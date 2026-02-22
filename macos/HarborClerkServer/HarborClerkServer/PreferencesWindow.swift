@@ -1,15 +1,36 @@
 import SwiftUI
 
+private let defaultPorts: [String: Int] = [
+    "api": 8100,
+    "postgres": 5433,
+    "redis": 6380,
+    "embedder": 8101,
+]
+
 struct PreferencesWindow: View {
     @State private var allowRemoteWeb = AppSettings.shared.allowRemoteWeb
     @State private var allowRemoteMCP = AppSettings.shared.allowRemoteMCP
     @State private var workerPreset = AppSettings.shared.workerPreset
-    @State private var apiPort = AppSettings.shared.apiPort
-    @State private var postgresPort = AppSettings.shared.postgresPort
-    @State private var redisPort = AppSettings.shared.redisPort
-    @State private var embedderPort = AppSettings.shared.embedderPort
+    @State private var apiPortText = String(AppSettings.shared.apiPort)
+    @State private var postgresPortText = String(AppSettings.shared.postgresPort)
+    @State private var redisPortText = String(AppSettings.shared.redisPort)
+    @State private var embedderPortText = String(AppSettings.shared.embedderPort)
     @State private var logLevel = AppSettings.shared.logLevel
     @State private var needsRestart = false
+
+    // Snapshot of initial values for cancel
+    @State private var initial: Snapshot = Snapshot()
+
+    struct Snapshot {
+        var allowRemoteWeb = AppSettings.shared.allowRemoteWeb
+        var allowRemoteMCP = AppSettings.shared.allowRemoteMCP
+        var workerPreset = AppSettings.shared.workerPreset
+        var apiPort = String(AppSettings.shared.apiPort)
+        var postgresPort = String(AppSettings.shared.postgresPort)
+        var redisPort = String(AppSettings.shared.redisPort)
+        var embedderPort = String(AppSettings.shared.embedderPort)
+        var logLevel = AppSettings.shared.logLevel
+    }
 
     var body: some View {
         Form {
@@ -52,49 +73,17 @@ struct PreferencesWindow: View {
             }
 
             Section("Advanced") {
-                HStack {
-                    Text("API port")
-                    Spacer()
-                    TextField("", value: $apiPort, format: .number)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-                        .onChange(of: apiPort) { _, newValue in
-                            AppSettings.shared.apiPort = newValue
-                            needsRestart = true
-                        }
+                portRow(label: "API port", text: $apiPortText, key: "api") { port in
+                    AppSettings.shared.apiPort = port
                 }
-                HStack {
-                    Text("PostgreSQL port")
-                    Spacer()
-                    TextField("", value: $postgresPort, format: .number)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-                        .onChange(of: postgresPort) { _, newValue in
-                            AppSettings.shared.postgresPort = newValue
-                            needsRestart = true
-                        }
+                portRow(label: "PostgreSQL port", text: $postgresPortText, key: "postgres") { port in
+                    AppSettings.shared.postgresPort = port
                 }
-                HStack {
-                    Text("Redis port")
-                    Spacer()
-                    TextField("", value: $redisPort, format: .number)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-                        .onChange(of: redisPort) { _, newValue in
-                            AppSettings.shared.redisPort = newValue
-                            needsRestart = true
-                        }
+                portRow(label: "Redis port", text: $redisPortText, key: "redis") { port in
+                    AppSettings.shared.redisPort = port
                 }
-                HStack {
-                    Text("Embedder port")
-                    Spacer()
-                    TextField("", value: $embedderPort, format: .number)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-                        .onChange(of: embedderPort) { _, newValue in
-                            AppSettings.shared.embedderPort = newValue
-                            needsRestart = true
-                        }
+                portRow(label: "Embedder port", text: $embedderPortText, key: "embedder") { port in
+                    AppSettings.shared.embedderPort = port
                 }
                 Picker("Log level", selection: $logLevel) {
                     Text("DEBUG").tag("DEBUG")
@@ -116,18 +105,89 @@ struct PreferencesWindow: View {
                         Text("Restart services to apply changes.")
                             .font(.callout)
                         Spacer()
+                        Button("Cancel Changes") {
+                            revertToInitial()
+                        }
                         Button("Restart Now") {
                             needsRestart = false
+                            captureInitial()
                             NotificationCenter.default.post(
                                 name: .preferencesRequestRestart, object: nil
                             )
                         }
+                        .keyboardShortcut(.defaultAction)
                     }
                 }
             }
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: needsRestart ? 520 : 480)
+        .frame(width: 480, height: needsRestart ? 540 : 490)
+        .onAppear { captureInitial() }
+    }
+
+    @ViewBuilder
+    private func portRow(label: String, text: Binding<String>, key: String, save: @escaping (Int) -> Void) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            TextField("", text: text)
+                .frame(width: 72)
+                .multilineTextAlignment(.trailing)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+                .onChange(of: text.wrappedValue) { _, newValue in
+                    if let port = Int(newValue), port > 0, port <= 65535 {
+                        save(port)
+                        needsRestart = true
+                    }
+                }
+            if let def = defaultPorts[key], Int(text.wrappedValue) != def {
+                Button {
+                    text.wrappedValue = String(def)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Reset to default (\(def))")
+            }
+        }
+    }
+
+    private func captureInitial() {
+        initial = Snapshot(
+            allowRemoteWeb: allowRemoteWeb,
+            allowRemoteMCP: allowRemoteMCP,
+            workerPreset: workerPreset,
+            apiPort: apiPortText,
+            postgresPort: postgresPortText,
+            redisPort: redisPortText,
+            embedderPort: embedderPortText,
+            logLevel: logLevel
+        )
+    }
+
+    private func revertToInitial() {
+        allowRemoteWeb = initial.allowRemoteWeb
+        allowRemoteMCP = initial.allowRemoteMCP
+        workerPreset = initial.workerPreset
+        apiPortText = initial.apiPort
+        postgresPortText = initial.postgresPort
+        redisPortText = initial.redisPort
+        embedderPortText = initial.embedderPort
+        logLevel = initial.logLevel
+
+        // Write reverted values back to settings
+        AppSettings.shared.allowRemoteWeb = initial.allowRemoteWeb
+        AppSettings.shared.allowRemoteMCP = initial.allowRemoteMCP
+        AppSettings.shared.workerPreset = initial.workerPreset
+        if let p = Int(initial.apiPort) { AppSettings.shared.apiPort = p }
+        if let p = Int(initial.postgresPort) { AppSettings.shared.postgresPort = p }
+        if let p = Int(initial.redisPort) { AppSettings.shared.redisPort = p }
+        if let p = Int(initial.embedderPort) { AppSettings.shared.embedderPort = p }
+        AppSettings.shared.logLevel = initial.logLevel
+
+        needsRestart = false
     }
 }
 

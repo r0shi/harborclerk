@@ -93,6 +93,9 @@ cp "$PROJECT_ROOT/alembic.ini" "$RESOURCES/alembic.ini"
 # Frontend
 cp -R "$FRONTEND_DIST" "$RESOURCES/frontend-dist"
 
+# Menubar icon
+cp "$PROJECT_ROOT/art/logo-favicon.png" "$RESOURCES/menubar_icon.png"
+
 # ── Copy to output ──
 OUTPUT_DIR="$BUILD_DIR/output"
 rm -rf "$OUTPUT_DIR"

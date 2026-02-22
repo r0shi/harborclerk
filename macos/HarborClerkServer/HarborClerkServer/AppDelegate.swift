@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusWindowController: NSWindowController?
     private var preferencesWindowController: NSWindowController?
     private var healthChecker: HealthChecker!
+    private var menuBarIcon: NSImage?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         serviceManager = ServiceManager()
@@ -105,27 +106,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusIcon(_ state: ServiceState) {
         guard let button = statusItem.button else { return }
-        let symbolName: String
-        let tint: NSColor
+        if menuBarIcon == nil, let url = Bundle.main.url(forResource: "menubar_icon", withExtension: "png") {
+            if let img = NSImage(contentsOf: url) {
+                img.isTemplate = true
+                img.size = NSSize(width: 18, height: 18)
+                menuBarIcon = img
+            }
+        }
+        if let icon = menuBarIcon {
+            button.image = icon
+        }
         switch state {
         case .stopped:
-            symbolName = "circle.fill"
-            tint = .systemGray
+            button.appearsDisabled = true
         case .starting, .stopping:
-            symbolName = "circle.fill"
-            tint = .systemYellow
+            button.appearsDisabled = false
         case .running:
-            symbolName = "circle.fill"
-            tint = .systemGreen
+            button.appearsDisabled = false
         case .errored:
-            symbolName = "exclamationmark.circle.fill"
-            tint = .systemRed
-        }
-        if let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Server status") {
-            let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
-            let configured = image.withSymbolConfiguration(config) ?? image
-            button.image = configured
-            button.contentTintColor = tint
+            button.appearsDisabled = false
         }
     }
 

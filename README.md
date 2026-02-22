@@ -4,9 +4,18 @@
 
 # Harbor Clerk
 
-A single-tenant document dropbox with OCR, hybrid full-text + vector search, and an MCP endpoint for LLM tool use. Designed for small offices running on a Mac mini or similar hardware.
+**Keep your data. Ask it anything.**
 
-Drop in PDFs, DOCX, RTF, or plain text files. The system extracts text (with OCR for scanned documents in English and French), chunks it, generates embeddings, and makes everything searchable. Cloud LLMs can query the knowledge base via MCP over HTTPS using read-only API keys — they receive only cited snippets, never the full corpus.
+Harbor Clerk is a safe harbor for your documents — and a capable clerk who knows where everything is. Drop in PDFs, scans, notes, or research files, and it turns them into a searchable, citation-backed knowledge base that runs entirely on your machine.
+
+No SaaS account. No background sync. No shared tenancy. Your documents stay local.
+
+Designed for small offices, independent operators, and privacy-focused individuals, Harbor Clerk runs comfortably on a Mac mini or similar hardware. It handles text extraction and OCR, builds hybrid full-text and vector search, and exposes a clean MCP endpoint so you can connect the model of your choice — fully local or selectively cloud-based.
+
+External models receive only cited snippets, never your full corpus.
+
+This isn't a platform. It's a tool.
+It keeps your documents where they belong — and makes them useful.
 
 ---
 
