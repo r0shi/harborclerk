@@ -5,6 +5,7 @@ class PythonService: ManagedService {
     let name: String
     var state: ServiceState = .stopped
     var process: Process?
+    var baseEnvironment: [String: String] = [:]
 
     private var restartCount = 0
     private let maxRestarts = 3
@@ -28,7 +29,7 @@ class PythonService: ManagedService {
         proc.arguments = arguments
 
         // Merge base Python env with service-specific overrides
-        var env = ServiceManager().pythonEnvironment()
+        var env = baseEnvironment
         for (k, v) in extraEnvironment {
             env[k] = v
         }
@@ -38,6 +39,7 @@ class PythonService: ManagedService {
         proc.standardOutput = pipe
         proc.standardError = pipe
 
+        let serviceName = self.name
         proc.terminationHandler = { [weak self] p in
             guard let self = self else { return }
             Task { @MainActor in
@@ -45,14 +47,14 @@ class PythonService: ManagedService {
                     self.restartCount += 1
                     let delay = pow(2.0, Double(self.restartCount))
                     LogManager.shared.append(
-                        service: self.name,
+                        service: serviceName,
                         text: "Process exited (\(p.terminationStatus)), restarting in \(Int(delay))s (attempt \(self.restartCount)/\(self.maxRestarts))"
                     )
                     try? await Task.sleep(for: .seconds(delay))
                     try? await self.start()
                 } else if self.state == .running {
                     self.state = .errored
-                    LogManager.shared.append(service: self.name, text: "Process exited, max restarts reached")
+                    LogManager.shared.append(service: serviceName, text: "Process exited, max restarts reached")
                 }
             }
         }

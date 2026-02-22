@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var serviceManager: ServiceManager!
@@ -134,7 +135,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             NSWorkspace.shared.openApplication(at: url, configuration: .init())
         } else {
-            // Try opening via URL
             let port = AppSettings.shared.apiPort
             if let url = URL(string: "http://localhost:\(port)") {
                 NSWorkspace.shared.open(url)

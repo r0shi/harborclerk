@@ -76,6 +76,14 @@ final class ServiceManager: ObservableObject {
     // MARK: - Lifecycle
 
     func startAll() async {
+        // Set base environment on all Python services
+        let env = pythonEnvironment()
+        for service in services {
+            if let pySvc = service as? PythonService {
+                pySvc.baseEnvironment = env
+            }
+        }
+
         // 1. PostgreSQL
         await startService(postgresService)
 
