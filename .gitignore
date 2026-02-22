@@ -28,6 +28,9 @@ docker-compose.override.yml
 caddy_data/
 caddy_config/
 
+# macOS build output
+macos/build/
+
 # Persistent data (Docker volumes, but ignore if local)
 minio_data/
 pg_data/
