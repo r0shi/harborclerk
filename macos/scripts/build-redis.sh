@@ -3,13 +3,16 @@
 set -euo pipefail
 
 REDIS_VERSION="${REDIS_VERSION:-7.4.1}"
-DEST_DIR="${DEST_DIR:-$(pwd)/build/redis}"
-BUILD_DIR="${BUILD_DIR:-$(pwd)/build/redis-build}"
 ARCH="${ARCH:-arm64}"
 
-echo "==> Building Redis ${REDIS_VERSION} for ${ARCH}"
+# Resolve to absolute paths before cd-ing around
+DEST_DIR="${DEST_DIR:-$(pwd)/build/redis}"
+BUILD_DIR="${BUILD_DIR:-$(pwd)/build/redis-build}"
+mkdir -p "$DEST_DIR/bin" "$BUILD_DIR"
+DEST_DIR="$(cd "$DEST_DIR" && pwd)"
+BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
 
-mkdir -p "$BUILD_DIR" "$DEST_DIR/bin"
+echo "==> Building Redis ${REDIS_VERSION} for ${ARCH}"
 
 cd "$BUILD_DIR"
 if [ ! -d "redis-${REDIS_VERSION}" ]; then

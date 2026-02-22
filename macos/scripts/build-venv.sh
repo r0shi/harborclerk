@@ -4,6 +4,8 @@ set -euo pipefail
 
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 DEST_DIR="${DEST_DIR:-$(pwd)/build}"
+mkdir -p "$DEST_DIR"
+DEST_DIR="$(cd "$DEST_DIR" && pwd)"
 PYTHON_DIR="$DEST_DIR/python"
 VENV_DIR="$DEST_DIR/venv"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"

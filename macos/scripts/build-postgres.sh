@@ -5,13 +5,16 @@ set -euo pipefail
 
 PG_VERSION="${PG_VERSION:-16.4}"
 PGVECTOR_VERSION="${PGVECTOR_VERSION:-0.8.0}"
-DEST_DIR="${DEST_DIR:-$(pwd)/build/postgres}"
-BUILD_DIR="${BUILD_DIR:-$(pwd)/build/pg-build}"
 ARCH="${ARCH:-arm64}"
 
-echo "==> Building PostgreSQL ${PG_VERSION} + pgvector ${PGVECTOR_VERSION} for ${ARCH}"
-
+# Resolve to absolute paths before cd-ing around
+DEST_DIR="${DEST_DIR:-$(pwd)/build/postgres}"
+BUILD_DIR="${BUILD_DIR:-$(pwd)/build/pg-build}"
 mkdir -p "$BUILD_DIR" "$DEST_DIR"
+DEST_DIR="$(cd "$DEST_DIR" && pwd)"
+BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
+
+echo "==> Building PostgreSQL ${PG_VERSION} + pgvector ${PGVECTOR_VERSION} for ${ARCH}"
 
 # ── PostgreSQL ──
 cd "$BUILD_DIR"
