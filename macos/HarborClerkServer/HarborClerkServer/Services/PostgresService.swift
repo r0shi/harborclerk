@@ -13,7 +13,7 @@ final class PostgresService: ManagedService {
         Bundle.main.resourceURL!.appendingPathComponent("postgres/share")
     }
     private var pgLibDir: URL {
-        Bundle.main.resourceURL!.appendingPathComponent("postgres/lib/postgresql")
+        Bundle.main.resourceURL!.appendingPathComponent("postgres/lib")
     }
     private var dataDir: URL { AppSettings.shared.postgresDataDir }
     private var port: Int { AppSettings.shared.postgresPort }
@@ -67,7 +67,7 @@ final class PostgresService: ManagedService {
         let pgIsReady = pgBinDir.appendingPathComponent("pg_isready")
         let proc = Process()
         proc.executableURL = pgIsReady
-        proc.arguments = ["-p", String(port), "-h", "localhost"]
+        proc.arguments = ["-p", String(port), "-h", "localhost", "-U", "lka"]
         proc.environment = pgEnvironment()
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
@@ -132,7 +132,8 @@ final class PostgresService: ManagedService {
 
         // Create extensions
         let psql = pgBinDir.appendingPathComponent("psql")
-        let extensions = ["vector", "pg_trgm", "pgcrypto", "citext"]
+        // pgcrypto not needed — gen_random_uuid() is built-in on PG 13+
+        let extensions = ["vector", "pg_trgm", "citext"]
         for ext in extensions {
             let extProc = Process()
             extProc.executableURL = psql
