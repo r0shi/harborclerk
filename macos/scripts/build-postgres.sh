@@ -32,6 +32,8 @@ cd "postgresql-${PG_VERSION}"
     --with-uuid=e2fs \
     CFLAGS="-arch ${ARCH} -O2"
 
+# Generate headers first to avoid parallel build race condition
+make -C src/backend generated-headers
 make -j"$(sysctl -n hw.ncpu)" world-bin
 make install-world-bin
 
