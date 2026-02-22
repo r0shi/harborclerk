@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MACOS_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="$(dirname "$MACOS_DIR")"
 BUILD_DIR="${BUILD_DIR:-$MACOS_DIR/build}"
+mkdir -p "$BUILD_DIR"
+BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
 
 echo "==> Packaging Harbor Clerk apps"
 
@@ -48,6 +50,9 @@ fi
 
 # ── Copy resources into server app bundle ──
 RESOURCES="$SERVER_APP/Contents/Resources"
+# Clean previous resources to avoid permission errors and nested dirs
+rm -rf "$RESOURCES"
+mkdir -p "$RESOURCES"
 echo "==> Copying resources to server app bundle"
 
 # PostgreSQL
@@ -90,6 +95,7 @@ cp -R "$FRONTEND_DIST" "$RESOURCES/frontend-dist"
 
 # ── Copy to output ──
 OUTPUT_DIR="$BUILD_DIR/output"
+rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 cp -R "$SERVER_APP" "$OUTPUT_DIR/"
 cp -R "$CLIENT_APP" "$OUTPUT_DIR/"

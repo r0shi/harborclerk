@@ -46,20 +46,35 @@ if [ ! -d "$VENV_DIR" ]; then
     "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
+# Use the venv's python directly (not pip script, since shebangs get patched later)
+VENV_PYTHON="$VENV_DIR/bin/python3"
+
 # ── Install packages ──
-echo "==> Installing harbor-clerk"
-"$VENV_DIR/bin/pip" install --no-cache-dir "$PROJECT_ROOT"
+if ! "$VENV_PYTHON" -c "import harbor_clerk" 2>/dev/null; then
+    echo "==> Installing harbor-clerk"
+    "$VENV_PYTHON" -m pip install --no-cache-dir "$PROJECT_ROOT"
+else
+    echo "==> harbor-clerk already installed, skipping"
+fi
 
-echo "==> Installing embedder"
-"$VENV_DIR/bin/pip" install --no-cache-dir "$PROJECT_ROOT/embedder"
+if ! "$VENV_PYTHON" -c "import embedder" 2>/dev/null; then
+    echo "==> Installing embedder"
+    "$VENV_PYTHON" -m pip install --no-cache-dir "$PROJECT_ROOT/embedder"
+else
+    echo "==> embedder already installed, skipping"
+fi
 
-echo "==> Installing striprtf"
-"$VENV_DIR/bin/pip" install --no-cache-dir striprtf
+if ! "$VENV_PYTHON" -c "import striprtf" 2>/dev/null; then
+    echo "==> Installing striprtf"
+    "$VENV_PYTHON" -m pip install --no-cache-dir striprtf
+else
+    echo "==> striprtf already installed, skipping"
+fi
 
 # Make the venv relocatable by patching shebangs
 echo "==> Patching shebangs for relocatability"
 for script in "$VENV_DIR/bin/"*; do
-    if [ -f "$script" ] && head -1 "$script" | grep -q "^#!.*python"; then
+    if [ -f "$script" ] && head -1 "$script" | grep -q "^#!.*$VENV_DIR"; then
         sed -i '' "1s|.*|#!/usr/bin/env python3|" "$script"
     fi
 done

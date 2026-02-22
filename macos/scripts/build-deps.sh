@@ -9,6 +9,12 @@ POPPLER_DIR="$DEST_DIR/poppler"
 
 echo "==> Extracting Tesseract and Poppler from Homebrew"
 
+# Skip if already extracted
+if [ -f "$TESSERACT_DIR/bin/tesseract" ] && [ -f "$POPPLER_DIR/bin/pdftoppm" ]; then
+    echo "==> Already extracted, skipping"
+    exit 0
+fi
+
 # Ensure Homebrew deps are installed
 brew list tesseract &>/dev/null || brew install tesseract
 brew list poppler &>/dev/null || brew install poppler
