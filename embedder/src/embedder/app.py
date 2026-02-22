@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
     logger.info("Embedder shut down")
 
 
-app = FastAPI(title="LKA Embedder", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Harbor Clerk Embedder", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")

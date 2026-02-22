@@ -40,7 +40,7 @@ services:
     build:
       context: .
       dockerfile: docker/app.Dockerfile
-    command: ["mcp-gateway-worker", "--queues", "io"]
+    command: ["harbor-clerk-worker", "--queues", "io"]
     restart: unless-stopped
     env_file: .env
     depends_on:
@@ -53,7 +53,7 @@ services:
     build:
       context: .
       dockerfile: docker/app.Dockerfile
-    command: ["mcp-gateway-worker", "--queues", "cpu"]
+    command: ["harbor-clerk-worker", "--queues", "cpu"]
     restart: unless-stopped
     env_file: .env
     depends_on:

@@ -42,7 +42,7 @@ export default function Layout() {
           <div className="flex h-14 items-center justify-between">
             <div className="flex items-center space-x-4">
               <Link to="/" className="text-lg font-bold text-white">
-                LKA
+                Harbor Clerk
               </Link>
               <NavLink to="/" end className={linkClass}>
                 Upload

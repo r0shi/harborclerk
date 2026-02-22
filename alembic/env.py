@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 # Import all models so they register on Base.metadata
-from mcp_gateway.models import Base
+from harbor_clerk.models import Base
 
 config = context.config
 

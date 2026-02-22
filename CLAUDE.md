@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Local Knowledge Appliance** — a single-tenant, web-first document dropbox for non-technical offices running on Mac mini/Studio. Local extraction, OCR (English/French), hybrid retrieval. Cloud LLMs query via MCP over HTTPS with read-only API keys, receiving only cited snippets (no full corpus upload).
+**Harbor Clerk** — a single-tenant, web-first document dropbox for non-technical offices running on Mac mini/Studio. Local extraction, OCR (English/French), hybrid retrieval. Cloud LLMs query via MCP over HTTPS with read-only API keys, receiving only cited snippets (no full corpus upload).
 
 The full specification lives in `spec.txt`.
 
 ## Architecture
 
-Docker Compose microservices:
+### Docker Compose (DIY/Linux)
 
 | Container | Role |
 |---|---|
@@ -24,15 +24,43 @@ Docker Compose microservices:
 | **minio** | Object storage for originals |
 | **tika** | Apache Tika server (RTF and fallback extraction) |
 
+### macOS Native Apps
+
+Two native macOS apps under `macos/`:
+
+- **Harbor Clerk Server** — menubar agent app managing all backend services as subprocesses (PostgreSQL, Redis, Embedder, API, Workers)
+- **Harbor Clerk** — WKWebView app wrapping the React SPA from localhost
+
+Build scripts in `macos/scripts/`, orchestrated by `macos/Makefile`.
+
+### Storage Backend
+
+Configurable via `STORAGE_BACKEND` env var:
+- `minio` (default) — MinIO/S3-compatible object storage (Docker Compose)
+- `filesystem` — local filesystem under `STORAGE_PATH` (native macOS app)
+
+### RTF Extraction
+
+Configurable: uses Apache Tika when `TIKA_URL` is set, falls back to `striprtf` library when empty.
+
 **No multi-tenancy.** Single-tenant appliance — no `tenant_id` anywhere in schema or API.
 
 **UI:** Vite + React + TypeScript SPA, built to static files and served by FastAPI at `/`.
+
+## Python Package
+
+Package name: `harbor_clerk` (under `src/harbor_clerk/`).
+
+Entry points:
+- `harbor-clerk-api` — FastAPI server
+- `harbor-clerk-worker` — RQ worker
+- `harbor-clerk-seed` — Database seeder
 
 ## Ingestion Pipeline
 
 Five idempotent stages, each guarded by row-level lock on `(version_id, stage)` in `ingestion_jobs`:
 
-1. **extract** (io) — PyMuPDF for PDF, python-docx for DOCX, Tika for RTF/fallback
+1. **extract** (io) — PyMuPDF for PDF, python-docx for DOCX, striprtf/Tika for RTF, plain text fallback
 2. **ocr** (cpu) — conditional: always for JPEG; PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for DOCX/RTF/TXT. Uses pdftoppm + Tesseract (eng+fra)
 3. **chunk** (io) — ~1000 char target, 150 char overlap, preserves page ranges + char offsets. Detects language per chunk
 4. **embed** (cpu) — calls embedder container over HTTP, 384-dim vectors stored in pgvector
@@ -69,7 +97,7 @@ Key tables: `users`, `api_keys`, `documents`, `document_versions`, `document_pag
 
 `chunks` has dual FTS columns (`fts_en` TSVECTOR, `fts_fr` TSVECTOR) both as generated stored columns with GIN indexes, plus `embedding vector(384)` with HNSW index. Full DDL in `spec.txt` section I.
 
-MinIO bucket: `originals`, key pattern: `originals/versions/<version_id>/<original_filename>`.
+Storage bucket: `originals`, key pattern: `originals/versions/<version_id>/<original_filename>`.
 
 ## Worker Presets (C = logical cores)
 

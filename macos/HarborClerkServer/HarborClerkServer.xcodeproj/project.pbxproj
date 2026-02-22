@@ -1,0 +1,296 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A100000001 /* App.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000001; };
+		A100000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000002; };
+		A100000003 /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000003; };
+		A100000004 /* PostgresService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000004; };
+		A100000005 /* RedisService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000005; };
+		A100000006 /* PythonService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000006; };
+		A100000007 /* APIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000007; };
+		A100000008 /* WorkerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000008; };
+		A100000009 /* EmbedderService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000009; };
+		A100000010 /* MigrationRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000010; };
+		A100000011 /* HealthChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000011; };
+		A100000012 /* LogManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000012; };
+		A100000013 /* StatusWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000013; };
+		A100000014 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000014; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		B100000001 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
+		B100000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		B100000003 /* ServiceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceManager.swift; sourceTree = "<group>"; };
+		B100000004 /* PostgresService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostgresService.swift; sourceTree = "<group>"; };
+		B100000005 /* RedisService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedisService.swift; sourceTree = "<group>"; };
+		B100000006 /* PythonService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PythonService.swift; sourceTree = "<group>"; };
+		B100000007 /* APIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIService.swift; sourceTree = "<group>"; };
+		B100000008 /* WorkerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkerService.swift; sourceTree = "<group>"; };
+		B100000009 /* EmbedderService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbedderService.swift; sourceTree = "<group>"; };
+		B100000010 /* MigrationRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MigrationRunner.swift; sourceTree = "<group>"; };
+		B100000011 /* HealthChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthChecker.swift; sourceTree = "<group>"; };
+		B100000012 /* LogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManager.swift; sourceTree = "<group>"; };
+		B100000013 /* StatusWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusWindow.swift; sourceTree = "<group>"; };
+		B100000014 /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
+		C100000001 /* HarborClerkServer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HarborClerkServer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		D100000002 /* HarborClerkServer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerkServer.entitlements; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E100000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		F100000001 = {
+			isa = PBXGroup;
+			children = (
+				F100000002 /* HarborClerkServer */,
+				F100000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F100000002 /* HarborClerkServer */ = {
+			isa = PBXGroup;
+			children = (
+				B100000001 /* App.swift */,
+				B100000002 /* AppDelegate.swift */,
+				B100000003 /* ServiceManager.swift */,
+				F100000003 /* Services */,
+				B100000010 /* MigrationRunner.swift */,
+				B100000011 /* HealthChecker.swift */,
+				B100000012 /* LogManager.swift */,
+				B100000013 /* StatusWindow.swift */,
+				B100000014 /* Settings.swift */,
+				D100000001 /* Info.plist */,
+				D100000002 /* HarborClerkServer.entitlements */,
+			);
+			path = HarborClerkServer;
+			sourceTree = "<group>";
+		};
+		F100000003 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				B100000004 /* PostgresService.swift */,
+				B100000005 /* RedisService.swift */,
+				B100000006 /* PythonService.swift */,
+				B100000007 /* APIService.swift */,
+				B100000008 /* WorkerService.swift */,
+				B100000009 /* EmbedderService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		F100000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C100000001 /* HarborClerkServer.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		G100000001 /* HarborClerkServer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = H100000003 /* Build configuration list for PBXNativeTarget "HarborClerkServer" */;
+			buildPhases = (
+				G100000002 /* Sources */,
+				E100000001 /* Frameworks */,
+				G100000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = HarborClerkServer;
+			productName = HarborClerkServer;
+			productReference = C100000001 /* HarborClerkServer.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		G100000004 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = H100000001 /* Build configuration list for PBXProject "HarborClerkServer" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = F100000001;
+			productRefGroup = F100000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				G100000001 /* HarborClerkServer */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		G100000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		G100000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A100000001 /* App.swift in Sources */,
+				A100000002 /* AppDelegate.swift in Sources */,
+				A100000003 /* ServiceManager.swift in Sources */,
+				A100000004 /* PostgresService.swift in Sources */,
+				A100000005 /* RedisService.swift in Sources */,
+				A100000006 /* PythonService.swift in Sources */,
+				A100000007 /* APIService.swift in Sources */,
+				A100000008 /* WorkerService.swift in Sources */,
+				A100000009 /* EmbedderService.swift in Sources */,
+				A100000010 /* MigrationRunner.swift in Sources */,
+				A100000011 /* HealthChecker.swift in Sources */,
+				A100000012 /* LogManager.swift in Sources */,
+				A100000013 /* StatusWindow.swift in Sources */,
+				A100000014 /* Settings.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		H100000002 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		H100000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				GCC_OPTIMIZATION_LEVEL = s;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		H100000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = HarborClerkServer/HarborClerkServer.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = HarborClerkServer/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.harborclerk.HarborClerkServer;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		H100000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = HarborClerkServer/HarborClerkServer.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = HarborClerkServer/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.harborclerk.HarborClerkServer;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		H100000001 /* Build configuration list for PBXProject "HarborClerkServer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				H100000002 /* Debug */,
+				H100000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		H100000003 /* Build configuration list for PBXNativeTarget "HarborClerkServer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				H100000005 /* Debug */,
+				H100000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = G100000004 /* Project object */;
+}

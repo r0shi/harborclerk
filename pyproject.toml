@@ -1,7 +1,7 @@
 [project]
-name = "mcp-gateway"
+name = "harbor-clerk"
 version = "0.1.0"
-description = "Local Knowledge Appliance - document dropbox with hybrid retrieval"
+description = "Harbor Clerk - document dropbox with hybrid retrieval"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
@@ -26,6 +26,7 @@ dependencies = [
     "psycopg2-binary>=2.9.0",
     "Pillow>=10.0.0",
     "mcp>=1.9.0",
+    "striprtf>=0.0.26",
 ]
 
 [build-system]
@@ -33,9 +34,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mcp_gateway"]
+packages = ["src/harbor_clerk"]
 
 [project.scripts]
-mcp-gateway-api = "mcp_gateway.api.app:main"
-mcp-gateway-worker = "mcp_gateway.worker.entry:main"
-mcp-gateway-seed = "mcp_gateway.seed:main"
+harbor-clerk-api = "harbor_clerk.api.app:main"
+harbor-clerk-worker = "harbor_clerk.worker.entry:main"
+harbor-clerk-seed = "harbor_clerk.seed:main"
