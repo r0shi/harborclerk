@@ -49,17 +49,44 @@ struct ContentView: View {
 struct WebView: NSViewRepresentable {
     let url: URL
 
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        // Use the default (persistent) data store so credentials and
+        // AutoFill state are preserved across launches.
+        config.websiteDataStore = .default()
+        // Allow text interaction so the system credential provider
+        // (Keychain, 1Password, etc.) can detect and fill form fields.
+        config.preferences.isTextInteractionEnabled = true
+
         let webView = WKWebView(frame: .zero, configuration: config)
+        webView.uiDelegate = context.coordinator
         webView.load(URLRequest(url: url))
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        // Reload only if URL changed
         if webView.url != url {
             webView.load(URLRequest(url: url))
+        }
+    }
+
+    class Coordinator: NSObject, WKUIDelegate {
+        // Respond to new-window requests (e.g. target="_blank" links)
+        // by loading them in the same web view.
+        func webView(
+            _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            if navigationAction.targetFrame == nil || navigationAction.targetFrame?.isMainFrame == false {
+                webView.load(navigationAction.request)
+            }
+            return nil
         }
     }
 }
