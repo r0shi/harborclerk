@@ -25,15 +25,15 @@ struct StatusWindow: View {
                     }
                 }
             }
-            .frame(height: 200)
+            .frame(minHeight: 180, maxHeight: 200)
 
             Divider()
 
-            // Logs behind disclosure triangle
-            DisclosureGroup("Logs (\(logManager.lines.count))", isExpanded: $logsExpanded) {
-                VStack(spacing: 0) {
+            // Logs disclosure
+            VStack(alignment: .leading, spacing: 0) {
+                DisclosureGroup(isExpanded: $logsExpanded) {
                     ScrollViewReader { proxy in
-                        ScrollView {
+                        ScrollView([.vertical, .horizontal]) {
                             LazyVStack(alignment: .leading, spacing: 1) {
                                 ForEach(logManager.lines) { line in
                                     HStack(alignment: .top, spacing: 8) {
@@ -45,13 +45,16 @@ struct StatusWindow: View {
                                             .font(.system(.caption, design: .monospaced))
                                             .foregroundColor(.primary)
                                             .textSelection(.enabled)
+                                            .lineLimit(nil)
+                                            .fixedSize(horizontal: false, vertical: true)
                                     }
                                     .id(line.id)
                                 }
                             }
-                            .padding(.horizontal)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
                         }
-                        .frame(minHeight: 120, maxHeight: .infinity)
+                        .frame(height: 200)
                         .onChange(of: logManager.lines.count) {
                             if let last = logManager.lines.last {
                                 proxy.scrollTo(last.id, anchor: .bottom)
@@ -70,12 +73,14 @@ struct StatusWindow: View {
                         }
                         .buttonStyle(.borderless)
                     }
-                    .padding(.horizontal)
-                    .padding(.vertical, 4)
+                    .padding(.top, 4)
+                } label: {
+                    Text("Logs (\(logManager.lines.count))")
+                        .font(.headline)
                 }
             }
             .padding(.horizontal)
-            .padding(.top, 8)
+            .padding(.vertical, 8)
 
             Divider()
 
