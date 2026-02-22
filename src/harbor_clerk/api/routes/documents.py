@@ -159,14 +159,22 @@ async def get_document_content(
     if pages is not None:
         # Parse "1-3" or "5"
         parts = pages.split("-")
-        if len(parts) == 2:
-            start, end = int(parts[0]), int(parts[1])
-            query = query.where(
-                DocumentPage.page_num >= start,
-                DocumentPage.page_num <= end,
+        try:
+            if len(parts) == 2:
+                start, end = int(parts[0]), int(parts[1])
+                query = query.where(
+                    DocumentPage.page_num >= start,
+                    DocumentPage.page_num <= end,
+                )
+            elif len(parts) == 1:
+                query = query.where(DocumentPage.page_num == int(parts[0]))
+            else:
+                raise ValueError("invalid format")
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid page range: '{pages}'. Use a number or range like '1-3'.",
             )
-        elif len(parts) == 1:
-            query = query.where(DocumentPage.page_num == int(parts[0]))
 
     page_result = await session.execute(query)
     page_rows = page_result.scalars().all()

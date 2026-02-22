@@ -37,6 +37,7 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-gray-900">
       <div className="w-full max-w-sm">
+        <img src="/logo.png" alt="Harbor Clerk" className="mx-auto mb-4 h-20 w-20" />
         <h1 className="mb-6 text-center text-2xl font-bold text-gray-900 dark:text-gray-100">
           Harbor Clerk
         </h1>

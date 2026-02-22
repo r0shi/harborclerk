@@ -12,6 +12,7 @@ final class EmbedderService: PythonService {
             .appendingPathComponent("model/all-MiniLM-L6-v2").path
         return [
             "EMBED_MODEL": modelPath,
+            "HOST": "127.0.0.1",
             "PORT": String(AppSettings.shared.embedderPort),
         ]
     }

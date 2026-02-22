@@ -21,6 +21,8 @@
 		A100000012 /* LogManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000012; };
 		A100000013 /* StatusWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000013; };
 		A100000014 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000014; };
+		A100000015 /* PreferencesWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000015; };
+		A100000016 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B100000016; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +40,8 @@
 		B100000012 /* LogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManager.swift; sourceTree = "<group>"; };
 		B100000013 /* StatusWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusWindow.swift; sourceTree = "<group>"; };
 		B100000014 /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
+		B100000015 /* PreferencesWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesWindow.swift; sourceTree = "<group>"; };
+		B100000016 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C100000001 /* HarborClerkServer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HarborClerkServer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D100000002 /* HarborClerkServer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerkServer.entitlements; sourceTree = "<group>"; };
@@ -74,6 +78,8 @@
 				B100000012 /* LogManager.swift */,
 				B100000013 /* StatusWindow.swift */,
 				B100000014 /* Settings.swift */,
+				B100000015 /* PreferencesWindow.swift */,
+				B100000016 /* Assets.xcassets */,
 				D100000001 /* Info.plist */,
 				D100000002 /* HarborClerkServer.entitlements */,
 			);
@@ -154,6 +160,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A100000016 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -178,6 +185,7 @@
 				A100000012 /* LogManager.swift in Sources */,
 				A100000013 /* StatusWindow.swift in Sources */,
 				A100000014 /* Settings.swift in Sources */,
+				A100000015 /* PreferencesWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

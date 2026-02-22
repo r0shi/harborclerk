@@ -18,6 +18,7 @@ final class RedisService: ManagedService {
         proc.executableURL = redisBin
         proc.arguments = [
             "--port", String(port),
+            "--bind", "127.0.0.1",
             "--dir", dataDir.path,
             "--daemonize", "no",
             "--save", "60", "1",

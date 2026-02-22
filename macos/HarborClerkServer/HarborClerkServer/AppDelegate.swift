@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var serviceManager: ServiceManager!
     private var statusWindowController: NSWindowController?
+    private var preferencesWindowController: NSWindowController?
     private var healthChecker: HealthChecker!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -25,6 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(servicesStateChanged),
             name: .servicesStateChanged,
+            object: nil,
+        )
+
+        // Observe preferences restart request
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePreferencesRestart),
+            name: .preferencesRequestRestart,
             object: nil,
         )
     }
@@ -74,6 +83,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusWindowItem = NSMenuItem(title: "Show Status Window...", action: #selector(showStatusWindow), keyEquivalent: "s")
         statusWindowItem.target = self
         menu.addItem(statusWindowItem)
+
+        let preferencesItem = NSMenuItem(title: "Preferences...", action: #selector(showPreferences), keyEquivalent: ",")
+        preferencesItem.target = self
+        menu.addItem(preferencesItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -163,6 +176,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusWindowController?.showWindow(nil)
         statusWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showPreferences() {
+        if preferencesWindowController == nil {
+            let view = PreferencesWindow()
+            let hostingController = NSHostingController(rootView: view)
+            let window = NSWindow(contentViewController: hostingController)
+            window.title = "Preferences"
+            window.styleMask = [.titled, .closable]
+            window.center()
+            preferencesWindowController = NSWindowController(window: window)
+        }
+        preferencesWindowController?.showWindow(nil)
+        preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func handlePreferencesRestart() {
+        serviceManager.stopAll()
+        Task { await serviceManager.startAll() }
     }
 
     @objc private func quitApp() {

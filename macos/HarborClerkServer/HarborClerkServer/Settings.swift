@@ -51,6 +51,16 @@ final class AppSettings {
         set { data["log_level"] = newValue; save() }
     }
 
+    var allowRemoteWeb: Bool {
+        get { data["allow_remote_web"] as? Bool ?? false }
+        set { data["allow_remote_web"] = newValue; save() }
+    }
+
+    var allowRemoteMCP: Bool {
+        get { data["allow_remote_mcp"] as? Bool ?? false }
+        set { data["allow_remote_mcp"] = newValue; save() }
+    }
+
     // MARK: - Derived paths
 
     static let dataDir: URL = {

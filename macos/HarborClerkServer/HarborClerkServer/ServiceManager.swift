@@ -177,7 +177,7 @@ final class ServiceManager: ObservableObject {
             "SECRET_KEY": settings.secretKey,
             "LOG_LEVEL": settings.logLevel,
             "STATIC_DIR": bundle.appendingPathComponent("frontend-dist").path,
-            "API_HOST": "127.0.0.1",
+            "API_HOST": (settings.allowRemoteWeb || settings.allowRemoteMCP) ? "0.0.0.0" : "127.0.0.1",
             "API_PORT": String(settings.apiPort),
             "PATH": [
                 bundle.appendingPathComponent("venv/bin").path,

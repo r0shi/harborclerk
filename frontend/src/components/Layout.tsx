@@ -41,8 +41,9 @@ export default function Layout() {
         <div className="mx-auto max-w-7xl px-4">
           <div className="flex h-14 items-center justify-between">
             <div className="flex items-center space-x-4">
-              <Link to="/" className="text-lg font-bold text-white">
-                Harbor Clerk
+              <Link to="/" className="flex items-center space-x-2 text-lg font-bold text-white">
+                <img src="/favicon.png" alt="" className="h-6 w-6" />
+                <span>Harbor Clerk</span>
               </Link>
               <NavLink to="/" end className={linkClass}>
                 Upload

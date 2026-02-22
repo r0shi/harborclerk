@@ -139,8 +139,15 @@ async def confirm_upload(
     settings = get_settings()
 
     # Load upload
+    try:
+        upload_uuid = uuid.UUID(body.upload_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid upload_id: not a valid UUID",
+        )
     result = await session.execute(
-        select(Upload).where(Upload.upload_id == uuid.UUID(body.upload_id))
+        select(Upload).where(Upload.upload_id == upload_uuid)
     )
     upload = result.scalar_one_or_none()
     if upload is None:
@@ -160,7 +167,13 @@ async def confirm_upload(
     elif body.action == "new_version":
         if body.existing_doc_id is None:
             raise HTTPException(status_code=422, detail="existing_doc_id required for new_version")
-        doc_id = uuid.UUID(body.existing_doc_id)
+        try:
+            doc_id = uuid.UUID(body.existing_doc_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid existing_doc_id: not a valid UUID",
+            )
         doc_result = await session.execute(
             select(Document).where(Document.doc_id == doc_id, Document.status == "active")
         )

@@ -38,6 +38,12 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting Harbor Clerk API")
 
+    if settings.secret_key == "change-me-in-production":
+        logger.warning(
+            "SECRET_KEY is set to the default value. "
+            "Change it to a random string for production use."
+        )
+
     # Ensure storage bucket exists
     get_storage().ensure_bucket(settings.minio_bucket)
 

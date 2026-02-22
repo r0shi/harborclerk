@@ -1,129 +1,95 @@
-# Local Knowledge Appliance
+<p align="center">
+  <img src="art/logo-large.png" alt="Harbor Clerk" width="280" />
+</p>
+
+# Harbor Clerk
 
 A single-tenant document dropbox with OCR, hybrid full-text + vector search, and an MCP endpoint for LLM tool use. Designed for small offices running on a Mac mini or similar hardware.
 
-Drop in PDFs, DOCX, RTF, or plain text files. The system extracts text (with OCR for scanned documents), chunks it, generates embeddings, and makes everything searchable. Cloud LLMs can query the knowledge base via MCP over HTTPS using read-only API keys — they receive only cited snippets, never the full corpus.
+Drop in PDFs, DOCX, RTF, or plain text files. The system extracts text (with OCR for scanned documents in English and French), chunks it, generates embeddings, and makes everything searchable. Cloud LLMs can query the knowledge base via MCP over HTTPS using read-only API keys — they receive only cited snippets, never the full corpus.
 
-## Prerequisites
+---
 
-- **Docker Desktop** (macOS/Windows) or **Docker Engine + Compose** (Linux)
-  - At least 4 GB RAM allocated to Docker (8 GB recommended)
-- **Git**
+## Deployment Options
 
-## Quick Start
+Harbor Clerk can run in two ways:
 
-1. **Clone the repo**
+| | macOS Native | Docker Compose |
+|---|---|---|
+| **Best for** | Target audience — small offices with a Mac | DIY / Linux servers |
+| **Services** | Managed by menubar app as subprocesses | Nine Docker containers |
+| **Storage** | Local filesystem (`~/Library/Application Support/Harbor Clerk/`) | MinIO object storage + Docker volumes |
+| **HTTPS** | Direct localhost access | Caddy reverse proxy with self-signed cert |
 
-   ```bash
-   git clone https://github.com/r0shi/mcp-gateway.git
-   cd mcp-gateway
-   ```
+---
 
-2. **Create your environment file**
+## macOS Native App
 
-   ```bash
-   cp .env.example .env
-   ```
+### Requirements
 
-   Edit `.env` and change `SECRET_KEY` to a random string:
+- Mac mini M2 or newer (M1 works, M2+ recommended)
+- macOS 15.0 (Sequoia) or later
+- 16 GB RAM minimum, 32 GB recommended for large document collections
 
-   ```bash
-   # Generate a random key:
-   python3 -c "import secrets; print(secrets.token_urlsafe(48))"
-   ```
+### Getting Started
 
-3. **Start the stack**
+1. **Download** Harbor Clerk from the releases page
+2. **Launch** "Harbor Clerk Server" — a menubar icon appears and services start automatically
+3. **Open** "Harbor Clerk" (or click "Open Harbor Clerk" in the menubar) to access the web UI
+4. **Create** your admin account on the setup page
 
-   ```bash
-   docker compose up --build
-   ```
+### What Gets Installed
 
-   First build takes a few minutes (downloading base images, model weights, etc.). Subsequent starts are much faster.
+All data lives in `~/Library/Application Support/Harbor Clerk/`:
 
-4. **Open the app**
-
-   Browse to **https://localhost/** and accept the self-signed certificate warning.
-
-   On first launch you'll see a setup page — create your admin account with a strong password (min 12 characters, mixed case, at least one digit).
-
-5. **Verify health**
-
-   ```bash
-   curl -k https://localhost/api/system/health
-   ```
-
-   All checks should return `"ok"`.
-
-## Architecture
-
-Nine Docker services:
-
-| Service | Role |
+| Directory | Contents |
 |---|---|
-| **gateway** | Caddy reverse proxy with automatic HTTPS (self-signed) |
-| **app** | FastAPI REST API + MCP endpoint + serves React SPA |
-| **worker-io** | Background worker for text extraction and chunking |
-| **worker-cpu** | Background worker for OCR and embedding |
-| **embedder** | Sentence-transformers model server (all-MiniLM-L6-v2, 384-dim) |
-| **postgres** | PostgreSQL with pgvector and pg_trgm extensions |
-| **redis** | Job queue backend |
-| **minio** | Object storage for original files |
-| **tika** | Apache Tika for RTF and fallback text extraction |
+| `postgres-data/` | PostgreSQL database |
+| `redis-data/` | Redis persistence |
+| `originals/` | Uploaded document files |
+| `logs/` | Service logs |
+| `config.json` | Settings (ports, worker preset, etc.) |
 
-## Ingestion Pipeline
+### Preferences
 
-Upload a file and it goes through five stages:
+Open Preferences (Cmd+,) from the menubar to configure:
 
-1. **Extract** — pull text from PDF (PyMuPDF), DOCX (python-docx), or RTF/fallback (Tika)
-2. **OCR** — conditional: always for images, for PDFs with little extractable text. Uses Tesseract (English + French)
-3. **Chunk** — split into ~1000 character segments with 150 char overlap, preserving page references
-4. **Embed** — generate 384-dim vectors via the embedder service
-5. **Finalize** — mark ingestion complete
+- **Network Access** — allow remote browser or MCP connections (off by default — local only)
+- **Performance** — worker preset (Quiet / Balanced / Fast)
+- **Advanced** — ports, log level
 
-Progress is streamed to the UI via server-sent events.
+---
 
-## Search
+## Docker Compose
 
-Hybrid retrieval combining:
-- PostgreSQL full-text search (bilingual English/French)
-- pgvector cosine similarity
+### Prerequisites
 
-Results are merged, deduplicated, and ranked with boosts for latest document versions and higher OCR confidence. All results include source citations with page numbers.
+- Docker Desktop (macOS/Windows) or Docker Engine + Compose (Linux)
+- At least 4 GB RAM allocated to Docker (8 GB recommended)
 
-## API
+### Quick Start
 
-### REST
+```bash
+git clone https://github.com/r0shi/mcp-gateway.git
+cd mcp-gateway
+cp .env.example .env
+```
 
-| Endpoint | Description |
-|---|---|
-| `POST /api/auth/login` | Login (email + password) |
-| `GET /api/system/setup-status` | Check if first-time setup is needed |
-| `POST /api/setup` | Create initial admin account |
-| `POST /api/uploads` | Upload documents |
-| `GET /api/docs` | List documents |
-| `GET /api/search?q=...` | Hybrid search |
-| `GET /api/system/health` | Health check |
+Edit `.env` and change `SECRET_KEY` to a random string:
 
-### MCP
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(48))"
+```
 
-`POST /mcp` — Streamable HTTP transport. Tools:
+Start the stack:
 
-- `kb_search` — hybrid search with citations
-- `kb_read_passages` — read specific passages by chunk ID
-- `kb_get_document` — document metadata and versions
-- `kb_list_recent` — recently added documents
-- `kb_ingest_status` — check ingestion progress
-- `kb_reprocess` — re-run ingestion on a document
-- `kb_system_health` — system health check
+```bash
+docker compose up --build
+```
 
-MCP clients authenticate with API keys created by an admin: `Authorization: Bearer <api_key>`
+Open **https://localhost/** and accept the self-signed certificate. Create your admin account on the setup page.
 
-## Auth
-
-- **Human users**: email + password, JWT access tokens + refresh cookies. Roles: `admin` / `user`.
-- **API keys**: admin-created, read-only, for MCP clients. Stored as SHA-256 hashes.
-
-## Configuration
+### Configuration
 
 All configuration is via environment variables in `.env`:
 
@@ -137,65 +103,129 @@ All configuration is via environment variables in `.env`:
 | `MINIO_SECRET_KEY` | `minioadmin123` | MinIO secret key |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
-For production, you should also change the PostgreSQL and MinIO credentials.
+For production, change the PostgreSQL and MinIO credentials as well.
 
-## Development
-
-The project uses [uv](https://docs.astral.sh/uv/) for Python package management. To work on the backend locally:
+### Managing the Stack
 
 ```bash
-uv sync
-uv run mcp-gateway-api   # run API server
+docker compose up --build         # build and start (foreground)
+docker compose up --build -d      # build and start (background)
+docker compose up --build -d app  # rebuild just the app
+docker compose down               # stop (keeps data)
+docker compose down -v            # stop and delete all data
+docker compose logs -f app        # tail app logs
 ```
 
-The frontend is a Vite + React + TypeScript SPA in `frontend/`:
+### Services
+
+| Service | Role |
+|---|---|
+| **gateway** | Caddy reverse proxy with automatic HTTPS (self-signed) |
+| **app** | FastAPI REST API + MCP endpoint + serves React SPA |
+| **worker-io** | Background worker for text extraction and chunking |
+| **worker-cpu** | Background worker for OCR and embedding |
+| **embedder** | Sentence-transformers model server (all-MiniLM-L6-v2, 384-dim) |
+| **postgres** | PostgreSQL with pgvector and pg_trgm extensions |
+| **redis** | Job queue backend |
+| **minio** | Object storage for original files |
+| **tika** | Apache Tika for RTF and fallback text extraction |
+
+---
+
+## Architecture
+
+### Ingestion Pipeline
+
+Upload a file and it goes through five idempotent stages:
+
+1. **Extract** — pull text from PDF (PyMuPDF), DOCX (python-docx), or RTF/fallback (Tika/striprtf)
+2. **OCR** — conditional: always for images, for PDFs with little extractable text. Uses Tesseract (English + French)
+3. **Chunk** — split into ~1000 character segments with 150 char overlap, preserving page references
+4. **Embed** — generate 384-dim vectors via the embedder service
+5. **Finalize** — mark ingestion complete
+
+Progress is streamed to the UI via server-sent events.
+
+### Hybrid Search
+
+Results combine PostgreSQL full-text search (bilingual English/French) and pgvector cosine similarity, merged and ranked with boosts for latest document versions and higher OCR confidence. All results include source citations with page numbers.
+
+### Auth
+
+- **Human users**: email + password, JWT access tokens + refresh cookies. Roles: `admin` / `user`.
+- **API keys**: admin-created, read-only, for MCP clients. Stored as SHA-256 hashes.
+
+---
+
+## API Reference
+
+### REST
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/auth/login` | POST | Login (email + password) |
+| `/api/auth/refresh` | POST | Refresh access token |
+| `/api/system/setup-status` | GET | Check if first-time setup is needed |
+| `/api/setup` | POST | Create initial admin account |
+| `/api/uploads` | POST | Upload documents |
+| `/api/uploads/confirm` | POST | Confirm upload action |
+| `/api/docs` | GET | List documents |
+| `/api/docs/{id}` | GET | Document detail with versions |
+| `/api/docs/{id}/content` | GET | Read document text (with page ranges) |
+| `/api/docs/{id}` | DELETE | Soft-delete a document |
+| `/api/docs/{id}/reprocess` | POST | Re-run ingestion |
+| `/api/search?q=...` | GET | Hybrid search |
+| `/api/passages/read` | POST | Read passages by chunk IDs |
+| `/api/system/health` | GET | Health check |
+| `/api/jobs/stream` | GET | SSE stream of job progress |
+
+### MCP
+
+`POST /mcp` — Streamable HTTP transport. Authenticate with `Authorization: Bearer <api_key>`.
+
+| Tool | Description |
+|---|---|
+| `kb_search` | Hybrid search with citations |
+| `kb_read_passages` | Read specific passages by chunk ID |
+| `kb_get_document` | Document metadata and versions |
+| `kb_list_recent` | Recently added documents |
+| `kb_ingest_status` | Check ingestion progress |
+| `kb_reprocess` | Re-run ingestion on a document |
+| `kb_system_health` | System health check |
+
+---
+
+## Building from Source
+
+### macOS Native Apps
+
+```bash
+cd macos
+make all
+```
+
+This builds both apps into `macos/build/`. Requires Xcode command-line tools, Python 3.11+, and Homebrew (for Redis, Tesseract, Poppler dependencies).
+
+### Frontend
 
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev     # dev server with HMR
+npm run build   # production build → dist/
 ```
 
-## Managing the Stack
+### Python Backend
 
-**Start** (after a previous `docker compose down`, or first time):
+The project uses [uv](https://docs.astral.sh/uv/) for Python package management:
 
 ```bash
-docker compose up --build      # build images and start (foreground)
-docker compose up --build -d   # same, but detached (background)
+uv sync
+uv run harbor-clerk-api      # API server
+uv run harbor-clerk-worker   # RQ worker
 ```
 
-**Restart a single service** (e.g., after code changes to the app):
-
-```bash
-docker compose up --build -d app   # rebuild and restart just the app container
-```
-
-**Stop** (keeps data volumes intact — documents, database, etc.):
-
-```bash
-docker compose down
-```
-
-**Start again** after stopping (no rebuild needed if nothing changed):
-
-```bash
-docker compose up -d
-```
-
-**Full reset** (destroys all data — database, uploaded files, everything):
-
-```bash
-docker compose down -v
-```
-
-**View logs:**
-
-```bash
-docker compose logs -f          # tail all services
-docker compose logs -f app      # tail just the app
-docker compose logs -f worker-io worker-cpu   # tail both workers
-```
+---
 
 ## License
 
