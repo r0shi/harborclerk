@@ -10,9 +10,7 @@ Harbor Clerk is a safe harbor for your documents — and a capable clerk who kno
 
 No SaaS account. No background sync. No shared tenancy. Your documents stay local.
 
-Designed for small offices, independent operators, and privacy-focused individuals, Harbor Clerk runs comfortably on a Mac mini or similar hardware. It handles text extraction and OCR, builds hybrid full-text and vector search, and exposes a clean MCP endpoint so you can connect the model of your choice — fully local or selectively cloud-based.
-
-External models receive only cited snippets, never your full corpus.
+Designed for small offices, independent operators, and privacy-focused individuals, Harbor Clerk runs comfortably on a Mac mini or similar hardware. It handles text extraction and OCR, builds hybrid full-text and vector search, and includes a built-in chat assistant powered by a local LLM — no cloud required. It also exposes a clean MCP endpoint so you can connect external models; they receive only cited snippets, never your full corpus.
 
 This isn't a platform. It's a tool.
 It keeps your documents where they belong — and makes them useful.
@@ -42,7 +40,7 @@ Harbor Clerk can run in two ways:
 
 ### Getting Started
 
-1. **Download** Harbor Clerk from the releases page
+1. **Download** Harbor Clerk from the [releases page](https://github.com/r0shi/harborclerk/releases)
 2. **Launch** "Harbor Clerk Server" — a menubar icon appears and services start automatically
 3. **Open** "Harbor Clerk" (or click "Open Harbor Clerk" in the menubar) to access the web UI
 4. **Create** your admin account on the setup page
@@ -56,6 +54,7 @@ All data lives in `~/Library/Application Support/Harbor Clerk/`:
 | `postgres-data/` | PostgreSQL database |
 | `redis-data/` | Redis persistence |
 | `originals/` | Uploaded document files |
+| `models/` | Downloaded LLM models for local chat |
 | `logs/` | Service logs |
 | `config.json` | Settings (ports, worker preset, etc.) |
 
@@ -79,8 +78,8 @@ Open Preferences (Cmd+,) from the menubar to configure:
 ### Quick Start
 
 ```bash
-git clone https://github.com/r0shi/mcp-gateway.git
-cd mcp-gateway
+git clone https://github.com/r0shi/harborclerk.git
+cd harborclerk
 cp .env.example .env
 ```
 
@@ -153,11 +152,15 @@ Upload a file and it goes through five idempotent stages:
 4. **Embed** — generate 384-dim vectors via the embedder service
 5. **Finalize** — mark ingestion complete
 
-Progress is streamed to the UI via server-sent events.
+Progress is streamed to the UI via server-sent events. Processing can be cancelled from the admin UI.
 
 ### Hybrid Search
 
 Results combine PostgreSQL full-text search (bilingual English/French) and pgvector cosine similarity, merged and ranked with boosts for latest document versions and higher OCR confidence. All results include source citations with page numbers.
+
+### Local Chat
+
+A built-in chat assistant runs a local LLM (via llama-server) with access to the knowledge base through tool calls. Models can be downloaded and managed from the admin UI. No data leaves the machine.
 
 ### Auth
 
@@ -183,8 +186,13 @@ Results combine PostgreSQL full-text search (bilingual English/French) and pgvec
 | `/api/docs/{id}/content` | GET | Read document text (with page ranges) |
 | `/api/docs/{id}` | DELETE | Soft-delete a document |
 | `/api/docs/{id}/reprocess` | POST | Re-run ingestion |
-| `/api/search?q=...` | GET | Hybrid search |
+| `/api/docs/{id}/cancel` | POST | Cancel in-progress ingestion |
+| `/api/search` | POST | Hybrid search |
 | `/api/passages/read` | POST | Read passages by chunk IDs |
+| `/api/chat/conversations` | GET/POST | List or create chat conversations |
+| `/api/chat/conversations/{id}/messages` | POST | Send a message (streamed response) |
+| `/api/chat/models` | GET | List available LLM models |
+| `/api/chat/models/{id}/download` | POST | Download a model |
 | `/api/system/health` | GET | Health check |
 | `/api/jobs/stream` | GET | SSE stream of job progress |
 
@@ -213,7 +221,7 @@ cd macos
 make all
 ```
 
-This builds both apps into `macos/build/`. Requires Xcode command-line tools, Python 3.11+, and Homebrew (for Redis, Tesseract, Poppler dependencies).
+This builds both apps into `macos/build/`. Requires Xcode command-line tools, Python 3.12+, and Homebrew (for Redis, Tesseract, Poppler dependencies).
 
 ### Frontend
 
