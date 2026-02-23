@@ -23,6 +23,7 @@
 		A100000014 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000014; };
 		A100000015 /* PreferencesWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000015; };
 		A100000016 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B100000016; };
+		A100000017 /* LlamaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000017; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +44,7 @@
 		B100000015 /* PreferencesWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesWindow.swift; sourceTree = "<group>"; };
 		B100000016 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C100000001 /* HarborClerkServer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HarborClerkServer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B100000017 /* LlamaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LlamaService.swift; sourceTree = "<group>"; };
 		D100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D100000002 /* HarborClerkServer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerkServer.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -95,6 +97,7 @@
 				B100000007 /* APIService.swift */,
 				B100000008 /* WorkerService.swift */,
 				B100000009 /* EmbedderService.swift */,
+				B100000017 /* LlamaService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -186,6 +189,7 @@
 				A100000013 /* StatusWindow.swift in Sources */,
 				A100000014 /* Settings.swift in Sources */,
 				A100000015 /* PreferencesWindow.swift in Sources */,
+				A100000017 /* LlamaService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

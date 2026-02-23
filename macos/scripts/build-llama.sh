@@ -7,6 +7,8 @@ BUILD_DIR="${BUILD_DIR:-/tmp/llama-build}"
 LLAMA_CPP_TAG="${LLAMA_CPP_TAG:-b4722}"
 
 mkdir -p "$DEST_DIR" "$BUILD_DIR"
+DEST_DIR="$(cd "$DEST_DIR" && pwd)"
+BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
 
 echo "==> Cloning llama.cpp at tag $LLAMA_CPP_TAG"
 if [ ! -d "$BUILD_DIR/llama.cpp" ]; then
