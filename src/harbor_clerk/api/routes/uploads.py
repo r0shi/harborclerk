@@ -5,7 +5,7 @@ import io
 import logging
 import mimetypes
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, status
 from sqlalchemy import select

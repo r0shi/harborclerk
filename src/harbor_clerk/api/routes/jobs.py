@@ -1,7 +1,6 @@
 """SSE endpoint for job progress events."""
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncGenerator
 

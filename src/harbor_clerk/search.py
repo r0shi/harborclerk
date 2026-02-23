@@ -5,7 +5,7 @@ import uuid
 from dataclasses import dataclass, field
 
 import httpx
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings

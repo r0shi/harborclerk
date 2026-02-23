@@ -1,20 +1,17 @@
 """OCR stage — Tesseract on images or scanned PDFs."""
 
 import logging
-import re
-import tempfile
 import uuid
 
 import pytesseract
 from PIL import Image
 from sqlalchemy import select
 
-from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.storage import get_storage
 from harbor_clerk.models import DocumentPage, DocumentVersion, IngestionJob
-from harbor_clerk.models.enums import JobStage, JobStatus
+from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)

@@ -4,9 +4,8 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from harbor_clerk.api.deps import Principal, require_admin, require_read_access
 from harbor_clerk.api.schemas.documents import (

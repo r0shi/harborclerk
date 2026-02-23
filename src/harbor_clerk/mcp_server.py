@@ -7,7 +7,6 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import decode_token, hash_api_key

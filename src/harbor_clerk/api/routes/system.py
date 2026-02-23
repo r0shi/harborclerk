@@ -12,7 +12,7 @@ from harbor_clerk.db import get_session
 from harbor_clerk.models import User
 from harbor_clerk.storage import get_storage
 from harbor_clerk.models import Chunk, Document, DocumentPage, DocumentVersion, IngestionJob
-from harbor_clerk.models.enums import JobStage, JobStatus
+from harbor_clerk.models.enums import JobStatus
 from harbor_clerk.redis import get_async_redis
 
 logger = logging.getLogger(__name__)
@@ -237,7 +237,6 @@ async def reaper_run(
     """Find ingestion jobs marked running in DB but absent from RQ, reset and re-enqueue."""
     from redis import Redis
     from rq import Queue
-    from rq.job import Job as RQJob
 
     from harbor_clerk.config import get_settings
     from harbor_clerk.worker.pipeline import enqueue_stage

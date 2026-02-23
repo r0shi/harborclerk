@@ -1,13 +1,12 @@
 """Chat and model management API routes."""
 
 import asyncio
-import json
 import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, select, func
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin, require_user

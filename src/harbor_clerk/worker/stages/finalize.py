@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.models import Document, DocumentVersion, Upload
-from harbor_clerk.models.enums import JobStage, VersionStatus
+from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)

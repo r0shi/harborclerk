@@ -2,8 +2,6 @@
 
 import io
 import logging
-import re
-import tempfile
 import uuid
 
 import httpx
@@ -11,7 +9,6 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.events import publish_job_event
 from harbor_clerk.storage import get_storage
 from harbor_clerk.models import DocumentPage, DocumentVersion
 from harbor_clerk.models.enums import JobStage

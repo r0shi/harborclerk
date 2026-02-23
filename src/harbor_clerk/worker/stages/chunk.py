@@ -6,15 +6,13 @@ import uuid
 
 from sqlalchemy import select
 
+from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import Chunk, DocumentPage, DocumentVersion
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
-
-from harbor_clerk.config import get_settings
 
 # Sentence boundary pattern
 SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')

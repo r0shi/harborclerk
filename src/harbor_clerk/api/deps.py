@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.auth import decode_token, hash_api_key
 from harbor_clerk.db import get_session
-from harbor_clerk.models import ApiKey, User
+from harbor_clerk.models import ApiKey
 
 
 @dataclass
