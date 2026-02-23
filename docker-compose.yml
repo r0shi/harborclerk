@@ -20,6 +20,11 @@ services:
       dockerfile: docker/app.Dockerfile
     restart: unless-stopped
     env_file: .env
+    environment:
+      LLAMA_SERVER_URL: http://llama-server:8080
+      MODELS_DIR: /models
+    volumes:
+      - llama_models:/models
     depends_on:
       postgres:
         condition: service_healthy
@@ -130,12 +135,33 @@ services:
     networks:
       - lka
 
+  llama-server:
+    image: ghcr.io/ggerganov/llama.cpp:server
+    restart: unless-stopped
+    volumes:
+      - llama_models:/models
+    command: [
+      "--host", "0.0.0.0",
+      "--port", "8080",
+      "-ngl", "99",
+      "-c", "8192",
+    ]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - lka
+
 volumes:
   pg_data:
   redis_data:
   minio_data:
   caddy_data:
   caddy_config:
+  llama_models:
 
 networks:
   lka:

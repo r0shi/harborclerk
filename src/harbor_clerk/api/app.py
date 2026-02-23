@@ -17,6 +17,7 @@ from harbor_clerk.api.routes.search import router as search_router
 from harbor_clerk.api.routes.setup import router as setup_router
 from harbor_clerk.api.routes.system import router as system_router
 from harbor_clerk.api.routes.uploads import router as uploads_router
+from harbor_clerk.api.routes.chat import router as chat_router
 from harbor_clerk.api.routes.users import router as users_router
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(documents_router, prefix="/api")
     app.include_router(jobs_router, prefix="/api")
     app.include_router(search_router, prefix="/api")
+    app.include_router(chat_router, prefix="/api")
 
     # Mount MCP Streamable HTTP endpoint
     app.mount("/mcp", _mcp_asgi)

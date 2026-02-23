@@ -54,6 +54,9 @@ export default function Layout() {
               <NavLink to="/search" className={linkClass}>
                 Search
               </NavLink>
+              <NavLink to="/chat" className={linkClass}>
+                Chat
+              </NavLink>
               {isAdmin && (
                 <>
                   <NavLink to="/admin/users" className={linkClass}>
@@ -64,6 +67,9 @@ export default function Layout() {
                   </NavLink>
                   <NavLink to="/admin/system" className={linkClass}>
                     System
+                  </NavLink>
+                  <NavLink to="/admin/models" className={linkClass}>
+                    Models
                   </NavLink>
                 </>
               )}

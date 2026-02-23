@@ -11,6 +11,8 @@ import UsersPage from './pages/UsersPage'
 import ApiKeysPage from './pages/ApiKeysPage'
 import SetupPage from './pages/SetupPage'
 import SystemPage from './pages/SystemPage'
+import ChatPage from './pages/ChatPage'
+import ModelsPage from './pages/ModelsPage'
 import PreferencesPage from './pages/PreferencesPage'
 
 export default function App() {
@@ -24,11 +26,14 @@ export default function App() {
           <Route path="/docs" element={<DocumentsPage />} />
           <Route path="/docs/:id" element={<DocumentDetailPage />} />
           <Route path="/search" element={<SearchPage />} />
+          <Route path="/chat" element={<ChatPage />} />
+          <Route path="/chat/:conversationId" element={<ChatPage />} />
           <Route path="/preferences" element={<PreferencesPage />} />
           <Route element={<AdminRoute />}>
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/keys" element={<ApiKeysPage />} />
             <Route path="/admin/system" element={<SystemPage />} />
+            <Route path="/admin/models" element={<ModelsPage />} />
           </Route>
         </Route>
       </Route>

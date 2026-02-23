@@ -27,6 +27,7 @@ final class ServiceManager: ObservableObject {
     let postgresService: PostgresService
     let redisService: RedisService
     let embedderService: EmbedderService
+    let llamaService: LlamaService
     let apiService: APIService
     private var ioWorkers: [WorkerService] = []
     private var cpuWorkers: [WorkerService] = []
@@ -45,6 +46,7 @@ final class ServiceManager: ObservableObject {
         postgresService = PostgresService()
         redisService = RedisService()
         embedderService = EmbedderService()
+        llamaService = LlamaService()
         apiService = APIService()
 
         // Worker counts based on preset
@@ -58,7 +60,7 @@ final class ServiceManager: ObservableObject {
             cpuWorkers.append(WorkerService(queue: "cpu", index: i))
         }
 
-        services = [postgresService, redisService, embedderService, apiService]
+        services = [postgresService, redisService, embedderService, llamaService, apiService]
             + ioWorkers + cpuWorkers
     }
 
@@ -96,10 +98,13 @@ final class ServiceManager: ObservableObject {
         // 4. Embedder (can take a while for model load)
         await startService(embedderService)
 
-        // 5. API server
+        // 5. LLM server (skip silently if no model selected)
+        await startService(llamaService)
+
+        // 6. API server
         await startService(apiService)
 
-        // 6. Workers
+        // 7. Workers
         for worker in ioWorkers + cpuWorkers {
             await startService(worker)
         }
@@ -124,7 +129,8 @@ final class ServiceManager: ObservableObject {
             try await service.start()
 
             // Wait for health check with timeout
-            let deadline = Date().addingTimeInterval(service is EmbedderService ? 120 : 30)
+            let timeout: TimeInterval = (service is EmbedderService || service is LlamaService) ? 120 : 30
+            let deadline = Date().addingTimeInterval(timeout)
             while Date() < deadline {
                 if await service.healthCheck() {
                     service.state = .running
@@ -187,6 +193,9 @@ final class ServiceManager: ObservableObject {
                 "/bin",
             ].joined(separator: ":"),
             "TESSDATA_PREFIX": bundle.appendingPathComponent("tesseract/share/tessdata").path,
+            "LLAMA_SERVER_URL": "http://localhost:\(settings.llamaPort)",
+            "LLM_MODEL_ID": settings.llmModelId,
+            "MODELS_DIR": settings.modelsDir.path,
         ]
     }
 }

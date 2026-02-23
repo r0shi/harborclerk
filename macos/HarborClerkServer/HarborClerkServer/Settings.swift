@@ -61,6 +61,16 @@ final class AppSettings {
         set { data["allow_remote_mcp"] = newValue; save() }
     }
 
+    var llamaPort: Int {
+        get { data["llama_port"] as? Int ?? 8102 }
+        set { data["llama_port"] = newValue; save() }
+    }
+
+    var llmModelId: String {
+        get { data["llm_model_id"] as? String ?? "" }
+        set { data["llm_model_id"] = newValue; save() }
+    }
+
     // MARK: - Derived paths
 
     static let dataDir: URL = {
@@ -72,6 +82,22 @@ final class AppSettings {
     var redisDataDir: URL { Self.dataDir.appendingPathComponent("redis-data") }
     var originalsDir: URL { Self.dataDir.appendingPathComponent("originals") }
     var logsDir: URL { Self.dataDir.appendingPathComponent("logs") }
+    var modelsDir: URL { Self.dataDir.appendingPathComponent("models") }
+
+    /// Resolved path to the active model GGUF file, or empty string if none.
+    var activeModelPath: String {
+        guard !llmModelId.isEmpty else { return "" }
+        // Map model IDs to filenames — mirrors the Python registry
+        let filenames: [String: String] = [
+            "qwen2.5-7b": "qwen2.5-7b-instruct-q4_k_m.gguf",
+            "qwen2.5-3b": "qwen2.5-3b-instruct-q4_k_m.gguf",
+            "llama3.2-3b": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+            "mistral-7b": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+            "deepseek-r1-8b": "DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf",
+        ]
+        guard let filename = filenames[llmModelId] else { return "" }
+        return modelsDir.appendingPathComponent(filename).path
+    }
 
     // MARK: - Init
 

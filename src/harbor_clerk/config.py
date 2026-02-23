@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # Synthetic page size for non-paginated formats (TXT, RTF, DOCX)
     synthetic_page_chars: int = Field(default=3000)
 
+    # LLM
+    llama_server_url: str = Field(default="http://localhost:8102")
+    llm_model_id: str = Field(default="")
+    models_dir: str = Field(default="./data/models")
+
 
 _settings: Settings | None = None
 

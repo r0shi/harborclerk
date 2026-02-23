@@ -5,6 +5,16 @@ private let defaultPorts: [String: Int] = [
     "postgres": 5433,
     "redis": 6380,
     "embedder": 8101,
+    "llama": 8102,
+]
+
+private let modelOptions: [(id: String, name: String)] = [
+    ("", "None"),
+    ("qwen2.5-7b", "Qwen 2.5 7B Instruct (4.4 GB)"),
+    ("qwen2.5-3b", "Qwen 2.5 3B Instruct (2.0 GB)"),
+    ("llama3.2-3b", "Llama 3.2 3B Instruct (2.0 GB)"),
+    ("mistral-7b", "Mistral 7B Instruct v0.3 (4.1 GB)"),
+    ("deepseek-r1-8b", "DeepSeek R1 8B (4.9 GB)"),
 ]
 
 struct PreferencesWindow: View {
@@ -15,6 +25,8 @@ struct PreferencesWindow: View {
     @State private var postgresPortText = String(AppSettings.shared.postgresPort)
     @State private var redisPortText = String(AppSettings.shared.redisPort)
     @State private var embedderPortText = String(AppSettings.shared.embedderPort)
+    @State private var llamaPortText = String(AppSettings.shared.llamaPort)
+    @State private var llmModelId = AppSettings.shared.llmModelId
     @State private var logLevel = AppSettings.shared.logLevel
     @State private var needsRestart = false
 
@@ -29,6 +41,8 @@ struct PreferencesWindow: View {
         var postgresPort = String(AppSettings.shared.postgresPort)
         var redisPort = String(AppSettings.shared.redisPort)
         var embedderPort = String(AppSettings.shared.embedderPort)
+        var llamaPort = String(AppSettings.shared.llamaPort)
+        var llmModelId = AppSettings.shared.llmModelId
         var logLevel = AppSettings.shared.logLevel
     }
 
@@ -72,6 +86,21 @@ struct PreferencesWindow: View {
                 }
             }
 
+            Section("Local LLM") {
+                Picker("Model", selection: $llmModelId) {
+                    ForEach(modelOptions, id: \.id) { option in
+                        Text(option.name).tag(option.id)
+                    }
+                }
+                .onChange(of: llmModelId) { _, newValue in
+                    AppSettings.shared.llmModelId = newValue
+                    needsRestart = true
+                }
+                Text("Select a model for the built-in chat. Models are downloaded from HuggingFace via the web UI.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Advanced") {
                 portRow(label: "API port", text: $apiPortText, key: "api") { port in
                     AppSettings.shared.apiPort = port
@@ -84,6 +113,9 @@ struct PreferencesWindow: View {
                 }
                 portRow(label: "Embedder port", text: $embedderPortText, key: "embedder") { port in
                     AppSettings.shared.embedderPort = port
+                }
+                portRow(label: "LLM port", text: $llamaPortText, key: "llama") { port in
+                    AppSettings.shared.llamaPort = port
                 }
                 Picker("Log level", selection: $logLevel) {
                     Text("DEBUG").tag("DEBUG")
@@ -121,7 +153,7 @@ struct PreferencesWindow: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: needsRestart ? 540 : 490)
+        .frame(width: 480, height: needsRestart ? 640 : 590)
         .onAppear { captureInitial() }
     }
 
@@ -163,6 +195,8 @@ struct PreferencesWindow: View {
             postgresPort: postgresPortText,
             redisPort: redisPortText,
             embedderPort: embedderPortText,
+            llamaPort: llamaPortText,
+            llmModelId: llmModelId,
             logLevel: logLevel
         )
     }
@@ -175,6 +209,8 @@ struct PreferencesWindow: View {
         postgresPortText = initial.postgresPort
         redisPortText = initial.redisPort
         embedderPortText = initial.embedderPort
+        llamaPortText = initial.llamaPort
+        llmModelId = initial.llmModelId
         logLevel = initial.logLevel
 
         // Write reverted values back to settings
@@ -185,6 +221,8 @@ struct PreferencesWindow: View {
         if let p = Int(initial.postgresPort) { AppSettings.shared.postgresPort = p }
         if let p = Int(initial.redisPort) { AppSettings.shared.redisPort = p }
         if let p = Int(initial.embedderPort) { AppSettings.shared.embedderPort = p }
+        if let p = Int(initial.llamaPort) { AppSettings.shared.llamaPort = p }
+        AppSettings.shared.llmModelId = initial.llmModelId
         AppSettings.shared.logLevel = initial.logLevel
 
         needsRestart = false

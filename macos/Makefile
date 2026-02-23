@@ -10,9 +10,9 @@
 SCRIPTS := scripts
 BUILD   := build
 
-.PHONY: all deps postgres redis tools venv model apps sign clean
+.PHONY: all deps postgres redis tools venv model llama apps sign clean
 
-all: deps venv model apps
+all: deps venv model llama apps
 
 # ── Dependencies ──
 
@@ -41,6 +41,12 @@ venv:
 model:
 	@echo "==> Downloading embedder model"
 	DEST_DIR=$(BUILD)/model/all-MiniLM-L6-v2 VENV_DIR=$(BUILD)/venv bash $(SCRIPTS)/download-model.sh
+
+# ── LLM server ──
+
+llama:
+	@echo "==> Building llama-server"
+	DEST_DIR=$(BUILD)/llama BUILD_DIR=$(BUILD)/llama-build bash $(SCRIPTS)/build-llama.sh
 
 # ── Apps ──
 

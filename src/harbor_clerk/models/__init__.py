@@ -17,6 +17,8 @@ from harbor_clerk.models.document_page import DocumentPage
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.audit_log import AuditLog
+from harbor_clerk.models.conversation import Conversation
+from harbor_clerk.models.chat_message import ChatMessage
 
 __all__ = [
     "Base",
@@ -34,4 +36,6 @@ __all__ = [
     "Chunk",
     "IngestionJob",
     "AuditLog",
+    "Conversation",
+    "ChatMessage",
 ]

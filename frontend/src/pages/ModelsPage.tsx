@@ -1,0 +1,225 @@
+import { useEffect, useState } from 'react'
+import { del, get, post } from '../api'
+
+interface ModelInfo {
+  id: string
+  name: string
+  size_bytes: number
+  context_window: number
+  supports_tools: boolean
+  downloaded: boolean
+  active: boolean
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`
+  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`
+  return `${bytes} B`
+}
+
+export default function ModelsPage() {
+  const [models, setModels] = useState<ModelInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [downloading, setDownloading] = useState<Set<string>>(new Set())
+
+  async function loadModels() {
+    try {
+      const data = await get<ModelInfo[]>('/api/chat/models')
+      setModels(data)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load models')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadModels()
+  }, [])
+
+  // Subscribe to download progress via SSE
+  useEffect(() => {
+    const token = localStorage.getItem('token')
+    if (!token) return
+
+    const controller = new AbortController()
+
+    async function connect() {
+      try {
+        const res = await fetch('/api/chat/models/download-progress', {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        })
+        if (!res.ok || !res.body) return
+
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              const event = JSON.parse(line.slice(6))
+              if (event.status === 'complete') {
+                setDownloading((prev) => {
+                  const next = new Set(prev)
+                  next.delete(event.model_id)
+                  return next
+                })
+                loadModels() // Refresh model list
+              } else if (event.status === 'error') {
+                setDownloading((prev) => {
+                  const next = new Set(prev)
+                  next.delete(event.model_id)
+                  return next
+                })
+                setError(`Download failed for ${event.model_id}: ${event.error}`)
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+      } catch (e) {
+        if (e instanceof DOMException && e.name === 'AbortError') return
+      }
+    }
+
+    connect()
+    return () => controller.abort()
+  }, [])
+
+  async function handleDownload(modelId: string) {
+    setError('')
+    setDownloading((prev) => new Set(prev).add(modelId))
+    try {
+      await post(`/api/chat/models/${modelId}/download`)
+    } catch (e) {
+      setDownloading((prev) => {
+        const next = new Set(prev)
+        next.delete(modelId)
+        return next
+      })
+      setError(e instanceof Error ? e.message : 'Download failed')
+    }
+  }
+
+  async function handleDelete(modelId: string) {
+    setError('')
+    try {
+      await del(`/api/chat/models/${modelId}`)
+      loadModels()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Delete failed')
+    }
+  }
+
+  if (loading) {
+    return <div className="text-sm text-gray-500 dark:text-gray-400">Loading models...</div>
+  }
+
+  return (
+    <div>
+      <h1 className="mb-4 text-xl font-bold">LLM Models</h1>
+      <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+        Download and manage models for the built-in chat assistant. Models run
+        locally on this machine.
+      </p>
+
+      {error && (
+        <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+          {error}
+        </div>
+      )}
+
+      <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 dark:bg-gray-800">
+            <tr>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Model</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Size</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Context</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Tools</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Status</th>
+              <th className="px-4 py-3 text-right font-medium text-gray-700 dark:text-gray-300">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+            {models.map((model) => (
+              <tr key={model.id} className="bg-white dark:bg-gray-900">
+                <td className="px-4 py-3">
+                  <div className="font-medium text-gray-900 dark:text-gray-100">{model.name}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{model.id}</div>
+                </td>
+                <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
+                  {formatSize(model.size_bytes)}
+                </td>
+                <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
+                  {model.context_window.toLocaleString()}
+                </td>
+                <td className="px-4 py-3">
+                  {model.supports_tools ? (
+                    <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-400">
+                      Yes
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      No
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  {model.active ? (
+                    <span className="inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900/30 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400">
+                      Active
+                    </span>
+                  ) : model.downloaded ? (
+                    <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-400">
+                      Ready
+                    </span>
+                  ) : downloading.has(model.id) ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                      <div className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+                      Downloading
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">Not downloaded</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <div className="flex items-center justify-end gap-2">
+                    {!model.downloaded && !downloading.has(model.id) && (
+                      <button
+                        onClick={() => handleDownload(model.id)}
+                        className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700"
+                      >
+                        Download
+                      </button>
+                    )}
+                    {model.downloaded && !model.active && (
+                      <button
+                        onClick={() => handleDelete(model.id)}
+                        className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}

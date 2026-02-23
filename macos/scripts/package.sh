@@ -86,6 +86,11 @@ if [ -d "$BUILD_DIR/model" ]; then
     cp -R "$BUILD_DIR/model" "$RESOURCES/model"
 fi
 
+# llama-server
+if [ -d "$BUILD_DIR/llama" ]; then
+    cp -R "$BUILD_DIR/llama" "$RESOURCES/llama"
+fi
+
 # Alembic
 cp -R "$PROJECT_ROOT/alembic" "$RESOURCES/alembic"
 cp "$PROJECT_ROOT/alembic.ini" "$RESOURCES/alembic.ini"
