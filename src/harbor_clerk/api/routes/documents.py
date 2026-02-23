@@ -267,3 +267,32 @@ async def reprocess_document(
     enqueue_stage(version_id, JobStage.extract)
 
     return {"doc_id": str(doc_id), "version_id": str(version_id), "status": "reprocessing"}
+
+
+@router.post("/docs/{doc_id}/cancel", status_code=status.HTTP_200_OK)
+async def cancel_processing(
+    doc_id: uuid.UUID,
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    result = await session.execute(
+        select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    from harbor_clerk.worker.pipeline import cancel_version_jobs
+
+    total_cancelled = 0
+    for v in (doc.versions or []):
+        total_cancelled += cancel_version_jobs(v.version_id)
+
+    await log_audit(
+        session, user_id=admin.id, action="cancel_processing",
+        target_type="document", target_id=doc_id,
+        detail={"cancelled_jobs": total_cancelled},
+    )
+    await session.commit()
+
+    return {"doc_id": str(doc_id), "cancelled_jobs": total_cancelled}

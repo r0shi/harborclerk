@@ -59,7 +59,7 @@ export default function ApiKeysPage() {
             setShowCreate(!showCreate)
             setNewKey(null)
           }}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
         >
           {showCreate ? 'Cancel' : 'Create Key'}
         </button>
@@ -72,7 +72,7 @@ export default function ApiKeysPage() {
       )}
 
       {newKey && (
-        <div className="mb-4 rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4">
+        <div className="mb-4 rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4 shadow-mac">
           <p className="mb-2 text-sm font-medium text-green-800 dark:text-green-400">
             API key created! Copy it now — it won't be shown again.
           </p>
@@ -92,9 +92,9 @@ export default function ApiKeysPage() {
         />
       )}
 
-      <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-          <thead className="bg-gray-50 dark:bg-gray-800">
+          <thead className="bg-[var(--color-bg-secondary)]">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
                 Name
@@ -113,13 +113,13 @@ export default function ApiKeysPage() {
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-800">
+          <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-[#2c2c2e]">
             {keys.map((k) => (
-              <tr key={k.key_id}>
+              <tr key={k.key_id} className="hover:bg-black/[0.02] dark:hover:bg-white/[0.02]">
                 <td className="px-4 py-3 text-sm font-medium">{k.name}</td>
                 <td className="px-4 py-3">
                   <span
-                    className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                    className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
                       k.is_active
                         ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
                         : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
@@ -191,7 +191,7 @@ function CreateKeyForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className="mb-4 flex items-end space-x-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
+      className="mb-4 flex items-end space-x-3 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4"
     >
       <div className="flex-1">
         <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -203,13 +203,13 @@ function CreateKeyForm({
           onChange={(e) => setName(e.target.value)}
           required
           placeholder="e.g. Claude Desktop"
-          className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm"
+          className="w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-1.5 text-sm"
         />
       </div>
       <button
         type="submit"
         disabled={submitting}
-        className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+        className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
       >
         Create
       </button>

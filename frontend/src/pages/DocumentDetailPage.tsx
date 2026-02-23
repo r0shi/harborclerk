@@ -97,7 +97,7 @@ function JobStatusBadge({ status }: { status: string }) {
   else if (status === 'queued') cls = 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
 
   return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>
+    <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>
       {status}
     </span>
   )
@@ -111,7 +111,7 @@ function VersionBanner({ version }: { version: VersionInfo }) {
 
   if (version.status === 'ready' || allDone) {
     return (
-      <div className="mb-3 flex items-center gap-2 rounded-md bg-green-50 dark:bg-green-900/20 px-3 py-2 text-sm text-green-700 dark:text-green-400">
+      <div className="mb-3 flex items-center gap-2 rounded-lg bg-green-50 dark:bg-green-900/20 px-3 py-2 text-sm text-green-700 dark:text-green-400">
         <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
         </svg>
@@ -123,7 +123,7 @@ function VersionBanner({ version }: { version: VersionInfo }) {
   if (hasError) {
     const errorJob = version.jobs.find((j) => j.status === 'error')
     return (
-      <div className="mb-3 flex items-center gap-2 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+      <div className="mb-3 flex items-center gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
         <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
@@ -135,7 +135,7 @@ function VersionBanner({ version }: { version: VersionInfo }) {
   if (runningJob) {
     const doneCount = version.jobs.filter((j) => j.status === 'done').length
     return (
-      <div className="mb-3 flex items-center gap-2 rounded-md bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+      <div className="mb-3 flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
         <div className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
         Processing — stage {doneCount + 1} of {version.jobs.length}
       </div>
@@ -180,7 +180,7 @@ function Pagination({
       <button
         onClick={() => onPageChange(1)}
         disabled={currentPage === 1}
-        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-default`}
+        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-default`}
         title="First page"
       >
         &laquo;
@@ -188,7 +188,7 @@ function Pagination({
       <button
         onClick={() => onPageChange(currentPage - 1)}
         disabled={currentPage === 1}
-        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-default`}
+        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-default`}
         title="Previous page"
       >
         &lsaquo;
@@ -205,7 +205,7 @@ function Pagination({
             className={`${btn} px-1.5 ${
               p === currentPage
                 ? 'bg-blue-600 text-white'
-                : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+                : 'text-gray-700 dark:text-gray-300 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
             }`}
           >
             {p}
@@ -215,7 +215,7 @@ function Pagination({
       <button
         onClick={() => onPageChange(currentPage + 1)}
         disabled={currentPage === totalPages}
-        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-default`}
+        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-default`}
         title="Next page"
       >
         &rsaquo;
@@ -223,7 +223,7 @@ function Pagination({
       <button
         onClick={() => onPageChange(totalPages)}
         disabled={currentPage === totalPages}
-        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-default`}
+        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-default`}
         title="Last page"
       >
         &raquo;
@@ -259,8 +259,22 @@ export default function DocumentDetailPage() {
   }
 
   useEffect(() => {
-    loadDoc().finally(() => setLoading(false))
+    loadDoc()
+      .then(() => {
+        // Persist for "continue viewing" on DocumentsPage
+      })
+      .finally(() => setLoading(false))
   }, [id])
+
+  // Write to sessionStorage when doc loads for state preservation
+  useEffect(() => {
+    if (doc) {
+      sessionStorage.setItem(
+        'lastDoc',
+        JSON.stringify({ doc_id: doc.doc_id, title: doc.title }),
+      )
+    }
+  }, [doc])
 
   // SSE: live job updates
   const onJobEvent = useCallback(
@@ -338,6 +352,23 @@ export default function DocumentDetailPage() {
     }
   }, [urlShowContent, urlTargetPage, loading])
 
+  const hasProcessing = doc?.versions.some(
+    (v) => v.status !== 'ready' && v.status !== 'error',
+  )
+
+  async function handleCancel() {
+    setActionLoading(true)
+    try {
+      await post(`/api/docs/${id}/cancel`)
+      const updated = await get<DocumentDetail>(`/api/docs/${id}`)
+      setDoc(updated)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Cancel failed')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   async function handleReprocess() {
     setActionLoading(true)
     try {
@@ -389,17 +420,26 @@ export default function DocumentDetailPage() {
         </div>
         {isAdmin && (
           <div className="flex space-x-2">
+            {hasProcessing && (
+              <button
+                onClick={handleCancel}
+                disabled={actionLoading}
+                className="rounded-lg bg-gray-500 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-gray-600 disabled:opacity-50"
+              >
+                Cancel Processing
+              </button>
+            )}
             <button
               onClick={handleReprocess}
               disabled={actionLoading}
-              className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+              className="rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-amber-600 disabled:opacity-50"
             >
               Reprocess
             </button>
             <button
               onClick={handleDelete}
               disabled={actionLoading}
-              className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              className="rounded-lg bg-red-500/10 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-500/20 disabled:opacity-50"
             >
               Delete
             </button>
@@ -429,7 +469,7 @@ export default function DocumentDetailPage() {
               return (
                 <div
                   key={v.version_id}
-                  className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
+                  className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-5"
                 >
                   <div className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
                     Version {v.versionNumber}{' '}
@@ -514,7 +554,7 @@ export default function DocumentDetailPage() {
       {!showContent ? (
         <button
           onClick={loadContent}
-          className="rounded-md bg-gray-100 dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:opacity-80"
         >
           View Content
         </button>
@@ -543,7 +583,7 @@ export default function DocumentDetailPage() {
                       setPageSize(Number(e.target.value))
                       setContentPage(1)
                     }}
-                    className="rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
+                    className="rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
                   >
                     {PAGE_SIZE_OPTIONS.map((n) => (
                       <option key={n} value={n}>
@@ -573,10 +613,10 @@ export default function DocumentDetailPage() {
               {visiblePages.map((page) => (
                 <div
                   key={page.page_num}
-                  className={`rounded border bg-white dark:bg-gray-800 p-4 transition-all duration-500 ${
+                  className={`rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4 transition-all duration-500 ${
                     highlightPage === page.page_num
-                      ? 'border-blue-400 ring-2 ring-blue-400/50'
-                      : 'border-gray-200 dark:border-gray-700'
+                      ? 'ring-2 ring-[var(--color-accent)]/40'
+                      : ''
                   }`}
                 >
                   <div className="mb-2 flex items-center justify-between">

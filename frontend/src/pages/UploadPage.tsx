@@ -194,10 +194,10 @@ export default function UploadPage() {
         }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
-        className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-12 transition-colors ${
+        className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-12 transition-colors ${
           dragOver
             ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-            : 'border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800'
+            : 'border-gray-300/60 dark:border-gray-600/60 bg-white dark:bg-[#2c2c2e] shadow-mac'
         }`}
       >
         {uploading ? (
@@ -210,7 +210,7 @@ export default function UploadPage() {
             <p className="mb-4 text-xs text-gray-400">
               PDF, DOCX, RTF, TXT, JPEG supported
             </p>
-            <label className="cursor-pointer rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700">
+            <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700">
               Choose Files
               <input
                 type="file"
@@ -264,7 +264,7 @@ function FileResult({
 
   if (confirmed) {
     return (
-      <div className="rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4">
+      <div className="rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4 shadow-mac">
         <p className="text-sm font-medium text-green-700 dark:text-green-400">
           {result.filename} — Processing started
         </p>
@@ -280,7 +280,7 @@ function FileResult({
 
   if (result.status === 'duplicate') {
     return (
-      <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4">
+      <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 shadow-mac">
         <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
           {result.filename} — Duplicate
         </p>
@@ -298,7 +298,7 @@ function FileResult({
 
   if (result.status === 'skipped') {
     return (
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-4">
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
         <p className="text-sm text-gray-500 dark:text-gray-400">
           {result.filename} — Skipped (unsupported type)
         </p>
@@ -307,7 +307,7 @@ function FileResult({
   }
 
   return (
-    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
       <p className="mb-3 text-sm font-medium">
         {result.filename}{' '}
         <span className="text-gray-400">
@@ -339,7 +339,7 @@ function FileResult({
           <select
             value={selectedDoc}
             onChange={(e) => setSelectedDoc(e.target.value)}
-            className="mt-1 w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm"
+            className="mt-1 w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-1.5 text-sm"
           >
             <option value="">Select document...</option>
             {docs.map((d) => (
@@ -359,7 +359,7 @@ function FileResult({
           )
         }
         disabled={action === 'new_version' && !selectedDoc}
-        className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+        className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
       >
         Confirm
       </button>

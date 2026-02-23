@@ -198,8 +198,8 @@ def mark_stage_done(version_id: uuid.UUID, stage: JobStage) -> None:
         advance_pipeline(version_id)
 
 
-def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> None:
-    """Mark a stage as running."""
+def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> bool:
+    """Mark a stage as running. Returns False if already cancelled/errored."""
     session = get_sync_session()
     try:
         job = session.execute(
@@ -208,6 +208,9 @@ def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> None:
                 IngestionJob.stage == stage,
             )
         ).scalar_one()
+        if job.status == JobStatus.error:
+            logger.info("Skipping %s for version %s — already cancelled/errored", stage.value, version_id)
+            return False
         job.status = JobStatus.running
         job.started_at = datetime.now(timezone.utc)
         session.commit()
@@ -215,6 +218,46 @@ def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> None:
         session.close()
 
     publish_job_event(version_id, stage.value, "running")
+    return True
+
+
+def cancel_version_jobs(version_id: uuid.UUID) -> int:
+    """Cancel all queued/running jobs for a version, setting them to error."""
+    session = get_sync_session()
+    cancelled = 0
+    cancelled_jobs: list[IngestionJob] = []
+    try:
+        jobs = session.execute(
+            select(IngestionJob).where(
+                IngestionJob.version_id == version_id,
+                IngestionJob.status.in_([JobStatus.queued, JobStatus.running]),
+            )
+        ).scalars().all()
+
+        now = datetime.now(timezone.utc)
+        for j in jobs:
+            j.status = JobStatus.error
+            j.error = "Cancelled by user"
+            j.finished_at = now
+            cancelled_jobs.append(j)
+            cancelled += 1
+
+        version = session.execute(
+            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
+        ).scalar_one_or_none()
+        if version and version.status not in (VersionStatus.ready, VersionStatus.error):
+            version.status = VersionStatus.error
+            version.error = "Cancelled by user"
+
+        session.commit()
+    finally:
+        session.close()
+
+    # Publish SSE events so frontend updates immediately
+    for j in cancelled_jobs:
+        publish_job_event(version_id, j.stage.value, "error", error="Cancelled by user")
+
+    return cancelled
 
 
 def on_job_failure(job, connection, type, value, traceback):

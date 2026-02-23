@@ -12,7 +12,7 @@ export default function PreferencesPage() {
       <h1 className="mb-6 text-xl font-bold">Preferences</h1>
 
       <div className="space-y-6">
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6">
+        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-6">
           <h2 className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">
             Theme
           </h2>
@@ -22,20 +22,20 @@ export default function PreferencesPage() {
           <div className="flex space-x-2">
             <button
               onClick={() => updatePreferences({ theme: 'light' })}
-              className={`rounded-md px-4 py-2 text-sm font-medium ${
+              className={`rounded-lg px-4 py-2 text-sm font-medium ${
                 theme === 'light'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-[var(--color-bg-tertiary)] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
               }`}
             >
               Light
             </button>
             <button
               onClick={() => updatePreferences({ theme: 'dark' })}
-              className={`rounded-md px-4 py-2 text-sm font-medium ${
+              className={`rounded-lg px-4 py-2 text-sm font-medium ${
                 theme === 'dark'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-[var(--color-bg-tertiary)] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
               }`}
             >
               Dark
@@ -43,7 +43,7 @@ export default function PreferencesPage() {
           </div>
         </div>
 
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6">
+        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-6">
           <h2 className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">
             Default page size
           </h2>
@@ -55,7 +55,7 @@ export default function PreferencesPage() {
             onChange={(e) =>
               updatePreferences({ page_size: Number(e.target.value) })
             }
-            className="rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+            className="rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
           >
             {PAGE_SIZE_OPTIONS.map((n) => (
               <option key={n} value={n}>

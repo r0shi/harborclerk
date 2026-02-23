@@ -20,7 +20,8 @@ BATCH_SIZE = 256
 
 def run_embed(version_id: uuid.UUID) -> None:
     """Generate embeddings for all chunks of a version."""
-    mark_stage_running(version_id, JobStage.embed)
+    if not mark_stage_running(version_id, JobStage.embed):
+        return
 
     settings = get_settings()
     session = get_sync_session()

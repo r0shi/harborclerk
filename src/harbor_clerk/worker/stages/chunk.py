@@ -99,7 +99,8 @@ def _find_page_range(
 
 def run_chunk(version_id: uuid.UUID) -> None:
     """Split extracted text into overlapping chunks."""
-    mark_stage_running(version_id, JobStage.chunk)
+    if not mark_stage_running(version_id, JobStage.chunk):
+        return
 
     session = get_sync_session()
     try:

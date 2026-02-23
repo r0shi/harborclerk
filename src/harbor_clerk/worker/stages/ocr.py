@@ -37,7 +37,8 @@ def _ocr_image_bytes(image_data: bytes) -> tuple[str, float]:
 
 def run_ocr(version_id: uuid.UUID) -> None:
     """Run OCR on pages that need it."""
-    mark_stage_running(version_id, JobStage.ocr)
+    if not mark_stage_running(version_id, JobStage.ocr):
+        return
 
     session = get_sync_session()
     try:

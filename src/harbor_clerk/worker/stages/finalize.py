@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 def run_finalize(version_id: uuid.UUID) -> None:
     """Complete ingestion: set version ready, update document.latest_version_id, mark upload done."""
-    mark_stage_running(version_id, JobStage.finalize)
+    if not mark_stage_running(version_id, JobStage.finalize):
+        return
 
     session = get_sync_session()
     try:

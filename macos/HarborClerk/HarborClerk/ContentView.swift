@@ -65,6 +65,10 @@ struct WebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.uiDelegate = context.coordinator
         webView.load(URLRequest(url: url))
+
+        // Store reference for navigation commands
+        context.coordinator.webView = webView
+
         return webView
     }
 
@@ -75,6 +79,34 @@ struct WebView: NSViewRepresentable {
     }
 
     class Coordinator: NSObject, WKUIDelegate {
+        weak var webView: WKWebView?
+        private var observers: [NSObjectProtocol] = []
+
+        override init() {
+            super.init()
+
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: .webViewGoBack, object: nil, queue: .main
+                ) { [weak self] _ in
+                    self?.webView?.goBack()
+                }
+            )
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: .webViewGoForward, object: nil, queue: .main
+                ) { [weak self] _ in
+                    self?.webView?.goForward()
+                }
+            )
+        }
+
+        deinit {
+            for observer in observers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+
         // Respond to new-window requests (e.g. target="_blank" links)
         // by loading them in the same web view.
         func webView(

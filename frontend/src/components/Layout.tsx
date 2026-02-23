@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth'
+import BackButton from './BackButton'
 import JobToast from './JobToast'
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
-  `px-3 py-2 rounded-md text-sm font-medium ${
+  `px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors ${
     isActive
-      ? 'bg-gray-900 text-white'
-      : 'text-gray-300 hover:bg-gray-700 hover:text-white'
+      ? 'text-[var(--color-accent)]'
+      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
   }`
 
 export default function Layout() {
@@ -36,13 +37,13 @@ export default function Layout() {
   }, [menuOpen])
 
   return (
-    <div className="min-h-screen">
-      <nav className="bg-gray-800">
+    <div className="min-h-screen bg-[var(--color-bg-secondary)]">
+      <nav className="sticky top-0 z-40 border-b border-[var(--color-border)] bg-[var(--bg-vibrancy)] backdrop-blur-xl">
         <div className="mx-auto max-w-7xl px-4">
-          <div className="flex h-14 items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <Link to="/" className="flex items-center space-x-2 text-lg font-bold text-white">
-                <img src="/favicon.png" alt="" className="h-6 w-6" />
+          <div className="flex h-12 items-center justify-between">
+            <div className="flex items-center space-x-1">
+              <Link to="/" className="mr-3 flex items-center space-x-2 text-[15px] font-semibold text-[var(--color-text-primary)]">
+                <img src="/favicon.png" alt="" className="h-5 w-5" />
                 <span>Harbor Clerk</span>
               </Link>
               <NavLink to="/" end className={linkClass}>
@@ -76,18 +77,18 @@ export default function Layout() {
             </div>
             <div className="flex items-center space-x-3">
               {isAdmin && (
-                <span className="rounded bg-amber-600 px-2 py-0.5 text-xs font-medium text-white">
+                <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                   admin
                 </span>
               )}
               <div className="relative" ref={menuRef}>
                 <button
                   onClick={() => setMenuOpen(!menuOpen)}
-                  className="flex items-center space-x-1 rounded-md px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-700 hover:text-white"
+                  className="flex items-center space-x-1 rounded-lg px-2.5 py-1.5 text-[13px] text-[var(--color-text-secondary)] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
                 >
                   <span>{user?.email}</span>
                   <svg
-                    className={`h-4 w-4 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+                    className={`h-3.5 w-3.5 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -97,23 +98,23 @@ export default function Layout() {
                   </svg>
                 </button>
                 {menuOpen && (
-                  <div className="absolute right-0 mt-1 w-48 rounded-md bg-white dark:bg-gray-700 py-1 shadow-lg ring-1 ring-black/5 dark:ring-white/10 z-50">
+                  <div className="absolute right-0 mt-1.5 w-48 rounded-xl bg-[var(--bg-vibrancy)] backdrop-blur-xl py-1 shadow-mac-lg ring-1 ring-[var(--color-border)] z-50">
                     <button
                       onClick={() => {
                         setMenuOpen(false)
                         navigate('/preferences')
                       }}
-                      className="block w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600"
+                      className="block w-full px-3.5 py-2 text-left text-[13px] text-[var(--color-text-primary)] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                     >
                       Preferences
                     </button>
-                    <div className="border-t border-gray-200 dark:border-gray-600" />
+                    <div className="mx-3 my-1 border-t border-[var(--color-border)]" />
                     <button
                       onClick={() => {
                         setMenuOpen(false)
                         logout()
                       }}
-                      className="block w-full px-4 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600"
+                      className="block w-full px-3.5 py-2 text-left text-[13px] text-[var(--color-text-primary)] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                     >
                       Logout
                     </button>
@@ -125,6 +126,7 @@ export default function Layout() {
         </div>
       </nav>
       <main className="mx-auto max-w-7xl px-4 py-6">
+        <BackButton />
         <Outlet />
       </main>
       <JobToast />

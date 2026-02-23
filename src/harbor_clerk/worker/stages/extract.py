@@ -119,7 +119,8 @@ def _alpha_ratio(text: str) -> float:
 
 def run_extract(version_id: uuid.UUID) -> None:
     """Download file from MinIO, extract text, store pages."""
-    mark_stage_running(version_id, JobStage.extract)
+    if not mark_stage_running(version_id, JobStage.extract):
+        return
 
     session = get_sync_session()
     try:

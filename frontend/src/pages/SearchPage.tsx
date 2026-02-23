@@ -130,10 +130,10 @@ export default function SearchPage() {
             }}
             placeholder="Search documents..."
             autoFocus
-            className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-4 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-4 py-2 text-sm"
           />
           {showHistory && history.length > 0 && (
-            <div className="absolute z-10 mt-1 w-full rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 shadow-lg">
+            <div className="absolute z-10 mt-1 w-full rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
               {history.map((q) => (
                 <button
                   key={q}
@@ -142,7 +142,7 @@ export default function SearchPage() {
                     e.preventDefault()
                     selectHistoryItem(q)
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-black/[0.02] dark:hover:bg-white/[0.02]"
                 >
                   <svg className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -166,7 +166,7 @@ export default function SearchPage() {
         <button
           type="submit"
           disabled={loading}
-          className="rounded-md bg-blue-600 px-6 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
         >
           {loading ? 'Searching...' : 'Search'}
         </button>
@@ -213,7 +213,7 @@ export default function SearchPage() {
                 return (
                   <div
                     key={hit.chunk_id}
-                    className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4"
+                    className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4"
                   >
                     <div className="mb-2 flex items-center justify-between">
                       <Link
@@ -249,7 +249,7 @@ export default function SearchPage() {
                         </span>
                       )}
                       <span>Lang: {hit.language}</span>
-                      {hit.ocr_used && <span>OCR</span>}
+                      {hit.ocr_used && <span className="rounded-md text-[11px] font-medium bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5">OCR</span>}
                     </div>
                   </div>
                 )

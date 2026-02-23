@@ -191,9 +191,9 @@ export default function ModelsPage() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+      <div className="overflow-hidden rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 dark:bg-gray-800">
+          <thead className="bg-[var(--color-bg-secondary)]">
             <tr>
               <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
                 Model
@@ -219,7 +219,7 @@ export default function ModelsPage() {
             {models.map((model) => {
               const progress = downloadProgress.get(model.id)
               return (
-                <tr key={model.id} className="bg-white dark:bg-gray-900">
+                <tr key={model.id} className="bg-white dark:bg-[#2c2c2e]">
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900 dark:text-gray-100">
                       {model.name}
@@ -236,22 +236,22 @@ export default function ModelsPage() {
                   </td>
                   <td className="px-4 py-3">
                     {model.supports_tools ? (
-                      <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-400">
+                      <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
                         Yes
                       </span>
                     ) : (
-                      <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400">
+                      <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-[11px] text-gray-500 dark:text-gray-400">
                         No
                       </span>
                     )}
                   </td>
                   <td className="px-4 py-3">
                     {model.active ? (
-                      <span className="inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900/30 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400">
+                      <span className="inline-flex items-center rounded-md bg-blue-100 dark:bg-blue-900/30 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:text-blue-400">
                         Active
                       </span>
                     ) : model.downloaded ? (
-                      <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-400">
+                      <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
                         Ready
                       </span>
                     ) : downloading.has(model.id) ? (
@@ -279,7 +279,7 @@ export default function ModelsPage() {
                       {!model.downloaded && !downloading.has(model.id) && (
                         <button
                           onClick={() => handleDownload(model.id)}
-                          className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700"
+                          className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-blue-700"
                         >
                           Download
                         </button>
@@ -287,7 +287,7 @@ export default function ModelsPage() {
                       {model.downloaded && !model.active && (
                         <button
                           onClick={() => handleDelete(model.id)}
-                          className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
+                          className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-red-700"
                         >
                           Delete
                         </button>

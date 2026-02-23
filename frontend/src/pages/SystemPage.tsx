@@ -148,7 +148,7 @@ export default function SystemPage() {
       {health && (
         <div className="mb-6">
           <span
-            className={`rounded-full px-3 py-1 text-sm font-medium ${
+            className={`rounded-md px-3 py-1 text-[11px] font-medium ${
               health.status === 'healthy'
                 ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
                 : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
@@ -163,19 +163,19 @@ export default function SystemPage() {
       <div className="flex space-x-3">
         <button
           onClick={handlePurge}
-          className="rounded-md bg-gray-100 dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
         >
           Run Purge
         </button>
         <button
           onClick={handleReaper}
-          className="rounded-md bg-gray-100 dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
         >
           Run Reaper
         </button>
         <button
           onClick={handleRefresh}
-          className="rounded-md bg-gray-100 dark:bg-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
         >
           Refresh
         </button>
@@ -202,10 +202,10 @@ function HealthCard({
 
   return (
     <div
-      className={`rounded-lg border p-4 ${
+      className={`rounded-xl shadow-mac p-4 ${
         ok
-          ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20'
-          : 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20'
+          ? 'bg-green-50 dark:bg-green-900/20'
+          : 'bg-red-50 dark:bg-red-900/20'
       }`}
     >
       <div className="text-sm font-medium text-gray-700 dark:text-gray-300">{name}</div>

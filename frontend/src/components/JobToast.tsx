@@ -41,7 +41,7 @@ export default function JobToast() {
       {Array.from(jobs.values()).map((job) => (
         <div
           key={`${job.version_id}:${job.stage}`}
-          className="rounded-lg bg-white dark:bg-gray-800 px-4 py-3 shadow-lg ring-1 ring-gray-200 dark:ring-gray-700"
+          className="rounded-xl bg-[var(--bg-vibrancy)] backdrop-blur-xl dark:bg-[var(--bg-vibrancy)] px-4 py-3 shadow-mac-lg ring-1 ring-[var(--color-border)]"
         >
           <div className="flex items-center space-x-2">
             <div className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
