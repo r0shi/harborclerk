@@ -1,3 +1,126 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ---- Chat page ---- */
+
+/* Sidebar scrollbar */
+.chat-sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.chat-sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 4px;
+}
+.dark .chat-sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Messages scrollbar */
+.chat-messages-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.chat-messages-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-messages-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 6px;
+}
+.chat-messages-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.12);
+}
+.dark .chat-messages-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.04);
+}
+.dark .chat-messages-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Message appear animation */
+.message-appear {
+  animation: messageSlideIn 0.25s ease-out;
+}
+@keyframes messageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Empty state */
+.empty-state-appear {
+  animation: emptyFadeIn 0.5s ease-out;
+}
+@keyframes emptyFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Thinking dots bounce */
+.thinking-dots span {
+  animation: dotBounce 1.4s ease-in-out infinite;
+}
+.thinking-dots span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.thinking-dots span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+@keyframes dotBounce {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Streaming indicator dots */
+.streaming-dots span {
+  animation: streamPulse 1.4s ease-in-out infinite;
+}
+.streaming-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.streaming-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes streamPulse {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Tool call card */
+.tool-call-card {
+  animation: toolCallAppear 0.2s ease-out;
+}
+@keyframes toolCallAppear {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

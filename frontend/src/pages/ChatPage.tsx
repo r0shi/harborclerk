@@ -22,6 +22,20 @@ interface ConversationDetail extends ConversationSummary {
   }[]
 }
 
+function formatRelativeDate(dateStr: string): string {
+  const d = new Date(dateStr)
+  const now = new Date()
+  const diffMs = now.getTime() - d.getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  if (diffMins < 1) return 'just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  const diffHours = Math.floor(diffMins / 60)
+  if (diffHours < 24) return `${diffHours}h ago`
+  const diffDays = Math.floor(diffHours / 24)
+  if (diffDays < 7) return `${diffDays}d ago`
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
 export default function ChatPage() {
   const { conversationId } = useParams<{ conversationId?: string }>()
   const navigate = useNavigate()
@@ -30,6 +44,7 @@ export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   const {
     messages,
@@ -40,12 +55,10 @@ export default function ChatPage() {
     loadMessages,
   } = useChat()
 
-  // Load conversation list
   useEffect(() => {
     get<ConversationSummary[]>('/api/chat/conversations').then(setConversations).catch(() => {})
   }, [])
 
-  // Load conversation messages when ID changes
   useEffect(() => {
     if (!conversationId) {
       loadMessages([])
@@ -68,7 +81,6 @@ export default function ChatPage() {
       })
   }, [conversationId, loadMessages, navigate])
 
-  // Auto-scroll on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, currentToolCall])
@@ -80,9 +92,13 @@ export default function ChatPage() {
       if (!text || isStreaming) return
       setInput('')
 
+      // Reset textarea height
+      if (inputRef.current) {
+        inputRef.current.style.height = 'auto'
+      }
+
       let activeConvId = conversationId
       if (!activeConvId) {
-        // Create new conversation
         const conv = await post<ConversationSummary>('/api/chat/conversations', {
           title: 'New conversation',
         })
@@ -92,8 +108,6 @@ export default function ChatPage() {
       }
 
       await sendMessage(activeConvId, text)
-
-      // Refresh conversation list to update title/timestamp
       get<ConversationSummary[]>('/api/chat/conversations').then(setConversations).catch(() => {})
     },
     [input, isStreaming, conversationId, sendMessage, navigate],
@@ -127,170 +141,319 @@ export default function ChatPage() {
     [handleSubmit],
   )
 
+  const activeConvTitle = conversationId
+    ? conversations.find((c) => c.conversation_id === conversationId)?.title
+    : undefined
+
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] -mx-4 -my-6">
+    <div className="chat-page flex h-[calc(100vh-3.5rem)] -mx-4 -my-6 overflow-hidden">
       {/* Sidebar */}
-      {sidebarOpen && (
-        <div className="w-64 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 flex flex-col">
-          <div className="p-3">
-            <button
-              onClick={handleNewChat}
-              className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
-            >
-              + New Chat
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            {conversations.map((conv) => (
+      <div
+        className={`chat-sidebar flex-shrink-0 flex flex-col border-r border-gray-200/80 dark:border-gray-700/60 bg-stone-50 dark:bg-gray-900/80 transition-all duration-300 ease-in-out ${
+          sidebarOpen ? 'w-72' : 'w-0'
+        } overflow-hidden`}
+      >
+        <div className="p-3 pb-2">
+          <button
+            onClick={handleNewChat}
+            className="group w-full flex items-center gap-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-[13px] font-medium text-gray-600 dark:text-gray-300 shadow-sm hover:shadow-md hover:border-gray-300 dark:hover:border-gray-600 transition-all duration-200"
+          >
+            <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800 text-xs transition-transform duration-200 group-hover:scale-110">
+              +
+            </span>
+            New conversation
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-2 pb-2 chat-sidebar-scroll">
+          {conversations.length === 0 && (
+            <div className="px-3 py-8 text-center text-xs text-gray-400 dark:text-gray-500">
+              No conversations yet
+            </div>
+          )}
+          {conversations.map((conv) => {
+            const isActive = conv.conversation_id === conversationId
+            return (
               <div
                 key={conv.conversation_id}
-                className={`group flex items-center px-3 py-2 text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 ${
-                  conv.conversation_id === conversationId
-                    ? 'bg-gray-200 dark:bg-gray-700'
-                    : ''
+                className={`group relative flex items-start rounded-lg px-3 py-2.5 mb-0.5 cursor-pointer transition-all duration-150 ${
+                  isActive
+                    ? 'bg-white dark:bg-gray-800 shadow-sm ring-1 ring-gray-200/80 dark:ring-gray-700/60'
+                    : 'hover:bg-white/60 dark:hover:bg-gray-800/40'
                 }`}
               >
                 <Link
                   to={`/chat/${conv.conversation_id}`}
-                  className="flex-1 truncate text-gray-700 dark:text-gray-300"
+                  className="flex-1 min-w-0"
                 >
-                  {conv.title}
+                  <div className={`text-[13px] font-medium truncate ${
+                    isActive
+                      ? 'text-gray-900 dark:text-gray-100'
+                      : 'text-gray-600 dark:text-gray-400'
+                  }`}>
+                    {conv.title}
+                  </div>
+                  <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+                    {formatRelativeDate(conv.updated_at)}
+                  </div>
                 </Link>
                 <button
                   onClick={(e) => {
                     e.preventDefault()
+                    e.stopPropagation()
                     handleDeleteConversation(conv.conversation_id)
                   }}
-                  className="ml-1 hidden rounded p-1 text-gray-400 hover:text-red-500 group-hover:block"
+                  className="absolute right-2 top-2.5 rounded-md p-1 text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all duration-150"
                   title="Delete conversation"
                 >
                   <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
                 </button>
               </div>
-            ))}
-          </div>
+            )
+          })}
         </div>
-      )}
+      </div>
 
       {/* Main chat area */}
-      <div className="flex flex-1 flex-col min-w-0">
-        {/* Toggle sidebar + header */}
-        <div className="flex items-center border-b border-gray-200 dark:border-gray-700 px-4 py-2">
+      <div className="flex flex-1 flex-col min-w-0 bg-white dark:bg-gray-900">
+        {/* Header */}
+        <div className="flex items-center gap-3 border-b border-gray-100 dark:border-gray-800 px-4 py-2.5 bg-white dark:bg-gray-900">
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="mr-3 rounded p-1 text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700"
+            className="rounded-lg p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
             title={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
           >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+            <svg className="h-4.5 w-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              {sidebarOpen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12H12m-8.25 5.25h16.5" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+              )}
             </svg>
           </button>
-          <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-            {conversationId
-              ? conversations.find((c) => c.conversation_id === conversationId)?.title || 'Chat'
-              : 'New Chat'}
-          </span>
+          {activeConvTitle ? (
+            <h2 className="text-[13px] font-semibold text-gray-700 dark:text-gray-300 truncate">
+              {activeConvTitle}
+            </h2>
+          ) : (
+            <h2 className="text-[13px] font-medium text-gray-400 dark:text-gray-500">
+              New conversation
+            </h2>
+          )}
+          {isStreaming && (
+            <div className="ml-auto flex items-center gap-1.5">
+              <div className="streaming-dots flex gap-0.5">
+                <span className="h-1 w-1 rounded-full bg-blue-500" />
+                <span className="h-1 w-1 rounded-full bg-blue-500" />
+                <span className="h-1 w-1 rounded-full bg-blue-500" />
+              </div>
+              <span className="text-[11px] text-gray-400">Generating</span>
+            </div>
+          )}
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-          {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500">
-              <svg className="h-12 w-12 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-              </svg>
-              <p className="text-sm">Ask a question about your documents</p>
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto chat-messages-scroll">
+          {messages.length === 0 ? (
+            <EmptyState />
+          ) : (
+            <div className="max-w-3xl mx-auto px-4 py-6 space-y-1">
+              {messages.map((msg, i) => (
+                <MessageBubble key={msg.message_id || i} message={msg} />
+              ))}
+
+              {currentToolCall && <ToolCallCard tool={currentToolCall} active />}
+
+              <div ref={messagesEndRef} />
             </div>
           )}
-
-          {messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} />
-          ))}
-
-          {currentToolCall && <ToolCallCard tool={currentToolCall} active />}
-
-          <div ref={messagesEndRef} />
         </div>
 
-        {/* Input */}
-        <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3">
-          <form onSubmit={handleSubmit} className="flex items-end space-x-2">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask a question..."
-              rows={1}
-              className="flex-1 resize-none rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              style={{ maxHeight: '120px' }}
-              onInput={(e) => {
-                const target = e.target as HTMLTextAreaElement
-                target.style.height = 'auto'
-                target.style.height = Math.min(target.scrollHeight, 120) + 'px'
-              }}
-            />
-            {isStreaming ? (
-              <button
-                type="button"
-                onClick={stopStreaming}
-                className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
-              >
-                Stop
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={!input.trim()}
-                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                Send
-              </button>
-            )}
-          </form>
+        {/* Input area */}
+        <div className="border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
+          <div className="max-w-3xl mx-auto px-4 py-3">
+            <form onSubmit={handleSubmit} className="relative">
+              <div className="chat-input-container rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-sm focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
+                <textarea
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Ask about your documents..."
+                  rows={1}
+                  className="w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none"
+                  style={{ maxHeight: '160px' }}
+                  onInput={(e) => {
+                    const target = e.target as HTMLTextAreaElement
+                    target.style.height = 'auto'
+                    target.style.height = Math.min(target.scrollHeight, 160) + 'px'
+                  }}
+                />
+                <div className="flex items-center justify-between px-3 pb-2">
+                  <span className="text-[10px] text-gray-300 dark:text-gray-600 select-none">
+                    {input.trim() ? 'Enter to send' : 'Shift+Enter for new line'}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {isStreaming ? (
+                      <button
+                        type="button"
+                        onClick={stopStreaming}
+                        className="flex items-center gap-1.5 rounded-lg bg-gray-800 dark:bg-gray-200 px-3 py-1.5 text-xs font-medium text-white dark:text-gray-800 hover:bg-gray-700 dark:hover:bg-gray-300 transition-colors duration-150"
+                      >
+                        <svg className="h-3 w-3" viewBox="0 0 24 24" fill="currentColor">
+                          <rect x="6" y="6" width="12" height="12" rx="2" />
+                        </svg>
+                        Stop
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        disabled={!input.trim()}
+                        className="flex items-center justify-center rounded-lg bg-gray-800 dark:bg-gray-200 p-1.5 text-white dark:text-gray-800 hover:bg-gray-700 dark:hover:bg-gray-300 disabled:opacity-30 disabled:hover:bg-gray-800 dark:disabled:hover:bg-gray-200 transition-all duration-150"
+                      >
+                        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </form>
+          </div>
         </div>
       </div>
     </div>
   )
 }
+
+/* ---- Empty state ---- */
+
+function EmptyState() {
+  return (
+    <div className="flex h-full items-center justify-center p-8">
+      <div className="text-center max-w-md empty-state-appear">
+        <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-100 dark:bg-gray-800">
+          <svg className="h-7 w-7 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m5.231 13.481L15 17.25m-4.5-15H5.625c-.621 0-1.125.504-1.125 1.125v16.5c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9zm3.75 11.625a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+          </svg>
+        </div>
+        <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-1.5">
+          Ask your documents
+        </h3>
+        <p className="text-[13px] text-gray-400 dark:text-gray-500 leading-relaxed mb-6">
+          Start a conversation to search, read, and reason over your document library using a local LLM.
+        </p>
+        <div className="flex flex-wrap justify-center gap-2">
+          {[
+            'What documents mention compliance?',
+            'Summarize the latest report',
+            'Find conflicting information',
+          ].map((q) => (
+            <span
+              key={q}
+              className="inline-block rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-[12px] text-gray-500 dark:text-gray-400 shadow-sm cursor-default"
+            >
+              {q}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ---- Message bubble ---- */
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user'
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div
-        className={`max-w-[75%] rounded-lg px-4 py-2.5 text-sm ${
+    <div className={`message-appear py-2.5 ${isUser ? '' : ''}`}>
+      <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
+        {/* Avatar */}
+        <div className={`flex-shrink-0 mt-0.5 h-7 w-7 rounded-lg flex items-center justify-center text-xs font-semibold ${
           isUser
-            ? 'bg-blue-600 text-white'
-            : 'bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200'
-        }`}
-      >
-        {/* Tool calls shown as inline cards */}
-        {message.tool_calls && message.tool_calls.length > 0 && (
-          <div className="mb-2 space-y-1">
-            {message.tool_calls.map((tc, i) => (
-              <ToolCallCard key={i} tool={tc} active={false} />
-            ))}
+            ? 'bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800'
+            : 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 ring-1 ring-amber-200/60 dark:ring-amber-700/40'
+        }`}>
+          {isUser ? (
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+            </svg>
+          ) : (
+            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" />
+            </svg>
+          )}
+        </div>
+
+        {/* Content */}
+        <div className={`min-w-0 max-w-[85%] ${isUser ? 'text-right' : ''}`}>
+          {/* Role label */}
+          <div className={`text-[11px] font-medium mb-1 ${
+            isUser
+              ? 'text-gray-400 dark:text-gray-500 mr-1'
+              : 'text-gray-400 dark:text-gray-500 ml-1'
+          }`}>
+            {isUser ? 'You' : 'Assistant'}
           </div>
-        )}
 
-        {message.content && (
-          <div className="whitespace-pre-wrap break-words">{message.content}</div>
-        )}
+          <div className={`rounded-xl px-4 py-2.5 text-[13.5px] leading-relaxed ${
+            isUser
+              ? 'bg-gray-800 dark:bg-gray-700 text-gray-100 dark:text-gray-200 rounded-tr-sm'
+              : 'bg-gray-50 dark:bg-gray-800/60 text-gray-700 dark:text-gray-300 ring-1 ring-gray-100 dark:ring-gray-700/50 rounded-tl-sm'
+          }`}>
+            {/* Tool calls shown as inline cards */}
+            {message.tool_calls && message.tool_calls.length > 0 && (
+              <div className="mb-2.5 space-y-1.5">
+                {message.tool_calls.map((tc, i) => (
+                  <ToolCallCard key={i} tool={tc} active={false} />
+                ))}
+              </div>
+            )}
 
-        {message.isStreaming && !message.content && (
-          <span className="inline-block animate-pulse">Thinking...</span>
-        )}
+            {message.content && (
+              <div className="whitespace-pre-wrap break-words">{message.content}</div>
+            )}
+
+            {message.isStreaming && !message.content && (
+              <div className="flex items-center gap-1.5 py-0.5">
+                <div className="thinking-dots flex gap-0.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-gray-300 dark:bg-gray-600" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-gray-300 dark:bg-gray-600" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-gray-300 dark:bg-gray-600" />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )
 }
 
+/* ---- Tool call card ---- */
+
 function ToolCallCard({ tool, active }: { tool: ToolCallInfo; active: boolean }) {
   const [expanded, setExpanded] = useState(false)
+
+  const icon = tool.name === 'search_documents' ? (
+    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+    </svg>
+  ) : tool.name === 'read_passages' ? (
+    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+    </svg>
+  ) : (
+    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17l-5.1-5.1m0 0L11.42 4.97m-5.1 5.1H20.8" />
+    </svg>
+  )
+
   const label =
     tool.name === 'search_documents'
       ? 'Searching documents'
@@ -300,38 +463,45 @@ function ToolCallCard({ tool, active }: { tool: ToolCallInfo; active: boolean })
 
   return (
     <div
-      className={`rounded border text-xs ${
+      className={`tool-call-card rounded-lg text-xs overflow-hidden transition-all duration-200 ${
         active
-          ? 'border-blue-300 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/20'
-          : 'border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800'
+          ? 'bg-blue-50/80 dark:bg-blue-900/10 ring-1 ring-blue-200/60 dark:ring-blue-800/30'
+          : 'bg-white/60 dark:bg-gray-700/30 ring-1 ring-gray-200/60 dark:ring-gray-600/30'
       }`}
     >
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-1.5"
+        className="flex w-full items-center gap-2 px-2.5 py-1.5"
       >
-        {active ? (
-          <div className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
-        ) : (
-          <svg className="h-3 w-3 text-green-500" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-              clipRule="evenodd"
-            />
-          </svg>
-        )}
-        <span className="font-medium text-gray-700 dark:text-gray-300">
-          {label}
-          {active ? '...' : ''}
+        <span className={`flex-shrink-0 ${
+          active
+            ? 'text-blue-500 dark:text-blue-400 animate-pulse'
+            : 'text-emerald-500 dark:text-emerald-400'
+        }`}>
+          {active ? icon : (
+            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+            </svg>
+          )}
+        </span>
+        <span className="font-medium text-gray-600 dark:text-gray-300">
+          {label}{active ? '...' : ''}
         </span>
         {tool.result && (
-          <span className="ml-auto text-gray-500 dark:text-gray-400">{tool.result}</span>
+          <span className="ml-auto text-gray-400 dark:text-gray-500 truncate max-w-[200px]">
+            {tool.result}
+          </span>
         )}
+        <svg
+          className={`h-3 w-3 flex-shrink-0 text-gray-300 dark:text-gray-600 transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+        </svg>
       </button>
       {expanded && tool.arguments && Object.keys(tool.arguments).length > 0 && (
-        <div className="border-t border-gray-200 dark:border-gray-600 px-3 py-1.5 font-mono text-gray-500 dark:text-gray-400">
-          {JSON.stringify(tool.arguments)}
+        <div className="border-t border-gray-100 dark:border-gray-700/50 px-2.5 py-1.5 font-mono text-[11px] text-gray-400 dark:text-gray-500 bg-gray-50/50 dark:bg-gray-800/30">
+          {JSON.stringify(tool.arguments, null, 2)}
         </div>
       )}
     </div>
