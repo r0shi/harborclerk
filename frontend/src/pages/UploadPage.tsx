@@ -7,7 +7,7 @@ interface UploadFileResult {
   filename: string
   size_bytes: number
   mime_type?: string
-  status: 'pending_confirmation' | 'duplicate'
+  status: 'pending_confirmation' | 'duplicate' | 'skipped'
   duplicate_doc_id?: string
   duplicate_version_id?: string
 }
@@ -21,6 +21,56 @@ interface ConfirmResult {
   doc_id: string
   version_id: string
   status: string
+}
+
+const SUPPORTED_EXTENSIONS = new Set([
+  '.pdf',
+  '.docx',
+  '.rtf',
+  '.txt',
+  '.jpg',
+  '.jpeg',
+])
+
+function isSupportedFile(name: string): boolean {
+  const dot = name.lastIndexOf('.')
+  if (dot === -1) return false
+  return SUPPORTED_EXTENSIONS.has(name.slice(dot).toLowerCase())
+}
+
+/** Drain all entries from a directory reader (spec requires repeated calls). */
+async function readAllEntries(
+  reader: FileSystemDirectoryReader,
+): Promise<FileSystemEntry[]> {
+  const all: FileSystemEntry[] = []
+  let batch: FileSystemEntry[] = await new Promise((resolve, reject) =>
+    reader.readEntries(resolve, reject),
+  )
+  while (batch.length > 0) {
+    all.push(...batch)
+    batch = await new Promise((resolve, reject) =>
+      reader.readEntries(resolve, reject),
+    )
+  }
+  return all
+}
+
+/** Recursively collect files from a FileSystemEntry tree, filtering by extension. */
+async function collectFiles(entry: FileSystemEntry): Promise<File[]> {
+  if (entry.isFile) {
+    const fileEntry = entry as FileSystemFileEntry
+    const file: File = await new Promise((resolve, reject) =>
+      fileEntry.file(resolve, reject),
+    )
+    return isSupportedFile(file.name) ? [file] : []
+  }
+  if (entry.isDirectory) {
+    const dirEntry = entry as FileSystemDirectoryEntry
+    const entries = await readAllEntries(dirEntry.createReader())
+    const nested = await Promise.all(entries.map(collectFiles))
+    return nested.flat()
+  }
+  return []
 }
 
 export default function UploadPage() {
@@ -62,11 +112,47 @@ export default function UploadPage() {
     }
   }, [])
 
-  function handleDrop(e: React.DragEvent) {
+  async function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragOver(false)
+
+    const items = e.dataTransfer.items
+    const entries: FileSystemEntry[] = []
+
+    // Try webkitGetAsEntry to detect directories
+    if (items) {
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry?.()
+        if (entry) entries.push(entry)
+      }
+    }
+
+    if (entries.length > 0) {
+      // Recursively collect supported files from entries (handles directories)
+      const allNested = await Promise.all(entries.map(collectFiles))
+      const files = allNested.flat()
+      if (files.length === 0) {
+        setError(
+          'No supported files found. Supported types: PDF, DOCX, RTF, TXT, JPEG',
+        )
+        return
+      }
+      uploadFiles(files)
+      return
+    }
+
+    // Fallback: filter plain file list by extension
     if (e.dataTransfer.files.length > 0) {
-      uploadFiles(e.dataTransfer.files)
+      const supported = Array.from(e.dataTransfer.files).filter((f) =>
+        isSupportedFile(f.name),
+      )
+      if (supported.length === 0) {
+        setError(
+          'No supported files found. Supported types: PDF, DOCX, RTF, TXT, JPEG',
+        )
+        return
+      }
+      uploadFiles(supported)
     }
   }
 
@@ -119,7 +205,7 @@ export default function UploadPage() {
         ) : (
           <>
             <p className="mb-2 text-gray-600 dark:text-gray-400">
-              Drag and drop files here, or click to browse
+              Drag and drop files or folders here, or click to browse
             </p>
             <p className="mb-4 text-xs text-gray-400">
               PDF, DOCX, RTF, TXT, JPEG supported
@@ -206,6 +292,16 @@ function FileResult({
             View existing document
           </Link>
         )}
+      </div>
+    )
+  }
+
+  if (result.status === 'skipped') {
+    return (
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-4">
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          {result.filename} — Skipped (unsupported type)
+        </p>
       </div>
     )
   }

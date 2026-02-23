@@ -22,6 +22,9 @@ export default function ModelsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [downloading, setDownloading] = useState<Set<string>>(new Set())
+  const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(
+    new Map(),
+  )
 
   async function loadModels() {
     try {
@@ -69,16 +72,33 @@ export default function ModelsPage() {
             if (!line.startsWith('data: ')) continue
             try {
               const event = JSON.parse(line.slice(6))
-              if (event.status === 'complete') {
+              if (event.status === 'downloading') {
+                setDownloading((prev) => new Set(prev).add(event.model_id))
+                if (event.progress != null) {
+                  setDownloadProgress((prev) =>
+                    new Map(prev).set(event.model_id, event.progress),
+                  )
+                }
+              } else if (event.status === 'complete') {
                 setDownloading((prev) => {
                   const next = new Set(prev)
                   next.delete(event.model_id)
                   return next
                 })
-                loadModels() // Refresh model list
+                setDownloadProgress((prev) => {
+                  const next = new Map(prev)
+                  next.delete(event.model_id)
+                  return next
+                })
+                loadModels()
               } else if (event.status === 'error') {
                 setDownloading((prev) => {
                   const next = new Set(prev)
+                  next.delete(event.model_id)
+                  return next
+                })
+                setDownloadProgress((prev) => {
+                  const next = new Map(prev)
                   next.delete(event.model_id)
                   return next
                 })
@@ -101,11 +121,37 @@ export default function ModelsPage() {
   async function handleDownload(modelId: string) {
     setError('')
     setDownloading((prev) => new Set(prev).add(modelId))
+    setDownloadProgress((prev) => new Map(prev).set(modelId, 0))
     try {
-      await post(`/api/chat/models/${modelId}/download`)
+      const result = await post<{ status: string }>(
+        `/api/chat/models/${modelId}/download`,
+      )
+      if (
+        result.status === 'already_downloading' ||
+        result.status === 'already_downloaded'
+      ) {
+        setDownloading((prev) => {
+          const next = new Set(prev)
+          next.delete(modelId)
+          return next
+        })
+        setDownloadProgress((prev) => {
+          const next = new Map(prev)
+          next.delete(modelId)
+          return next
+        })
+        if (result.status === 'already_downloaded') {
+          loadModels()
+        }
+      }
     } catch (e) {
       setDownloading((prev) => {
         const next = new Set(prev)
+        next.delete(modelId)
+        return next
+      })
+      setDownloadProgress((prev) => {
+        const next = new Map(prev)
         next.delete(modelId)
         return next
       })
@@ -124,7 +170,11 @@ export default function ModelsPage() {
   }
 
   if (loading) {
-    return <div className="text-sm text-gray-500 dark:text-gray-400">Loading models...</div>
+    return (
+      <div className="text-sm text-gray-500 dark:text-gray-400">
+        Loading models...
+      </div>
+    )
   }
 
   return (
@@ -145,78 +195,108 @@ export default function ModelsPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 dark:bg-gray-800">
             <tr>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Model</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Size</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Context</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Tools</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Status</th>
-              <th className="px-4 py-3 text-right font-medium text-gray-700 dark:text-gray-300">Actions</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
+                Model
+              </th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
+                Size
+              </th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
+                Context
+              </th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
+                Tools
+              </th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
+                Status
+              </th>
+              <th className="px-4 py-3 text-right font-medium text-gray-700 dark:text-gray-300">
+                Actions
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-            {models.map((model) => (
-              <tr key={model.id} className="bg-white dark:bg-gray-900">
-                <td className="px-4 py-3">
-                  <div className="font-medium text-gray-900 dark:text-gray-100">{model.name}</div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">{model.id}</div>
-                </td>
-                <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
-                  {formatSize(model.size_bytes)}
-                </td>
-                <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
-                  {model.context_window.toLocaleString()}
-                </td>
-                <td className="px-4 py-3">
-                  {model.supports_tools ? (
-                    <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-400">
-                      Yes
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400">
-                      No
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  {model.active ? (
-                    <span className="inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900/30 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400">
-                      Active
-                    </span>
-                  ) : model.downloaded ? (
-                    <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-400">
-                      Ready
-                    </span>
-                  ) : downloading.has(model.id) ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
-                      <div className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-                      Downloading
-                    </span>
-                  ) : (
-                    <span className="text-xs text-gray-400">Not downloaded</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    {!model.downloaded && !downloading.has(model.id) && (
-                      <button
-                        onClick={() => handleDownload(model.id)}
-                        className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700"
-                      >
-                        Download
-                      </button>
+            {models.map((model) => {
+              const progress = downloadProgress.get(model.id)
+              return (
+                <tr key={model.id} className="bg-white dark:bg-gray-900">
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-gray-900 dark:text-gray-100">
+                      {model.name}
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                      {model.id}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
+                    {formatSize(model.size_bytes)}
+                  </td>
+                  <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
+                    {model.context_window.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3">
+                    {model.supports_tools ? (
+                      <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-400">
+                        Yes
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-xs text-gray-500 dark:text-gray-400">
+                        No
+                      </span>
                     )}
-                    {model.downloaded && !model.active && (
-                      <button
-                        onClick={() => handleDelete(model.id)}
-                        className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
-                      >
-                        Delete
-                      </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    {model.active ? (
+                      <span className="inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900/30 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400">
+                        Active
+                      </span>
+                    ) : model.downloaded ? (
+                      <span className="inline-flex items-center rounded-full bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-400">
+                        Ready
+                      </span>
+                    ) : downloading.has(model.id) ? (
+                      <div className="flex items-center gap-2">
+                        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                          <div
+                            className="h-full rounded-full bg-amber-500 transition-all duration-300"
+                            style={{
+                              width: `${Math.min(progress ?? 0, 100)}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="text-xs tabular-nums text-amber-600 dark:text-amber-400">
+                          {Math.round(progress ?? 0)}%
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-400">
+                        Not downloaded
+                      </span>
                     )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      {!model.downloaded && !downloading.has(model.id) && (
+                        <button
+                          onClick={() => handleDownload(model.id)}
+                          className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white hover:bg-blue-700"
+                        >
+                          Download
+                        </button>
+                      )}
+                      {model.downloaded && !model.active && (
+                        <button
+                          onClick={() => handleDelete(model.id)}
+                          className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>

@@ -10,7 +10,7 @@ class UploadFileResult(BaseModel):
     filename: str
     size_bytes: int
     mime_type: str | None = None
-    status: str  # "pending_confirmation" or "duplicate"
+    status: str  # "pending_confirmation", "duplicate", or "skipped"
     duplicate_doc_id: str | None = None
     duplicate_version_id: str | None = None
 

@@ -29,6 +29,8 @@ from harbor_clerk.models.enums import JobStage, VersionStatus
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["uploads"])
 
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".rtf", ".txt", ".jpg", ".jpeg"}
+
 
 @router.post("/uploads", response_model=UploadResponse)
 async def upload_files(
@@ -41,6 +43,20 @@ async def upload_files(
     results: list[UploadFileResult] = []
 
     for file in files:
+        # Skip files with unsupported extensions
+        fname = file.filename or ""
+        dot = fname.rfind(".")
+        ext = fname[dot:].lower() if dot != -1 else ""
+        if ext not in ALLOWED_EXTENSIONS:
+            results.append(UploadFileResult(
+                upload_id=str(uuid.uuid4()),
+                filename=fname or "unknown",
+                size_bytes=0,
+                mime_type=file.content_type or "application/octet-stream",
+                status="skipped",
+            ))
+            continue
+
         # Stream file, compute SHA256, buffer content
         sha = hashlib.sha256()
         chunks: list[bytes] = []

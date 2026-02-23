@@ -25,6 +25,7 @@ from harbor_clerk.llm.download import (
     delete_model,
     download_model,
     get_model_path,
+    is_downloading,
     list_downloaded,
 )
 from harbor_clerk.llm.models import list_models
@@ -194,6 +195,9 @@ async def start_model_download(
 
     if get_model_path(model_id) is not None:
         return {"status": "already_downloaded"}
+
+    if is_downloading(model_id):
+        return {"status": "already_downloading"}
 
     # Run download in background thread to avoid blocking
     loop = asyncio.get_event_loop()
