@@ -2,7 +2,7 @@
 # Usage: make all        (build everything)
 #        make deps       (build PostgreSQL, Tesseract, Tika/JRE)
 #        make venv       (build Python + venv)
-#        make model      (download sentence-transformers model)
+#        make model      (download embedding model)
 #        make apps       (build Xcode projects + assemble bundles)
 #        make sign       (codesign + notarize)
 #        make clean      (remove build artifacts)
@@ -37,6 +37,7 @@ venv:
 	DEST_DIR=$(BUILD) PROJECT_ROOT=$(shell cd .. && pwd) bash $(SCRIPTS)/build-venv.sh
 
 # ── Model ──
+# DEST_DIR must match the path in EmbedderService.swift ("model/<name>")
 
 model:
 	@echo "==> Downloading embedder model"

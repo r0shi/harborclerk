@@ -218,7 +218,7 @@ cd macos
 make all
 ```
 
-This builds both apps into `macos/build/`. Requires Xcode command-line tools, Python 3.12+, and Homebrew (for Tesseract).
+This builds both apps into `macos/build/output/`. Requires Xcode command-line tools, Python 3.12+, and Homebrew (for Tesseract).
 
 ### Frontend
 
