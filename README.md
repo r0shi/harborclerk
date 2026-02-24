@@ -130,7 +130,7 @@ docker compose logs -f app        # tail app logs
 | **app** | FastAPI REST API + MCP endpoint + serves React SPA |
 | **worker-io** | Background worker for text extraction and chunking |
 | **worker-cpu** | Background worker for OCR and embedding |
-| **embedder** | Embedding model server (nomic-embed-text-v1.5, 768-dim) |
+| **embedder** | Embedding model server (nomic-embed-text-v2-moe, 768-dim) |
 | **postgres** | PostgreSQL with pgvector and pg_trgm extensions |
 | **minio** | Object storage for original files |
 | **tika** | Apache Tika for PDF, DOCX, and RTF text extraction |

@@ -2,7 +2,7 @@
 # Download the embedding model for Harbor Clerk.
 set -euo pipefail
 
-MODEL_NAME="${MODEL_NAME:-nomic-embed-text-v1.5}"
+MODEL_NAME="${MODEL_NAME:-nomic-embed-text-v2-moe}"
 DEST_DIR="${DEST_DIR:-$(pwd)/build/model/${MODEL_NAME}}"
 
 echo "==> Downloading embedding model: ${MODEL_NAME}"

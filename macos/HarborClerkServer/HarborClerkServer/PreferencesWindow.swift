@@ -10,8 +10,8 @@ private let defaultPorts: [String: Int] = [
 
 private let modelOptions: [(id: String, name: String)] = [
     ("", "None"),
-    ("qwen2.5-7b", "Qwen 2.5 7B Instruct (4.4 GB)"),
-    ("qwen2.5-3b", "Qwen 2.5 3B Instruct (2.0 GB)"),
+    ("qwen3-8b", "Qwen3 8B (5.0 GB)"),
+    ("qwen3-4b", "Qwen3 4B (2.5 GB)"),
     ("llama3.2-3b", "Llama 3.2 3B Instruct (2.0 GB)"),
     ("mistral-7b", "Mistral 7B Instruct v0.3 (4.1 GB)"),
     ("deepseek-r1-8b", "DeepSeek R1 8B (4.9 GB)"),

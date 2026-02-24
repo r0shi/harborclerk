@@ -9,7 +9,7 @@ final class EmbedderService: PythonService {
 
     override var extraEnvironment: [String: String] {
         let modelPath = Bundle.main.resourceURL!
-            .appendingPathComponent("model/nomic-embed-text-v1.5").path
+            .appendingPathComponent("model/nomic-embed-text-v2-moe").path
         return [
             "EMBED_MODEL": modelPath,
             "HOST": "127.0.0.1",

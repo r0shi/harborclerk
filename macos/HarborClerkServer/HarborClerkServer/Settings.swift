@@ -88,8 +88,8 @@ final class AppSettings {
         guard !llmModelId.isEmpty else { return "" }
         // Map model IDs to filenames — mirrors the Python registry
         let filenames: [String: String] = [
-            "qwen2.5-7b": "qwen2.5-7b-instruct-q4_k_m.gguf",
-            "qwen2.5-3b": "qwen2.5-3b-instruct-q4_k_m.gguf",
+            "qwen3-8b": "Qwen3-8B-Q4_K_M.gguf",
+            "qwen3-4b": "Qwen3-4B-Q4_K_M.gguf",
             "llama3.2-3b": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
             "mistral-7b": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
             "deepseek-r1-8b": "DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf",

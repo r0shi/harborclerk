@@ -1,6 +1,6 @@
 """Embedding model server.
 
-Loads nomic-embed-text-v1.5 (768-dim) and exposes POST /embed.
+Loads nomic-embed-text-v2-moe (768-dim) and exposes POST /embed.
 """
 
 import logging
@@ -14,7 +14,7 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = os.environ.get("EMBED_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+MODEL_NAME = os.environ.get("EMBED_MODEL", "nomic-ai/nomic-embed-text-v2-moe")
 
 _model: SentenceTransformer | None = None
 
