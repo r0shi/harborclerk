@@ -29,6 +29,15 @@ def upgrade() -> None:
         postgresql_ops={"embedding": "vector_cosine_ops"},
     )
 
+    # -- Re-queue embed+finalize so workers re-process with new model --
+    op.execute(
+        "UPDATE ingestion_jobs"
+        " SET status = 'queued', started_at = NULL, finished_at = NULL,"
+        "     progress_current = 0, progress_total = 0"
+        " WHERE stage IN ('embed', 'finalize') AND status = 'done'"
+    )
+    op.execute("SELECT pg_notify('job_enqueued_cpu', '')")
+
 
 def downgrade() -> None:
     op.drop_index("chunks_embedding_hnsw_idx", table_name="chunks")
@@ -42,3 +51,12 @@ def downgrade() -> None:
         postgresql_with={"m": 16, "ef_construction": 64},
         postgresql_ops={"embedding": "vector_cosine_ops"},
     )
+
+    # -- Re-queue embed+finalize so workers re-process after dimension revert --
+    op.execute(
+        "UPDATE ingestion_jobs"
+        " SET status = 'queued', started_at = NULL, finished_at = NULL,"
+        "     progress_current = 0, progress_total = 0"
+        " WHERE stage IN ('embed', 'finalize') AND status = 'done'"
+    )
+    op.execute("SELECT pg_notify('job_enqueued_cpu', '')")
