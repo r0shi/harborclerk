@@ -15,7 +15,7 @@ from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 256
+BATCH_SIZE = 64
 
 
 def run_embed(version_id: uuid.UUID) -> None:
@@ -57,7 +57,7 @@ def run_embed(version_id: uuid.UUID) -> None:
 
             resp = httpx.post(
                 f"{settings.embedder_url}/embed",
-                json={"texts": texts},
+                json={"texts": texts, "task": "search_document"},
                 timeout=120,
             )
             resp.raise_for_status()

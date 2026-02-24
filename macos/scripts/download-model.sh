@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Download the sentence-transformers model for embedding.
+# Download the embedding model for Harbor Clerk.
 set -euo pipefail
 
-MODEL_NAME="${MODEL_NAME:-all-MiniLM-L6-v2}"
+MODEL_NAME="${MODEL_NAME:-nomic-embed-text-v1.5}"
 DEST_DIR="${DEST_DIR:-$(pwd)/build/model/${MODEL_NAME}}"
 
-echo "==> Downloading sentence-transformers model: ${MODEL_NAME}"
+echo "==> Downloading embedding model: ${MODEL_NAME}"
 
 mkdir -p "$DEST_DIR"
 
@@ -25,7 +25,7 @@ model_name = '${MODEL_NAME}'
 dest = '${DEST_DIR}'
 
 print(f'Loading model {model_name}...')
-model = SentenceTransformer(model_name)
+model = SentenceTransformer(model_name, trust_remote_code=True)
 
 # Save to destination
 print(f'Saving to {dest}...')

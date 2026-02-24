@@ -215,7 +215,7 @@ async def reaper_run(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Find ingestion jobs stuck as running past 2x their timeout, re-enqueue them."""
+    """Find ingestion jobs stuck as running with stale heartbeat, re-enqueue them."""
     from harbor_clerk.worker.pipeline import STAGE_CONFIG, enqueue_stage
 
     # Get all currently running jobs from DB
@@ -227,19 +227,27 @@ async def reaper_run(
     if not running_jobs:
         return {"reaped": 0}
 
+    now = datetime.now(timezone.utc)
     reaped = 0
     for job in running_jobs:
-        _, timeout, _ = STAGE_CONFIG[job.stage]
-        if job.started_at is None:
-            continue
-        elapsed = (datetime.now(timezone.utc) - job.started_at).total_seconds()
-        if elapsed < timeout * 2:
-            continue
+        if job.heartbeat_at is not None:
+            # Worker has heartbeat — if stale > 90s, it's dead
+            stale = (now - job.heartbeat_at).total_seconds()
+            if stale < 90:
+                continue
+        else:
+            # Legacy: no heartbeat yet, use 2x timeout
+            _, timeout, _ = STAGE_CONFIG[job.stage]
+            if job.started_at is None:
+                continue
+            elapsed = (now - job.started_at).total_seconds()
+            if elapsed < timeout * 2:
+                continue
 
         # Orphan detected — re-enqueue
         logger.warning(
-            "Reaping orphan job: version=%s stage=%s (running for %.0fs, timeout=%ds)",
-            job.version_id, job.stage.value, elapsed, timeout,
+            "Reaping orphan job: version=%s stage=%s heartbeat_at=%s",
+            job.version_id, job.stage.value, job.heartbeat_at,
         )
         await session.commit()  # flush before sync enqueue_stage
         enqueue_stage(job.version_id, job.stage)

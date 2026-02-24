@@ -79,10 +79,10 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
 
         session.commit()
 
-        # Notify workers that a new job is available
+        # Notify workers on per-queue channel for instant wakeup
         session.execute(
-            text("SELECT pg_notify('job_enqueued', :queue)"),
-            {"queue": queue_name},
+            text("SELECT pg_notify(:channel, :payload)"),
+            {"channel": f"job_enqueued_{queue_name}", "payload": str(version_id)},
         )
         session.commit()
     finally:

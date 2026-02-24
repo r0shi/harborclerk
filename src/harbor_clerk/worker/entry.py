@@ -1,4 +1,4 @@
-"""PostgreSQL-polling worker entry point.
+"""PostgreSQL-polling worker entry point with LISTEN wakeup and heartbeat.
 
 Usage:
     harbor-clerk-worker                    # reads RQ_QUEUES env var (default: io)
@@ -8,15 +8,18 @@ Usage:
 import argparse
 import logging
 import os
+import select as select_mod
 import signal
-import time
+import threading
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+import psycopg2
+import psycopg2.extensions
+from sqlalchemy import select, update
 
 from harbor_clerk.config import get_settings
-from harbor_clerk.db_sync import get_sync_session
+from harbor_clerk.db_sync import _make_sync_url, get_sync_session
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import DocumentVersion, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
@@ -30,7 +33,51 @@ QUEUE_STAGES: dict[str, list[JobStage]] = {
     "cpu": [JobStage.ocr, JobStage.embed],
 }
 
-POLL_INTERVAL = 2  # seconds
+HEARTBEAT_INTERVAL = 30  # seconds
+
+_shutdown = False
+
+
+def _handle_signal(signum, frame):
+    global _shutdown
+    _shutdown = True
+
+
+def _get_listen_connection():
+    """Get a raw psycopg2 connection for LISTEN (outside SQLAlchemy pool)."""
+    settings = get_settings()
+    dsn = _make_sync_url(settings.database_url).replace("postgresql+psycopg2://", "postgresql://")
+    conn = psycopg2.connect(dsn)
+    conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+    return conn
+
+
+def _wait_for_notify(conn, timeout=30):
+    """Block until a NOTIFY arrives or timeout expires."""
+    if select_mod.select([conn], [], [], timeout) != ([], [], []):
+        conn.poll()
+        while conn.notifies:
+            conn.notifies.pop(0)
+
+
+def _heartbeat_loop(version_id: uuid.UUID, stage: JobStage, stop_event: threading.Event):
+    """Update heartbeat_at every HEARTBEAT_INTERVAL seconds until stop_event is set."""
+    while not stop_event.wait(timeout=HEARTBEAT_INTERVAL):
+        session = get_sync_session()
+        try:
+            session.execute(
+                update(IngestionJob)
+                .where(
+                    IngestionJob.version_id == version_id,
+                    IngestionJob.stage == stage,
+                )
+                .values(heartbeat_at=datetime.now(timezone.utc))
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
+        finally:
+            session.close()
 
 
 def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
@@ -51,8 +98,10 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
         if row is None:
             return None
 
+        now = datetime.now(timezone.utc)
         row.status = JobStatus.running
-        row.started_at = datetime.now(timezone.utc)
+        row.started_at = now
+        row.heartbeat_at = now
         version_id = row.version_id
         stage = row.stage
         session.commit()
@@ -65,12 +114,21 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
 
 
 def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
-    """Run a stage function with timeout enforcement via signal.alarm()."""
+    """Run a stage function with timeout enforcement via signal.alarm() and heartbeat."""
     _, timeout, _ = STAGE_CONFIG[stage]
     func = STAGE_FUNCTIONS[stage]
 
     logger.info("Starting %s for version %s (timeout=%ds)", stage.value, version_id, timeout)
     publish_job_event(version_id, stage.value, "running")
+
+    # Start heartbeat thread
+    stop_heartbeat = threading.Event()
+    hb_thread = threading.Thread(
+        target=_heartbeat_loop,
+        args=(version_id, stage, stop_heartbeat),
+        daemon=True,
+    )
+    hb_thread.start()
 
     def _timeout_handler(signum, frame):
         raise TimeoutError(f"Stage {stage.value} timed out after {timeout}s")
@@ -111,6 +169,8 @@ def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old_handler)
+        stop_heartbeat.set()
+        hb_thread.join(timeout=5)
 
 
 def main():
@@ -136,12 +196,26 @@ def main():
 
     logger.info("Worker starting, listening for stages: %s", [s.value for s in stages])
 
-    while True:
-        result = claim_next_job(stages)
-        if result:
-            execute_job(*result)
-        else:
-            time.sleep(POLL_INTERVAL)
+    # Set up graceful shutdown
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    # Set up LISTEN connection for instant wakeup
+    listen_conn = _get_listen_connection()
+    try:
+        with listen_conn.cursor() as cur:
+            for q in args.queues:
+                cur.execute(f"LISTEN job_enqueued_{q}")
+
+        while not _shutdown:
+            result = claim_next_job(stages)
+            if result:
+                execute_job(*result)
+            else:
+                _wait_for_notify(listen_conn, timeout=30)
+    finally:
+        listen_conn.close()
+        logger.info("Worker shut down")
 
 
 if __name__ == "__main__":

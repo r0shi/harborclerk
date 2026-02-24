@@ -45,6 +45,9 @@ class IngestionJob(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    heartbeat_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
 
     __table_args__ = (
         UniqueConstraint("version_id", "stage", name="uq_jobs_version_stage"),

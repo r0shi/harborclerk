@@ -33,7 +33,8 @@ Harbor Clerk includes or depends on the following third-party software.
 - **asyncpg** — PostgreSQL driver for asyncio
 - **bcrypt** — password hashing
 - **httpx** — HTTP client
-- **sentence-transformers** — text embedding models
+- **sentence-transformers** — text embedding framework
+- **nomic-embed-text-v1.5** — embedding model (768-dim)
 - **huggingface_hub** — HuggingFace model download
 - **llama.cpp** — LLM inference engine
 
