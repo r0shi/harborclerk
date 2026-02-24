@@ -13,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_user
 from harbor_clerk.api.schemas.uploads import (
+    BatchConfirmRequest,
+    BatchConfirmResponse,
+    BatchConfirmResultItem,
     ConfirmUploadRequest,
     ConfirmUploadResponse,
     UploadFileResult,
@@ -162,17 +165,20 @@ async def upload_files(
     return UploadResponse(files=results)
 
 
-@router.post("/uploads/confirm", response_model=ConfirmUploadResponse)
-async def confirm_upload(
-    body: ConfirmUploadRequest,
-    principal: Principal = Depends(require_user),
-    session: AsyncSession = Depends(get_session),
-):
-    settings = get_settings()
+async def _confirm_single(
+    session: AsyncSession,
+    upload_id_str: str,
+    action: str,
+    existing_doc_id: str | None,
+    principal: Principal,
+    settings: object,
+) -> ConfirmUploadResponse:
+    """Core confirm logic shared by single and batch endpoints.
 
-    # Load upload
+    Raises HTTPException on validation errors.
+    """
     try:
-        upload_uuid = uuid.UUID(body.upload_id)
+        upload_uuid = uuid.UUID(upload_id_str)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -187,8 +193,7 @@ async def confirm_upload(
     if upload.status != "pending_confirmation":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Upload status is '{upload.status}', not pending_confirmation")
 
-    if body.action == "new_document":
-        # Create document family
+    if action == "new_document":
         filename = upload.original_filename
         title = filename.rsplit(".", 1)[0] if "." in filename else filename
         doc = Document(title=title, canonical_filename=filename)
@@ -196,11 +201,11 @@ async def confirm_upload(
         await session.flush()
         doc_id = doc.doc_id
 
-    elif body.action == "new_version":
-        if body.existing_doc_id is None:
+    elif action == "new_version":
+        if existing_doc_id is None:
             raise HTTPException(status_code=422, detail="existing_doc_id required for new_version")
         try:
-            doc_id = uuid.UUID(body.existing_doc_id)
+            doc_id = uuid.UUID(existing_doc_id)
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -215,12 +220,11 @@ async def confirm_upload(
     else:
         raise HTTPException(status_code=422, detail="action must be 'new_document' or 'new_version'")
 
-    # Create document version
     version = DocumentVersion(
         doc_id=doc_id,
         original_sha256=upload.sha256,
         original_bucket=settings.minio_bucket,
-        original_object_key="",  # will be set after move
+        original_object_key="",
         mime_type=upload.mime_type,
         size_bytes=upload.size_bytes,
         status=VersionStatus.queued,
@@ -228,7 +232,6 @@ async def confirm_upload(
     session.add(version)
     await session.flush()
 
-    # Move object to canonical path
     canonical_key = f"versions/{version.version_id}/{upload.original_filename}"
     storage = get_storage()
     storage.copy_and_delete(
@@ -237,7 +240,6 @@ async def confirm_upload(
     )
     version.original_object_key = canonical_key
 
-    # Update upload record
     upload.doc_id = doc_id
     upload.version_id = version.version_id
     upload.status = "processing"
@@ -248,19 +250,72 @@ async def confirm_upload(
         action="confirm_upload",
         target_type="document_version",
         target_id=version.version_id,
-        detail={"action": body.action, "doc_id": str(doc_id)},
+        detail={"action": action, "doc_id": str(doc_id)},
     )
-    await session.commit()
-
-    # Enqueue extract stage (import here to avoid circular imports)
-    from harbor_clerk.worker.pipeline import enqueue_stage
-    enqueue_stage(version.version_id, JobStage.extract)
 
     return ConfirmUploadResponse(
         doc_id=str(doc_id),
         version_id=str(version.version_id),
         status="processing",
     )
+
+
+@router.post("/uploads/confirm", response_model=ConfirmUploadResponse)
+async def confirm_upload(
+    body: ConfirmUploadRequest,
+    principal: Principal = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    settings = get_settings()
+    result = await _confirm_single(
+        session, body.upload_id, body.action, body.existing_doc_id,
+        principal, settings,
+    )
+    await session.commit()
+
+    from harbor_clerk.worker.pipeline import enqueue_stage
+    enqueue_stage(uuid.UUID(result.version_id), JobStage.extract)
+
+    return result
+
+
+@router.post("/uploads/confirm-batch", response_model=BatchConfirmResponse)
+async def confirm_upload_batch(
+    body: BatchConfirmRequest,
+    principal: Principal = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    settings = get_settings()
+    results: list[BatchConfirmResultItem] = []
+    version_ids_to_enqueue: list[uuid.UUID] = []
+
+    for item in body.items:
+        try:
+            confirm_result = await _confirm_single(
+                session, item.upload_id, item.action, item.existing_doc_id,
+                principal, settings,
+            )
+            results.append(BatchConfirmResultItem(
+                upload_id=item.upload_id,
+                doc_id=confirm_result.doc_id,
+                version_id=confirm_result.version_id,
+                status=confirm_result.status,
+            ))
+            version_ids_to_enqueue.append(uuid.UUID(confirm_result.version_id))
+        except HTTPException as exc:
+            results.append(BatchConfirmResultItem(
+                upload_id=item.upload_id,
+                status="error",
+                error=exc.detail,
+            ))
+
+    await session.commit()
+
+    from harbor_clerk.worker.pipeline import enqueue_stage
+    for vid in version_ids_to_enqueue:
+        enqueue_stage(vid, JobStage.extract)
+
+    return BatchConfirmResponse(results=results)
 
 
 @router.get("/uploads", response_model=list[UploadStatusResponse])

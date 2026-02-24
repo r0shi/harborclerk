@@ -31,6 +31,28 @@ class ConfirmUploadResponse(BaseModel):
     status: str
 
 
+class BatchConfirmItem(BaseModel):
+    upload_id: str
+    action: str  # "new_document" | "new_version"
+    existing_doc_id: str | None = None
+
+
+class BatchConfirmRequest(BaseModel):
+    items: list[BatchConfirmItem]
+
+
+class BatchConfirmResultItem(BaseModel):
+    upload_id: str
+    doc_id: str | None = None
+    version_id: str | None = None
+    status: str
+    error: str | None = None
+
+
+class BatchConfirmResponse(BaseModel):
+    results: list[BatchConfirmResultItem]
+
+
 class UploadStatusResponse(BaseModel):
     upload_id: str
     original_filename: str
