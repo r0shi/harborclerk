@@ -121,7 +121,7 @@ services:
       - lka
 
   llama-server:
-    image: ghcr.io/ggerganov/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server
     restart: unless-stopped
     volumes:
       - llama_models:/models
