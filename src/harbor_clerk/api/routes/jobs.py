@@ -1,50 +1,57 @@
-"""SSE endpoint for job progress events."""
+"""SSE endpoint for job progress events via PostgreSQL LISTEN/NOTIFY."""
 
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
 
+import asyncpg
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
 from harbor_clerk.api.deps import Principal, require_read_access
+from harbor_clerk.config import get_settings
 from harbor_clerk.events import CHANNEL
-from harbor_clerk.redis import get_async_redis
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["jobs"])
 
+KEEPALIVE_INTERVAL = 15  # seconds
 
-async def _event_generator(redis) -> AsyncGenerator[str, None]:
-    """Subscribe to Redis pub/sub and yield SSE events."""
-    pubsub = redis.pubsub()
-    await pubsub.subscribe(CHANNEL)
+
+def _asyncpg_dsn() -> str:
+    """Convert SQLAlchemy DSN to raw asyncpg DSN."""
+    return get_settings().database_url.replace("postgresql+asyncpg://", "postgresql://")
+
+
+async def _event_generator() -> AsyncGenerator[str, None]:
+    """Listen on PostgreSQL NOTIFY channel and yield SSE events."""
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def _on_notify(conn, pid, channel, payload):
+        queue.put_nowait(payload)
+
+    conn = await asyncpg.connect(_asyncpg_dsn())
     try:
+        await conn.add_listener(CHANNEL, _on_notify)
         while True:
-            message = await pubsub.get_message(
-                ignore_subscribe_messages=True, timeout=1.0,
-            )
-            if message is not None and message["type"] == "message":
-                data = message["data"]
-                yield f"data: {data}\n\n"
-            else:
-                # Send keepalive comment every ~15s of inactivity
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_INTERVAL)
+                yield f"data: {payload}\n\n"
+            except asyncio.TimeoutError:
                 yield ": keepalive\n\n"
-                await asyncio.sleep(1)
     except asyncio.CancelledError:
         pass
     finally:
-        await pubsub.unsubscribe(CHANNEL)
-        await pubsub.aclose()
+        await conn.remove_listener(CHANNEL, _on_notify)
+        await conn.close()
 
 
 @router.get("/jobs/stream")
 async def job_stream(
     principal: Principal = Depends(require_read_access),
 ):
-    redis = get_async_redis()
     return StreamingResponse(
-        _event_generator(redis),
+        _event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

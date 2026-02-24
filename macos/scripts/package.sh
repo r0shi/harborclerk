@@ -60,9 +60,14 @@ if [ -d "$BUILD_DIR/postgres" ]; then
     cp -R "$BUILD_DIR/postgres" "$RESOURCES/postgres"
 fi
 
-# Redis
-if [ -d "$BUILD_DIR/redis" ]; then
-    cp -R "$BUILD_DIR/redis" "$RESOURCES/redis"
+# Java JRE (for Tika)
+if [ -d "$BUILD_DIR/java" ]; then
+    cp -R "$BUILD_DIR/java" "$RESOURCES/java"
+fi
+
+# Tika
+if [ -d "$BUILD_DIR/tika" ]; then
+    cp -R "$BUILD_DIR/tika" "$RESOURCES/tika"
 fi
 
 # Python + venv
@@ -73,12 +78,9 @@ if [ -d "$BUILD_DIR/venv" ]; then
     cp -R "$BUILD_DIR/venv" "$RESOURCES/venv"
 fi
 
-# Tesseract + Poppler
+# Tesseract
 if [ -d "$BUILD_DIR/tesseract" ]; then
     cp -R "$BUILD_DIR/tesseract" "$RESOURCES/tesseract"
-fi
-if [ -d "$BUILD_DIR/poppler" ]; then
-    cp -R "$BUILD_DIR/poppler" "$RESOURCES/poppler"
 fi
 
 # Model

@@ -1,6 +1,5 @@
-"""Extract stage — pull text from PDF/DOCX/RTF/TXT/JPEG."""
+"""Extract stage — pull text from PDF/DOCX/RTF/TXT/JPEG via Tika."""
 
-import io
 import logging
 import uuid
 
@@ -16,17 +15,8 @@ from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
 
-
-def _extract_pdf(data: bytes) -> list[tuple[int, str]]:
-    """Extract text from PDF using PyMuPDF. Returns [(page_num, text)]."""
-    import fitz  # PyMuPDF
-
-    pages = []
-    with fitz.open(stream=data, filetype="pdf") as doc:
-        for i, page in enumerate(doc):
-            text = page.get_text("text") or ""
-            pages.append((i + 1, text))
-    return pages
+# MIME types that are images (OCR-only, no text extraction)
+IMAGE_MIMES = {"image/jpeg", "image/png", "image/tiff"}
 
 
 def _paginate_text(text: str, target: int) -> list[tuple[int, str]]:
@@ -66,16 +56,6 @@ def _paginate_text(text: str, target: int) -> list[tuple[int, str]]:
     return pages
 
 
-def _extract_docx(data: bytes) -> list[tuple[int, str]]:
-    """Extract text from DOCX, split into synthetic pages."""
-    from docx import Document as DocxDocument
-
-    settings = get_settings()
-    doc = DocxDocument(io.BytesIO(data))
-    full_text = "\n".join(p.text for p in doc.paragraphs)
-    return _paginate_text(full_text, settings.synthetic_page_chars)
-
-
 def _extract_txt(data: bytes) -> list[tuple[int, str]]:
     """Plain text, split into synthetic pages."""
     settings = get_settings()
@@ -83,21 +63,14 @@ def _extract_txt(data: bytes) -> list[tuple[int, str]]:
     return _paginate_text(text, settings.synthetic_page_chars)
 
 
-def _extract_rtf(data: bytes) -> list[tuple[int, str]]:
-    """Extract text from RTF using striprtf (no Tika needed)."""
-    from striprtf.striprtf import rtf_to_text
-
-    settings = get_settings()
-    raw = data.decode("utf-8", errors="replace")
-    text = rtf_to_text(raw)
-    return _paginate_text(text.strip(), settings.synthetic_page_chars)
-
-
-def _extract_via_tika(data: bytes, mime_type: str) -> list[tuple[int, str]]:
-    """Fallback extraction via Apache Tika, split into synthetic pages."""
+def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list[tuple[int, str]]:
+    """Extract text via Apache Tika. For PDFs, splits on form feed characters."""
     settings = get_settings()
     if not settings.tika_url:
-        raise RuntimeError("Tika is not configured (TIKA_URL is empty)")
+        raise RuntimeError(
+            "Tika is required for extraction (TIKA_URL not set). "
+            "Only plain text and images work without Tika."
+        )
     resp = httpx.put(
         f"{settings.tika_url}/tika",
         content=data,
@@ -106,6 +79,12 @@ def _extract_via_tika(data: bytes, mime_type: str) -> list[tuple[int, str]]:
     )
     resp.raise_for_status()
     text = resp.text.strip()
+
+    if is_pdf and "\f" in text:
+        # Tika/PDFBox inserts form feed (\f) between pages
+        raw_pages = text.split("\f")
+        return [(i + 1, p.strip()) for i, p in enumerate(raw_pages) if p.strip()]
+
     return _paginate_text(text, settings.synthetic_page_chars)
 
 
@@ -118,7 +97,7 @@ def _alpha_ratio(text: str) -> float:
 
 
 def run_extract(version_id: uuid.UUID) -> None:
-    """Download file from MinIO, extract text, store pages."""
+    """Download file from storage, extract text, store pages."""
     if not mark_stage_running(version_id, JobStage.extract):
         return
 
@@ -135,36 +114,30 @@ def run_extract(version_id: uuid.UUID) -> None:
 
         mime = (version.mime_type or "").lower()
 
-        # Sniff RTF content regardless of extension/MIME — files are often
-        # mislabeled (e.g. .txt containing RTF markup)
+        # Sniff RTF content regardless of extension/MIME
         is_rtf = data[:5] == b"{\\rtf"
+        is_pdf = mime == "application/pdf" or version.original_object_key.endswith(".pdf")
+        is_image = mime in IMAGE_MIMES
 
-        settings = get_settings()
-
-        # Dispatch by mime type (with content sniffing overrides)
-        if is_rtf or mime == "text/rtf" or version.original_object_key.endswith(".rtf"):
-            if settings.tika_url:
-                pages = _extract_via_tika(data, "text/rtf")
-            else:
-                pages = _extract_rtf(data)
-        elif mime == "application/pdf" or version.original_object_key.endswith(".pdf"):
-            pages = _extract_pdf(data)
+        # Dispatch by type
+        if is_image:
+            # Image — create empty page, OCR will fill it
+            pages = [(1, "")]
+        elif mime == "text/plain" or version.original_object_key.endswith(".txt"):
+            # Plain text — no Tika needed
+            pages = _extract_txt(data)
+        elif is_rtf or mime == "text/rtf" or version.original_object_key.endswith(".rtf"):
+            pages = _extract_via_tika(data, "text/rtf")
+        elif is_pdf:
+            pages = _extract_via_tika(data, "application/pdf", is_pdf=True)
         elif mime in (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/msword",
         ) or version.original_object_key.endswith(".docx"):
-            pages = _extract_docx(data)
-        elif mime == "text/plain" or version.original_object_key.endswith(".txt"):
-            pages = _extract_txt(data)
-        elif mime in ("image/jpeg", "image/png", "image/tiff"):
-            # Image — create empty page, OCR will fill it
-            pages = [(1, "")]
-        elif settings.tika_url:
-            # Fallback to Tika
-            pages = _extract_via_tika(data, mime or "application/octet-stream")
+            pages = _extract_via_tika(data, mime or "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         else:
-            # No Tika — try plain text as last resort
-            pages = _extract_txt(data)
+            # Unknown type — try Tika
+            pages = _extract_via_tika(data, mime or "application/octet-stream")
 
         # Delete existing pages for this version (idempotency)
         existing_pages = session.execute(
@@ -187,8 +160,6 @@ def run_extract(version_id: uuid.UUID) -> None:
             total_chars += len(text)
 
         # Determine if OCR is needed
-        is_image = mime in ("image/jpeg", "image/png", "image/tiff")
-        is_pdf = mime == "application/pdf" or version.original_object_key.endswith(".pdf")
         is_never_ocr = is_rtf or mime in (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "text/plain", "text/rtf",

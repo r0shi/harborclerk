@@ -224,22 +224,33 @@ async def remove_model(
 async def download_progress_stream(
     principal: Principal = Depends(require_user),
 ):
-    """SSE stream for model download progress events."""
-    import redis.asyncio as aioredis
+    """SSE stream for model download progress events via PostgreSQL LISTEN/NOTIFY."""
+    import asyncpg
 
-    settings = get_settings()
+    from harbor_clerk.llm.download import DOWNLOAD_CHANNEL
+
+    dsn = get_settings().database_url.replace("postgresql+asyncpg://", "postgresql://")
 
     async def event_generator():
-        r = aioredis.from_url(settings.redis_url, decode_responses=True)
-        pubsub = r.pubsub()
-        await pubsub.subscribe("model_downloads")
+        queue: asyncio.Queue[str] = asyncio.Queue()
+
+        def _on_notify(conn, pid, channel, payload):
+            queue.put_nowait(payload)
+
+        conn = await asyncpg.connect(dsn)
         try:
-            async for message in pubsub.listen():
-                if message["type"] == "message":
-                    yield f"data: {message['data']}\n\n"
+            await conn.add_listener(DOWNLOAD_CHANNEL, _on_notify)
+            while True:
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {payload}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            pass
         finally:
-            await pubsub.unsubscribe("model_downloads")
-            await r.aclose()
+            await conn.remove_listener(DOWNLOAD_CHANNEL, _on_notify)
+            await conn.close()
 
     return StreamingResponse(
         event_generator(),

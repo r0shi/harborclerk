@@ -4,11 +4,8 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from redis import Redis
-from rq import Queue
-from sqlalchemy import select
+from sqlalchemy import select, text
 
-from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import DocumentVersion, IngestionJob
@@ -44,14 +41,8 @@ STAGE_DONE_STATUS: dict[JobStage, VersionStatus] = {
 }
 
 
-def _get_rq_queue(queue_name: str) -> Queue:
-    settings = get_settings()
-    conn = Redis.from_url(settings.redis_url)
-    return Queue(queue_name, connection=conn)
-
-
 def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
-    """Upsert IngestionJob row and enqueue the RQ job."""
+    """Upsert IngestionJob row as queued and notify workers."""
     queue_name, timeout, running_status = STAGE_CONFIG[stage]
 
     session = get_sync_session()
@@ -87,20 +78,15 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
         version.error = None
 
         session.commit()
+
+        # Notify workers that a new job is available
+        session.execute(
+            text("SELECT pg_notify('job_enqueued', :queue)"),
+            {"queue": queue_name},
+        )
+        session.commit()
     finally:
         session.close()
-
-    # Enqueue RQ job
-    q = _get_rq_queue(queue_name)
-    from harbor_clerk.worker.stages import STAGE_FUNCTIONS
-    func = STAGE_FUNCTIONS[stage]
-    q.enqueue(
-        func,
-        version_id,
-        job_timeout=timeout,
-        on_failure=on_job_failure,
-        result_ttl=0,
-    )
 
     publish_job_event(version_id, stage.value, "queued")
     logger.info("Enqueued %s for version %s on queue %s", stage.value, version_id, queue_name)
@@ -199,7 +185,7 @@ def mark_stage_done(version_id: uuid.UUID, stage: JobStage) -> None:
 
 
 def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> bool:
-    """Mark a stage as running. Returns False if already cancelled/errored."""
+    """Check that job hasn't been cancelled. Returns False if errored/cancelled."""
     session = get_sync_session()
     try:
         job = session.execute(
@@ -211,8 +197,6 @@ def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> bool:
         if job.status == JobStatus.error:
             logger.info("Skipping %s for version %s — already cancelled/errored", stage.value, version_id)
             return False
-        job.status = JobStatus.running
-        job.started_at = datetime.now(timezone.utc)
         session.commit()
     finally:
         session.close()
@@ -258,51 +242,3 @@ def cancel_version_jobs(version_id: uuid.UUID) -> int:
         publish_job_event(version_id, j.stage.value, "error", error="Cancelled by user")
 
     return cancelled
-
-
-def on_job_failure(job, connection, type, value, traceback):
-    """RQ on_failure callback — marks job + version as error."""
-    error_msg = f"{type.__name__}: {value}" if type and value else "Unknown error"
-    logger.error("Job %s failed: %s", job.id, error_msg)
-
-    # Extract version_id and stage from the job args
-    if not job.args:
-        return
-    version_id = job.args[0]
-    func_name = job.func_name or ""
-
-    # Determine stage from function name
-    stage = None
-    for s in JobStage:
-        if s.value in func_name:
-            stage = s
-            break
-
-    if stage is None:
-        return
-
-    session = get_sync_session()
-    try:
-        ing_job = session.execute(
-            select(IngestionJob).where(
-                IngestionJob.version_id == version_id,
-                IngestionJob.stage == stage,
-            )
-        ).scalar_one_or_none()
-        if ing_job:
-            ing_job.status = JobStatus.error
-            ing_job.error = error_msg
-            ing_job.finished_at = datetime.now(timezone.utc)
-
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one_or_none()
-        if version:
-            version.status = VersionStatus.error
-            version.error = error_msg
-
-        session.commit()
-    finally:
-        session.close()
-
-    publish_job_event(version_id, stage.value, "error", error=error_msg)

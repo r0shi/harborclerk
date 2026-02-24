@@ -1,6 +1,6 @@
 # Harbor Clerk — macOS native app build system
 # Usage: make all        (build everything)
-#        make deps       (build PostgreSQL, Redis, Tesseract, Poppler)
+#        make deps       (build PostgreSQL, Tesseract, Tika/JRE)
 #        make venv       (build Python + venv)
 #        make model      (download sentence-transformers model)
 #        make apps       (build Xcode projects + assemble bundles)
@@ -10,24 +10,24 @@
 SCRIPTS := scripts
 BUILD   := build
 
-.PHONY: all deps postgres redis tools venv model llama apps sign clean
+.PHONY: all deps postgres tika tools venv model llama apps sign clean
 
 all: deps venv model llama apps
 
 # ── Dependencies ──
 
-deps: postgres redis tools
+deps: postgres tika tools
 
 postgres:
 	@echo "==> Building PostgreSQL + pgvector"
 	DEST_DIR=$(BUILD)/postgres BUILD_DIR=$(BUILD)/pg-build bash $(SCRIPTS)/build-postgres.sh
 
-redis:
-	@echo "==> Building Redis"
-	DEST_DIR=$(BUILD)/redis BUILD_DIR=$(BUILD)/redis-build bash $(SCRIPTS)/build-redis.sh
+tika:
+	@echo "==> Downloading JRE + Tika"
+	DEST_DIR=$(BUILD) bash $(SCRIPTS)/build-tika.sh
 
 tools:
-	@echo "==> Extracting Tesseract + Poppler"
+	@echo "==> Extracting Tesseract"
 	DEST_DIR=$(BUILD) bash $(SCRIPTS)/build-deps.sh
 
 # ── Python ──

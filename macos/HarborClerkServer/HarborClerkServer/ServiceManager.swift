@@ -25,7 +25,7 @@ final class ServiceManager: ObservableObject {
     @Published var services: [any ManagedService] = []
 
     let postgresService: PostgresService
-    let redisService: RedisService
+    let tikaService: TikaService
     let embedderService: EmbedderService
     let llamaService: LlamaService
     let apiService: APIService
@@ -44,7 +44,7 @@ final class ServiceManager: ObservableObject {
         let settings = AppSettings.shared
 
         postgresService = PostgresService()
-        redisService = RedisService()
+        tikaService = TikaService()
         embedderService = EmbedderService()
         llamaService = LlamaService()
         apiService = APIService()
@@ -60,7 +60,7 @@ final class ServiceManager: ObservableObject {
             cpuWorkers.append(WorkerService(queue: "cpu", index: i))
         }
 
-        services = [postgresService, redisService, embedderService, llamaService, apiService]
+        services = [postgresService, tikaService, embedderService, llamaService, apiService]
             + ioWorkers + cpuWorkers
     }
 
@@ -92,8 +92,8 @@ final class ServiceManager: ObservableObject {
         // 2. Alembic migrations
         await runMigrations()
 
-        // 3. Redis
-        await startService(redisService)
+        // 3. Tika (JVM startup can take ~30-60s)
+        await startService(tikaService)
 
         // 4. Embedder (can take a while for model load)
         await startService(embedderService)
@@ -129,7 +129,7 @@ final class ServiceManager: ObservableObject {
             try await service.start()
 
             // Wait for health check with timeout
-            let timeout: TimeInterval = (service is EmbedderService || service is LlamaService) ? 120 : 30
+            let timeout: TimeInterval = (service is EmbedderService || service is LlamaService) ? 120 : (service is TikaService) ? 60 : 30
             let deadline = Date().addingTimeInterval(timeout)
             while Date() < deadline {
                 if await service.healthCheck() {
@@ -175,11 +175,10 @@ final class ServiceManager: ObservableObject {
 
         return [
             "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
-            "REDIS_URL": "redis://localhost:\(settings.redisPort)/0",
             "STORAGE_BACKEND": "filesystem",
             "STORAGE_PATH": settings.originalsDir.path,
             "EMBEDDER_URL": "http://localhost:\(settings.embedderPort)",
-            "TIKA_URL": "",
+            "TIKA_URL": "http://localhost:\(settings.tikaPort)",
             "SECRET_KEY": settings.secretKey,
             "LOG_LEVEL": settings.logLevel,
             "STATIC_DIR": bundle.appendingPathComponent("frontend-dist").path,
@@ -188,7 +187,7 @@ final class ServiceManager: ObservableObject {
             "PATH": [
                 bundle.appendingPathComponent("venv/bin").path,
                 bundle.appendingPathComponent("tesseract/bin").path,
-                bundle.appendingPathComponent("poppler/bin").path,
+                bundle.appendingPathComponent("java/bin").path,
                 "/usr/bin",
                 "/bin",
             ].joined(separator: ":"),

@@ -12,9 +12,9 @@ final class AppSettings {
         set { data["postgres_port"] = newValue; save() }
     }
 
-    var redisPort: Int {
-        get { data["redis_port"] as? Int ?? 6380 }
-        set { data["redis_port"] = newValue; save() }
+    var tikaPort: Int {
+        get { data["tika_port"] as? Int ?? 9998 }
+        set { data["tika_port"] = newValue; save() }
     }
 
     var apiPort: Int {
@@ -79,7 +79,6 @@ final class AppSettings {
     }()
 
     var postgresDataDir: URL { Self.dataDir.appendingPathComponent("postgres-data") }
-    var redisDataDir: URL { Self.dataDir.appendingPathComponent("redis-data") }
     var originalsDir: URL { Self.dataDir.appendingPathComponent("originals") }
     var logsDir: URL { Self.dataDir.appendingPathComponent("logs") }
     var modelsDir: URL { Self.dataDir.appendingPathComponent("models") }

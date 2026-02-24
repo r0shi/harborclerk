@@ -1,21 +1,16 @@
-"""Redis pub/sub event publisher for job progress."""
+"""PostgreSQL NOTIFY event publisher for job progress."""
 
 import json
 import logging
 import uuid
 
-from redis import Redis
+from sqlalchemy import text
 
-from harbor_clerk.config import get_settings
+from harbor_clerk.db_sync import get_sync_session
 
 logger = logging.getLogger(__name__)
 
 CHANNEL = "job_progress"
-
-
-def _get_sync_redis() -> Redis:
-    settings = get_settings()
-    return Redis.from_url(settings.redis_url, decode_responses=True)
 
 
 def publish_job_event(
@@ -26,7 +21,7 @@ def publish_job_event(
     total: int | None = None,
     error: str | None = None,
 ) -> None:
-    """Publish a job progress event via Redis pub/sub (sync, for workers)."""
+    """Publish a job progress event via PostgreSQL NOTIFY (sync, for workers)."""
     payload = {
         "version_id": str(version_id),
         "stage": stage,
@@ -40,8 +35,14 @@ def publish_job_event(
         payload["error"] = error
 
     try:
-        r = _get_sync_redis()
-        r.publish(CHANNEL, json.dumps(payload))
-        r.close()
+        session = get_sync_session()
+        try:
+            session.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": CHANNEL, "payload": json.dumps(payload)},
+            )
+            session.commit()
+        finally:
+            session.close()
     except Exception:
         logger.exception("Failed to publish job event")

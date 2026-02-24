@@ -3,7 +3,7 @@ import SwiftUI
 private let defaultPorts: [String: Int] = [
     "api": 8100,
     "postgres": 5433,
-    "redis": 6380,
+    "tika": 9998,
     "embedder": 8101,
     "llama": 8102,
 ]
@@ -23,7 +23,7 @@ struct PreferencesWindow: View {
     @State private var workerPreset = AppSettings.shared.workerPreset
     @State private var apiPortText = String(AppSettings.shared.apiPort)
     @State private var postgresPortText = String(AppSettings.shared.postgresPort)
-    @State private var redisPortText = String(AppSettings.shared.redisPort)
+    @State private var tikaPortText = String(AppSettings.shared.tikaPort)
     @State private var embedderPortText = String(AppSettings.shared.embedderPort)
     @State private var llamaPortText = String(AppSettings.shared.llamaPort)
     @State private var llmModelId = AppSettings.shared.llmModelId
@@ -39,7 +39,7 @@ struct PreferencesWindow: View {
         var workerPreset = AppSettings.shared.workerPreset
         var apiPort = String(AppSettings.shared.apiPort)
         var postgresPort = String(AppSettings.shared.postgresPort)
-        var redisPort = String(AppSettings.shared.redisPort)
+        var tikaPort = String(AppSettings.shared.tikaPort)
         var embedderPort = String(AppSettings.shared.embedderPort)
         var llamaPort = String(AppSettings.shared.llamaPort)
         var llmModelId = AppSettings.shared.llmModelId
@@ -108,8 +108,8 @@ struct PreferencesWindow: View {
                 portRow(label: "PostgreSQL port", text: $postgresPortText, key: "postgres") { port in
                     AppSettings.shared.postgresPort = port
                 }
-                portRow(label: "Redis port", text: $redisPortText, key: "redis") { port in
-                    AppSettings.shared.redisPort = port
+                portRow(label: "Tika port", text: $tikaPortText, key: "tika") { port in
+                    AppSettings.shared.tikaPort = port
                 }
                 portRow(label: "Embedder port", text: $embedderPortText, key: "embedder") { port in
                     AppSettings.shared.embedderPort = port
@@ -193,7 +193,7 @@ struct PreferencesWindow: View {
             workerPreset: workerPreset,
             apiPort: apiPortText,
             postgresPort: postgresPortText,
-            redisPort: redisPortText,
+            tikaPort: tikaPortText,
             embedderPort: embedderPortText,
             llamaPort: llamaPortText,
             llmModelId: llmModelId,
@@ -207,7 +207,7 @@ struct PreferencesWindow: View {
         workerPreset = initial.workerPreset
         apiPortText = initial.apiPort
         postgresPortText = initial.postgresPort
-        redisPortText = initial.redisPort
+        tikaPortText = initial.tikaPort
         embedderPortText = initial.embedderPort
         llamaPortText = initial.llamaPort
         llmModelId = initial.llmModelId
@@ -219,7 +219,7 @@ struct PreferencesWindow: View {
         AppSettings.shared.workerPreset = initial.workerPreset
         if let p = Int(initial.apiPort) { AppSettings.shared.apiPort = p }
         if let p = Int(initial.postgresPort) { AppSettings.shared.postgresPort = p }
-        if let p = Int(initial.redisPort) { AppSettings.shared.redisPort = p }
+        if let p = Int(initial.tikaPort) { AppSettings.shared.tikaPort = p }
         if let p = Int(initial.embedderPort) { AppSettings.shared.embedderPort = p }
         if let p = Int(initial.llamaPort) { AppSettings.shared.llamaPort = p }
         AppSettings.shared.llmModelId = initial.llmModelId

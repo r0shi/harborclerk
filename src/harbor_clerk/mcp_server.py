@@ -405,12 +405,10 @@ async def kb_reprocess(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_system_health() -> str:
-    """Check system health (Postgres, Redis, MinIO). Admin only."""
+    """Check system health (Postgres, storage). Admin only."""
     _require_admin()
 
     from sqlalchemy import text
-
-    from harbor_clerk.redis import get_async_redis
 
     checks: dict = {}
 
@@ -420,14 +418,6 @@ async def kb_system_health() -> str:
             checks["postgres"] = "ok"
         except Exception as e:
             checks["postgres"] = f"error: {e}"
-
-    try:
-        redis = get_async_redis()
-        await redis.ping()
-        await redis.aclose()
-        checks["redis"] = "ok"
-    except Exception as e:
-        checks["redis"] = f"error: {e}"
 
     try:
         from harbor_clerk.storage import get_storage

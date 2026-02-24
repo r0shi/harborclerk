@@ -16,19 +16,18 @@ The full specification lives in `spec.txt`.
 |---|---|
 | **gateway** (Caddy) | HTTPS termination (self-signed CA), reverse proxy |
 | **app** (FastAPI) | REST API + MCP endpoint + serves React SPA |
-| **worker-io** | RQ worker for `io` queue (extract/chunk/finalize) |
-| **worker-cpu** | RQ worker for `cpu` queue (ocr/embed) |
+| **worker-io** | PostgreSQL-polling worker for `io` queue (extract/chunk/finalize) |
+| **worker-cpu** | PostgreSQL-polling worker for `cpu` queue (ocr/embed) |
 | **embedder** | sentence-transformers model server (all-MiniLM-L6-v2, 384-dim) |
 | **postgres** | PostgreSQL + pgvector + pg_trgm |
-| **redis** | RQ job queue backend |
 | **minio** | Object storage for originals |
-| **tika** | Apache Tika server (RTF and fallback extraction) |
+| **tika** | Apache Tika server (PDF/DOCX/RTF text extraction) |
 
 ### macOS Native Apps
 
 Two native macOS apps under `macos/`:
 
-- **Harbor Clerk Server** — menubar agent app managing all backend services as subprocesses (PostgreSQL, Redis, Embedder, API, Workers)
+- **Harbor Clerk Server** — menubar agent app managing all backend services as subprocesses (PostgreSQL, Tika, Embedder, API, Workers)
 - **Harbor Clerk** — WKWebView app wrapping the React SPA from localhost
 
 Build scripts in `macos/scripts/`, orchestrated by `macos/Makefile`.
@@ -39,9 +38,9 @@ Configurable via `STORAGE_BACKEND` env var:
 - `minio` (default) — MinIO/S3-compatible object storage (Docker Compose)
 - `filesystem` — local filesystem under `STORAGE_PATH` (native macOS app)
 
-### RTF Extraction
+### Text Extraction
 
-Configurable: uses Apache Tika when `TIKA_URL` is set, falls back to `striprtf` library when empty.
+All non-TXT/image formats (PDF, DOCX, RTF, etc.) are extracted via Apache Tika. Tika is required.
 
 **No multi-tenancy.** Single-tenant appliance — no `tenant_id` anywhere in schema or API.
 
@@ -53,20 +52,20 @@ Package name: `harbor_clerk` (under `src/harbor_clerk/`).
 
 Entry points:
 - `harbor-clerk-api` — FastAPI server
-- `harbor-clerk-worker` — RQ worker
+- `harbor-clerk-worker` — PostgreSQL-polling background worker
 - `harbor-clerk-seed` — Database seeder
 
 ## Ingestion Pipeline
 
 Five idempotent stages, each guarded by row-level lock on `(version_id, stage)` in `ingestion_jobs`:
 
-1. **extract** (io) — PyMuPDF for PDF, python-docx for DOCX, striprtf/Tika for RTF, plain text fallback
-2. **ocr** (cpu) — conditional: always for JPEG; PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for DOCX/RTF/TXT. Uses pdftoppm + Tesseract (eng+fra)
+1. **extract** (io) — Apache Tika for PDF/DOCX/RTF, plain text fallback for TXT
+2. **ocr** (cpu) — conditional: always for JPEG; PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for DOCX/RTF/TXT. Uses pypdfium2 + Tesseract (eng+fra)
 3. **chunk** (io) — ~1000 char target, 150 char overlap, preserves page ranges + char offsets. Detects language per chunk
 4. **embed** (cpu) — calls embedder container over HTTP, 384-dim vectors stored in pgvector
 5. **finalize** (io) — completes ingestion
 
-**Job timeouts:** RQ native `job_timeout` per stage with `on_failure` callback updating `ingestion_jobs` to error. Reaper (every 5 min) only handles orphans — jobs marked running in DB but absent from RQ registry.
+**Job timeouts:** `signal.alarm()` per stage with error handling updating `ingestion_jobs` to error. Reaper handles orphans — jobs marked running in DB past 2x their timeout.
 
 ## Upload Flow
 

@@ -1,8 +1,10 @@
 """OCR stage — Tesseract on images or scanned PDFs."""
 
+import io as _io
 import logging
 import uuid
 
+import pypdfium2 as pdfium
 import pytesseract
 from PIL import Image
 from sqlalchemy import select
@@ -22,8 +24,7 @@ DPI = 300
 
 def _ocr_image_bytes(image_data: bytes) -> tuple[str, float]:
     """OCR a single image, return (text, confidence)."""
-    import io
-    img = Image.open(io.BytesIO(image_data))
+    img = Image.open(_io.BytesIO(image_data))
     # Get detailed data for confidence
     data = pytesseract.image_to_data(img, lang=TESSERACT_LANG, output_type=pytesseract.Output.DICT)
     text = pytesseract.image_to_string(img, lang=TESSERACT_LANG)
@@ -33,6 +34,20 @@ def _ocr_image_bytes(image_data: bytes) -> tuple[str, float]:
     avg_conf = sum(confs) / len(confs) if confs else 0.0
 
     return text.strip(), avg_conf
+
+
+def _pdf_to_images(data: bytes) -> list[Image.Image]:
+    """Convert PDF pages to PIL Images using pypdfium2."""
+    pdf = pdfium.PdfDocument(data)
+    images = []
+    try:
+        for i in range(len(pdf)):
+            page = pdf[i]
+            bitmap = page.render(scale=DPI / 72)
+            images.append(bitmap.to_pil())
+    finally:
+        pdf.close()
+    return images
 
 
 def run_ocr(version_id: uuid.UUID) -> None:
@@ -90,10 +105,8 @@ def run_ocr(version_id: uuid.UUID) -> None:
             publish_job_event(version_id, "ocr", "running", progress=1, total=1)
 
         elif mime == "application/pdf" or version.original_object_key.endswith(".pdf"):
-            # PDF → page images → OCR
-            from pdf2image import convert_from_bytes
-
-            images = convert_from_bytes(data, dpi=DPI)
+            # PDF → page images → OCR (using pypdfium2)
+            images = _pdf_to_images(data)
             job.progress_total = len(images)
             session.commit()
 
@@ -107,7 +120,6 @@ def run_ocr(version_id: uuid.UUID) -> None:
             for i, img in enumerate(images):
                 page_num = i + 1
                 # Convert PIL image to bytes for OCR
-                import io as _io
                 buf = _io.BytesIO()
                 img.save(buf, format="PNG")
                 img_bytes = buf.getvalue()

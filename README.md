@@ -24,7 +24,7 @@ Harbor Clerk can run in two ways:
 | | macOS Native | Docker Compose |
 |---|---|---|
 | **Best for** | Target audience — small offices with a Mac | DIY / Linux servers |
-| **Services** | Managed by menubar app as subprocesses | Nine Docker containers |
+| **Services** | Managed by menubar app as subprocesses | Eight Docker containers |
 | **Storage** | Local filesystem (`~/Library/Application Support/Harbor Clerk/`) | MinIO object storage + Docker volumes |
 | **HTTPS** | Direct localhost access | Caddy reverse proxy with self-signed cert |
 
@@ -52,7 +52,6 @@ All data lives in `~/Library/Application Support/Harbor Clerk/`:
 | Directory | Contents |
 |---|---|
 | `postgres-data/` | PostgreSQL database |
-| `redis-data/` | Redis persistence |
 | `originals/` | Uploaded document files |
 | `models/` | Downloaded LLM models for local chat |
 | `logs/` | Service logs |
@@ -105,7 +104,6 @@ All configuration is via environment variables in `.env`:
 |---|---|---|
 | `SECRET_KEY` | `change-me-in-production` | JWT signing key — **change this** |
 | `DATABASE_URL` | `postgresql+asyncpg://lka:...` | PostgreSQL connection string |
-| `REDIS_URL` | `redis://redis:6379/0` | Redis connection string |
 | `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint |
 | `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `minioadmin123` | MinIO secret key |
@@ -134,9 +132,8 @@ docker compose logs -f app        # tail app logs
 | **worker-cpu** | Background worker for OCR and embedding |
 | **embedder** | Sentence-transformers model server (all-MiniLM-L6-v2, 384-dim) |
 | **postgres** | PostgreSQL with pgvector and pg_trgm extensions |
-| **redis** | Job queue backend |
 | **minio** | Object storage for original files |
-| **tika** | Apache Tika for RTF and fallback text extraction |
+| **tika** | Apache Tika for PDF, DOCX, and RTF text extraction |
 
 ---
 
@@ -146,7 +143,7 @@ docker compose logs -f app        # tail app logs
 
 Upload a file and it goes through five idempotent stages:
 
-1. **Extract** — pull text from PDF (PyMuPDF), DOCX (python-docx), or RTF/fallback (Tika/striprtf)
+1. **Extract** — pull text from PDF, DOCX, RTF, and other formats via Apache Tika
 2. **OCR** — conditional: always for images, for PDFs with little extractable text. Uses Tesseract (English + French)
 3. **Chunk** — split into ~1000 character segments with 150 char overlap, preserving page references
 4. **Embed** — generate 384-dim vectors via the embedder service
@@ -221,7 +218,7 @@ cd macos
 make all
 ```
 
-This builds both apps into `macos/build/`. Requires Xcode command-line tools, Python 3.12+, and Homebrew (for Redis, Tesseract, Poppler dependencies).
+This builds both apps into `macos/build/`. Requires Xcode command-line tools, Python 3.12+, and Homebrew (for Tesseract).
 
 ### Frontend
 
@@ -239,11 +236,11 @@ The project uses [uv](https://docs.astral.sh/uv/) for Python package management:
 ```bash
 uv sync
 uv run harbor-clerk-api      # API server
-uv run harbor-clerk-worker   # RQ worker
+uv run harbor-clerk-worker   # background worker
 ```
 
 ---
 
 ## License
 
-Private — not yet licensed for distribution.
+MIT — see [LICENSE](LICENSE) for details. Third-party dependencies are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

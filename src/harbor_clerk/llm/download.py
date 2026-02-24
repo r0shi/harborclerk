@@ -6,9 +6,10 @@ import threading
 from pathlib import Path
 
 import httpx
-from redis import Redis
+from sqlalchemy import text
 
 from harbor_clerk.config import get_settings
+from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.llm.models import MODELS, get_model
 
 logger = logging.getLogger(__name__)
@@ -37,17 +38,22 @@ def _publish_progress(
     progress: float | None = None,
     error: str | None = None,
 ) -> None:
-    """Publish download progress via Redis pub/sub."""
+    """Publish download progress via PostgreSQL NOTIFY."""
     payload: dict = {"model_id": model_id, "status": status}
     if progress is not None:
         payload["progress"] = round(progress, 2)
     if error is not None:
         payload["error"] = error
     try:
-        settings = get_settings()
-        r = Redis.from_url(settings.redis_url, decode_responses=True)
-        r.publish(DOWNLOAD_CHANNEL, json.dumps(payload))
-        r.close()
+        session = get_sync_session()
+        try:
+            session.execute(
+                text("SELECT pg_notify(:channel, :payload)"),
+                {"channel": DOWNLOAD_CHANNEL, "payload": json.dumps(payload)},
+            )
+            session.commit()
+        finally:
+            session.close()
     except Exception:
         logger.exception("Failed to publish download progress")
 
@@ -76,7 +82,7 @@ def list_downloaded() -> list[str]:
 def download_model(model_id: str) -> Path:
     """Download a model from HuggingFace with streaming progress.
 
-    Uses httpx to stream the download and publishes progress via Redis.
+    Uses httpx to stream the download and publishes progress via PostgreSQL NOTIFY.
     Guarded by a concurrency lock to prevent duplicate downloads.
     """
     info = get_model(model_id)

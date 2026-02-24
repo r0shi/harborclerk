@@ -13,7 +13,6 @@ from harbor_clerk.models import User
 from harbor_clerk.storage import get_storage
 from harbor_clerk.models import Chunk, Document, DocumentPage, DocumentVersion, IngestionJob
 from harbor_clerk.models.enums import JobStatus
-from harbor_clerk.redis import get_async_redis
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
@@ -32,7 +31,7 @@ async def setup_status(
 async def health_check(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Check connectivity to Postgres, Redis, and MinIO."""
+    """Check connectivity to Postgres and storage."""
     checks: dict[str, Any] = {}
 
     # PostgreSQL
@@ -43,16 +42,6 @@ async def health_check(
     except Exception as e:
         logger.error("Postgres health check failed: %s", e)
         checks["postgres"] = f"error: {e}"
-
-    # Redis
-    try:
-        redis = get_async_redis()
-        await redis.ping()
-        await redis.aclose()
-        checks["redis"] = "ok"
-    except Exception as e:
-        logger.error("Redis health check failed: %s", e)
-        checks["redis"] = f"error: {e}"
 
     # Storage
     try:
@@ -76,12 +65,6 @@ async def system_stats(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Return per-service performance/health stats (admin only)."""
-    from redis import Redis
-    from rq import Queue
-
-    from harbor_clerk.config import get_settings
-
-    settings = get_settings()
     result: dict[str, Any] = {}
 
     # ── PostgreSQL stats ──
@@ -122,28 +105,26 @@ async def system_stats(
         logger.error("Failed to collect Postgres stats: %s", e)
         result["postgres"] = {"error": str(e)}
 
-    # ── Redis stats ──
+    # ── Queue stats (from ingestion_jobs table) ──
     try:
-        redis = get_async_redis()
-        info_mem = await redis.info("memory")
-        info_clients = await redis.info("clients")
-        await redis.aclose()
-
-        # RQ queue depths (sync client needed)
-        conn = Redis.from_url(settings.redis_url)
-        io_depth = Queue("io", connection=conn).count
-        cpu_depth = Queue("cpu", connection=conn).count
-        conn.close()
-
-        result["redis"] = {
-            "used_memory_mb": round(info_mem.get("used_memory", 0) / (1024 * 1024), 1),
-            "io_queue_depth": io_depth,
-            "cpu_queue_depth": cpu_depth,
-            "connected_clients": info_clients.get("connected_clients", 0),
+        rows = await session.execute(text(
+            "SELECT stage, count(*) FROM ingestion_jobs "
+            "WHERE status = 'queued' GROUP BY stage"
+        ))
+        queue_depths = {row[0]: row[1] for row in rows}
+        result["queues"] = {
+            "io_queued": sum(
+                queue_depths.get(s, 0)
+                for s in ("extract", "chunk", "finalize")
+            ),
+            "cpu_queued": sum(
+                queue_depths.get(s, 0)
+                for s in ("ocr", "embed")
+            ),
         }
     except Exception as e:
-        logger.error("Failed to collect Redis stats: %s", e)
-        result["redis"] = {"error": str(e)}
+        logger.error("Failed to collect queue stats: %s", e)
+        result["queues"] = {"error": str(e)}
 
     # ── Storage stats ──
     try:
@@ -234,15 +215,8 @@ async def reaper_run(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Find ingestion jobs marked running in DB but absent from RQ, reset and re-enqueue."""
-    from redis import Redis
-    from rq import Queue
-
-    from harbor_clerk.config import get_settings
-    from harbor_clerk.worker.pipeline import enqueue_stage
-
-    settings = get_settings()
-    conn = Redis.from_url(settings.redis_url)
+    """Find ingestion jobs stuck as running past 2x their timeout, re-enqueue them."""
+    from harbor_clerk.worker.pipeline import STAGE_CONFIG, enqueue_stage
 
     # Get all currently running jobs from DB
     result = await session.execute(
@@ -253,22 +227,8 @@ async def reaper_run(
     if not running_jobs:
         return {"reaped": 0}
 
-    # Check which RQ queues have these jobs
-    io_queue = Queue("io", connection=conn)
-    cpu_queue = Queue("cpu", connection=conn)
-
-    # Build set of all known RQ job IDs (started + queued registries)
-    rq_job_ids: set[str] = set()
-    for q in [io_queue, cpu_queue]:
-        rq_job_ids.update(q.started_job_registry.get_job_ids())
-        rq_job_ids.update(q.get_job_ids())
-
     reaped = 0
     for job in running_jobs:
-        # Check if any RQ job references this version_id + stage
-        # Since we don't store RQ job ID in our DB, check by scanning.
-        # A simpler heuristic: if the job has been "running" for > 2x its timeout, reap it.
-        from harbor_clerk.worker.pipeline import STAGE_CONFIG
         _, timeout, _ = STAGE_CONFIG[job.stage]
         if job.started_at is None:
             continue

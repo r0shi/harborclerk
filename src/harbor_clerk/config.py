@@ -15,9 +15,6 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://lka:lka_dev_password@postgres:5432/lka",
     )
 
-    # Redis
-    redis_url: str = Field(default="redis://redis:6379/0")
-
     # Storage backend: "minio" or "filesystem"
     storage_backend: str = Field(default="minio")
     storage_path: str = Field(default="./data/originals")
@@ -32,8 +29,8 @@ class Settings(BaseSettings):
     # Embedder
     embedder_url: str = Field(default="http://embedder:8000")
 
-    # Tika (set to empty string to disable)
-    tika_url: str | None = Field(default="http://tika:9998")
+    # Tika (required for PDF/DOCX/RTF extraction)
+    tika_url: str = Field(default="http://tika:9998")
 
     # API server
     api_host: str = Field(default="0.0.0.0")

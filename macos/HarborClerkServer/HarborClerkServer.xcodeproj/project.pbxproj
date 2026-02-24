@@ -11,7 +11,7 @@
 		A100000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000002; };
 		A100000003 /* ServiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000003; };
 		A100000004 /* PostgresService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000004; };
-		A100000005 /* RedisService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000005; };
+		A100000005 /* TikaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000005; };
 		A100000006 /* PythonService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000006; };
 		A100000007 /* APIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000007; };
 		A100000008 /* WorkerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000008; };
@@ -31,7 +31,7 @@
 		B100000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		B100000003 /* ServiceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceManager.swift; sourceTree = "<group>"; };
 		B100000004 /* PostgresService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostgresService.swift; sourceTree = "<group>"; };
-		B100000005 /* RedisService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedisService.swift; sourceTree = "<group>"; };
+		B100000005 /* TikaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TikaService.swift; sourceTree = "<group>"; };
 		B100000006 /* PythonService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PythonService.swift; sourceTree = "<group>"; };
 		B100000007 /* APIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIService.swift; sourceTree = "<group>"; };
 		B100000008 /* WorkerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkerService.swift; sourceTree = "<group>"; };
@@ -92,7 +92,7 @@
 			isa = PBXGroup;
 			children = (
 				B100000004 /* PostgresService.swift */,
-				B100000005 /* RedisService.swift */,
+				B100000005 /* TikaService.swift */,
 				B100000006 /* PythonService.swift */,
 				B100000007 /* APIService.swift */,
 				B100000008 /* WorkerService.swift */,
@@ -178,7 +178,7 @@
 				A100000002 /* AppDelegate.swift in Sources */,
 				A100000003 /* ServiceManager.swift in Sources */,
 				A100000004 /* PostgresService.swift in Sources */,
-				A100000005 /* RedisService.swift in Sources */,
+				A100000005 /* TikaService.swift in Sources */,
 				A100000006 /* PythonService.swift in Sources */,
 				A100000007 /* APIService.swift in Sources */,
 				A100000008 /* WorkerService.swift in Sources */,
