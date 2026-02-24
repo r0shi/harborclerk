@@ -21,7 +21,7 @@ The full specification lives in `spec.txt`.
 | **embedder** | nomic-embed-text-v2-moe model server (768-dim, Apache 2.0) |
 | **postgres** | PostgreSQL + pgvector + pg_trgm |
 | **minio** | Object storage for originals |
-| **tika** | Apache Tika server (PDF/DOCX/RTF text extraction) |
+| **tika** | Apache Tika server (text extraction for PDF, Office, eBook, HTML, email formats) |
 
 ### macOS Native Apps
 
@@ -40,7 +40,7 @@ Configurable via `STORAGE_BACKEND` env var:
 
 ### Text Extraction
 
-All non-TXT/image formats (PDF, DOCX, RTF, etc.) are extracted via Apache Tika. Tika is required.
+All non-TXT/MD/CSV/image formats (PDF, DOCX, DOC, ODT, XLSX, PPTX, RTF, EPUB, HTML, EML, etc.) are extracted via Apache Tika. TXT/MD/CSV use direct UTF-8 decode. Tika is required.
 
 **No multi-tenancy.** Single-tenant appliance — no `tenant_id` anywhere in schema or API.
 
@@ -59,8 +59,8 @@ Entry points:
 
 Five idempotent stages, each guarded by row-level lock on `(version_id, stage)` in `ingestion_jobs`:
 
-1. **extract** (io) — Apache Tika for PDF/DOCX/RTF, plain text fallback for TXT
-2. **ocr** (cpu) — conditional: always for JPEG; PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for DOCX/RTF/TXT. Uses pypdfium2 + Tesseract (eng+fra)
+1. **extract** (io) — Apache Tika for PDF/Office/eBook/HTML/email, plain text fallback for TXT/MD/CSV
+2. **ocr** (cpu) — conditional: always for images (JPEG/PNG/TIFF); PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for text-native formats. Uses pypdfium2 + Tesseract (eng+fra)
 3. **chunk** (io) — ~1000 char target, 150 char overlap, preserves page ranges + char offsets. Detects language per chunk
 4. **embed** (cpu) — calls embedder container over HTTP, 768-dim vectors stored in pgvector
 5. **finalize** (io) — completes ingestion

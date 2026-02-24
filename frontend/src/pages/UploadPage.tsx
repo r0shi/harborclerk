@@ -24,12 +24,21 @@ interface ConfirmResult {
 }
 
 const SUPPORTED_EXTENSIONS = new Set([
-  '.pdf',
-  '.docx',
-  '.rtf',
-  '.txt',
-  '.jpg',
-  '.jpeg',
+  // Documents
+  '.pdf', '.docx', '.doc', '.rtf', '.txt', '.md',
+  '.odt', '.pages',
+  // Spreadsheets
+  '.xlsx', '.xls', '.ods', '.numbers', '.csv',
+  // Presentations
+  '.pptx', '.ppt', '.odp', '.key',
+  // Images (OCR)
+  '.jpg', '.jpeg', '.png', '.tiff', '.tif',
+  // eBooks
+  '.epub',
+  // Web
+  '.html', '.htm',
+  // Email
+  '.eml',
 ])
 
 function isSupportedFile(name: string): boolean {
@@ -133,7 +142,7 @@ export default function UploadPage() {
       const files = allNested.flat()
       if (files.length === 0) {
         setError(
-          'No supported files found. Supported types: PDF, DOCX, RTF, TXT, JPEG',
+          'No supported files found. Supported types: PDF, DOCX, DOC, RTF, TXT, MD, ODT, XLSX, XLS, CSV, PPTX, PPT, JPEG, PNG, TIFF, EPUB, HTML, EML',
         )
         return
       }
@@ -148,7 +157,7 @@ export default function UploadPage() {
       )
       if (supported.length === 0) {
         setError(
-          'No supported files found. Supported types: PDF, DOCX, RTF, TXT, JPEG',
+          'No supported files found. Supported types: PDF, DOCX, DOC, RTF, TXT, MD, ODT, XLSX, XLS, CSV, PPTX, PPT, JPEG, PNG, TIFF, EPUB, HTML, EML',
         )
         return
       }
@@ -208,7 +217,7 @@ export default function UploadPage() {
               Drag and drop files or folders here, or click to browse
             </p>
             <p className="mb-4 text-xs text-gray-400">
-              PDF, DOCX, RTF, TXT, JPEG supported
+              PDF, Office, text, images, eBooks, and more
             </p>
             <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700">
               Choose Files
@@ -217,7 +226,7 @@ export default function UploadPage() {
                 multiple
                 onChange={handleFileChange}
                 className="hidden"
-                accept=".pdf,.docx,.rtf,.txt,.jpg,.jpeg"
+                accept=".pdf,.docx,.doc,.rtf,.txt,.md,.odt,.pages,.xlsx,.xls,.ods,.numbers,.csv,.pptx,.ppt,.odp,.key,.jpg,.jpeg,.png,.tiff,.tif,.epub,.html,.htm,.eml"
               />
             </label>
           </>

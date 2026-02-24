@@ -1,4 +1,4 @@
-"""Extract stage — pull text from PDF/DOCX/RTF/TXT/JPEG via Tika."""
+"""Extract stage — pull text from documents, spreadsheets, and images via Tika."""
 
 import logging
 import uuid
@@ -120,11 +120,16 @@ def run_extract(version_id: uuid.UUID) -> None:
         is_image = mime in IMAGE_MIMES
 
         # Dispatch by type
+        # Extension-based image detection (covers .png, .tif, .tiff not in MIME)
+        obj_key = version.original_object_key.lower()
+        if not is_image and obj_key.endswith((".png", ".tif", ".tiff")):
+            is_image = True
+
         if is_image:
             # Image — create empty page, OCR will fill it
             pages = [(1, "")]
-        elif mime == "text/plain" or version.original_object_key.endswith(".txt"):
-            # Plain text — no Tika needed
+        elif mime == "text/plain" or obj_key.endswith((".txt", ".md", ".csv")):
+            # Plain text / Markdown / CSV — no Tika needed
             pages = _extract_txt(data)
         elif is_rtf or mime == "text/rtf" or version.original_object_key.endswith(".rtf"):
             pages = _extract_via_tika(data, "text/rtf")
@@ -160,10 +165,26 @@ def run_extract(version_id: uuid.UUID) -> None:
             total_chars += len(text)
 
         # Determine if OCR is needed
-        is_never_ocr = is_rtf or mime in (
+        _NEVER_OCR_MIMES = {
+            "text/plain", "text/rtf", "text/html", "text/csv", "text/markdown",
+            "application/msword",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "text/plain", "text/rtf",
-        ) or version.original_object_key.endswith((".docx", ".txt", ".rtf"))
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.ms-excel", "application/vnd.ms-powerpoint",
+            "application/vnd.oasis.opendocument.text",
+            "application/vnd.oasis.opendocument.spreadsheet",
+            "application/vnd.oasis.opendocument.presentation",
+            "application/epub+zip", "message/rfc822",
+        }
+        _NEVER_OCR_EXTS = (
+            ".docx", ".doc", ".txt", ".rtf", ".md", ".csv",
+            ".odt", ".pages",
+            ".xlsx", ".xls", ".ods", ".numbers",
+            ".pptx", ".ppt", ".odp", ".key",
+            ".epub", ".html", ".htm", ".eml",
+        )
+        is_never_ocr = is_rtf or mime in _NEVER_OCR_MIMES or obj_key.endswith(_NEVER_OCR_EXTS)
 
         if is_image:
             version.needs_ocr = True

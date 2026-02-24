@@ -29,7 +29,23 @@ from harbor_clerk.models.enums import JobStage, VersionStatus
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["uploads"])
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".rtf", ".txt", ".jpg", ".jpeg"}
+ALLOWED_EXTENSIONS = {
+    # Documents
+    ".pdf", ".docx", ".doc", ".rtf", ".txt", ".md",
+    ".odt", ".pages",
+    # Spreadsheets
+    ".xlsx", ".xls", ".ods", ".numbers", ".csv",
+    # Presentations
+    ".pptx", ".ppt", ".odp", ".key",
+    # Images (OCR)
+    ".jpg", ".jpeg", ".png", ".tiff", ".tif",
+    # eBooks
+    ".epub",
+    # Web
+    ".html", ".htm",
+    # Email
+    ".eml",
+}
 
 
 @router.post("/uploads", response_model=UploadResponse)

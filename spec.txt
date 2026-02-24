@@ -16,10 +16,15 @@ Built-in automated backup scheduling (documented ops only)
 Multi-tenancy
 C) Supported files
 PDF (text layer extraction; OCR fallback)
-DOCX
-TXT/MD
+DOCX, DOC, ODT, Pages
+XLSX, XLS, ODS, Numbers, CSV
+PPTX, PPT, ODP, Keynote
+TXT, MD
 RTF
-JPEG (OCR "phone scan")
+EPUB
+HTML/HTM
+EML (email)
+JPEG, PNG, TIFF (OCR "phone scan")
 OCR languages:
 English + French (tika unaffected; tesseract language packs required)
 Upload limits (defaults, configurable):
@@ -120,18 +125,18 @@ chunk: 20 min
 embed: 30 min
 finalize: 10 min
 OCR triggering
-JPEG: always OCR (one "page")
+JPEG/PNG/TIFF: always OCR (one "page")
 PDF:
 attempt text extraction
 OCR if extracted_chars < 500 OR alpha_ratio < 0.2
-DOCX/RTF/TXT: no OCR
+All other formats (Office, eBook, web, email, text): never OCR
 Extraction tooling
-All non-TXT/image formats: Apache Tika (PDF, DOCX, RTF, and other formats)
+All non-TXT/CSV/MD/image formats: Apache Tika (PDF, DOCX, DOC, ODT, XLSX, XLS, PPTX, PPT, RTF, EPUB, HTML, EML, etc.)
   PDF: Tika/PDFBox inserts form feed (\f) between pages — split on those for page boundaries
-  Non-paginated formats (DOCX, RTF): split into synthetic pages at paragraph boundaries
-TXT: direct UTF-8 decode (no Tika needed)
+  Non-paginated formats (DOCX, RTF, etc.): split into synthetic pages at paragraph boundaries
+TXT/MD/CSV: direct UTF-8 decode (no Tika needed)
 Images: empty page (OCR fills later)
-Tika is required for PDF/DOCX/RTF extraction.
+Tika is required for document extraction.
 OCR tooling
 Convert PDF pages to images via pypdfium2
 Tesseract OCR with eng+fra (configurable)
