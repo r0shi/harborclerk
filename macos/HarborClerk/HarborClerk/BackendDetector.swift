@@ -45,7 +45,7 @@ final class BackendDetector: ObservableObject {
     }
 
     /// Read port from shared config.json.
-    private static func readPort() -> Int {
+    nonisolated static func readPort() -> Int {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let configURL = appSupport
             .appendingPathComponent("Harbor Clerk")

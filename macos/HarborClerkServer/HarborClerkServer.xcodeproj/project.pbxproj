@@ -24,7 +24,22 @@
 		A100000015 /* PreferencesWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000015; };
 		A100000016 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B100000016; };
 		A100000017 /* LlamaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000017; };
+		AT10000001 /* WorkerCountsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000001; };
+		AT10000002 /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000002; };
+		AT10000003 /* OverallStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000003; };
+		AT10000004 /* LogManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000004; };
+		AT10000005 /* HealthCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000005; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		CP10000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = G100000004 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = G100000001;
+			remoteInfo = HarborClerkServer;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		B100000001 /* App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>"; };
@@ -47,10 +62,23 @@
 		B100000017 /* LlamaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LlamaService.swift; sourceTree = "<group>"; };
 		D100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D100000002 /* HarborClerkServer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerkServer.entitlements; sourceTree = "<group>"; };
+		CT10000001 /* HarborClerkServerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HarborClerkServerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BT10000001 /* WorkerCountsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkerCountsTests.swift; sourceTree = "<group>"; };
+		BT10000002 /* AppSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsTests.swift; sourceTree = "<group>"; };
+		BT10000003 /* OverallStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverallStateTests.swift; sourceTree = "<group>"; };
+		BT10000004 /* LogManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManagerTests.swift; sourceTree = "<group>"; };
+		BT10000005 /* HealthCheckerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheckerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		E100000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ET10000001 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -64,6 +92,7 @@
 			isa = PBXGroup;
 			children = (
 				F100000002 /* HarborClerkServer */,
+				FT10000001 /* HarborClerkServerTests */,
 				F100000004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -106,8 +135,21 @@
 			isa = PBXGroup;
 			children = (
 				C100000001 /* HarborClerkServer.app */,
+				CT10000001 /* HarborClerkServerTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		FT10000001 /* HarborClerkServerTests */ = {
+			isa = PBXGroup;
+			children = (
+				BT10000001 /* WorkerCountsTests.swift */,
+				BT10000002 /* AppSettingsTests.swift */,
+				BT10000003 /* OverallStateTests.swift */,
+				BT10000004 /* LogManagerTests.swift */,
+				BT10000005 /* HealthCheckerTests.swift */,
+			);
+			path = HarborClerkServerTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -129,6 +171,24 @@
 			productName = HarborClerkServer;
 			productReference = C100000001 /* HarborClerkServer.app */;
 			productType = "com.apple.product-type.application";
+		};
+		GT10000001 /* HarborClerkServerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = HT10000003 /* Build configuration list for PBXNativeTarget "HarborClerkServerTests" */;
+			buildPhases = (
+				GT10000002 /* Sources */,
+				ET10000001 /* Frameworks */,
+				GT10000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DT10000001 /* PBXTargetDependency */,
+			);
+			name = HarborClerkServerTests;
+			productName = HarborClerkServerTests;
+			productReference = CT10000001 /* HarborClerkServerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -154,6 +214,7 @@
 			projectRoot = "";
 			targets = (
 				G100000001 /* HarborClerkServer */,
+				GT10000001 /* HarborClerkServerTests */,
 			);
 		};
 /* End PBXProject section */
@@ -164,6 +225,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				A100000016 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		GT10000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -193,7 +261,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		GT10000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AT10000001 /* WorkerCountsTests.swift in Sources */,
+				AT10000002 /* AppSettingsTests.swift in Sources */,
+				AT10000003 /* OverallStateTests.swift in Sources */,
+				AT10000004 /* LogManagerTests.swift in Sources */,
+				AT10000005 /* HealthCheckerTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		DT10000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = G100000001 /* HarborClerkServer */;
+			targetProxy = CP10000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		H100000002 /* Debug */ = {
@@ -244,6 +332,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = HarborClerkServer/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -266,6 +356,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = HarborClerkServer/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -277,6 +368,40 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		HT10000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.harborclerk.HarborClerkServerTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HarborClerkServer.app/Contents/MacOS/HarborClerkServer";
+			};
+			name = Debug;
+		};
+		HT10000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.harborclerk.HarborClerkServerTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/HarborClerkServer.app/Contents/MacOS/HarborClerkServer";
 			};
 			name = Release;
 		};
@@ -297,6 +422,15 @@
 			buildConfigurations = (
 				H100000005 /* Debug */,
 				H100000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		HT10000003 /* Build configuration list for PBXNativeTarget "HarborClerkServerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				HT10000001 /* Debug */,
+				HT10000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

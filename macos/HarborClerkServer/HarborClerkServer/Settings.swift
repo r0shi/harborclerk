@@ -114,6 +114,18 @@ final class AppSettings {
         }
     }
 
+    /// Testable initializer that uses a custom config file path.
+    init(configURL: URL) {
+        self.configURL = configURL
+
+        if let jsonData = try? Data(contentsOf: configURL),
+           let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+            data = json
+        } else {
+            data = [:]
+        }
+    }
+
     private func save() {
         if let jsonData = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted) {
             try? jsonData.write(to: configURL)

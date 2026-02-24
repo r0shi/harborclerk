@@ -33,10 +33,15 @@ final class ServiceManager: ObservableObject {
     private var cpuWorkers: [WorkerService] = []
 
     var overallState: ServiceState {
-        if services.contains(where: { $0.state == .errored }) { return .errored }
-        if services.allSatisfy({ $0.state == .running }) { return .running }
-        if services.allSatisfy({ $0.state == .stopped }) { return .stopped }
-        if services.contains(where: { $0.state == .stopping }) { return .stopping }
+        Self.computeOverallState(services.map(\.state))
+    }
+
+    nonisolated static func computeOverallState(_ states: [ServiceState]) -> ServiceState {
+        if states.isEmpty { return .stopped }
+        if states.contains(.errored) { return .errored }
+        if states.allSatisfy({ $0 == .running }) { return .running }
+        if states.allSatisfy({ $0 == .stopped }) { return .stopped }
+        if states.contains(.stopping) { return .stopping }
         return .starting
     }
 
@@ -64,7 +69,7 @@ final class ServiceManager: ObservableObject {
             + ioWorkers + cpuWorkers
     }
 
-    static func workerCounts(preset: String, cores: Int) -> (io: Int, cpu: Int) {
+    nonisolated static func workerCounts(preset: String, cores: Int) -> (io: Int, cpu: Int) {
         switch preset {
         case "quiet":
             return (1, 1)
