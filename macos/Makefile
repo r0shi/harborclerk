@@ -40,7 +40,7 @@ venv:
 
 model:
 	@echo "==> Downloading embedder model"
-	DEST_DIR=$(BUILD)/model/all-MiniLM-L6-v2 VENV_DIR=$(BUILD)/venv bash $(SCRIPTS)/download-model.sh
+	DEST_DIR=$(BUILD)/model/nomic-embed-text-v2-moe VENV_DIR=$(BUILD)/venv bash $(SCRIPTS)/download-model.sh
 
 # ── LLM server ──
 

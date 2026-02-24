@@ -2,10 +2,11 @@
 # Download the embedding model for Harbor Clerk.
 set -euo pipefail
 
-MODEL_NAME="${MODEL_NAME:-nomic-embed-text-v2-moe}"
-DEST_DIR="${DEST_DIR:-$(pwd)/build/model/${MODEL_NAME}}"
+MODEL_REPO="${MODEL_REPO:-nomic-ai/nomic-embed-text-v2-moe}"
+MODEL_SHORT="${MODEL_REPO##*/}"
+DEST_DIR="${DEST_DIR:-$(pwd)/build/model/${MODEL_SHORT}}"
 
-echo "==> Downloading embedding model: ${MODEL_NAME}"
+echo "==> Downloading embedding model: ${MODEL_REPO}"
 
 mkdir -p "$DEST_DIR"
 
@@ -21,7 +22,7 @@ fi
 from sentence_transformers import SentenceTransformer
 import shutil, os
 
-model_name = '${MODEL_NAME}'
+model_name = '${MODEL_REPO}'
 dest = '${DEST_DIR}'
 
 print(f'Loading model {model_name}...')
