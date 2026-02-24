@@ -30,4 +30,4 @@ WORKDIR /app
 
 EXPOSE 8000
 
-CMD ["lka-embedder"]
+CMD ["harbor-clerk-embedder"]

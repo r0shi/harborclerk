@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.auth import decode_token, hash_api_key
+from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.db import get_session
 from harbor_clerk.models import ApiKey
 
@@ -43,7 +43,7 @@ async def get_current_principal(
         )
 
     # Try JWT decode
-    if not token.startswith("lka_"):
+    if not token.startswith(API_KEY_PREFIXES):
         try:
             payload = decode_token(token)
             if payload.get("type") != "access":

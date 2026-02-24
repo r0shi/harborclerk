@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth'
 import BackButton from './BackButton'
-import JobToast from './JobToast'
+import { QueueTray } from './queue-tray'
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   `px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors ${
@@ -43,7 +43,7 @@ export default function Layout() {
           <div className="flex h-12 items-center justify-between">
             <div className="flex items-center space-x-1">
               <Link to="/" className="mr-3 flex items-center space-x-2 text-[15px] font-semibold text-[var(--color-text-primary)]">
-                <img src="/favicon.png" alt="" className="h-5 w-5" />
+                <img src="/favicon.svg" alt="" className="h-5 w-5" />
                 <span>Harbor Clerk</span>
               </Link>
               <NavLink to="/" end className={linkClass}>
@@ -129,7 +129,7 @@ export default function Layout() {
         <BackButton />
         <Outlet />
       </main>
-      <JobToast />
+      <QueueTray />
     </div>
   )
 }

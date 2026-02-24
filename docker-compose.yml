@@ -12,7 +12,7 @@ services:
       app:
         condition: service_healthy
     networks:
-      - lka
+      - harbor-clerk
 
   app:
     build:
@@ -37,7 +37,7 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - lka
+      - harbor-clerk
 
   worker-io:
     build:
@@ -50,7 +50,7 @@ services:
       app:
         condition: service_healthy
     networks:
-      - lka
+      - harbor-clerk
 
   worker-cpu:
     build:
@@ -63,7 +63,7 @@ services:
       app:
         condition: service_healthy
     networks:
-      - lka
+      - harbor-clerk
 
   embedder:
     build:
@@ -77,25 +77,25 @@ services:
       retries: 5
       start_period: 60s
     networks:
-      - lka
+      - harbor-clerk
 
   postgres:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-lka}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lka_dev_password}
-      POSTGRES_DB: ${POSTGRES_DB:-lka}
+      POSTGRES_USER: ${POSTGRES_USER:-harbor_clerk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-harbor_clerk_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-harbor_clerk}
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./docker/postgres/init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lka}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-harbor_clerk}"]
       interval: 5s
       timeout: 3s
       retries: 5
     networks:
-      - lka
+      - harbor-clerk
 
   minio:
     image: minio/minio:latest
@@ -112,13 +112,13 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - lka
+      - harbor-clerk
 
   tika:
     image: apache/tika:latest
     restart: unless-stopped
     networks:
-      - lka
+      - harbor-clerk
 
   llama-server:
     image: ghcr.io/ggml-org/llama.cpp:server
@@ -138,7 +138,7 @@ services:
       retries: 5
       start_period: 60s
     networks:
-      - lka
+      - harbor-clerk
 
 volumes:
   pg_data:
@@ -148,5 +148,5 @@ volumes:
   llama_models:
 
 networks:
-  lka:
+  harbor-clerk:
     driver: bridge

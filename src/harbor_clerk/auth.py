@@ -24,8 +24,12 @@ def hash_api_key(raw_key: str) -> str:
 
 
 def generate_api_key() -> str:
-    """Generate a random API key prefixed with 'lka_'."""
-    return f"lka_{uuid.uuid4().hex}{uuid.uuid4().hex[:16]}"
+    """Generate a random API key prefixed with 'hc_'."""
+    return f"hc_{uuid.uuid4().hex}{uuid.uuid4().hex[:16]}"
+
+
+# Prefixes recognized as API keys (hc_ is current, lka_ is legacy)
+API_KEY_PREFIXES = ("hc_", "lka_")
 
 
 def create_access_token(user_id: uuid.UUID, role: str) -> str:

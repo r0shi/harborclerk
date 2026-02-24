@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 
 from harbor_clerk.api.deps import Principal
-from harbor_clerk.auth import decode_token, hash_api_key
+from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.models import (
     ApiKey,
@@ -31,7 +31,7 @@ _mcp_principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVa
 
 async def _resolve_principal(token: str) -> Principal | None:
     """Validate a Bearer token (JWT or API key) and return a Principal."""
-    if not token.startswith("lka_"):
+    if not token.startswith(API_KEY_PREFIXES):
         try:
             payload = decode_token(token)
             if payload.get("type") != "access":

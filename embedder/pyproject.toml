@@ -1,5 +1,5 @@
 [project]
-name = "lka-embedder"
+name = "harbor-clerk-embedder"
 version = "0.1.0"
 description = "Embedding model server for Harbor Clerk"
 requires-python = ">=3.12"
@@ -18,4 +18,4 @@ build-backend = "hatchling.build"
 packages = ["src/embedder"]
 
 [project.scripts]
-lka-embedder = "embedder.app:main"
+harbor-clerk-embedder = "embedder.app:main"

@@ -7,6 +7,7 @@ import jwt
 import pytest
 
 from harbor_clerk.auth import (
+    API_KEY_PREFIXES,
     create_access_token,
     create_refresh_token,
     decode_token,
@@ -51,8 +52,14 @@ def test_hash_api_key_deterministic():
 
 def test_generate_api_key_prefix():
     key = generate_api_key()
-    assert key.startswith("lka_")
+    assert key.startswith("hc_")
     assert len(key) > 20
+
+
+def test_legacy_lka_prefix_recognized():
+    """Existing lka_ keys should still be recognized as API key prefixes."""
+    assert "lka_" in API_KEY_PREFIXES
+    assert "hc_" in API_KEY_PREFIXES
 
 
 def test_generate_api_key_unique():

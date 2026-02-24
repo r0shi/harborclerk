@@ -103,7 +103,7 @@ All configuration is via environment variables in `.env`:
 | Variable | Default | Description |
 |---|---|---|
 | `SECRET_KEY` | `change-me-in-production` | JWT signing key — **change this** |
-| `DATABASE_URL` | `postgresql+asyncpg://lka:...` | PostgreSQL connection string |
+| `DATABASE_URL` | `postgresql+asyncpg://harbor_clerk:...` | PostgreSQL connection string |
 | `MINIO_ENDPOINT` | `minio:9000` | MinIO endpoint |
 | `MINIO_ACCESS_KEY` | `minioadmin` | MinIO access key |
 | `MINIO_SECRET_KEY` | `minioadmin123` | MinIO secret key |
