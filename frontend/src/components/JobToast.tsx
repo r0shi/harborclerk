@@ -9,6 +9,8 @@ interface ActiveJob {
   progress_total?: number
 }
 
+const MAX_VISIBLE_TOASTS = 3
+
 export default function JobToast() {
   const [jobs, setJobs] = useState<Map<string, ActiveJob>>(new Map())
 
@@ -36,9 +38,18 @@ export default function JobToast() {
 
   if (jobs.size === 0) return null
 
+  const allJobs = Array.from(jobs.values())
+  const visible = allJobs.slice(-MAX_VISIBLE_TOASTS)
+  const hiddenCount = allJobs.length - visible.length
+
   return (
     <div className="fixed bottom-4 right-4 z-50 space-y-2">
-      {Array.from(jobs.values()).map((job) => (
+      {hiddenCount > 0 && (
+        <div className="text-xs text-gray-400 dark:text-gray-500 text-right pr-1">
+          +{hiddenCount} more
+        </div>
+      )}
+      {visible.map((job) => (
         <div
           key={`${job.version_id}:${job.stage}`}
           className="rounded-xl bg-[var(--bg-vibrancy)] backdrop-blur-xl dark:bg-[var(--bg-vibrancy)] px-4 py-3 shadow-mac-lg ring-1 ring-[var(--color-border)]"

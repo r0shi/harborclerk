@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Download the embedding model for Harbor Clerk.
-# MODEL_REPO must be a full HuggingFace repo ID (e.g. nomic-ai/nomic-embed-text-v2-moe).
+# MODEL_REPO must be a full HuggingFace repo ID (e.g. nomic-ai/nomic-embed-text-v1.5).
 set -euo pipefail
 
-MODEL_REPO="${MODEL_REPO:-nomic-ai/nomic-embed-text-v2-moe}"
+MODEL_REPO="${MODEL_REPO:-nomic-ai/nomic-embed-text-v1.5}"
 MODEL_SHORT="${MODEL_REPO##*/}"
 DEST_DIR="${DEST_DIR:-$(pwd)/build/model/${MODEL_SHORT}}"
 
