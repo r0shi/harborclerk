@@ -130,7 +130,7 @@ docker compose logs -f app        # tail app logs
 | **app** | FastAPI REST API + MCP endpoint + serves React SPA |
 | **worker-io** | Background worker for text extraction and chunking |
 | **worker-cpu** | Background worker for OCR and embedding |
-| **embedder** | Embedding model server (nomic-embed-text-v2-moe, 768-dim) |
+| **embedder** | Embedding model server (all-MiniLM-L6-v2, 384-dim) |
 | **postgres** | PostgreSQL with pgvector and pg_trgm extensions |
 | **minio** | Object storage for original files |
 | **tika** | Apache Tika for text extraction (PDF, Office, eBook, HTML, email) |
@@ -146,7 +146,7 @@ Upload a file and it goes through five idempotent stages:
 1. **Extract** — pull text from PDF, Office, eBook, HTML, email, and other formats via Apache Tika (TXT/MD/CSV decoded directly)
 2. **OCR** — conditional: always for images (JPEG/PNG/TIFF), for PDFs with little extractable text; never for text-native formats. Uses Tesseract (English + French)
 3. **Chunk** — split into ~1000 character segments with 150 char overlap, preserving page references
-4. **Embed** — generate 768-dim vectors via the embedder service
+4. **Embed** — generate 384-dim vectors via the embedder service
 5. **Finalize** — mark ingestion complete
 
 Progress is streamed to the UI via server-sent events. Processing can be cancelled from the admin UI.

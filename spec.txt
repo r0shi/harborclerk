@@ -44,7 +44,7 @@ gateway (Caddy) — HTTPS termination (self-signed CA), reverse proxy
 app (FastAPI) — REST API + MCP endpoint + serves static UI
 worker-io — PostgreSQL-polling worker for io queue (extract/chunk/finalize)
 worker-cpu — PostgreSQL-polling worker for cpu queue (ocr/embed)
-embedder — nomic-embed-text-v2-moe model server (768-dim, Apache 2.0)
+embedder — all-MiniLM-L6-v2 model server (384-dim, Apache 2.0)
 postgres — Postgres + pgvector (also used for job queuing via LISTEN/NOTIFY)
 minio — object store for originals
 tika — Apache Tika server (PDF/DOCX/RTF text extraction)
@@ -147,9 +147,8 @@ Target chunk length: ~1000 chars, overlap 150 chars (character-based in prototyp
 Preserve mapping to page ranges + char offsets for citations
 Detect language per chunk (for FTS column assignment)
 Embeddings
-Served by embedder container (nomic-embed-text-v2-moe, 768-dim, Apache 2.0)
-worker-cpu calls embedder over HTTP to get vectors (task prefix: "search_document:")
-Queries use task prefix "search_query:" for optimal retrieval
+Served by embedder container (all-MiniLM-L6-v2, 384-dim, Apache 2.0)
+worker-cpu calls embedder over HTTP to get vectors
 Store per chunk embedding in pgvector column
 Similarity: cosine
 H) Retrieval
@@ -282,7 +281,7 @@ CREATE TABLE chunks (
   ocr_confidence REAL,
   fts_en TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', coalesce(chunk_text,''))) STORED,
   fts_fr TSVECTOR GENERATED ALWAYS AS (to_tsvector('french', coalesce(chunk_text,''))) STORED,
-  embedding vector(768),
+  embedding vector(384),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (version_id, chunk_num)
 );

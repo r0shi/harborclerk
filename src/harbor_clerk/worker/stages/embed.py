@@ -57,7 +57,7 @@ def run_embed(version_id: uuid.UUID) -> None:
 
             resp = httpx.post(
                 f"{settings.embedder_url}/embed",
-                json={"texts": texts, "task": "search_document"},
+                json={"texts": texts},
                 timeout=120,
             )
             resp.raise_for_status()

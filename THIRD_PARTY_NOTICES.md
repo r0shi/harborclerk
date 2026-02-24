@@ -34,7 +34,7 @@ Harbor Clerk includes or depends on the following third-party software.
 - **bcrypt** — password hashing
 - **httpx** — HTTP client
 - **sentence-transformers** — text embedding framework
-- **nomic-embed-text-v2-moe** — embedding model (768-dim)
+- **all-MiniLM-L6-v2** — embedding model (384-dim)
 - **huggingface_hub** — HuggingFace model download
 - **llama.cpp** — LLM inference engine
 

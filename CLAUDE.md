@@ -18,7 +18,7 @@ The full specification lives in `spec.txt`.
 | **app** (FastAPI) | REST API + MCP endpoint + serves React SPA |
 | **worker-io** | PostgreSQL-polling worker for `io` queue (extract/chunk/finalize) |
 | **worker-cpu** | PostgreSQL-polling worker for `cpu` queue (ocr/embed) |
-| **embedder** | nomic-embed-text-v1.5 model server (768-dim, Apache 2.0) |
+| **embedder** | all-MiniLM-L6-v2 model server (384-dim, Apache 2.0) |
 | **postgres** | PostgreSQL + pgvector + pg_trgm |
 | **minio** | Object storage for originals |
 | **tika** | Apache Tika server (text extraction for PDF, Office, eBook, HTML, email formats) |
@@ -62,7 +62,7 @@ Five idempotent stages, each guarded by row-level lock on `(version_id, stage)` 
 1. **extract** (io) — Apache Tika for PDF/Office/eBook/HTML/email, plain text fallback for TXT/MD/CSV
 2. **ocr** (cpu) — conditional: always for images (JPEG/PNG/TIFF); PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for text-native formats. Uses pypdfium2 + Tesseract (eng+fra)
 3. **chunk** (io) — ~1000 char target, 150 char overlap, preserves page ranges + char offsets. Detects language per chunk
-4. **embed** (cpu) — calls embedder container over HTTP, 768-dim vectors stored in pgvector
+4. **embed** (cpu) — calls embedder container over HTTP, 384-dim vectors stored in pgvector
 5. **finalize** (io) — completes ingestion
 
 **Job timeouts:** `signal.alarm()` per stage with error handling updating `ingestion_jobs` to error. Workers send heartbeats every 30s. Reaper detects orphans via stale heartbeat (>90s) or 2x timeout fallback.
@@ -96,7 +96,7 @@ PostgreSQL with extensions: `pgcrypto`, `vector`, `pg_trgm`. No tenant table or 
 
 Key tables: `users`, `api_keys`, `documents`, `document_versions`, `document_pages`, `chunks`, `ingestion_jobs`, `uploads`, `audit_log`.
 
-`chunks` has dual FTS columns (`fts_en` TSVECTOR, `fts_fr` TSVECTOR) both as generated stored columns with GIN indexes, plus `embedding vector(768)` with HNSW index. Full DDL in `spec.txt` section I.
+`chunks` has dual FTS columns (`fts_en` TSVECTOR, `fts_fr` TSVECTOR) both as generated stored columns with GIN indexes, plus `embedding vector(384)` with HNSW index. Full DDL in `spec.txt` section I.
 
 Storage bucket: `originals`, key pattern: `originals/versions/<version_id>/<original_filename>`.
 

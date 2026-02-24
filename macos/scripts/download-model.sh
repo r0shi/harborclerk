@@ -3,7 +3,7 @@
 # MODEL_REPO must be a full HuggingFace repo ID (e.g. nomic-ai/nomic-embed-text-v1.5).
 set -euo pipefail
 
-MODEL_REPO="${MODEL_REPO:-nomic-ai/nomic-embed-text-v1.5}"
+MODEL_REPO="${MODEL_REPO:-sentence-transformers/all-MiniLM-L6-v2}"
 MODEL_SHORT="${MODEL_REPO##*/}"
 DEST_DIR="${DEST_DIR:-$(pwd)/build/model/${MODEL_SHORT}}"
 
@@ -27,7 +27,7 @@ model_name = '${MODEL_REPO}'
 dest = '${DEST_DIR}'
 
 print(f'Loading model {model_name}...')
-model = SentenceTransformer(model_name, trust_remote_code=True)
+model = SentenceTransformer(model_name)
 
 # Save to destination
 print(f'Saving to {dest}...')
