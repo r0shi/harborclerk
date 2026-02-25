@@ -3,11 +3,12 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harbor_clerk.api.routes.auth import _is_secure_request
 from harbor_clerk.api.schemas.auth import LoginResponse, UserInfo
 from harbor_clerk.auth import create_access_token, create_refresh_token, hash_password
 from harbor_clerk.config import get_settings
@@ -28,6 +29,7 @@ class SetupRequest(BaseModel):
 @router.post("/setup", response_model=LoginResponse, status_code=status.HTTP_201_CREATED)
 async def setup(
     body: SetupRequest,
+    request: Request,
     response: Response,
     session: AsyncSession = Depends(get_session),
 ):
@@ -75,7 +77,7 @@ async def setup(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=True,
+        secure=_is_secure_request(request),
         samesite="strict",
         max_age=settings.jwt_refresh_token_expire_days * 86400,
         path="/api/auth",

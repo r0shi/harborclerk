@@ -24,9 +24,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
 
 
+def _is_secure_request(request: Request) -> bool:
+    """Check if the request came over HTTPS (directly or via reverse proxy)."""
+    proto = request.headers.get("x-forwarded-proto", "")
+    if proto:
+        return proto == "https"
+    return request.url.scheme == "https"
+
+
 @router.post("/auth/login", response_model=LoginResponse)
 async def login(
     body: LoginRequest,
+    request: Request,
     response: Response,
     session: AsyncSession = Depends(get_session),
 ):
@@ -65,7 +74,7 @@ async def login(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=True,
+        secure=_is_secure_request(request),
         samesite="strict",
         max_age=settings.jwt_refresh_token_expire_days * 86400,
         path="/api/auth",
@@ -126,7 +135,7 @@ async def refresh(
         key="refresh_token",
         value=new_refresh,
         httponly=True,
-        secure=True,
+        secure=_is_secure_request(request),
         samesite="strict",
         max_age=settings.jwt_refresh_token_expire_days * 86400,
         path="/api/auth",
