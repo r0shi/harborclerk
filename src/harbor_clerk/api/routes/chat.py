@@ -18,7 +18,7 @@ from harbor_clerk.api.schemas.chat import (
     ModelOut,
     SendMessageRequest,
 )
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import get_settings, sync_native_config
 from harbor_clerk.db import get_session
 from harbor_clerk.llm.chat import chat_stream
 from harbor_clerk.llm.download import (
@@ -216,6 +216,7 @@ async def activate_model(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded")
     settings = get_settings()
     settings.llm_model_id = model_id
+    sync_native_config("llm_model_id", model_id)
     return {"status": "activated"}
 
 
@@ -231,6 +232,7 @@ async def remove_model(
     settings = get_settings()
     if settings.llm_model_id == model_id:
         settings.llm_model_id = ""
+        sync_native_config("llm_model_id", "")
 
 
 @router.get("/chat/models/download-progress")

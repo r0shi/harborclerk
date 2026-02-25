@@ -1,5 +1,10 @@
+import json
+import logging
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -62,6 +67,9 @@ class Settings(BaseSettings):
     llm_model_id: str = Field(default="")
     models_dir: str = Field(default="./data/models")
 
+    # Native macOS app config file (set by Swift via env var)
+    native_config_file: str = Field(default="")
+
 
 _settings: Settings | None = None
 
@@ -71,3 +79,26 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+def sync_native_config(key: str, value: str) -> None:
+    """Write a key back to the shared config.json used by the macOS app.
+
+    Only operates when ``native_config_file`` is set (i.e. running inside the
+    native macOS app).  Reads the file, updates the key, writes it back.
+    """
+    path = get_settings().native_config_file
+    if not path:
+        return
+    try:
+        from pathlib import Path
+
+        p = Path(path)
+        data: dict = {}
+        if p.exists():
+            data = json.loads(p.read_text())
+        data[key] = value
+        p.write_text(json.dumps(data, indent=2) + "\n")
+        logger.info("Synced %s=%r to %s", key, value, path)
+    except Exception:
+        logger.exception("Failed to sync native config")

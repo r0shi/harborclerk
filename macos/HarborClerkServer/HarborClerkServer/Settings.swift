@@ -4,7 +4,7 @@ import Foundation
 final class AppSettings {
     static let shared = AppSettings()
 
-    private let configURL: URL
+    private(set) var configURL: URL
     private var data: [String: Any]
 
     var postgresPort: Int {
@@ -129,6 +129,14 @@ final class AppSettings {
     private func save() {
         if let jsonData = try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted) {
             try? jsonData.write(to: configURL)
+        }
+    }
+
+    /// Re-read config.json from disk (e.g. after Python updated it).
+    func reload() {
+        if let jsonData = try? Data(contentsOf: configURL),
+           let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+            data = json
         }
     }
 

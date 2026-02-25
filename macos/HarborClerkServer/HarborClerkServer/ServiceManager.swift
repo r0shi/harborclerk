@@ -33,6 +33,10 @@ final class ServiceManager: ObservableObject {
     private var ioWorkers: [WorkerService] = []
     private var cpuWorkers: [WorkerService] = []
 
+    private var configWatcherSource: DispatchSourceFileSystemObject?
+    private var configFileDescriptor: Int32 = -1
+    private var lastLlmModelId: String = ""
+
     var overallState: ServiceState {
         Self.computeOverallState(services.map(\.state))
     }
@@ -115,10 +119,14 @@ final class ServiceManager: ObservableObject {
             await startService(worker)
         }
 
+        // 8. Watch config.json for model changes from the web UI
+        startConfigWatcher()
+
         notifyStateChanged()
     }
 
     func stopAll() {
+        stopConfigWatcher()
         // Reverse order
         let reversed = Array(services.reversed())
         for service in reversed {
@@ -188,6 +196,91 @@ final class ServiceManager: ObservableObject {
         NotificationCenter.default.post(name: .servicesStateChanged, object: nil)
     }
 
+    // MARK: - Config file watcher
+
+    /// Start watching config.json for changes from the Python side.
+    func startConfigWatcher() {
+        let settings = AppSettings.shared
+        lastLlmModelId = settings.llmModelId
+        let path = settings.configURL.path
+
+        let fd = open(path, O_EVTONLY)
+        guard fd >= 0 else {
+            Log.logger("lifecycle").error("Cannot open config.json for watching")
+            return
+        }
+        configFileDescriptor = fd
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename],
+            queue: .global(qos: .utility)
+        )
+        source.setEventHandler { [weak self] in
+            // After an atomic write (rename), the fd points to the old inode.
+            // Re-create the watcher to track the new file.
+            let flags = source.data
+            Task { @MainActor in
+                self?.handleConfigChange()
+                if flags.contains(.rename) {
+                    self?.stopConfigWatcher()
+                    self?.startConfigWatcher()
+                }
+            }
+        }
+        source.setCancelHandler {
+            close(fd)
+        }
+        source.resume()
+        configWatcherSource = source
+    }
+
+    func stopConfigWatcher() {
+        configWatcherSource?.cancel()
+        configWatcherSource = nil
+        configFileDescriptor = -1
+    }
+
+    private func handleConfigChange() {
+        let settings = AppSettings.shared
+        settings.reload()
+
+        let newModelId = settings.llmModelId
+        guard newModelId != lastLlmModelId else { return }
+
+        let previousId = lastLlmModelId
+        lastLlmModelId = newModelId
+        Log.logger("lifecycle").info(
+            "Config change: llm_model_id \(previousId, privacy: .public) → \(newModelId, privacy: .public)"
+        )
+
+        Task {
+            // Stop current llama-server if running
+            if llamaService.state == .running || llamaService.state == .starting {
+                llamaService.stop()
+                notifyStateChanged()
+                try? await Task.sleep(for: .seconds(1))
+            }
+
+            if newModelId.isEmpty {
+                // Model deactivated — stay stopped
+                llamaService.state = .stopped
+                notifyStateChanged()
+            } else {
+                // Start with new model
+                await startService(llamaService)
+            }
+
+            // Update Python services' env so restarts pick up the new model ID
+            let env = pythonEnvironment()
+            for service in services {
+                if let pySvc = service as? PythonService {
+                    pySvc.baseEnvironment = env
+                }
+            }
+        }
+    }
+
     // MARK: - Environment
 
     /// Build the full environment dict for Python services.
@@ -217,6 +310,7 @@ final class ServiceManager: ObservableObject {
             "LLAMA_SERVER_URL": "http://localhost:\(settings.llamaPort)",
             "LLM_MODEL_ID": settings.llmModelId,
             "MODELS_DIR": settings.modelsDir.path,
+            "NATIVE_CONFIG_FILE": settings.configURL.path,
         ]
     }
 }
