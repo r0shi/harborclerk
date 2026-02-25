@@ -41,8 +41,9 @@ fi
 PYTHON_BIN="$PYTHON_DIR/bin/python3"
 
 # ── Create venv ──
-if [ ! -d "$VENV_DIR" ]; then
+if [ ! -x "$VENV_DIR/bin/python3" ]; then
     echo "==> Creating virtual environment"
+    rm -rf "$VENV_DIR"
     "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
