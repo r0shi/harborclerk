@@ -30,7 +30,7 @@ struct PreferencesWindow: View {
     @State private var logLevel = AppSettings.shared.logLevel
     @State private var needsRestart = false
 
-    // Snapshot of initial values for cancel
+    // Snapshot of initial values for cancel/dirty detection
     @State private var initial: Snapshot = Snapshot()
 
     struct Snapshot {
@@ -62,19 +62,13 @@ struct PreferencesWindow: View {
             Form {
                 Section {
                     Toggle("Allow remote browser connections", isOn: $allowRemoteWeb)
-                        .onChange(of: allowRemoteWeb) { _, newValue in
-                            AppSettings.shared.allowRemoteWeb = newValue
-                            needsRestart = true
-                        }
+                        .onChange(of: allowRemoteWeb) { _, _ in markDirty() }
                     Text("Let users on your network access Harbor Clerk via a web browser.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
                     Toggle("Allow remote model connections (MCP)", isOn: $allowRemoteMCP)
-                        .onChange(of: allowRemoteMCP) { _, newValue in
-                            AppSettings.shared.allowRemoteMCP = newValue
-                            needsRestart = true
-                        }
+                        .onChange(of: allowRemoteMCP) { _, _ in markDirty() }
                     Text("Let AI models on your network query your documents.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -97,10 +91,7 @@ struct PreferencesWindow: View {
                         Text("Balanced").tag("balanced")
                         Text("Fast").tag("fast")
                     }
-                    .onChange(of: workerPreset) { _, newValue in
-                        AppSettings.shared.workerPreset = newValue
-                        needsRestart = true
-                    }
+                    .onChange(of: workerPreset) { _, _ in markDirty() }
                 } header: {
                     Text("Performance")
                         .font(.subheadline)
@@ -114,10 +105,7 @@ struct PreferencesWindow: View {
                             Text(option.name).tag(option.id)
                         }
                     }
-                    .onChange(of: llmModelId) { _, newValue in
-                        AppSettings.shared.llmModelId = newValue
-                        needsRestart = true
-                    }
+                    .onChange(of: llmModelId) { _, _ in markDirty() }
                     Text("Select a model for the built-in chat. Models are downloaded from HuggingFace via the web UI.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -129,31 +117,18 @@ struct PreferencesWindow: View {
                 }
 
                 Section {
-                    portRow(label: "API port", text: $apiPortText, key: "api") { port in
-                        AppSettings.shared.apiPort = port
-                    }
-                    portRow(label: "PostgreSQL port", text: $postgresPortText, key: "postgres") { port in
-                        AppSettings.shared.postgresPort = port
-                    }
-                    portRow(label: "Tika port", text: $tikaPortText, key: "tika") { port in
-                        AppSettings.shared.tikaPort = port
-                    }
-                    portRow(label: "Embedder port", text: $embedderPortText, key: "embedder") { port in
-                        AppSettings.shared.embedderPort = port
-                    }
-                    portRow(label: "LLM port", text: $llamaPortText, key: "llama") { port in
-                        AppSettings.shared.llamaPort = port
-                    }
+                    portRow(label: "API port", text: $apiPortText, key: "api")
+                    portRow(label: "PostgreSQL port", text: $postgresPortText, key: "postgres")
+                    portRow(label: "Tika port", text: $tikaPortText, key: "tika")
+                    portRow(label: "Embedder port", text: $embedderPortText, key: "embedder")
+                    portRow(label: "LLM port", text: $llamaPortText, key: "llama")
                     Picker("Log level", selection: $logLevel) {
                         Text("DEBUG").tag("DEBUG")
                         Text("INFO").tag("INFO")
                         Text("WARNING").tag("WARNING")
                         Text("ERROR").tag("ERROR")
                     }
-                    .onChange(of: logLevel) { _, newValue in
-                        AppSettings.shared.logLevel = newValue
-                        needsRestart = true
-                    }
+                    .onChange(of: logLevel) { _, _ in markDirty() }
                 } header: {
                     Text("Advanced")
                         .font(.subheadline)
@@ -196,6 +171,7 @@ struct PreferencesWindow: View {
             .controlSize(.small)
 
             Button("Restart Now") {
+                applyToSettings()
                 needsRestart = false
                 captureInitial()
                 NotificationCenter.default.post(
@@ -222,7 +198,7 @@ struct PreferencesWindow: View {
     // MARK: - Port Row
 
     @ViewBuilder
-    private func portRow(label: String, text: Binding<String>, key: String, save: @escaping (Int) -> Void) -> some View {
+    private func portRow(label: String, text: Binding<String>, key: String) -> some View {
         HStack {
             Text(label)
             Spacer()
@@ -233,8 +209,7 @@ struct PreferencesWindow: View {
                 .font(.system(.body, design: .monospaced))
                 .onChange(of: text.wrappedValue) { _, newValue in
                     if let port = Int(newValue), port > 0, port <= 65535 {
-                        save(port)
-                        needsRestart = true
+                        markDirty()
                     }
                 }
             if let def = defaultPorts[key], Int(text.wrappedValue) != def {
@@ -248,6 +223,27 @@ struct PreferencesWindow: View {
                 .help("Reset to default (\(def))")
             }
         }
+    }
+
+    // MARK: - State management
+
+    private func markDirty() {
+        needsRestart = true
+    }
+
+    /// Write all local @State values to AppSettings (single save).
+    private func applyToSettings() {
+        let settings = AppSettings.shared
+        settings.allowRemoteWeb = allowRemoteWeb
+        settings.allowRemoteMCP = allowRemoteMCP
+        settings.workerPreset = workerPreset
+        if let p = Int(apiPortText), p > 0, p <= 65535 { settings.apiPort = p }
+        if let p = Int(postgresPortText), p > 0, p <= 65535 { settings.postgresPort = p }
+        if let p = Int(tikaPortText), p > 0, p <= 65535 { settings.tikaPort = p }
+        if let p = Int(embedderPortText), p > 0, p <= 65535 { settings.embedderPort = p }
+        if let p = Int(llamaPortText), p > 0, p <= 65535 { settings.llamaPort = p }
+        settings.llmModelId = llmModelId
+        settings.logLevel = logLevel
     }
 
     private func captureInitial() {
@@ -276,19 +272,6 @@ struct PreferencesWindow: View {
         llamaPortText = initial.llamaPort
         llmModelId = initial.llmModelId
         logLevel = initial.logLevel
-
-        // Write reverted values back to settings
-        AppSettings.shared.allowRemoteWeb = initial.allowRemoteWeb
-        AppSettings.shared.allowRemoteMCP = initial.allowRemoteMCP
-        AppSettings.shared.workerPreset = initial.workerPreset
-        if let p = Int(initial.apiPort) { AppSettings.shared.apiPort = p }
-        if let p = Int(initial.postgresPort) { AppSettings.shared.postgresPort = p }
-        if let p = Int(initial.tikaPort) { AppSettings.shared.tikaPort = p }
-        if let p = Int(initial.embedderPort) { AppSettings.shared.embedderPort = p }
-        if let p = Int(initial.llamaPort) { AppSettings.shared.llamaPort = p }
-        AppSettings.shared.llmModelId = initial.llmModelId
-        AppSettings.shared.logLevel = initial.logLevel
-
         needsRestart = false
     }
 }

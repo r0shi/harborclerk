@@ -92,8 +92,12 @@ final class PostgresService: ManagedService {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         try? proc.run()
-        proc.waitUntilExit()
-        return proc.terminationStatus == 0
+        return await withCheckedContinuation { c in
+            DispatchQueue.global().async {
+                proc.waitUntilExit()
+                c.resume(returning: proc.terminationStatus == 0)
+            }
+        }
     }
 
     // MARK: - Setup

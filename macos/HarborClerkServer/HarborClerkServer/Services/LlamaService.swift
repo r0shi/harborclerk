@@ -15,7 +15,8 @@ final class LlamaService: ManagedService {
         let settings = AppSettings.shared
         let modelPath = settings.activeModelPath
         guard !modelPath.isEmpty else {
-            // No model selected — stay stopped silently
+            // No model selected — revert to stopped (ServiceManager set .starting)
+            state = .stopped
             return
         }
 
@@ -77,7 +78,7 @@ final class LlamaService: ManagedService {
     }
 
     func healthCheck() async -> Bool {
-        guard !AppSettings.shared.activeModelPath.isEmpty else { return true }
+        guard !AppSettings.shared.activeModelPath.isEmpty else { return false }
         guard let url = URL(string: "http://localhost:\(port)/health") else { return false }
         do {
             let (_, response) = try await URLSession.shared.data(from: url)

@@ -25,10 +25,15 @@ struct MigrationRunner {
         proc.standardError = pipe
 
         try proc.run()
-        proc.waitUntilExit()
+        let exitCode: Int32 = await withCheckedContinuation { c in
+            DispatchQueue.global().async {
+                proc.waitUntilExit()
+                c.resume(returning: proc.terminationStatus)
+            }
+        }
 
-        if proc.terminationStatus != 0 {
-            throw ServiceError.startFailed("Alembic", "exit code \(proc.terminationStatus)")
+        if exitCode != 0 {
+            throw ServiceError.startFailed("Alembic", "exit code \(exitCode)")
         }
     }
 }

@@ -35,6 +35,7 @@ final class ServiceManager: ObservableObject {
 
     private var configWatcherSource: DispatchSourceFileSystemObject?
     private var configFileDescriptor: Int32 = -1
+    private var configChangeTask: Task<Void, Never>?
     private var lastLlmModelId: String = ""
 
     var overallState: ServiceState {
@@ -158,6 +159,12 @@ final class ServiceManager: ObservableObject {
         do {
             try await service.start()
 
+            // Service chose not to start (e.g. LLM with no model selected)
+            if service.state == .stopped {
+                notifyStateChanged()
+                return
+            }
+
             // Wait for health check with timeout
             let timeout: TimeInterval = (service is EmbedderService || service is LlamaService) ? 120 : (service is TikaService) ? 60 : 30
             let deadline = Date().addingTimeInterval(timeout)
@@ -240,6 +247,8 @@ final class ServiceManager: ObservableObject {
     }
 
     func stopConfigWatcher() {
+        configChangeTask?.cancel()
+        configChangeTask = nil
         configWatcherSource?.cancel()
         configWatcherSource = nil
         configFileDescriptor = -1
@@ -258,7 +267,8 @@ final class ServiceManager: ObservableObject {
             "Config change: llm_model_id \(previousId, privacy: .public) → \(newModelId, privacy: .public)"
         )
 
-        Task {
+        configChangeTask?.cancel()
+        configChangeTask = Task {
             // Stop current llama-server if running
             if llamaService.state == .running || llamaService.state == .starting {
                 await llamaService.stop()
