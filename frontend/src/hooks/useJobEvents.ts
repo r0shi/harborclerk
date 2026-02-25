@@ -8,13 +8,14 @@ export interface JobEvent {
   progress?: number
   total?: number
   error?: string
+  filename?: string
 }
 
 type Listener = (event: JobEvent) => void
 
 /**
  * Shared SSE hook that connects to /api/jobs/stream,
- * parses flat JSON events from Redis pub/sub, and
+ * parses flat JSON events from PostgreSQL LISTEN/NOTIFY, and
  * calls the provided listener on each event.
  * Reconnects automatically on disconnect.
  */

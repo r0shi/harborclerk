@@ -9,6 +9,7 @@ export interface ActiveJob {
   status: string
   progress_current?: number
   progress_total?: number
+  filename?: string
   updated_at: number
 }
 
@@ -17,6 +18,7 @@ export interface HistoryEntry {
   version_id: string
   stage: string
   status: 'done' | 'error'
+  filename?: string
   finished_at: number
 }
 
@@ -83,6 +85,7 @@ export function useQueueTray() {
             version_id: event.version_id,
             stage: event.stage,
             status: event.status as 'done' | 'error',
+            filename: event.filename,
             finished_at: Date.now(),
           }
           const next = [entry, ...prev.filter((h) => h.key !== key)]
@@ -98,6 +101,7 @@ export function useQueueTray() {
             status: event.status,
             progress_current: event.progress,
             progress_total: event.total,
+            filename: event.filename || prev.get(key)?.filename,
             updated_at: Date.now(),
           })
           return next

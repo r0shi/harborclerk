@@ -177,6 +177,7 @@ async def list_available_models(
             supports_tools=m.supports_tools,
             downloaded=m.id in downloaded,
             active=m.id == settings.llm_model_id,
+            downloading=is_downloading(m.id),
         )
         for m in list_models()
     ]
@@ -204,6 +205,18 @@ async def start_model_download(
     loop.run_in_executor(None, download_model, model_id)
 
     return {"status": "downloading"}
+
+
+@router.put("/chat/models/{model_id}/activate", status_code=200)
+async def activate_model(
+    model_id: str,
+    principal: Principal = Depends(require_admin),
+):
+    if get_model_path(model_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded")
+    settings = get_settings()
+    settings.llm_model_id = model_id
+    return {"status": "activated"}
 
 
 @router.delete("/chat/models/{model_id}", status_code=204)

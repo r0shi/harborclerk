@@ -20,6 +20,7 @@ def publish_job_event(
     progress: int | None = None,
     total: int | None = None,
     error: str | None = None,
+    filename: str | None = None,
 ) -> None:
     """Publish a job progress event via PostgreSQL NOTIFY (sync, for workers)."""
     payload = {
@@ -33,6 +34,8 @@ def publish_job_event(
         payload["total"] = total
     if error is not None:
         payload["error"] = error
+    if filename is not None:
+        payload["filename"] = filename
 
     try:
         session = get_sync_session()

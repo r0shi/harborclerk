@@ -2,12 +2,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin
 from harbor_clerk.audit import log_audit
+from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.models import User
 from harbor_clerk.storage import get_storage
@@ -51,6 +53,16 @@ async def health_check(
     except Exception as e:
         logger.error("Storage health check failed: %s", e)
         checks["storage"] = f"error: {e}"
+
+    # Tika
+    try:
+        settings = get_settings()
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{settings.tika_url}/tika", timeout=5)
+            checks["tika"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
+    except Exception as e:
+        logger.error("Tika health check failed: %s", e)
+        checks["tika"] = f"error: {e}"
 
     overall = all(v == "ok" for v in checks.values())
     return {

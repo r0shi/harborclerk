@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { del, get, post } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { del, get, post, put } from '../api'
 
 interface ModelInfo {
   id: string
@@ -9,6 +9,7 @@ interface ModelInfo {
   supports_tools: boolean
   downloaded: boolean
   active: boolean
+  downloading: boolean
 }
 
 function formatSize(bytes: number): string {
@@ -26,10 +27,21 @@ export default function ModelsPage() {
     new Map(),
   )
 
+  const loadModelsRef = useRef(loadModels)
+  loadModelsRef.current = loadModels
+
   async function loadModels() {
     try {
       const data = await get<ModelInfo[]>('/api/chat/models')
       setModels(data)
+      // Seed downloading set from server state
+      setDownloading((prev) => {
+        const next = new Set(prev)
+        for (const m of data) {
+          if (m.downloading) next.add(m.id)
+        }
+        return next
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load models')
     } finally {
@@ -41,12 +53,13 @@ export default function ModelsPage() {
     loadModels()
   }, [])
 
-  // Subscribe to download progress via SSE
+  // Subscribe to download progress via SSE with auto-reconnect
   useEffect(() => {
     const token = localStorage.getItem('token')
     if (!token) return
 
     const controller = new AbortController()
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 
     async function connect() {
       try {
@@ -90,7 +103,7 @@ export default function ModelsPage() {
                   next.delete(event.model_id)
                   return next
                 })
-                loadModels()
+                loadModelsRef.current()
               } else if (event.status === 'error') {
                 setDownloading((prev) => {
                   const next = new Set(prev)
@@ -112,10 +125,17 @@ export default function ModelsPage() {
       } catch (e) {
         if (e instanceof DOMException && e.name === 'AbortError') return
       }
+      // Reconnect after delay (unless aborted)
+      if (!controller.signal.aborted) {
+        reconnectTimer = setTimeout(connect, 5000)
+      }
     }
 
     connect()
-    return () => controller.abort()
+    return () => {
+      controller.abort()
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+    }
   }, [])
 
   async function handleDownload(modelId: string) {
@@ -156,6 +176,16 @@ export default function ModelsPage() {
         return next
       })
       setError(e instanceof Error ? e.message : 'Download failed')
+    }
+  }
+
+  async function handleActivate(modelId: string) {
+    setError('')
+    try {
+      await put(`/api/chat/models/${modelId}/activate`)
+      loadModels()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Activation failed')
     }
   }
 
@@ -285,12 +315,20 @@ export default function ModelsPage() {
                         </button>
                       )}
                       {model.downloaded && !model.active && (
-                        <button
-                          onClick={() => handleDelete(model.id)}
-                          className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-red-700"
-                        >
-                          Delete
-                        </button>
+                        <>
+                          <button
+                            onClick={() => handleActivate(model.id)}
+                            className="rounded-lg border border-blue-600 px-3 py-1 text-xs font-medium text-blue-600 shadow-sm hover:bg-blue-50 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/20"
+                          >
+                            Activate
+                          </button>
+                          <button
+                            onClick={() => handleDelete(model.id)}
+                            className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-red-700"
+                          >
+                            Delete
+                          </button>
+                        </>
                       )}
                     </div>
                   </td>

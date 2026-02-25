@@ -5,8 +5,8 @@ interface HealthCheck {
   status: string
   checks: {
     postgres: string
-    redis: string
-    minio: string
+    storage: string
+    tika: string
   }
 }
 
@@ -16,8 +16,7 @@ interface ServiceStats {
 
 interface StatsResponse {
   postgres?: ServiceStats
-  redis?: ServiceStats
-  minio?: ServiceStats
+  storage?: ServiceStats
 }
 
 const STAT_LABELS: Record<string, string> = {
@@ -26,10 +25,8 @@ const STAT_LABELS: Record<string, string> = {
   cache_hit_ratio: 'Cache Hit Ratio',
   total_chunks: 'Total Chunks',
   dead_tuples: 'Dead Tuples',
-  used_memory_mb: 'Memory Used',
   io_queue_depth: 'IO Queue',
   cpu_queue_depth: 'CPU Queue',
-  connected_clients: 'Clients',
   object_count: 'Objects',
   total_size_mb: 'Total Size',
 }
@@ -131,16 +128,15 @@ export default function SystemPage() {
             statsLoading={statsLoading}
           />
           <HealthCard
-            name="Redis"
-            status={health.checks.redis}
-            stats={stats?.redis}
+            name="Storage"
+            status={health.checks.storage}
+            stats={stats?.storage}
             statsLoading={statsLoading}
           />
           <HealthCard
-            name="MinIO"
-            status={health.checks.minio}
-            stats={stats?.minio}
-            statsLoading={statsLoading}
+            name="Tika"
+            status={health.checks.tika}
+            statsLoading={false}
           />
         </div>
       )}

@@ -1,6 +1,7 @@
 """Pipeline orchestrator — enqueue stages, advance pipeline, handle failures."""
 
 import logging
+import posixpath
 import uuid
 from datetime import datetime, timezone
 
@@ -12,6 +13,11 @@ from harbor_clerk.models import DocumentVersion, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _version_filename(version: DocumentVersion) -> str:
+    """Extract original filename from the object key (e.g. 'originals/versions/<id>/report.pdf' → 'report.pdf')."""
+    return posixpath.basename(version.original_object_key)
 
 # stage → (queue_name, timeout_seconds, version_status_while_running)
 STAGE_CONFIG: dict[JobStage, tuple[str, int, VersionStatus]] = {
@@ -79,6 +85,8 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
 
         session.commit()
 
+        filename = _version_filename(version)
+
         # Notify workers on per-queue channel for instant wakeup
         session.execute(
             text("SELECT pg_notify(:channel, :payload)"),
@@ -88,7 +96,7 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
     finally:
         session.close()
 
-    publish_job_event(version_id, stage.value, "queued")
+    publish_job_event(version_id, stage.value, "queued", filename=filename)
     logger.info("Enqueued %s for version %s on queue %s", stage.value, version_id, queue_name)
 
 
@@ -140,7 +148,7 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
                     existing.metrics = {"skipped": True}
                 version.status = VersionStatus.ocr_done
                 session.commit()
-                publish_job_event(version_id, "ocr", "done")
+                publish_job_event(version_id, "ocr", "done", filename=_version_filename(version))
                 continue
 
             session.close()
@@ -171,12 +179,13 @@ def mark_stage_done(version_id: uuid.UUID, stage: JobStage) -> None:
             select(DocumentVersion).where(DocumentVersion.version_id == version_id)
         ).scalar_one()
         version.status = done_status
+        filename = _version_filename(version)
 
         session.commit()
     finally:
         session.close()
 
-    publish_job_event(version_id, stage.value, "done")
+    publish_job_event(version_id, stage.value, "done", filename=filename)
     logger.info("Stage %s done for version %s", stage.value, version_id)
 
     # Advance to next stage (unless this was finalize)
@@ -187,6 +196,7 @@ def mark_stage_done(version_id: uuid.UUID, stage: JobStage) -> None:
 def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> bool:
     """Check that job hasn't been cancelled. Returns False if errored/cancelled."""
     session = get_sync_session()
+    filename = None
     try:
         job = session.execute(
             select(IngestionJob).where(
@@ -197,11 +207,15 @@ def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> bool:
         if job.status == JobStatus.error:
             logger.info("Skipping %s for version %s — already cancelled/errored", stage.value, version_id)
             return False
+        version = session.execute(
+            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
+        ).scalar_one()
+        filename = _version_filename(version)
         session.commit()
     finally:
         session.close()
 
-    publish_job_event(version_id, stage.value, "running")
+    publish_job_event(version_id, stage.value, "running", filename=filename)
     return True
 
 
@@ -210,6 +224,7 @@ def cancel_version_jobs(version_id: uuid.UUID) -> int:
     session = get_sync_session()
     cancelled = 0
     cancelled_jobs: list[IngestionJob] = []
+    filename = None
     try:
         jobs = session.execute(
             select(IngestionJob).where(
@@ -229,9 +244,11 @@ def cancel_version_jobs(version_id: uuid.UUID) -> int:
         version = session.execute(
             select(DocumentVersion).where(DocumentVersion.version_id == version_id)
         ).scalar_one_or_none()
-        if version and version.status not in (VersionStatus.ready, VersionStatus.error):
-            version.status = VersionStatus.error
-            version.error = "Cancelled by user"
+        if version:
+            filename = _version_filename(version)
+            if version.status not in (VersionStatus.ready, VersionStatus.error):
+                version.status = VersionStatus.error
+                version.error = "Cancelled by user"
 
         session.commit()
     finally:
@@ -239,6 +256,6 @@ def cancel_version_jobs(version_id: uuid.UUID) -> int:
 
     # Publish SSE events so frontend updates immediately
     for j in cancelled_jobs:
-        publish_job_event(version_id, j.stage.value, "error", error="Cancelled by user")
+        publish_job_event(version_id, j.stage.value, "error", error="Cancelled by user", filename=filename)
 
     return cancelled

@@ -51,3 +51,4 @@ class ModelOut(BaseModel):
     supports_tools: bool
     downloaded: bool
     active: bool
+    downloading: bool = False

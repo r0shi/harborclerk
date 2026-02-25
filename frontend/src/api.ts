@@ -100,6 +100,23 @@ export async function postForm<T = unknown>(
   return res.json()
 }
 
+export async function put<T = unknown>(
+  url: string,
+  body?: unknown,
+): Promise<T> {
+  const res = await request(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new ApiError(res.status, err.detail || res.statusText)
+  }
+  if (res.status === 204) return undefined as T
+  return res.json()
+}
+
 export async function patch<T = unknown>(
   url: string,
   body?: unknown,

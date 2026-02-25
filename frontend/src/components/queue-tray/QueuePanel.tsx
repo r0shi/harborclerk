@@ -58,6 +58,7 @@ export default function QueuePanel({ activeJobs, history, onClose }: QueuePanelP
                       <div className="h-2 w-2 animate-pulse rounded-full bg-amber-500 shrink-0" />
                       <span className="text-[13px] font-medium text-[var(--color-text-primary)] truncate">
                         {stageLabel(job.stage)}
+                        {job.filename && <span className="font-normal text-[var(--color-text-secondary)]"> · {job.filename}</span>}
                       </span>
                     </div>
                     {job.progress_total != null && job.progress_total > 0 && (
@@ -99,6 +100,7 @@ export default function QueuePanel({ activeJobs, history, onClose }: QueuePanelP
                     )}
                     <span className="text-[13px] text-[var(--color-text-secondary)] truncate">
                       {stageLabel(entry.stage)}
+                      {entry.filename && <span> · {entry.filename}</span>}
                     </span>
                     <span className="text-[11px] text-[var(--color-text-secondary)] opacity-60 ml-auto shrink-0">
                       {formatAge(entry.finished_at)}

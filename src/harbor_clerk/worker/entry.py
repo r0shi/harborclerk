@@ -113,13 +113,29 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
         session.close()
 
 
+def _lookup_filename(version_id: uuid.UUID) -> str | None:
+    """Look up the original filename for a version."""
+    import posixpath
+    session = get_sync_session()
+    try:
+        version = session.execute(
+            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
+        ).scalar_one_or_none()
+        if version:
+            return posixpath.basename(version.original_object_key)
+        return None
+    finally:
+        session.close()
+
+
 def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
     """Run a stage function with timeout enforcement via signal.alarm() and heartbeat."""
     _, timeout, _ = STAGE_CONFIG[stage]
     func = STAGE_FUNCTIONS[stage]
+    filename = _lookup_filename(version_id)
 
     logger.info("Starting %s for version %s (timeout=%ds)", stage.value, version_id, timeout)
-    publish_job_event(version_id, stage.value, "running")
+    publish_job_event(version_id, stage.value, "running", filename=filename)
 
     # Start heartbeat thread
     stop_heartbeat = threading.Event()
@@ -165,7 +181,7 @@ def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
         finally:
             session.close()
 
-        publish_job_event(version_id, stage.value, "error", error=error_msg)
+        publish_job_event(version_id, stage.value, "error", error=error_msg, filename=filename)
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old_handler)
