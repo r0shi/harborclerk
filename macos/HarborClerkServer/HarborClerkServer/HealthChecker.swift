@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Periodically polls service health checks and updates states.
 @MainActor
@@ -32,7 +33,7 @@ final class HealthChecker {
             if !healthy {
                 service.state = .errored
                 changed = true
-                LogManager.shared.append(service: service.name, text: "Health check failed")
+                Log.logger("health").error("[\(service.name, privacy: .public)] Health check failed")
             }
         }
         if changed {

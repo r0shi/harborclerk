@@ -88,7 +88,7 @@ export default function ChatPage() {
   const handleSubmit = useCallback(
     async (e: FormEvent) => {
       e.preventDefault()
-      const text = input.trim()
+      const text = inputRef.current?.value.trim() ?? ''
       if (!text || isStreaming) return
       setInput('')
 
@@ -110,7 +110,7 @@ export default function ChatPage() {
       await sendMessage(activeConvId, text)
       get<ConversationSummary[]>('/api/chat/conversations').then(setConversations).catch(() => {})
     },
-    [input, isStreaming, conversationId, sendMessage, navigate],
+    [isStreaming, conversationId, sendMessage, navigate],
   )
 
   const handleNewChat = useCallback(() => {

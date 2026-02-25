@@ -24,11 +24,9 @@
 		A100000015 /* PreferencesWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000015; };
 		A100000016 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B100000016; };
 		A100000017 /* LlamaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000017; };
-		A100000018 /* LogWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000018; };
 		AT10000001 /* WorkerCountsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000001; };
 		AT10000002 /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000002; };
 		AT10000003 /* OverallStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000003; };
-		AT10000004 /* LogManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000004; };
 		AT10000005 /* HealthCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000005; };
 		AT10000006 /* ServiceConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000006; };
 		AT10000007 /* BundleResourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000007; };
@@ -63,14 +61,12 @@
 		B100000016 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C100000001 /* HarborClerkServer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HarborClerkServer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B100000017 /* LlamaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LlamaService.swift; sourceTree = "<group>"; };
-		B100000018 /* LogWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogWindow.swift; sourceTree = "<group>"; };
 		D100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D100000002 /* HarborClerkServer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerkServer.entitlements; sourceTree = "<group>"; };
 		CT10000001 /* HarborClerkServerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HarborClerkServerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BT10000001 /* WorkerCountsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkerCountsTests.swift; sourceTree = "<group>"; };
 		BT10000002 /* AppSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsTests.swift; sourceTree = "<group>"; };
 		BT10000003 /* OverallStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverallStateTests.swift; sourceTree = "<group>"; };
-		BT10000004 /* LogManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManagerTests.swift; sourceTree = "<group>"; };
 		BT10000005 /* HealthCheckerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheckerTests.swift; sourceTree = "<group>"; };
 		BT10000006 /* ServiceConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConfigTests.swift; sourceTree = "<group>"; };
 		BT10000007 /* BundleResourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleResourceTests.swift; sourceTree = "<group>"; };
@@ -114,7 +110,6 @@
 				B100000011 /* HealthChecker.swift */,
 				B100000012 /* LogManager.swift */,
 				B100000013 /* StatusWindow.swift */,
-				B100000018 /* LogWindow.swift */,
 				B100000014 /* Settings.swift */,
 				B100000015 /* PreferencesWindow.swift */,
 				B100000016 /* Assets.xcassets */,
@@ -153,7 +148,6 @@
 				BT10000001 /* WorkerCountsTests.swift */,
 				BT10000002 /* AppSettingsTests.swift */,
 				BT10000003 /* OverallStateTests.swift */,
-				BT10000004 /* LogManagerTests.swift */,
 				BT10000005 /* HealthCheckerTests.swift */,
 				BT10000006 /* ServiceConfigTests.swift */,
 				BT10000007 /* BundleResourceTests.swift */,
@@ -289,7 +283,6 @@
 				A100000014 /* Settings.swift in Sources */,
 				A100000015 /* PreferencesWindow.swift in Sources */,
 				A100000017 /* LlamaService.swift in Sources */,
-				A100000018 /* LogWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -300,7 +293,6 @@
 				AT10000001 /* WorkerCountsTests.swift in Sources */,
 				AT10000002 /* AppSettingsTests.swift in Sources */,
 				AT10000003 /* OverallStateTests.swift in Sources */,
-				AT10000004 /* LogManagerTests.swift in Sources */,
 				AT10000005 /* HealthCheckerTests.swift in Sources */,
 				AT10000006 /* ServiceConfigTests.swift in Sources */,
 				AT10000007 /* BundleResourceTests.swift in Sources */,

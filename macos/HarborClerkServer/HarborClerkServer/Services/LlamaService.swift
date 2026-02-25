@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 final class LlamaService: ManagedService {
     let name = "LLM"
@@ -19,7 +20,7 @@ final class LlamaService: ManagedService {
         }
 
         guard FileManager.default.fileExists(atPath: modelPath) else {
-            LogManager.shared.append(service: name, text: "Model file not found: \(modelPath)")
+            Log.logger("llm").error("Model file not found: \(modelPath, privacy: .public)")
             state = .errored
             return
         }
@@ -35,15 +36,16 @@ final class LlamaService: ManagedService {
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
 
-        let pipe = LogManager.shared.createPipe(service: name)
+        let pipe = Log.createPipe(category: "llm")
         proc.standardOutput = pipe
         proc.standardError = pipe
 
+        let llmLogger = Log.logger("llm")
         proc.terminationHandler = { [weak self] p in
             Task { @MainActor in
                 if self?.state == .running {
                     self?.state = .errored
-                    LogManager.shared.append(service: "LLM", text: "Process exited unexpectedly (\(p.terminationStatus))")
+                    llmLogger.error("Process exited unexpectedly (\(p.terminationStatus, privacy: .public))")
                 }
             }
         }

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - Service protocol & state
 
@@ -164,11 +165,11 @@ final class ServiceManager: ObservableObject {
             // Timeout waiting for health
             service.state = .errored
             notifyStateChanged()
-            LogManager.shared.append(service: service.name, text: "Health check timeout")
+            Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout")
         } catch {
             service.state = .errored
             notifyStateChanged()
-            LogManager.shared.append(service: service.name, text: "Start failed: \(error)")
+            Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Start failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -176,9 +177,9 @@ final class ServiceManager: ObservableObject {
         let runner = MigrationRunner()
         do {
             try await runner.run()
-            LogManager.shared.append(service: "alembic", text: "Migrations complete")
+            Log.logger("alembic").info("Migrations complete")
         } catch {
-            LogManager.shared.append(service: "alembic", text: "Migration failed: \(error)")
+            Log.logger("alembic").error("Migration failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 

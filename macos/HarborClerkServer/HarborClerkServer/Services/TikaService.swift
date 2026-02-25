@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 final class TikaService: ManagedService {
     let name = "Tika"
@@ -22,15 +23,16 @@ final class TikaService: ManagedService {
             "--port", String(port),
         ]
 
-        let pipe = LogManager.shared.createPipe(service: name)
+        let pipe = Log.createPipe(category: "tika")
         proc.standardOutput = pipe
         proc.standardError = pipe
 
+        let tikaLogger = Log.logger("tika")
         proc.terminationHandler = { [weak self] p in
             Task { @MainActor in
                 if self?.state == .running {
                     self?.state = .errored
-                    LogManager.shared.append(service: "Tika", text: "Process exited unexpectedly (\(p.terminationStatus))")
+                    tikaLogger.error("Process exited unexpectedly (\(p.terminationStatus, privacy: .public))")
                 }
             }
         }

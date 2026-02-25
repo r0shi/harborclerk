@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Runs `alembic upgrade head` as a subprocess before the API starts.
 struct MigrationRunner {
@@ -19,7 +20,7 @@ struct MigrationRunner {
             "PYTHONPATH": bundle.appendingPathComponent("venv/lib").path,
         ]
 
-        let pipe = LogManager.shared.createPipe(service: "alembic")
+        let pipe = Log.createPipe(category: "alembic")
         proc.standardOutput = pipe
         proc.standardError = pipe
 

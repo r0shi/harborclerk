@@ -1,10 +1,10 @@
 import Foundation
+import os
 
 final class PostgresService: ManagedService {
     let name = "PostgreSQL"
     var state: ServiceState = .stopped
     private var process: Process?
-    private let logManager = LogManager.shared
 
     private var pgBinDir: URL {
         Bundle.main.resourceURL!.appendingPathComponent("postgres/bin")
@@ -34,7 +34,7 @@ final class PostgresService: ManagedService {
             switch action {
             case .remove(let pid):
                 try? fm.removeItem(at: pidFile)
-                logManager.append(service: name, text: "Removed stale postmaster.pid (pid \(pid))")
+                Log.logger("postgresql").info("Removed stale postmaster.pid (pid \(pid, privacy: .public))")
             case .removeUnparseable:
                 try? fm.removeItem(at: pidFile)
             case .keep:
@@ -54,7 +54,7 @@ final class PostgresService: ManagedService {
         ]
         proc.environment = pgEnvironment()
 
-        let pipe = logManager.createPipe(service: name)
+        let pipe = Log.createPipe(category: "postgresql")
         proc.standardOutput = pipe
         proc.standardError = pipe
 
@@ -103,7 +103,7 @@ final class PostgresService: ManagedService {
         proc.arguments = ["-D", dataDir.path, "-U", "lka", "--encoding=UTF8", "--locale=C"]
         proc.environment = pgEnvironment()
 
-        let pipe = logManager.createPipe(service: name)
+        let pipe = Log.createPipe(category: "postgresql")
         proc.standardOutput = pipe
         proc.standardError = pipe
 

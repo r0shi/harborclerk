@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Base class for Python subprocess services (API, Worker, Embedder).
 class PythonService: ManagedService {
@@ -35,26 +36,24 @@ class PythonService: ManagedService {
         }
         proc.environment = env
 
-        let pipe = LogManager.shared.createPipe(service: name)
+        let category = name.lowercased()
+        let pipe = Log.createPipe(category: category)
         proc.standardOutput = pipe
         proc.standardError = pipe
 
-        let serviceName = self.name
+        let serviceLogger = Log.logger(category)
         proc.terminationHandler = { [weak self] p in
             guard let self = self else { return }
             Task { @MainActor in
                 if self.state == .running && self.restartCount < self.maxRestarts {
                     self.restartCount += 1
                     let delay = pow(2.0, Double(self.restartCount))
-                    LogManager.shared.append(
-                        service: serviceName,
-                        text: "Process exited (\(p.terminationStatus)), restarting in \(Int(delay))s (attempt \(self.restartCount)/\(self.maxRestarts))"
-                    )
+                    serviceLogger.error("Process exited (\(p.terminationStatus, privacy: .public)), restarting in \(Int(delay), privacy: .public)s (attempt \(self.restartCount, privacy: .public)/\(self.maxRestarts, privacy: .public))")
                     try? await Task.sleep(for: .seconds(delay))
                     try? await self.start()
                 } else if self.state == .running {
                     self.state = .errored
-                    LogManager.shared.append(service: serviceName, text: "Process exited, max restarts reached")
+                    serviceLogger.error("Process exited, max restarts reached")
                 }
             }
         }
