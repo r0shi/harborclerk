@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     tika_url: str = Field(default="http://tika:9998")
 
     # API server
-    api_host: str = Field(default="0.0.0.0")
+    api_host: str = Field(default="127.0.0.1")
     api_port: int = Field(default=8000)
     static_dir: str = Field(default="/app/static")
 

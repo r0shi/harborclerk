@@ -68,7 +68,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
     uvicorn.run(
         "embedder.app:app",
-        host=os.environ.get("HOST", "0.0.0.0"),
+        host=os.environ.get("HOST", "127.0.0.1"),
         port=int(os.environ.get("PORT", "8000")),
         reload=False,
         workers=1,

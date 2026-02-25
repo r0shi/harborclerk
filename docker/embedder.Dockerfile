@@ -26,6 +26,7 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /root/.cache /root/.cache
 
 ENV PATH="/app/.venv/bin:$PATH"
+ENV HOST="0.0.0.0"
 WORKDIR /app
 
 EXPOSE 8000
