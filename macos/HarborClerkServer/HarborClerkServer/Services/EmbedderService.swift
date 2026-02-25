@@ -5,7 +5,7 @@ final class EmbedderService: PythonService {
         super.init(name: "Embedder")
     }
 
-    override var executableName: String { "lka-embedder" }
+    override var executableName: String { "harbor-clerk-embedder" }
 
     override var extraEnvironment: [String: String] {
         let modelPath = Bundle.main.resourceURL!

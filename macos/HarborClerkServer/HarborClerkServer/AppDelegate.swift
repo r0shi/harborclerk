@@ -106,10 +106,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusIcon(_ state: ServiceState) {
         guard let button = statusItem.button else { return }
-        if menuBarIcon == nil, let img = NSImage(named: "MenuBarIcon") {
-            img.isTemplate = true
-            img.size = NSSize(width: 18, height: 18)
-            menuBarIcon = img
+        if menuBarIcon == nil {
+            if let img = NSImage(named: "MenuBarIcon") {
+                img.isTemplate = true
+                img.size = NSSize(width: 18, height: 18)
+                menuBarIcon = img
+            } else if let img = NSImage(systemSymbolName: "doc.text.magnifyingglass", accessibilityDescription: "Harbor Clerk") {
+                img.isTemplate = true
+                menuBarIcon = img
+            }
         }
         if let icon = menuBarIcon {
             button.image = icon

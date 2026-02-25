@@ -126,7 +126,23 @@ final class ServiceManager: ObservableObject {
         notifyStateChanged()
     }
 
-    private func startService(_ service: any ManagedService) async {
+    func stopService(_ service: any ManagedService) {
+        service.stop()
+        notifyStateChanged()
+    }
+
+    func restartService(_ service: any ManagedService) async {
+        service.stop()
+        notifyStateChanged()
+        try? await Task.sleep(for: .seconds(1))
+        await startService(service)
+    }
+
+    func startService(_ service: any ManagedService) async {
+        // Ensure Python services have env set
+        if let pySvc = service as? PythonService, pySvc.baseEnvironment.isEmpty {
+            pySvc.baseEnvironment = pythonEnvironment()
+        }
         service.state = .starting
         notifyStateChanged()
 

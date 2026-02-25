@@ -6,7 +6,7 @@ final class TikaService: ManagedService {
     private var process: Process?
 
     private var javaBin: URL {
-        Bundle.main.resourceURL!.appendingPathComponent("java/bin/java")
+        Bundle.main.resourceURL!.appendingPathComponent("java/Contents/Home/bin/java")
     }
     private var tikaJar: URL {
         Bundle.main.resourceURL!.appendingPathComponent("tika/tika-server.jar")

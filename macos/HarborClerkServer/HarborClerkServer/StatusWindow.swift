@@ -18,23 +18,24 @@ struct StatusWindow: View {
                 .padding(.top, 16)
                 .padding(.bottom, 12)
 
-            // Service cards
-            serviceCards
-                .padding(.horizontal, 20)
+            // Service cards (scrollable if many services)
+            ScrollView {
+                serviceCards
+            }
+            .padding(.horizontal, 20)
 
-            Spacer(minLength: 8)
-
-            // Logs section
+            // Logs section (flexible height when expanded)
             logsSection
                 .padding(.horizontal, 20)
+                .padding(.top, 8)
                 .padding(.bottom, 8)
 
-            // Control bar
+            // Control bar (always visible at bottom)
             controlBar
                 .padding(.horizontal, 20)
                 .padding(.bottom, 16)
         }
-        .frame(minWidth: 560, minHeight: 420)
+        .frame(minWidth: 600, minHeight: 480)
     }
 
     // MARK: - Header
@@ -129,13 +130,52 @@ struct StatusWindow: View {
 
             Text(service.name)
                 .font(.body)
+
             Spacer()
+
             Text(service.state.rawValue.capitalized)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .frame(width: 56, alignment: .trailing)
+
+            // Per-service controls
+            HStack(spacing: 4) {
+                Button {
+                    Task { await serviceManager.startService(service) }
+                } label: {
+                    Image(systemName: "play.fill")
+                        .font(.caption2)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.borderless)
+                .disabled(service.state == .running || service.state == .starting)
+                .help("Start")
+
+                Button {
+                    serviceManager.stopService(service)
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.caption2)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.borderless)
+                .disabled(service.state == .stopped || service.state == .stopping)
+                .help("Stop")
+
+                Button {
+                    Task { await serviceManager.restartService(service) }
+                } label: {
+                    Image(systemName: "arrow.trianglehead.2.counterclockwise")
+                        .font(.caption2)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.borderless)
+                .disabled(service.state == .stopped || service.state == .starting || service.state == .stopping)
+                .help("Restart")
+            }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 7)
+        .padding(.vertical, 5)
         .contentShape(Rectangle())
     }
 
@@ -163,6 +203,15 @@ struct StatusWindow: View {
                     Spacer()
                     if logsExpanded {
                         Button {
+                            copyLogs()
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Copy Logs")
+
+                        Button {
                             saveLogs()
                         } label: {
                             Image(systemName: "square.and.arrow.down")
@@ -188,6 +237,7 @@ struct StatusWindow: View {
 
             if logsExpanded {
                 logTerminalView
+                    .frame(minHeight: 120, maxHeight: 250)
             }
         }
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
@@ -195,38 +245,38 @@ struct StatusWindow: View {
 
     private var logTerminalView: some View {
         ScrollViewReader { proxy in
+            // Use a single selectable Text for multi-line select + Cmd+C/Cmd+A
             ScrollView([.vertical, .horizontal]) {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(logManager.lines) { line in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(line.service)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(.cyan)
-                                .frame(width: 80, alignment: .trailing)
-                            Text(line.text)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(.primary.opacity(0.9))
-                                .textSelection(.enabled)
-                                .lineLimit(nil)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .id(line.id)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                Text(logTextAttributed)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .id("logContent")
             }
-            .frame(height: 180)
             .background(.black.opacity(0.55))
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
             .onChange(of: logManager.lines.count) {
-                if let last = logManager.lines.last {
-                    proxy.scrollTo(last.id, anchor: .bottom)
+                withAnimation {
+                    proxy.scrollTo("logContent", anchor: .bottom)
                 }
             }
         }
+    }
+
+    private var logTextAttributed: AttributedString {
+        var result = AttributedString()
+        for line in logManager.lines {
+            var service = AttributedString(line.service.padding(toLength: 12, withPad: " ", startingAt: 0))
+            service.foregroundColor = .cyan
+            var text = AttributedString(line.text + "\n")
+            text.foregroundColor = .init(white: 0.9)
+            result += service + text
+        }
+        return result
     }
 
     // MARK: - Controls
@@ -269,6 +319,15 @@ struct StatusWindow: View {
 
     private func isTransient(_ state: ServiceState) -> Bool {
         state == .starting || state == .stopping
+    }
+
+    private func copyLogs() {
+        let text = logManager.lines.map { line in
+            let ts = ISO8601DateFormatter().string(from: line.timestamp)
+            return "\(ts) [\(line.service)] \(line.text)"
+        }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private func saveLogs() {

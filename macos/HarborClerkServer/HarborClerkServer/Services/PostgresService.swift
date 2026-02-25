@@ -27,6 +27,22 @@ final class PostgresService: ManagedService {
             try await createDatabaseAndExtensions()
         }
 
+        // Remove stale PID file if no process is actually running
+        let pidFile = dataDir.appendingPathComponent("postmaster.pid")
+        if fm.fileExists(atPath: pidFile.path) {
+            if let contents = try? String(contentsOf: pidFile),
+               let pidLine = contents.components(separatedBy: "\n").first,
+               let pid = Int32(pidLine) {
+                // Check if the PID is actually running
+                if kill(pid, 0) != 0 {
+                    try? fm.removeItem(at: pidFile)
+                    logManager.append(service: name, text: "Removed stale postmaster.pid (pid \(pid))")
+                }
+            } else {
+                try? fm.removeItem(at: pidFile)
+            }
+        }
+
         // Start PostgreSQL via pg_ctl
         let pgCtl = pgBinDir.appendingPathComponent("pg_ctl")
         let proc = Process()
