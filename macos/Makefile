@@ -86,5 +86,5 @@ sign:
 # ── Cleanup ──
 
 clean:
-	rm -rf $(BUILD) || (find $(BUILD) -name '.DS_Store' -delete 2>/dev/null; rm -rf $(BUILD))
+	rm -rf $(BUILD) 2>/dev/null; rm -rf $(BUILD) 2>/dev/null; true
 	@echo "==> Build artifacts cleaned"
