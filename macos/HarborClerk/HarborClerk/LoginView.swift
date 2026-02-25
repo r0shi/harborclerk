@@ -75,6 +75,7 @@ struct LoginView: View {
             // Pre-fill email from Keychain if available
             if let creds = KeychainManager.load() {
                 email = creds.email
+                password = creds.password
             }
             focusedField = email.isEmpty ? .email : .password
         }

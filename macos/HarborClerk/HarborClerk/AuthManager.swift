@@ -18,6 +18,8 @@ final class AuthManager: ObservableObject {
 
     let baseURL: URL
 
+    private static let loggedOutKey = "didLogOut"
+
     init(baseURL: URL) {
         self.baseURL = baseURL
     }
@@ -33,8 +35,9 @@ final class AuthManager: ObservableObject {
             return
         }
 
-        // 2. Try auto-login from Keychain
-        if let creds = KeychainManager.load() {
+        // 2. Try auto-login from Keychain (skip if user explicitly logged out)
+        let wasLoggedOut = UserDefaults.standard.bool(forKey: Self.loggedOutKey)
+        if !wasLoggedOut, let creds = KeychainManager.load() {
             do {
                 try await performLogin(email: creds.email, password: creds.password)
                 return // state is now .authenticated
@@ -56,6 +59,8 @@ final class AuthManager: ObservableObject {
             if rememberMe {
                 KeychainManager.save(email: email, password: password)
             }
+            // Clear logged-out flag on successful login
+            UserDefaults.standard.removeObject(forKey: Self.loggedOutKey)
         } catch let error as LoginError {
             state = .loginRequired(errorMessage: error.message)
         } catch {
@@ -73,6 +78,8 @@ final class AuthManager: ObservableObject {
                 dataStore.httpCookieStore.delete(cookie)
             }
         }
+        // Remember that user explicitly logged out so we don't auto-login on next launch
+        UserDefaults.standard.set(true, forKey: Self.loggedOutKey)
         state = .loginRequired(errorMessage: nil)
     }
 

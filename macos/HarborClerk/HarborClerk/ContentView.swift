@@ -105,10 +105,10 @@ struct WebView: NSViewRepresentable {
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.uiDelegate = context.coordinator
-        webView.navigationDelegate = context.coordinator
         webView.load(URLRequest(url: url))
 
         context.coordinator.webView = webView
+        context.coordinator.startObservingURL()
         return webView
     }
 
@@ -116,9 +116,10 @@ struct WebView: NSViewRepresentable {
         // Only reload if the base URL changed (not on every SwiftUI update)
     }
 
-    class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate {
+    class Coordinator: NSObject, WKUIDelegate {
         weak var webView: WKWebView?
         private var observers: [NSObjectProtocol] = []
+        private var urlObservation: NSKeyValueObservation?
         private let authManager: AuthManager
 
         init(authManager: AuthManager) {
@@ -141,7 +142,29 @@ struct WebView: NSViewRepresentable {
             )
         }
 
+        /// Observe the webView's URL via KVO to detect client-side (pushState)
+        /// navigations to /login, which WKNavigationDelegate doesn't catch.
+        func startObservingURL() {
+            urlObservation = webView?.observe(\.url, options: [.new]) { [weak self] _, change in
+                guard let self,
+                      let newURL = change.newValue ?? nil,
+                      let path = newURL.path.nilIfEmpty
+                else { return }
+
+                if path == "/login" || path == "/login/" {
+                    Task { @MainActor in
+                        if case .needsSetup = self.authManager.state {
+                            self.authManager.handleSetupComplete()
+                        } else {
+                            self.authManager.handleWebLogout()
+                        }
+                    }
+                }
+            }
+        }
+
         deinit {
+            urlObservation?.invalidate()
             for observer in observers {
                 NotificationCenter.default.removeObserver(observer)
             }
@@ -159,26 +182,9 @@ struct WebView: NSViewRepresentable {
             }
             return nil
         }
-
-        // Intercept navigation to /login — means the web UI logged out (or setup finished)
-        func webView(
-            _ webView: WKWebView,
-            decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
-        ) {
-            if let navURL = navigationAction.request.url,
-               navURL.path == "/login" || navURL.path == "/login/" {
-                decisionHandler(.cancel)
-                Task { @MainActor in
-                    if case .needsSetup = authManager.state {
-                        authManager.handleSetupComplete()
-                    } else {
-                        authManager.handleWebLogout()
-                    }
-                }
-                return
-            }
-            decisionHandler(.allow)
-        }
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
