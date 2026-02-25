@@ -45,6 +45,7 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const skipNextFetchRef = useRef(false)
 
   const {
     messages,
@@ -62,6 +63,10 @@ export default function ChatPage() {
   useEffect(() => {
     if (!conversationId) {
       loadMessages([])
+      return
+    }
+    if (skipNextFetchRef.current) {
+      skipNextFetchRef.current = false
       return
     }
     get<ConversationDetail>(`/api/chat/conversations/${conversationId}`)
@@ -104,6 +109,7 @@ export default function ChatPage() {
         })
         activeConvId = conv.conversation_id
         setConversations((prev) => [conv, ...prev])
+        skipNextFetchRef.current = true
         navigate(`/chat/${activeConvId}`, { replace: true })
       }
 

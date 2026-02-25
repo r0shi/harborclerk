@@ -130,7 +130,7 @@ async def chat_stream(
             yield f"data: {json.dumps({'type': 'error', 'message': f'LLM server error: {e.response.status_code}'})}\n\n"
             return
         except (httpx.ConnectError, httpx.ReadTimeout):
-            yield f"data: {json.dumps({'type': 'error', 'message': 'LLM server unavailable'})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': 'LLM server is not running. Select and activate a model in Settings.'})}\n\n"
             return
 
         # If we got tool calls, execute them and loop

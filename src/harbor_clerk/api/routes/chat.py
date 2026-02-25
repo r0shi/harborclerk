@@ -143,7 +143,7 @@ async def send_message(
     if not settings.llm_model_id:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No LLM model configured",
+            detail="No LLM model configured. Select and activate a model in Settings.",
         )
 
     # Update conversation timestamp
