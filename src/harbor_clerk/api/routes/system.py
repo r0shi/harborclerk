@@ -1,4 +1,5 @@
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -14,7 +15,7 @@ from harbor_clerk.db import get_session
 from harbor_clerk.models import User
 from harbor_clerk.storage import get_storage
 from harbor_clerk.models import Chunk, Document, DocumentPage, DocumentVersion, IngestionJob
-from harbor_clerk.models.enums import JobStatus
+from harbor_clerk.models.enums import JobStage, JobStatus
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
@@ -240,7 +241,7 @@ async def reaper_run(
         return {"reaped": 0}
 
     now = datetime.now(timezone.utc)
-    reaped = 0
+    orphans: list[tuple[uuid.UUID, JobStage]] = []
     for job in running_jobs:
         if job.heartbeat_at is not None:
             # Worker has heartbeat — if stale > 90s, it's dead
@@ -256,20 +257,22 @@ async def reaper_run(
             if elapsed < timeout * 2:
                 continue
 
-        # Orphan detected — re-enqueue
         logger.warning(
             "Reaping orphan job: version=%s stage=%s heartbeat_at=%s",
             job.version_id, job.stage.value, job.heartbeat_at,
         )
-        await session.commit()  # flush before sync enqueue_stage
-        enqueue_stage(job.version_id, job.stage)
-        reaped += 1
+        orphans.append((job.version_id, job.stage))
 
+    # Commit any pending state and log audit before re-enqueuing
     await log_audit(
         session, user_id=admin.id, action="reaper_run",
-        detail={"reaped_count": reaped},
+        detail={"reaped_count": len(orphans)},
     )
     await session.commit()
 
-    logger.info("Reaped %d orphan jobs", reaped)
-    return {"reaped": reaped}
+    # Re-enqueue orphans (each creates its own sync session)
+    for version_id, stage in orphans:
+        enqueue_stage(version_id, stage)
+
+    logger.info("Reaped %d orphan jobs", len(orphans))
+    return {"reaped": len(orphans)}

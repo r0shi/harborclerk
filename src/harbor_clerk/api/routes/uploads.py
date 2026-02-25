@@ -4,6 +4,7 @@ import hashlib
 import io
 import logging
 import mimetypes
+import os
 import uuid
 from datetime import datetime
 
@@ -23,7 +24,7 @@ from harbor_clerk.api.schemas.uploads import (
     UploadStatusResponse,
 )
 from harbor_clerk.audit import log_audit
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import Settings, get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.storage import get_storage
 from harbor_clerk.models import Document, DocumentVersion, Upload
@@ -59,7 +60,9 @@ async def upload_files(
 ):
     settings = get_settings()
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
+    max_batch_bytes = settings.max_batch_size_mb * 1024 * 1024
     results: list[UploadFileResult] = []
+    batch_total = 0
 
     for file in files:
         # Skip files with unsupported extensions
@@ -92,6 +95,13 @@ async def upload_files(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail=f"File '{file.filename}' exceeds {settings.max_file_size_mb}MB limit",
                 )
+
+        batch_total += total_size
+        if batch_total > max_batch_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Batch exceeds {settings.max_batch_size_mb}MB limit",
+            )
 
         sha256_bytes = sha.digest()
         mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
@@ -128,8 +138,9 @@ async def upload_files(
             ))
             continue
 
-        # Store at temp key
-        temp_key = f"tmp/uploads/{uuid.uuid4()}/{file.filename or 'file'}"
+        # Store at temp key — sanitize filename to prevent path traversal
+        safe_name = os.path.basename(file.filename or "file") or "file"
+        temp_key = f"tmp/uploads/{uuid.uuid4()}/{safe_name}"
         content = b"".join(chunks)
         storage = get_storage()
         storage.put_object(
@@ -171,7 +182,7 @@ async def _confirm_single(
     action: str,
     existing_doc_id: str | None,
     principal: Principal,
-    settings: object,
+    settings: Settings,
 ) -> ConfirmUploadResponse:
     """Core confirm logic shared by single and batch endpoints.
 
@@ -232,7 +243,8 @@ async def _confirm_single(
     session.add(version)
     await session.flush()
 
-    canonical_key = f"versions/{version.version_id}/{upload.original_filename}"
+    safe_name = os.path.basename(upload.original_filename) or "file"
+    canonical_key = f"versions/{version.version_id}/{safe_name}"
     storage = get_storage()
     storage.copy_and_delete(
         upload.minio_bucket, upload.minio_object_key,

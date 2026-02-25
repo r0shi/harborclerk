@@ -6,6 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from harbor_clerk.api.deps import Principal, require_admin, require_read_access
 from harbor_clerk.api.schemas.documents import (
@@ -33,6 +34,7 @@ async def list_documents(
     result = await session.execute(
         select(Document)
         .where(Document.status == "active")
+        .options(selectinload(Document.versions))
         .order_by(Document.updated_at.desc())
         .limit(200)
     )
@@ -70,7 +72,9 @@ async def get_document(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Document).where(Document.doc_id == doc_id)
+        select(Document)
+        .where(Document.doc_id == doc_id)
+        .options(selectinload(Document.versions))
     )
     doc = result.scalar_one_or_none()
     if doc is None:
@@ -136,7 +140,9 @@ async def get_document_content(
 ):
     # Get document + latest version
     result = await session.execute(
-        select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+        select(Document)
+        .where(Document.doc_id == doc_id, Document.status == "active")
+        .options(selectinload(Document.versions))
     )
     doc = result.scalar_one_or_none()
     if doc is None:
@@ -236,7 +242,9 @@ async def reprocess_document(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+        select(Document)
+        .where(Document.doc_id == doc_id, Document.status == "active")
+        .options(selectinload(Document.versions))
     )
     doc = result.scalar_one_or_none()
     if doc is None:
@@ -276,7 +284,9 @@ async def cancel_processing(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+        select(Document)
+        .where(Document.doc_id == doc_id, Document.status == "active")
+        .options(selectinload(Document.versions))
     )
     doc = result.scalar_one_or_none()
     if doc is None:

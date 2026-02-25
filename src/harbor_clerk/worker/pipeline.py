@@ -151,10 +151,14 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
                 publish_job_event(version_id, "ocr", "done", filename=_version_filename(version))
                 continue
 
+            # Commit OCR-skip changes (if any) before enqueuing next stage,
+            # which creates its own session.
+            session.commit()
             session.close()
             enqueue_stage(version_id, stage)
             return
 
+        session.commit()
         logger.info("Pipeline complete for version %s", version_id)
     finally:
         session.close()

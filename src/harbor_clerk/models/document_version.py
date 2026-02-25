@@ -41,5 +41,5 @@ class DocumentVersion(Base):
 
     document = relationship("Document", back_populates="versions")
     pages = relationship(
-        "DocumentPage", back_populates="version", lazy="selectin",
+        "DocumentPage", back_populates="version",
     )

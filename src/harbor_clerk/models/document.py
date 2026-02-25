@@ -24,5 +24,5 @@ class Document(Base):
     updated_at: Mapped[updated_at]
 
     versions = relationship(
-        "DocumentVersion", back_populates="document", lazy="selectin",
+        "DocumentVersion", back_populates="document",
     )
