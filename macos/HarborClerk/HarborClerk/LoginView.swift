@@ -52,7 +52,7 @@ struct LoginView: View {
                         .focused($focusedField, equals: .password)
                         .onSubmit { submit() }
 
-                    Toggle("Remember me", isOn: $rememberMe)
+                    Toggle("Save to Keychain", isOn: $rememberMe)
                         .toggleStyle(.checkbox)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

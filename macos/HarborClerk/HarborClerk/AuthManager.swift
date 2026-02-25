@@ -105,7 +105,14 @@ final class AuthManager: ObservableObject {
         let body = ["email": email, "password": password]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        // Use a session that does NOT handle cookies itself, so the raw
+        // Set-Cookie header is preserved in the response for us to parse.
+        let ephemeral = URLSessionConfiguration.ephemeral
+        ephemeral.httpCookieAcceptPolicy = .never
+        ephemeral.httpShouldSetCookies = false
+        let session = URLSession(configuration: ephemeral)
+
+        let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LoginError(message: "Unexpected response")
         }
@@ -120,29 +127,67 @@ final class AuthManager: ObservableObject {
             throw LoginError(message: "Login failed (HTTP \(httpResponse.statusCode))")
         }
 
-        // Transfer the refresh_token cookie from URLSession's shared cookie storage
-        // into WKWebView's cookie store so the React SPA can authenticate.
-        await injectCookiesIntoWebView()
+        // Parse the JSON to verify login succeeded (we don't need the access_token
+        // since the SPA will get its own via the refresh cookie).
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["access_token"] != nil else {
+            throw LoginError(message: "Unexpected response format")
+        }
+
+        // Extract Set-Cookie from response headers and inject into WKWebView.
+        await injectCookiesFromResponse(httpResponse, url: url)
         state = .authenticated
     }
 
-    private func injectCookiesIntoWebView() async {
-        guard let cookies = HTTPCookieStorage.shared.cookies(for: baseURL) else { return }
-
-        let webCookieStore = WKWebsiteDataStore.default().httpCookieStore
-        for cookie in cookies {
-            // If the server hasn't been updated yet and sends Secure on http://localhost,
-            // create a non-Secure copy so the cookie actually sticks in WKWebView.
-            var props = cookie.properties ?? [:]
-            if baseURL.scheme == "http" {
-                props.removeValue(forKey: .secure)
-            }
-            if let fixedCookie = HTTPCookie(properties: props) {
-                await webCookieStore.setCookie(fixedCookie)
-            } else {
-                await webCookieStore.setCookie(cookie)
+    private func injectCookiesFromResponse(_ response: HTTPURLResponse, url: URL) async {
+        // Extract the raw Set-Cookie header value.
+        let headerFields = response.allHeaderFields
+        var setCookieValue: String? = nil
+        for (key, value) in headerFields {
+            if let k = key as? String, k.lowercased() == "set-cookie", let v = value as? String {
+                setCookieValue = v
+                break
             }
         }
+        guard let rawHeader = setCookieValue else { return }
+
+        // HTTPCookie.cookies(withResponseHeaderFields:for:) silently rejects
+        // Secure cookies when the URL scheme is http. We must parse manually.
+        let parts = rawHeader.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let nameValue = parts.first, let eqIdx = nameValue.firstIndex(of: "=") else { return }
+
+        let cookieName = String(nameValue[nameValue.startIndex..<eqIdx])
+        let cookieValue = String(nameValue[nameValue.index(after: eqIdx)...])
+
+        var props: [HTTPCookiePropertyKey: Any] = [
+            .name: cookieName,
+            .value: cookieValue,
+            .domain: url.host ?? "localhost",
+            .path: "/api/auth",
+        ]
+
+        for part in parts.dropFirst() {
+            let lower = part.lowercased()
+            if lower.hasPrefix("path=") {
+                props[.path] = String(part.dropFirst(5))
+            } else if lower.hasPrefix("max-age=") {
+                if let seconds = Int(part.dropFirst(8)) {
+                    props[.maximumAge] = String(seconds)
+                }
+            } else if lower.hasPrefix("domain=") {
+                props[.domain] = String(part.dropFirst(7))
+            } else if lower == "secure" {
+                // Only set Secure when actually on HTTPS
+                if baseURL.scheme == "https" {
+                    props[.secure] = "TRUE"
+                }
+            }
+        }
+
+        guard let cookie = HTTPCookie(properties: props) else { return }
+
+        let webCookieStore = WKWebsiteDataStore.default().httpCookieStore
+        await webCookieStore.setCookie(cookie)
     }
 }
 
