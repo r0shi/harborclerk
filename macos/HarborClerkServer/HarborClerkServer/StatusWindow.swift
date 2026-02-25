@@ -35,7 +35,6 @@ struct StatusWindow: View {
                 .padding(.bottom, 16)
         }
         .frame(minWidth: 560, minHeight: 420)
-        .background(.clear)
     }
 
     // MARK: - Header

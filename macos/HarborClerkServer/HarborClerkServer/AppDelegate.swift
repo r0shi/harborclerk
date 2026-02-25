@@ -106,12 +106,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusIcon(_ state: ServiceState) {
         guard let button = statusItem.button else { return }
-        if menuBarIcon == nil, let url = Bundle.main.url(forResource: "menubar_icon", withExtension: "png") {
-            if let img = NSImage(contentsOf: url) {
-                img.isTemplate = true
-                img.size = NSSize(width: 18, height: 18)
-                menuBarIcon = img
-            }
+        if menuBarIcon == nil, let img = NSImage(named: "MenuBarIcon") {
+            img.isTemplate = true
+            img.size = NSSize(width: 18, height: 18)
+            menuBarIcon = img
         }
         if let icon = menuBarIcon {
             button.image = icon
@@ -195,30 +193,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Glass Window Configuration
 
     private func configureGlassWindow(_ window: NSWindow, size: NSSize) {
-        window.isOpaque = false
-        window.backgroundColor = .clear
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.toolbarStyle = .unified
         window.setContentSize(size)
         window.center()
-
-        // Add NSVisualEffectView as background for window-level vibrancy
-        let visualEffect = NSVisualEffectView()
-        visualEffect.material = .underWindowBackground
-        visualEffect.blendingMode = .behindWindow
-        visualEffect.state = .active
-        visualEffect.translatesAutoresizingMaskIntoConstraints = false
-
-        if let contentView = window.contentView {
-            contentView.addSubview(visualEffect, positioned: .below, relativeTo: nil)
-            NSLayoutConstraint.activate([
-                visualEffect.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                visualEffect.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-                visualEffect.topAnchor.constraint(equalTo: contentView.topAnchor),
-                visualEffect.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            ])
-        }
     }
 
     @objc private func handlePreferencesRestart() {

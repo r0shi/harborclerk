@@ -172,7 +172,6 @@ struct PreferencesWindow: View {
             }
         }
         .frame(width: 480, height: needsRestart ? 650 : 600)
-        .background(.clear)
         .animation(.easeInOut(duration: 0.25), value: needsRestart)
         .onAppear { captureInitial() }
     }
