@@ -30,16 +30,15 @@ final class PostgresService: ManagedService {
         // Remove stale PID file if no process is actually running
         let pidFile = dataDir.appendingPathComponent("postmaster.pid")
         if fm.fileExists(atPath: pidFile.path) {
-            if let contents = try? String(contentsOf: pidFile),
-               let pidLine = contents.components(separatedBy: "\n").first,
-               let pid = Int32(pidLine) {
-                // Check if the PID is actually running
-                if kill(pid, 0) != 0 {
-                    try? fm.removeItem(at: pidFile)
-                    logManager.append(service: name, text: "Removed stale postmaster.pid (pid \(pid))")
-                }
-            } else {
+            let action = Self.stalePidAction(pidFileContents: try? String(contentsOf: pidFile))
+            switch action {
+            case .remove(let pid):
                 try? fm.removeItem(at: pidFile)
+                logManager.append(service: name, text: "Removed stale postmaster.pid (pid \(pid))")
+            case .removeUnparseable:
+                try? fm.removeItem(at: pidFile)
+            case .keep:
+                break
             }
         }
 
@@ -171,6 +170,29 @@ final class PostgresService: ManagedService {
         stopProc.environment = pgEnvironment()
         try? stopProc.run()
         stopProc.waitUntilExit()
+    }
+
+    // MARK: - Stale PID Detection
+
+    enum StalePidAction: Equatable {
+        case keep           // PID is alive, don't touch
+        case remove(Int32)  // PID is dead, remove file
+        case removeUnparseable  // Can't parse file, remove it
+    }
+
+    /// Determine what to do with a postmaster.pid file.
+    /// Extracted as static for testability.
+    nonisolated static func stalePidAction(pidFileContents: String?) -> StalePidAction {
+        guard let contents = pidFileContents,
+              let pidLine = contents.components(separatedBy: "\n").first,
+              let pid = Int32(pidLine) else {
+            return .removeUnparseable
+        }
+        // kill(pid, 0) returns 0 if process exists, -1 if not
+        if kill(pid, 0) != 0 {
+            return .remove(pid)
+        }
+        return .keep
     }
 
     private func pgEnvironment() -> [String: String] {

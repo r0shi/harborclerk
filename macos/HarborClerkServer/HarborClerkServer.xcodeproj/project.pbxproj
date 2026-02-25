@@ -29,6 +29,7 @@
 		AT10000003 /* OverallStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000003; };
 		AT10000004 /* LogManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000004; };
 		AT10000005 /* HealthCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000005; };
+		AT10000006 /* ServiceConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000006; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -68,6 +69,7 @@
 		BT10000003 /* OverallStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverallStateTests.swift; sourceTree = "<group>"; };
 		BT10000004 /* LogManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManagerTests.swift; sourceTree = "<group>"; };
 		BT10000005 /* HealthCheckerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheckerTests.swift; sourceTree = "<group>"; };
+		BT10000006 /* ServiceConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConfigTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -148,6 +150,7 @@
 				BT10000003 /* OverallStateTests.swift */,
 				BT10000004 /* LogManagerTests.swift */,
 				BT10000005 /* HealthCheckerTests.swift */,
+				BT10000006 /* ServiceConfigTests.swift */,
 			);
 			path = HarborClerkServerTests;
 			sourceTree = "<group>";
@@ -270,6 +273,7 @@
 				AT10000003 /* OverallStateTests.swift in Sources */,
 				AT10000004 /* LogManagerTests.swift in Sources */,
 				AT10000005 /* HealthCheckerTests.swift in Sources */,
+				AT10000006 /* ServiceConfigTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
