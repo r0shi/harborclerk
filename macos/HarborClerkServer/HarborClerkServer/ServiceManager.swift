@@ -15,7 +15,7 @@ protocol ManagedService: AnyObject {
     var name: String { get }
     var state: ServiceState { get set }
     func start() async throws
-    func stop()
+    func stop() async
     func healthCheck() async -> Bool
 }
 
@@ -125,23 +125,23 @@ final class ServiceManager: ObservableObject {
         notifyStateChanged()
     }
 
-    func stopAll() {
+    func stopAll() async {
         stopConfigWatcher()
         // Reverse order
         let reversed = Array(services.reversed())
         for service in reversed {
-            service.stop()
+            await service.stop()
         }
         notifyStateChanged()
     }
 
-    func stopService(_ service: any ManagedService) {
-        service.stop()
+    func stopService(_ service: any ManagedService) async {
+        await service.stop()
         notifyStateChanged()
     }
 
     func restartService(_ service: any ManagedService) async {
-        service.stop()
+        await service.stop()
         notifyStateChanged()
         try? await Task.sleep(for: .seconds(1))
         await startService(service)
@@ -164,6 +164,10 @@ final class ServiceManager: ObservableObject {
             while Date() < deadline {
                 if await service.healthCheck() {
                     service.state = .running
+                    // Reset crash counter now that the service is confirmed healthy
+                    if let pySvc = service as? PythonService {
+                        pySvc.resetRestartCount()
+                    }
                     notifyStateChanged()
                     return
                 }
@@ -257,7 +261,7 @@ final class ServiceManager: ObservableObject {
         Task {
             // Stop current llama-server if running
             if llamaService.state == .running || llamaService.state == .starting {
-                llamaService.stop()
+                await llamaService.stop()
                 notifyStateChanged()
                 try? await Task.sleep(for: .seconds(1))
             }

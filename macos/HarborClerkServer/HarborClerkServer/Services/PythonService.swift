@@ -60,10 +60,14 @@ class PythonService: ManagedService {
 
         try proc.run()
         process = proc
+    }
+
+    /// Reset the restart counter. Called by ServiceManager after health check passes.
+    func resetRestartCount() {
         restartCount = 0
     }
 
-    func stop() {
+    func stop() async {
         state = .stopping
         guard let proc = process, proc.isRunning else {
             state = .stopped
@@ -75,7 +79,12 @@ class PythonService: ManagedService {
                 self?.process?.interrupt()
             }
         }
-        proc.waitUntilExit()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                proc.waitUntilExit()
+                c.resume()
+            }
+        }
         process = nil
         state = .stopped
     }

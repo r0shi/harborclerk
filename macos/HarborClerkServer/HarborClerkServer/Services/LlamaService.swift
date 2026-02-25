@@ -54,15 +54,24 @@ final class LlamaService: ManagedService {
         process = proc
     }
 
-    func stop() {
+    func stop() async {
         state = .stopping
-        process?.terminate()
+        guard let proc = process else {
+            state = .stopped
+            return
+        }
+        proc.terminate()
         DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in
             if self?.process?.isRunning == true {
                 self?.process?.interrupt()
             }
         }
-        process?.waitUntilExit()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                proc.waitUntilExit()
+                c.resume()
+            }
+        }
         process = nil
         state = .stopped
     }

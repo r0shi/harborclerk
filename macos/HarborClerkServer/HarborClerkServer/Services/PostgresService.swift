@@ -66,7 +66,7 @@ final class PostgresService: ManagedService {
         }
     }
 
-    func stop() {
+    func stop() async {
         state = .stopping
         let pgCtl = pgBinDir.appendingPathComponent("pg_ctl")
         let proc = Process()
@@ -74,7 +74,12 @@ final class PostgresService: ManagedService {
         proc.arguments = ["-D", dataDir.path, "stop", "-m", "fast"]
         proc.environment = pgEnvironment()
         try? proc.run()
-        proc.waitUntilExit()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                proc.waitUntilExit()
+                c.resume()
+            }
+        }
         state = .stopped
     }
 

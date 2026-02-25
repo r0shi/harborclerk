@@ -41,16 +41,25 @@ final class TikaService: ManagedService {
         process = proc
     }
 
-    func stop() {
+    func stop() async {
         state = .stopping
-        process?.terminate()
+        guard let proc = process else {
+            state = .stopped
+            return
+        }
+        proc.terminate()
         // Give 5s grace for JVM shutdown, then force kill
         DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in
             if self?.process?.isRunning == true {
                 self?.process?.interrupt()
             }
         }
-        process?.waitUntilExit()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                proc.waitUntilExit()
+                c.resume()
+            }
+        }
         process = nil
         state = .stopped
     }

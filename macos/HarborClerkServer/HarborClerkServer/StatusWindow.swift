@@ -146,7 +146,7 @@ struct StatusWindow: View {
                 .help("Start")
 
                 Button {
-                    serviceManager.stopService(service)
+                    Task { await serviceManager.stopService(service) }
                 } label: {
                     Image(systemName: "stop.fill")
                         .font(.caption2)
@@ -188,7 +188,7 @@ struct StatusWindow: View {
             .tint(.accentColor)
 
             Button {
-                serviceManager.stopAll()
+                Task { await serviceManager.stopAll() }
             } label: {
                 Label("Stop All", systemImage: "stop.fill")
                     .frame(minWidth: 100)

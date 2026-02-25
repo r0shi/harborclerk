@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import tempfile
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
@@ -91,14 +93,27 @@ def sync_native_config(key: str, value: str) -> None:
     if not path:
         return
     try:
-        from pathlib import Path
-
-        p = Path(path)
         data: dict = {}
-        if p.exists():
-            data = json.loads(p.read_text())
+        if os.path.exists(path):
+            with open(path) as f:
+                data = json.loads(f.read())
         data[key] = value
-        p.write_text(json.dumps(data, indent=2) + "\n")
+        content = json.dumps(data, indent=2) + "\n"
+
+        # Atomic write: temp file in same dir then rename (same filesystem)
+        dir_name = os.path.dirname(path)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(tmp_path, path)
+        except BaseException:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+
         logger.info("Synced %s=%r to %s", key, value, path)
     except Exception:
         logger.exception("Failed to sync native config")

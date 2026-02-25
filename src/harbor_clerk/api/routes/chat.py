@@ -148,9 +148,10 @@ async def send_message(
 
     # Update conversation timestamp
     conv.updated_at = func.now()
+    await session.commit()
 
     return StreamingResponse(
-        chat_stream(conv_id, body.content, session),
+        chat_stream(conv_id, body.content),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -201,8 +202,13 @@ async def start_model_download(
         return {"status": "already_downloading"}
 
     # Run download in background thread to avoid blocking
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, download_model, model_id)
+    def _download_with_logging():
+        try:
+            download_model(model_id)
+        except Exception:
+            logger.exception("Background model download failed for %s", model_id)
+
+    asyncio.get_running_loop().run_in_executor(None, _download_with_logging)
 
     return {"status": "downloading"}
 

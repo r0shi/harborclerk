@@ -41,7 +41,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         healthChecker.stopPolling()
-        serviceManager.stopAll()
+        // stopAll is async; pump RunLoop so MainActor tasks can execute
+        var finished = false
+        Task {
+            await serviceManager.stopAll()
+            finished = true
+        }
+        while !finished {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
+        }
     }
 
     // MARK: - Status Item
@@ -166,7 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func stopAllServices() {
-        serviceManager.stopAll()
+        Task { await serviceManager.stopAll() }
     }
 
     @objc private func showStatusWindow() {
@@ -218,12 +226,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handlePreferencesRestart() {
-        serviceManager.stopAll()
-        Task { await serviceManager.startAll() }
+        Task {
+            await serviceManager.stopAll()
+            await serviceManager.startAll()
+        }
     }
 
     @objc private func quitApp() {
-        serviceManager.stopAll()
-        NSApp.terminate(nil)
+        Task {
+            await serviceManager.stopAll()
+            NSApp.terminate(nil)
+        }
     }
 }
