@@ -31,6 +31,7 @@
 		AT10000004 /* LogManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000004; };
 		AT10000005 /* HealthCheckerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000005; };
 		AT10000006 /* ServiceConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000006; };
+		AT10000007 /* BundleResourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000007; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -72,6 +73,7 @@
 		BT10000004 /* LogManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManagerTests.swift; sourceTree = "<group>"; };
 		BT10000005 /* HealthCheckerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthCheckerTests.swift; sourceTree = "<group>"; };
 		BT10000006 /* ServiceConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceConfigTests.swift; sourceTree = "<group>"; };
+		BT10000007 /* BundleResourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleResourceTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -154,6 +156,7 @@
 				BT10000004 /* LogManagerTests.swift */,
 				BT10000005 /* HealthCheckerTests.swift */,
 				BT10000006 /* ServiceConfigTests.swift */,
+				BT10000007 /* BundleResourceTests.swift */,
 			);
 			path = HarborClerkServerTests;
 			sourceTree = "<group>";
@@ -168,6 +171,7 @@
 				G100000002 /* Sources */,
 				E100000001 /* Frameworks */,
 				G100000003 /* Resources */,
+				SP10000001 /* Copy Frontend Dist */,
 			);
 			buildRules = (
 			);
@@ -243,6 +247,27 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		SP10000001 /* Copy Frontend Dist */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Frontend Dist";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "FRONTEND_SRC=\"${PROJECT_DIR}/../../frontend/dist\"\nFRONTEND_DEST=\"${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/Resources/frontend-dist\"\n\nif [ -d \"$FRONTEND_SRC\" ]; then\n    mkdir -p \"$FRONTEND_DEST\"\n    rsync -a --delete \"$FRONTEND_SRC/\" \"$FRONTEND_DEST/\"\n    echo \"note: Copied frontend-dist from $FRONTEND_SRC\"\nelse\n    echo \"warning: frontend/dist not found — run 'cd frontend && npm run build' first\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		G100000002 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -278,6 +303,7 @@
 				AT10000004 /* LogManagerTests.swift in Sources */,
 				AT10000005 /* HealthCheckerTests.swift in Sources */,
 				AT10000006 /* ServiceConfigTests.swift in Sources */,
+				AT10000007 /* BundleResourceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

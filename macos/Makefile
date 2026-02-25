@@ -3,6 +3,9 @@
 #        make deps       (build PostgreSQL, Tesseract, Tika/JRE)
 #        make venv       (build Python + venv)
 #        make model      (download embedding model)
+#        make frontend   (build React SPA)
+#        make dev        (frontend + Xcode debug build)
+#        make test       (run Xcode tests)
 #        make apps       (build Xcode projects + assemble bundles)
 #        make sign       (codesign + notarize)
 #        make clean      (remove build artifacts)
@@ -10,7 +13,7 @@
 SCRIPTS := scripts
 BUILD   := build
 
-.PHONY: all deps postgres tika tools venv model llama apps sign clean
+.PHONY: all deps postgres tika tools venv model llama frontend dev test apps sign clean
 
 all: deps venv model llama apps
 
@@ -49,9 +52,28 @@ llama:
 	@echo "==> Building llama-server"
 	DEST_DIR=$(BUILD)/llama BUILD_DIR=$(BUILD)/llama-build bash $(SCRIPTS)/build-llama.sh
 
+# ── Frontend ──
+
+frontend:
+	@echo "==> Building frontend"
+	cd ../frontend && npm ci && npm run build
+
+# ── Dev (debug build with frontend, no deps/venv/model needed) ──
+
+dev: frontend
+	@echo "==> Building Xcode project (Debug)"
+	cd HarborClerkServer && xcodebuild -project HarborClerkServer.xcodeproj \
+		-scheme HarborClerkServer -configuration Debug build
+
+# ── Test ──
+
+test:
+	cd HarborClerkServer && xcodebuild -project HarborClerkServer.xcodeproj \
+		-scheme HarborClerkServer -configuration Debug test
+
 # ── Apps ──
 
-apps:
+apps: frontend
 	@echo "==> Building and packaging apps"
 	BUILD_DIR=$(BUILD) bash $(SCRIPTS)/package.sh
 

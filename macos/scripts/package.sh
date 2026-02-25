@@ -11,11 +11,6 @@ BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
 
 echo "==> Packaging Harbor Clerk apps"
 
-# ── Build frontend ──
-echo "==> Building frontend"
-cd "$PROJECT_ROOT/frontend"
-npm ci
-npm run build
 FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
 
 # ── Build Xcode projects ──
