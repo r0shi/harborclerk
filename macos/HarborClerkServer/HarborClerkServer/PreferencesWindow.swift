@@ -47,115 +47,180 @@ struct PreferencesWindow: View {
     }
 
     var body: some View {
-        Form {
-            Section("Network Access") {
-                Toggle("Allow remote browser connections", isOn: $allowRemoteWeb)
-                    .onChange(of: allowRemoteWeb) { _, newValue in
-                        AppSettings.shared.allowRemoteWeb = newValue
-                        needsRestart = true
-                    }
-                Text("Let users on your network access Harbor Clerk via a web browser.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            // Title area
+            HStack {
+                Text("Preferences")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Spacer()
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
 
-                Toggle("Allow remote model connections (MCP)", isOn: $allowRemoteMCP)
-                    .onChange(of: allowRemoteMCP) { _, newValue in
-                        AppSettings.shared.allowRemoteMCP = newValue
-                        needsRestart = true
-                    }
-                Text("Let AI models on your network query your documents.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if !allowRemoteWeb && !allowRemoteMCP {
-                    Text("Harbor Clerk is only accessible from this Mac.")
+            Form {
+                Section {
+                    Toggle("Allow remote browser connections", isOn: $allowRemoteWeb)
+                        .onChange(of: allowRemoteWeb) { _, newValue in
+                            AppSettings.shared.allowRemoteWeb = newValue
+                            needsRestart = true
+                        }
+                    Text("Let users on your network access Harbor Clerk via a web browser.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-            }
 
-            Section("Performance") {
-                Picker("Worker preset", selection: $workerPreset) {
-                    Text("Quiet").tag("quiet")
-                    Text("Balanced").tag("balanced")
-                    Text("Fast").tag("fast")
-                }
-                .onChange(of: workerPreset) { _, newValue in
-                    AppSettings.shared.workerPreset = newValue
-                    needsRestart = true
-                }
-            }
+                    Toggle("Allow remote model connections (MCP)", isOn: $allowRemoteMCP)
+                        .onChange(of: allowRemoteMCP) { _, newValue in
+                            AppSettings.shared.allowRemoteMCP = newValue
+                            needsRestart = true
+                        }
+                    Text("Let AI models on your network query your documents.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-            Section("Local LLM") {
-                Picker("Model", selection: $llmModelId) {
-                    ForEach(modelOptions, id: \.id) { option in
-                        Text(option.name).tag(option.id)
+                    if !allowRemoteWeb && !allowRemoteMCP {
+                        Text("Harbor Clerk is only accessible from this Mac.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
+                } header: {
+                    Text("Network Access")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .textCase(nil)
                 }
-                .onChange(of: llmModelId) { _, newValue in
-                    AppSettings.shared.llmModelId = newValue
-                    needsRestart = true
-                }
-                Text("Select a model for the built-in chat. Models are downloaded from HuggingFace via the web UI.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("Advanced") {
-                portRow(label: "API port", text: $apiPortText, key: "api") { port in
-                    AppSettings.shared.apiPort = port
-                }
-                portRow(label: "PostgreSQL port", text: $postgresPortText, key: "postgres") { port in
-                    AppSettings.shared.postgresPort = port
-                }
-                portRow(label: "Tika port", text: $tikaPortText, key: "tika") { port in
-                    AppSettings.shared.tikaPort = port
-                }
-                portRow(label: "Embedder port", text: $embedderPortText, key: "embedder") { port in
-                    AppSettings.shared.embedderPort = port
-                }
-                portRow(label: "LLM port", text: $llamaPortText, key: "llama") { port in
-                    AppSettings.shared.llamaPort = port
-                }
-                Picker("Log level", selection: $logLevel) {
-                    Text("DEBUG").tag("DEBUG")
-                    Text("INFO").tag("INFO")
-                    Text("WARNING").tag("WARNING")
-                    Text("ERROR").tag("ERROR")
-                }
-                .onChange(of: logLevel) { _, newValue in
-                    AppSettings.shared.logLevel = newValue
-                    needsRestart = true
-                }
-            }
-
-            if needsRestart {
                 Section {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                        Text("Restart services to apply changes.")
-                            .font(.callout)
-                        Spacer()
-                        Button("Cancel Changes") {
-                            revertToInitial()
-                        }
-                        Button("Restart Now") {
-                            needsRestart = false
-                            captureInitial()
-                            NotificationCenter.default.post(
-                                name: .preferencesRequestRestart, object: nil
-                            )
-                        }
-                        .keyboardShortcut(.defaultAction)
+                    Picker("Worker preset", selection: $workerPreset) {
+                        Text("Quiet").tag("quiet")
+                        Text("Balanced").tag("balanced")
+                        Text("Fast").tag("fast")
                     }
+                    .onChange(of: workerPreset) { _, newValue in
+                        AppSettings.shared.workerPreset = newValue
+                        needsRestart = true
+                    }
+                } header: {
+                    Text("Performance")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .textCase(nil)
                 }
+
+                Section {
+                    Picker("Model", selection: $llmModelId) {
+                        ForEach(modelOptions, id: \.id) { option in
+                            Text(option.name).tag(option.id)
+                        }
+                    }
+                    .onChange(of: llmModelId) { _, newValue in
+                        AppSettings.shared.llmModelId = newValue
+                        needsRestart = true
+                    }
+                    Text("Select a model for the built-in chat. Models are downloaded from HuggingFace via the web UI.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Local LLM")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .textCase(nil)
+                }
+
+                Section {
+                    portRow(label: "API port", text: $apiPortText, key: "api") { port in
+                        AppSettings.shared.apiPort = port
+                    }
+                    portRow(label: "PostgreSQL port", text: $postgresPortText, key: "postgres") { port in
+                        AppSettings.shared.postgresPort = port
+                    }
+                    portRow(label: "Tika port", text: $tikaPortText, key: "tika") { port in
+                        AppSettings.shared.tikaPort = port
+                    }
+                    portRow(label: "Embedder port", text: $embedderPortText, key: "embedder") { port in
+                        AppSettings.shared.embedderPort = port
+                    }
+                    portRow(label: "LLM port", text: $llamaPortText, key: "llama") { port in
+                        AppSettings.shared.llamaPort = port
+                    }
+                    Picker("Log level", selection: $logLevel) {
+                        Text("DEBUG").tag("DEBUG")
+                        Text("INFO").tag("INFO")
+                        Text("WARNING").tag("WARNING")
+                        Text("ERROR").tag("ERROR")
+                    }
+                    .onChange(of: logLevel) { _, newValue in
+                        AppSettings.shared.logLevel = newValue
+                        needsRestart = true
+                    }
+                } header: {
+                    Text("Advanced")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .textCase(nil)
+                }
+            }
+            .formStyle(.grouped)
+
+            // Restart banner
+            if needsRestart {
+                restartBanner
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .formStyle(.grouped)
-        .frame(width: 480, height: needsRestart ? 640 : 590)
+        .frame(width: 480, height: needsRestart ? 650 : 600)
+        .background(.clear)
+        .animation(.easeInOut(duration: 0.25), value: needsRestart)
         .onAppear { captureInitial() }
     }
+
+    // MARK: - Restart Banner
+
+    private var restartBanner: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.title3)
+                .foregroundStyle(.white)
+            Text("Restart services to apply changes.")
+                .font(.callout)
+                .fontWeight(.medium)
+                .foregroundStyle(.white)
+            Spacer()
+            Button("Cancel") {
+                withAnimation { revertToInitial() }
+            }
+            .buttonStyle(.bordered)
+            .tint(.white)
+            .controlSize(.small)
+
+            Button("Restart Now") {
+                needsRestart = false
+                captureInitial()
+                NotificationCenter.default.post(
+                    name: .preferencesRequestRestart, object: nil
+                )
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.white)
+            .controlSize(.small)
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            LinearGradient(
+                colors: [.orange, .orange.opacity(0.85)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    // MARK: - Port Row
 
     @ViewBuilder
     private func portRow(label: String, text: Binding<String>, key: String, save: @escaping (Int) -> Void) -> some View {

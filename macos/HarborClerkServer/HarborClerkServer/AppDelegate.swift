@@ -168,8 +168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let hostingController = NSHostingController(rootView: view)
             let window = NSWindow(contentViewController: hostingController)
             window.title = "Harbor Clerk Server"
-            window.setContentSize(NSSize(width: 600, height: 450))
-            window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+            window.styleMask = [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView]
+            configureGlassWindow(window, size: NSSize(width: 600, height: 500))
             statusWindowController = NSWindowController(window: window)
         }
         statusWindowController?.showWindow(nil)
@@ -183,13 +183,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let hostingController = NSHostingController(rootView: view)
             let window = NSWindow(contentViewController: hostingController)
             window.title = "Preferences"
-            window.styleMask = [.titled, .closable]
-            window.center()
+            window.styleMask = [.titled, .closable, .fullSizeContentView]
+            configureGlassWindow(window, size: NSSize(width: 480, height: 590))
             preferencesWindowController = NSWindowController(window: window)
         }
         preferencesWindowController?.showWindow(nil)
         preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Glass Window Configuration
+
+    private func configureGlassWindow(_ window: NSWindow, size: NSSize) {
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.toolbarStyle = .unified
+        window.setContentSize(size)
+        window.center()
+
+        // Add NSVisualEffectView as background for window-level vibrancy
+        let visualEffect = NSVisualEffectView()
+        visualEffect.material = .underWindowBackground
+        visualEffect.blendingMode = .behindWindow
+        visualEffect.state = .active
+        visualEffect.translatesAutoresizingMaskIntoConstraints = false
+
+        if let contentView = window.contentView {
+            contentView.addSubview(visualEffect, positioned: .below, relativeTo: nil)
+            NSLayoutConstraint.activate([
+                visualEffect.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                visualEffect.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+                visualEffect.topAnchor.constraint(equalTo: contentView.topAnchor),
+                visualEffect.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            ])
+        }
     }
 
     @objc private func handlePreferencesRestart() {
