@@ -4,7 +4,7 @@ set -euo pipefail
 
 DEST_DIR="${DEST_DIR:?DEST_DIR must be set}"
 BUILD_DIR="${BUILD_DIR:-/tmp/llama-build}"
-LLAMA_CPP_TAG="${LLAMA_CPP_TAG:-b4722}"
+LLAMA_CPP_TAG="${LLAMA_CPP_TAG:-b8149}"
 
 mkdir -p "$DEST_DIR" "$BUILD_DIR"
 DEST_DIR="$(cd "$DEST_DIR" && pwd)"
@@ -13,7 +13,7 @@ BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
 echo "==> Cloning llama.cpp at tag $LLAMA_CPP_TAG"
 if [ ! -d "$BUILD_DIR/llama.cpp" ]; then
     git clone --depth 1 --branch "$LLAMA_CPP_TAG" \
-        https://github.com/ggerganov/llama.cpp.git "$BUILD_DIR/llama.cpp"
+        https://github.com/ggml-org/llama.cpp.git "$BUILD_DIR/llama.cpp"
 else
     echo "    (using existing clone)"
 fi
