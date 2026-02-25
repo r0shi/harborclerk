@@ -1,13 +1,16 @@
 import Foundation
 
 /// Captures stdout/stderr from subprocesses into a ring buffer.
+/// Publishes objectWillChange at most every 250ms to avoid saturating the main thread.
 final class LogManager: ObservableObject {
     static let shared = LogManager()
 
-    @Published var lines: [LogLine] = []
+    private(set) var lines: [LogLine] = []
 
     private let maxLines = 2000
     private let lock = NSLock()
+    private var pendingNotify: DispatchWorkItem?
+    private let throttleInterval: TimeInterval = 0.25
 
     struct LogLine: Identifiable {
         let id = UUID()
@@ -28,6 +31,7 @@ final class LogManager: ObservableObject {
                 lines.removeFirst(lines.count - maxLines)
             }
             lock.unlock()
+            scheduleNotify()
         }
 
         if Thread.isMainThread {
@@ -41,6 +45,10 @@ final class LogManager: ObservableObject {
         lock.lock()
         lines.removeAll()
         lock.unlock()
+        // Immediate notify for user-initiated action
+        pendingNotify?.cancel()
+        pendingNotify = nil
+        objectWillChange.send()
     }
 
     /// Set up a pipe to capture output from a Process and feed it to the log.
@@ -52,5 +60,19 @@ final class LogManager: ObservableObject {
             self?.append(service: service, text: text)
         }
         return pipe
+    }
+
+    // MARK: - Throttled Notify
+
+    private func scheduleNotify() {
+        // Already have a pending notification — coalesce
+        if pendingNotify != nil { return }
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingNotify = nil
+            self?.objectWillChange.send()
+        }
+        pendingNotify = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + throttleInterval, execute: work)
     }
 }

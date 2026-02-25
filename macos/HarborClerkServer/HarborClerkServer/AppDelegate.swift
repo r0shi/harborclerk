@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var serviceManager: ServiceManager!
     private var statusWindowController: NSWindowController?
+    private var logWindowController: NSWindowController?
     private var preferencesWindowController: NSWindowController?
     private var healthChecker: HealthChecker!
     private var menuBarIcon: NSImage?
@@ -84,6 +85,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusWindowItem = NSMenuItem(title: "Show Status Window...", action: #selector(showStatusWindow), keyEquivalent: "s")
         statusWindowItem.target = self
         menu.addItem(statusWindowItem)
+
+        let logWindowItem = NSMenuItem(title: "Show Logs...", action: #selector(showLogWindow), keyEquivalent: "l")
+        logWindowItem.target = self
+        menu.addItem(logWindowItem)
 
         let preferencesItem = NSMenuItem(title: "Preferences...", action: #selector(showPreferences), keyEquivalent: ",")
         preferencesItem.target = self
@@ -177,6 +182,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusWindowController?.showWindow(nil)
         statusWindowController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showLogWindow() {
+        if logWindowController == nil {
+            let view = LogWindow()
+            let hostingController = NSHostingController(rootView: view)
+            let window = NSWindow(contentViewController: hostingController)
+            window.title = "Logs"
+            window.styleMask = [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView]
+            configureGlassWindow(window, size: NSSize(width: 700, height: 400))
+            logWindowController = NSWindowController(window: window)
+        }
+        logWindowController?.showWindow(nil)
+        logWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 

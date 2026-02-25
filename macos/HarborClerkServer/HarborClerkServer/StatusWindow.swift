@@ -1,10 +1,7 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct StatusWindow: View {
     @ObservedObject var serviceManager: ServiceManager
-    @ObservedObject var logManager = LogManager.shared
-    @State private var logsExpanded = false
 
     private var overallState: ServiceState {
         serviceManager.overallState
@@ -24,18 +21,14 @@ struct StatusWindow: View {
             }
             .padding(.horizontal, 20)
 
-            // Logs section (flexible height when expanded)
-            logsSection
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-                .padding(.bottom, 8)
+            Spacer(minLength: 8)
 
             // Control bar (always visible at bottom)
             controlBar
                 .padding(.horizontal, 20)
                 .padding(.bottom, 16)
         }
-        .frame(minWidth: 600, minHeight: 480)
+        .frame(minWidth: 600, minHeight: 380)
     }
 
     // MARK: - Header
@@ -179,106 +172,6 @@ struct StatusWindow: View {
         .contentShape(Rectangle())
     }
 
-    // MARK: - Logs
-
-    private var logsSection: some View {
-        VStack(spacing: 0) {
-            // Logs toggle bar
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    logsExpanded.toggle()
-                }
-            } label: {
-                HStack {
-                    Image(systemName: logsExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12)
-                    Text("Logs")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                    Text("(\(logManager.lines.count))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if logsExpanded {
-                        Button {
-                            copyLogs()
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Copy Logs")
-
-                        Button {
-                            saveLogs()
-                        } label: {
-                            Image(systemName: "square.and.arrow.down")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Save Logs")
-
-                        Button {
-                            logManager.clear()
-                        } label: {
-                            Image(systemName: "trash")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Clear Logs")
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-            }
-            .buttonStyle(.plain)
-
-            if logsExpanded {
-                logTerminalView
-                    .frame(minHeight: 120, maxHeight: 250)
-            }
-        }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var logTerminalView: some View {
-        ScrollViewReader { proxy in
-            // Use a single selectable Text for multi-line select + Cmd+C/Cmd+A
-            ScrollView([.vertical, .horizontal]) {
-                Text(logTextAttributed)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .id("logContent")
-            }
-            .background(.black.opacity(0.55))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
-            .onChange(of: logManager.lines.count) {
-                withAnimation {
-                    proxy.scrollTo("logContent", anchor: .bottom)
-                }
-            }
-        }
-    }
-
-    private var logTextAttributed: AttributedString {
-        var result = AttributedString()
-        for line in logManager.lines {
-            var service = AttributedString(line.service.padding(toLength: 12, withPad: " ", startingAt: 0))
-            service.foregroundColor = .cyan
-            var text = AttributedString(line.text + "\n")
-            text.foregroundColor = .init(white: 0.9)
-            result += service + text
-        }
-        return result
-    }
-
     // MARK: - Controls
 
     private var controlBar: some View {
@@ -319,28 +212,5 @@ struct StatusWindow: View {
 
     private func isTransient(_ state: ServiceState) -> Bool {
         state == .starting || state == .stopping
-    }
-
-    private func copyLogs() {
-        let text = logManager.lines.map { line in
-            let ts = ISO8601DateFormatter().string(from: line.timestamp)
-            return "\(ts) [\(line.service)] \(line.text)"
-        }.joined(separator: "\n")
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private func saveLogs() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.plainText]
-        panel.nameFieldStringValue = "harbor-clerk-logs.txt"
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            let text = logManager.lines.map { line in
-                let ts = ISO8601DateFormatter().string(from: line.timestamp)
-                return "\(ts) [\(line.service)] \(line.text)"
-            }.joined(separator: "\n")
-            try? text.write(to: url, atomically: true, encoding: .utf8)
-        }
     }
 }

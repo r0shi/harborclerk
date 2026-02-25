@@ -24,6 +24,7 @@
 		A100000015 /* PreferencesWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000015; };
 		A100000016 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B100000016; };
 		A100000017 /* LlamaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000017; };
+		A100000018 /* LogWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000018; };
 		AT10000001 /* WorkerCountsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000001; };
 		AT10000002 /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000002; };
 		AT10000003 /* OverallStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000003; };
@@ -61,6 +62,7 @@
 		B100000016 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C100000001 /* HarborClerkServer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HarborClerkServer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B100000017 /* LlamaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LlamaService.swift; sourceTree = "<group>"; };
+		B100000018 /* LogWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogWindow.swift; sourceTree = "<group>"; };
 		D100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D100000002 /* HarborClerkServer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerkServer.entitlements; sourceTree = "<group>"; };
 		CT10000001 /* HarborClerkServerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HarborClerkServerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -110,6 +112,7 @@
 				B100000011 /* HealthChecker.swift */,
 				B100000012 /* LogManager.swift */,
 				B100000013 /* StatusWindow.swift */,
+				B100000018 /* LogWindow.swift */,
 				B100000014 /* Settings.swift */,
 				B100000015 /* PreferencesWindow.swift */,
 				B100000016 /* Assets.xcassets */,
@@ -261,6 +264,7 @@
 				A100000014 /* Settings.swift in Sources */,
 				A100000015 /* PreferencesWindow.swift in Sources */,
 				A100000017 /* LlamaService.swift in Sources */,
+				A100000018 /* LogWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
