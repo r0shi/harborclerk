@@ -143,12 +143,20 @@ export default function DocumentsPage() {
   })
 
   const totalPages = Math.max(1, Math.ceil(filteredDocs.length / pageSize))
-  const clampedPage = Math.min(currentPage, totalPages)
-  const startIdx = (clampedPage - 1) * pageSize
+  const effectivePage = Math.min(currentPage, totalPages)
+  const startIdx = (effectivePage - 1) * pageSize
   const visibleDocs = filteredDocs.slice(startIdx, startIdx + pageSize)
 
-  const lastDocRaw = sessionStorage.getItem('lastDoc')
-  const lastDoc = lastDocRaw ? JSON.parse(lastDocRaw) as { doc_id: string; title: string } : null
+  // Sync state when page exceeds total (e.g. after doc count changes)
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages)
+  }, [totalPages, currentPage])
+
+  let lastDoc: { doc_id: string; title: string } | null = null
+  try {
+    const raw = sessionStorage.getItem('lastDoc')
+    if (raw) lastDoc = JSON.parse(raw)
+  } catch { /* ignore */ }
 
   if (loading) return <div className="text-gray-500 dark:text-gray-400">Loading documents...</div>
   if (error) return <div className="text-red-600 dark:text-red-400">Error: {error}</div>
@@ -273,7 +281,7 @@ export default function DocumentsPage() {
           <div className="mt-2 text-center text-xs text-gray-400">
             Showing {filteredDocs.length === 0 ? 0 : startIdx + 1}–{Math.min(startIdx + pageSize, filteredDocs.length)} of {filteredDocs.length}{filter && ` (filtered from ${docs.length})`}
           </div>
-          <Pagination currentPage={clampedPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+          <Pagination currentPage={effectivePage} totalPages={totalPages} onPageChange={setCurrentPage} />
         </>
       )}
     </div>

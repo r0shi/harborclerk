@@ -267,11 +267,16 @@ async def download_document(
     filename = posixpath.basename(version.original_object_key)
     content_type = version.mime_type or "application/octet-stream"
 
+    from urllib.parse import quote
+
+    # RFC 8187 encoding for non-ASCII filenames (French accents, etc.)
+    disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+
     return Response(
         content=obj.read(),
         media_type=content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": disposition,
         },
     )
 

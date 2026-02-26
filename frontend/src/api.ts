@@ -149,8 +149,10 @@ export async function downloadBlob(url: string): Promise<{ blob: Blob; filename:
     throw new ApiError(res.status, err.detail || res.statusText)
   }
   const disposition = res.headers.get('Content-Disposition') || ''
-  const match = disposition.match(/filename="?([^"]+)"?/)
-  const filename = match?.[1] || 'download'
+  // Handle RFC 8187 filename*=UTF-8''encoded and plain filename="name"
+  const starMatch = disposition.match(/filename\*=UTF-8''([^;\s]+)/i)
+  const plainMatch = disposition.match(/filename="?([^"]+)"?/)
+  const filename = starMatch ? decodeURIComponent(starMatch[1]) : (plainMatch?.[1] || 'download')
   const blob = await res.blob()
   return { blob, filename }
 }
