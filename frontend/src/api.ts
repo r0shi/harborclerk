@@ -31,15 +31,12 @@ function checkBuildHash(response: Response) {
 }
 
 function showReloadToast() {
-  const container = document.createElement('div')
-  container.style.cssText =
-    'position:fixed;top:16px;right:16px;z-index:10000;animation:toastSlideUp 0.3s ease-out'
-
-  const toast = document.createElement('div')
-  toast.style.cssText =
-    'background:var(--color-bg-secondary, #1e293b);color:var(--color-text-primary, #f1f5f9);' +
-    'padding:12px 20px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.3);' +
-    'display:flex;align-items:center;gap:12px;font-size:14px;font-family:system-ui'
+  const bar = document.createElement('div')
+  bar.style.cssText =
+    'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+    'background:#1e40af;color:white;padding:10px 20px;' +
+    'display:flex;align-items:center;justify-content:center;gap:12px;' +
+    'font-size:14px;font-family:system-ui'
 
   const msg = document.createElement('span')
   msg.textContent = 'Server updated. Reload for latest version.'
@@ -47,20 +44,19 @@ function showReloadToast() {
   const reloadBtn = document.createElement('button')
   reloadBtn.textContent = 'Reload'
   reloadBtn.style.cssText =
-    'background:var(--color-accent, #3b82f6);color:white;border:none;' +
-    'padding:6px 14px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500'
+    'background:white;color:#1e40af;border:none;' +
+    'padding:5px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600'
   reloadBtn.addEventListener('click', () => window.location.reload())
 
   const closeBtn = document.createElement('button')
   closeBtn.textContent = '\u00d7'
   closeBtn.style.cssText =
-    'background:none;border:none;color:var(--color-text-secondary, #94a3b8);' +
-    'cursor:pointer;font-size:18px;line-height:1;padding:0 4px'
-  closeBtn.addEventListener('click', () => container.remove())
+    'background:none;border:none;color:rgba(255,255,255,0.7);' +
+    'cursor:pointer;font-size:20px;line-height:1;padding:0 4px'
+  closeBtn.addEventListener('click', () => bar.remove())
 
-  toast.append(msg, reloadBtn, closeBtn)
-  container.appendChild(toast)
-  document.body.appendChild(container)
+  bar.append(msg, reloadBtn, closeBtn)
+  document.body.appendChild(bar)
 }
 
 async function refreshToken(): Promise<boolean> {
