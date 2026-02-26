@@ -25,6 +25,17 @@ export default function SystemMaintenancePage() {
     }
   }
 
+  async function handleReprocessAll() {
+    if (!window.confirm('This will reprocess every document from scratch and could take a long time. Continue?')) return
+    setActionResult('')
+    try {
+      const data = await post<{ reprocessed: number }>('/api/system/reprocess-all')
+      setActionResult(`Reprocess all complete: ${data.reprocessed} documents queued`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Reprocess all failed')
+    }
+  }
+
   return (
     <div>
       <h1 className="mb-4 text-xl font-bold">System Maintenance</h1>
@@ -53,6 +64,12 @@ export default function SystemMaintenancePage() {
           className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
         >
           Run Reaper
+        </button>
+        <button
+          onClick={handleReprocessAll}
+          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+        >
+          Reprocess All
         </button>
       </div>
     </div>
