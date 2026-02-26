@@ -60,11 +60,11 @@
 | # | Feature | Status |
 |---|---------|--------|
 | 1 | Adjustable K + Pagination | **Done** |
-| 2 | Document Summaries | Not started |
+| 2 | Document Summaries | **Done** |
 | 3 | Context Expansion | Not started |
 | 4 | Scoped/Filtered Search | Not started |
 | 5 | Document Outline | Not started |
-| 6 | Corpus Overview | Not started |
+| 6 | Corpus Overview | Partial (basic tool added in Feature 2) |
 | 7 | Cross-Document Similarity | Not started |
 | 8 | Entity Extraction | Not started |
 | 9 | Auto-Inject RAG | Not started |
