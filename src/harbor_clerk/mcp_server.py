@@ -165,8 +165,8 @@ async def kb_search(
       "brief": first ~200 characters per chunk (adjustable via brief_chars) —
         use when scanning 20-50 results to identify which are worth
         reading in full via kb_read_passages
-      "compact": metadata only (chunk_id, doc_title, score, pages, language,
-        no text) — use when surveying a broad result set (50+) to
+      "compact": metadata only (chunk_id, doc_id, version_id, doc_title,
+        score, pages, language — no text) — use when surveying a broad result set (50+) to
         understand score distribution and document coverage before
         narrowing down
 
