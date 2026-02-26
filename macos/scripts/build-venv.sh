@@ -54,12 +54,8 @@ VENV_PYTHON="$VENV_DIR/bin/python3"
 echo "==> Installing harbor-clerk"
 "$VENV_PYTHON" -m pip install --no-cache-dir --upgrade "$PROJECT_ROOT"
 
-if ! "$VENV_PYTHON" -c "import embedder" 2>/dev/null; then
-    echo "==> Installing embedder"
-    "$VENV_PYTHON" -m pip install --no-cache-dir "$PROJECT_ROOT/embedder"
-else
-    echo "==> embedder already installed, skipping"
-fi
+echo "==> Installing embedder"
+"$VENV_PYTHON" -m pip install --no-cache-dir --upgrade "$PROJECT_ROOT/embedder"
 
 if ! "$VENV_PYTHON" -c "import striprtf" 2>/dev/null; then
     echo "==> Installing striprtf"

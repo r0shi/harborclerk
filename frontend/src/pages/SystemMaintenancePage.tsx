@@ -7,6 +7,7 @@ export default function SystemMaintenancePage() {
   const [confirmingReprocess, setConfirmingReprocess] = useState(false)
 
   async function handlePurge() {
+    setError('')
     setActionResult('')
     try {
       const data = await post<{ purged: number }>('/api/system/purge-run')
@@ -17,6 +18,7 @@ export default function SystemMaintenancePage() {
   }
 
   async function handleReaper() {
+    setError('')
     setActionResult('')
     try {
       const data = await post<{ reaped: number }>('/api/system/reaper-run')
@@ -32,6 +34,7 @@ export default function SystemMaintenancePage() {
       return
     }
     setConfirmingReprocess(false)
+    setError('')
     setActionResult('')
     try {
       const data = await post<{ reprocessed: number }>('/api/system/reprocess-all')
