@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var healthChecker: HealthChecker!
     private var menuBarIcon: NSImage?
     private var restartTask: Task<Void, Never>?
+    private var isQuitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         serviceManager = ServiceManager()
@@ -40,17 +41,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isQuitting else { return .terminateNow }
+        isQuitting = true
         healthChecker.stopPolling()
-        // stopAll is async; pump RunLoop so MainActor tasks can execute
-        var finished = false
         Task {
             await serviceManager.stopAll()
-            finished = true
+            NSApp.reply(toApplicationShouldTerminate: true)
         }
-        while !finished {
-            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
-        }
+        return .terminateLater
     }
 
     // MARK: - Status Item
@@ -244,9 +243,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quitApp() {
-        Task {
-            await serviceManager.stopAll()
-            NSApp.terminate(nil)
-        }
+        // Don't stop services here — applicationWillTerminate handles shutdown.
+        // Calling stopAll() in an async Task would block the MainActor and prevent
+        // NSApp.terminate from processing properly.
+        NSApp.terminate(nil)
     }
 }

@@ -128,12 +128,36 @@ final class ServiceManager: ObservableObject {
 
     func stopAll() async {
         stopConfigWatcher()
-        // Reverse order
-        let reversed = Array(services.reversed())
-        for service in reversed {
-            await service.stop()
+
+        // Stop workers in parallel (SIGTERM all, then wait) — same as restartForChangedSettings
+        let allWorkers = ioWorkers + cpuWorkers
+        for worker in allWorkers {
+            worker.state = .stopping
+            worker.process?.terminate()
         }
         notifyStateChanged()
+        for worker in allWorkers {
+            if let proc = worker.process, proc.isRunning {
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.global().async {
+                        proc.waitUntilExit()
+                        c.resume()
+                    }
+                }
+            }
+            worker.process = nil
+            worker.state = .stopped
+        }
+        notifyStateChanged()
+
+        // Stop remaining services in reverse order, notifying after each
+        let nonWorkers = services.filter { svc in
+            !allWorkers.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(svc) })
+        }.reversed()
+        for service in nonWorkers {
+            await service.stop()
+            notifyStateChanged()
+        }
     }
 
     func stopService(_ service: any ManagedService) async {
