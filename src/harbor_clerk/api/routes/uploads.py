@@ -35,18 +35,36 @@ router = APIRouter(tags=["uploads"])
 
 ALLOWED_EXTENSIONS = {
     # Documents
-    ".pdf", ".docx", ".doc", ".rtf", ".txt", ".md",
-    ".odt", ".pages",
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".rtf",
+    ".txt",
+    ".md",
+    ".odt",
+    ".pages",
     # Spreadsheets
-    ".xlsx", ".xls", ".ods", ".numbers", ".csv",
+    ".xlsx",
+    ".xls",
+    ".ods",
+    ".numbers",
+    ".csv",
     # Presentations
-    ".pptx", ".ppt", ".odp", ".key",
+    ".pptx",
+    ".ppt",
+    ".odp",
+    ".key",
     # Images (OCR)
-    ".jpg", ".jpeg", ".png", ".tiff", ".tif",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".tiff",
+    ".tif",
     # eBooks
     ".epub",
     # Web
-    ".html", ".htm",
+    ".html",
+    ".htm",
     # Email
     ".eml",
 }
@@ -70,13 +88,15 @@ async def upload_files(
         dot = fname.rfind(".")
         ext = fname[dot:].lower() if dot != -1 else ""
         if ext not in ALLOWED_EXTENSIONS:
-            results.append(UploadFileResult(
-                upload_id=str(uuid.uuid4()),
-                filename=fname or "unknown",
-                size_bytes=0,
-                mime_type=file.content_type or "application/octet-stream",
-                status="skipped",
-            ))
+            results.append(
+                UploadFileResult(
+                    upload_id=str(uuid.uuid4()),
+                    filename=fname or "unknown",
+                    size_bytes=0,
+                    mime_type=file.content_type or "application/octet-stream",
+                    status="skipped",
+                )
+            )
             continue
 
         # Stream file, compute SHA256, buffer content
@@ -104,11 +124,17 @@ async def upload_files(
             )
 
         sha256_bytes = sha.digest()
-        mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
+        mime = (
+            file.content_type
+            or mimetypes.guess_type(file.filename or "")[0]
+            or "application/octet-stream"
+        )
 
         # Check for duplicate by SHA256
         dup_result = await session.execute(
-            select(DocumentVersion).where(DocumentVersion.original_sha256 == sha256_bytes)
+            select(DocumentVersion).where(
+                DocumentVersion.original_sha256 == sha256_bytes
+            )
         )
         dup_version = dup_result.scalar_one_or_none()
 
@@ -127,15 +153,17 @@ async def upload_files(
             )
             session.add(upload_row)
             await session.flush()
-            results.append(UploadFileResult(
-                upload_id=str(upload_row.upload_id),
-                filename=file.filename or "unknown",
-                size_bytes=total_size,
-                mime_type=mime,
-                status="duplicate",
-                duplicate_doc_id=str(dup_version.doc_id),
-                duplicate_version_id=str(dup_version.version_id),
-            ))
+            results.append(
+                UploadFileResult(
+                    upload_id=str(upload_row.upload_id),
+                    filename=file.filename or "unknown",
+                    size_bytes=total_size,
+                    mime_type=mime,
+                    status="duplicate",
+                    duplicate_doc_id=str(dup_version.doc_id),
+                    duplicate_version_id=str(dup_version.version_id),
+                )
+            )
             continue
 
         # Store at temp key — sanitize filename to prevent path traversal
@@ -164,13 +192,15 @@ async def upload_files(
         session.add(upload_row)
         await session.flush()
 
-        results.append(UploadFileResult(
-            upload_id=str(upload_row.upload_id),
-            filename=file.filename or "unknown",
-            size_bytes=total_size,
-            mime_type=mime,
-            status="pending_confirmation",
-        ))
+        results.append(
+            UploadFileResult(
+                upload_id=str(upload_row.upload_id),
+                filename=file.filename or "unknown",
+                size_bytes=total_size,
+                mime_type=mime,
+                status="pending_confirmation",
+            )
+        )
 
     await session.commit()
     return UploadResponse(files=results)
@@ -183,6 +213,7 @@ async def _confirm_single(
     existing_doc_id: str | None,
     principal: Principal,
     settings: Settings,
+    source_path: str | None = None,
 ) -> ConfirmUploadResponse:
     """Core confirm logic shared by single and batch endpoints.
 
@@ -200,9 +231,14 @@ async def _confirm_single(
     )
     upload = result.scalar_one_or_none()
     if upload is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found"
+        )
     if upload.status != "pending_confirmation":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Upload status is '{upload.status}', not pending_confirmation")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Upload status is '{upload.status}', not pending_confirmation",
+        )
 
     if action == "new_document":
         filename = upload.original_filename
@@ -214,7 +250,9 @@ async def _confirm_single(
 
     elif action == "new_version":
         if existing_doc_id is None:
-            raise HTTPException(status_code=422, detail="existing_doc_id required for new_version")
+            raise HTTPException(
+                status_code=422, detail="existing_doc_id required for new_version"
+            )
         try:
             doc_id = uuid.UUID(existing_doc_id)
         except ValueError:
@@ -223,13 +261,19 @@ async def _confirm_single(
                 detail="Invalid existing_doc_id: not a valid UUID",
             )
         doc_result = await session.execute(
-            select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+            select(Document).where(
+                Document.doc_id == doc_id, Document.status == "active"
+            )
         )
         doc = doc_result.scalar_one_or_none()
         if doc is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+            )
     else:
-        raise HTTPException(status_code=422, detail="action must be 'new_document' or 'new_version'")
+        raise HTTPException(
+            status_code=422, detail="action must be 'new_document' or 'new_version'"
+        )
 
     version = DocumentVersion(
         doc_id=doc_id,
@@ -239,6 +283,7 @@ async def _confirm_single(
         mime_type=upload.mime_type,
         size_bytes=upload.size_bytes,
         status=VersionStatus.queued,
+        source_path=source_path,
     )
     session.add(version)
     await session.flush()
@@ -247,8 +292,10 @@ async def _confirm_single(
     canonical_key = f"versions/{version.version_id}/{safe_name}"
     storage = get_storage()
     storage.copy_and_delete(
-        upload.minio_bucket, upload.minio_object_key,
-        settings.minio_bucket, canonical_key,
+        upload.minio_bucket,
+        upload.minio_object_key,
+        settings.minio_bucket,
+        canonical_key,
     )
     version.original_object_key = canonical_key
 
@@ -280,12 +327,18 @@ async def confirm_upload(
 ):
     settings = get_settings()
     result = await _confirm_single(
-        session, body.upload_id, body.action, body.existing_doc_id,
-        principal, settings,
+        session,
+        body.upload_id,
+        body.action,
+        body.existing_doc_id,
+        principal,
+        settings,
+        source_path=body.source_path,
     )
     await session.commit()
 
     from harbor_clerk.worker.pipeline import enqueue_stage
+
     enqueue_stage(uuid.UUID(result.version_id), JobStage.extract)
 
     return result
@@ -304,26 +357,36 @@ async def confirm_upload_batch(
     for item in body.items:
         try:
             confirm_result = await _confirm_single(
-                session, item.upload_id, item.action, item.existing_doc_id,
-                principal, settings,
+                session,
+                item.upload_id,
+                item.action,
+                item.existing_doc_id,
+                principal,
+                settings,
+                source_path=item.source_path,
             )
-            results.append(BatchConfirmResultItem(
-                upload_id=item.upload_id,
-                doc_id=confirm_result.doc_id,
-                version_id=confirm_result.version_id,
-                status=confirm_result.status,
-            ))
+            results.append(
+                BatchConfirmResultItem(
+                    upload_id=item.upload_id,
+                    doc_id=confirm_result.doc_id,
+                    version_id=confirm_result.version_id,
+                    status=confirm_result.status,
+                )
+            )
             version_ids_to_enqueue.append(uuid.UUID(confirm_result.version_id))
         except HTTPException as exc:
-            results.append(BatchConfirmResultItem(
-                upload_id=item.upload_id,
-                status="error",
-                error=exc.detail,
-            ))
+            results.append(
+                BatchConfirmResultItem(
+                    upload_id=item.upload_id,
+                    status="error",
+                    error=exc.detail,
+                )
+            )
 
     await session.commit()
 
     from harbor_clerk.worker.pipeline import enqueue_stage
+
     for vid in version_ids_to_enqueue:
         enqueue_stage(vid, JobStage.extract)
 

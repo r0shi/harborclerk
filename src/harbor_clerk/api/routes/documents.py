@@ -122,6 +122,7 @@ async def get_document(
                 has_text_layer=v.has_text_layer,
                 needs_ocr=v.needs_ocr,
                 extracted_chars=v.extracted_chars,
+                source_path=v.source_path,
                 error=v.error,
                 created_at=v.created_at,
                 jobs=jobs,
@@ -348,8 +349,9 @@ async def reprocess_document(
     )
     await session.commit()
 
-    from harbor_clerk.worker.pipeline import enqueue_stage
+    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
 
+    reset_jobs(version_id)
     enqueue_stage(version_id, JobStage.extract)
 
     return {

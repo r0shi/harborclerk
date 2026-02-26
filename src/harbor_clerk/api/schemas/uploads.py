@@ -23,6 +23,7 @@ class ConfirmUploadRequest(BaseModel):
     upload_id: str
     action: str  # "new_document" or "new_version"
     existing_doc_id: str | None = None  # required if action=new_version
+    source_path: str | None = None
 
 
 class ConfirmUploadResponse(BaseModel):
@@ -35,6 +36,7 @@ class BatchConfirmItem(BaseModel):
     upload_id: str
     action: str  # "new_document" | "new_version"
     existing_doc_id: str | None = None
+    source_path: str | None = None
 
 
 class BatchConfirmRequest(BaseModel):

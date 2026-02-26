@@ -21,6 +21,7 @@ class VersionStatus(str, enum.Enum):
     chunked = "chunked"
     embedding = "embedding"
     embedded = "embedded"
+    finalizing = "finalizing"
     ready = "ready"
     error = "error"
 

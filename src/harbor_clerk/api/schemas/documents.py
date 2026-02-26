@@ -25,6 +25,7 @@ class VersionInfo(BaseModel):
     has_text_layer: bool | None = None
     needs_ocr: bool | None = None
     extracted_chars: int | None = None
+    source_path: str | None = None
     error: str | None = None
     created_at: datetime
     jobs: list[JobInfo] = []

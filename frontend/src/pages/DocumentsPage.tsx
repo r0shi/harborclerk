@@ -16,7 +16,7 @@ interface DocSummary {
 
 const PROCESSING_STATUSES = new Set([
   'queued', 'extracting', 'extracted', 'ocr_running', 'ocr_done',
-  'chunking', 'chunked', 'embedding', 'embedded',
+  'chunking', 'chunked', 'embedding', 'embedded', 'finalizing',
 ])
 
 function normalizeStatus(status?: string): string {

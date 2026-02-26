@@ -39,7 +39,8 @@ _STATS_LOG_INTERVAL = 50
 
 # Context variable set by auth middleware before tool execution
 _mcp_principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVar(
-    "_mcp_principal", default=None,
+    "_mcp_principal",
+    default=None,
 )
 
 
@@ -63,7 +64,8 @@ async def _resolve_principal(token: str) -> Principal | None:
     async with async_session_factory() as session:
         result = await session.execute(
             select(ApiKey).where(
-                ApiKey.key_hash == key_hash, ApiKey.is_active.is_(True),
+                ApiKey.key_hash == key_hash,
+                ApiKey.is_active.is_(True),
             )
         )
         api_key = result.scalar_one_or_none()
@@ -105,14 +107,16 @@ class MCPAuthMiddleware:
 
         # No valid auth — return 401 JSON
         body = json.dumps({"error": "Unauthorized"}).encode()
-        await send({
-            "type": "http.response.start",
-            "status": 401,
-            "headers": [
-                [b"content-type", b"application/json"],
-                [b"content-length", str(len(body)).encode()],
-            ],
-        })
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    [b"content-type", b"application/json"],
+                    [b"content-length", str(len(body)).encode()],
+                ],
+            }
+        )
         await send({"type": "http.response.body", "body": body})
 
 
@@ -200,7 +204,11 @@ async def kb_search(
             "language": h.language,
         }
         if h.page_start is not None:
-            hit["pages"] = f"{h.page_start}-{h.page_end}" if h.page_end != h.page_start else str(h.page_start)
+            hit["pages"] = (
+                f"{h.page_start}-{h.page_end}"
+                if h.page_end != h.page_start
+                else str(h.page_start)
+            )
         # Detail mode formatting
         if detail == "full":
             hit["text"] = h.chunk_text
@@ -240,10 +248,13 @@ async def kb_search(
         logger.info(
             "kb_search stats (%d calls): avg_k=%.0f, max_k=%d, cap_hit_rate=%.0f%%, "
             "pagination_rate=%.0f%%, detail: full=%d brief=%d compact=%d",
-            n, _search_stats["total_k"] / n, _search_stats["max_k"],
+            n,
+            _search_stats["total_k"] / n,
+            _search_stats["max_k"],
             100 * _search_stats["cap_hits"] / n,
             100 * _search_stats["pagination_calls"] / n,
-            _search_stats["detail_full"], _search_stats["detail_brief"],
+            _search_stats["detail_full"],
+            _search_stats["detail_brief"],
             _search_stats["detail_compact"],
         )
 
@@ -263,9 +274,7 @@ async def kb_read_passages(
     uuids = [uuid.UUID(cid) for cid in chunk_ids]
 
     async with async_session_factory() as session:
-        result = await session.execute(
-            select(Chunk).where(Chunk.chunk_id.in_(uuids))
-        )
+        result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(uuids)))
         chunks = {c.chunk_id: c for c in result.scalars().all()}
 
         # Doc titles
@@ -288,7 +297,11 @@ async def kb_read_passages(
                 "language": chunk.language,
             }
             if chunk.page_start is not None:
-                p["pages"] = f"{chunk.page_start}-{chunk.page_end}" if chunk.page_end != chunk.page_start else str(chunk.page_start)
+                p["pages"] = (
+                    f"{chunk.page_start}-{chunk.page_end}"
+                    if chunk.page_end != chunk.page_start
+                    else str(chunk.page_start)
+                )
 
             if include_context:
                 prev = await session.execute(
@@ -323,15 +336,13 @@ async def kb_get_document(doc_id: str) -> str:
     did = uuid.UUID(doc_id)
 
     async with async_session_factory() as session:
-        result = await session.execute(
-            select(Document).where(Document.doc_id == did)
-        )
+        result = await session.execute(select(Document).where(Document.doc_id == did))
         doc = result.scalar_one_or_none()
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
         versions = []
-        for v in (doc.versions or []):
+        for v in doc.versions or []:
             jobs_result = await session.execute(
                 select(IngestionJob).where(IngestionJob.version_id == v.version_id)
             )
@@ -339,23 +350,31 @@ async def kb_get_document(doc_id: str) -> str:
                 {"stage": j.stage.value, "status": j.status.value, "error": j.error}
                 for j in jobs_result.scalars().all()
             ]
-            versions.append({
-                "version_id": str(v.version_id),
-                "status": v.status.value,
-                "mime_type": v.mime_type,
-                "size_bytes": v.size_bytes,
-                "extracted_chars": v.extracted_chars,
-                "created_at": v.created_at.isoformat(),
-                "jobs": jobs,
-            })
+            versions.append(
+                {
+                    "version_id": str(v.version_id),
+                    "status": v.status.value,
+                    "mime_type": v.mime_type,
+                    "size_bytes": v.size_bytes,
+                    "extracted_chars": v.extracted_chars,
+                    "source_path": v.source_path,
+                    "created_at": v.created_at.isoformat(),
+                    "jobs": jobs,
+                }
+            )
 
-    return json.dumps({
-        "doc_id": str(doc.doc_id),
-        "title": doc.title,
-        "status": doc.status,
-        "latest_version_id": str(doc.latest_version_id) if doc.latest_version_id else None,
-        "versions": versions,
-    }, indent=2)
+    return json.dumps(
+        {
+            "doc_id": str(doc.doc_id),
+            "title": doc.title,
+            "status": doc.status,
+            "latest_version_id": str(doc.latest_version_id)
+            if doc.latest_version_id
+            else None,
+            "versions": versions,
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()
@@ -380,14 +399,16 @@ async def kb_list_recent(limit: int = 20) -> str:
                 if v.version_id == doc.latest_version_id:
                     latest_status = v.status.value
                     break
-        items.append({
-            "doc_id": str(doc.doc_id),
-            "title": doc.title,
-            "status": doc.status,
-            "latest_version_status": latest_status,
-            "version_count": len(doc.versions) if doc.versions else 0,
-            "updated_at": doc.updated_at.isoformat(),
-        })
+        items.append(
+            {
+                "doc_id": str(doc.doc_id),
+                "title": doc.title,
+                "status": doc.status,
+                "latest_version_status": latest_status,
+                "version_count": len(doc.versions) if doc.versions else 0,
+                "updated_at": doc.updated_at.isoformat(),
+            }
+        )
 
     return json.dumps({"documents": items}, indent=2)
 
@@ -399,9 +420,7 @@ async def kb_ingest_status(doc_id: str) -> str:
     did = uuid.UUID(doc_id)
 
     async with async_session_factory() as session:
-        result = await session.execute(
-            select(Document).where(Document.doc_id == did)
-        )
+        result = await session.execute(select(Document).where(Document.doc_id == did))
         doc = result.scalar_one_or_none()
         if doc is None:
             return json.dumps({"error": "Document not found"})
@@ -426,7 +445,9 @@ async def kb_ingest_status(doc_id: str) -> str:
             {
                 "stage": j.stage.value,
                 "status": j.status.value,
-                "progress": f"{j.progress_current}/{j.progress_total}" if j.progress_total else None,
+                "progress": f"{j.progress_current}/{j.progress_total}"
+                if j.progress_total
+                else None,
                 "error": j.error,
                 "started_at": j.started_at.isoformat() if j.started_at else None,
                 "finished_at": j.finished_at.isoformat() if j.finished_at else None,
@@ -434,12 +455,15 @@ async def kb_ingest_status(doc_id: str) -> str:
             for j in jobs_result.scalars().all()
         ]
 
-    return json.dumps({
-        "doc_id": str(did),
-        "version_id": str(vid),
-        "version_status": version.status.value,
-        "jobs": jobs,
-    }, indent=2)
+    return json.dumps(
+        {
+            "doc_id": str(did),
+            "version_id": str(vid),
+            "version_status": version.status.value,
+            "jobs": jobs,
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()
@@ -470,14 +494,18 @@ async def kb_reprocess(doc_id: str) -> str:
         version.error = None
         await session.commit()
 
-    from harbor_clerk.worker.pipeline import enqueue_stage
+    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
+
+    reset_jobs(vid)
     enqueue_stage(vid, JobStage.extract)
 
-    return json.dumps({
-        "doc_id": str(did),
-        "version_id": str(vid),
-        "status": "reprocessing",
-    })
+    return json.dumps(
+        {
+            "doc_id": str(did),
+            "version_id": str(vid),
+            "status": "reprocessing",
+        }
+    )
 
 
 @mcp.tool()
@@ -498,6 +526,7 @@ async def kb_system_health() -> str:
 
     try:
         from harbor_clerk.storage import get_storage
+
         storage = get_storage()
         storage.bucket_exists("originals")
         checks["storage"] = "ok"
@@ -505,10 +534,13 @@ async def kb_system_health() -> str:
         checks["storage"] = f"error: {e}"
 
     overall = all(v == "ok" for v in checks.values())
-    return json.dumps({
-        "status": "healthy" if overall else "degraded",
-        "checks": checks,
-    }, indent=2)
+    return json.dumps(
+        {
+            "status": "healthy" if overall else "degraded",
+            "checks": checks,
+        },
+        indent=2,
+    )
 
 
 def create_mcp_app():

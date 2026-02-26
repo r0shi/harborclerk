@@ -24,6 +24,7 @@ interface VersionInfo {
   has_text_layer?: boolean
   needs_ocr?: boolean
   extracted_chars?: number
+  source_path?: string
   error?: string
   created_at: string
   jobs: JobInfo[]
@@ -501,6 +502,11 @@ export default function DocumentDetailPage() {
                     OCR: {v.needs_ocr ? 'yes' : 'no'} | Text layer:{' '}
                     {v.has_text_layer ? 'yes' : 'no'}
                   </div>
+                  {v.source_path && (
+                    <div className="mt-1 text-xs text-gray-400 break-all">
+                      Source: {v.source_path}
+                    </div>
+                  )}
 
                   {v.jobs.length > 0 && (
                     <div className="mt-3">
