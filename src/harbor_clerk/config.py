@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     mcp_max_k: int = Field(default=350)
 
     # Summaries
-    summary_max_chars: int = Field(default=300)
+    summary_max_chars: int = Field(default=500)
 
 
 _settings: Settings | None = None
