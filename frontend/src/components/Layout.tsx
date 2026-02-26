@@ -4,12 +4,30 @@ import { useAuth } from '../auth'
 import BackButton from './BackButton'
 import { QueueTray } from './queue-tray'
 
-const linkClass = ({ isActive }: { isActive: boolean }) =>
-  `px-3 py-1.5 rounded-lg text-[13px] font-medium transition-colors ${
-    isActive
-      ? 'text-[var(--color-accent)]'
-      : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
-  }`
+function TabLink({ to, end, children }: { to: string; end?: boolean; children: React.ReactNode }) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) =>
+        `relative px-3 py-1.5 text-[13px] font-medium transition-colors ${
+          isActive
+            ? 'text-[var(--color-text-primary)]'
+            : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+        }`
+      }
+    >
+      {({ isActive }) => (
+        <>
+          {children}
+          {isActive && (
+            <span className="absolute inset-x-0 -bottom-[7px] h-[2px] bg-[var(--color-accent)] rounded-full" />
+          )}
+        </>
+      )}
+    </NavLink>
+  )
+}
 
 export default function Layout() {
   const { user, logout, isAdmin } = useAuth()
@@ -42,37 +60,15 @@ export default function Layout() {
         <div className="mx-auto max-w-7xl px-4">
           <div className="flex h-12 items-center justify-between">
             <div className="flex items-center space-x-1">
-              <Link to="/" className="mr-3 flex items-center space-x-2 text-[15px] font-semibold text-[var(--color-text-primary)]">
+              <Link to="/" className="mr-3 flex items-center text-[15px] font-semibold text-[var(--color-text-primary)]">
                 <img src="/favicon.svg" alt="" className="h-5 w-5" />
-                <span>Harbor Clerk</span>
               </Link>
-              <NavLink to="/" end className={linkClass}>
-                Chat
-              </NavLink>
-              <NavLink to="/upload" className={linkClass}>
-                Upload
-              </NavLink>
-              <NavLink to="/docs" className={linkClass}>
-                Documents
-              </NavLink>
-              <NavLink to="/search" className={linkClass}>
-                Search
-              </NavLink>
+              <TabLink to="/" end>Harbor Clerk</TabLink>
+              <TabLink to="/upload">Upload</TabLink>
+              <TabLink to="/docs">Documents</TabLink>
+              <TabLink to="/search">Raw Search</TabLink>
               {isAdmin && (
-                <>
-                  <NavLink to="/admin/users" className={linkClass}>
-                    Users
-                  </NavLink>
-                  <NavLink to="/admin/keys" className={linkClass}>
-                    API Keys
-                  </NavLink>
-                  <NavLink to="/admin/system" className={linkClass}>
-                    System
-                  </NavLink>
-                  <NavLink to="/admin/models" className={linkClass}>
-                    Models
-                  </NavLink>
-                </>
+                <TabLink to="/admin">System Settings</TabLink>
               )}
             </div>
             <div className="flex items-center space-x-3">
