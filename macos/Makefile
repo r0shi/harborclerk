@@ -74,7 +74,7 @@ test:
 
 # ── Apps ──
 
-apps: frontend
+apps: deps venv model llama frontend
 	@echo "==> Building and packaging apps"
 	BUILD_DIR=$(BUILD) bash $(SCRIPTS)/package.sh
 
