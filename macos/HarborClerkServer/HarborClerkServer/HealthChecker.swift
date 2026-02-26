@@ -7,6 +7,8 @@ final class HealthChecker {
     private let serviceManager: ServiceManager
     private var timer: Timer?
     private let interval: TimeInterval = 10
+    /// Set to true to skip health checks during targeted restarts.
+    var paused = false
 
     init(serviceManager: ServiceManager) {
         self.serviceManager = serviceManager
@@ -26,6 +28,7 @@ final class HealthChecker {
     }
 
     private func checkAll() async {
+        guard !paused else { return }
         var changed = false
         for service in serviceManager.services {
             guard service.state == .running else { continue }

@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var preferencesWindowController: NSWindowController?
     private var healthChecker: HealthChecker!
     private var menuBarIcon: NSImage?
+    private var restartTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         serviceManager = ServiceManager()
@@ -226,8 +227,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handlePreferencesRestart(_ notification: Notification) {
+        // Cancel any in-flight restart to prevent duplicate concurrent restarts
+        restartTask?.cancel()
         let changedKeys = notification.userInfo?["changedKeys"] as? Set<String> ?? []
-        Task {
+        restartTask = Task {
+            // Pause health checker to prevent it from marking restarting services as errored
+            healthChecker.paused = true
+            defer { healthChecker.paused = false }
             if changedKeys.isEmpty {
                 await serviceManager.stopAll()
                 await serviceManager.startAll()

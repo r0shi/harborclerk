@@ -169,6 +169,13 @@ final class ServiceManager: ObservableObject {
             let timeout: TimeInterval = (service is EmbedderService || service is LlamaService) ? 120 : (service is TikaService) ? 60 : 30
             let deadline = Date().addingTimeInterval(timeout)
             while Date() < deadline {
+                // Bail early if the process died — no point waiting for the full timeout
+                if let pySvc = service as? PythonService, pySvc.process?.isRunning != true {
+                    service.state = .errored
+                    notifyStateChanged()
+                    Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Process exited during startup")
+                    return
+                }
                 if await service.healthCheck() {
                     service.state = .running
                     // Reset crash counter now that the service is confirmed healthy
@@ -264,11 +271,28 @@ final class ServiceManager: ObservableObject {
 
         // Collect python services to restart (excluding workers if we're recreating them)
         let workersToStop: [WorkerService] = needsWorkerRecreate ? ioWorkers + cpuWorkers : (ioWorkers + cpuWorkers).filter { pythonToRestart.contains(ObjectIdentifier($0)) }
-        let nonWorkerPython: [any ManagedService] = [apiService, embedderService].filter { pythonToRestart.contains(ObjectIdentifier($0)) }
+        // Embedder before API to match startAll() ordering
+        let nonWorkerPython: [any ManagedService] = [embedderService, apiService].filter { pythonToRestart.contains(ObjectIdentifier($0)) }
 
         // 1. Stop python services (dependents first: workers → api/embedder)
+        // Send SIGTERM to all workers in parallel, then wait for all to exit.
+        // This reduces total stop time from N×30s to ~30s.
         for worker in workersToStop {
-            await worker.stop()
+            worker.state = .stopping
+            worker.process?.terminate()
+        }
+        notifyStateChanged()
+        for worker in workersToStop {
+            if let proc = worker.process, proc.isRunning {
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.global().async {
+                        proc.waitUntilExit()
+                        c.resume()
+                    }
+                }
+            }
+            worker.process = nil
+            worker.state = .stopped
         }
         notifyStateChanged()
         for svc in nonWorkerPython {
@@ -310,7 +334,16 @@ final class ServiceManager: ObservableObject {
             worker.baseEnvironment = env
         }
 
-        // 7. Start affected python services (api first, then workers)
+        // 7. Reset crash counters so stale counts from prior runs don't cause
+        //    premature .errored states after an intentional restart.
+        for svc in nonWorkerPython {
+            (svc as? PythonService)?.resetRestartCount()
+        }
+        for worker in ioWorkers + cpuWorkers {
+            worker.resetRestartCount()
+        }
+
+        // 8. Start affected python services (embedder → api → workers)
         for svc in nonWorkerPython {
             await startService(svc)
         }

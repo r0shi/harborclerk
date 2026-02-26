@@ -74,9 +74,11 @@ class PythonService: ManagedService {
             return
         }
         proc.terminate()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in
-            if self?.process?.isRunning == true {
-                self?.process?.interrupt()
+        // Capture proc (not self.process) so the SIGINT fallback targets the
+        // correct process even if self.process is reassigned after a restart.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            if proc.isRunning {
+                proc.interrupt()
             }
         }
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
