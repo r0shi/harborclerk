@@ -142,6 +142,19 @@ export async function del(url: string): Promise<void> {
   }
 }
 
+export async function downloadBlob(url: string): Promise<{ blob: Blob; filename: string }> {
+  const res = await request(url, { method: 'GET' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new ApiError(res.status, err.detail || res.statusText)
+  }
+  const disposition = res.headers.get('Content-Disposition') || ''
+  const match = disposition.match(/filename="?([^"]+)"?/)
+  const filename = match?.[1] || 'download'
+  const blob = await res.blob()
+  return { blob, filename }
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
