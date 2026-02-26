@@ -13,6 +13,7 @@ import SetupPage from './pages/SetupPage'
 import SystemStatusPage from './pages/SystemStatusPage'
 import SystemMaintenancePage from './pages/SystemMaintenancePage'
 import ChatPage from './pages/ChatPage'
+import HomePage from './pages/HomePage'
 import ModelsPage from './pages/ModelsPage'
 import PreferencesPage from './pages/PreferencesPage'
 import SystemSettingsPage from './pages/SystemSettingsPage'
@@ -29,7 +30,7 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route element={<ProtectedRoute />}>
         <Route element={<Layout />}>
-          <Route path="/" element={<ChatPage />} />
+          <Route path="/" element={<HomePage />} />
           <Route path="/c/:conversationId" element={<ChatPage />} />
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/docs" element={<DocumentsPage />} />
