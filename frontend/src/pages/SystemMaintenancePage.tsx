@@ -52,25 +52,34 @@ export default function SystemMaintenancePage() {
         </div>
       )}
 
-      <div className="flex space-x-3">
-        <button
-          onClick={handlePurge}
-          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-        >
-          Run Purge
-        </button>
-        <button
-          onClick={handleReaper}
-          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-        >
-          Run Reaper
-        </button>
-        <button
-          onClick={handleReprocessAll}
-          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-        >
-          Reprocess All
-        </button>
+      <div className="space-y-4">
+        <div>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Permanently remove documents deleted more than 60 days ago, including stored files.</p>
+          <button
+            onClick={handlePurge}
+            className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          >
+            Purge
+          </button>
+        </div>
+        <div>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Recover ingestion jobs that got stuck due to a crashed or killed worker.</p>
+          <button
+            onClick={handleReaper}
+            className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          >
+            Reap
+          </button>
+        </div>
+        <div>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Re-run the full ingestion pipeline on every document from the original files.</p>
+          <button
+            onClick={handleReprocessAll}
+            className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          >
+            Reprocess All
+          </button>
+        </div>
       </div>
     </div>
   )
