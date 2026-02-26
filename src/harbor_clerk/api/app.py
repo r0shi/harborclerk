@@ -1,9 +1,10 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -58,6 +59,9 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Harbor Clerk API")
 
 
+BUILD_HASH = os.environ.get("BUILD_HASH", "dev")
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Harbor Clerk",
@@ -67,6 +71,13 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url=None,
     )
+
+    @app.middleware("http")
+    async def add_build_hash(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Build-Hash"] = BUILD_HASH
+        return response
+
     app.include_router(system_router, prefix="/api")
     app.include_router(setup_router, prefix="/api")
     app.include_router(auth_router, prefix="/api")
@@ -86,7 +97,9 @@ def create_app() -> FastAPI:
     static_dir = Path(settings.static_dir)
     if static_dir.is_dir():
         # Serve actual static assets (JS, CSS, images)
-        app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
+        app.mount(
+            "/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets"
+        )
 
         # SPA fallback: serve index.html for all non-API, non-asset routes
         index_html = static_dir / "index.html"

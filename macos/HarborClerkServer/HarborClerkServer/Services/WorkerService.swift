@@ -6,6 +6,7 @@ final class WorkerService: PythonService {
     init(queue: String, index: Int) {
         self.queue = queue
         super.init(name: "Worker-\(queue)-\(index)")
+        shutdownGracePeriod = 10.0 // May be mid-pipeline stage
     }
 
     override var executableName: String { "harbor-clerk-worker" }

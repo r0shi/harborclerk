@@ -38,6 +38,7 @@ tools:
 venv:
 	@echo "==> Building Python + venv"
 	DEST_DIR=$(BUILD) PROJECT_ROOT=$(shell cd .. && pwd) bash $(SCRIPTS)/build-venv.sh
+	git -C $(shell cd .. && pwd) rev-parse --short HEAD > $(BUILD)/venv/build-hash.txt
 
 # ── Model ──
 # DEST_DIR must match the path in EmbedderService.swift ("model/<name>")

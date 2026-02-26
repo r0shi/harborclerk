@@ -14,7 +14,13 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.models import User
 from harbor_clerk.storage import get_storage
-from harbor_clerk.models import Chunk, Document, DocumentPage, DocumentVersion, IngestionJob
+from harbor_clerk.models import (
+    Chunk,
+    Document,
+    DocumentPage,
+    DocumentVersion,
+    IngestionJob,
+)
 from harbor_clerk.models.enums import JobStage, JobStatus
 
 logger = logging.getLogger(__name__)
@@ -60,14 +66,19 @@ async def health_check(
         settings = get_settings()
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{settings.tika_url}/tika", timeout=5)
-            checks["tika"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
+            checks["tika"] = (
+                "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
+            )
     except Exception as e:
         logger.error("Tika health check failed: %s", e)
         checks["tika"] = f"error: {e}"
 
+    from harbor_clerk.api.app import BUILD_HASH
+
     overall = all(v == "ok" for v in checks.values())
     return {
         "status": "healthy" if overall else "degraded",
+        "build": BUILD_HASH,
         "checks": checks,
     }
 
@@ -82,35 +93,39 @@ async def system_stats(
 
     # ── PostgreSQL stats ──
     try:
-        row = await session.execute(text(
-            "SELECT pg_database_size(current_database()) AS db_size"
-        ))
+        row = await session.execute(
+            text("SELECT pg_database_size(current_database()) AS db_size")
+        )
         db_size = row.scalar() or 0
 
-        row = await session.execute(text(
-            "SELECT count(*) FROM pg_stat_activity WHERE state IS NOT NULL"
-        ))
+        row = await session.execute(
+            text("SELECT count(*) FROM pg_stat_activity WHERE state IS NOT NULL")
+        )
         active_conns = row.scalar() or 0
 
-        row = await session.execute(text(
-            "SELECT sum(heap_blks_hit)::float "
-            "/ nullif(sum(heap_blks_hit + heap_blks_read), 0) "
-            "FROM pg_statio_user_tables"
-        ))
+        row = await session.execute(
+            text(
+                "SELECT sum(heap_blks_hit)::float "
+                "/ nullif(sum(heap_blks_hit + heap_blks_read), 0) "
+                "FROM pg_statio_user_tables"
+            )
+        )
         cache_hit = row.scalar()
 
         row = await session.execute(text("SELECT count(*) FROM chunks"))
         total_chunks = row.scalar() or 0
 
-        row = await session.execute(text(
-            "SELECT coalesce(sum(n_dead_tup), 0) FROM pg_stat_user_tables"
-        ))
+        row = await session.execute(
+            text("SELECT coalesce(sum(n_dead_tup), 0) FROM pg_stat_user_tables")
+        )
         dead_tuples = row.scalar() or 0
 
         result["postgres"] = {
             "db_size_mb": round(db_size / (1024 * 1024), 1),
             "active_connections": int(active_conns),
-            "cache_hit_ratio": round(float(cache_hit), 4) if cache_hit is not None else None,
+            "cache_hit_ratio": round(float(cache_hit), 4)
+            if cache_hit is not None
+            else None,
             "total_chunks": int(total_chunks),
             "dead_tuples": int(dead_tuples),
         }
@@ -120,20 +135,18 @@ async def system_stats(
 
     # ── Queue stats (from ingestion_jobs table) ──
     try:
-        rows = await session.execute(text(
-            "SELECT stage, count(*) FROM ingestion_jobs "
-            "WHERE status = 'queued' GROUP BY stage"
-        ))
+        rows = await session.execute(
+            text(
+                "SELECT stage, count(*) FROM ingestion_jobs "
+                "WHERE status = 'queued' GROUP BY stage"
+            )
+        )
         queue_depths = {row[0]: row[1] for row in rows}
         result["queues"] = {
             "io_queued": sum(
-                queue_depths.get(s, 0)
-                for s in ("extract", "chunk", "finalize")
+                queue_depths.get(s, 0) for s in ("extract", "chunk", "finalize")
             ),
-            "cpu_queued": sum(
-                queue_depths.get(s, 0)
-                for s in ("ocr", "embed")
-            ),
+            "cpu_queued": sum(queue_depths.get(s, 0) for s in ("ocr", "embed")),
         }
     except Exception as e:
         logger.error("Failed to collect queue stats: %s", e)
@@ -192,7 +205,9 @@ async def purge_run(
             except Exception as e:
                 logger.warning(
                     "Failed to delete object %s/%s: %s",
-                    ver.original_bucket, ver.original_object_key, e,
+                    ver.original_bucket,
+                    ver.original_object_key,
+                    e,
                 )
 
             # Cascade delete DB rows: chunks, pages, ingestion_jobs
@@ -214,7 +229,9 @@ async def purge_run(
         purged += 1
 
     await log_audit(
-        session, user_id=admin.id, action="purge_run",
+        session,
+        user_id=admin.id,
+        action="purge_run",
         detail={"purged_count": purged},
     )
     await session.commit()
@@ -259,13 +276,17 @@ async def reaper_run(
 
         logger.warning(
             "Reaping orphan job: version=%s stage=%s heartbeat_at=%s",
-            job.version_id, job.stage.value, job.heartbeat_at,
+            job.version_id,
+            job.stage.value,
+            job.heartbeat_at,
         )
         orphans.append((job.version_id, job.stage))
 
     # Commit any pending state and log audit before re-enqueuing
     await log_audit(
-        session, user_id=admin.id, action="reaper_run",
+        session,
+        user_id=admin.id,
+        action="reaper_run",
         detail={"reaped_count": len(orphans)},
     )
     await session.commit()

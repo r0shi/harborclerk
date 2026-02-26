@@ -82,18 +82,54 @@ final class PostgresService: ManagedService {
 
     func stop() async {
         state = .stopping
+
+        // Phase 1: pg_ctl stop -m fast (SIGINT — orderly shutdown)
         let pgCtl = pgBinDir.appendingPathComponent("pg_ctl")
-        let proc = Process()
-        proc.executableURL = pgCtl
-        proc.arguments = ["-D", dataDir.path, "stop", "-m", "fast"]
-        proc.environment = pgEnvironment()
-        try? proc.run()
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+        let fastProc = Process()
+        fastProc.executableURL = pgCtl
+        fastProc.arguments = ["-D", dataDir.path, "stop", "-m", "fast", "-t", "15"]
+        fastProc.environment = pgEnvironment()
+        fastProc.standardOutput = FileHandle.nullDevice
+        fastProc.standardError = FileHandle.nullDevice
+        try? fastProc.run()
+        let fastExited: Bool = await withCheckedContinuation { c in
             DispatchQueue.global().async {
-                proc.waitUntilExit()
-                c.resume()
+                fastProc.waitUntilExit()
+                c.resume(returning: fastProc.terminationStatus == 0)
             }
         }
+
+        if !fastExited {
+            // Phase 2: pg_ctl stop -m immediate (SIGQUIT — skip recovery)
+            Log.logger("lifecycle").warning("PostgreSQL fast shutdown failed, trying immediate mode")
+            let immProc = Process()
+            immProc.executableURL = pgCtl
+            immProc.arguments = ["-D", dataDir.path, "stop", "-m", "immediate"]
+            immProc.environment = pgEnvironment()
+            immProc.standardOutput = FileHandle.nullDevice
+            immProc.standardError = FileHandle.nullDevice
+            try? immProc.run()
+
+            let immExited: Bool = await withCheckedContinuation { c in
+                DispatchQueue.global().async {
+                    immProc.waitUntilExit()
+                    c.resume(returning: immProc.terminationStatus == 0)
+                }
+            }
+
+            if !immExited {
+                // Phase 3: read postmaster.pid and SIGKILL
+                Log.logger("lifecycle").warning("PostgreSQL immediate shutdown failed, sending SIGKILL")
+                let pidFile = dataDir.appendingPathComponent("postmaster.pid")
+                if let contents = try? String(contentsOf: pidFile),
+                   let pidLine = contents.components(separatedBy: "\n").first,
+                   let pid = Int32(pidLine) {
+                    kill(pid, SIGKILL)
+                    usleep(1_000_000) // 1s for process to die
+                }
+            }
+        }
+
         state = .stopped
     }
 

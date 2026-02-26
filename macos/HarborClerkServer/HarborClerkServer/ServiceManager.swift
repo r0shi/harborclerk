@@ -89,7 +89,39 @@ final class ServiceManager: ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// Kill any process listening on the given port (leftover from a prior run).
+    /// PostgreSQL handles stale PIDs via pg_ctl / postmaster.pid, so skip it.
+    nonisolated private func killStaleProcess(onPort port: Int) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        proc.arguments = ["-ti", "tcp:\(port)"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+        proc.waitUntilExit()
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !output.isEmpty else { return }
+
+        for line in output.components(separatedBy: "\n") {
+            if let pid = Int32(line.trimmingCharacters(in: .whitespaces)) {
+                Log.logger("lifecycle").warning(
+                    "Killing stale process \(pid, privacy: .public) on port \(port, privacy: .public)")
+                kill(pid, SIGTERM)
+                usleep(500_000) // 0.5s grace
+                if kill(pid, 0) == 0 {
+                    kill(pid, SIGKILL)
+                }
+            }
+        }
+    }
+
     func startAll() async {
+        let settings = AppSettings.shared
+
         // Set base environment on all Python services
         let env = pythonEnvironment()
         for service in services {
@@ -98,22 +130,26 @@ final class ServiceManager: ObservableObject {
             }
         }
 
-        // 1. PostgreSQL
+        // 1. PostgreSQL (handles stale PIDs internally via postmaster.pid)
         await startService(postgresService)
 
         // 2. Alembic migrations
         await runMigrations()
 
         // 3. Tika (JVM startup can take ~30-60s)
+        killStaleProcess(onPort: settings.tikaPort)
         await startService(tikaService)
 
         // 4. Embedder (can take a while for model load)
+        killStaleProcess(onPort: settings.embedderPort)
         await startService(embedderService)
 
         // 5. LLM server (skip silently if no model selected)
+        killStaleProcess(onPort: settings.llamaPort)
         await startService(llamaService)
 
         // 6. API server
+        killStaleProcess(onPort: settings.apiPort)
         await startService(apiService)
 
         // 7. Workers
@@ -500,7 +536,12 @@ final class ServiceManager: ObservableObject {
         let settings = AppSettings.shared
         let bundle = Bundle.main.resourceURL!
 
+        let hashFile = bundle.appendingPathComponent("venv/build-hash.txt")
+        let buildHash = (try? String(contentsOf: hashFile, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+
         return [
+            "BUILD_HASH": buildHash,
             "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
             "STORAGE_BACKEND": "filesystem",
             "STORAGE_PATH": settings.originalsDir.path,

@@ -57,15 +57,16 @@ final class LlamaService: ManagedService {
 
     func stop() async {
         state = .stopping
-        guard let proc = process else {
+        guard let proc = process, proc.isRunning else {
             state = .stopped
             return
         }
-        proc.terminate()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in
-            if self?.process?.isRunning == true {
-                self?.process?.interrupt()
-            }
+        proc.terminate() // SIGTERM
+        // Model unload can be slow — 10s grace, then SIGKILL
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+            guard proc.isRunning else { return }
+            Log.logger("lifecycle").warning("LLM still running after 10s, sending SIGKILL")
+            kill(proc.processIdentifier, SIGKILL)
         }
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async {

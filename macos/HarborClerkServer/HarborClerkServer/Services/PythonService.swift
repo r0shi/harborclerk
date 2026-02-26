@@ -8,6 +8,9 @@ class PythonService: ManagedService {
     var process: Process?
     var baseEnvironment: [String: String] = [:]
 
+    /// Seconds to wait after SIGTERM before sending SIGKILL.
+    var shutdownGracePeriod: TimeInterval = 5.0
+
     private var restartCount = 0
     private let maxRestarts = 3
 
@@ -73,13 +76,14 @@ class PythonService: ManagedService {
             state = .stopped
             return
         }
-        proc.terminate()
-        // Capture proc (not self.process) so the SIGINT fallback targets the
-        // correct process even if self.process is reassigned after a restart.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
-            if proc.isRunning {
-                proc.interrupt()
-            }
+        proc.terminate() // SIGTERM
+        let grace = shutdownGracePeriod
+        let svcName = name
+        DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
+            guard proc.isRunning else { return }
+            Log.logger("lifecycle").warning(
+                "\(svcName, privacy: .public) still running after \(Int(grace), privacy: .public)s, sending SIGKILL")
+            kill(proc.processIdentifier, SIGKILL)
         }
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async {
