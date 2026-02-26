@@ -10,7 +10,8 @@ import SearchPage from './pages/SearchPage'
 import UsersPage from './pages/UsersPage'
 import ApiKeysPage from './pages/ApiKeysPage'
 import SetupPage from './pages/SetupPage'
-import SystemPage from './pages/SystemPage'
+import SystemStatusPage from './pages/SystemStatusPage'
+import SystemMaintenancePage from './pages/SystemMaintenancePage'
 import ChatPage from './pages/ChatPage'
 import ModelsPage from './pages/ModelsPage'
 import PreferencesPage from './pages/PreferencesPage'
@@ -41,7 +42,9 @@ export default function App() {
             <Route path="/admin" element={<SystemSettingsPage />} />
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/keys" element={<ApiKeysPage />} />
-            <Route path="/admin/system" element={<SystemPage />} />
+            <Route path="/admin/system" element={<Navigate to="/admin/system/status" replace />} />
+            <Route path="/admin/system/status" element={<SystemStatusPage />} />
+            <Route path="/admin/system/maintenance" element={<SystemMaintenancePage />} />
             <Route path="/admin/models" element={<ModelsPage />} />
           </Route>
         </Route>

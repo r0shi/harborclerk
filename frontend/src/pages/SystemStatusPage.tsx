@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { get, post } from '../api'
+import { get } from '../api'
 
 interface HealthCheck {
   status: string
@@ -32,20 +32,19 @@ const STAT_LABELS: Record<string, string> = {
 }
 
 function formatStatValue(key: string, value: number | string | null | undefined): string {
-  if (value == null) return '—'
+  if (value == null) return '\u2014'
   if (typeof value === 'string') return value
   if (key.endsWith('_mb')) return `${value} MB`
   if (key === 'cache_hit_ratio') return `${(value * 100).toFixed(1)}%`
   return value.toLocaleString()
 }
 
-export default function SystemPage() {
+export default function SystemStatusPage() {
   const [health, setHealth] = useState<HealthCheck | null>(null)
   const [stats, setStats] = useState<StatsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [statsLoading, setStatsLoading] = useState(true)
   const [error, setError] = useState('')
-  const [actionResult, setActionResult] = useState('')
 
   async function loadHealth() {
     try {
@@ -75,26 +74,6 @@ export default function SystemPage() {
     loadStats()
   }, [])
 
-  async function handlePurge() {
-    setActionResult('')
-    try {
-      const data = await post<{ purged: number }>('/api/system/purge-run')
-      setActionResult(`Purge complete: ${data.purged} items removed`)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Purge failed')
-    }
-  }
-
-  async function handleReaper() {
-    setActionResult('')
-    try {
-      const data = await post<{ reaped: number }>('/api/system/reaper-run')
-      setActionResult(`Reaper complete: ${data.reaped} orphaned jobs recovered`)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Reaper failed')
-    }
-  }
-
   function handleRefresh() {
     loadHealth()
     loadStats()
@@ -104,17 +83,19 @@ export default function SystemPage() {
 
   return (
     <div>
-      <h1 className="mb-4 text-xl font-bold">System</h1>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-xl font-bold">System Status</h1>
+        <button
+          onClick={handleRefresh}
+          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+        >
+          Refresh
+        </button>
+      </div>
 
       {error && (
         <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
           {error}
-        </div>
-      )}
-
-      {actionResult && (
-        <div className="mb-4 rounded bg-green-50 dark:bg-green-900/20 px-3 py-2 text-sm text-green-700 dark:text-green-400">
-          {actionResult}
         </div>
       )}
 
@@ -154,28 +135,6 @@ export default function SystemPage() {
           </span>
         </div>
       )}
-
-      <h2 className="mb-3 text-lg font-semibold">Maintenance</h2>
-      <div className="flex space-x-3">
-        <button
-          onClick={handlePurge}
-          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-        >
-          Run Purge
-        </button>
-        <button
-          onClick={handleReaper}
-          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-        >
-          Run Reaper
-        </button>
-        <button
-          onClick={handleRefresh}
-          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-        >
-          Refresh
-        </button>
-      </div>
     </div>
   )
 }
