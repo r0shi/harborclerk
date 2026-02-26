@@ -4,6 +4,7 @@ import { post } from '../api'
 export default function SystemMaintenancePage() {
   const [error, setError] = useState('')
   const [actionResult, setActionResult] = useState('')
+  const [confirmingReprocess, setConfirmingReprocess] = useState(false)
 
   async function handlePurge() {
     setActionResult('')
@@ -26,7 +27,11 @@ export default function SystemMaintenancePage() {
   }
 
   async function handleReprocessAll() {
-    if (!window.confirm('This will reprocess every document from scratch and could take a long time. Continue?')) return
+    if (!confirmingReprocess) {
+      setConfirmingReprocess(true)
+      return
+    }
+    setConfirmingReprocess(false)
     setActionResult('')
     try {
       const data = await post<{ reprocessed: number }>('/api/system/reprocess-all')
@@ -73,12 +78,26 @@ export default function SystemMaintenancePage() {
         </div>
         <div>
           <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Re-run the full ingestion pipeline on every document from the original files.</p>
-          <button
-            onClick={handleReprocessAll}
-            className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-          >
-            Reprocess All
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleReprocessAll}
+              className={`rounded-lg px-4 py-2 text-sm font-medium ${
+                confirmingReprocess
+                  ? 'bg-red-600 text-white hover:bg-red-700'
+                  : 'bg-[var(--color-bg-tertiary)] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+              }`}
+            >
+              {confirmingReprocess ? 'Click again to confirm' : 'Reprocess All'}
+            </button>
+            {confirmingReprocess && (
+              <button
+                onClick={() => setConfirmingReprocess(false)}
+                className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
