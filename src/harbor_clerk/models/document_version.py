@@ -41,6 +41,7 @@ class DocumentVersion(Base):
         nullable=True,
     )
     source_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[created_at]
     updated_at: Mapped[updated_at]
 

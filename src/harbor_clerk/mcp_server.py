@@ -6,7 +6,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
@@ -354,6 +354,7 @@ async def kb_get_document(doc_id: str) -> str:
                 {
                     "version_id": str(v.version_id),
                     "status": v.status.value,
+                    "summary": v.summary,
                     "mime_type": v.mime_type,
                     "size_bytes": v.size_bytes,
                     "extracted_chars": v.extracted_chars,
@@ -394,15 +395,18 @@ async def kb_list_recent(limit: int = 20) -> str:
     items = []
     for doc in docs:
         latest_status = None
+        latest_summary = None
         if doc.latest_version_id and doc.versions:
             for v in doc.versions:
                 if v.version_id == doc.latest_version_id:
                     latest_status = v.status.value
+                    latest_summary = v.summary
                     break
         items.append(
             {
                 "doc_id": str(doc.doc_id),
                 "title": doc.title,
+                "summary": latest_summary,
                 "status": doc.status,
                 "latest_version_status": latest_status,
                 "version_count": len(doc.versions) if doc.versions else 0,
@@ -411,6 +415,66 @@ async def kb_list_recent(limit: int = 20) -> str:
         )
 
     return json.dumps({"documents": items}, indent=2)
+
+
+@mcp.tool()
+async def kb_corpus_overview() -> str:
+    """Get a bird's-eye view of the knowledge base.
+
+    Returns document count, total chunks, and a summary of each document.
+    Use this to understand what's in the corpus before searching."""
+    _get_principal()
+
+    async with async_session_factory() as session:
+        doc_count_result = await session.execute(
+            select(func.count())
+            .select_from(Document)
+            .where(Document.status == "active")
+        )
+        doc_count = doc_count_result.scalar() or 0
+
+        chunk_count_result = await session.execute(
+            select(func.count()).select_from(Chunk)
+        )
+        chunk_count = chunk_count_result.scalar() or 0
+
+        result = await session.execute(
+            select(Document)
+            .where(Document.status == "active")
+            .order_by(Document.updated_at.desc())
+            .limit(200)
+        )
+        docs = result.scalars().all()
+
+    items = []
+    for doc in docs:
+        summary = None
+        status = None
+        if doc.latest_version_id and doc.versions:
+            for v in doc.versions:
+                if v.version_id == doc.latest_version_id:
+                    summary = v.summary
+                    status = v.status.value
+                    break
+        items.append(
+            {
+                "doc_id": str(doc.doc_id),
+                "title": doc.title,
+                "summary": summary,
+                "status": status,
+                "updated_at": doc.updated_at.isoformat(),
+            }
+        )
+
+    return json.dumps(
+        {
+            "document_count": doc_count,
+            "total_chunks": chunk_count,
+            "documents": items,
+            "truncated": doc_count > len(items),
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()
