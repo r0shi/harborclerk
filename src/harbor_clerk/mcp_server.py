@@ -19,9 +19,23 @@ from harbor_clerk.models import (
     IngestionJob,
 )
 from harbor_clerk.models.enums import JobStage, VersionStatus
+from harbor_clerk.config import get_settings
 from harbor_clerk.search import hybrid_search
 
 logger = logging.getLogger(__name__)
+
+# Runtime stats for kb_search usage monitoring
+_search_stats = {
+    "calls": 0,
+    "total_k": 0,
+    "max_k": 0,
+    "cap_hits": 0,
+    "pagination_calls": 0,
+    "detail_full": 0,
+    "detail_brief": 0,
+    "detail_compact": 0,
+}
+_STATS_LOG_INTERVAL = 50
 
 # Context variable set by auth middleware before tool execution
 _mcp_principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVar(
@@ -135,41 +149,104 @@ mcp = FastMCP(
 async def kb_search(
     query: str,
     k: int = 10,
+    offset: int = 0,
+    detail: str = "full",
+    brief_chars: int = 0,
     doc_id: str | None = None,
 ) -> str:
     """Search the knowledge base with hybrid FTS + vector search.
 
     Returns ranked chunks with citations (page numbers, scores).
     Use this as the primary tool to find information.
+
+    detail levels control how much text is returned per hit:
+      "full" (default): complete chunk text — best for reading a small
+        number of high-confidence results carefully
+      "brief": first ~200 characters per chunk (adjustable via brief_chars) —
+        use when scanning 20-50 results to identify which are worth
+        reading in full via kb_read_passages
+      "compact": metadata only (chunk_id, doc_title, score, pages, language,
+        no text) — use when surveying a broad result set (50+) to
+        understand score distribution and document coverage before
+        narrowing down
+
+    Pagination: use offset to page through results. Check has_more
+    in the response to know if more results exist beyond your window.
     """
     _get_principal()
+    settings = get_settings()
     did = uuid.UUID(doc_id) if doc_id else None
 
+    # Clamp parameters
+    k = max(1, min(k, settings.mcp_max_k))
+    offset = max(0, offset)
+    if detail not in ("full", "brief", "compact"):
+        detail = "full"
+
     async with async_session_factory() as session:
-        result = await hybrid_search(session, query, k=k, doc_id=did)
+        result = await hybrid_search(session, query, k=k, doc_id=did, offset=offset)
+
+    # Resolve brief_chars for brief mode
+    effective_brief_chars = brief_chars if brief_chars > 0 else settings.mcp_brief_chars
 
     hits = []
     for h in result.hits:
-        hit = {
+        hit: dict = {
             "chunk_id": h.chunk_id,
             "doc_id": h.doc_id,
             "doc_title": h.doc_title,
             "version_id": h.version_id,
             "score": h.score,
-            "text": h.chunk_text,
             "language": h.language,
         }
         if h.page_start is not None:
             hit["pages"] = f"{h.page_start}-{h.page_end}" if h.page_end != h.page_start else str(h.page_start)
+        # Detail mode formatting
+        if detail == "full":
+            hit["text"] = h.chunk_text
+        elif detail == "brief":
+            text = h.chunk_text
+            if len(text) > effective_brief_chars:
+                hit["text"] = text[:effective_brief_chars] + "\u2026"
+            else:
+                hit["text"] = text
+        # compact: no text field
         hits.append(hit)
 
-    resp: dict = {"hits": hits}
+    resp: dict = {
+        "hits": hits,
+        "total_candidates": result.total_candidates,
+        "has_more": offset + k < result.total_candidates,
+    }
     if result.possible_conflict:
         resp["possible_conflict"] = True
         resp["conflict_sources"] = [
             {"doc_id": cs.doc_id, "version_id": cs.version_id, "title": cs.title}
             for cs in result.conflict_sources
         ]
+
+    # Runtime stats
+    _search_stats["calls"] += 1
+    _search_stats["total_k"] += k
+    _search_stats["max_k"] = max(_search_stats["max_k"], k)
+    if k >= settings.mcp_max_k:
+        _search_stats["cap_hits"] += 1
+    if offset > 0:
+        _search_stats["pagination_calls"] += 1
+    _search_stats[f"detail_{detail}"] += 1
+
+    if _search_stats["calls"] % _STATS_LOG_INTERVAL == 0:
+        n = _search_stats["calls"]
+        logger.info(
+            "kb_search stats (%d calls): avg_k=%.0f, max_k=%d, cap_hit_rate=%.0f%%, "
+            "pagination_rate=%.0f%%, detail: full=%d brief=%d compact=%d",
+            n, _search_stats["total_k"] / n, _search_stats["max_k"],
+            100 * _search_stats["cap_hits"] / n,
+            100 * _search_stats["pagination_calls"] / n,
+            _search_stats["detail_full"], _search_stats["detail_brief"],
+            _search_stats["detail_compact"],
+        )
+
     return json.dumps(resp, indent=2)
 
 

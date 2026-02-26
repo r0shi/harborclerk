@@ -40,6 +40,7 @@ class SearchHit:
 @dataclass
 class SearchResult:
     hits: list[SearchHit]
+    total_candidates: int = 0
     possible_conflict: bool = False
     conflict_sources: list[ConflictSource] = field(default_factory=list)
 
@@ -74,6 +75,7 @@ async def hybrid_search(
     k: int = 10,
     doc_id: uuid.UUID | None = None,
     version_id: uuid.UUID | None = None,
+    offset: int = 0,
 ) -> SearchResult:
     """Run hybrid FTS + vector search, merge scores, return top K."""
 
@@ -83,6 +85,9 @@ async def hybrid_search(
         scope_filters.append(Chunk.doc_id == doc_id)
     if version_id is not None:
         scope_filters.append(Chunk.version_id == version_id)
+
+    # Dynamic candidate limit: pull enough candidates for k + offset
+    candidate_limit = max(30, k + offset + 20)
 
     # --- 1. Lexical candidates (FTS) ---
     fts_scores: dict[uuid.UUID, float] = {}
@@ -94,7 +99,7 @@ async def hybrid_search(
             select(Chunk.chunk_id, rank.label("rank"))
             .where(col.op("@@")(tsquery), *scope_filters)
             .order_by(rank.desc())
-            .limit(30)
+            .limit(candidate_limit)
         )
         result = await session.execute(stmt)
         for row in result:
@@ -111,7 +116,7 @@ async def hybrid_search(
             select(Chunk.chunk_id, distance.label("distance"))
             .where(Chunk.embedding.isnot(None), *scope_filters)
             .order_by(distance)
-            .limit(30)
+            .limit(candidate_limit)
         )
         result = await session.execute(stmt)
         for row in result:
@@ -162,8 +167,10 @@ async def hybrid_search(
             score += 0.05 * (chunk.ocr_confidence / 100.0)
         combined[cid] = score
 
-    # --- 5. Top K ---
-    sorted_ids = sorted(combined, key=lambda cid: combined[cid], reverse=True)[:k]
+    # --- 5. Top K with offset ---
+    total_candidates = len(combined)
+    sorted_ids = sorted(combined, key=lambda cid: combined[cid], reverse=True)
+    sorted_ids = sorted_ids[offset:offset + k]
 
     hits: list[SearchHit] = []
     for cid in sorted_ids:
@@ -207,6 +214,7 @@ async def hybrid_search(
 
     return SearchResult(
         hits=hits,
+        total_candidates=total_candidates,
         possible_conflict=possible_conflict,
         conflict_sources=conflict_sources,
     )

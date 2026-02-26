@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Native macOS app config file (set by Swift via env var)
     native_config_file: str = Field(default="")
 
+    # MCP search defaults
+    mcp_brief_chars: int = Field(default=200)
+    mcp_max_k: int = Field(default=350)
+
 
 _settings: Settings | None = None
 
