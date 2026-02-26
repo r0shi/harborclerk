@@ -51,12 +51,8 @@ fi
 VENV_PYTHON="$VENV_DIR/bin/python3"
 
 # ── Install packages ──
-if ! "$VENV_PYTHON" -c "import harbor_clerk" 2>/dev/null; then
-    echo "==> Installing harbor-clerk"
-    "$VENV_PYTHON" -m pip install --no-cache-dir "$PROJECT_ROOT"
-else
-    echo "==> harbor-clerk already installed, skipping"
-fi
+echo "==> Installing harbor-clerk"
+"$VENV_PYTHON" -m pip install --no-cache-dir --upgrade "$PROJECT_ROOT"
 
 if ! "$VENV_PYTHON" -c "import embedder" 2>/dev/null; then
     echo "==> Installing embedder"
