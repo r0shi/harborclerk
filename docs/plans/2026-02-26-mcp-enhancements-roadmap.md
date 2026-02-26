@@ -59,7 +59,7 @@
 
 | # | Feature | Status |
 |---|---------|--------|
-| 1 | Adjustable K + Pagination | Not started |
+| 1 | Adjustable K + Pagination | **Done** |
 | 2 | Document Summaries | Not started |
 | 3 | Context Expansion | Not started |
 | 4 | Scoped/Filtered Search | Not started |
