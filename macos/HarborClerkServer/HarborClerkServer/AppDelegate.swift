@@ -232,13 +232,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restartTask = Task {
             // Pause health checker to prevent it from marking restarting services as errored
             healthChecker.paused = true
-            defer { healthChecker.paused = false }
             if changedKeys.isEmpty {
                 await serviceManager.stopAll()
                 await serviceManager.startAll()
             } else {
                 await serviceManager.restartForChangedSettings(changedKeys)
             }
+            // Only unpause if this task wasn't superseded by a newer restart
+            guard !Task.isCancelled else { return }
+            healthChecker.paused = false
         }
     }
 

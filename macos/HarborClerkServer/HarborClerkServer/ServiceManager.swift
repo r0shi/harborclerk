@@ -36,6 +36,7 @@ final class ServiceManager: ObservableObject {
     private var configWatcherSource: DispatchSourceFileSystemObject?
     private var configFileDescriptor: Int32 = -1
     private var configChangeTask: Task<Void, Never>?
+    private var configWatcherActive = false
     private var lastLlmModelId: String = ""
 
     var overallState: ServiceState {
@@ -405,6 +406,7 @@ final class ServiceManager: ObservableObject {
 
     /// Start watching config.json for changes from the Python side.
     func startConfigWatcher() {
+        configWatcherActive = true
         let settings = AppSettings.shared
         lastLlmModelId = settings.llmModelId
         let path = settings.configURL.path
@@ -441,6 +443,7 @@ final class ServiceManager: ObservableObject {
     }
 
     func stopConfigWatcher() {
+        configWatcherActive = false
         configChangeTask?.cancel()
         configChangeTask = nil
         configWatcherSource?.cancel()
@@ -449,6 +452,7 @@ final class ServiceManager: ObservableObject {
     }
 
     private func handleConfigChange() {
+        guard configWatcherActive else { return }
         let settings = AppSettings.shared
         settings.reload()
 
