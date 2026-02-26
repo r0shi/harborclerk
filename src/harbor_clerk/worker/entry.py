@@ -29,7 +29,7 @@ from harbor_clerk.worker.stages import STAGE_FUNCTIONS
 logger = logging.getLogger(__name__)
 
 QUEUE_STAGES: dict[str, list[JobStage]] = {
-    "io":  [JobStage.extract, JobStage.chunk, JobStage.finalize],
+    "io": [JobStage.extract, JobStage.chunk, JobStage.summarize, JobStage.finalize],
     "cpu": [JobStage.ocr, JobStage.embed],
 }
 
@@ -46,7 +46,9 @@ def _handle_signal(signum, frame):
 def _get_listen_connection():
     """Get a raw psycopg2 connection for LISTEN (outside SQLAlchemy pool)."""
     settings = get_settings()
-    dsn = _make_sync_url(settings.database_url).replace("postgresql+psycopg2://", "postgresql://")
+    dsn = _make_sync_url(settings.database_url).replace(
+        "postgresql+psycopg2://", "postgresql://"
+    )
     conn = psycopg2.connect(dsn)
     conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
     return conn
@@ -60,7 +62,9 @@ def _wait_for_notify(conn, timeout=30):
             conn.notifies.pop(0)
 
 
-def _heartbeat_loop(version_id: uuid.UUID, stage: JobStage, stop_event: threading.Event):
+def _heartbeat_loop(
+    version_id: uuid.UUID, stage: JobStage, stop_event: threading.Event
+):
     """Update heartbeat_at every HEARTBEAT_INTERVAL seconds until stop_event is set."""
     while not stop_event.wait(timeout=HEARTBEAT_INTERVAL):
         session = get_sync_session()
@@ -116,6 +120,7 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
 def _lookup_filename(version_id: uuid.UUID) -> str | None:
     """Look up the original filename for a version."""
     import posixpath
+
     session = get_sync_session()
     try:
         version = session.execute(
@@ -134,7 +139,9 @@ def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
     func = STAGE_FUNCTIONS[stage]
     filename = _lookup_filename(version_id)
 
-    logger.info("Starting %s for version %s (timeout=%ds)", stage.value, version_id, timeout)
+    logger.info(
+        "Starting %s for version %s (timeout=%ds)", stage.value, version_id, timeout
+    )
     publish_job_event(version_id, stage.value, "running", filename=filename)
 
     # Start heartbeat thread
@@ -181,7 +188,9 @@ def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
         finally:
             session.close()
 
-        publish_job_event(version_id, stage.value, "error", error=error_msg, filename=filename)
+        publish_job_event(
+            version_id, stage.value, "error", error=error_msg, filename=filename
+        )
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old_handler)

@@ -6,11 +6,13 @@ from harbor_clerk.worker.stages.embed import run_embed
 from harbor_clerk.worker.stages.extract import run_extract
 from harbor_clerk.worker.stages.finalize import run_finalize
 from harbor_clerk.worker.stages.ocr import run_ocr
+from harbor_clerk.worker.stages.summarize import run_summarize
 
 STAGE_FUNCTIONS = {
     JobStage.extract: run_extract,
     JobStage.ocr: run_ocr,
     JobStage.chunk: run_chunk,
     JobStage.embed: run_embed,
+    JobStage.summarize: run_summarize,
     JobStage.finalize: run_finalize,
 }

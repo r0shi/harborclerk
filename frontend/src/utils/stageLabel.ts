@@ -8,6 +8,8 @@ export function stageLabel(stage: string): string {
       return 'Chunking'
     case 'embed':
       return 'Embedding'
+    case 'summarize':
+      return 'Summarizing'
     case 'finalize':
       return 'Finalizing'
     default:

@@ -72,7 +72,7 @@ ALLOWED_EXTENSIONS = {
 
 @router.post("/uploads", response_model=UploadResponse)
 async def upload_files(
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] = File(..., max_part_size=200 * 1024 * 1024),
     principal: Principal = Depends(require_user),
     session: AsyncSession = Depends(get_session),
 ):

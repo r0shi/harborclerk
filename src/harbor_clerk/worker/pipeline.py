@@ -26,6 +26,7 @@ STAGE_CONFIG: dict[JobStage, tuple[str, int, VersionStatus]] = {
     JobStage.ocr: ("cpu", 7200, VersionStatus.ocr_running),
     JobStage.chunk: ("io", 1200, VersionStatus.chunking),
     JobStage.embed: ("cpu", 1800, VersionStatus.embedding),
+    JobStage.summarize: ("io", 120, VersionStatus.summarizing),
     JobStage.finalize: ("io", 600, VersionStatus.finalizing),
 }
 
@@ -35,6 +36,7 @@ STAGE_ORDER = [
     JobStage.ocr,
     JobStage.chunk,
     JobStage.embed,
+    JobStage.summarize,
     JobStage.finalize,
 ]
 
@@ -44,6 +46,7 @@ STAGE_DONE_STATUS: dict[JobStage, VersionStatus] = {
     JobStage.ocr: VersionStatus.ocr_done,
     JobStage.chunk: VersionStatus.chunked,
     JobStage.embed: VersionStatus.embedded,
+    JobStage.summarize: VersionStatus.summarized,
     JobStage.finalize: VersionStatus.ready,
 }
 

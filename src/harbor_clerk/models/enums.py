@@ -21,6 +21,8 @@ class VersionStatus(str, enum.Enum):
     chunked = "chunked"
     embedding = "embedding"
     embedded = "embedded"
+    summarizing = "summarizing"
+    summarized = "summarized"
     finalizing = "finalizing"
     ready = "ready"
     error = "error"
@@ -31,6 +33,7 @@ class JobStage(str, enum.Enum):
     ocr = "ocr"
     chunk = "chunk"
     embed = "embed"
+    summarize = "summarize"
     finalize = "finalize"
 
 
