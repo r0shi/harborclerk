@@ -14,6 +14,7 @@ import SystemPage from './pages/SystemPage'
 import ChatPage from './pages/ChatPage'
 import ModelsPage from './pages/ModelsPage'
 import PreferencesPage from './pages/PreferencesPage'
+import SystemSettingsPage from './pages/SystemSettingsPage'
 
 function ChatRedirect() {
   const { conversationId } = useParams<{ conversationId: string }>()
@@ -37,6 +38,7 @@ export default function App() {
           <Route path="/chat/:conversationId" element={<ChatRedirect />} />
           <Route path="/preferences" element={<PreferencesPage />} />
           <Route element={<AdminRoute />}>
+            <Route path="/admin" element={<SystemSettingsPage />} />
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/keys" element={<ApiKeysPage />} />
             <Route path="/admin/system" element={<SystemPage />} />
