@@ -4,8 +4,10 @@ import { post } from '../api'
 export default function SystemMaintenancePage() {
   const [error, setError] = useState('')
   const [actionResult, setActionResult] = useState('')
+  const [confirmingReprocess, setConfirmingReprocess] = useState(false)
 
   async function handlePurge() {
+    setError('')
     setActionResult('')
     try {
       const data = await post<{ purged: number }>('/api/system/purge-run')
@@ -16,12 +18,29 @@ export default function SystemMaintenancePage() {
   }
 
   async function handleReaper() {
+    setError('')
     setActionResult('')
     try {
       const data = await post<{ reaped: number }>('/api/system/reaper-run')
       setActionResult(`Reaper complete: ${data.reaped} orphaned jobs recovered`)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Reaper failed')
+    }
+  }
+
+  async function handleReprocessAll() {
+    if (!confirmingReprocess) {
+      setConfirmingReprocess(true)
+      return
+    }
+    setConfirmingReprocess(false)
+    setError('')
+    setActionResult('')
+    try {
+      const data = await post<{ reprocessed: number }>('/api/system/reprocess-all')
+      setActionResult(`Reprocess all complete: ${data.reprocessed} documents queued`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Reprocess all failed')
     }
   }
 
@@ -41,19 +60,48 @@ export default function SystemMaintenancePage() {
         </div>
       )}
 
-      <div className="flex space-x-3">
-        <button
-          onClick={handlePurge}
-          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-        >
-          Run Purge
-        </button>
-        <button
-          onClick={handleReaper}
-          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-        >
-          Run Reaper
-        </button>
+      <div className="space-y-4">
+        <div>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Permanently remove documents deleted more than 60 days ago, including stored files.</p>
+          <button
+            onClick={handlePurge}
+            className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          >
+            Purge
+          </button>
+        </div>
+        <div>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Recover ingestion jobs that got stuck due to a crashed or killed worker.</p>
+          <button
+            onClick={handleReaper}
+            className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          >
+            Reap
+          </button>
+        </div>
+        <div>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Re-run the full ingestion pipeline on every document from the original files.</p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleReprocessAll}
+              className={`rounded-lg px-4 py-2 text-sm font-medium ${
+                confirmingReprocess
+                  ? 'bg-red-600 text-white hover:bg-red-700'
+                  : 'bg-[var(--color-bg-tertiary)] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+              }`}
+            >
+              {confirmingReprocess ? 'Click again to confirm' : 'Reprocess All'}
+            </button>
+            {confirmingReprocess && (
+              <button
+                onClick={() => setConfirmingReprocess(false)}
+                className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )

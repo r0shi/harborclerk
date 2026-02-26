@@ -21,7 +21,7 @@ from harbor_clerk.models import (
     DocumentVersion,
     IngestionJob,
 )
-from harbor_clerk.models.enums import JobStage, JobStatus
+from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
@@ -297,3 +297,50 @@ async def reaper_run(
 
     logger.info("Reaped %d orphan jobs", len(orphans))
     return {"reaped": len(orphans)}
+
+
+@router.post("/system/reprocess-all")
+async def reprocess_all(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Re-run ingestion pipeline on every active document's latest version."""
+    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
+
+    result = await session.execute(select(Document).where(Document.status == "active"))
+    docs = result.scalars().all()
+
+    count = 0
+    for doc in docs:
+        version_id = doc.latest_version_id
+        if version_id is None:
+            continue
+
+        ver_result = await session.execute(
+            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
+        )
+        version = ver_result.scalar_one_or_none()
+        if version is None:
+            continue
+
+        version.status = VersionStatus.queued
+        version.error = None
+        count += 1
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="reprocess_all",
+        detail={"reprocessed_count": count},
+    )
+    await session.commit()
+
+    # Reset and re-enqueue outside the async session (sync calls)
+    for doc in docs:
+        if doc.latest_version_id is None:
+            continue
+        reset_jobs(doc.latest_version_id)
+        enqueue_stage(doc.latest_version_id, JobStage.extract)
+
+    logger.info("Reprocess-all: %d documents queued", count)
+    return {"reprocessed": count}
