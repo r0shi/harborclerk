@@ -171,11 +171,14 @@ struct PreferencesWindow: View {
             .controlSize(.small)
 
             Button("Restart Now") {
+                let changed = changedSettingKeys()
                 applyToSettings()
                 needsRestart = false
                 captureInitial()
                 NotificationCenter.default.post(
-                    name: .preferencesRequestRestart, object: nil
+                    name: .preferencesRequestRestart,
+                    object: nil,
+                    userInfo: ["changedKeys": changed]
                 )
             }
             .buttonStyle(.borderedProminent)
@@ -273,6 +276,21 @@ struct PreferencesWindow: View {
         llmModelId = initial.llmModelId
         logLevel = initial.logLevel
         needsRestart = false
+    }
+
+    private func changedSettingKeys() -> Set<String> {
+        var keys = Set<String>()
+        if allowRemoteWeb != initial.allowRemoteWeb { keys.insert("allow_remote_web") }
+        if allowRemoteMCP != initial.allowRemoteMCP { keys.insert("allow_remote_mcp") }
+        if workerPreset != initial.workerPreset { keys.insert("worker_preset") }
+        if apiPortText != initial.apiPort { keys.insert("api_port") }
+        if postgresPortText != initial.postgresPort { keys.insert("postgres_port") }
+        if tikaPortText != initial.tikaPort { keys.insert("tika_port") }
+        if embedderPortText != initial.embedderPort { keys.insert("embedder_port") }
+        if llamaPortText != initial.llamaPort { keys.insert("llama_port") }
+        if llmModelId != initial.llmModelId { keys.insert("llm_model_id") }
+        if logLevel != initial.logLevel { keys.insert("log_level") }
+        return keys
     }
 }
 

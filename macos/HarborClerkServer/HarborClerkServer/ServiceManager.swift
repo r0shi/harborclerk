@@ -207,6 +207,143 @@ final class ServiceManager: ObservableObject {
         NotificationCenter.default.post(name: .servicesStateChanged, object: nil)
     }
 
+    // MARK: - Targeted restart
+
+    /// Restart only the services affected by the given changed setting keys.
+    func restartForChangedSettings(_ changedKeys: Set<String>) async {
+        // Determine which infrastructure and python services need restart
+        var infraToRestart: [any ManagedService] = []
+        var pythonToRestart: Set<ObjectIdentifier> = []
+        var needsMigrations = false
+        var needsWorkerRecreate = false
+
+        for key in changedKeys {
+            switch key {
+            case "postgres_port":
+                infraToRestart.append(postgresService)
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+                for w in ioWorkers + cpuWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+                needsMigrations = true
+
+            case "tika_port":
+                infraToRestart.append(tikaService)
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+                for w in ioWorkers + cpuWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+
+            case "embedder_port":
+                infraToRestart.append(embedderService)
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+                for w in ioWorkers + cpuWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+
+            case "llama_port":
+                infraToRestart.append(llamaService)
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+
+            case "llm_model_id":
+                infraToRestart.append(llamaService)
+
+            case "api_port", "allow_remote_web", "allow_remote_mcp":
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+
+            case "worker_preset":
+                needsWorkerRecreate = true
+
+            case "log_level":
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+                pythonToRestart.insert(ObjectIdentifier(embedderService))
+                for w in ioWorkers + cpuWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+
+            default:
+                break
+            }
+        }
+
+        // Deduplicate infra list
+        var seenInfra = Set<ObjectIdentifier>()
+        infraToRestart = infraToRestart.filter { seenInfra.insert(ObjectIdentifier($0)).inserted }
+
+        // Collect python services to restart (excluding workers if we're recreating them)
+        let workersToStop: [WorkerService] = needsWorkerRecreate ? ioWorkers + cpuWorkers : (ioWorkers + cpuWorkers).filter { pythonToRestart.contains(ObjectIdentifier($0)) }
+        let nonWorkerPython: [any ManagedService] = [apiService, embedderService].filter { pythonToRestart.contains(ObjectIdentifier($0)) }
+
+        // 1. Stop python services (dependents first: workers → api/embedder)
+        for worker in workersToStop {
+            await worker.stop()
+        }
+        notifyStateChanged()
+        for svc in nonWorkerPython {
+            await svc.stop()
+        }
+        notifyStateChanged()
+
+        // 2. Stop infrastructure services
+        for svc in infraToRestart {
+            await svc.stop()
+        }
+        notifyStateChanged()
+
+        // 3. Start infrastructure services (startup order)
+        let infraOrder: [any ManagedService] = [postgresService, tikaService, embedderService, llamaService]
+        for svc in infraOrder where infraToRestart.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(svc) }) {
+            await startService(svc)
+        }
+
+        // 4. Run migrations if needed
+        if needsMigrations {
+            await runMigrations()
+        }
+
+        // 5. Recreate workers if preset changed
+        if needsWorkerRecreate {
+            recreateWorkers()
+        }
+
+        // 6. Update environment on all affected python services
+        let env = pythonEnvironment()
+        for svc in nonWorkerPython {
+            if let pySvc = svc as? PythonService {
+                pySvc.baseEnvironment = env
+            }
+        }
+        // Workers always get fresh env (whether recreated or restarted)
+        for worker in ioWorkers + cpuWorkers {
+            worker.baseEnvironment = env
+        }
+
+        // 7. Start affected python services (api first, then workers)
+        for svc in nonWorkerPython {
+            await startService(svc)
+        }
+        let allWorkers = ioWorkers + cpuWorkers
+        let workersToStart = needsWorkerRecreate ? allWorkers : allWorkers.filter { pythonToRestart.contains(ObjectIdentifier($0)) }
+        for worker in workersToStart {
+            await startService(worker)
+        }
+
+        notifyStateChanged()
+    }
+
+    /// Tear down old workers and create new ones based on current preset.
+    func recreateWorkers() {
+        // Remove old workers from services array
+        let oldWorkerIds = Set((ioWorkers + cpuWorkers).map { ObjectIdentifier($0) })
+        services.removeAll { oldWorkerIds.contains(ObjectIdentifier($0)) }
+
+        // Create new workers
+        let cpuCount = ProcessInfo.processInfo.processorCount
+        let settings = AppSettings.shared
+        let (ioCount, cpuWorkerCount) = Self.workerCounts(preset: settings.workerPreset, cores: cpuCount)
+
+        ioWorkers = (0..<ioCount).map { WorkerService(queue: "io", index: $0) }
+        cpuWorkers = (0..<cpuWorkerCount).map { WorkerService(queue: "cpu", index: $0) }
+
+        services.append(contentsOf: ioWorkers + cpuWorkers)
+
+        Log.logger("lifecycle").info(
+            "Recreated workers: \(ioCount, privacy: .public) io, \(cpuWorkerCount, privacy: .public) cpu (preset: \(settings.workerPreset, privacy: .public))"
+        )
+    }
+
     // MARK: - Config file watcher
 
     /// Start watching config.json for changes from the Python side.

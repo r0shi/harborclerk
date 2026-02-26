@@ -225,10 +225,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
     }
 
-    @objc private func handlePreferencesRestart() {
+    @objc private func handlePreferencesRestart(_ notification: Notification) {
+        let changedKeys = notification.userInfo?["changedKeys"] as? Set<String> ?? []
         Task {
-            await serviceManager.stopAll()
-            await serviceManager.startAll()
+            if changedKeys.isEmpty {
+                await serviceManager.stopAll()
+                await serviceManager.startAll()
+            } else {
+                await serviceManager.restartForChangedSettings(changedKeys)
+            }
         }
     }
 
