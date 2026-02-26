@@ -38,7 +38,21 @@ final class PostgresService: ManagedService {
             case .removeUnparseable:
                 try? fm.removeItem(at: pidFile)
             case .keep:
-                break
+                // PostgreSQL is still running (possibly shutting down) — stop it first
+                Log.logger("postgresql").warning("Existing PostgreSQL process found, stopping it before start")
+                let stopProc = Process()
+                stopProc.executableURL = pgBinDir.appendingPathComponent("pg_ctl")
+                stopProc.arguments = ["-D", dataDir.path, "stop", "-m", "immediate"]
+                stopProc.environment = pgEnvironment()
+                stopProc.standardOutput = FileHandle.nullDevice
+                stopProc.standardError = FileHandle.nullDevice
+                try? stopProc.run()
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.global().async {
+                        stopProc.waitUntilExit()
+                        c.resume()
+                    }
+                }
             }
         }
 
