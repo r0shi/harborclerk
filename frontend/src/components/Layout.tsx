@@ -47,6 +47,9 @@ export default function Layout() {
                 <span>Harbor Clerk</span>
               </Link>
               <NavLink to="/" end className={linkClass}>
+                Chat
+              </NavLink>
+              <NavLink to="/upload" className={linkClass}>
                 Upload
               </NavLink>
               <NavLink to="/docs" className={linkClass}>
@@ -54,9 +57,6 @@ export default function Layout() {
               </NavLink>
               <NavLink to="/search" className={linkClass}>
                 Search
-              </NavLink>
-              <NavLink to="/chat" className={linkClass}>
-                Chat
               </NavLink>
               {isAdmin && (
                 <>

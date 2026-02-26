@@ -82,7 +82,7 @@ export default function ChatPage() {
         )
       })
       .catch(() => {
-        navigate('/chat')
+        navigate('/')
       })
   }, [conversationId, loadMessages, navigate])
 
@@ -110,7 +110,7 @@ export default function ChatPage() {
         activeConvId = conv.conversation_id
         setConversations((prev) => [conv, ...prev])
         skipNextFetchRef.current = true
-        navigate(`/chat/${activeConvId}`, { replace: true })
+        navigate(`/c/${activeConvId}`, { replace: true })
       }
 
       await sendMessage(activeConvId, text)
@@ -121,7 +121,7 @@ export default function ChatPage() {
 
   const handleNewChat = useCallback(() => {
     loadMessages([])
-    navigate('/chat')
+    navigate('/')
     inputRef.current?.focus()
   }, [loadMessages, navigate])
 
@@ -131,7 +131,7 @@ export default function ChatPage() {
       setConversations((prev) => prev.filter((c) => c.conversation_id !== convId))
       if (conversationId === convId) {
         loadMessages([])
-        navigate('/chat')
+        navigate('/')
       }
     },
     [conversationId, loadMessages, navigate],
@@ -189,7 +189,7 @@ export default function ChatPage() {
                 }`}
               >
                 <Link
-                  to={`/chat/${conv.conversation_id}`}
+                  to={`/c/${conv.conversation_id}`}
                   className="flex-1 min-w-0"
                 >
                   <div className={`text-[13px] font-medium truncate ${

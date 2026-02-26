@@ -2,9 +2,9 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 const TOP_LEVEL = new Set([
   '/',
+  '/upload',
   '/docs',
   '/search',
-  '/chat',
   '/preferences',
   '/login',
   '/setup',

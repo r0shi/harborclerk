@@ -87,7 +87,7 @@ export default function DocumentsPage() {
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-bold">Documents</h1>
         <Link
-          to="/"
+          to="/upload"
           className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
         >
           Upload
@@ -96,7 +96,7 @@ export default function DocumentsPage() {
       {docs.length === 0 ? (
         <p className="text-gray-500 dark:text-gray-400">
           No documents yet.{' '}
-          <Link to="/" className="text-blue-600 dark:text-blue-400 hover:underline">
+          <Link to="/upload" className="text-blue-600 dark:text-blue-400 hover:underline">
             Upload one
           </Link>
           .

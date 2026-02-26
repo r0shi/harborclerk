@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom'
+import { Route, Routes, Navigate, useParams } from 'react-router-dom'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 import AdminRoute from './components/AdminRoute'
@@ -15,6 +15,11 @@ import ChatPage from './pages/ChatPage'
 import ModelsPage from './pages/ModelsPage'
 import PreferencesPage from './pages/PreferencesPage'
 
+function ChatRedirect() {
+  const { conversationId } = useParams<{ conversationId: string }>()
+  return <Navigate to={`/c/${conversationId}`} replace />
+}
+
 export default function App() {
   return (
     <Routes>
@@ -22,12 +27,14 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route element={<ProtectedRoute />}>
         <Route element={<Layout />}>
-          <Route path="/" element={<UploadPage />} />
+          <Route path="/" element={<ChatPage />} />
+          <Route path="/c/:conversationId" element={<ChatPage />} />
+          <Route path="/upload" element={<UploadPage />} />
           <Route path="/docs" element={<DocumentsPage />} />
           <Route path="/docs/:id" element={<DocumentDetailPage />} />
           <Route path="/search" element={<SearchPage />} />
-          <Route path="/chat" element={<ChatPage />} />
-          <Route path="/chat/:conversationId" element={<ChatPage />} />
+          <Route path="/chat" element={<Navigate to="/" replace />} />
+          <Route path="/chat/:conversationId" element={<ChatRedirect />} />
           <Route path="/preferences" element={<PreferencesPage />} />
           <Route element={<AdminRoute />}>
             <Route path="/admin/users" element={<UsersPage />} />
