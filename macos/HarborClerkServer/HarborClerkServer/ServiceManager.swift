@@ -226,6 +226,9 @@ final class ServiceManager: ObservableObject {
     }
 
     func startService(_ service: any ManagedService) async {
+        // Bail if a shutdown was requested while we were waiting to start
+        guard service.state != .shutdownPending else { return }
+
         // Ensure Python services have env set
         if let pySvc = service as? PythonService, pySvc.baseEnvironment.isEmpty {
             pySvc.baseEnvironment = pythonEnvironment()
