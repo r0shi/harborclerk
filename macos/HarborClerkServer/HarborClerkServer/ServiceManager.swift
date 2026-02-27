@@ -33,6 +33,7 @@ final class ServiceManager: ObservableObject {
     private var ioWorkers: [WorkerService] = []
     private var cpuWorkers: [WorkerService] = []
 
+    private var startAllInProgress = false
     private var configWatcherSource: DispatchSourceFileSystemObject?
     private var configFileDescriptor: Int32 = -1
     private var configChangeTask: Task<Void, Never>?
@@ -120,6 +121,11 @@ final class ServiceManager: ObservableObject {
     }
 
     func startAll() async {
+        // Prevent concurrent startAll() calls (e.g. auto-start + user click)
+        guard !startAllInProgress else { return }
+        startAllInProgress = true
+        defer { startAllInProgress = false }
+
         let settings = AppSettings.shared
 
         // Set base environment on all Python services
