@@ -12,9 +12,11 @@ Run:
 import os
 
 # Must be set BEFORE any harbor_clerk import — db.py reads settings at module level.
-os.environ["DATABASE_URL"] = (
-    "postgresql+asyncpg://lka:lka_dev_password@localhost:5432/lka_test"
-)
+# Respect DATABASE_URL if already set (e.g. macOS native server on port 5433).
+if "DATABASE_URL" not in os.environ:
+    os.environ["DATABASE_URL"] = (
+        "postgresql+asyncpg://lka:lka_dev_password@localhost:5432/lka_test"
+    )
 os.environ["STORAGE_BACKEND"] = "filesystem"
 os.environ["STORAGE_PATH"] = "/tmp/harbor_clerk_test_storage"
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
@@ -69,7 +71,9 @@ async def db_session(
 ) -> AsyncGenerator[AsyncSession, None]:
     """Per-test session with table cleanup for isolation."""
     factory = async_sessionmaker(
-        _engine, class_=AsyncSession, expire_on_commit=False,
+        _engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
     )
     async with factory() as session:
         yield session

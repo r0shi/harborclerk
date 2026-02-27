@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
+from sqlalchemy.orm import selectinload
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
@@ -401,7 +402,11 @@ async def kb_get_document(doc_id: str) -> str:
     did = uuid.UUID(doc_id)
 
     async with async_session_factory() as session:
-        result = await session.execute(select(Document).where(Document.doc_id == did))
+        result = await session.execute(
+            select(Document)
+            .options(selectinload(Document.versions))
+            .where(Document.doc_id == did)
+        )
         doc = result.scalar_one_or_none()
         if doc is None:
             return json.dumps({"error": "Document not found"})
@@ -451,6 +456,7 @@ async def kb_list_recent(limit: int = 20) -> str:
     async with async_session_factory() as session:
         result = await session.execute(
             select(Document)
+            .options(selectinload(Document.versions))
             .where(Document.status == "active")
             .order_by(Document.updated_at.desc())
             .limit(min(limit, 100))
@@ -505,6 +511,7 @@ async def kb_corpus_overview() -> str:
 
         result = await session.execute(
             select(Document)
+            .options(selectinload(Document.versions))
             .where(Document.status == "active")
             .order_by(Document.updated_at.desc())
             .limit(200)
