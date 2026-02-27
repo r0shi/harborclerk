@@ -1,12 +1,12 @@
 interface QueuePillProps {
   activeCount: number
-  historyCount: number
+  completedCount: number
   isPulsing: boolean
   onClick: () => void
 }
 
-export default function QueuePill({ activeCount, historyCount, isPulsing, onClick }: QueuePillProps) {
-  if (activeCount === 0 && historyCount === 0) return null
+export default function QueuePill({ activeCount, completedCount, isPulsing, onClick }: QueuePillProps) {
+  if (activeCount === 0 && completedCount === 0) return null
 
   return (
     <button
@@ -26,14 +26,14 @@ export default function QueuePill({ activeCount, historyCount, isPulsing, onClic
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
             <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
           </span>
-          <span>{activeCount} active</span>
+          <span>{activeCount} processing</span>
         </>
       ) : (
         <>
           <svg className="h-3.5 w-3.5 text-[var(--color-text-secondary)]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
           </svg>
-          <span className="text-[var(--color-text-secondary)]">{historyCount}</span>
+          <span className="text-[var(--color-text-secondary)]">{completedCount}</span>
         </>
       )}
     </button>

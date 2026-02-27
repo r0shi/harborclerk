@@ -5,11 +5,11 @@ import QueueToastPopup from './QueueToastPopup'
 import QueuePanel from './QueuePanel'
 
 export default function QueueTray() {
-  const { trayState, activeJobs, history, toggleExpanded, collapse } = useQueueTray()
+  const { trayState, activeItems, completed, toggleExpanded, collapse } = useQueueTray()
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const activeCount = activeJobs.size
-  const historyCount = history.length
+  const activeCount = activeItems.size
+  const completedCount = completed.length
 
   // Click outside to collapse
   const handleClickOutside = useCallback(
@@ -47,7 +47,7 @@ export default function QueueTray() {
   }, [trayState, handleClickOutside, handleKeyDown])
 
   // Don't render anything if nothing to show
-  if (activeCount === 0 && historyCount === 0 && trayState === 'collapsed') {
+  if (activeCount === 0 && completedCount === 0 && trayState === 'collapsed') {
     return null
   }
 
@@ -56,8 +56,8 @@ export default function QueueTray() {
       {/* Panel (expanded state) */}
       {trayState === 'expanded' && (
         <QueuePanel
-          activeJobs={activeJobs}
-          history={history}
+          activeItems={activeItems}
+          completed={completed}
           onClose={collapse}
         />
       )}
@@ -65,7 +65,7 @@ export default function QueueTray() {
       {/* Toast (toasting state, hidden when expanded) */}
       {trayState === 'toasting' && (
         <QueueToastPopup
-          jobs={Array.from(activeJobs.values())}
+          items={Array.from(activeItems.values())}
           onDismiss={collapse}
         />
       )}
@@ -73,7 +73,7 @@ export default function QueueTray() {
       {/* Pill (always visible when there's content) */}
       <QueuePill
         activeCount={activeCount}
-        historyCount={historyCount}
+        completedCount={completedCount}
         isPulsing={trayState === 'toasting'}
         onClick={toggleExpanded}
       />
