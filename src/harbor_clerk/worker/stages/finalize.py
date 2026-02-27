@@ -4,10 +4,10 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import Document, DocumentVersion, Upload
+from harbor_clerk.models import Chunk, Document, DocumentPage, DocumentVersion, Upload
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 
@@ -43,8 +43,27 @@ def run_finalize(version_id: uuid.UUID) -> None:
                 u.status = "done"
 
         session.commit()
-        logger.info("Finalized version %s for document %s", version_id, version.doc_id)
+
+        page_count = session.execute(
+            select(func.count())
+            .select_from(DocumentPage)
+            .where(DocumentPage.version_id == version_id)
+        ).scalar_one()
+        chunk_count = session.execute(
+            select(func.count())
+            .select_from(Chunk)
+            .where(Chunk.version_id == version_id)
+        ).scalar_one()
+        doc_id = doc.doc_id
+
+        logger.info("Finalized version %s for document %s", version_id, doc_id)
     finally:
         session.close()
 
-    mark_stage_done(version_id, JobStage.finalize)
+    mark_stage_done(
+        version_id,
+        JobStage.finalize,
+        doc_id=doc_id,
+        page_count=page_count,
+        chunk_count=chunk_count,
+    )

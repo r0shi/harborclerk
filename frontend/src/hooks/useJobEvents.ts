@@ -9,6 +9,9 @@ export interface JobEvent {
   total?: number
   error?: string
   filename?: string
+  doc_id?: string
+  page_count?: number
+  chunk_count?: number
 }
 
 type Listener = (event: JobEvent) => void

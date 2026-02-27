@@ -21,6 +21,9 @@ def publish_job_event(
     total: int | None = None,
     error: str | None = None,
     filename: str | None = None,
+    doc_id: uuid.UUID | None = None,
+    page_count: int | None = None,
+    chunk_count: int | None = None,
 ) -> None:
     """Publish a job progress event via PostgreSQL NOTIFY (sync, for workers)."""
     payload = {
@@ -36,6 +39,12 @@ def publish_job_event(
         payload["error"] = error
     if filename is not None:
         payload["filename"] = filename
+    if doc_id is not None:
+        payload["doc_id"] = str(doc_id)
+    if page_count is not None:
+        payload["page_count"] = page_count
+    if chunk_count is not None:
+        payload["chunk_count"] = chunk_count
 
     try:
         session = get_sync_session()

@@ -195,7 +195,9 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
         session.close()
 
 
-def mark_stage_done(version_id: uuid.UUID, stage: JobStage) -> None:
+def mark_stage_done(
+    version_id: uuid.UUID, stage: JobStage, **extra_event_fields
+) -> None:
     """Mark a stage as done and advance the pipeline."""
     done_status = STAGE_DONE_STATUS[stage]
 
@@ -220,7 +222,9 @@ def mark_stage_done(version_id: uuid.UUID, stage: JobStage) -> None:
     finally:
         session.close()
 
-    publish_job_event(version_id, stage.value, "done", filename=filename)
+    publish_job_event(
+        version_id, stage.value, "done", filename=filename, **extra_event_fields
+    )
     logger.info("Stage %s done for version %s", stage.value, version_id)
 
     # Advance to next stage (unless this was finalize)
