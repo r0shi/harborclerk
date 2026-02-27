@@ -334,12 +334,13 @@ async def kb_search(
         n = _search_stats["calls"]
         logger.info(
             "kb_search stats (%d calls): avg_k=%.0f, max_k=%d, cap_hit_rate=%.0f%%, "
-            "pagination_rate=%.0f%%, detail: full=%d brief=%d compact=%d",
+            "pagination_rate=%.0f%%, faceted_rate=%.0f%%, detail: full=%d brief=%d compact=%d",
             n,
             _search_stats["total_k"] / n,
             _search_stats["max_k"],
             100 * _search_stats["cap_hits"] / n,
             100 * _search_stats["pagination_calls"] / n,
+            100 * _search_stats["faceted_calls"] / n,
             _search_stats["detail_full"],
             _search_stats["detail_brief"],
             _search_stats["detail_compact"],

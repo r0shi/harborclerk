@@ -1,7 +1,7 @@
 """Integration tests for hybrid_search() with filtering parameters."""
 
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession

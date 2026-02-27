@@ -391,11 +391,11 @@ def mock_hybrid_search(monkeypatch):
     async def _mock(
         session,
         query,
-        *,
         k=10,
         doc_id=None,
         version_id=None,
         offset=0,
+        *,
         doc_ids=None,
         after=None,
         before=None,

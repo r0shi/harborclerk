@@ -11,7 +11,7 @@ class SearchRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     doc_id: str | None = None
     version_id: str | None = None
-    doc_ids: list[str] | None = None
+    doc_ids: list[str] | None = Field(default=None, max_length=50)
     after: datetime | None = None
     before: datetime | None = None
     language: str | None = None

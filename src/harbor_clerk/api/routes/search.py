@@ -44,7 +44,7 @@ def _hit_to_out(h) -> SearchHitOut:
     )
 
 
-@router.post("/search", response_model=None)
+@router.post("/search", response_model=SearchResponse | FacetedSearchResponse)
 async def search(
     body: SearchRequest,
     principal: Principal = Depends(require_read_access),
