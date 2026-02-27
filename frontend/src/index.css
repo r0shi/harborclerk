@@ -247,6 +247,51 @@
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* ---- Queue progress bars ---- */
+
+.queue-overall-bar {
+  background: linear-gradient(90deg, #007aff 0%, #34aadc 50%, #30d158 100%);
+  transition: width 0.5s ease-out;
+}
+
+.queue-stage-bar {
+  transition: width 0.5s ease-out;
+}
+
+.queue-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-accent) 0%,
+    rgba(0, 122, 255, 0.3) 50%,
+    var(--color-accent) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.queue-row-detail {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease-out;
+}
+.queue-row-detail.expanded {
+  grid-template-rows: 1fr;
+}
+.queue-row-detail > div {
+  overflow: hidden;
+}
+
+.queue-chevron {
+  transition: transform 0.2s ease-out;
+}
+.queue-chevron.expanded {
+  transform: rotate(180deg);
+}
+
 /* Tool call card */
 .tool-call-card {
   animation: toolCallAppear 0.2s ease-out;

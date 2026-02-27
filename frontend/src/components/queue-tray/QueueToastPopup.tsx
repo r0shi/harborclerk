@@ -1,19 +1,20 @@
 import { useState } from 'react'
 import { stageLabel } from '../../utils/stageLabel'
-import type { ActiveJob } from '../../hooks/useQueueTray'
+import type { DocumentQueueItem } from '../../hooks/useQueueTray'
 
 interface QueueToastPopupProps {
-  jobs: ActiveJob[]
+  items: DocumentQueueItem[]
   onDismiss: () => void
 }
 
-export default function QueueToastPopup({ jobs, onDismiss }: QueueToastPopupProps) {
+export default function QueueToastPopup({ items, onDismiss }: QueueToastPopupProps) {
   const [exiting, setExiting] = useState(false)
 
-  if (jobs.length === 0 && !exiting) return null
+  if (items.length === 0 && !exiting) return null
 
-  // Show latest job in toast
-  const latest = jobs[jobs.length - 1]
+  // Show the latest running item
+  const running = items.filter((i) => i.status === 'running')
+  const latest = running.length > 0 ? running[running.length - 1] : items[items.length - 1]
   if (!latest && !exiting) return null
 
   const handleDismiss = () => {
@@ -38,30 +39,18 @@ export default function QueueToastPopup({ jobs, onDismiss }: QueueToastPopupProp
           <>
             <div className="flex items-center space-x-2">
               <div className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-              <span className="text-sm font-medium text-[var(--color-text-primary)]">
-                {stageLabel(latest.stage)}
+              <span className="text-sm font-medium text-[var(--color-text-primary)] truncate max-w-[200px]">
+                {latest.filename}
               </span>
-              {jobs.length > 1 && (
+              {items.length > 1 && (
                 <span className="text-xs text-[var(--color-text-secondary)]">
-                  +{jobs.length - 1} more
+                  +{items.length - 1} more
                 </span>
               )}
             </div>
-            {latest.progress_total != null && latest.progress_total > 0 && (
-              <div className="mt-1.5">
-                <div className="h-1.5 w-48 rounded-full bg-gray-200 dark:bg-gray-600">
-                  <div
-                    className="h-1.5 rounded-full bg-blue-500 transition-all"
-                    style={{
-                      width: `${Math.round(((latest.progress_current || 0) / latest.progress_total) * 100)}%`,
-                    }}
-                  />
-                </div>
-                <span className="text-xs text-[var(--color-text-secondary)]">
-                  {latest.progress_current}/{latest.progress_total}
-                </span>
-              </div>
-            )}
+            <div className="text-xs text-[var(--color-text-secondary)] mt-0.5 ml-4">
+              {latest.status === 'queued' ? 'Queued' : stageLabel(latest.current_stage)}
+            </div>
           </>
         )}
       </div>
