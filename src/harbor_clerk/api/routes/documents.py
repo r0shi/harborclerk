@@ -20,6 +20,7 @@ from harbor_clerk.api.schemas.documents import (
     HeadingOut,
     JobInfo,
     PageContent,
+    RelatedDocumentsResponse,
     VersionInfo,
 )
 from harbor_clerk.audit import log_audit
@@ -419,6 +420,107 @@ async def get_document_outline(
             for h in headings
         ],
     )
+
+
+@router.get("/docs/{doc_id}/related", response_model=RelatedDocumentsResponse)
+async def find_related_documents(
+    doc_id: uuid.UUID,
+    k: int = Query(default=5, ge=1, le=20),
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Find documents most similar to the given document by embedding cosine similarity."""
+    doc = (
+        await session.execute(
+            select(Document).where(
+                Document.doc_id == doc_id, Document.status == "active"
+            )
+        )
+    ).scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    version_id = doc.latest_version_id
+    if version_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No versions available"
+        )
+
+    # Get embeddings for this document
+    rows = (
+        await session.execute(
+            select(Chunk.embedding).where(
+                Chunk.version_id == version_id,
+                Chunk.embedding.isnot(None),
+            )
+        )
+    ).all()
+
+    if not rows:
+        return RelatedDocumentsResponse(doc_id=str(doc_id), related=[])
+
+    # Average embeddings
+    dim = len(rows[0][0])
+    avg = [0.0] * dim
+    for (emb,) in rows:
+        for i, v in enumerate(emb):
+            avg[i] += v
+    n = len(rows)
+    avg = [v / n for v in avg]
+
+    # Find nearest docs
+    distance = Chunk.embedding.cosine_distance(avg)
+    nearest = (
+        await session.execute(
+            select(Chunk.doc_id, func.min(distance).label("min_distance"))
+            .join(Document, Document.latest_version_id == Chunk.version_id)
+            .where(
+                Document.status == "active",
+                Chunk.embedding.isnot(None),
+                Chunk.doc_id != doc_id,
+            )
+            .group_by(Chunk.doc_id)
+            .order_by(func.min(distance))
+            .limit(k)
+        )
+    ).all()
+
+    if not nearest:
+        return RelatedDocumentsResponse(doc_id=str(doc_id), related=[])
+
+    related_ids = [row[0] for row in nearest]
+    distances = {row[0]: float(row[1]) for row in nearest}
+
+    docs_result = await session.execute(
+        select(Document)
+        .options(selectinload(Document.versions))
+        .where(Document.doc_id.in_(related_ids))
+    )
+    related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
+
+    items = []
+    for rid in related_ids:
+        rdoc = related_docs.get(rid)
+        if not rdoc:
+            continue
+        summary = None
+        if rdoc.latest_version_id and rdoc.versions:
+            for v in rdoc.versions:
+                if v.version_id == rdoc.latest_version_id:
+                    summary = v.summary
+                    break
+        items.append(
+            {
+                "doc_id": str(rid),
+                "title": rdoc.title,
+                "summary": summary,
+                "similarity": round(1.0 - distances[rid], 4),
+            }
+        )
+
+    return RelatedDocumentsResponse(doc_id=str(doc_id), related=items)
 
 
 @router.get("/docs/{doc_id}/download")

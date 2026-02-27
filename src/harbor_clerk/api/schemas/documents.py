@@ -106,3 +106,15 @@ class CorpusOverviewResponse(BaseModel):
     date_range: DateRange
     documents: list[CorpusDocumentSummary]
     truncated: bool
+
+
+class RelatedDocument(BaseModel):
+    doc_id: str
+    title: str
+    summary: str | None = None
+    similarity: float
+
+
+class RelatedDocumentsResponse(BaseModel):
+    doc_id: str
+    related: list[RelatedDocument]

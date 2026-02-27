@@ -21,6 +21,7 @@ from harbor_clerk.mcp_server import (
     kb_corpus_overview,
     kb_document_outline,
     kb_expand_context,
+    kb_find_related,
     kb_get_document,
     kb_list_recent,
     kb_read_passages,
@@ -400,6 +401,102 @@ async def test_corpus_overview_multilingual(
 
     result = json.loads(await kb_corpus_overview())
     assert result["languages"] == {"fr": 3, "en": 2}
+
+
+# ---------------------------------------------------------------------------
+# kb_find_related
+# ---------------------------------------------------------------------------
+
+
+async def test_find_related_happy(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Returns related documents ranked by embedding similarity."""
+    # Create two documents with embeddings
+    doc1 = Document(title="Machine Learning Guide", status="active")
+    doc2 = Document(title="Deep Learning Intro", status="active")
+    doc3 = Document(title="Cooking Recipes", status="active")
+    db_session.add_all([doc1, doc2, doc3])
+    await db_session.flush()
+
+    # Create versions
+    for doc in [doc1, doc2, doc3]:
+        ver = DocumentVersion(
+            doc_id=doc.doc_id,
+            original_sha256=f"sha_{doc.title[:8]}".encode().ljust(31, b"_"),
+            original_bucket="originals",
+            original_object_key=f"originals/versions/{doc.doc_id}/f.pdf",
+            mime_type="application/pdf",
+            size_bytes=1000,
+            status=VersionStatus.ready,
+            source_path="f.pdf",
+            summary=f"Summary of {doc.title}",
+        )
+        db_session.add(ver)
+        await db_session.flush()
+        doc.latest_version_id = ver.version_id
+
+    await db_session.flush()
+
+    # Embeddings: doc1 and doc2 are similar, doc3 is different
+    # 384-dim vectors (matching model dimension) with signal in first 4 dims
+    similar_emb = [0.9, 0.1, 0.0, 0.0] + [0.0] * 380
+    different_emb = [0.0, 0.0, 0.9, 0.1] + [0.0] * 380
+
+    for i, doc in enumerate([doc1, doc2, doc3]):
+        ver_id = doc.latest_version_id
+        emb = similar_emb if doc in (doc1, doc2) else different_emb
+        db_session.add(
+            Chunk(
+                version_id=ver_id,
+                doc_id=doc.doc_id,
+                chunk_num=0,
+                page_start=1,
+                page_end=1,
+                char_start=0,
+                char_end=100,
+                chunk_text=f"Chunk for {doc.title}",
+                language="en",
+                embedding=emb,
+            )
+        )
+    await db_session.flush()
+
+    result = json.loads(await kb_find_related(str(doc1.doc_id)))
+    assert len(result["related"]) == 2
+    # doc2 (similar) should rank higher than doc3 (different)
+    assert result["related"][0]["title"] == "Deep Learning Intro"
+    assert result["related"][0]["similarity"] > result["related"][1]["similarity"]
+
+
+async def test_find_related_not_found(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Returns error for nonexistent document."""
+    fake_id = str(uuid.uuid4())
+    result = json.loads(await kb_find_related(fake_id))
+    assert "error" in result
+
+
+async def test_find_related_no_embeddings(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+):
+    """Returns empty list when document has no embeddings."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_find_related(str(doc.doc_id)))
+    assert result["related"] == []
+    assert "No embeddings" in result.get("note", "")
 
 
 # ---------------------------------------------------------------------------

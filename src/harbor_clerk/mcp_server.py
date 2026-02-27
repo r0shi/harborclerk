@@ -855,6 +855,126 @@ async def kb_document_outline(doc_id: str) -> str:
 
 
 @mcp.tool()
+async def kb_find_related(doc_id: str, k: int = 5) -> str:
+    """Find documents most similar to a given document based on embedding similarity.
+
+    Computes the average embedding of the document's chunks and finds the
+    closest documents by cosine distance. Useful for discovering related
+    content, finding duplicates, or understanding topic clusters.
+
+    Args:
+        doc_id: The document to find related documents for.
+        k: Number of related documents to return (1-20, default 5).
+    """
+    _get_principal()
+    k = max(1, min(k, 20))
+
+    try:
+        target_id = uuid.UUID(doc_id)
+    except ValueError:
+        return json.dumps({"error": f"Invalid doc_id: {doc_id}"})
+
+    async with async_session_factory() as session:
+        # Verify document exists and get latest version
+        doc = (
+            await session.execute(
+                select(Document).where(
+                    Document.doc_id == target_id, Document.status == "active"
+                )
+            )
+        ).scalar_one_or_none()
+        if doc is None:
+            return json.dumps({"error": "Document not found"})
+
+        version_id = doc.latest_version_id
+        if version_id is None:
+            return json.dumps({"error": "Document has no versions"})
+
+        # Get all embeddings for this document's latest version
+        rows = (
+            await session.execute(
+                select(Chunk.embedding).where(
+                    Chunk.version_id == version_id,
+                    Chunk.embedding.isnot(None),
+                )
+            )
+        ).all()
+
+        if not rows:
+            return json.dumps(
+                {"doc_id": doc_id, "related": [], "note": "No embeddings available"}
+            )
+
+        # Compute average embedding in Python
+        dim = len(rows[0][0])
+        avg = [0.0] * dim
+        for (emb,) in rows:
+            for i, v in enumerate(emb):
+                avg[i] += v
+        n = len(rows)
+        avg = [v / n for v in avg]
+
+        # Find nearest chunks from OTHER active documents' latest versions
+        distance = Chunk.embedding.cosine_distance(avg)
+        nearest = (
+            await session.execute(
+                select(
+                    Chunk.doc_id,
+                    func.min(distance).label("min_distance"),
+                )
+                .join(Document, Document.latest_version_id == Chunk.version_id)
+                .where(
+                    Document.status == "active",
+                    Chunk.embedding.isnot(None),
+                    Chunk.doc_id != target_id,
+                )
+                .group_by(Chunk.doc_id)
+                .order_by(func.min(distance))
+                .limit(k)
+            )
+        ).all()
+
+        if not nearest:
+            return json.dumps({"doc_id": doc_id, "related": []})
+
+        # Fetch document metadata for results
+        related_ids = [row[0] for row in nearest]
+        distances = {row[0]: float(row[1]) for row in nearest}
+
+        docs_result = await session.execute(
+            select(Document)
+            .options(selectinload(Document.versions))
+            .where(Document.doc_id.in_(related_ids))
+        )
+        related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
+
+    items = []
+    for rid in related_ids:
+        rdoc = related_docs.get(rid)
+        if not rdoc:
+            continue
+        summary = None
+        if rdoc.latest_version_id and rdoc.versions:
+            for v in rdoc.versions:
+                if v.version_id == rdoc.latest_version_id:
+                    summary = v.summary
+                    break
+        items.append(
+            {
+                "doc_id": str(rid),
+                "title": rdoc.title,
+                "summary": summary,
+                "similarity": round(1.0 - distances[rid], 4),
+            }
+        )
+
+    return json.dumps(
+        {"doc_id": doc_id, "related": items},
+        indent=2,
+    )
+
+
+@mcp.tool()
 async def kb_system_health() -> str:
     """Check system health (Postgres, storage). Admin only."""
     _require_admin()

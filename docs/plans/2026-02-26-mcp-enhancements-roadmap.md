@@ -66,7 +66,7 @@
 | 4 | Scoped/Filtered Search | **Done** |
 | 5 | Document Outline | **Done** |
 | 6 | Corpus Overview | **Done** |
-| 7 | Cross-Document Similarity | Not started |
+| 7 | Cross-Document Similarity | **Done** |
 | 8 | Entity Extraction | Not started |
 | 9 | Auto-Inject RAG | Not started |
 

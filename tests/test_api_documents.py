@@ -117,6 +117,64 @@ async def test_corpus_overview_empty(client, admin_user, admin_token):
     assert data["documents"] == []
 
 
+async def test_find_related_happy(client, admin_user, admin_token, db_session):
+    doc1 = Document(title="ML Guide", status="active")
+    doc2 = Document(title="DL Intro", status="active")
+    db_session.add_all([doc1, doc2])
+    await db_session.flush()
+
+    for doc in [doc1, doc2]:
+        ver = DocumentVersion(
+            doc_id=doc.doc_id,
+            original_sha256=f"sha_{doc.title[:6]}".encode().ljust(31, b"_"),
+            original_bucket="originals",
+            original_object_key=f"originals/versions/{doc.doc_id}/f.pdf",
+            mime_type="application/pdf",
+            size_bytes=1000,
+            status=VersionStatus.ready,
+            source_path="f.pdf",
+        )
+        db_session.add(ver)
+        await db_session.flush()
+        doc.latest_version_id = ver.version_id
+    await db_session.flush()
+
+    emb = [0.9, 0.1] + [0.0] * 382
+    for doc in [doc1, doc2]:
+        db_session.add(
+            Chunk(
+                version_id=doc.latest_version_id,
+                doc_id=doc.doc_id,
+                chunk_num=0,
+                page_start=1,
+                page_end=1,
+                char_start=0,
+                char_end=100,
+                chunk_text="text",
+                language="en",
+                embedding=emb,
+            )
+        )
+    await db_session.flush()
+
+    resp = await client.get(
+        f"/api/docs/{doc1.doc_id}/related", headers=auth_header(admin_token)
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["doc_id"] == str(doc1.doc_id)
+    assert len(data["related"]) == 1
+    assert data["related"][0]["title"] == "DL Intro"
+    assert data["related"][0]["similarity"] > 0
+
+
+async def test_find_related_not_found(client, admin_user, admin_token):
+    resp = await client.get(
+        f"/api/docs/{uuid.uuid4()}/related", headers=auth_header(admin_token)
+    )
+    assert resp.status_code == 404
+
+
 async def test_delete_document_requires_admin(
     client, regular_user, user_token, db_session
 ):
