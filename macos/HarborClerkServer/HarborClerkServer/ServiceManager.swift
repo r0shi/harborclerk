@@ -4,7 +4,7 @@ import os
 // MARK: - Service protocol & state
 
 enum ServiceState: String, CaseIterable {
-    case stopped, starting, running, stopping, errored
+    case stopped, startupPending, starting, running, shutdownPending, stopping, errored
 }
 
 extension Notification.Name {
@@ -48,7 +48,7 @@ final class ServiceManager: ObservableObject {
         if states.contains(.errored) { return .errored }
         if states.allSatisfy({ $0 == .running }) { return .running }
         if states.allSatisfy({ $0 == .stopped }) { return .stopped }
-        if states.contains(.stopping) { return .stopping }
+        if states.contains(.stopping) || states.contains(.shutdownPending) { return .stopping }
         return .starting
     }
 
@@ -130,6 +130,14 @@ final class ServiceManager: ObservableObject {
             }
         }
 
+        // Mark all services as startup pending before sequential start
+        for service in services {
+            if service.state == .stopped || service.state == .errored {
+                service.state = .startupPending
+            }
+        }
+        notifyStateChanged()
+
         // 1. PostgreSQL (handles stale PIDs internally via postmaster.pid)
         await startService(postgresService)
 
@@ -165,6 +173,14 @@ final class ServiceManager: ObservableObject {
 
     func stopAll() async {
         stopConfigWatcher()
+
+        // Mark all running/starting services as shutdown pending
+        for service in services {
+            if service.state == .running || service.state == .starting || service.state == .startupPending {
+                service.state = .shutdownPending
+            }
+        }
+        notifyStateChanged()
 
         // Stop workers in parallel (SIGTERM all, then wait) — same as restartForChangedSettings
         let allWorkers = ioWorkers + cpuWorkers

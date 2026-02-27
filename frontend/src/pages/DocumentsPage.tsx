@@ -1,7 +1,8 @@
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { get, post, downloadBlob } from '../api'
 import { useAuth } from '../auth'
+import { useJobEvents } from '../hooks/useJobEvents'
 
 interface DocSummary {
   doc_id: string
@@ -95,8 +96,8 @@ function Pagination({ currentPage, totalPages, onPageChange }: {
 }
 
 export default function DocumentsPage() {
-  const { user, isAdmin } = useAuth()
-  const pageSize = user?.preferences?.page_size || 10
+  const { user, isAdmin, updatePreferences } = useAuth()
+  const [pageSize, setPageSize] = useState(user?.preferences?.page_size || 10)
   const [docs, setDocs] = useState<DocSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -104,16 +105,25 @@ export default function DocumentsPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
-  function loadDocs() {
+  const loadDocs = useCallback(() => {
     return get<DocSummary[]>('/api/docs')
       .then(setDocs)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-  }
+  }, [])
 
   useEffect(() => {
     loadDocs()
-  }, [])
+  }, [loadDocs])
+
+  // Live-update when ingestion completes
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useJobEvents(useCallback((event) => {
+    if (event.stage === 'finalize' && event.status === 'done') {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = setTimeout(() => loadDocs(), 1000)
+    }
+  }, [loadDocs]))
 
   async function handleCancel(docId: string) {
     try {
@@ -331,8 +341,29 @@ export default function DocumentsPage() {
               </tbody>
             </table>
           </div>
-          <div className="mt-2 text-center text-xs text-gray-400">
-            Showing {filteredDocs.length === 0 ? 0 : startIdx + 1}–{Math.min(startIdx + pageSize, filteredDocs.length)} of {filteredDocs.length}{filter && ` (filtered from ${docs.length})`}
+          <div className="mt-2 flex items-center justify-center gap-3 text-xs text-gray-400">
+            <span>
+              Showing {filteredDocs.length === 0 ? 0 : startIdx + 1}–{Math.min(startIdx + pageSize, filteredDocs.length)} of {filteredDocs.length}{filter && ` (filtered from ${docs.length})`}
+            </span>
+            <span className="text-gray-300 dark:text-gray-600">|</span>
+            <label className="flex items-center gap-1.5">
+              Show
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  const n = Number(e.target.value)
+                  setPageSize(n)
+                  setCurrentPage(1)
+                  updatePreferences({ page_size: n }).catch(() => {})
+                }}
+                className="rounded border-0 bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 text-xs focus:ring-2 focus:ring-[var(--color-accent)]/30"
+              >
+                {[10, 25, 50, 100].map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+              per page
+            </label>
           </div>
           <Pagination currentPage={effectivePage} totalPages={totalPages} onPageChange={setCurrentPage} />
         </>

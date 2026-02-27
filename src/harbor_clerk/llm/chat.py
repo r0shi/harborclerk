@@ -115,15 +115,26 @@ async def chat_stream(
                                     idx = tc.get("index", 0)
                                     while len(tool_calls_accumulated) <= idx:
                                         tool_calls_accumulated.append(
-                                            {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                                            {
+                                                "id": "",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": "",
+                                                    "arguments": "",
+                                                },
+                                            }
                                         )
                                     if "id" in tc and tc["id"]:
                                         tool_calls_accumulated[idx]["id"] = tc["id"]
                                     fn = tc.get("function", {})
                                     if "name" in fn and fn["name"]:
-                                        tool_calls_accumulated[idx]["function"]["name"] = fn["name"]
+                                        tool_calls_accumulated[idx]["function"][
+                                            "name"
+                                        ] = fn["name"]
                                     if "arguments" in fn:
-                                        tool_calls_accumulated[idx]["function"]["arguments"] += fn["arguments"]
+                                        tool_calls_accumulated[idx]["function"][
+                                            "arguments"
+                                        ] += fn["arguments"]
 
                             # Stream text tokens
                             if "content" in delta and delta["content"]:
@@ -148,7 +159,13 @@ async def chat_stream(
                     tool_calls=tool_calls_accumulated,
                 )
                 session.add(tc_msg)
-                messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls_accumulated})
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": tool_calls_accumulated,
+                    }
+                )
 
                 for tc in tool_calls_accumulated:
                     fn_name = tc["function"]["name"]
@@ -171,11 +188,13 @@ async def chat_stream(
                         tool_call_id=tc.get("id", f"call_{fn_name}"),
                     )
                     session.add(tool_msg)
-                    messages.append({
-                        "role": "tool",
-                        "content": result_str,
-                        "tool_call_id": tc.get("id", f"call_{fn_name}"),
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "content": result_str,
+                            "tool_call_id": tc.get("id", f"call_{fn_name}"),
+                        }
+                    )
 
                 await session.flush()
                 continue  # Next round — let LLM see tool results
@@ -201,7 +220,13 @@ async def chat_stream(
 
         await session.commit()
 
-        yield f"data: {json.dumps({'type': 'done', 'message_id': str(user_msg.message_id) if assistant_content else None})}\n\n"
+        done_payload: dict = {
+            "type": "done",
+            "message_id": str(user_msg.message_id) if assistant_content else None,
+        }
+        if conv and conv.title != "New conversation":
+            done_payload["title"] = conv.title
+        yield f"data: {json.dumps(done_payload)}\n\n"
 
 
 def _generate_title(user_message: str) -> str:

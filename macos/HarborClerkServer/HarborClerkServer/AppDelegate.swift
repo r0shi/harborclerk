@@ -134,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch state {
         case .stopped:
             button.appearsDisabled = true
-        case .starting, .stopping:
+        case .startupPending, .starting, .shutdownPending, .stopping:
             button.appearsDisabled = false
         case .running:
             button.appearsDisabled = false

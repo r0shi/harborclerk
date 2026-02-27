@@ -57,4 +57,19 @@ final class OverallStateTests: XCTestCase {
         let result = ServiceManager.computeOverallState([.errored])
         XCTAssertEqual(result, .errored)
     }
+
+    func testStartupPendingReturnsStarting() {
+        let result = ServiceManager.computeOverallState([.running, .startupPending, .stopped])
+        XCTAssertEqual(result, .starting)
+    }
+
+    func testShutdownPendingReturnsStopping() {
+        let result = ServiceManager.computeOverallState([.running, .shutdownPending, .stopped])
+        XCTAssertEqual(result, .stopping)
+    }
+
+    func testShutdownPendingWithStoppingReturnsStopping() {
+        let result = ServiceManager.computeOverallState([.shutdownPending, .stopping, .stopped])
+        XCTAssertEqual(result, .stopping)
+    }
 }

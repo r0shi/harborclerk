@@ -313,7 +313,8 @@ export default function UploadPage() {
 
     if (e.dataTransfer.files.length > 0) {
       const supported = Array.from(e.dataTransfer.files).filter((f) =>
-        isSupportedFile(f.name),
+        // Skip likely folder entries: 0-byte with empty type or no extension
+        f.size > 0 && isSupportedFile(f.name),
       )
       if (supported.length === 0) {
         setError(

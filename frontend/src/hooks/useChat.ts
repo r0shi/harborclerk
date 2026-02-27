@@ -21,6 +21,7 @@ export function useChat() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [currentToolCall, setCurrentToolCall] = useState<ToolCallInfo | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const lastTitleRef = useRef<string | null>(null)
 
   const loadMessages = useCallback((msgs: ChatMessage[]) => {
     // Filter out tool messages for display — they're shown inline as tool cards
@@ -34,6 +35,7 @@ export function useChat() {
       if (!token || isStreaming) return
 
       // Add user message immediately
+      lastTitleRef.current = null
       const userMsg: ChatMessage = { role: 'user', content }
       setMessages((prev) => [...prev, userMsg])
       setIsStreaming(true)
@@ -133,6 +135,9 @@ export function useChat() {
                   break
 
                 case 'done':
+                  if (event.title) {
+                    lastTitleRef.current = event.title
+                  }
                   setMessages((prev) => {
                     const updated = [...prev]
                     const last = updated[updated.length - 1]
@@ -201,5 +206,6 @@ export function useChat() {
     stopStreaming,
     loadMessages,
     setMessages,
+    lastTitle: lastTitleRef,
   }
 }

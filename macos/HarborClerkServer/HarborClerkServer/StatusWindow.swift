@@ -69,7 +69,7 @@ struct StatusWindow: View {
     private var pillColor: Color {
         switch overallState {
         case .running: .green
-        case .starting, .stopping: .orange
+        case .startupPending, .starting, .shutdownPending, .stopping: .orange
         case .errored: .red
         case .stopped: .gray
         }
@@ -78,8 +78,8 @@ struct StatusWindow: View {
     private var pillLabel: String {
         switch overallState {
         case .running: "All Running"
-        case .starting: "Starting"
-        case .stopping: "Stopping"
+        case .startupPending, .starting: "Starting"
+        case .shutdownPending, .stopping: "Stopping"
         case .errored: "Error"
         case .stopped: "Stopped"
         }
@@ -127,10 +127,10 @@ struct StatusWindow: View {
 
             Spacer()
 
-            Text(service.state.rawValue.capitalized)
+            Text(labelForState(service.state))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .frame(width: 56, alignment: .trailing)
+                .frame(width: 100, alignment: .trailing)
 
             // Per-service controls
             HStack(spacing: 4) {
@@ -142,7 +142,7 @@ struct StatusWindow: View {
                         .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.borderless)
-                .disabled(service.state == .running || service.state == .starting)
+                .disabled(service.state == .running || service.state == .starting || service.state == .startupPending)
                 .help("Start")
 
                 Button {
@@ -153,7 +153,7 @@ struct StatusWindow: View {
                         .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.borderless)
-                .disabled(service.state == .stopped || service.state == .stopping)
+                .disabled(service.state == .stopped || service.state == .stopping || service.state == .shutdownPending)
                 .help("Stop")
 
                 Button {
@@ -164,7 +164,7 @@ struct StatusWindow: View {
                         .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.borderless)
-                .disabled(service.state == .stopped || service.state == .starting || service.state == .stopping)
+                .disabled(service.state == .stopped || service.state == .starting || service.state == .stopping || service.state == .startupPending || service.state == .shutdownPending)
                 .help("Restart")
             }
         }
@@ -217,6 +217,7 @@ struct StatusWindow: View {
     private func colorForState(_ state: ServiceState) -> Color {
         switch state {
         case .stopped: .gray
+        case .startupPending, .shutdownPending: .blue
         case .starting, .stopping: .orange
         case .running: .green
         case .errored: .red
@@ -224,6 +225,21 @@ struct StatusWindow: View {
     }
 
     private func isTransient(_ state: ServiceState) -> Bool {
-        state == .starting || state == .stopping
+        switch state {
+        case .starting, .stopping, .startupPending, .shutdownPending: true
+        default: false
+        }
+    }
+
+    private func labelForState(_ state: ServiceState) -> String {
+        switch state {
+        case .stopped: "Stopped"
+        case .startupPending: "Startup Pending"
+        case .starting: "Starting"
+        case .running: "Running"
+        case .shutdownPending: "Shutdown Pending"
+        case .stopping: "Stopping"
+        case .errored: "Errored"
+        }
     }
 }

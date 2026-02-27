@@ -116,6 +116,19 @@ async def upload_files(
                     detail=f"File '{file.filename}' exceeds {settings.max_file_size_mb}MB limit",
                 )
 
+        # Skip 0-byte entries (likely folder placeholders from drag-and-drop)
+        if total_size == 0:
+            results.append(
+                UploadFileResult(
+                    upload_id=str(uuid.uuid4()),
+                    filename=fname or "unknown",
+                    size_bytes=0,
+                    mime_type=file.content_type or "application/octet-stream",
+                    status="skipped",
+                )
+            )
+            continue
+
         batch_total += total_size
         if batch_total > max_batch_bytes:
             raise HTTPException(

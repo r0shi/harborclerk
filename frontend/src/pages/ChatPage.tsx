@@ -54,6 +54,7 @@ export default function ChatPage() {
     sendMessage,
     stopStreaming,
     loadMessages,
+    lastTitle,
   } = useChat()
 
   useEffect(() => {
@@ -113,10 +114,22 @@ export default function ChatPage() {
         navigate(`/c/${activeConvId}`, { replace: true })
       }
 
-      await sendMessage(activeConvId, text)
-      get<ConversationSummary[]>('/api/chat/conversations').then(setConversations).catch(() => {})
+      await sendMessage(activeConvId, text).finally(() => {
+        // Update title immediately from SSE if available
+        if (lastTitle.current && activeConvId) {
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.conversation_id === activeConvId
+                ? { ...c, title: lastTitle.current! }
+                : c,
+            ),
+          )
+        }
+        // Always refetch conversation list for updated timestamps
+        get<ConversationSummary[]>('/api/chat/conversations').then(setConversations).catch(() => {})
+      })
     },
-    [isStreaming, conversationId, sendMessage, navigate],
+    [isStreaming, conversationId, sendMessage, navigate, lastTitle],
   )
 
   const handleNewChat = useCallback(() => {
