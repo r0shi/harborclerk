@@ -15,6 +15,7 @@ build/
 .vscode/
 *.swp
 .claude/
+.serena/
 
 # Frontend
 frontend/node_modules/
