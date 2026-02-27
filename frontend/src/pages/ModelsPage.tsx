@@ -199,6 +199,16 @@ export default function ModelsPage() {
     }
   }
 
+  async function handleDeactivate() {
+    setError('')
+    try {
+      await put('/api/chat/models/deactivate')
+      loadModels()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Deactivation failed')
+    }
+  }
+
   if (loading) {
     return (
       <div className="text-sm text-gray-500 dark:text-gray-400">
@@ -306,6 +316,14 @@ export default function ModelsPage() {
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
+                      {model.active && (
+                        <button
+                          onClick={() => handleDeactivate()}
+                          className="rounded-lg border border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 shadow-sm hover:bg-gray-50 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-700/50"
+                        >
+                          Deactivate
+                        </button>
+                      )}
                       {!model.downloaded && !downloading.has(model.id) && (
                         <button
                           onClick={() => handleDownload(model.id)}

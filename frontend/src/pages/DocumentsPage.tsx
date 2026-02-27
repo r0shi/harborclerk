@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { get, post, downloadBlob } from '../api'
 import { useAuth } from '../auth'
@@ -12,11 +12,15 @@ interface DocSummary {
   version_count: number
   created_at: string
   updated_at: string
+  summary?: string
+  summary_model?: string
+  source_path?: string
 }
 
 const PROCESSING_STATUSES = new Set([
   'queued', 'extracting', 'extracted', 'ocr_running', 'ocr_done',
   'chunking', 'chunked', 'embedding', 'embedded', 'finalizing',
+  'summarizing', 'summarized',
 ])
 
 function normalizeStatus(status?: string): string {
@@ -98,6 +102,7 @@ export default function DocumentsPage() {
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   function loadDocs() {
     return get<DocSummary[]>('/api/docs')
@@ -222,59 +227,107 @@ export default function DocumentsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--color-border)] bg-white dark:bg-[#2c2c2e]">
-                {visibleDocs.map((doc) => (
-                  <tr key={doc.doc_id} className="hover:bg-black/[0.02] dark:hover:bg-white/[0.02]">
-                    <td className="px-4 py-3">
-                      <Link
-                        to={`/docs/${doc.doc_id}`}
-                        className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                      >
-                        {doc.title}
-                      </Link>
-                      {doc.canonical_filename && (
-                        <div className="text-xs text-gray-400">
-                          {doc.canonical_filename}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
-                        <StatusBadge status={doc.latest_version_status || doc.status} />
-                        {isAdmin && normalizeStatus(doc.latest_version_status) === 'processing' && (
+                {visibleDocs.map((doc) => {
+                  const isExpanded = expanded.has(doc.doc_id)
+                  return (
+                    <Fragment key={doc.doc_id}>
+                      <tr className="hover:bg-black/[0.02] dark:hover:bg-white/[0.02]">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => setExpanded(prev => {
+                                const next = new Set(prev)
+                                if (next.has(doc.doc_id)) next.delete(doc.doc_id)
+                                else next.add(doc.doc_id)
+                                return next
+                              })}
+                              className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                              title="Toggle details"
+                            >
+                              <svg
+                                className={`h-3.5 w-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              </svg>
+                            </button>
+                            <div>
+                              <Link
+                                to={`/docs/${doc.doc_id}`}
+                                className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                              >
+                                {doc.title}
+                              </Link>
+                              {doc.canonical_filename && (
+                                <div className="text-xs text-gray-400">
+                                  {doc.canonical_filename}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <StatusBadge status={doc.latest_version_status || doc.status} />
+                            {isAdmin && normalizeStatus(doc.latest_version_status) === 'processing' && (
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  handleCancel(doc.doc_id)
+                                }}
+                                className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                                title="Cancel processing"
+                              >
+                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
+                          {doc.version_count}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
+                          {new Date(doc.updated_at).toLocaleDateString()}
+                        </td>
+                        <td className="px-4 py-3 text-right">
                           <button
-                            onClick={(e) => {
-                              e.preventDefault()
-                              handleCancel(doc.doc_id)
-                            }}
-                            className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                            title="Cancel processing"
+                            onClick={() => handleDownload(doc.doc_id)}
+                            className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                            title="Download original"
                           >
-                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
                             </svg>
                           </button>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
-                      {doc.version_count}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                      {new Date(doc.updated_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => handleDownload(doc.doc_id)}
-                        className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                        title="Download original"
-                      >
-                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                        </svg>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-gray-50/50 dark:bg-white/[0.02]">
+                          <td colSpan={5} className="px-4 py-3 pl-10">
+                            <div className="space-y-1 text-sm">
+                              <div>
+                                <span className="font-medium text-gray-500 dark:text-gray-400">Summary{doc.summary_model ? <span className="font-normal text-gray-400 dark:text-gray-500"> ({doc.summary_model})</span> : ''}: </span>
+                                {doc.summary
+                                  ? <span className="text-gray-700 dark:text-gray-300">{doc.summary}</span>
+                                  : <span className="italic text-gray-400 dark:text-gray-500">No summary</span>
+                                }
+                              </div>
+                              <div>
+                                <span className="font-medium text-gray-500 dark:text-gray-400">Source: </span>
+                                {doc.source_path
+                                  ? <span className="text-gray-700 dark:text-gray-300 font-mono text-xs">{doc.source_path}</span>
+                                  : <span className="italic text-gray-400 dark:text-gray-500">Unknown</span>
+                                }
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           </div>

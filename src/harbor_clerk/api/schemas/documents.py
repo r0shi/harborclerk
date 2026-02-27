@@ -40,6 +40,9 @@ class DocumentSummary(BaseModel):
     version_count: int
     created_at: datetime
     updated_at: datetime
+    summary: str | None = None
+    summary_model: str | None = None
+    source_path: str | None = None
 
 
 class DocumentDetail(BaseModel):

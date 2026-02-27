@@ -46,14 +46,24 @@ async def list_documents(
     summaries = []
     for doc in docs:
         latest_status = None
+        latest_summary = None
+        latest_summary_model = None
+        latest_source_path = None
         version_count = len(doc.versions) if doc.versions else 0
         if doc.latest_version_id and doc.versions:
             for v in doc.versions:
                 if v.version_id == doc.latest_version_id:
                     latest_status = v.status.value
+                    latest_summary = v.summary
+                    latest_summary_model = v.summary_model
+                    latest_source_path = v.source_path
                     break
         if latest_status is None and doc.versions:
-            latest_status = doc.versions[-1].status.value
+            latest_v = doc.versions[-1]
+            latest_status = latest_v.status.value
+            latest_summary = latest_v.summary
+            latest_summary_model = latest_v.summary_model
+            latest_source_path = latest_v.source_path
 
         summaries.append(
             DocumentSummary(
@@ -65,6 +75,9 @@ async def list_documents(
                 version_count=version_count,
                 created_at=doc.created_at,
                 updated_at=doc.updated_at,
+                summary=latest_summary,
+                summary_model=latest_summary_model,
+                source_path=latest_source_path,
             )
         )
     return summaries

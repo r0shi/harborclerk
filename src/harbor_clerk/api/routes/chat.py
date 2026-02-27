@@ -226,6 +226,16 @@ async def activate_model(
     return {"status": "activated"}
 
 
+@router.put("/chat/models/deactivate", status_code=200)
+async def deactivate_model(
+    principal: Principal = Depends(require_admin),
+):
+    settings = get_settings()
+    settings.llm_model_id = ""
+    sync_native_config("llm_model_id", "")
+    return {"status": "deactivated"}
+
+
 @router.delete("/chat/models/{model_id}", status_code=204)
 async def remove_model(
     model_id: str,

@@ -34,12 +34,12 @@ def run_summarize(version_id: uuid.UUID) -> None:
         if chunks:
             combined = "\n\n".join(chunks)
             try:
-                summary = generate_summary(combined)
+                summary, model_used = generate_summary(combined)
             except Exception:
                 logger.warning(
                     "Summary generation failed for %s", version_id, exc_info=True
                 )
-                summary = None
+                summary, model_used = None, None
 
             if summary:
                 version = session.execute(
@@ -48,6 +48,7 @@ def run_summarize(version_id: uuid.UUID) -> None:
                     )
                 ).scalar_one()
                 version.summary = summary
+                version.summary_model = model_used
                 session.commit()
     finally:
         session.close()
