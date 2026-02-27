@@ -38,7 +38,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
       className={`mb-2 ${exiting ? 'panel-exit' : 'panel-enter'}`}
       onAnimationEnd={handleAnimationEnd}
     >
-      <div className="w-80 max-h-[60vh] flex flex-col rounded-2xl bg-[var(--bg-vibrancy)] backdrop-blur-xl shadow-mac-lg ring-1 ring-[var(--color-border)] overflow-hidden">
+      <div className="w-[360px] max-h-[60vh] flex flex-col rounded-2xl bg-[var(--bg-vibrancy)] backdrop-blur-xl shadow-mac-lg ring-1 ring-[var(--color-border)] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
           <span className="text-[13px] font-semibold text-[var(--color-text-primary)]">Processing</span>
@@ -77,7 +77,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
           {hasCompleted && (
             <div className="px-4 py-2">
               <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">
-                Completed
+                Completed ({completed.length})
               </div>
               <div className="space-y-2">
                 {completed.map((item) => (

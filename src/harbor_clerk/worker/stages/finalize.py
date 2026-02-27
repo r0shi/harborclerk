@@ -19,6 +19,10 @@ def run_finalize(version_id: uuid.UUID) -> None:
     if not mark_stage_running(version_id, JobStage.finalize):
         return
 
+    doc_id: uuid.UUID | None = None
+    page_count = 0
+    chunk_count = 0
+
     session = get_sync_session()
     try:
         version = session.execute(
