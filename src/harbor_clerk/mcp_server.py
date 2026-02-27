@@ -581,7 +581,9 @@ async def kb_list_recent(limit: int = 20) -> str:
 async def kb_corpus_overview() -> str:
     """Get a bird's-eye view of the knowledge base.
 
-    Returns document count, total chunks, and a summary of each document.
+    Returns corpus-level statistics and a summary of each document.
+    Includes document count, chunk/page totals, language distribution,
+    file type breakdown, and date range.
     Use this to understand what's in the corpus before searching."""
     _get_principal()
 
@@ -597,6 +599,45 @@ async def kb_corpus_overview() -> str:
             select(func.count()).select_from(Chunk)
         )
         chunk_count = chunk_count_result.scalar() or 0
+
+        page_count_result = await session.execute(
+            select(func.count()).select_from(DocumentPage)
+        )
+        total_pages = page_count_result.scalar() or 0
+
+        # Language distribution from chunks
+        lang_rows = (
+            await session.execute(
+                select(Chunk.language, func.count())
+                .group_by(Chunk.language)
+                .order_by(func.count().desc())
+            )
+        ).all()
+        languages = {row[0]: row[1] for row in lang_rows if row[0]}
+
+        # Mime type breakdown from latest versions of active docs
+        mime_rows = (
+            await session.execute(
+                select(DocumentVersion.mime_type, func.count())
+                .join(
+                    Document, Document.latest_version_id == DocumentVersion.version_id
+                )
+                .where(Document.status == "active")
+                .group_by(DocumentVersion.mime_type)
+                .order_by(func.count().desc())
+            )
+        ).all()
+        mime_types = {row[0]: row[1] for row in mime_rows if row[0]}
+
+        # Date range
+        date_result = await session.execute(
+            select(func.min(Document.updated_at), func.max(Document.updated_at)).where(
+                Document.status == "active"
+            )
+        )
+        date_row = date_result.one()
+        oldest = date_row[0].isoformat() if date_row[0] else None
+        newest = date_row[1].isoformat() if date_row[1] else None
 
         result = await session.execute(
             select(Document)
@@ -631,6 +672,10 @@ async def kb_corpus_overview() -> str:
         {
             "document_count": doc_count,
             "total_chunks": chunk_count,
+            "total_pages": total_pages,
+            "languages": languages,
+            "mime_types": mime_types,
+            "date_range": {"oldest": oldest, "newest": newest},
             "documents": items,
             "truncated": doc_count > len(items),
         },

@@ -82,3 +82,27 @@ class DocumentOutlineResponse(BaseModel):
     page_count: int
     chunk_count: int
     headings: list[HeadingOut]
+
+
+class DateRange(BaseModel):
+    oldest: datetime | None = None
+    newest: datetime | None = None
+
+
+class CorpusDocumentSummary(BaseModel):
+    doc_id: str
+    title: str
+    summary: str | None = None
+    status: str | None = None
+    updated_at: datetime
+
+
+class CorpusOverviewResponse(BaseModel):
+    document_count: int
+    total_chunks: int
+    total_pages: int
+    languages: dict[str, int]
+    mime_types: dict[str, int]
+    date_range: DateRange
+    documents: list[CorpusDocumentSummary]
+    truncated: bool

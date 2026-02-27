@@ -341,10 +341,15 @@ async def test_corpus_overview(
     sample_doc,
     sample_chunks,
 ):
-    """Returns correct counts and document list."""
+    """Returns correct counts, aggregate stats, and document list."""
     result = json.loads(await kb_corpus_overview())
     assert result["document_count"] == 1
     assert result["total_chunks"] == 5
+    assert result["total_pages"] == 0  # no DocumentPage rows in fixture
+    assert result["languages"] == {"en": 5}
+    assert result["mime_types"] == {"application/pdf": 1}
+    assert result["date_range"]["oldest"] is not None
+    assert result["date_range"]["newest"] is not None
     assert len(result["documents"]) == 1
     assert result["documents"][0]["title"] == "Test Document"
     assert result["documents"][0]["summary"] == "A test document summary."
@@ -357,11 +362,44 @@ async def test_corpus_overview_empty(
     mcp_principal,
     mock_session_factory,
 ):
-    """Empty corpus returns zeros."""
+    """Empty corpus returns zeros and empty aggregates."""
     result = json.loads(await kb_corpus_overview())
     assert result["document_count"] == 0
     assert result["total_chunks"] == 0
+    assert result["total_pages"] == 0
+    assert result["languages"] == {}
+    assert result["mime_types"] == {}
+    assert result["date_range"] == {"oldest": None, "newest": None}
     assert result["documents"] == []
+
+
+async def test_corpus_overview_multilingual(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+):
+    """Language distribution correctly counts per-language chunks."""
+    doc, version = sample_doc
+    for i, lang in enumerate(["en", "en", "fr", "fr", "fr"]):
+        db_session.add(
+            Chunk(
+                version_id=version.version_id,
+                doc_id=doc.doc_id,
+                chunk_num=i,
+                page_start=1,
+                page_end=1,
+                char_start=i * 100,
+                char_end=(i + 1) * 100,
+                chunk_text=f"Chunk {i}",
+                language=lang,
+            )
+        )
+    await db_session.flush()
+
+    result = json.loads(await kb_corpus_overview())
+    assert result["languages"] == {"fr": 3, "en": 2}
 
 
 # ---------------------------------------------------------------------------

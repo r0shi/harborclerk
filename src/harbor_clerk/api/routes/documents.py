@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from harbor_clerk.api.deps import Principal, require_admin, require_read_access
 from harbor_clerk.api.schemas.documents import (
+    CorpusOverviewResponse,
     DocumentContentResponse,
     DocumentDetail,
     DocumentOutlineResponse,
@@ -90,6 +91,100 @@ async def list_documents(
             )
         )
     return summaries
+
+
+@router.get("/docs/overview", response_model=CorpusOverviewResponse)
+async def corpus_overview(
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Corpus-level statistics: counts, language distribution, mime types, date range, and document list."""
+    doc_count = (
+        await session.execute(
+            select(func.count())
+            .select_from(Document)
+            .where(Document.status == "active")
+        )
+    ).scalar() or 0
+
+    chunk_count = (
+        await session.execute(select(func.count()).select_from(Chunk))
+    ).scalar() or 0
+
+    total_pages = (
+        await session.execute(select(func.count()).select_from(DocumentPage))
+    ).scalar() or 0
+
+    lang_rows = (
+        await session.execute(
+            select(Chunk.language, func.count())
+            .group_by(Chunk.language)
+            .order_by(func.count().desc())
+        )
+    ).all()
+    languages = {row[0]: row[1] for row in lang_rows if row[0]}
+
+    mime_rows = (
+        await session.execute(
+            select(DocumentVersion.mime_type, func.count())
+            .join(Document, Document.latest_version_id == DocumentVersion.version_id)
+            .where(Document.status == "active")
+            .group_by(DocumentVersion.mime_type)
+            .order_by(func.count().desc())
+        )
+    ).all()
+    mime_types = {row[0]: row[1] for row in mime_rows if row[0]}
+
+    date_row = (
+        await session.execute(
+            select(func.min(Document.updated_at), func.max(Document.updated_at)).where(
+                Document.status == "active"
+            )
+        )
+    ).one()
+
+    result = await session.execute(
+        select(Document)
+        .options(selectinload(Document.versions))
+        .where(Document.status == "active")
+        .order_by(Document.updated_at.desc())
+        .limit(200)
+    )
+    docs = result.scalars().all()
+
+    items = []
+    for doc in docs:
+        summary = None
+        ver_status = None
+        if doc.latest_version_id and doc.versions:
+            for v in doc.versions:
+                if v.version_id == doc.latest_version_id:
+                    summary = v.summary
+                    ver_status = v.status.value
+                    break
+        items.append(
+            {
+                "doc_id": str(doc.doc_id),
+                "title": doc.title,
+                "summary": summary,
+                "status": ver_status,
+                "updated_at": doc.updated_at,
+            }
+        )
+
+    return CorpusOverviewResponse(
+        document_count=doc_count,
+        total_chunks=chunk_count,
+        total_pages=total_pages,
+        languages=languages,
+        mime_types=mime_types,
+        date_range={
+            "oldest": date_row[0],
+            "newest": date_row[1],
+        },
+        documents=items,
+        truncated=doc_count > len(items),
+    )
 
 
 @router.get("/docs/{doc_id}", response_model=DocumentDetail)

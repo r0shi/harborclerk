@@ -65,7 +65,7 @@
 | 3 | Context Expansion | **Done** |
 | 4 | Scoped/Filtered Search | **Done** |
 | 5 | Document Outline | **Done** |
-| 6 | Corpus Overview | Partial (basic tool added in Feature 2) |
+| 6 | Corpus Overview | **Done** |
 | 7 | Cross-Document Similarity | Not started |
 | 8 | Entity Extraction | Not started |
 | 9 | Auto-Inject RAG | Not started |
