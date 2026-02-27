@@ -93,6 +93,7 @@ async def list_documents(
     return summaries
 
 
+# Must be defined before /docs/{doc_id} to avoid path capture
 @router.get("/docs/overview", response_model=CorpusOverviewResponse)
 async def corpus_overview(
     principal: Principal = Depends(require_read_access),
@@ -108,16 +109,28 @@ async def corpus_overview(
     ).scalar() or 0
 
     chunk_count = (
-        await session.execute(select(func.count()).select_from(Chunk))
+        await session.execute(
+            select(func.count())
+            .select_from(Chunk)
+            .join(Document, Document.latest_version_id == Chunk.version_id)
+            .where(Document.status == "active")
+        )
     ).scalar() or 0
 
     total_pages = (
-        await session.execute(select(func.count()).select_from(DocumentPage))
+        await session.execute(
+            select(func.count())
+            .select_from(DocumentPage)
+            .join(Document, Document.latest_version_id == DocumentPage.version_id)
+            .where(Document.status == "active")
+        )
     ).scalar() or 0
 
     lang_rows = (
         await session.execute(
             select(Chunk.language, func.count())
+            .join(Document, Document.latest_version_id == Chunk.version_id)
+            .where(Document.status == "active")
             .group_by(Chunk.language)
             .order_by(func.count().desc())
         )

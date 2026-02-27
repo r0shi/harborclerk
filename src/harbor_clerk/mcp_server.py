@@ -596,19 +596,27 @@ async def kb_corpus_overview() -> str:
         doc_count = doc_count_result.scalar() or 0
 
         chunk_count_result = await session.execute(
-            select(func.count()).select_from(Chunk)
+            select(func.count())
+            .select_from(Chunk)
+            .join(Document, Document.latest_version_id == Chunk.version_id)
+            .where(Document.status == "active")
         )
         chunk_count = chunk_count_result.scalar() or 0
 
         page_count_result = await session.execute(
-            select(func.count()).select_from(DocumentPage)
+            select(func.count())
+            .select_from(DocumentPage)
+            .join(Document, Document.latest_version_id == DocumentPage.version_id)
+            .where(Document.status == "active")
         )
         total_pages = page_count_result.scalar() or 0
 
-        # Language distribution from chunks
+        # Language distribution from chunks (scoped to active docs' latest versions)
         lang_rows = (
             await session.execute(
                 select(Chunk.language, func.count())
+                .join(Document, Document.latest_version_id == Chunk.version_id)
+                .where(Document.status == "active")
                 .group_by(Chunk.language)
                 .order_by(func.count().desc())
             )

@@ -4,7 +4,8 @@ import uuid
 
 import pytest
 
-from harbor_clerk.models import Document
+from harbor_clerk.models import Chunk, Document, DocumentVersion
+from harbor_clerk.models.enums import VersionStatus
 from tests.conftest import auth_header
 
 
@@ -26,7 +27,9 @@ async def test_list_documents_with_doc(client, admin_user, admin_token, db_sessi
     assert data[0]["title"] == "Test Doc"
 
 
-async def test_list_documents_excludes_deleted(client, admin_user, admin_token, db_session):
+async def test_list_documents_excludes_deleted(
+    client, admin_user, admin_token, db_session
+):
     doc_active = Document(title="Active", status="active")
     doc_deleted = Document(title="Deleted", status="deleted")
     db_session.add_all([doc_active, doc_deleted])
@@ -50,7 +53,73 @@ async def test_get_document_not_found(client, admin_user, admin_token):
     assert resp.status_code == 404
 
 
-async def test_delete_document_requires_admin(client, regular_user, user_token, db_session):
+async def test_corpus_overview_happy(client, admin_user, admin_token, db_session):
+    doc = Document(title="Overview Doc", status="active")
+    db_session.add(doc)
+    await db_session.flush()
+
+    version = DocumentVersion(
+        doc_id=doc.doc_id,
+        original_sha256=b"sha256_for_overview_test_12345678",
+        original_bucket="originals",
+        original_object_key=f"originals/versions/{uuid.uuid4()}/test.pdf",
+        mime_type="application/pdf",
+        size_bytes=5000,
+        status=VersionStatus.ready,
+        source_path="test.pdf",
+        summary="A summary.",
+    )
+    db_session.add(version)
+    await db_session.flush()
+    doc.latest_version_id = version.version_id
+
+    for i in range(3):
+        db_session.add(
+            Chunk(
+                version_id=version.version_id,
+                doc_id=doc.doc_id,
+                chunk_num=i,
+                page_start=1,
+                page_end=1,
+                char_start=i * 100,
+                char_end=(i + 1) * 100,
+                chunk_text=f"Chunk {i}",
+                language="en",
+            )
+        )
+    await db_session.flush()
+
+    resp = await client.get("/api/docs/overview", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["document_count"] == 1
+    assert data["total_chunks"] == 3
+    assert data["total_pages"] == 0
+    assert data["languages"] == {"en": 3}
+    assert data["mime_types"] == {"application/pdf": 1}
+    assert data["date_range"]["oldest"] is not None
+    assert data["date_range"]["newest"] is not None
+    assert len(data["documents"]) == 1
+    assert data["documents"][0]["title"] == "Overview Doc"
+    assert data["truncated"] is False
+
+
+async def test_corpus_overview_empty(client, admin_user, admin_token):
+    resp = await client.get("/api/docs/overview", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["document_count"] == 0
+    assert data["total_chunks"] == 0
+    assert data["total_pages"] == 0
+    assert data["languages"] == {}
+    assert data["mime_types"] == {}
+    assert data["date_range"] == {"oldest": None, "newest": None}
+    assert data["documents"] == []
+
+
+async def test_delete_document_requires_admin(
+    client, regular_user, user_token, db_session
+):
     doc = Document(title="To Delete", status="active")
     db_session.add(doc)
     await db_session.flush()
