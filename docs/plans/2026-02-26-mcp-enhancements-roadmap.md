@@ -61,7 +61,7 @@
 |---|---------|--------|
 | 1 | Adjustable K + Pagination | **Done** |
 | 2 | Document Summaries | **Done** |
-| 3 | Context Expansion | Not started |
+| 3 | Context Expansion | **Done** |
 | 4 | Scoped/Filtered Search | Not started |
 | 5 | Document Outline | Not started |
 | 6 | Corpus Overview | Partial (basic tool added in Feature 2) |
