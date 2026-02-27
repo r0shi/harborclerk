@@ -67,3 +67,18 @@ class DocumentContentResponse(BaseModel):
     version_id: str
     pages: list[PageContent]
     total_chars: int
+
+
+class HeadingOut(BaseModel):
+    level: int
+    title: str
+    page_num: int | None = None
+
+
+class DocumentOutlineResponse(BaseModel):
+    doc_id: str
+    version_id: str
+    title: str
+    page_count: int
+    chunk_count: int
+    headings: list[HeadingOut]

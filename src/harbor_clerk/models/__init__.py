@@ -14,6 +14,7 @@ from harbor_clerk.models.document import Document
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.document_version import DocumentVersion
 from harbor_clerk.models.document_page import DocumentPage
+from harbor_clerk.models.document_heading import DocumentHeading
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.audit_log import AuditLog
@@ -33,6 +34,7 @@ __all__ = [
     "Upload",
     "DocumentVersion",
     "DocumentPage",
+    "DocumentHeading",
     "Chunk",
     "IngestionJob",
     "AuditLog",

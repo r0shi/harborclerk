@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,14 +14,23 @@ from harbor_clerk.api.deps import Principal, require_admin, require_read_access
 from harbor_clerk.api.schemas.documents import (
     DocumentContentResponse,
     DocumentDetail,
+    DocumentOutlineResponse,
     DocumentSummary,
+    HeadingOut,
     JobInfo,
     PageContent,
     VersionInfo,
 )
 from harbor_clerk.audit import log_audit
 from harbor_clerk.db import get_session
-from harbor_clerk.models import Document, DocumentPage, DocumentVersion, IngestionJob
+from harbor_clerk.models import (
+    Chunk,
+    Document,
+    DocumentHeading,
+    DocumentPage,
+    DocumentVersion,
+    IngestionJob,
+)
 from harbor_clerk.models.enums import JobStage, VersionStatus
 from harbor_clerk.storage import get_storage
 
@@ -242,6 +251,65 @@ async def get_document_content(
         version_id=str(version_id),
         pages=page_contents,
         total_chars=total_chars,
+    )
+
+
+@router.get("/docs/{doc_id}/outline", response_model=DocumentOutlineResponse)
+async def get_document_outline(
+    doc_id: uuid.UUID,
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get document heading outline/structure with page and chunk counts."""
+    result = await session.execute(
+        select(Document)
+        .where(Document.doc_id == doc_id, Document.status == "active")
+        .options(selectinload(Document.versions))
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    version_id = doc.latest_version_id
+    if version_id is None and doc.versions:
+        version_id = doc.versions[-1].version_id
+    if version_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No versions available"
+        )
+
+    # Fetch headings, page count, chunk count
+    headings_result = await session.execute(
+        select(DocumentHeading)
+        .where(DocumentHeading.version_id == version_id)
+        .order_by(DocumentHeading.position)
+    )
+    headings = headings_result.scalars().all()
+
+    page_count_result = await session.execute(
+        select(func.count())
+        .select_from(DocumentPage)
+        .where(DocumentPage.version_id == version_id)
+    )
+    page_count = page_count_result.scalar_one()
+
+    chunk_count_result = await session.execute(
+        select(func.count()).select_from(Chunk).where(Chunk.version_id == version_id)
+    )
+    chunk_count = chunk_count_result.scalar_one()
+
+    return DocumentOutlineResponse(
+        doc_id=str(doc_id),
+        version_id=str(version_id),
+        title=doc.title,
+        page_count=page_count,
+        chunk_count=chunk_count,
+        headings=[
+            HeadingOut(level=h.level, title=h.title, page_num=h.page_num)
+            for h in headings
+        ],
     )
 
 

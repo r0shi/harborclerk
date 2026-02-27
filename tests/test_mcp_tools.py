@@ -8,11 +8,18 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from harbor_clerk.api.deps import Principal
-from harbor_clerk.models import Chunk, Document, DocumentVersion
+from harbor_clerk.models import (
+    Chunk,
+    Document,
+    DocumentHeading,
+    DocumentPage,
+    DocumentVersion,
+)
 from harbor_clerk.models.enums import VersionStatus
 from harbor_clerk.mcp_server import (
     _mcp_principal,
     kb_corpus_overview,
+    kb_document_outline,
     kb_expand_context,
     kb_get_document,
     kb_list_recent,
@@ -563,3 +570,102 @@ async def test_kb_search_faceted_detail_modes(
     doc = result["documents"][0]
     text = doc["hits"][0]["text"]
     assert len(text) <= 51  # 50 chars + ellipsis
+
+
+# ---------------------------------------------------------------------------
+# kb_document_outline
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def sample_headings(db_session: AsyncSession, sample_doc):
+    """Create headings for the sample document's version."""
+    _, version = sample_doc
+    headings = []
+    for i, (level, title) in enumerate(
+        [(1, "Introduction"), (2, "Background"), (2, "Methods"), (1, "Results")]
+    ):
+        h = DocumentHeading(
+            version_id=version.version_id,
+            level=level,
+            title=title,
+            page_num=i + 1,
+            position=i * 500,
+        )
+        db_session.add(h)
+        headings.append(h)
+    await db_session.flush()
+    return headings
+
+
+@pytest.fixture
+async def sample_pages(db_session: AsyncSession, sample_doc):
+    """Create pages for the sample document's version."""
+    _, version = sample_doc
+    pages = []
+    for i in range(3):
+        p = DocumentPage(
+            version_id=version.version_id,
+            page_num=i + 1,
+            page_text=f"Page {i + 1} content.",
+            ocr_used=False,
+        )
+        db_session.add(p)
+        pages.append(p)
+    await db_session.flush()
+    return pages
+
+
+async def test_document_outline_happy(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_headings,
+    sample_pages,
+    sample_chunks,
+):
+    """Outline returns headings, page count, and chunk count."""
+    doc, version = sample_doc
+    result = json.loads(await kb_document_outline(str(doc.doc_id)))
+    assert result["doc_id"] == str(doc.doc_id)
+    assert result["version_id"] == str(version.version_id)
+    assert result["title"] == "Test Document"
+    assert result["page_count"] == 3
+    assert result["chunk_count"] == 5
+    assert len(result["headings"]) == 4
+    assert result["headings"][0] == {
+        "level": 1,
+        "title": "Introduction",
+        "page_num": 1,
+    }
+    assert result["headings"][3]["title"] == "Results"
+
+
+async def test_document_outline_not_found(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Non-existent doc_id returns error."""
+    result = json.loads(await kb_document_outline(str(uuid.uuid4())))
+    assert "error" in result
+
+
+async def test_document_outline_no_headings(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_pages,
+    sample_chunks,
+):
+    """Document with no headings returns empty list, not error."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_document_outline(str(doc.doc_id)))
+    assert result["headings"] == []
+    assert result["page_count"] == 3
+    assert result["chunk_count"] == 5

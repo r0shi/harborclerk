@@ -9,7 +9,8 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.storage import get_storage
-from harbor_clerk.models import DocumentPage, DocumentVersion
+from harbor_clerk.models import DocumentHeading, DocumentPage, DocumentVersion
+from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 
@@ -63,7 +64,9 @@ def _extract_txt(data: bytes) -> list[tuple[int, str]]:
     return _paginate_text(text, settings.synthetic_page_chars)
 
 
-def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list[tuple[int, str]]:
+def _extract_via_tika(
+    data: bytes, mime_type: str, is_pdf: bool = False
+) -> list[tuple[int, str]]:
     """Extract text via Apache Tika. For PDFs, splits on form feed characters."""
     settings = get_settings()
     if not settings.tika_url:
@@ -96,6 +99,68 @@ def _alpha_ratio(text: str) -> float:
     return alpha / len(text)
 
 
+# MIME types where heading extraction from Tika XHTML makes no sense
+_SKIP_HEADINGS_MIMES = IMAGE_MIMES | {"text/plain", "text/csv", "text/markdown"}
+_SKIP_HEADINGS_EXTS = (".txt", ".md", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff")
+
+
+def _extract_headings_via_tika(
+    data: bytes,
+    mime_type: str,
+    pages: list[tuple[int, str]],
+) -> list[dict]:
+    """Fetch Tika XHTML and parse headings. Non-fatal — returns [] on failure."""
+    settings = get_settings()
+    if not settings.tika_url:
+        return []
+    try:
+        resp = httpx.put(
+            f"{settings.tika_url}/tika",
+            content=data,
+            headers={"Content-Type": mime_type, "Accept": "text/html"},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        raw_headings = parse_headings_from_xhtml(resp.text)
+        if not raw_headings:
+            return []
+
+        # Build cumulative char offsets per page for position→page mapping.
+        # NOTE: Heading positions come from XHTML text nodes, page offsets
+        # come from plain-text output. This is a heuristic mapping and may
+        # be off near page boundaries.
+        cum_offsets: list[tuple[int, int, int]] = []  # (start, end, page_num)
+        offset = 0
+        for page_num, text in pages:
+            end = offset + len(text)
+            cum_offsets.append((offset, end, page_num))
+            offset = end
+
+        result = []
+        for h in raw_headings:
+            page_num = None
+            for start, end, pnum in cum_offsets:
+                if h.position < end:
+                    page_num = pnum
+                    break
+            result.append(
+                {
+                    "level": h.level,
+                    "title": h.title,
+                    "page_num": page_num,
+                    "position": h.position,
+                }
+            )
+        return result
+    except Exception:
+        logger.warning(
+            "Heading extraction failed for mime=%s, continuing without headings",
+            mime_type,
+            exc_info=True,
+        )
+        return []
+
+
 def run_extract(version_id: uuid.UUID) -> None:
     """Download file from storage, extract text, store pages."""
     if not mark_stage_running(version_id, JobStage.extract):
@@ -109,14 +174,18 @@ def run_extract(version_id: uuid.UUID) -> None:
 
         # Download from storage
         storage = get_storage()
-        response = storage.get_object(version.original_bucket, version.original_object_key)
+        response = storage.get_object(
+            version.original_bucket, version.original_object_key
+        )
         data = response.read()
 
         mime = (version.mime_type or "").lower()
 
         # Sniff RTF content regardless of extension/MIME
         is_rtf = data[:5] == b"{\\rtf"
-        is_pdf = mime == "application/pdf" or version.original_object_key.endswith(".pdf")
+        is_pdf = mime == "application/pdf" or version.original_object_key.endswith(
+            ".pdf"
+        )
         is_image = mime in IMAGE_MIMES
 
         # Dispatch by type
@@ -131,7 +200,9 @@ def run_extract(version_id: uuid.UUID) -> None:
         elif mime == "text/plain" or obj_key.endswith((".txt", ".md", ".csv")):
             # Plain text / Markdown / CSV — no Tika needed
             pages = _extract_txt(data)
-        elif is_rtf or mime == "text/rtf" or version.original_object_key.endswith(".rtf"):
+        elif (
+            is_rtf or mime == "text/rtf" or version.original_object_key.endswith(".rtf")
+        ):
             pages = _extract_via_tika(data, "text/rtf")
         elif is_pdf:
             pages = _extract_via_tika(data, "application/pdf", is_pdf=True)
@@ -139,15 +210,23 @@ def run_extract(version_id: uuid.UUID) -> None:
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/msword",
         ) or version.original_object_key.endswith(".docx"):
-            pages = _extract_via_tika(data, mime or "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            pages = _extract_via_tika(
+                data,
+                mime
+                or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
         else:
             # Unknown type — try Tika
             pages = _extract_via_tika(data, mime or "application/octet-stream")
 
         # Delete existing pages for this version (idempotency)
-        existing_pages = session.execute(
-            select(DocumentPage).where(DocumentPage.version_id == version_id)
-        ).scalars().all()
+        existing_pages = (
+            session.execute(
+                select(DocumentPage).where(DocumentPage.version_id == version_id)
+            )
+            .scalars()
+            .all()
+        )
         for p in existing_pages:
             session.delete(p)
         session.flush()
@@ -164,27 +243,89 @@ def run_extract(version_id: uuid.UUID) -> None:
             session.add(page)
             total_chars += len(text)
 
+        # Extract headings from Tika XHTML (skip images and plain text)
+        skip_headings = (
+            is_image
+            or mime in _SKIP_HEADINGS_MIMES
+            or obj_key.endswith(_SKIP_HEADINGS_EXTS)
+        )
+        # Delete existing headings (idempotency)
+        existing_headings = (
+            session.execute(
+                select(DocumentHeading).where(DocumentHeading.version_id == version_id)
+            )
+            .scalars()
+            .all()
+        )
+        for h in existing_headings:
+            session.delete(h)
+        session.flush()
+
+        if not skip_headings:
+            headings = _extract_headings_via_tika(
+                data, mime or "application/octet-stream", pages
+            )
+            for hd in headings:
+                session.add(
+                    DocumentHeading(
+                        version_id=version_id,
+                        level=hd["level"],
+                        title=hd["title"],
+                        page_num=hd["page_num"],
+                        position=hd["position"],
+                    )
+                )
+            if headings:
+                logger.info(
+                    "Extracted %d headings for version %s",
+                    len(headings),
+                    version_id,
+                )
+
         # Determine if OCR is needed
         _NEVER_OCR_MIMES = {
-            "text/plain", "text/rtf", "text/html", "text/csv", "text/markdown",
+            "text/plain",
+            "text/rtf",
+            "text/html",
+            "text/csv",
+            "text/markdown",
             "application/msword",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            "application/vnd.ms-excel", "application/vnd.ms-powerpoint",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-powerpoint",
             "application/vnd.oasis.opendocument.text",
             "application/vnd.oasis.opendocument.spreadsheet",
             "application/vnd.oasis.opendocument.presentation",
-            "application/epub+zip", "message/rfc822",
+            "application/epub+zip",
+            "message/rfc822",
         }
         _NEVER_OCR_EXTS = (
-            ".docx", ".doc", ".txt", ".rtf", ".md", ".csv",
-            ".odt", ".pages",
-            ".xlsx", ".xls", ".ods", ".numbers",
-            ".pptx", ".ppt", ".odp", ".key",
-            ".epub", ".html", ".htm", ".eml",
+            ".docx",
+            ".doc",
+            ".txt",
+            ".rtf",
+            ".md",
+            ".csv",
+            ".odt",
+            ".pages",
+            ".xlsx",
+            ".xls",
+            ".ods",
+            ".numbers",
+            ".pptx",
+            ".ppt",
+            ".odp",
+            ".key",
+            ".epub",
+            ".html",
+            ".htm",
+            ".eml",
         )
-        is_never_ocr = is_rtf or mime in _NEVER_OCR_MIMES or obj_key.endswith(_NEVER_OCR_EXTS)
+        is_never_ocr = (
+            is_rtf or mime in _NEVER_OCR_MIMES or obj_key.endswith(_NEVER_OCR_EXTS)
+        )
 
         if is_image:
             version.needs_ocr = True
@@ -207,7 +348,10 @@ def run_extract(version_id: uuid.UUID) -> None:
         session.commit()
         logger.info(
             "Extracted %d pages, %d chars for version %s (needs_ocr=%s)",
-            len(pages), total_chars, version_id, version.needs_ocr,
+            len(pages),
+            total_chars,
+            version_id,
+            version.needs_ocr,
         )
     finally:
         session.close()
