@@ -3,13 +3,14 @@
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
-from harbor_clerk.models import Chunk, Document
+from harbor_clerk.models import Chunk, Document, DocumentVersion
 
 logger = logging.getLogger(__name__)
 
@@ -76,15 +77,40 @@ async def hybrid_search(
     doc_id: uuid.UUID | None = None,
     version_id: uuid.UUID | None = None,
     offset: int = 0,
+    *,
+    doc_ids: list[uuid.UUID] | None = None,
+    after: datetime | None = None,
+    before: datetime | None = None,
+    language: str | None = None,
+    mime_type: str | None = None,
 ) -> SearchResult:
     """Run hybrid FTS + vector search, merge scores, return top K."""
+
+    if doc_id is not None and doc_ids is not None:
+        raise ValueError("Cannot specify both doc_id and doc_ids")
 
     # --- Scope filters ---
     scope_filters = []
     if doc_id is not None:
         scope_filters.append(Chunk.doc_id == doc_id)
+    if doc_ids is not None:
+        scope_filters.append(Chunk.doc_id.in_(doc_ids))
     if version_id is not None:
         scope_filters.append(Chunk.version_id == version_id)
+    if language is not None:
+        scope_filters.append(Chunk.language == language)
+
+    # Version-level filters → subquery on version_ids
+    version_conditions = []
+    if after is not None:
+        version_conditions.append(DocumentVersion.created_at >= after)
+    if before is not None:
+        version_conditions.append(DocumentVersion.created_at < before)
+    if mime_type is not None:
+        version_conditions.append(DocumentVersion.mime_type == mime_type)
+    if version_conditions:
+        version_subq = select(DocumentVersion.version_id).where(*version_conditions)
+        scope_filters.append(Chunk.version_id.in_(version_subq))
 
     # Dynamic candidate limit: pull enough candidates for k + offset
     candidate_limit = max(30, k + offset + 20)
@@ -170,7 +196,7 @@ async def hybrid_search(
     # --- 5. Top K with offset ---
     total_candidates = len(combined)
     sorted_ids = sorted(combined, key=lambda cid: combined[cid], reverse=True)
-    sorted_ids = sorted_ids[offset:offset + k]
+    sorted_ids = sorted_ids[offset : offset + k]
 
     hits: list[SearchHit] = []
     for cid in sorted_ids:
@@ -178,20 +204,22 @@ async def hybrid_search(
         if chunk is None:
             continue
         doc = docs_by_id.get(chunk.doc_id)
-        hits.append(SearchHit(
-            chunk_id=str(cid),
-            doc_id=str(chunk.doc_id),
-            version_id=str(chunk.version_id),
-            chunk_num=chunk.chunk_num,
-            chunk_text=chunk.chunk_text,
-            page_start=chunk.page_start,
-            page_end=chunk.page_end,
-            language=chunk.language,
-            ocr_used=chunk.ocr_used,
-            ocr_confidence=chunk.ocr_confidence,
-            score=round(combined[cid], 4),
-            doc_title=doc.title if doc else None,
-        ))
+        hits.append(
+            SearchHit(
+                chunk_id=str(cid),
+                doc_id=str(chunk.doc_id),
+                version_id=str(chunk.version_id),
+                chunk_num=chunk.chunk_num,
+                chunk_text=chunk.chunk_text,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                language=chunk.language,
+                ocr_used=chunk.ocr_used,
+                ocr_confidence=chunk.ocr_confidence,
+                score=round(combined[cid], 4),
+                doc_title=doc.title if doc else None,
+            )
+        )
 
     # --- 6. Conflict detection ---
     possible_conflict = False
@@ -206,11 +234,13 @@ async def hybrid_search(
             possible_conflict = True
             for doc_id_str, version_id_str in unique_sources:
                 doc = docs_by_id.get(uuid.UUID(doc_id_str))
-                conflict_sources.append(ConflictSource(
-                    doc_id=doc_id_str,
-                    version_id=version_id_str,
-                    title=doc.title if doc else "Unknown",
-                ))
+                conflict_sources.append(
+                    ConflictSource(
+                        doc_id=doc_id_str,
+                        version_id=version_id_str,
+                        title=doc.title if doc else "Unknown",
+                    )
+                )
 
     return SearchResult(
         hits=hits,

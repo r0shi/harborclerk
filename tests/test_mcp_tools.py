@@ -17,7 +17,9 @@ from harbor_clerk.mcp_server import (
     kb_get_document,
     kb_list_recent,
     kb_read_passages,
+    kb_search,
 )
+from harbor_clerk.search import SearchHit, SearchResult
 
 
 # ---------------------------------------------------------------------------
@@ -353,3 +355,211 @@ async def test_corpus_overview_empty(
     assert result["document_count"] == 0
     assert result["total_chunks"] == 0
     assert result["documents"] == []
+
+
+# ---------------------------------------------------------------------------
+# kb_search — filter and faceted tests (mock hybrid_search)
+# ---------------------------------------------------------------------------
+
+
+def _make_hit(
+    doc_id="d1", doc_title="Doc 1", chunk_id=None, score=1.0, language="english"
+):
+    """Helper to build a SearchHit."""
+    return SearchHit(
+        chunk_id=chunk_id or str(uuid.uuid4()),
+        doc_id=doc_id,
+        version_id=str(uuid.uuid4()),
+        chunk_num=0,
+        chunk_text="some text",
+        page_start=1,
+        page_end=1,
+        language=language,
+        ocr_used=False,
+        ocr_confidence=None,
+        score=score,
+        doc_title=doc_title,
+    )
+
+
+@pytest.fixture
+def mock_hybrid_search(monkeypatch):
+    """Provide a mock for hybrid_search that captures kwargs and returns configurable results."""
+    captured = {}
+    result_override = SearchResult(hits=[], total_candidates=0)
+
+    async def _mock(
+        session,
+        query,
+        *,
+        k=10,
+        doc_id=None,
+        version_id=None,
+        offset=0,
+        doc_ids=None,
+        after=None,
+        before=None,
+        language=None,
+        mime_type=None,
+    ):
+        captured.update(
+            query=query,
+            k=k,
+            doc_id=doc_id,
+            version_id=version_id,
+            offset=offset,
+            doc_ids=doc_ids,
+            after=after,
+            before=before,
+            language=language,
+            mime_type=mime_type,
+        )
+        return result_override
+
+    monkeypatch.setattr("harbor_clerk.mcp_server.hybrid_search", _mock)
+    return captured, result_override
+
+
+def _set_result(result_obj, hits, total=None):
+    """Mutate the result_override in-place."""
+    result_obj.hits = hits
+    result_obj.total_candidates = total if total is not None else len(hits)
+
+
+async def test_kb_search_doc_ids_filter(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search,
+):
+    """doc_ids are parsed and passed through."""
+    captured, result = mock_hybrid_search
+    d1 = str(uuid.uuid4())
+    d2 = str(uuid.uuid4())
+    await kb_search("test", doc_ids=[d1, d2])
+    assert captured["doc_ids"] == [uuid.UUID(d1), uuid.UUID(d2)]
+
+
+async def test_kb_search_date_filters(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search,
+):
+    """ISO date strings are parsed to datetime objects."""
+    captured, result = mock_hybrid_search
+    await kb_search("test", after="2025-01-01T00:00:00+00:00", before="2025-12-31")
+    from datetime import datetime, timezone
+
+    assert captured["after"] == datetime(2025, 1, 1, tzinfo=timezone.utc)
+    assert captured["before"] == datetime(2025, 12, 31)
+
+
+async def test_kb_search_language_filter(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search,
+):
+    """language is passed through to hybrid_search."""
+    captured, result = mock_hybrid_search
+    await kb_search("test", language="french")
+    assert captured["language"] == "french"
+
+
+async def test_kb_search_mime_type_filter(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search,
+):
+    """mime_type is passed through to hybrid_search."""
+    captured, result = mock_hybrid_search
+    await kb_search("test", mime_type="application/pdf")
+    assert captured["mime_type"] == "application/pdf"
+
+
+async def test_kb_search_doc_id_doc_ids_mutual_exclusion(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Providing both doc_id and doc_ids returns error JSON."""
+    raw = await kb_search("test", doc_id=str(uuid.uuid4()), doc_ids=[str(uuid.uuid4())])
+    result = json.loads(raw)
+    assert "error" in result
+    assert "both" in result["error"].lower()
+
+
+async def test_kb_search_invalid_date(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Invalid ISO date returns error JSON."""
+    raw = await kb_search("test", after="not-a-date")
+    result = json.loads(raw)
+    assert "error" in result
+    assert "after" in result["error"]
+
+
+async def test_kb_search_faceted_output(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search,
+):
+    """faceted=True groups hits by doc_id with top_score and hit_count."""
+    captured, result_obj = mock_hybrid_search
+    d1 = str(uuid.uuid4())
+    d2 = str(uuid.uuid4())
+    _set_result(
+        result_obj,
+        [
+            _make_hit(doc_id=d1, doc_title="Doc A", score=0.9),
+            _make_hit(doc_id=d1, doc_title="Doc A", score=0.7),
+            _make_hit(doc_id=d2, doc_title="Doc B", score=0.8),
+        ],
+        total=3,
+    )
+
+    raw = await kb_search("test", faceted=True)
+    result = json.loads(raw)
+
+    assert "documents" in result
+    assert len(result["documents"]) == 2
+    # Sorted by top_score desc → d1 first (0.9)
+    assert result["documents"][0]["doc_id"] == d1
+    assert result["documents"][0]["top_score"] == 0.9
+    assert result["documents"][0]["hit_count"] == 2
+    assert result["documents"][1]["doc_id"] == d2
+    assert result["documents"][1]["top_score"] == 0.8
+    assert result["documents"][1]["hit_count"] == 1
+
+
+async def test_kb_search_faceted_detail_modes(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search,
+):
+    """faceted output respects detail modes (brief truncates text)."""
+    captured, result_obj = mock_hybrid_search
+    hit = _make_hit(doc_id=str(uuid.uuid4()), score=1.0)
+    hit.chunk_text = "x" * 500
+    _set_result(result_obj, [hit])
+
+    raw = await kb_search("test", faceted=True, detail="brief", brief_chars=50)
+    result = json.loads(raw)
+
+    doc = result["documents"][0]
+    text = doc["hits"][0]["text"]
+    assert len(text) <= 51  # 50 chars + ellipsis

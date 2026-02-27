@@ -32,6 +32,7 @@ _search_stats = {
     "max_k": 0,
     "cap_hits": 0,
     "pagination_calls": 0,
+    "faceted_calls": 0,
     "detail_full": 0,
     "detail_brief": 0,
     "detail_compact": 0,
@@ -158,11 +159,25 @@ async def kb_search(
     detail: str = "full",
     brief_chars: int = 0,
     doc_id: str | None = None,
+    doc_ids: list[str] | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    language: str | None = None,
+    mime_type: str | None = None,
+    faceted: bool = False,
 ) -> str:
     """Search the knowledge base with hybrid FTS + vector search.
 
     Returns ranked chunks with citations (page numbers, scores).
     Use this as the primary tool to find information.
+
+    Filters (all optional):
+      doc_id: restrict to a single document (mutually exclusive with doc_ids)
+      doc_ids: restrict to multiple documents (list of UUIDs, max 50)
+      after: only versions created at or after this ISO datetime
+      before: only versions created before this ISO datetime
+      language: chunk language filter ("english" or "french")
+      mime_type: version MIME type filter (e.g. "application/pdf")
 
     detail levels control how much text is returned per hit:
       "full" (default): complete chunk text — best for reading a small
@@ -175,12 +190,45 @@ async def kb_search(
         understand score distribution and document coverage before
         narrowing down
 
+    faceted: if true, groups hits by document with per-document top_score
+      and hit_count — useful for understanding which documents are most
+      relevant at a glance
+
     Pagination: use offset to page through results. Check has_more
     in the response to know if more results exist beyond your window.
     """
     _get_principal()
     settings = get_settings()
+
+    # Mutual exclusion check
+    if doc_id is not None and doc_ids is not None:
+        return json.dumps({"error": "Cannot specify both doc_id and doc_ids"})
+
     did = uuid.UUID(doc_id) if doc_id else None
+
+    # Parse doc_ids
+    parsed_doc_ids = None
+    if doc_ids is not None:
+        if len(doc_ids) > 50:
+            return json.dumps({"error": "doc_ids limited to 50 entries"})
+        try:
+            parsed_doc_ids = [uuid.UUID(d) for d in doc_ids]
+        except ValueError:
+            return json.dumps({"error": "Invalid UUID in doc_ids"})
+
+    # Parse dates
+    parsed_after = None
+    parsed_before = None
+    if after is not None:
+        try:
+            parsed_after = datetime.fromisoformat(after)
+        except ValueError:
+            return json.dumps({"error": f"Invalid ISO datetime for after: {after}"})
+    if before is not None:
+        try:
+            parsed_before = datetime.fromisoformat(before)
+        except ValueError:
+            return json.dumps({"error": f"Invalid ISO datetime for before: {before}"})
 
     # Clamp parameters
     k = max(1, min(k, settings.mcp_max_k))
@@ -189,7 +237,18 @@ async def kb_search(
         detail = "full"
 
     async with async_session_factory() as session:
-        result = await hybrid_search(session, query, k=k, doc_id=did, offset=offset)
+        result = await hybrid_search(
+            session,
+            query,
+            k=k,
+            doc_id=did,
+            offset=offset,
+            doc_ids=parsed_doc_ids,
+            after=parsed_after,
+            before=parsed_before,
+            language=language,
+            mime_type=mime_type,
+        )
 
     # Resolve brief_chars for brief mode
     effective_brief_chars = brief_chars if brief_chars > 0 else settings.mcp_brief_chars
@@ -222,17 +281,42 @@ async def kb_search(
         # compact: no text field
         hits.append(hit)
 
-    resp: dict = {
-        "hits": hits,
-        "total_candidates": result.total_candidates,
-        "has_more": offset + k < result.total_candidates,
-    }
-    if result.possible_conflict:
-        resp["possible_conflict"] = True
-        resp["conflict_sources"] = [
-            {"doc_id": cs.doc_id, "version_id": cs.version_id, "title": cs.title}
-            for cs in result.conflict_sources
-        ]
+    has_more = offset + k < result.total_candidates
+
+    if faceted:
+        # Group hits by doc_id
+        groups: dict[str, list[dict]] = {}
+        for h in hits:
+            groups.setdefault(h["doc_id"], []).append(h)
+        doc_groups = []
+        for did_str, group_hits in groups.items():
+            doc_groups.append(
+                {
+                    "doc_id": did_str,
+                    "doc_title": group_hits[0].get("doc_title"),
+                    "top_score": max(h["score"] for h in group_hits),
+                    "hit_count": len(group_hits),
+                    "hits": group_hits,
+                }
+            )
+        doc_groups.sort(key=lambda g: g["top_score"], reverse=True)
+        resp: dict = {
+            "documents": doc_groups,
+            "total_candidates": result.total_candidates,
+            "has_more": has_more,
+        }
+    else:
+        resp = {
+            "hits": hits,
+            "total_candidates": result.total_candidates,
+            "has_more": has_more,
+        }
+        if result.possible_conflict:
+            resp["possible_conflict"] = True
+            resp["conflict_sources"] = [
+                {"doc_id": cs.doc_id, "version_id": cs.version_id, "title": cs.title}
+                for cs in result.conflict_sources
+            ]
 
     # Runtime stats
     _search_stats["calls"] += 1
@@ -242,6 +326,8 @@ async def kb_search(
         _search_stats["cap_hits"] += 1
     if offset > 0:
         _search_stats["pagination_calls"] += 1
+    if faceted:
+        _search_stats["faceted_calls"] += 1
     _search_stats[f"detail_{detail}"] += 1
 
     if _search_stats["calls"] % _STATS_LOG_INTERVAL == 0:
