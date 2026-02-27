@@ -329,6 +329,73 @@ async def kb_read_passages(
     return json.dumps({"passages": passages}, indent=2)
 
 
+
+@mcp.tool()
+async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
+    """Expand context around a chunk — returns the target plus up to N chunks
+    before and after from the same document version, in order.
+
+    Use after kb_search or kb_read_passages when you need more surrounding
+    text. The target chunk is marked with "is_target": true.
+    """
+    _get_principal()
+    n = max(1, min(n, 10))
+    target_id = uuid.UUID(chunk_id)
+
+    async with async_session_factory() as session:
+        target = (
+            await session.execute(
+                select(Chunk).where(Chunk.chunk_id == target_id)
+            )
+        ).scalar_one_or_none()
+        if target is None:
+            return json.dumps({"error": "Chunk not found"})
+
+        result = await session.execute(
+            select(Chunk)
+            .where(
+                Chunk.version_id == target.version_id,
+                Chunk.chunk_num.between(target.chunk_num - n, target.chunk_num + n),
+            )
+            .order_by(Chunk.chunk_num)
+        )
+        neighbours = result.scalars().all()
+
+        doc = (
+            await session.execute(
+                select(Document).where(Document.doc_id == target.doc_id)
+            )
+        ).scalar_one_or_none()
+
+        chunks = []
+        for c in neighbours:
+            entry: dict = {
+                "chunk_id": str(c.chunk_id),
+                "chunk_num": c.chunk_num,
+                "text": c.chunk_text,
+                "language": c.language,
+            }
+            if c.page_start is not None:
+                entry["pages"] = (
+                    f"{c.page_start}-{c.page_end}"
+                    if c.page_end != c.page_start
+                    else str(c.page_start)
+                )
+            if c.chunk_id == target_id:
+                entry["is_target"] = True
+            chunks.append(entry)
+
+    return json.dumps(
+        {
+            "doc_id": str(target.doc_id),
+            "doc_title": doc.title if doc else None,
+            "version_id": str(target.version_id),
+            "target_chunk_num": target.chunk_num,
+            "chunks": chunks,
+        },
+        indent=2,
+    )
+
 @mcp.tool()
 async def kb_get_document(doc_id: str) -> str:
     """Get document details including all versions and their status."""
