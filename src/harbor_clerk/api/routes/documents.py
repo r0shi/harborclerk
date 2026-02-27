@@ -280,7 +280,7 @@ async def get_document_outline(
             status_code=status.HTTP_404_NOT_FOUND, detail="No versions available"
         )
 
-    # Fetch headings, page count, chunk count in parallel queries
+    # Fetch headings, page count, chunk count
     headings_result = await session.execute(
         select(DocumentHeading)
         .where(DocumentHeading.version_id == version_id)

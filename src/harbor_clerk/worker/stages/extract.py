@@ -125,7 +125,10 @@ def _extract_headings_via_tika(
         if not raw_headings:
             return []
 
-        # Build cumulative char offsets per page for position→page mapping
+        # Build cumulative char offsets per page for position→page mapping.
+        # NOTE: Heading positions come from XHTML text nodes, page offsets
+        # come from plain-text output. This is a heuristic mapping and may
+        # be off near page boundaries.
         cum_offsets: list[tuple[int, int, int]] = []  # (start, end, page_num)
         offset = 0
         for page_num, text in pages:

@@ -748,7 +748,7 @@ async def kb_document_outline(doc_id: str) -> str:
         result = await session.execute(
             select(Document)
             .options(selectinload(Document.versions))
-            .where(Document.doc_id == did)
+            .where(Document.doc_id == did, Document.status == "active")
         )
         doc = result.scalar_one_or_none()
         if doc is None:
