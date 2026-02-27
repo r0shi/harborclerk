@@ -35,8 +35,9 @@
 - Store in document_pages or new table
 
 ### 6. Corpus Overview
-- New `kb_corpus_overview` tool: document count, total chunks, language distribution, topic clusters
-- Precomputed stats vs live query TBD
+- Enhance existing `kb_corpus_overview` tool with aggregate stats: language distribution, mime type breakdown, total pages, date range
+- Live queries (no precomputation needed at single-tenant scale)
+- REST endpoint mirror
 
 ### 7. Cross-Document Similarity
 - New `kb_find_related` tool: given doc/chunk ID, find nearest neighbors
@@ -62,9 +63,26 @@
 | 1 | Adjustable K + Pagination | **Done** |
 | 2 | Document Summaries | **Done** |
 | 3 | Context Expansion | **Done** |
-| 4 | Scoped/Filtered Search | Not started |
-| 5 | Document Outline | Not started |
+| 4 | Scoped/Filtered Search | **Done** |
+| 5 | Document Outline | **Done** |
 | 6 | Corpus Overview | Partial (basic tool added in Feature 2) |
 | 7 | Cross-Document Similarity | Not started |
 | 8 | Entity Extraction | Not started |
 | 9 | Auto-Inject RAG | Not started |
+
+---
+
+## Future Improvements
+
+### Topic Clustering for Multi-Project Navigation
+
+When Harbor Clerk gains multiple datasets/projects within a single tenant (project switching, not multi-tenancy), corpus overview becomes the **project-switching UI** — the agent needs to quickly understand "what's in Project A vs Project B."
+
+The natural zoom hierarchy would be:
+- **Corpus overview** → list projects (name, doc count, summary)
+- **Project overview** → list documents (title, summary, mime type)
+- **Document outline** → headings, pages, chunks
+
+Per-project aggregate stats (language distribution, mime type breakdown) already serve much of this need. True embedding-based topic clustering (k-means on averaged doc embeddings, label extraction) would only add value when a single project has 100+ diverse documents where stats alone don't convey the content mix.
+
+**Decision:** Defer topic clustering. The aggregate stats from Feature 6 are exactly what would be scoped per-project later. Topic clustering is an optional enhancement for large, diverse corpora — not an architectural prerequisite.
