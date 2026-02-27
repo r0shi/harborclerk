@@ -16,6 +16,8 @@ from harbor_clerk.models import (
     ApiKey,
     Chunk,
     Document,
+    DocumentHeading,
+    DocumentPage,
     DocumentVersion,
     IngestionJob,
 )
@@ -728,6 +730,74 @@ async def kb_reprocess(doc_id: str) -> str:
             "version_id": str(vid),
             "status": "reprocessing",
         }
+    )
+
+
+@mcp.tool()
+async def kb_document_outline(doc_id: str) -> str:
+    """Get the heading outline/structure of a document, including page and chunk counts.
+
+    Returns the heading hierarchy (h1-h6), total page count, and total chunk count
+    for the latest version of the document. Useful for understanding document structure
+    before reading specific sections.
+    """
+    _get_principal()
+    did = uuid.UUID(doc_id)
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Document)
+            .options(selectinload(Document.versions))
+            .where(Document.doc_id == did)
+        )
+        doc = result.scalar_one_or_none()
+        if doc is None:
+            return json.dumps({"error": "Document not found"})
+
+        vid = doc.latest_version_id
+        if vid is None and doc.versions:
+            vid = doc.versions[-1].version_id
+        if vid is None:
+            return json.dumps({"error": "No versions available"})
+
+        headings_result = await session.execute(
+            select(DocumentHeading)
+            .where(DocumentHeading.version_id == vid)
+            .order_by(DocumentHeading.position)
+        )
+        headings = headings_result.scalars().all()
+
+        page_count = (
+            await session.execute(
+                select(func.count())
+                .select_from(DocumentPage)
+                .where(DocumentPage.version_id == vid)
+            )
+        ).scalar_one()
+
+        chunk_count = (
+            await session.execute(
+                select(func.count()).select_from(Chunk).where(Chunk.version_id == vid)
+            )
+        ).scalar_one()
+
+    return json.dumps(
+        {
+            "doc_id": str(doc.doc_id),
+            "version_id": str(vid),
+            "title": doc.title,
+            "page_count": page_count,
+            "chunk_count": chunk_count,
+            "headings": [
+                {
+                    "level": h.level,
+                    "title": h.title,
+                    "page_num": h.page_num,
+                }
+                for h in headings
+            ],
+        },
+        indent=2,
     )
 
 

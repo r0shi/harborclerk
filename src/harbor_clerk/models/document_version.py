@@ -51,3 +51,7 @@ class DocumentVersion(Base):
         "DocumentPage",
         back_populates="version",
     )
+    headings = relationship(
+        "DocumentHeading",
+        back_populates="version",
+    )
