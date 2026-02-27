@@ -1,4 +1,4 @@
-"""MCP server — 7 tools for Claude to query the knowledge base."""
+"""MCP server — tools for Claude to query the knowledge base."""
 
 import contextvars
 import json
@@ -329,7 +329,6 @@ async def kb_read_passages(
     return json.dumps({"passages": passages}, indent=2)
 
 
-
 @mcp.tool()
 async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
     """Expand context around a chunk — returns the target plus up to N chunks
@@ -344,9 +343,7 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
 
     async with async_session_factory() as session:
         target = (
-            await session.execute(
-                select(Chunk).where(Chunk.chunk_id == target_id)
-            )
+            await session.execute(select(Chunk).where(Chunk.chunk_id == target_id))
         ).scalar_one_or_none()
         if target is None:
             return json.dumps({"error": "Chunk not found"})
@@ -395,6 +392,7 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
         },
         indent=2,
     )
+
 
 @mcp.tool()
 async def kb_get_document(doc_id: str) -> str:
