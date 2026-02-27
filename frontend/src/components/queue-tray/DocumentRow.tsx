@@ -1,8 +1,6 @@
 import { useState } from 'react'
 import { stageLabel } from '../../utils/stageLabel'
-import type { DocumentQueueItem } from '../../hooks/useQueueTray'
-
-const PIPELINE_STAGES = ['extract', 'ocr', 'chunk', 'embed', 'summarize', 'finalize']
+import { PIPELINE_STAGES, type DocumentQueueItem } from '../../hooks/useQueueTray'
 
 interface DocumentRowProps {
   item: DocumentQueueItem

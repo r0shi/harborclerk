@@ -34,7 +34,7 @@ const HISTORY_CAP = 20
 const HISTORY_TTL = 3_600_000 // 1 hour
 const TOAST_DURATION = 4_000 // 4s
 const TOAST_DEBOUNCE = 500 // ms
-const PIPELINE_STAGES = ['extract', 'ocr', 'chunk', 'embed', 'summarize', 'finalize']
+export const PIPELINE_STAGES = ['extract', 'ocr', 'chunk', 'embed', 'summarize', 'finalize']
 
 function computeOverallProgress(stages: Map<string, StageState>): number {
   // Filter out skipped stages
@@ -86,6 +86,9 @@ export function useQueueTray() {
   const trayStateRef = useRef(trayState)
   trayStateRef.current = trayState
 
+  const activeItemsRef = useRef(activeItems)
+  activeItemsRef.current = activeItems
+
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const lastToastRef = useRef(0)
   const purgeTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
@@ -127,59 +130,56 @@ export function useQueueTray() {
 
       // Handle finalize done -> move to completed
       if (stage === 'finalize' && status === 'done') {
+        const existing = activeItemsRef.current.get(vid)
+        const filename = event.filename || existing?.filename || vid
+
+        const entry: CompletedItem = {
+          version_id: vid,
+          doc_id: event.doc_id,
+          filename,
+          status: 'done',
+          page_count: event.page_count,
+          chunk_count: event.chunk_count,
+          finished_at: Date.now(),
+        }
+
         setActiveItems((prev) => {
           const next = new Map(prev)
-          const item = next.get(vid)
-          const filename = event.filename || item?.filename || vid
-
-          // Build completed entry
-          const entry: CompletedItem = {
-            version_id: vid,
-            doc_id: event.doc_id,
-            filename,
-            status: 'done',
-            page_count: event.page_count,
-            chunk_count: event.chunk_count,
-            finished_at: Date.now(),
-          }
-
-          setCompleted((prev) => {
-            const filtered = prev.filter((c) => c.version_id !== vid)
-            return [entry, ...filtered].slice(0, HISTORY_CAP)
-          })
-          schedulePurge(vid)
-
           next.delete(vid)
           return next
         })
+        setCompleted((prev) => {
+          const filtered = prev.filter((c) => c.version_id !== vid)
+          return [entry, ...filtered].slice(0, HISTORY_CAP)
+        })
+        schedulePurge(vid)
         triggerToast()
         return
       }
 
       // Handle error -> move to completed
       if (status === 'error') {
+        const existing = activeItemsRef.current.get(vid)
+        const filename = event.filename || existing?.filename || vid
+
+        const entry: CompletedItem = {
+          version_id: vid,
+          filename,
+          status: 'error',
+          error_stage: stage,
+          finished_at: Date.now(),
+        }
+
         setActiveItems((prev) => {
           const next = new Map(prev)
-          const item = next.get(vid)
-          const filename = event.filename || item?.filename || vid
-
-          const entry: CompletedItem = {
-            version_id: vid,
-            filename,
-            status: 'error',
-            error_stage: stage,
-            finished_at: Date.now(),
-          }
-
-          setCompleted((prev) => {
-            const filtered = prev.filter((c) => c.version_id !== vid)
-            return [entry, ...filtered].slice(0, HISTORY_CAP)
-          })
-          schedulePurge(vid)
-
           next.delete(vid)
           return next
         })
+        setCompleted((prev) => {
+          const filtered = prev.filter((c) => c.version_id !== vid)
+          return [entry, ...filtered].slice(0, HISTORY_CAP)
+        })
+        schedulePurge(vid)
         triggerToast()
         return
       }

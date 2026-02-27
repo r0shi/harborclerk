@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { stageLabel } from '../../utils/stageLabel'
 import type { CompletedItem } from '../../hooks/useQueueTray'
@@ -7,6 +8,12 @@ interface CompletedRowProps {
 }
 
 export default function CompletedRow({ item }: CompletedRowProps) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => tick((n) => n + 1), 30_000)
+    return () => clearInterval(id)
+  }, [])
+
   const isError = item.status === 'error'
 
   return (
@@ -90,5 +97,6 @@ function formatAge(timestamp: number): string {
   const seconds = Math.round((Date.now() - timestamp) / 1000)
   if (seconds < 5) return 'now'
   if (seconds < 60) return `${seconds}s ago`
-  return `${Math.round(seconds / 60)}m ago`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`
+  return '1h ago'
 }

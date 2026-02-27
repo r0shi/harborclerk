@@ -292,16 +292,6 @@
   transform: rotate(180deg);
 }
 
-.queue-completed-exit {
-  animation: completedFadeOut 0.3s ease-out forwards;
-}
-@keyframes completedFadeOut {
-  to {
-    opacity: 0;
-    transform: translateX(-8px);
-  }
-}
-
 /* Tool call card */
 .tool-call-card {
   animation: toolCallAppear 0.2s ease-out;
