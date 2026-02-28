@@ -86,7 +86,9 @@ async def get_conversation(
 ):
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+        )
 
     msgs_result = await session.execute(
         select(ChatMessage)
@@ -100,6 +102,7 @@ async def get_conversation(
             content=m.content,
             tool_calls=m.tool_calls,
             tool_call_id=m.tool_call_id,
+            rag_context=m.rag_context,
             tokens_used=m.tokens_used,
             created_at=m.created_at,
         )
@@ -123,7 +126,9 @@ async def delete_conversation(
 ):
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+        )
     await session.delete(conv)
     await session.commit()
 
@@ -137,7 +142,9 @@ async def send_message(
 ):
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
+        )
 
     settings = get_settings()
     if not settings.llm_model_id:
@@ -193,7 +200,9 @@ async def start_model_download(
 
     info = get_model(model_id)
     if info is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model"
+        )
 
     if get_model_path(model_id) is not None:
         return {"status": "already_downloaded"}
@@ -219,7 +228,9 @@ async def activate_model(
     principal: Principal = Depends(require_admin),
 ):
     if get_model_path(model_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded"
+        )
     settings = get_settings()
     settings.llm_model_id = model_id
     sync_native_config("llm_model_id", model_id)
@@ -242,7 +253,10 @@ async def remove_model(
     principal: Principal = Depends(require_admin),
 ):
     if not delete_model(model_id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not found or not downloaded")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model not found or not downloaded",
+        )
 
     # If this was the active model, clear it
     settings = get_settings()
