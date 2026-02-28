@@ -191,7 +191,7 @@ export default function UploadPage() {
     [unconfirmedPending],
   )
 
-  const CONFIRM_BATCH_SIZE = 50
+  const CONFIRM_BATCH_SIZE = 20
 
   async function batchConfirm(items: PendingFile[]) {
     setConfirming(true)

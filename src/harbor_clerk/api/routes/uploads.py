@@ -404,8 +404,13 @@ async def confirm_upload_batch(
 
     from harbor_clerk.worker.pipeline import enqueue_stage
 
-    for vid in version_ids_to_enqueue:
-        enqueue_stage(vid, JobStage.extract)
+    loop = asyncio.get_running_loop()
+
+    def _enqueue_all():
+        for vid in version_ids_to_enqueue:
+            enqueue_stage(vid, JobStage.extract)
+
+    await loop.run_in_executor(None, _enqueue_all)
 
     return BatchConfirmResponse(results=results)
 

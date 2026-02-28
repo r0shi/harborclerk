@@ -26,8 +26,9 @@ def get_sync_engine():
         _engine = create_engine(
             _make_sync_url(settings.database_url),
             echo=False,
-            pool_size=3,
-            max_overflow=5,
+            pool_size=8,
+            max_overflow=12,
+            pool_pre_ping=True,
         )
     return _engine
 
