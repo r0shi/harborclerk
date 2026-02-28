@@ -68,7 +68,7 @@
 | 6 | Corpus Overview | **Done** |
 | 7 | Cross-Document Similarity | **Done** |
 | 8 | Entity Extraction | **Done** |
-| 9 | Auto-Inject RAG | Not started |
+| 9 | Auto-Inject RAG | **Done** |
 
 ---
 
