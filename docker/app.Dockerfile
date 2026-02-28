@@ -24,6 +24,10 @@ COPY . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-editable
 
+# Download spaCy NER models
+RUN /app/.venv/bin/python -m spacy download en_core_web_sm \
+    && /app/.venv/bin/python -m spacy download fr_core_news_sm
+
 # ── Runtime ──
 FROM python:3.12-slim
 

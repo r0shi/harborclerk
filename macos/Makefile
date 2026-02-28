@@ -13,9 +13,9 @@
 SCRIPTS := scripts
 BUILD   := build
 
-.PHONY: all deps postgres tika tools venv model llama frontend dev test apps sign clean
+.PHONY: all deps postgres tika tools venv spacy-models model llama frontend dev test apps sign clean
 
-all: deps venv model llama apps
+all: deps venv spacy-models model llama apps
 
 # ── Dependencies ──
 
@@ -39,6 +39,12 @@ venv:
 	@echo "==> Building Python + venv"
 	DEST_DIR=$(BUILD) PROJECT_ROOT=$(shell cd .. && pwd) bash $(SCRIPTS)/build-venv.sh
 	git -C $(shell cd .. && pwd) rev-parse --short HEAD > $(BUILD)/venv/build-hash.txt
+
+# ── spaCy NER models ──
+
+spacy-models: venv
+	@echo "==> Downloading spaCy NER models"
+	VENV_DIR=$(BUILD)/venv bash $(SCRIPTS)/download-spacy-models.sh
 
 # ── Model ──
 # DEST_DIR must match the path in EmbedderService.swift ("model/<name>")

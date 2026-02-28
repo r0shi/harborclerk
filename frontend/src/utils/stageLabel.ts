@@ -6,6 +6,8 @@ export function stageLabel(stage: string): string {
       return 'OCR processing'
     case 'chunk':
       return 'Chunking'
+    case 'entities':
+      return 'Extracting entities'
     case 'embed':
       return 'Embedding'
     case 'summarize':

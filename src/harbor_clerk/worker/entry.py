@@ -29,7 +29,13 @@ from harbor_clerk.worker.stages import STAGE_FUNCTIONS
 logger = logging.getLogger(__name__)
 
 QUEUE_STAGES: dict[str, list[JobStage]] = {
-    "io": [JobStage.extract, JobStage.chunk, JobStage.summarize, JobStage.finalize],
+    "io": [
+        JobStage.extract,
+        JobStage.chunk,
+        JobStage.entities,
+        JobStage.summarize,
+        JobStage.finalize,
+    ],
     "cpu": [JobStage.ocr, JobStage.embed],
 }
 

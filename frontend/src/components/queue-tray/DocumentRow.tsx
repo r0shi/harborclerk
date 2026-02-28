@@ -93,7 +93,7 @@ export default function DocumentRow({ item }: DocumentRowProps) {
               const status = state?.status || 'queued'
               return (
                 <div key={stage} className="flex items-center gap-1.5 text-xs">
-                  <StageIcon status={status} />
+                  <StageIcon status={status} stage={stage} />
                   <span
                     className={
                       status === 'skipped'
@@ -120,7 +120,7 @@ export default function DocumentRow({ item }: DocumentRowProps) {
   )
 }
 
-function StageIcon({ status }: { status: string }) {
+function StageIcon({ status, stage }: { status: string; stage?: string }) {
   switch (status) {
     case 'done':
       return <span className="text-green-500 font-medium leading-none">&check;</span>
@@ -129,6 +129,8 @@ function StageIcon({ status }: { status: string }) {
     case 'error':
       return <span className="text-red-500 font-medium leading-none">&times;</span>
     case 'skipped':
+      if (stage === 'entities')
+        return <span className="text-amber-500 leading-none" title="NER not available">&#9888;</span>
       return <span className="text-[var(--color-text-secondary)] leading-none">&ndash;</span>
     default:
       return <span className="text-[var(--color-text-secondary)] leading-none">&#9675;</span>
@@ -143,6 +145,8 @@ function stageName(stage: string): string {
       return 'OCR'
     case 'chunk':
       return 'Chunk'
+    case 'entities':
+      return 'Entities'
     case 'embed':
       return 'Embed'
     case 'summarize':

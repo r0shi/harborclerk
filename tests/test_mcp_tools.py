@@ -14,12 +14,15 @@ from harbor_clerk.models import (
     DocumentHeading,
     DocumentPage,
     DocumentVersion,
+    Entity,
 )
 from harbor_clerk.models.enums import VersionStatus
 from harbor_clerk.mcp_server import (
     _mcp_principal,
     kb_corpus_overview,
     kb_document_outline,
+    kb_entity_overview,
+    kb_entity_search,
     kb_expand_context,
     kb_find_related,
     kb_get_document,
@@ -804,3 +807,120 @@ async def test_document_outline_no_headings(
     assert result["headings"] == []
     assert result["page_count"] == 3
     assert result["chunk_count"] == 5
+
+
+# ---------------------------------------------------------------------------
+# kb_entity_search & kb_entity_overview
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def sample_entities(db_session: AsyncSession, sample_doc, sample_chunks):
+    """Create entities for the sample document's chunks."""
+    doc, version = sample_doc
+    chunks = sample_chunks
+    entities = []
+    entity_data = [
+        (chunks[0], "John Smith", "PERSON", 0, 10),
+        (chunks[0], "Acme Corp", "ORG", 15, 24),
+        (chunks[1], "John Smith", "PERSON", 5, 15),
+        (chunks[1], "New York", "GPE", 20, 28),
+        (chunks[2], "Paris", "GPE", 0, 5),
+    ]
+    for chunk, text, etype, start, end in entity_data:
+        e = Entity(
+            version_id=version.version_id,
+            chunk_id=chunk.chunk_id,
+            doc_id=doc.doc_id,
+            entity_text=text,
+            entity_type=etype,
+            start_char=start,
+            end_char=end,
+        )
+        db_session.add(e)
+        entities.append(e)
+    await db_session.flush()
+    return entities
+
+
+async def test_entity_search_happy(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Search for entities by text substring."""
+    result = json.loads(await kb_entity_search("John"))
+    assert result["total"] >= 2
+    assert any(e["entity_text"] == "John Smith" for e in result["entities"])
+
+
+async def test_entity_search_by_type(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Filter entities by type."""
+    result = json.loads(await kb_entity_search("", entity_type="PERSON"))
+    for e in result["entities"]:
+        assert e["entity_type"] == "PERSON"
+
+
+async def test_entity_search_deduplicated(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Deduplicate mode groups by entity_text+entity_type with counts."""
+    result = json.loads(await kb_entity_search("John", deduplicate=True))
+    assert result["total"] == 1  # one unique "John Smith" PERSON
+    assert result["entities"][0]["mention_count"] == 2
+
+
+async def test_entity_overview_happy(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Entity overview returns type distribution and top entities."""
+    result = json.loads(await kb_entity_overview())
+    assert result["total_entities"] == 5
+    assert result["unique_entities"] == 4  # John Smith, Acme Corp, New York, Paris
+    assert "PERSON" in result["type_distribution"]
+    assert "GPE" in result["type_distribution"]
+    assert len(result["top_entities"]) > 0
+    # John Smith has 2 mentions, should be at or near top
+    john = next(
+        (e for e in result["top_entities"] if e["entity_text"] == "John Smith"), None
+    )
+    assert john is not None
+    assert john["mention_count"] == 2
+
+
+async def test_entity_overview_empty(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Empty corpus returns zeros."""
+    result = json.loads(await kb_entity_overview())
+    assert result["total_entities"] == 0
+    assert result["unique_entities"] == 0
+    assert result["type_distribution"] == {}
+    assert result["top_entities"] == []

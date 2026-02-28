@@ -3,6 +3,7 @@
 import contextvars
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ from harbor_clerk.models import (
     DocumentHeading,
     DocumentPage,
     DocumentVersion,
+    Entity,
     IngestionJob,
 )
 from harbor_clerk.models.enums import JobStage, VersionStatus
@@ -970,6 +972,247 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
 
     return json.dumps(
         {"doc_id": doc_id, "related": items},
+        indent=2,
+    )
+
+
+@mcp.tool()
+async def kb_entity_search(
+    query: str,
+    entity_type: str | None = None,
+    doc_id: str | None = None,
+    deduplicate: bool = False,
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    """Search for named entities (people, organizations, places, etc.) in the corpus.
+
+    Args:
+        query: Substring search on entity text (case-insensitive).
+        entity_type: Filter by entity type (PERSON, ORG, GPE, LOC, DATE, etc.).
+        doc_id: Scope to a single document's latest version.
+        deduplicate: If true, group by entity_text+entity_type and return mention counts.
+        limit: Max results (1-100, default 20).
+        offset: Pagination offset.
+    """
+    _get_principal()
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    # Escape ILIKE metacharacters in query
+    escaped_query = re.sub(r"([%_\\])", r"\\\1", query)
+
+    async with async_session_factory() as session:
+        # Base filter: active docs, latest version
+        base_filter = [
+            Entity.entity_text.ilike(f"%{escaped_query}%"),
+        ]
+
+        if entity_type:
+            base_filter.append(Entity.entity_type == entity_type)
+
+        if doc_id:
+            did = uuid.UUID(doc_id)
+            # Scope to latest version of the document
+            doc = (
+                await session.execute(
+                    select(Document).where(
+                        Document.doc_id == did, Document.status == "active"
+                    )
+                )
+            ).scalar_one_or_none()
+            if doc is None:
+                return json.dumps({"error": "Document not found"})
+            if doc.latest_version_id:
+                base_filter.append(Entity.version_id == doc.latest_version_id)
+            else:
+                return json.dumps({"entities": [], "total": 0, "has_more": False})
+        else:
+            # Scope to active docs' latest versions
+            base_filter.append(
+                Entity.version_id.in_(
+                    select(Document.latest_version_id).where(
+                        Document.status == "active",
+                        Document.latest_version_id.isnot(None),
+                    )
+                )
+            )
+
+        if deduplicate:
+            count_q = (
+                select(
+                    Entity.entity_text,
+                    Entity.entity_type,
+                    func.count().label("mention_count"),
+                )
+                .where(*base_filter)
+                .group_by(Entity.entity_text, Entity.entity_type)
+            )
+            # Total
+            total_q = select(func.count()).select_from(count_q.subquery())
+            total = (await session.execute(total_q)).scalar() or 0
+
+            rows = (
+                await session.execute(
+                    count_q.order_by(func.count().desc()).offset(offset).limit(limit)
+                )
+            ).all()
+            entities = [
+                {
+                    "entity_text": r[0],
+                    "entity_type": r[1],
+                    "mention_count": r[2],
+                }
+                for r in rows
+            ]
+        else:
+            # Total count
+            total = (
+                await session.execute(
+                    select(func.count()).select_from(Entity).where(*base_filter)
+                )
+            ).scalar() or 0
+
+            rows = (
+                (
+                    await session.execute(
+                        select(Entity)
+                        .where(*base_filter)
+                        .order_by(Entity.entity_text)
+                        .offset(offset)
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            entities = [
+                {
+                    "entity_id": str(e.entity_id),
+                    "entity_text": e.entity_text,
+                    "entity_type": e.entity_type,
+                    "doc_id": str(e.doc_id),
+                    "chunk_id": str(e.chunk_id),
+                    "start_char": e.start_char,
+                    "end_char": e.end_char,
+                }
+                for e in rows
+            ]
+
+    return json.dumps(
+        {
+            "entities": entities,
+            "total": total,
+            "has_more": offset + limit < total,
+        },
+        indent=2,
+    )
+
+
+@mcp.tool()
+async def kb_entity_overview(doc_id: str | None = None) -> str:
+    """Get an overview of named entities in the corpus or a specific document.
+
+    Returns entity type distribution, total/unique counts, and top entities
+    by mention frequency. Useful for understanding what people, organizations,
+    and places appear in the knowledge base.
+
+    Args:
+        doc_id: Optional — scope to a single document's latest version.
+    """
+    _get_principal()
+
+    async with async_session_factory() as session:
+        # Build version filter
+        if doc_id:
+            did = uuid.UUID(doc_id)
+            doc = (
+                await session.execute(
+                    select(Document).where(
+                        Document.doc_id == did, Document.status == "active"
+                    )
+                )
+            ).scalar_one_or_none()
+            if doc is None:
+                return json.dumps({"error": "Document not found"})
+            if not doc.latest_version_id:
+                return json.dumps(
+                    {
+                        "total_entities": 0,
+                        "unique_entities": 0,
+                        "type_distribution": {},
+                        "top_entities": [],
+                    }
+                )
+            version_filter = [Entity.version_id == doc.latest_version_id]
+        else:
+            version_filter = [
+                Entity.version_id.in_(
+                    select(Document.latest_version_id).where(
+                        Document.status == "active",
+                        Document.latest_version_id.isnot(None),
+                    )
+                )
+            ]
+
+        # Total entities
+        total = (
+            await session.execute(
+                select(func.count()).select_from(Entity).where(*version_filter)
+            )
+        ).scalar() or 0
+
+        # Unique entities
+        unique_q = (
+            select(Entity.entity_text, Entity.entity_type)
+            .where(*version_filter)
+            .distinct()
+        )
+        unique = (
+            await session.execute(select(func.count()).select_from(unique_q.subquery()))
+        ).scalar() or 0
+
+        # Type distribution
+        type_rows = (
+            await session.execute(
+                select(Entity.entity_type, func.count())
+                .where(*version_filter)
+                .group_by(Entity.entity_type)
+                .order_by(func.count().desc())
+            )
+        ).all()
+        type_distribution = {row[0]: row[1] for row in type_rows}
+
+        # Top entities by mention count (deduplicated)
+        top_rows = (
+            await session.execute(
+                select(
+                    Entity.entity_text,
+                    Entity.entity_type,
+                    func.count().label("mention_count"),
+                )
+                .where(*version_filter)
+                .group_by(Entity.entity_text, Entity.entity_type)
+                .order_by(func.count().desc())
+                .limit(20)
+            )
+        ).all()
+        top_entities = [
+            {
+                "entity_text": r[0],
+                "entity_type": r[1],
+                "mention_count": r[2],
+            }
+            for r in top_rows
+        ]
+
+    return json.dumps(
+        {
+            "total_entities": total,
+            "unique_entities": unique,
+            "type_distribution": type_distribution,
+            "top_entities": top_entities,
+        },
         indent=2,
     )
 
