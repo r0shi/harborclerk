@@ -33,10 +33,9 @@ _mcp_asgi, _mcp_session_manager = create_mcp_app()
 async def lifespan(app: FastAPI):
     settings = get_settings()
 
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    from harbor_clerk.log_setup import setup_logging
+
+    setup_logging("api", settings.log_level)
 
     logger.info("Starting Harbor Clerk API")
 

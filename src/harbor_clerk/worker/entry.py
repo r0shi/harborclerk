@@ -207,11 +207,6 @@ def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
 def main():
     settings = get_settings()
 
-    logging.basicConfig(
-        level=getattr(logging, settings.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-
     parser = argparse.ArgumentParser(description="Harbor Clerk worker")
     parser.add_argument(
         "--queues",
@@ -220,6 +215,11 @@ def main():
         help="Queue names to listen on",
     )
     args = parser.parse_args()
+
+    from harbor_clerk.log_setup import setup_logging
+
+    queue_suffix = "-".join(args.queues)
+    setup_logging(f"worker-{queue_suffix}", settings.log_level)
 
     stages: list[JobStage] = []
     for q in args.queues:
