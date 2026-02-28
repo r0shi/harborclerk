@@ -67,7 +67,7 @@
 | 5 | Document Outline | **Done** |
 | 6 | Corpus Overview | **Done** |
 | 7 | Cross-Document Similarity | **Done** |
-| 8 | Entity Extraction | Not started |
+| 8 | Entity Extraction | **Done** |
 | 9 | Auto-Inject RAG | Not started |
 
 ---
@@ -86,3 +86,7 @@ The natural zoom hierarchy would be:
 Per-project aggregate stats (language distribution, mime type breakdown) already serve much of this need. True embedding-based topic clustering (k-means on averaged doc embeddings, label extraction) would only add value when a single project has 100+ diverse documents where stats alone don't convey the content mix.
 
 **Decision:** Defer topic clustering. The aggregate stats from Feature 6 are exactly what would be scoped per-project later. Topic clustering is an optional enhancement for large, diverse corpora — not an architectural prerequisite.
+
+### Entity Co-occurrence Graph
+
+Once Feature 8 (Entity Extraction) is in place, a natural extension is a `kb_entity_graph` tool that finds entities mentioned near a given entity (within N chunks). This enables relationship discovery — e.g., "which organizations are mentioned alongside John Smith?" Deferred because the core entity search + overview tools cover the primary use case; co-occurrence is a power-user feature that can be layered on top of the same `entities` table without schema changes.
