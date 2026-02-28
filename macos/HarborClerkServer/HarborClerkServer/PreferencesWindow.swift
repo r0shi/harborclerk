@@ -12,9 +12,11 @@ private let modelOptions: [(id: String, name: String)] = [
     ("", "None"),
     ("qwen3-8b", "Qwen3 8B (5.0 GB)"),
     ("qwen3-4b", "Qwen3 4B (2.5 GB)"),
-    ("llama3.2-3b", "Llama 3.2 3B Instruct (2.0 GB)"),
-    ("mistral-7b", "Mistral 7B Instruct v0.3 (4.1 GB)"),
-    ("deepseek-r1-8b", "DeepSeek R1 8B (4.9 GB)"),
+    ("phi4-mini", "Phi-4 Mini 3.8B (2.5 GB)"),
+    ("deepseek-r1-0528-8b", "DeepSeek R1 0528 8B (5.0 GB)"),
+    ("gemma3-4b", "Gemma 3 4B (2.5 GB)"),
+    ("smollm3-3b", "SmolLM3 3B (1.9 GB)"),
+    ("llama3.1-8b", "Llama 3.1 8B Instruct (4.9 GB)"),
 ]
 
 struct PreferencesWindow: View {

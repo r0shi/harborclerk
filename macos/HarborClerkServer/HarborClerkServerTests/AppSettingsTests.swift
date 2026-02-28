@@ -93,9 +93,11 @@ final class AppSettingsTests: XCTestCase {
         let expected: [String: String] = [
             "qwen3-8b": "Qwen3-8B-Q4_K_M.gguf",
             "qwen3-4b": "Qwen3-4B-Q4_K_M.gguf",
-            "llama3.2-3b": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-            "mistral-7b": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
-            "deepseek-r1-8b": "DeepSeek-R1-Distill-Qwen-8B-Q4_K_M.gguf",
+            "phi4-mini": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
+            "deepseek-r1-0528-8b": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
+            "gemma3-4b": "google_gemma-3-4b-it-Q4_K_M.gguf",
+            "smollm3-3b": "HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
+            "llama3.1-8b": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         ]
         for (modelId, filename) in expected {
             settings.llmModelId = modelId

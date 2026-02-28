@@ -113,3 +113,16 @@ No good automatic heuristic yet — context window size correlates loosely with 
 ### Entity Co-occurrence Graph
 
 Once Feature 8 (Entity Extraction) is in place, a natural extension is a `kb_entity_graph` tool that finds entities mentioned near a given entity (within N chunks). This enables relationship discovery — e.g., "which organizations are mentioned alongside John Smith?" Deferred because the core entity search + overview tools cover the primary use case; co-occurrence is a power-user feature that can be layered on top of the same `entities` table without schema changes.
+
+### PostgreSQL 17 Upgrade (target: v0.5.0)
+
+Upgrade from PostgreSQL 16 to 17 for next minor release. PG 17 is stable since September 2024 (now at 17.9). Notable features: new VACUUM memory management, `JSON_TABLE()`, streaming sequential I/O, improved write throughput. PG 16 EOL is November 2028, so this is opportunistic, not urgent.
+
+**Approach:**
+- Bump `PG_VERSION` in `build-postgres.sh` to `17.x`, Docker image to `pgvector/pgvector:pg17`
+- **Rebase Alembic migrations**: Collapse all 14+ migration files into a single initial migration reflecting the final schema. This eliminates accumulated cruft and makes the schema easier to reason about going forward.
+- **Require full re-import** for the 0.X.0 upgrade: document data is re-ingestible, so users delete their data directory and re-upload. No `pg_upgrade` needed, no backward-compatible migration path.
+- Update `initdb` args in `PostgresService.swift` if any PG 17-specific flags are needed (unlikely).
+- Update Docker base images (`docker/app.Dockerfile` builder stage if needed).
+
+This is a clean breaking change appropriate for a pre-1.0 release.

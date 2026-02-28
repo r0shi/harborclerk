@@ -7,10 +7,10 @@ DEST_DIR="${DEST_DIR:-$(pwd)/build}"
 JAVA_DIR="$DEST_DIR/java"
 TIKA_DIR="$DEST_DIR/tika"
 
-TEMURIN_VERSION="21.0.5+11"
+TEMURIN_VERSION="21.0.10+7"
 TEMURIN_URL="https://github.com/adoptium/temurin21-binaries/releases/download/jdk-${TEMURIN_VERSION}/OpenJDK21U-jre_aarch64_mac_hotspot_${TEMURIN_VERSION//+/_}.tar.gz"
 
-TIKA_VERSION="3.0.0"
+TIKA_VERSION="3.2.3"
 TIKA_URL="https://archive.apache.org/dist/tika/${TIKA_VERSION}/tika-server-standard-${TIKA_VERSION}.jar"
 
 # Skip if already built

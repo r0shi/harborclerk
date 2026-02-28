@@ -3,8 +3,8 @@
 # Output: $DEST_DIR/{bin,lib/postgresql,share}
 set -euo pipefail
 
-PG_VERSION="${PG_VERSION:-16.4}"
-PGVECTOR_VERSION="${PGVECTOR_VERSION:-0.8.0}"
+PG_VERSION="${PG_VERSION:-16.13}"
+PGVECTOR_VERSION="${PGVECTOR_VERSION:-0.8.2}"
 ARCH="${ARCH:-arm64}"
 
 # Resolve to absolute paths before cd-ing around
