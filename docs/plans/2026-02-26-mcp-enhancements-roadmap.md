@@ -58,6 +58,8 @@
 
 ## Status
 
+All 9 features shipped in v0.4.0.
+
 | # | Feature | Status |
 |---|---------|--------|
 | 1 | Adjustable K + Pagination | **Done** |

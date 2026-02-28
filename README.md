@@ -10,7 +10,9 @@ Harbor Clerk is a safe harbor for your documents — and a capable clerk who kno
 
 No SaaS account. No background sync. No shared tenancy. Your documents stay local.
 
-Designed for small offices, independent operators, and privacy-focused individuals, Harbor Clerk runs comfortably on a Mac mini or similar hardware. It handles text extraction and OCR, builds hybrid full-text and vector search, and includes a built-in chat assistant powered by a local LLM — no cloud required. It also exposes a clean MCP endpoint so you can connect external models; they receive only cited snippets, never your full corpus.
+Designed for small offices, independent operators, and privacy-focused individuals, Harbor Clerk runs comfortably on a Mac mini or similar hardware. It handles text extraction and OCR, builds hybrid full-text and vector search, and includes a built-in chat assistant powered by a local LLM — no cloud required. Chat responses automatically surface relevant passages from your knowledge base, with transparent sourcing you can click through to verify.
+
+Harbor Clerk also exposes a comprehensive MCP endpoint with 13 tools for external AI agents (Claude, GPT, etc.) to search, navigate, and explore your corpus. They receive only cited snippets, never your full documents.
 
 This isn't a platform. It's a tool.
 It keeps your documents where they belong — and makes them useful.
@@ -141,23 +143,36 @@ docker compose logs -f app        # tail app logs
 
 ### Ingestion Pipeline
 
-Upload a file and it goes through five idempotent stages:
+Upload a file and it goes through seven idempotent stages:
 
 1. **Extract** — pull text from PDF, Office, eBook, HTML, email, and other formats via Apache Tika (TXT/MD/CSV decoded directly)
 2. **OCR** — conditional: always for images (JPEG/PNG/TIFF), for PDFs with little extractable text; never for text-native formats. Uses Tesseract (English + French)
-3. **Chunk** — split into ~1000 character segments with 150 char overlap, preserving page references
-4. **Embed** — generate 384-dim vectors via the embedder service
-5. **Finalize** — mark ingestion complete
+3. **Chunk** — split into ~1000 character segments with 150 char overlap, preserving page references and detecting language per chunk
+4. **Entities** — extract named entities (people, places, organizations) via spaCy NER (English + French models)
+5. **Embed** — generate 384-dim vectors via the embedder service
+6. **Summarize** — generate a document summary (local LLM, with extractive fallback)
+7. **Finalize** — mark ingestion complete
 
-Progress is streamed to the UI via server-sent events. Processing can be cancelled from the admin UI.
+Progress is streamed to the UI via server-sent events with a visual stage ring showing each step. Processing can be cancelled from the admin UI.
 
 ### Hybrid Search
 
-Results combine PostgreSQL full-text search (bilingual English/French) and pgvector cosine similarity, merged and ranked with boosts for latest document versions and higher OCR confidence. All results include source citations with page numbers.
+Results combine PostgreSQL full-text search (bilingual English/French) and pgvector cosine similarity, merged and ranked with boosts for latest document versions and higher OCR confidence. All results include source citations with page numbers. Search supports filtering by document, date range, language, and MIME type, with faceted results grouping hits by document.
 
 ### Local Chat
 
 A built-in chat assistant runs a local LLM (via llama-server) with access to the knowledge base through tool calls. Models can be downloaded and managed from the admin UI. No data leaves the machine.
+
+Chat automatically retrieves relevant passages from your documents (RAG) and displays them as a collapsible context card above each response — click any source to jump to the original document. The assistant can also use tools to search, read passages, and explore document structure during the conversation.
+
+### Document Intelligence
+
+Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
+
+- **Document outlines** — heading structure extracted during ingestion
+- **Entity index** — people, places, and organizations extracted by spaCy, searchable and browsable
+- **Cross-document similarity** — find related documents using embedding-based nearest neighbors
+- **Corpus overview** — aggregate stats (language distribution, MIME types, page counts, date ranges)
 
 ### Auth
 
@@ -178,19 +193,29 @@ A built-in chat assistant runs a local LLM (via llama-server) with access to the
 | `/api/setup` | POST | Create initial admin account |
 | `/api/uploads` | POST | Upload documents |
 | `/api/uploads/confirm` | POST | Confirm upload action |
+| `/api/uploads/confirm-batch` | POST | Confirm multiple uploads |
 | `/api/docs` | GET | List documents |
+| `/api/docs/overview` | GET | Corpus overview stats |
 | `/api/docs/{id}` | GET | Document detail with versions |
 | `/api/docs/{id}/content` | GET | Read document text (with page ranges) |
+| `/api/docs/{id}/outline` | GET | Document heading structure |
+| `/api/docs/{id}/entities` | GET | Named entities in document |
+| `/api/docs/{id}/related` | GET | Similar documents |
+| `/api/docs/{id}/download` | GET | Download original file |
 | `/api/docs/{id}` | DELETE | Soft-delete a document |
 | `/api/docs/{id}/reprocess` | POST | Re-run ingestion |
 | `/api/docs/{id}/cancel` | POST | Cancel in-progress ingestion |
-| `/api/search` | POST | Hybrid search |
+| `/api/search` | POST | Hybrid search (with optional filtering and facets) |
 | `/api/passages/read` | POST | Read passages by chunk IDs |
 | `/api/chat/conversations` | GET/POST | List or create chat conversations |
-| `/api/chat/conversations/{id}/messages` | POST | Send a message (streamed response) |
+| `/api/chat/conversations/{id}/messages` | POST | Send a message (streamed response with RAG) |
 | `/api/chat/models` | GET | List available LLM models |
 | `/api/chat/models/{id}/download` | POST | Download a model |
 | `/api/system/health` | GET | Health check |
+| `/api/system/stats` | GET | System performance stats (admin) |
+| `/api/system/retrieval-settings` | GET/PUT | RAG and MCP retrieval config (admin) |
+| `/api/system/reprocess-all` | POST | Re-run ingestion on all documents (admin) |
+| `/api/system/delete-all-documents` | POST | Delete all documents and data (admin) |
 | `/api/jobs/stream` | GET | SSE stream of job progress |
 
 ### MCP
@@ -199,10 +224,16 @@ A built-in chat assistant runs a local LLM (via llama-server) with access to the
 
 | Tool | Description |
 |---|---|
-| `kb_search` | Hybrid search with citations |
+| `kb_search` | Hybrid search with pagination, detail modes, and optional filters |
 | `kb_read_passages` | Read specific passages by chunk ID |
-| `kb_get_document` | Document metadata and versions |
-| `kb_list_recent` | Recently added documents |
+| `kb_expand_context` | Get surrounding chunks for a given chunk |
+| `kb_get_document` | Document metadata, versions, and summary |
+| `kb_list_recent` | Recently added documents with summaries |
+| `kb_corpus_overview` | Aggregate corpus stats (languages, types, dates) |
+| `kb_document_outline` | Document heading structure and page layout |
+| `kb_find_related` | Find similar documents via embedding similarity |
+| `kb_entity_search` | Search named entities across the corpus |
+| `kb_entity_overview` | Entity type breakdown (per-doc or corpus-wide) |
 | `kb_ingest_status` | Check ingestion progress |
 | `kb_reprocess` | Re-run ingestion on a document |
 | `kb_system_health` | System health check |
