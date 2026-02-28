@@ -5,8 +5,8 @@ export interface RagContextChunk {
   chunk_id: string
   doc_id: string
   doc_title: string
-  page_start: number
-  page_end: number
+  page_start: number | null
+  page_end: number | null
   score: number
   text: string
 }

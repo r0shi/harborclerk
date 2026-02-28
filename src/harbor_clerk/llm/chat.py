@@ -102,13 +102,17 @@ async def chat_stream(
                     # Build context block for LLM
                     context_lines = ["\n\n[Relevant context from knowledge base]\n"]
                     for h in good_hits:
-                        pages = (
-                            f"page {h.page_start}"
-                            if h.page_start == h.page_end
-                            else f"pages {h.page_start}-{h.page_end}"
-                        )
+                        if h.page_start is not None:
+                            pages = (
+                                f"page {h.page_start}"
+                                if h.page_start == h.page_end
+                                else f"pages {h.page_start}-{h.page_end}"
+                            )
+                            location = f" ({pages})"
+                        else:
+                            location = ""
                         context_lines.append(
-                            f'Document: "{h.doc_title or "Untitled"}" ({pages})\n'
+                            f'Document: "{h.doc_title or "Untitled"}"{location}\n'
                             f"{h.chunk_text}\n"
                         )
                     context_lines.append(

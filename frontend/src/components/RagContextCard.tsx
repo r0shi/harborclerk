@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { RagContextChunk } from '../hooks/useChat'
 
-function formatPages(start: number, end: number): string {
+function formatPages(start: number | null, end: number | null): string | null {
+  if (start == null) return null
   return start === end ? `p.\u00A0${start}` : `pp.\u00A0${start}\u2013${end}`
 }
 
@@ -77,7 +78,9 @@ export default function RagContextCard({ chunks }: { chunks: RagContextChunk[] }
 function ChunkRow({ chunk }: { chunk: RagContextChunk }) {
   const filled = scoreDots(chunk.score)
   const pages = formatPages(chunk.page_start, chunk.page_end)
-  const tooltip = `${chunk.doc_title}, ${pages.replace('\u00A0', ' ')}`
+  const tooltip = pages
+    ? `${chunk.doc_title}, ${pages.replace('\u00A0', ' ')}`
+    : chunk.doc_title
 
   return (
     <div className="text-[11px] leading-relaxed">
@@ -91,9 +94,11 @@ function ChunkRow({ chunk }: { chunk: RagContextChunk }) {
           {chunk.doc_title}
           <span className="inline-block ml-0.5 text-[9px] opacity-50">&#x2197;</span>
         </Link>
-        <span className="flex-shrink-0 rounded px-1 py-px bg-stone-200/60 dark:bg-stone-700/40 text-stone-400 dark:text-stone-500 text-[10px] tabular-nums">
-          {pages}
-        </span>
+        {pages && (
+          <span className="flex-shrink-0 rounded px-1 py-px bg-stone-200/60 dark:bg-stone-700/40 text-stone-400 dark:text-stone-500 text-[10px] tabular-nums">
+            {pages}
+          </span>
+        )}
         {/* Score dots */}
         <span className="ml-auto flex gap-px flex-shrink-0" title={`Relevance: ${(chunk.score * 100).toFixed(0)}%`}>
           {[1, 2, 3, 4].map((n) => (
