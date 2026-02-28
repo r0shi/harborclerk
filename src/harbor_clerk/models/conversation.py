@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import ForeignKey, Index, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,7 +17,11 @@ class Conversation(Base):
         nullable=False,
     )
     title: Mapped[str] = mapped_column(
-        String(200), nullable=False, server_default="New conversation",
+        String(200),
+        nullable=False,
+        server_default="New conversation",
     )
     created_at: Mapped[created_at]
     updated_at: Mapped[updated_at]
+
+    __table_args__ = (Index("ix_conversations_user_updated", "user_id", "updated_at"),)

@@ -13,12 +13,23 @@ from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.tools import CHAT_TOOLS, execute_tool
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
+from harbor_clerk.search import hybrid_search
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are Harbor Clerk, a document assistant for a local knowledge base. "
     "Use the search_documents tool to find relevant information before answering. "
+    "Always cite your sources with document titles and page numbers. "
+    "If you cannot find relevant information, say so honestly. "
+    "Respond in the same language as the user's question. Be concise and factual."
+)
+
+SYSTEM_PROMPT_WITH_CONTEXT = (
+    "You are Harbor Clerk, a document assistant for a local knowledge base. "
+    "Relevant context from the knowledge base has been provided below. "
+    "Use it to answer the user's question if sufficient. "
+    "If you need more information, use the search_documents tool for additional investigation. "
     "Always cite your sources with document titles and page numbers. "
     "If you cannot find relevant information, say so honestly. "
     "Respond in the same language as the user's question. Be concise and factual."
@@ -58,8 +69,66 @@ async def chat_stream(
         )
         history_rows = history_result.scalars().all()
 
+        # --- RAG auto-inject ---
+        rag_chunks: list[dict] | None = None
+        system_content = SYSTEM_PROMPT
+
+        if settings.rag_auto_k > 0:
+            try:
+                search_result = await hybrid_search(
+                    session,
+                    user_message,
+                    k=settings.rag_auto_k,
+                )
+                good_hits = [
+                    h
+                    for h in search_result.hits
+                    if h.score >= settings.rag_auto_threshold
+                ]
+                if good_hits:
+                    rag_chunks = [
+                        {
+                            "chunk_id": h.chunk_id,
+                            "doc_id": h.doc_id,
+                            "doc_title": h.doc_title or "Untitled",
+                            "page_start": h.page_start,
+                            "page_end": h.page_end,
+                            "score": round(h.score, 3),
+                            "text": h.chunk_text[:200],
+                        }
+                        for h in good_hits
+                    ]
+
+                    # Build context block for LLM
+                    context_lines = ["\n\n[Relevant context from knowledge base]\n"]
+                    for h in good_hits:
+                        if h.page_start is not None:
+                            pages = (
+                                f"page {h.page_start}"
+                                if h.page_start == h.page_end
+                                else f"pages {h.page_start}-{h.page_end}"
+                            )
+                            location = f" ({pages})"
+                        else:
+                            location = ""
+                        context_lines.append(
+                            f'Document: "{h.doc_title or "Untitled"}"{location}\n'
+                            f"{h.chunk_text}\n"
+                        )
+                    context_lines.append(
+                        "[End of context — use search_documents for additional investigation if needed]"
+                    )
+                    system_content = SYSTEM_PROMPT_WITH_CONTEXT + "\n".join(
+                        context_lines
+                    )
+            except Exception:
+                logger.debug(
+                    "RAG auto-inject search failed, continuing without context",
+                    exc_info=True,
+                )
+
         # Build messages for the LLM
-        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages: list[dict] = [{"role": "system", "content": system_content}]
         for msg in history_rows[-MAX_HISTORY_MESSAGES:]:
             entry: dict = {"role": msg.role, "content": msg.content}
             if msg.tool_calls:
@@ -70,6 +139,10 @@ async def chat_stream(
             if msg.tool_call_id:
                 entry["tool_call_id"] = msg.tool_call_id
             messages.append(entry)
+
+        # Emit RAG context event if we injected chunks
+        if rag_chunks:
+            yield f"data: {json.dumps({'type': 'rag_context', 'chunks': rag_chunks})}\n\n"
 
         # Tool-calling loop
         assistant_content = ""
@@ -210,6 +283,7 @@ async def chat_stream(
                 role="assistant",
                 content=assistant_content,
                 tokens_used=total_tokens or None,
+                rag_context=rag_chunks,
             )
             session.add(assistant_msg)
 

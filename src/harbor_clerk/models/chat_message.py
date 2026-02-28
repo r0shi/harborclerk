@@ -21,9 +21,8 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     tool_calls: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     tool_call_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    rag_context: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     tokens_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[created_at]
 
-    __table_args__ = (
-        Index("idx_messages_conv", "conversation_id", "created_at"),
-    )
+    __table_args__ = (Index("idx_messages_conv", "conversation_id", "created_at"),)

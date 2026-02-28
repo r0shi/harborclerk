@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 # --- Conversations ---
 
+
 class CreateConversationRequest(BaseModel):
     title: str = "New conversation"
 
@@ -25,6 +26,7 @@ class ChatMessageOut(BaseModel):
     content: str
     tool_calls: Any | None = None
     tool_call_id: str | None = None
+    rag_context: Any | None = None
     tokens_used: int | None = None
     created_at: datetime
 
@@ -42,6 +44,7 @@ class SendMessageRequest(BaseModel):
 
 
 # --- Models ---
+
 
 class ModelOut(BaseModel):
     id: str

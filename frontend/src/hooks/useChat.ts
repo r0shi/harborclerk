@@ -1,11 +1,22 @@
 import { useCallback, useRef, useState } from 'react'
 import { useAuth } from '../auth'
 
+export interface RagContextChunk {
+  chunk_id: string
+  doc_id: string
+  doc_title: string
+  page_start: number | null
+  page_end: number | null
+  score: number
+  text: string
+}
+
 export interface ChatMessage {
   message_id?: string
   role: 'user' | 'assistant' | 'tool'
   content: string
   tool_calls?: ToolCallInfo[]
+  rag_context?: RagContextChunk[]
   isStreaming?: boolean
 }
 
@@ -91,6 +102,20 @@ export function useChat() {
             try {
               const event = JSON.parse(line.slice(6))
               switch (event.type) {
+                case 'rag_context':
+                  setMessages((prev) => {
+                    const updated = [...prev]
+                    const last = updated[updated.length - 1]
+                    if (last && last.role === 'assistant') {
+                      updated[updated.length - 1] = {
+                        ...last,
+                        rag_context: event.chunks,
+                      }
+                    }
+                    return updated
+                  })
+                  break
+
                 case 'token':
                   setMessages((prev) => {
                     const updated = [...prev]
