@@ -306,3 +306,29 @@
     transform: translateY(0);
   }
 }
+
+/* RAG context card */
+.rag-context-card {
+  animation: ragContextAppear 0.3s ease-out;
+}
+@keyframes ragContextAppear {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.rag-context-detail {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease-out;
+}
+.rag-context-detail.expanded {
+  grid-template-rows: 1fr;
+}
+.rag-context-detail > div {
+  overflow: hidden;
+}

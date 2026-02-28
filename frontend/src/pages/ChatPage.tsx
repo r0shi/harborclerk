@@ -1,7 +1,8 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { del, get, post } from '../api'
-import { useChat, type ChatMessage, type ToolCallInfo } from '../hooks/useChat'
+import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../hooks/useChat'
+import RagContextCard from '../components/RagContextCard'
 
 interface ConversationSummary {
   conversation_id: string
@@ -17,6 +18,7 @@ interface ConversationDetail extends ConversationSummary {
     content: string
     tool_calls?: unknown[]
     tool_call_id?: string
+    rag_context?: RagContextChunk[]
     tokens_used?: number
     created_at: string
   }[]
@@ -79,6 +81,7 @@ export default function ChatPage() {
               message_id: m.message_id,
               role: m.role as ChatMessage['role'],
               content: m.content,
+              rag_context: m.rag_context,
             })),
         )
       })
@@ -419,6 +422,13 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           }`}>
             {isUser ? 'You' : 'Assistant'}
           </div>
+
+          {/* RAG context card shown above the message bubble */}
+          {!isUser && message.rag_context && message.rag_context.length > 0 && (
+            <div className="mb-1.5">
+              <RagContextCard chunks={message.rag_context} />
+            </div>
+          )}
 
           <div className={`rounded-xl px-4 py-2.5 text-[13.5px] leading-relaxed ${
             isUser
