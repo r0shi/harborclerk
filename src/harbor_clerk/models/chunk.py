@@ -12,7 +12,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from pgvector.sqlalchemy import Vector
 
@@ -40,10 +40,14 @@ class Chunk(Base):
     char_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     language: Mapped[str] = mapped_column(
-        Text, nullable=False, server_default="english",
+        Text,
+        nullable=False,
+        server_default="english",
     )
     ocr_used: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false"),
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
     )
     ocr_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
@@ -61,6 +65,10 @@ class Chunk(Base):
     embedding = mapped_column(Vector(384), nullable=True)
 
     created_at: Mapped[created_at]
+
+    entities = relationship(
+        "Entity", back_populates="chunk", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         UniqueConstraint("version_id", "chunk_num", name="uq_chunks_version_num"),

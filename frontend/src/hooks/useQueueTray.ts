@@ -34,7 +34,7 @@ const HISTORY_CAP = 20
 const HISTORY_TTL = 3_600_000 // 1 hour
 const TOAST_DURATION = 4_000 // 4s
 const TOAST_DEBOUNCE = 500 // ms
-export const PIPELINE_STAGES = ['extract', 'ocr', 'chunk', 'embed', 'summarize', 'finalize']
+export const PIPELINE_STAGES = ['extract', 'ocr', 'chunk', 'entities', 'embed', 'summarize', 'finalize']
 
 function computeOverallProgress(stages: Map<string, StageState>): number {
   // Filter out skipped stages
@@ -191,9 +191,9 @@ export function useQueueTray() {
         const stages = new Map(existing?.stages || [])
         const filename = event.filename || existing?.filename || vid
 
-        // Handle OCR skip: done without prior running event
-        if (stage === 'ocr' && status === 'done' && !stages.has('ocr')) {
-          stages.set('ocr', { status: 'skipped' })
+        // Handle OCR/entities skip: done without prior running event
+        if ((stage === 'ocr' || stage === 'entities') && status === 'done' && !stages.has(stage)) {
+          stages.set(stage, { status: 'skipped' })
         } else {
           stages.set(stage, {
             status,

@@ -20,7 +20,8 @@ interface DocSummary {
 
 const PROCESSING_STATUSES = new Set([
   'queued', 'extracting', 'extracted', 'ocr_running', 'ocr_done',
-  'chunking', 'chunked', 'embedding', 'embedded', 'finalizing',
+  'chunking', 'chunked', 'extracting_entities', 'entities_done',
+  'embedding', 'embedded', 'finalizing',
   'summarizing', 'summarized',
 ])
 

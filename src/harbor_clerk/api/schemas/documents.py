@@ -108,6 +108,19 @@ class CorpusOverviewResponse(BaseModel):
     truncated: bool
 
 
+class EntityOut(BaseModel):
+    entity_text: str
+    entity_type: str
+    mention_count: int
+
+
+class DocumentEntitiesResponse(BaseModel):
+    doc_id: str
+    entities: list[EntityOut]
+    total: int
+    entity_types: list[str]
+
+
 class RelatedDocument(BaseModel):
     doc_id: str
     title: str

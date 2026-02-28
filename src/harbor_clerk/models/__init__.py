@@ -20,6 +20,7 @@ from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.audit_log import AuditLog
 from harbor_clerk.models.conversation import Conversation
 from harbor_clerk.models.chat_message import ChatMessage
+from harbor_clerk.models.entity import Entity
 
 __all__ = [
     "Base",
@@ -40,4 +41,5 @@ __all__ = [
     "AuditLog",
     "Conversation",
     "ChatMessage",
+    "Entity",
 ]

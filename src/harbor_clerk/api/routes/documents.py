@@ -15,8 +15,10 @@ from harbor_clerk.api.schemas.documents import (
     CorpusOverviewResponse,
     DocumentContentResponse,
     DocumentDetail,
+    DocumentEntitiesResponse,
     DocumentOutlineResponse,
     DocumentSummary,
+    EntityOut,
     HeadingOut,
     JobInfo,
     PageContent,
@@ -31,6 +33,7 @@ from harbor_clerk.models import (
     DocumentHeading,
     DocumentPage,
     DocumentVersion,
+    Entity,
     IngestionJob,
 )
 from harbor_clerk.models.enums import JobStage, VersionStatus
@@ -419,6 +422,86 @@ async def get_document_outline(
             HeadingOut(level=h.level, title=h.title, page_num=h.page_num)
             for h in headings
         ],
+    )
+
+
+@router.get("/docs/{doc_id}/entities", response_model=DocumentEntitiesResponse)
+async def get_document_entities(
+    doc_id: uuid.UUID,
+    entity_type: str | None = Query(default=None, description="Filter by entity type"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Get deduplicated entities with mention counts for a document's latest version."""
+    result = await session.execute(
+        select(Document)
+        .where(Document.doc_id == doc_id, Document.status == "active")
+        .options(selectinload(Document.versions))
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
+        )
+
+    version_id = doc.latest_version_id
+    if version_id is None and doc.versions:
+        version_id = doc.versions[-1].version_id
+    if version_id is None:
+        return DocumentEntitiesResponse(
+            doc_id=str(doc_id), entities=[], total=0, entity_types=[]
+        )
+
+    filters = [Entity.version_id == version_id]
+    if entity_type:
+        filters.append(Entity.entity_type == entity_type)
+
+    # Deduplicated entities with mention counts
+    count_q = (
+        select(
+            Entity.entity_text,
+            Entity.entity_type,
+            func.count().label("mention_count"),
+        )
+        .where(*filters)
+        .group_by(Entity.entity_text, Entity.entity_type)
+    )
+
+    total = (
+        await session.execute(select(func.count()).select_from(count_q.subquery()))
+    ).scalar() or 0
+
+    rows = (
+        await session.execute(
+            count_q.order_by(func.count().desc()).offset(offset).limit(limit)
+        )
+    ).all()
+
+    entities = [
+        EntityOut(entity_text=r[0], entity_type=r[1], mention_count=r[2]) for r in rows
+    ]
+
+    # Get all distinct entity types for this version
+    type_rows = (
+        (
+            await session.execute(
+                select(Entity.entity_type)
+                .where(Entity.version_id == version_id)
+                .distinct()
+                .order_by(Entity.entity_type)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    return DocumentEntitiesResponse(
+        doc_id=str(doc_id),
+        entities=entities,
+        total=total,
+        entity_types=list(type_rows),
     )
 
 

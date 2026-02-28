@@ -14,6 +14,18 @@ from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
 
 logger = logging.getLogger(__name__)
 
+# Cache NER availability at module level (won't change during worker lifetime)
+_ner_available: bool | None = None
+
+
+def _is_ner_available() -> bool:
+    global _ner_available
+    if _ner_available is None:
+        from harbor_clerk.worker.ner import is_ner_available
+
+        _ner_available = is_ner_available()
+    return _ner_available
+
 
 def _version_filename(version: DocumentVersion) -> str:
     """Extract original filename from the object key (e.g. 'originals/versions/<id>/report.pdf' → 'report.pdf')."""
@@ -25,6 +37,7 @@ STAGE_CONFIG: dict[JobStage, tuple[str, int, VersionStatus]] = {
     JobStage.extract: ("io", 600, VersionStatus.extracting),
     JobStage.ocr: ("cpu", 7200, VersionStatus.ocr_running),
     JobStage.chunk: ("io", 1200, VersionStatus.chunking),
+    JobStage.entities: ("io", 300, VersionStatus.extracting_entities),
     JobStage.embed: ("cpu", 1800, VersionStatus.embedding),
     JobStage.summarize: ("io", 120, VersionStatus.summarizing),
     JobStage.finalize: ("io", 600, VersionStatus.finalizing),
@@ -35,6 +48,7 @@ STAGE_ORDER = [
     JobStage.extract,
     JobStage.ocr,
     JobStage.chunk,
+    JobStage.entities,
     JobStage.embed,
     JobStage.summarize,
     JobStage.finalize,
@@ -45,6 +59,7 @@ STAGE_DONE_STATUS: dict[JobStage, VersionStatus] = {
     JobStage.extract: VersionStatus.extracted,
     JobStage.ocr: VersionStatus.ocr_done,
     JobStage.chunk: VersionStatus.chunked,
+    JobStage.entities: VersionStatus.entities_done,
     JobStage.embed: VersionStatus.embedded,
     JobStage.summarize: VersionStatus.summarized,
     JobStage.finalize: VersionStatus.ready,
@@ -182,7 +197,36 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
                 )
                 continue
 
-            # Commit OCR-skip changes (if any) before enqueuing next stage,
+            # Skip entities stage if spaCy NER is not available
+            if stage == JobStage.entities and not _is_ner_available():
+                existing = session.execute(
+                    select(IngestionJob).where(
+                        IngestionJob.version_id == version_id,
+                        IngestionJob.stage == JobStage.entities,
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    skipped_job = IngestionJob(
+                        version_id=version_id,
+                        stage=JobStage.entities,
+                        status=JobStatus.done,
+                        started_at=datetime.now(timezone.utc),
+                        finished_at=datetime.now(timezone.utc),
+                        metrics={"skipped": True, "reason": "spacy_unavailable"},
+                    )
+                    session.add(skipped_job)
+                else:
+                    existing.status = JobStatus.done
+                    existing.finished_at = datetime.now(timezone.utc)
+                    existing.metrics = {"skipped": True, "reason": "spacy_unavailable"}
+                version.status = VersionStatus.entities_done
+                session.commit()
+                publish_job_event(
+                    version_id, "entities", "done", filename=_version_filename(version)
+                )
+                continue
+
+            # Commit skip changes (if any) before enqueuing next stage,
             # which creates its own session.
             session.commit()
             session.close()
