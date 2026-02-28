@@ -80,7 +80,7 @@ test:
 
 # ── Apps ──
 
-apps: deps venv model llama frontend
+apps: deps venv spacy-models model llama frontend
 	@echo "==> Building and packaging apps"
 	BUILD_DIR=$(BUILD) bash $(SCRIPTS)/package.sh
 
