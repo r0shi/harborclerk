@@ -87,6 +87,27 @@ Per-project aggregate stats (language distribution, mime type breakdown) already
 
 **Decision:** Defer topic clustering. The aggregate stats from Feature 6 are exactly what would be scoped per-project later. Topic clustering is an optional enhancement for large, diverse corpora — not an architectural prerequisite.
 
+### Apple Intelligence as Summarization Fallback
+
+Use macOS 26's Foundation Models framework as a middle-tier summarization fallback — better than extractive, available without downloading a model. The fallback chain becomes: (1) user-selected model via llama-server, (2) Apple Intelligence via Foundation Models, (3) extractive heuristic.
+
+Since Foundation Models is Swift-only, the approach is a standalone Swift CLI tool (`apple-intelligence-server`) exposing `POST /v1/chat/completions` (OpenAI-compatible subset) on port 8103. ServiceManager spawns it like any other subprocess. Python's `generate_summary()` tries `llama_server_url` first, then `apple_intelligence_url`, then extractive. Only started when no user-selected LLM model is active.
+
+Full plan: `docs/plans/2026-02-26-apple-intelligence-summarization-fallback.md`
+
+Open questions: Foundation Models availability detection, context window limits, first-call model load latency, build gating for macOS 26+ only. Not in scope: using Apple Intelligence for chat, replacing llama-server, or any cloud API calls.
+
+### Adaptive Tool Schema Complexity
+
+Chat tools currently use simplified parameter schemas (e.g., `search_documents` exposes 3 of kb_search's 12 params) because small local models (4-8B) struggle with many parameters. As average local model capability increases, revisit this.
+
+Possible approaches:
+- **Tiered schemas**: "simple" and "full" schema sets, selected by model metadata (param count, context window)
+- **Progressive disclosure**: Model requests richer schemas mid-conversation when it needs advanced filtering
+- **Model self-assessment**: The model recognizes it needs a parameter it doesn't have and asks for an upgraded tool definition
+
+No good automatic heuristic yet — context window size correlates loosely with tool-handling ability but isn't a reliable proxy. For now, the simplified schemas work and the full MCP tools remain available to external agents (Claude, etc.) that can handle the complexity.
+
 ### Entity Co-occurrence Graph
 
 Once Feature 8 (Entity Extraction) is in place, a natural extension is a `kb_entity_graph` tool that finds entities mentioned near a given entity (within N chunks). This enables relationship discovery — e.g., "which organizations are mentioned alongside John Smith?" Deferred because the core entity search + overview tools cover the primary use case; co-occurrence is a power-user feature that can be layered on top of the same `entities` table without schema changes.

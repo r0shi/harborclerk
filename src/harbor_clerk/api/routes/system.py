@@ -4,22 +4,30 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin
+from harbor_clerk.api.schemas.system import (
+    DeleteAllRequest,
+    RetrievalSettingsResponse,
+    RetrievalSettingsUpdate,
+)
 from harbor_clerk.audit import log_audit
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import get_settings, sync_native_config
 from harbor_clerk.db import get_session
 from harbor_clerk.models import User
 from harbor_clerk.storage import get_storage
 from harbor_clerk.models import (
     Chunk,
     Document,
+    DocumentHeading,
     DocumentPage,
     DocumentVersion,
+    Entity,
     IngestionJob,
+    Upload,
 )
 from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
 
@@ -344,3 +352,85 @@ async def reprocess_all(
 
     logger.info("Reprocess-all: %d documents queued", count)
     return {"reprocessed": count}
+
+
+@router.post("/system/delete-all-documents")
+async def delete_all_documents(
+    body: DeleteAllRequest,
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Delete ALL documents and related data. Keeps users, api_keys, audit_log, conversations, chat_messages."""
+    if body.confirmation != "DELETE EVERYTHING":
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation text must be exactly 'DELETE EVERYTHING'",
+        )
+
+    # Delete all storage objects
+    try:
+        storage = get_storage()
+        objects = storage.list_objects("originals", recursive=True)
+        for obj in objects:
+            try:
+                storage.remove_object("originals", obj["key"])
+            except Exception as e:
+                logger.warning("Failed to delete storage object %s: %s", obj["key"], e)
+    except Exception as e:
+        logger.warning("Failed to list storage objects for deletion: %s", e)
+
+    # TRUNCATE CASCADE all document-related tables
+    await session.execute(
+        text(
+            "TRUNCATE entities, chunks, document_headings, document_pages, ingestion_jobs, document_versions, documents, uploads CASCADE"
+        )
+    )
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="delete_all_documents",
+        detail={},
+    )
+    await session.commit()
+
+    logger.info("All documents deleted by admin %s", admin.id)
+    return {"status": "ok"}
+
+
+@router.get("/system/retrieval-settings")
+async def get_retrieval_settings(
+    admin: Principal = Depends(require_admin),
+) -> RetrievalSettingsResponse:
+    """Return current retrieval-related settings."""
+    s = get_settings()
+    return RetrievalSettingsResponse(
+        rag_auto_k=s.rag_auto_k,
+        rag_auto_threshold=s.rag_auto_threshold,
+        max_tool_rounds=s.max_tool_rounds,
+        max_history_messages=s.max_history_messages,
+        mcp_max_k=s.mcp_max_k,
+        mcp_brief_chars=s.mcp_brief_chars,
+    )
+
+
+@router.put("/system/retrieval-settings")
+async def update_retrieval_settings(
+    body: RetrievalSettingsUpdate,
+    admin: Principal = Depends(require_admin),
+) -> RetrievalSettingsResponse:
+    """Update retrieval-related settings (mutates singleton, syncs native config)."""
+    s = get_settings()
+    for key in body.model_fields_set:
+        value = getattr(body, key)
+        setattr(s, key, value)
+        sync_native_config(key, str(value))
+
+    return RetrievalSettingsResponse(
+        rag_auto_k=s.rag_auto_k,
+        rag_auto_threshold=s.rag_auto_threshold,
+        max_tool_rounds=s.max_tool_rounds,
+        max_history_messages=s.max_history_messages,
+        mcp_max_k=s.mcp_max_k,
+        mcp_brief_chars=s.mcp_brief_chars,
+    )

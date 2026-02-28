@@ -6,6 +6,7 @@ const ITEMS = [
   { to: '/admin/system/status', label: 'System Status', description: 'Health checks and statistics' },
   { to: '/admin/system/maintenance', label: 'System Maintenance', description: 'Purge, reaper, and cleanup' },
   { to: '/admin/models', label: 'Models', description: 'Download and manage LLM models' },
+  { to: '/admin/retrieval', label: 'Retrieval', description: 'Chat and MCP search behavior' },
 ]
 
 export default function SystemSettingsPage() {

@@ -532,6 +532,17 @@ export default function UploadPage() {
                   >
                     All as New Documents
                   </button>
+                  <button
+                    onClick={() => batchConfirm(unconfirmedPending)}
+                    disabled={confirming}
+                    className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {confirming
+                      ? confirmProgress
+                        ? `${Math.min(confirmProgress.done + CONFIRM_BATCH_SIZE, confirmProgress.total)}/${confirmProgress.total}`
+                        : 'Confirming...'
+                      : `Confirm ${unconfirmedPending.length}`}
+                  </button>
                 </div>
               </div>
 

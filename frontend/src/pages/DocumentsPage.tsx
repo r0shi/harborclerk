@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { get, post, downloadBlob } from '../api'
+import { get, post, del, downloadBlob } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents } from '../hooks/useJobEvents'
 
@@ -105,6 +105,9 @@ export default function DocumentsPage() {
   const [filter, setFilter] = useState('')
   const [currentPage, setCurrentPage] = useState(1)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkAction, setBulkAction] = useState('')
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   const loadDocs = useCallback(() => {
     return get<DocSummary[]>('/api/docs')
@@ -151,6 +154,68 @@ export default function DocumentsPage() {
     }
   }
 
+  function toggleSelect(docId: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(docId)) next.delete(docId)
+      else next.add(docId)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    if (selected.size === visibleDocIds.size) {
+      setSelected(new Set())
+    } else {
+      setSelected(new Set(visibleDocIds))
+    }
+  }
+
+  async function handleBulkReprocess() {
+    setBulkAction('reprocess')
+    const errors: string[] = []
+    for (const docId of selected) {
+      try {
+        await post(`/api/docs/${docId}/reprocess`)
+      } catch (e) {
+        errors.push(e instanceof Error ? e.message : 'Reprocess failed')
+      }
+    }
+    if (errors.length > 0) setError(errors.join('; '))
+    setSelected(new Set())
+    loadDocs()
+    setBulkAction('')
+  }
+
+  async function handleBulkDelete() {
+    if (!confirmingDelete) {
+      setConfirmingDelete(true)
+      return
+    }
+    setConfirmingDelete(false)
+    setBulkAction('delete')
+    const errors: string[] = []
+    for (const docId of selected) {
+      try {
+        await del(`/api/docs/${docId}`)
+      } catch (e) {
+        errors.push(e instanceof Error ? e.message : 'Delete failed')
+      }
+    }
+    if (errors.length > 0) setError(errors.join('; '))
+    setSelected(new Set())
+    loadDocs()
+    setBulkAction('')
+  }
+
+  async function handleBulkDownload() {
+    setBulkAction('download')
+    for (const docId of selected) {
+      await handleDownload(docId)
+    }
+    setBulkAction('')
+  }
+
   const filteredDocs = docs.filter((d) => {
     if (!filter) return true
     const q = filter.toLowerCase()
@@ -162,6 +227,7 @@ export default function DocumentsPage() {
   const effectivePage = Math.min(currentPage, totalPages)
   const startIdx = (effectivePage - 1) * pageSize
   const visibleDocs = filteredDocs.slice(startIdx, startIdx + pageSize)
+  const visibleDocIds = new Set(visibleDocs.map(d => d.doc_id))
 
   // Sync state when page exceeds total (e.g. after doc count changes)
   useEffect(() => {
@@ -218,10 +284,33 @@ export default function DocumentsPage() {
         </p>
       ) : (
         <>
+          {/* Bulk actions bar */}
+          {selected.size > 0 && (
+            <BulkActionsBar
+              count={selected.size}
+              isAdmin={isAdmin}
+              bulkAction={bulkAction}
+              confirmingDelete={confirmingDelete}
+              onReprocess={handleBulkReprocess}
+              onDelete={handleBulkDelete}
+              onCancelDelete={() => setConfirmingDelete(false)}
+              onDownload={handleBulkDownload}
+              onClear={() => { setSelected(new Set()); setConfirmingDelete(false) }}
+            />
+          )}
+
           <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
             <table className="min-w-full divide-y divide-[var(--color-border)]">
               <thead className="bg-[var(--color-bg-secondary)]">
                 <tr>
+                  <th className="w-10 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={visibleDocs.length > 0 && visibleDocs.every(d => selected.has(d.doc_id))}
+                      onChange={toggleSelectAll}
+                      className="h-3.5 w-3.5 rounded border-gray-300 text-[var(--color-accent)] focus:ring-[var(--color-accent)]/30"
+                    />
+                  </th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
                     Title
                   </th>
@@ -243,6 +332,14 @@ export default function DocumentsPage() {
                   return (
                     <Fragment key={doc.doc_id}>
                       <tr className="hover:bg-black/[0.02] dark:hover:bg-white/[0.02]">
+                        <td className="w-10 px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(doc.doc_id)}
+                            onChange={() => toggleSelect(doc.doc_id)}
+                            className="h-3.5 w-3.5 rounded border-gray-300 text-[var(--color-accent)] focus:ring-[var(--color-accent)]/30"
+                          />
+                        </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
                             <button
@@ -316,7 +413,7 @@ export default function DocumentsPage() {
                       </tr>
                       {isExpanded && (
                         <tr className="bg-gray-50/50 dark:bg-white/[0.02]">
-                          <td colSpan={5} className="px-4 py-3 pl-10">
+                          <td colSpan={6} className="px-4 py-3 pl-14">
                             <div className="space-y-1 text-sm">
                               <div>
                                 <span className="font-medium text-gray-500 dark:text-gray-400">Summary{doc.summary_model ? <span className="font-normal text-gray-400 dark:text-gray-500"> ({doc.summary_model})</span> : ''}: </span>
@@ -342,6 +439,21 @@ export default function DocumentsPage() {
               </tbody>
             </table>
           </div>
+          {/* Bottom bulk actions bar */}
+          {selected.size > 0 && (
+            <BulkActionsBar
+              count={selected.size}
+              isAdmin={isAdmin}
+              bulkAction={bulkAction}
+              confirmingDelete={confirmingDelete}
+              onReprocess={handleBulkReprocess}
+              onDelete={handleBulkDelete}
+              onCancelDelete={() => setConfirmingDelete(false)}
+              onDownload={handleBulkDownload}
+              onClear={() => { setSelected(new Set()); setConfirmingDelete(false) }}
+            />
+          )}
+
           <div className="mt-2 flex items-center justify-center gap-3 text-xs text-gray-400">
             <span>
               Showing {filteredDocs.length === 0 ? 0 : startIdx + 1}–{Math.min(startIdx + pageSize, filteredDocs.length)} of {filteredDocs.length}{filter && ` (filtered from ${docs.length})`}
@@ -369,6 +481,76 @@ export default function DocumentsPage() {
           <Pagination currentPage={effectivePage} totalPages={totalPages} onPageChange={setCurrentPage} />
         </>
       )}
+    </div>
+  )
+}
+
+function BulkActionsBar({ count, isAdmin, bulkAction, confirmingDelete, onReprocess, onDelete, onCancelDelete, onDownload, onClear }: {
+  count: number
+  isAdmin: boolean
+  bulkAction: string
+  confirmingDelete: boolean
+  onReprocess: () => void
+  onDelete: () => void
+  onCancelDelete: () => void
+  onDownload: () => void
+  onClear: () => void
+}) {
+  return (
+    <div className="my-2 flex items-center gap-2 rounded-lg bg-[var(--color-bg-secondary)] px-3 py-2">
+      <span className="text-xs font-medium text-[var(--color-text-secondary)]">
+        {count} selected
+      </span>
+      <div className="flex-1" />
+      {isAdmin && (
+        <button
+          onClick={onReprocess}
+          disabled={!!bulkAction}
+          className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-50"
+        >
+          {bulkAction === 'reprocess' ? 'Reprocessing...' : 'Reprocess'}
+        </button>
+      )}
+      <button
+        onClick={onDownload}
+        disabled={!!bulkAction}
+        className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-50"
+      >
+        {bulkAction === 'download' ? 'Downloading...' : 'Download'}
+      </button>
+      {isAdmin && (
+        confirmingDelete ? (
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={onDelete}
+              disabled={!!bulkAction}
+              className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+            >
+              {bulkAction === 'delete' ? 'Deleting...' : 'Click to confirm'}
+            </button>
+            <button
+              onClick={onCancelDelete}
+              className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={onDelete}
+            disabled={!!bulkAction}
+            className="rounded-lg border border-red-300 dark:border-red-700 px-3 py-1 text-xs font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+          >
+            Delete
+          </button>
+        )
+      )}
+      <button
+        onClick={onClear}
+        className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+      >
+        Clear
+      </button>
     </div>
   )
 }

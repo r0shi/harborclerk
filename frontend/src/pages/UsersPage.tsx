@@ -65,7 +65,7 @@ export default function UsersPage() {
   if (loading) return <div className="text-gray-500 dark:text-gray-400">Loading...</div>
 
   return (
-    <div>
+    <div className="animate-slide-in">
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-bold">Users</h1>
         <button

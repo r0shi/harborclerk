@@ -16,6 +16,7 @@ import ChatPage from './pages/ChatPage'
 import HomePage from './pages/HomePage'
 import ModelsPage from './pages/ModelsPage'
 import PreferencesPage from './pages/PreferencesPage'
+import RetrievalSettingsPage from './pages/RetrievalSettingsPage'
 import SystemSettingsPage from './pages/SystemSettingsPage'
 
 function ChatRedirect() {
@@ -47,6 +48,7 @@ export default function App() {
             <Route path="/admin/system/status" element={<SystemStatusPage />} />
             <Route path="/admin/system/maintenance" element={<SystemMaintenancePage />} />
             <Route path="/admin/models" element={<ModelsPage />} />
+            <Route path="/admin/retrieval" element={<RetrievalSettingsPage />} />
           </Route>
         </Route>
       </Route>

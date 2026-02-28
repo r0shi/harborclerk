@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     # RAG auto-inject in chat
     rag_auto_k: int = Field(default=3)
     rag_auto_threshold: float = Field(default=0.3)
+    max_tool_rounds: int = Field(default=5)
+    max_history_messages: int = Field(default=40)
 
     # Summaries
     summary_max_chars: int = Field(default=500)

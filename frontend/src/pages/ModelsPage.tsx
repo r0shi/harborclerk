@@ -218,7 +218,7 @@ export default function ModelsPage() {
   }
 
   return (
-    <div>
+    <div className="animate-slide-in">
       <h1 className="mb-4 text-xl font-bold">LLM Models</h1>
       <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
         Download and manage models for the built-in chat assistant. Models run

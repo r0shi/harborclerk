@@ -18,30 +18,46 @@ from harbor_clerk.search import hybrid_search
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You are Harbor Clerk, a document assistant for a local knowledge base. "
-    "Use the search_documents tool to find relevant information before answering. "
-    "Always cite your sources with document titles and page numbers. "
-    "If you cannot find relevant information, say so honestly. "
-    "Respond in the same language as the user's question. Be concise and factual."
+    "You are Harbor Clerk, a document assistant for a local knowledge base.\n"
+    "You have tools to search, browse, and analyze documents. Choose the right tool:\n\n"
+    "- list_documents: List documents in the knowledge base\n"
+    "- corpus_overview: Get collection statistics (doc count, languages, types)\n"
+    "- search_documents: Search for specific information by keyword or topic\n"
+    "- get_document: Get full metadata and summary for a specific document\n"
+    "- document_outline: Get a document's structure (headings, page count)\n"
+    "- read_passages / expand_context: Read full text of specific passages\n"
+    "- find_related: Find documents similar to a given document\n"
+    "- entity_search / entity_overview: Find people, places, and organizations\n"
+    "- ingest_status: Check document processing status\n\n"
+    "Always cite sources with document titles and page numbers.\n"
+    "If you cannot find relevant information, say so honestly.\n"
+    "Respond in the same language as the user's question."
 )
 
 SYSTEM_PROMPT_WITH_CONTEXT = (
-    "You are Harbor Clerk, a document assistant for a local knowledge base. "
-    "Relevant context from the knowledge base has been provided below. "
-    "Use it to answer the user's question if sufficient. "
-    "If you need more information, use the search_documents tool for additional investigation. "
-    "Always cite your sources with document titles and page numbers. "
-    "If you cannot find relevant information, say so honestly. "
-    "Respond in the same language as the user's question. Be concise and factual."
+    "You are Harbor Clerk, a document assistant for a local knowledge base.\n"
+    "Relevant context from the knowledge base is provided below. "
+    "Use it if sufficient, otherwise use your tools for deeper investigation.\n\n"
+    "You have tools to search, browse, and analyze documents. Choose the right tool:\n\n"
+    "- list_documents: List documents in the knowledge base\n"
+    "- corpus_overview: Get collection statistics (doc count, languages, types)\n"
+    "- search_documents: Search for specific information by keyword or topic\n"
+    "- get_document: Get full metadata and summary for a specific document\n"
+    "- document_outline: Get a document's structure (headings, page count)\n"
+    "- read_passages / expand_context: Read full text of specific passages\n"
+    "- find_related: Find documents similar to a given document\n"
+    "- entity_search / entity_overview: Find people, places, and organizations\n"
+    "- ingest_status: Check document processing status\n\n"
+    "Always cite sources with document titles and page numbers.\n"
+    "If you cannot find relevant information, say so honestly.\n"
+    "Respond in the same language as the user's question."
 )
-
-MAX_TOOL_ROUNDS = 5
-MAX_HISTORY_MESSAGES = 40
 
 
 async def chat_stream(
     conversation_id: uuid.UUID,
     user_message: str,
+    user_id: uuid.UUID | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream chat response as SSE events. Handles tool-calling loop internally.
 
@@ -129,7 +145,7 @@ async def chat_stream(
 
         # Build messages for the LLM
         messages: list[dict] = [{"role": "system", "content": system_content}]
-        for msg in history_rows[-MAX_HISTORY_MESSAGES:]:
+        for msg in history_rows[-settings.max_history_messages :]:
             entry: dict = {"role": msg.role, "content": msg.content}
             if msg.tool_calls:
                 entry["tool_calls"] = msg.tool_calls
@@ -148,7 +164,7 @@ async def chat_stream(
         assistant_content = ""
         total_tokens = 0
 
-        for _round in range(MAX_TOOL_ROUNDS):
+        for _round in range(settings.max_tool_rounds):
             tool_calls_accumulated: list[dict] = []
             text_buffer = ""
 
@@ -249,7 +265,7 @@ async def chat_stream(
 
                     yield f"data: {json.dumps({'type': 'tool_call', 'name': fn_name, 'arguments': fn_args})}\n\n"
 
-                    result_str = await execute_tool(fn_name, fn_args, session)
+                    result_str = await execute_tool(fn_name, fn_args, user_id)
 
                     yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': _summarize_result(result_str)})}\n\n"
 
@@ -315,12 +331,28 @@ def _summarize_result(result_str: str) -> str:
     """Create a short summary of a tool result for the UI."""
     try:
         data = json.loads(result_str)
+        if "error" in data:
+            return f"Error: {data['error']}"
         if "results" in data:
             return f"Found {data.get('count', len(data['results']))} results"
         if "passages" in data:
             return f"Read {len(data['passages'])} passages"
-        if "error" in data:
-            return f"Error: {data['error']}"
-    except json.JSONDecodeError:
+        if "chunks" in data:
+            return f"Read {len(data['chunks'])} chunks"
+        if "documents" in data:
+            return f"{len(data['documents'])} documents"
+        if "document" in data:
+            return f"Document: {data['document'].get('title', 'Untitled')}"
+        if "headings" in data:
+            return f"{len(data.get('headings', []))} headings"
+        if "related" in data:
+            return f"{len(data['related'])} related documents"
+        if "entities" in data:
+            return f"{len(data['entities'])} entities"
+        if "stages" in data:
+            return f"Status: {data.get('overall_status', 'unknown')}"
+        if "total_documents" in data:
+            return f"{data['total_documents']} documents in corpus"
+    except (json.JSONDecodeError, TypeError, KeyError):
         pass
     return "Done"

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { stageLabel } from '../../utils/stageLabel'
 import { PIPELINE_STAGES, type DocumentQueueItem } from '../../hooks/useQueueTray'
+import StageRing from './StageRing'
 
 interface DocumentRowProps {
   item: DocumentQueueItem
@@ -13,25 +14,49 @@ export default function DocumentRow({ item }: DocumentRowProps) {
   const hasSubProgress =
     currentState?.status === 'running' && currentState.total != null && currentState.total > 0
 
-  // Stage bar width
-  let stageBarWidth = '0%'
-  let stageBarClass = 'queue-stage-bar bg-[var(--color-accent)]'
-  if (item.status === 'running' && currentState?.status === 'running') {
-    if (hasSubProgress) {
-      stageBarWidth = `${Math.round(((currentState.progress || 0) / currentState.total!) * 100)}%`
-    } else {
-      stageBarWidth = '100%'
-      stageBarClass = 'queue-shimmer'
-    }
+  // Count active (non-skipped) stages and current step
+  const activeStages = PIPELINE_STAGES.filter(s => {
+    const st = item.stages.get(s)
+    return !st || st.status !== 'skipped'
+  })
+  let doneCount = 0
+  for (const s of activeStages) {
+    const st = item.stages.get(s)
+    if (st?.status === 'done') doneCount++
+    else break
   }
+  const runningStage = activeStages.find(s => item.stages.get(s)?.status === 'running')
+  const currentStep = runningStage ? doneCount + 1 : doneCount
 
   return (
     <div className="py-1.5">
-      {/* Header: filename + chevron */}
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium text-[var(--color-text-primary)] truncate min-w-0">
-          {item.filename}
-        </span>
+      {/* Main row: ring + info + chevron */}
+      <div className="flex items-center gap-2.5">
+        <StageRing stages={item.stages} size={36} />
+
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-[var(--color-text-primary)] truncate">
+            {item.filename}
+          </div>
+          <div className="text-xs text-[var(--color-text-secondary)]">
+            {item.status === 'queued' ? (
+              'Queued'
+            ) : (
+              <>
+                {stageLabel(item.current_stage)}
+                {hasSubProgress && (
+                  <span className="ml-1">
+                    — {currentState.progress}/{currentState.total} pages
+                  </span>
+                )}
+                <span className="ml-1 text-[var(--color-text-secondary)]">
+                  (Step {currentStep}/{activeStages.length})
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+
         <button
           onClick={() => setExpanded((p) => !p)}
           className="shrink-0 rounded-md p-0.5 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
@@ -46,42 +71,6 @@ export default function DocumentRow({ item }: DocumentRowProps) {
             <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
           </svg>
         </button>
-      </div>
-
-      {/* Stage label + sub-progress */}
-      <div className="text-xs text-[var(--color-text-secondary)] mt-0.5">
-        {item.status === 'queued' ? (
-          'Queued'
-        ) : (
-          <>
-            {stageLabel(item.current_stage)}
-            {hasSubProgress && (
-              <span className="ml-1">
-                {currentState.progress} of {currentState.total}
-              </span>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Dual progress bars */}
-      <div className="flex flex-col gap-1.5 mt-1.5">
-        {/* Stage bar (3px) */}
-        <div className="h-[3px] rounded-full bg-black/[0.04] dark:bg-white/[0.06] overflow-hidden">
-          {item.status !== 'queued' && (
-            <div
-              className={`h-full rounded-full ${stageBarClass}`}
-              style={{ width: stageBarWidth }}
-            />
-          )}
-        </div>
-        {/* Overall bar (5px) */}
-        <div className="h-[5px] rounded-full bg-black/[0.04] dark:bg-white/[0.06] overflow-hidden">
-          <div
-            className="h-full rounded-full queue-overall-bar"
-            style={{ width: `${item.overall_progress}%` }}
-          />
-        </div>
       </div>
 
       {/* Expandable detail */}

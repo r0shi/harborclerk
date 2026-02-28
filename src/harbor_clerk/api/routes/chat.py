@@ -158,7 +158,7 @@ async def send_message(
     await session.commit()
 
     return StreamingResponse(
-        chat_stream(conv_id, body.content),
+        chat_stream(conv_id, body.content, user_id=principal.id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
