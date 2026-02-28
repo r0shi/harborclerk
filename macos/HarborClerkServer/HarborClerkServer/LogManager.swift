@@ -14,7 +14,13 @@ enum Log {
         let pipe = Pipe()
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
+                // EOF: nil out handler so the pipe fully closes.
+                // Without this, waitUntilExit() deadlocks because it waits
+                // for the pipe's read end to close.
+                handle.readabilityHandler = nil
+                return
+            }
             for line in text.components(separatedBy: .newlines) where !line.isEmpty {
                 logger.info("\(line, privacy: .public)")
             }

@@ -92,7 +92,7 @@ final class ServiceManager: ObservableObject {
 
     /// Kill any process listening on the given port (leftover from a prior run).
     /// PostgreSQL handles stale PIDs via pg_ctl / postmaster.pid, so skip it.
-    nonisolated private func killStaleProcess(onPort port: Int) {
+    private func killStaleProcess(onPort port: Int) async {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         proc.arguments = ["-ti", "tcp:\(port)"]
@@ -100,9 +100,14 @@ final class ServiceManager: ObservableObject {
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
         try? proc.run()
-        proc.waitUntilExit()
+        let data: Data = await withCheckedContinuation { c in
+            DispatchQueue.global().async {
+                proc.waitUntilExit()
+                let d = pipe.fileHandleForReading.readDataToEndOfFile()
+                c.resume(returning: d)
+            }
+        }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         guard let output = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !output.isEmpty else { return }
@@ -112,7 +117,7 @@ final class ServiceManager: ObservableObject {
                 Log.logger("lifecycle").warning(
                     "Killing stale process \(pid, privacy: .public) on port \(port, privacy: .public)")
                 kill(pid, SIGTERM)
-                usleep(500_000) // 0.5s grace
+                try? await Task.sleep(for: .milliseconds(500))
                 if kill(pid, 0) == 0 {
                     kill(pid, SIGKILL)
                 }
@@ -151,19 +156,19 @@ final class ServiceManager: ObservableObject {
         await runMigrations()
 
         // 3. Tika (JVM startup can take ~30-60s)
-        killStaleProcess(onPort: settings.tikaPort)
+        await killStaleProcess(onPort: settings.tikaPort)
         await startService(tikaService)
 
         // 4. Embedder (can take a while for model load)
-        killStaleProcess(onPort: settings.embedderPort)
+        await killStaleProcess(onPort: settings.embedderPort)
         await startService(embedderService)
 
         // 5. LLM server (skip silently if no model selected)
-        killStaleProcess(onPort: settings.llamaPort)
+        await killStaleProcess(onPort: settings.llamaPort)
         await startService(llamaService)
 
         // 6. API server
-        killStaleProcess(onPort: settings.apiPort)
+        await killStaleProcess(onPort: settings.apiPort)
         await startService(apiService)
 
         // 7. Workers

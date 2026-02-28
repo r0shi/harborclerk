@@ -197,7 +197,9 @@ final class PostgresService: ManagedService {
         ]
         startProc.environment = pgEnvironment()
         try startProc.run()
-        startProc.waitUntilExit()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { startProc.waitUntilExit(); c.resume() }
+        }
 
         // Wait for ready
         for _ in 0..<30 {
@@ -212,7 +214,9 @@ final class PostgresService: ManagedService {
         createProc.arguments = ["-p", String(port), "-h", "localhost", "-U", "lka", "lka"]
         createProc.environment = pgEnvironment()
         try? createProc.run()
-        createProc.waitUntilExit()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { createProc.waitUntilExit(); c.resume() }
+        }
 
         // Create extensions
         let psql = pgBinDir.appendingPathComponent("psql")
@@ -229,7 +233,9 @@ final class PostgresService: ManagedService {
             extProc.standardOutput = FileHandle.nullDevice
             extProc.standardError = FileHandle.nullDevice
             try? extProc.run()
-            extProc.waitUntilExit()
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().async { extProc.waitUntilExit(); c.resume() }
+            }
         }
 
         // Stop — will be started properly by ServiceManager
@@ -238,7 +244,9 @@ final class PostgresService: ManagedService {
         stopProc.arguments = ["-D", dataDir.path, "stop", "-m", "fast"]
         stopProc.environment = pgEnvironment()
         try? stopProc.run()
-        stopProc.waitUntilExit()
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { stopProc.waitUntilExit(); c.resume() }
+        }
     }
 
     // MARK: - Stale PID Detection
