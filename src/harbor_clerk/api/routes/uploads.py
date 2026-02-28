@@ -1,5 +1,6 @@
 """Upload endpoints: upload files, confirm, list status."""
 
+import asyncio
 import hashlib
 import io
 import logging
@@ -304,7 +305,10 @@ async def _confirm_single(
     safe_name = os.path.basename(upload.original_filename) or "file"
     canonical_key = f"versions/{version.version_id}/{safe_name}"
     storage = get_storage()
-    storage.copy_and_delete(
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        storage.copy_and_delete,
         upload.minio_bucket,
         upload.minio_object_key,
         settings.minio_bucket,

@@ -107,18 +107,18 @@ export default function ChatPage() {
       }
 
       let activeConvId = conversationId
+      let isNewConversation = false
       if (!activeConvId) {
         const conv = await post<ConversationSummary>('/api/chat/conversations', {
           title: 'New conversation',
         })
         activeConvId = conv.conversation_id
         setConversations((prev) => [conv, ...prev])
-        skipNextFetchRef.current = true
-        navigate(`/c/${activeConvId}`, { replace: true })
+        isNewConversation = true
+        // Don't navigate yet — keep this component instance alive for streaming
       }
 
       await sendMessage(activeConvId, text).finally(() => {
-        // Update title immediately from SSE if available
         if (lastTitle.current && activeConvId) {
           setConversations((prev) =>
             prev.map((c) =>
@@ -128,9 +128,14 @@ export default function ChatPage() {
             ),
           )
         }
-        // Always refetch conversation list for updated timestamps
         get<ConversationSummary[]>('/api/chat/conversations').then(setConversations).catch(() => {})
       })
+
+      // Navigate AFTER streaming completes — messages are saved to DB now
+      if (isNewConversation) {
+        skipNextFetchRef.current = true
+        navigate(`/c/${activeConvId}`, { replace: true })
+      }
     },
     [isStreaming, conversationId, sendMessage, navigate, lastTitle],
   )

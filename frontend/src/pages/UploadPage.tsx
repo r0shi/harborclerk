@@ -170,6 +170,7 @@ export default function UploadPage() {
   const [docs, setDocs] = useState<DocSummary[]>([])
   const [docsLoaded, setDocsLoaded] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
+  const [confirmProgress, setConfirmProgress] = useState<{ done: number; total: number } | null>(null)
 
   useEffect(() => {
     get<DocSummary[]>('/api/docs')
@@ -190,43 +191,56 @@ export default function UploadPage() {
     [unconfirmedPending],
   )
 
+  const CONFIRM_BATCH_SIZE = 50
+
   async function batchConfirm(items: PendingFile[]) {
     setConfirming(true)
     setError('')
+    setConfirmProgress(null)
+    const allErrors: string[] = []
+
     try {
-      const body = {
-        items: items.map((p) => ({
-          upload_id: p.uploadId,
-          action: p.action,
-          existing_doc_id:
-            p.action === 'new_version' ? p.selectedDocId : undefined,
-        })),
-      }
-      const data = await post<{ results: BatchConfirmResultItem[] }>(
-        '/api/uploads/confirm-batch',
-        body,
-      )
-      setConfirmed((prev) => {
-        const next = new Map(prev)
-        for (const r of data.results) {
-          if (r.status !== 'error' && r.doc_id && r.version_id) {
-            next.set(r.upload_id, {
-              doc_id: r.doc_id,
-              version_id: r.version_id,
-              status: r.status,
-            })
-          }
+      for (let i = 0; i < items.length; i += CONFIRM_BATCH_SIZE) {
+        const chunk = items.slice(i, i + CONFIRM_BATCH_SIZE)
+        setConfirmProgress({ done: i, total: items.length })
+
+        const body = {
+          items: chunk.map((p) => ({
+            upload_id: p.uploadId,
+            action: p.action,
+            existing_doc_id:
+              p.action === 'new_version' ? p.selectedDocId : undefined,
+          })),
         }
-        return next
-      })
-      const errors = data.results.filter((r) => r.status === 'error')
-      if (errors.length > 0) {
-        setError(errors.map((e) => e.error).join('; '))
+        const data = await post<{ results: BatchConfirmResultItem[] }>(
+          '/api/uploads/confirm-batch',
+          body,
+        )
+        setConfirmed((prev) => {
+          const next = new Map(prev)
+          for (const r of data.results) {
+            if (r.status !== 'error' && r.doc_id && r.version_id) {
+              next.set(r.upload_id, {
+                doc_id: r.doc_id,
+                version_id: r.version_id,
+                status: r.status,
+              })
+            }
+          }
+          return next
+        })
+        const errors = data.results.filter((r) => r.status === 'error')
+        allErrors.push(...errors.map((e) => e.error ?? 'Unknown error'))
+      }
+
+      if (allErrors.length > 0) {
+        setError(allErrors.join('; '))
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Confirm failed')
     } finally {
       setConfirming(false)
+      setConfirmProgress(null)
     }
   }
 
@@ -560,7 +574,9 @@ export default function UploadPage() {
                   className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
                 >
                   {confirming
-                    ? 'Confirming...'
+                    ? confirmProgress
+                      ? `Confirming... ${Math.min(confirmProgress.done + CONFIRM_BATCH_SIZE, confirmProgress.total)}/${confirmProgress.total}`
+                      : 'Confirming...'
                     : `Confirm ${unconfirmedPending.length} file${unconfirmedPending.length !== 1 ? 's' : ''}`}
                 </button>
               </div>
