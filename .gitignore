@@ -16,6 +16,7 @@ build/
 *.swp
 .claude/
 .serena/
+.worktrees/
 
 # Frontend
 frontend/node_modules/
