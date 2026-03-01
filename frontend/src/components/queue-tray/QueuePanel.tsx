@@ -34,10 +34,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
   const hasCompleted = completed.length > 0
 
   return (
-    <div
-      className={`mb-2 ${exiting ? 'panel-exit' : 'panel-enter'}`}
-      onAnimationEnd={handleAnimationEnd}
-    >
+    <div className={`mb-2 ${exiting ? 'panel-exit' : 'panel-enter'}`} onAnimationEnd={handleAnimationEnd}>
       <div className="w-[360px] max-h-[60vh] flex flex-col rounded-2xl bg-[var(--bg-vibrancy)] backdrop-blur-xl shadow-mac-lg ring-1 ring-[var(--color-border)] overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
@@ -69,9 +66,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
           )}
 
           {/* Divider */}
-          {hasActive && hasCompleted && (
-            <div className="border-b border-[var(--color-border)]" />
-          )}
+          {hasActive && hasCompleted && <div className="border-b border-[var(--color-border)]" />}
 
           {/* Completed section */}
           {hasCompleted && (

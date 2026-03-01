@@ -132,7 +132,9 @@
   animation-delay: 0.32s;
 }
 @keyframes dotBounce {
-  0%, 80%, 100% {
+  0%,
+  80%,
+  100% {
     transform: scale(0.6);
     opacity: 0.4;
   }
@@ -153,7 +155,8 @@
   animation-delay: 0.4s;
 }
 @keyframes streamPulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 0.3;
   }
   50% {

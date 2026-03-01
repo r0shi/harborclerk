@@ -32,7 +32,10 @@ def ensure_bucket_exists() -> None:
 
 
 def copy_and_delete_object(
-    src_bucket: str, src_key: str, dst_bucket: str, dst_key: str,
+    src_bucket: str,
+    src_key: str,
+    dst_bucket: str,
+    dst_key: str,
 ) -> None:
     """Copy an object to a new key and delete the original."""
     client = get_minio_client()

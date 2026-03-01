@@ -144,8 +144,18 @@ export default function SearchPage() {
                   }}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-black/[0.02] dark:hover:bg-white/[0.02]"
                 >
-                  <svg className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  <svg
+                    className="h-3.5 w-3.5 flex-shrink-0 text-gray-400"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
                   </svg>
                   {q}
                 </button>
@@ -182,15 +192,11 @@ export default function SearchPage() {
         <>
           {results.possible_conflict && results.conflict_sources.length > 0 && (
             <div className="mb-4 rounded bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-400">
-              <strong>Possible conflict:</strong> Similar content found across
-              multiple sources:{' '}
+              <strong>Possible conflict:</strong> Similar content found across multiple sources:{' '}
               {results.conflict_sources.map((s, i) => (
                 <span key={s.version_id}>
                   {i > 0 && ', '}
-                  <Link
-                    to={`/docs/${s.doc_id}`}
-                    className="font-medium text-amber-900 dark:text-amber-300 underline"
-                  >
+                  <Link to={`/docs/${s.doc_id}`} className="font-medium text-amber-900 dark:text-amber-300 underline">
                     {s.title}
                   </Link>
                 </span>
@@ -202,24 +208,17 @@ export default function SearchPage() {
             <p className="text-gray-500 dark:text-gray-400">No results found.</p>
           ) : (
             <div className="space-y-3">
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                {results.hits.length} results
-              </p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">{results.hits.length} results</p>
               {results.hits.map((hit) => {
-                const linkTo = hit.page_start != null
-                  ? `/docs/${hit.doc_id}?showContent=true&page=${hit.page_start}`
-                  : `/docs/${hit.doc_id}?showContent=true`
+                const linkTo =
+                  hit.page_start != null
+                    ? `/docs/${hit.doc_id}?showContent=true&page=${hit.page_start}`
+                    : `/docs/${hit.doc_id}?showContent=true`
 
                 return (
-                  <div
-                    key={hit.chunk_id}
-                    className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4"
-                  >
+                  <div key={hit.chunk_id} className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
                     <div className="mb-2 flex items-center justify-between">
-                      <Link
-                        to={linkTo}
-                        className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                      >
+                      <Link to={linkTo} className="font-medium text-blue-600 dark:text-blue-400 hover:underline">
                         {hit.doc_title || 'Untitled'}
                       </Link>
                       <div className="flex items-center space-x-2">
@@ -231,25 +230,23 @@ export default function SearchPage() {
                             }}
                           />
                         </div>
-                        <span className="text-xs text-gray-400">
-                          {hit.score.toFixed(3)}
-                        </span>
+                        <span className="text-xs text-gray-400">{hit.score.toFixed(3)}</span>
                       </div>
                     </div>
-                    <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">
-                      {hit.chunk_text}
-                    </p>
+                    <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{hit.chunk_text}</p>
                     <div className="flex items-center space-x-3 text-xs text-gray-400">
                       {hit.page_start != null && (
                         <span>
                           Page {hit.page_start}
-                          {hit.page_end != null && hit.page_end !== hit.page_start
-                            ? `\u2013${hit.page_end}`
-                            : ''}
+                          {hit.page_end != null && hit.page_end !== hit.page_start ? `\u2013${hit.page_end}` : ''}
                         </span>
                       )}
                       <span>Lang: {hit.language}</span>
-                      {hit.ocr_used && <span className="rounded-md text-[11px] font-medium bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5">OCR</span>}
+                      {hit.ocr_used && (
+                        <span className="rounded-md text-[11px] font-medium bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5">
+                          OCR
+                        </span>
+                      )}
                     </div>
                   </div>
                 )

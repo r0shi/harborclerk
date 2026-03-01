@@ -59,18 +59,36 @@ interface PendingFile {
 
 const SUPPORTED_EXTENSIONS = new Set([
   // Documents
-  '.pdf', '.docx', '.doc', '.rtf', '.txt', '.md',
-  '.odt', '.pages',
+  '.pdf',
+  '.docx',
+  '.doc',
+  '.rtf',
+  '.txt',
+  '.md',
+  '.odt',
+  '.pages',
   // Spreadsheets
-  '.xlsx', '.xls', '.ods', '.numbers', '.csv',
+  '.xlsx',
+  '.xls',
+  '.ods',
+  '.numbers',
+  '.csv',
   // Presentations
-  '.pptx', '.ppt', '.odp', '.key',
+  '.pptx',
+  '.ppt',
+  '.odp',
+  '.key',
   // Images (OCR)
-  '.jpg', '.jpeg', '.png', '.tiff', '.tif',
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.tiff',
+  '.tif',
   // eBooks
   '.epub',
   // Web
-  '.html', '.htm',
+  '.html',
+  '.htm',
   // Email
   '.eml',
 ])
@@ -89,10 +107,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function findMatchCandidates(
-  filename: string,
-  docs: DocSummary[],
-): MatchCandidate[] {
+function findMatchCandidates(filename: string, docs: DocSummary[]): MatchCandidate[] {
   const stem = filename.replace(/\.[^.]+$/, '').toLowerCase()
   const candidates: MatchCandidate[] = []
 
@@ -104,10 +119,7 @@ function findMatchCandidates(
       candidates.push({ doc, score: 1.0, reason: 'Exact filename match' })
     } else if (stem === docStem) {
       candidates.push({ doc, score: 0.8, reason: 'Same name, different format' })
-    } else if (
-      stem.length > 3 &&
-      (docStem.includes(stem) || stem.includes(docStem))
-    ) {
+    } else if (stem.length > 3 && (docStem.includes(stem) || stem.includes(docStem))) {
       candidates.push({ doc, score: 0.5, reason: 'Similar name' })
     }
   }
@@ -116,41 +128,28 @@ function findMatchCandidates(
 }
 
 /** Drain all entries from a directory reader (spec requires repeated calls). */
-async function readAllEntries(
-  reader: FileSystemDirectoryReader,
-): Promise<FileSystemEntry[]> {
+async function readAllEntries(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> {
   const all: FileSystemEntry[] = []
-  let batch: FileSystemEntry[] = await new Promise((resolve, reject) =>
-    reader.readEntries(resolve, reject),
-  )
+  let batch: FileSystemEntry[] = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))
   while (batch.length > 0) {
     all.push(...batch)
-    batch = await new Promise((resolve, reject) =>
-      reader.readEntries(resolve, reject),
-    )
+    batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))
   }
   return all
 }
 
 /** Recursively collect files from a FileSystemEntry tree, tracking folder paths. */
-async function collectFiles(
-  entry: FileSystemEntry,
-  basePath = '',
-): Promise<FileWithFolder[]> {
+async function collectFiles(entry: FileSystemEntry, basePath = ''): Promise<FileWithFolder[]> {
   if (entry.isFile) {
     const fileEntry = entry as FileSystemFileEntry
-    const file: File = await new Promise((resolve, reject) =>
-      fileEntry.file(resolve, reject),
-    )
+    const file: File = await new Promise((resolve, reject) => fileEntry.file(resolve, reject))
     return isSupportedFile(file.name) ? [{ file, folderPath: basePath }] : []
   }
   if (entry.isDirectory) {
     const dirEntry = entry as FileSystemDirectoryEntry
     const folderPath = basePath ? `${basePath}/${entry.name}` : entry.name
     const entries = await readAllEntries(dirEntry.createReader())
-    const nested = await Promise.all(
-      entries.map((ent) => collectFiles(ent, folderPath)),
-    )
+    const nested = await Promise.all(entries.map((ent) => collectFiles(ent, folderPath)))
     return nested.flat()
   }
   return []
@@ -164,9 +163,7 @@ export default function UploadPage() {
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState('')
   const [dragOver, setDragOver] = useState(false)
-  const [confirmed, setConfirmed] = useState<Map<string, ConfirmResult>>(
-    new Map(),
-  )
+  const [confirmed, setConfirmed] = useState<Map<string, ConfirmResult>>(new Map())
   const [docs, setDocs] = useState<DocSummary[]>([])
   const [docsLoaded, setDocsLoaded] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
@@ -208,14 +205,10 @@ export default function UploadPage() {
           items: chunk.map((p) => ({
             upload_id: p.uploadId,
             action: p.action,
-            existing_doc_id:
-              p.action === 'new_version' ? p.selectedDocId : undefined,
+            existing_doc_id: p.action === 'new_version' ? p.selectedDocId : undefined,
           })),
         }
-        const data = await post<{ results: BatchConfirmResultItem[] }>(
-          '/api/uploads/confirm-batch',
-          body,
-        )
+        const data = await post<{ results: BatchConfirmResultItem[] }>('/api/uploads/confirm-batch', body)
         setConfirmed((prev) => {
           const next = new Map(prev)
           for (const r of data.results) {
@@ -257,10 +250,7 @@ export default function UploadPage() {
         for (const { file } of filesWithFolders) {
           formData.append('files', file)
         }
-        const data = await postForm<{ files: UploadFileResult[] }>(
-          '/api/uploads',
-          formData,
-        )
+        const data = await postForm<{ files: UploadFileResult[] }>('/api/uploads', formData)
         setResults(data.files)
 
         // Build pending files with folder paths and match candidates
@@ -269,8 +259,7 @@ export default function UploadPage() {
           if (r.status !== 'pending_confirmation') return
           const folderPath = filesWithFolders[i]?.folderPath || ''
           const matches = findMatchCandidates(r.filename, docs)
-          const bestMatch =
-            matches.length > 0 && matches[0].score >= 0.8 ? matches[0] : null
+          const bestMatch = matches.length > 0 && matches[0].score >= 0.8 ? matches[0] : null
           pending.push({
             uploadId: r.upload_id,
             filename: r.filename,
@@ -311,9 +300,7 @@ export default function UploadPage() {
     }
 
     if (entries.length > 0) {
-      const allNested = await Promise.all(
-        entries.map((ent) => collectFiles(ent)),
-      )
+      const allNested = await Promise.all(entries.map((ent) => collectFiles(ent)))
       const files = allNested.flat()
       if (files.length === 0) {
         setError(
@@ -326,9 +313,10 @@ export default function UploadPage() {
     }
 
     if (e.dataTransfer.files.length > 0) {
-      const supported = Array.from(e.dataTransfer.files).filter((f) =>
-        // Skip likely folder entries: 0-byte with empty type or no extension
-        f.size > 0 && isSupportedFile(f.name),
+      const supported = Array.from(e.dataTransfer.files).filter(
+        (f) =>
+          // Skip likely folder entries: 0-byte with empty type or no extension
+          f.size > 0 && isSupportedFile(f.name),
       )
       if (supported.length === 0) {
         setError(
@@ -342,9 +330,7 @@ export default function UploadPage() {
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (e.target.files && e.target.files.length > 0) {
-      uploadFiles(
-        Array.from(e.target.files).map((f) => ({ file: f, folderPath: '' })),
-      )
+      uploadFiles(Array.from(e.target.files).map((f) => ({ file: f, folderPath: '' })))
     }
   }
 
@@ -425,9 +411,7 @@ export default function UploadPage() {
   }, [unconfirmedPending])
 
   const confirmedFiles = pendingFiles.filter((p) => confirmed.has(p.uploadId))
-  const nonPendingResults = results.filter(
-    (r) => r.status === 'duplicate' || r.status === 'skipped',
-  )
+  const nonPendingResults = results.filter((r) => r.status === 'duplicate' || r.status === 'skipped')
 
   return (
     <div>
@@ -454,17 +438,13 @@ export default function UploadPage() {
         }`}
       >
         {uploading || confirming ? (
-          <p className="text-gray-500 dark:text-gray-400">
-            {uploading ? 'Uploading...' : 'Starting processing...'}
-          </p>
+          <p className="text-gray-500 dark:text-gray-400">{uploading ? 'Uploading...' : 'Starting processing...'}</p>
         ) : (
           <>
             <p className="mb-2 text-gray-600 dark:text-gray-400">
               Drag and drop files or folders here, or click to browse
             </p>
-            <p className="mb-4 text-xs text-gray-400">
-              PDF, Office, text, images, eBooks, and more
-            </p>
+            <p className="mb-4 text-xs text-gray-400">PDF, Office, text, images, eBooks, and more</p>
             <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700">
               Choose Files
               <input
@@ -498,10 +478,7 @@ export default function UploadPage() {
                 <p className="text-sm font-medium text-green-700 dark:text-green-400">
                   {p.filename} — Processing started
                 </p>
-                <Link
-                  to={`/docs/${c.doc_id}`}
-                  className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
-                >
+                <Link to={`/docs/${c.doc_id}`} className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
                   View document
                 </Link>
               </div>
@@ -566,12 +543,7 @@ export default function UploadPage() {
                       </div>
                     )}
                     {files.map((p) => (
-                      <FileRow
-                        key={p.uploadId}
-                        pending={p}
-                        docs={docs}
-                        onChange={updatePendingAction}
-                      />
+                      <FileRow key={p.uploadId} pending={p} docs={docs} onChange={updatePendingAction} />
                     ))}
                   </div>
                 ))}
@@ -608,35 +580,23 @@ function FileRow({
   docs: DocSummary[]
   onChange: (uploadId: string, value: string) => void
 }) {
-  const otherDocs = docs.filter(
-    (d) => !pending.matchCandidates.some((m) => m.doc.doc_id === d.doc_id),
-  )
+  const otherDocs = docs.filter((d) => !pending.matchCandidates.some((m) => m.doc.doc_id === d.doc_id))
   const matchReason =
     pending.action === 'new_version'
-      ? pending.matchCandidates.find(
-          (m) => m.doc.doc_id === pending.selectedDocId,
-        )?.reason
+      ? pending.matchCandidates.find((m) => m.doc.doc_id === pending.selectedDocId)?.reason
       : null
 
   return (
     <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50/50 dark:hover:bg-gray-800/20">
       <div className="min-w-0 flex-1">
         <span className="text-sm truncate block">{pending.filename}</span>
-        <span className="text-xs text-gray-400">
-          {formatSize(pending.sizeBytes)}
-        </span>
+        <span className="text-xs text-gray-400">{formatSize(pending.sizeBytes)}</span>
       </div>
       {matchReason && (
-        <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0 hidden sm:inline">
-          {matchReason}
-        </span>
+        <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0 hidden sm:inline">{matchReason}</span>
       )}
       <select
-        value={
-          pending.action === 'new_document'
-            ? 'new'
-            : `version:${pending.selectedDocId}`
-        }
+        value={pending.action === 'new_document' ? 'new' : `version:${pending.selectedDocId}`}
         onChange={(e) => onChange(pending.uploadId, e.target.value)}
         className="shrink-0 rounded-lg border-0 bg-gray-100 dark:bg-gray-700/50 px-2 py-1 text-xs focus:ring-2 focus:ring-blue-500/30"
       >
@@ -668,9 +628,7 @@ function StatusCard({ result }: { result: UploadFileResult }) {
   if (result.status === 'duplicate') {
     return (
       <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 shadow-mac">
-        <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
-          {result.filename} — Duplicate
-        </p>
+        <p className="text-sm font-medium text-amber-700 dark:text-amber-400">{result.filename} — Duplicate</p>
         {result.duplicate_doc_id && (
           <Link
             to={`/docs/${result.duplicate_doc_id}`}
@@ -685,9 +643,7 @@ function StatusCard({ result }: { result: UploadFileResult }) {
 
   return (
     <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
-      <p className="text-sm text-gray-500 dark:text-gray-400">
-        {result.filename} — Skipped (unsupported type)
-      </p>
+      <p className="text-sm text-gray-500 dark:text-gray-400">{result.filename} — Skipped (unsupported type)</p>
     </div>
   )
 }

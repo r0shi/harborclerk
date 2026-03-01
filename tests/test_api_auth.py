@@ -1,15 +1,16 @@
 """Tests for /api/auth/* and /me endpoints."""
 
-import pytest
-
 from tests.conftest import auth_header
 
 
 async def test_login_success(client, admin_user):
-    resp = await client.post("/api/auth/login", json={
-        "email": "admin@test.com",
-        "password": "TestPassword123",
-    })
+    resp = await client.post(
+        "/api/auth/login",
+        json={
+            "email": "admin@test.com",
+            "password": "TestPassword123",
+        },
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["access_token"]
@@ -17,18 +18,24 @@ async def test_login_success(client, admin_user):
 
 
 async def test_login_wrong_password(client, admin_user):
-    resp = await client.post("/api/auth/login", json={
-        "email": "admin@test.com",
-        "password": "WrongPassword999",
-    })
+    resp = await client.post(
+        "/api/auth/login",
+        json={
+            "email": "admin@test.com",
+            "password": "WrongPassword999",
+        },
+    )
     assert resp.status_code == 401
 
 
 async def test_login_nonexistent_user(client):
-    resp = await client.post("/api/auth/login", json={
-        "email": "nobody@test.com",
-        "password": "Whatever123!",
-    })
+    resp = await client.post(
+        "/api/auth/login",
+        json={
+            "email": "nobody@test.com",
+            "password": "Whatever123!",
+        },
+    )
     assert resp.status_code == 401
 
 

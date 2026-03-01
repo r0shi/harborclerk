@@ -23,10 +23,7 @@ def run_summarize(version_id: uuid.UUID) -> None:
     try:
         chunks = (
             session.execute(
-                select(Chunk.chunk_text)
-                .where(Chunk.version_id == version_id)
-                .order_by(Chunk.chunk_num)
-                .limit(5)
+                select(Chunk.chunk_text).where(Chunk.version_id == version_id).order_by(Chunk.chunk_num).limit(5)
             )
             .scalars()
             .all()
@@ -36,16 +33,12 @@ def run_summarize(version_id: uuid.UUID) -> None:
             try:
                 summary, model_used = generate_summary(combined)
             except Exception:
-                logger.warning(
-                    "Summary generation failed for %s", version_id, exc_info=True
-                )
+                logger.warning("Summary generation failed for %s", version_id, exc_info=True)
                 summary, model_used = None, None
 
             if summary:
                 version = session.execute(
-                    select(DocumentVersion).where(
-                        DocumentVersion.version_id == version_id
-                    )
+                    select(DocumentVersion).where(DocumentVersion.version_id == version_id)
                 ).scalar_one()
                 version.summary = summary
                 version.summary_model = model_used

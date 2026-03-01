@@ -38,10 +38,7 @@ def test_extract_entities_french():
     assert len(entities) > 0
     names = {e.text for e in entities}
     # French model should find at least one person/location
-    assert any(
-        n in names
-        for n in ("Emmanuel Macron", "Macron", "Paris", "Angela Merkel", "Merkel")
-    )
+    assert any(n in names for n in ("Emmanuel Macron", "Macron", "Paris", "Angela Merkel", "Merkel"))
 
 
 def test_extract_entities_empty_text():

@@ -43,9 +43,7 @@ export default function QueueToastPopup({ items, onDismiss }: QueueToastPopupPro
                 {latest.filename}
               </span>
               {items.length > 1 && (
-                <span className="text-xs text-[var(--color-text-secondary)]">
-                  +{items.length - 1} more
-                </span>
+                <span className="text-xs text-[var(--color-text-secondary)]">+{items.length - 1} more</span>
               )}
             </div>
             <div className="text-xs text-[var(--color-text-secondary)] mt-0.5 ml-4">

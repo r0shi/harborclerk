@@ -32,7 +32,12 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def put_object(
-        self, bucket: str, key: str, data: BinaryIO, length: int, content_type: str = "",
+        self,
+        bucket: str,
+        key: str,
+        data: BinaryIO,
+        length: int,
+        content_type: str = "",
     ) -> None: ...
 
     @abstractmethod
@@ -40,7 +45,11 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def copy_object(
-        self, dst_bucket: str, dst_key: str, src_bucket: str, src_key: str,
+        self,
+        dst_bucket: str,
+        dst_key: str,
+        src_bucket: str,
+        src_key: str,
     ) -> None: ...
 
     @abstractmethod
@@ -48,7 +57,10 @@ class StorageBackend(ABC):
 
     @abstractmethod
     def list_objects(
-        self, bucket: str, prefix: str = "", recursive: bool = False,
+        self,
+        bucket: str,
+        prefix: str = "",
+        recursive: bool = False,
     ) -> list[dict]: ...
 
     @abstractmethod
@@ -58,7 +70,11 @@ class StorageBackend(ABC):
     def ensure_bucket(self, bucket: str) -> None: ...
 
     def copy_and_delete(
-        self, src_bucket: str, src_key: str, dst_bucket: str, dst_key: str,
+        self,
+        src_bucket: str,
+        src_key: str,
+        dst_bucket: str,
+        dst_key: str,
     ) -> None:
         """Copy object to new key, then delete the original."""
         self.copy_object(dst_bucket, dst_key, src_bucket, src_key)
@@ -81,7 +97,12 @@ class MinIOBackend(StorageBackend):
         self._bucket = settings.minio_bucket
 
     def put_object(
-        self, bucket: str, key: str, data: BinaryIO, length: int, content_type: str = "",
+        self,
+        bucket: str,
+        key: str,
+        data: BinaryIO,
+        length: int,
+        content_type: str = "",
     ) -> None:
         self._client.put_object(bucket, key, data, length, content_type=content_type)
 
@@ -93,7 +114,11 @@ class MinIOBackend(StorageBackend):
         return StorageResponse(data)
 
     def copy_object(
-        self, dst_bucket: str, dst_key: str, src_bucket: str, src_key: str,
+        self,
+        dst_bucket: str,
+        dst_key: str,
+        src_bucket: str,
+        src_key: str,
     ) -> None:
         from minio.commonconfig import CopySource
 
@@ -103,7 +128,10 @@ class MinIOBackend(StorageBackend):
         self._client.remove_object(bucket, key)
 
     def list_objects(
-        self, bucket: str, prefix: str = "", recursive: bool = False,
+        self,
+        bucket: str,
+        prefix: str = "",
+        recursive: bool = False,
     ) -> list[dict]:
         result = []
         for obj in self._client.list_objects(bucket, prefix=prefix, recursive=recursive):
@@ -132,7 +160,12 @@ class FilesystemBackend(StorageBackend):
         return self._base / bucket / key
 
     def put_object(
-        self, bucket: str, key: str, data: BinaryIO, length: int, content_type: str = "",
+        self,
+        bucket: str,
+        key: str,
+        data: BinaryIO,
+        length: int,
+        content_type: str = "",
     ) -> None:
         path = self._path(bucket, key)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -150,7 +183,11 @@ class FilesystemBackend(StorageBackend):
         return StorageResponse(path.read_bytes())
 
     def copy_object(
-        self, dst_bucket: str, dst_key: str, src_bucket: str, src_key: str,
+        self,
+        dst_bucket: str,
+        dst_key: str,
+        src_bucket: str,
+        src_key: str,
     ) -> None:
         src = self._path(src_bucket, src_key)
         dst = self._path(dst_bucket, dst_key)
@@ -172,7 +209,10 @@ class FilesystemBackend(StorageBackend):
                 parent = parent.parent
 
     def list_objects(
-        self, bucket: str, prefix: str = "", recursive: bool = False,
+        self,
+        bucket: str,
+        prefix: str = "",
+        recursive: bool = False,
     ) -> list[dict]:
         bucket_root = self._base / bucket
         search_root = bucket_root / prefix if prefix else bucket_root

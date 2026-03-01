@@ -1,6 +1,5 @@
 """Chat tool definitions and executor — delegates to MCP tool functions."""
 
-import contextvars
 import json
 import logging
 import uuid
@@ -298,13 +297,10 @@ _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
 }
 
 
-async def execute_tool(
-    name: str, arguments: dict, user_id: uuid.UUID | None = None
-) -> str:
+async def execute_tool(name: str, arguments: dict, user_id: uuid.UUID | None = None) -> str:
     """Execute a chat tool by delegating to the corresponding MCP function."""
-    from harbor_clerk.mcp_server import _mcp_principal
-
     from harbor_clerk.api.deps import Principal
+    from harbor_clerk.mcp_server import _mcp_principal
 
     entry = _TOOL_DISPATCH.get(name)
     if entry is None:

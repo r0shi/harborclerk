@@ -8,18 +8,18 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from harbor_clerk.config import get_settings
-from harbor_clerk.storage import get_storage
 from harbor_clerk.api.routes.api_keys import router as api_keys_router
 from harbor_clerk.api.routes.auth import router as auth_router
+from harbor_clerk.api.routes.chat import router as chat_router
 from harbor_clerk.api.routes.documents import router as documents_router
 from harbor_clerk.api.routes.jobs import router as jobs_router
 from harbor_clerk.api.routes.search import router as search_router
 from harbor_clerk.api.routes.setup import router as setup_router
 from harbor_clerk.api.routes.system import router as system_router
 from harbor_clerk.api.routes.uploads import router as uploads_router
-from harbor_clerk.api.routes.chat import router as chat_router
 from harbor_clerk.api.routes.users import router as users_router
+from harbor_clerk.config import get_settings
+from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +40,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Harbor Clerk API")
 
     if settings.secret_key == "change-me-in-production":
-        logger.warning(
-            "SECRET_KEY is set to the default value. "
-            "Change it to a random string for production use."
-        )
+        logger.warning("SECRET_KEY is set to the default value. Change it to a random string for production use.")
 
     # Ensure storage bucket exists
     get_storage().ensure_bucket(settings.minio_bucket)
@@ -96,9 +93,7 @@ def create_app() -> FastAPI:
     static_dir = Path(settings.static_dir)
     if static_dir.is_dir():
         # Serve actual static assets (JS, CSS, images)
-        app.mount(
-            "/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets"
-        )
+        app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
 
         # SPA fallback: serve index.html for all non-API, non-asset routes
         index_html = static_dir / "index.html"

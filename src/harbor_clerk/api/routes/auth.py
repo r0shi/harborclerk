@@ -1,9 +1,9 @@
 """Authentication endpoints: login, refresh, logout, me."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,9 +39,7 @@ async def login(
     response: Response,
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(User).where(User.email == body.email)
-    )
+    result = await session.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(
@@ -55,13 +53,12 @@ async def login(
         )
 
     # Update last_login_at
-    await session.execute(
-        update(User)
-        .where(User.user_id == user.user_id)
-        .values(last_login_at=datetime.now(timezone.utc))
-    )
+    await session.execute(update(User).where(User.user_id == user.user_id).values(last_login_at=datetime.now(UTC)))
     await log_audit(
-        session, user_id=user.user_id, action="login", target_type="user",
+        session,
+        user_id=user.user_id,
+        action="login",
+        target_type="user",
         target_id=user.user_id,
     )
     await session.commit()
@@ -117,9 +114,7 @@ async def refresh(
         )
 
     user_id = payload["sub"]
-    result = await session.execute(
-        select(User).where(User.user_id == user_id)
-    )
+    result = await session.execute(select(User).where(User.user_id == user_id))
     user = result.scalar_one_or_none()
     if user is None or not user.is_active:
         raise HTTPException(
@@ -160,9 +155,7 @@ async def get_me(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="API keys cannot access /me",
         )
-    result = await session.execute(
-        select(User).where(User.user_id == principal.id)
-    )
+    result = await session.execute(select(User).where(User.user_id == principal.id))
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -197,9 +190,7 @@ async def update_preferences(
             detail="page_size must be 10, 25, 50, or 100",
         )
 
-    result = await session.execute(
-        select(User).where(User.user_id == principal.id)
-    )
+    result = await session.execute(select(User).where(User.user_id == principal.id))
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -210,11 +201,7 @@ async def update_preferences(
     if body.page_size is not None:
         prefs["page_size"] = body.page_size
 
-    await session.execute(
-        update(User)
-        .where(User.user_id == principal.id)
-        .values(preferences=prefs)
-    )
+    await session.execute(update(User).where(User.user_id == principal.id).values(preferences=prefs))
     await session.commit()
     await session.refresh(user)
 

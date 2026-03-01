@@ -6,11 +6,7 @@ let getToken: TokenGetter = () => null
 let setToken: TokenSetter = () => {}
 let onUnauthorized: OnUnauthorized = () => {}
 
-export function configureApi(
-  getter: TokenGetter,
-  setter: TokenSetter,
-  onUnauth: OnUnauthorized,
-) {
+export function configureApi(getter: TokenGetter, setter: TokenSetter, onUnauth: OnUnauthorized) {
   getToken = getter
   setToken = setter
   onUnauthorized = onUnauth
@@ -74,11 +70,7 @@ async function refreshToken(): Promise<boolean> {
   }
 }
 
-async function request(
-  url: string,
-  options: RequestInit = {},
-  retry = true,
-): Promise<Response> {
+async function request(url: string, options: RequestInit = {}, retry = true): Promise<Response> {
   const token = getToken()
   const headers = new Headers(options.headers)
   if (token) {
@@ -113,10 +105,7 @@ export async function get<T = unknown>(url: string): Promise<T> {
   return res.json()
 }
 
-export async function post<T = unknown>(
-  url: string,
-  body?: unknown,
-): Promise<T> {
+export async function post<T = unknown>(url: string, body?: unknown): Promise<T> {
   const res = await request(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -130,10 +119,7 @@ export async function post<T = unknown>(
   return res.json()
 }
 
-export async function postForm<T = unknown>(
-  url: string,
-  formData: FormData,
-): Promise<T> {
+export async function postForm<T = unknown>(url: string, formData: FormData): Promise<T> {
   const res = await request(url, {
     method: 'POST',
     body: formData,
@@ -145,10 +131,7 @@ export async function postForm<T = unknown>(
   return res.json()
 }
 
-export async function put<T = unknown>(
-  url: string,
-  body?: unknown,
-): Promise<T> {
+export async function put<T = unknown>(url: string, body?: unknown): Promise<T> {
   const res = await request(url, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -162,10 +145,7 @@ export async function put<T = unknown>(
   return res.json()
 }
 
-export async function patch<T = unknown>(
-  url: string,
-  body?: unknown,
-): Promise<T> {
+export async function patch<T = unknown>(url: string, body?: unknown): Promise<T> {
   const res = await request(url, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -197,7 +177,7 @@ export async function downloadBlob(url: string): Promise<{ blob: Blob; filename:
   // Handle RFC 8187 filename*=UTF-8''encoded and plain filename="name"
   const starMatch = disposition.match(/filename\*=UTF-8''([^;\s]+)/i)
   const plainMatch = disposition.match(/filename="?([^"]+)"?/)
-  const filename = starMatch ? decodeURIComponent(starMatch[1]) : (plainMatch?.[1] || 'download')
+  const filename = starMatch ? decodeURIComponent(starMatch[1]) : plainMatch?.[1] || 'download'
   const blob = await res.blob()
   return { blob, filename }
 }

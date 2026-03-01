@@ -30,6 +30,7 @@ dependencies = [
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "ruff>=0.11",
 ]
 
 [build-system]
@@ -48,3 +49,22 @@ harbor-clerk-seed = "harbor_clerk.seed:main"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # line length handled by formatter
+    "B008",   # Depends() in args is standard FastAPI
+    "B904",   # raise from None not needed for HTTPException
+    "B905",   # zip strict= not needed everywhere
+    "UP042",  # StrEnum migration risks SQLAlchemy enum compat
+    "SIM108", # ternary not always more readable
+    "SIM105", # contextlib.suppress is stylistic preference
+]
+
+[tool.ruff.format]
+quote-style = "double"

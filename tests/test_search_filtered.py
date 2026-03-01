@@ -1,7 +1,7 @@
 """Integration tests for hybrid_search() with filtering parameters."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.models import Chunk, Document, DocumentVersion
 from harbor_clerk.models.enums import VersionStatus
 from harbor_clerk.search import hybrid_search
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -42,7 +41,7 @@ async def two_docs(db_session: AsyncSession):
     await db_session.flush()
     doc_a.latest_version_id = ver_a.version_id
     # Backdate created_at
-    ver_a.created_at = datetime(2025, 1, 15, tzinfo=timezone.utc)
+    ver_a.created_at = datetime(2025, 1, 15, tzinfo=UTC)
     await db_session.flush()
 
     for i in range(3):
@@ -79,7 +78,7 @@ async def two_docs(db_session: AsyncSession):
     db_session.add(ver_b)
     await db_session.flush()
     doc_b.latest_version_id = ver_b.version_id
-    ver_b.created_at = datetime(2025, 6, 15, tzinfo=timezone.utc)
+    ver_b.created_at = datetime(2025, 6, 15, tzinfo=UTC)
     await db_session.flush()
 
     for i in range(3):
@@ -142,7 +141,7 @@ async def test_hybrid_search_date_range_filter(db_session, two_docs):
         db_session,
         "section",
         k=10,
-        after=datetime(2025, 3, 1, tzinfo=timezone.utc),
+        after=datetime(2025, 3, 1, tzinfo=UTC),
     )
     for h in result.hits:
         assert h.doc_id == str(doc_b.doc_id)
@@ -152,7 +151,7 @@ async def test_hybrid_search_date_range_filter(db_session, two_docs):
         db_session,
         "section",
         k=10,
-        before=datetime(2025, 3, 1, tzinfo=timezone.utc),
+        before=datetime(2025, 3, 1, tzinfo=UTC),
     )
     for h in result.hits:
         assert h.doc_id == str(doc_a.doc_id)

@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 from harbor_clerk.models import Chunk, Document, DocumentVersion, Entity
 from harbor_clerk.models.enums import VersionStatus
 from tests.conftest import auth_header
@@ -27,9 +25,7 @@ async def test_list_documents_with_doc(client, admin_user, admin_token, db_sessi
     assert data[0]["title"] == "Test Doc"
 
 
-async def test_list_documents_excludes_deleted(
-    client, admin_user, admin_token, db_session
-):
+async def test_list_documents_excludes_deleted(client, admin_user, admin_token, db_session):
     doc_active = Document(title="Active", status="active")
     doc_deleted = Document(title="Deleted", status="deleted")
     db_session.add_all([doc_active, doc_deleted])
@@ -157,9 +153,7 @@ async def test_find_related_happy(client, admin_user, admin_token, db_session):
         )
     await db_session.flush()
 
-    resp = await client.get(
-        f"/api/docs/{doc1.doc_id}/related", headers=auth_header(admin_token)
-    )
+    resp = await client.get(f"/api/docs/{doc1.doc_id}/related", headers=auth_header(admin_token))
     assert resp.status_code == 200
     data = resp.json()
     assert data["doc_id"] == str(doc1.doc_id)
@@ -169,15 +163,11 @@ async def test_find_related_happy(client, admin_user, admin_token, db_session):
 
 
 async def test_find_related_not_found(client, admin_user, admin_token):
-    resp = await client.get(
-        f"/api/docs/{uuid.uuid4()}/related", headers=auth_header(admin_token)
-    )
+    resp = await client.get(f"/api/docs/{uuid.uuid4()}/related", headers=auth_header(admin_token))
     assert resp.status_code == 404
 
 
-async def test_delete_document_requires_admin(
-    client, regular_user, user_token, db_session
-):
+async def test_delete_document_requires_admin(client, regular_user, user_token, db_session):
     doc = Document(title="To Delete", status="active")
     db_session.add(doc)
     await db_session.flush()
@@ -246,9 +236,7 @@ async def test_get_document_entities_happy(client, admin_user, admin_token, db_s
     )
     await db_session.flush()
 
-    resp = await client.get(
-        f"/api/docs/{doc.doc_id}/entities", headers=auth_header(admin_token)
-    )
+    resp = await client.get(f"/api/docs/{doc.doc_id}/entities", headers=auth_header(admin_token))
     assert resp.status_code == 200
     data = resp.json()
     assert data["doc_id"] == str(doc.doc_id)
@@ -280,9 +268,7 @@ async def test_get_document_entities_empty(client, admin_user, admin_token, db_s
     doc.latest_version_id = version.version_id
     await db_session.flush()
 
-    resp = await client.get(
-        f"/api/docs/{doc.doc_id}/entities", headers=auth_header(admin_token)
-    )
+    resp = await client.get(f"/api/docs/{doc.doc_id}/entities", headers=auth_header(admin_token))
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] == 0

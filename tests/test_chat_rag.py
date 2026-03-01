@@ -5,8 +5,6 @@ import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from harbor_clerk.config import get_settings
 from harbor_clerk.search import SearchHit, SearchResult
 
@@ -86,9 +84,9 @@ async def _collect_events(gen):
 
 async def test_rag_context_emitted_when_hits_above_threshold(db_session):
     """When search returns high-scoring hits, a rag_context SSE event is emitted."""
-    from harbor_clerk.models.conversation import Conversation
-    from harbor_clerk.models import User
     from harbor_clerk.auth import hash_password
+    from harbor_clerk.models import User
+    from harbor_clerk.models.conversation import Conversation
     from harbor_clerk.models.enums import UserRole
 
     # Create user and conversation (committed so chat_stream's session sees them)
@@ -141,9 +139,7 @@ async def test_rag_context_emitted_when_hits_above_threshold(db_session):
                 return_value=_mock_llm_streaming("Based on the context"),
             ),
         ):
-            events = await _collect_events(
-                chat_stream(conv.conversation_id, "What does the policy say?")
-            )
+            events = await _collect_events(chat_stream(conv.conversation_id, "What does the policy say?"))
     finally:
         settings.llm_model_id = original_model
 
@@ -163,9 +159,9 @@ async def test_rag_context_emitted_when_hits_above_threshold(db_session):
 
 async def test_rag_context_skipped_when_scores_below_threshold(db_session):
     """When all search results score below threshold, no rag_context event."""
-    from harbor_clerk.models.conversation import Conversation
-    from harbor_clerk.models import User
     from harbor_clerk.auth import hash_password
+    from harbor_clerk.models import User
+    from harbor_clerk.models.conversation import Conversation
     from harbor_clerk.models.enums import UserRole
 
     user = User(
@@ -208,9 +204,7 @@ async def test_rag_context_skipped_when_scores_below_threshold(db_session):
                 return_value=_mock_llm_streaming("Hello!"),
             ),
         ):
-            events = await _collect_events(
-                chat_stream(conv.conversation_id, "hello there")
-            )
+            events = await _collect_events(chat_stream(conv.conversation_id, "hello there"))
     finally:
         settings.llm_model_id = original_model
 
@@ -220,9 +214,9 @@ async def test_rag_context_skipped_when_scores_below_threshold(db_session):
 
 async def test_rag_context_skipped_when_search_fails(db_session):
     """When hybrid_search raises, chat continues without RAG context."""
-    from harbor_clerk.models.conversation import Conversation
-    from harbor_clerk.models import User
     from harbor_clerk.auth import hash_password
+    from harbor_clerk.models import User
+    from harbor_clerk.models.conversation import Conversation
     from harbor_clerk.models.enums import UserRole
 
     user = User(
@@ -263,9 +257,7 @@ async def test_rag_context_skipped_when_search_fails(db_session):
                 return_value=_mock_llm_streaming("I can still respond"),
             ),
         ):
-            events = await _collect_events(
-                chat_stream(conv.conversation_id, "What is this about?")
-            )
+            events = await _collect_events(chat_stream(conv.conversation_id, "What is this about?"))
     finally:
         settings.llm_model_id = original_model
 

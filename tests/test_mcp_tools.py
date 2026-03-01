@@ -3,20 +3,12 @@
 import json
 import uuid
 from contextlib import asynccontextmanager
+from datetime import UTC
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal
-from harbor_clerk.models import (
-    Chunk,
-    Document,
-    DocumentHeading,
-    DocumentPage,
-    DocumentVersion,
-    Entity,
-)
-from harbor_clerk.models.enums import VersionStatus
 from harbor_clerk.mcp_server import (
     _mcp_principal,
     kb_corpus_overview,
@@ -30,8 +22,16 @@ from harbor_clerk.mcp_server import (
     kb_read_passages,
     kb_search,
 )
+from harbor_clerk.models import (
+    Chunk,
+    Document,
+    DocumentHeading,
+    DocumentPage,
+    DocumentVersion,
+    Entity,
+)
+from harbor_clerk.models.enums import VersionStatus
 from harbor_clerk.search import SearchHit, SearchResult
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -41,9 +41,7 @@ from harbor_clerk.search import SearchHit, SearchResult
 @pytest.fixture
 def mcp_principal(admin_user):
     """Set _mcp_principal context var to an admin Principal for the test."""
-    token = _mcp_principal.set(
-        Principal(type="user", id=admin_user.user_id, role="admin")
-    )
+    token = _mcp_principal.set(Principal(type="user", id=admin_user.user_id, role="admin"))
     yield
     _mcp_principal.reset(token)
 
@@ -449,7 +447,7 @@ async def test_find_related_happy(
     similar_emb = [0.9, 0.1, 0.0, 0.0] + [0.0] * 380
     different_emb = [0.0, 0.0, 0.9, 0.1] + [0.0] * 380
 
-    for i, doc in enumerate([doc1, doc2, doc3]):
+    for _i, doc in enumerate([doc1, doc2, doc3]):
         ver_id = doc.latest_version_id
         emb = similar_emb if doc in (doc1, doc2) else different_emb
         db_session.add(
@@ -507,9 +505,7 @@ async def test_find_related_no_embeddings(
 # ---------------------------------------------------------------------------
 
 
-def _make_hit(
-    doc_id="d1", doc_title="Doc 1", chunk_id=None, score=1.0, language="english"
-):
+def _make_hit(doc_id="d1", doc_title="Doc 1", chunk_id=None, score=1.0, language="english"):
     """Helper to build a SearchHit."""
     return SearchHit(
         chunk_id=chunk_id or str(uuid.uuid4()),
@@ -596,9 +592,9 @@ async def test_kb_search_date_filters(
     """ISO date strings are parsed to datetime objects."""
     captured, result = mock_hybrid_search
     await kb_search("test", after="2025-01-01T00:00:00+00:00", before="2025-12-31")
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    assert captured["after"] == datetime(2025, 1, 1, tzinfo=timezone.utc)
+    assert captured["after"] == datetime(2025, 1, 1, tzinfo=UTC)
     assert captured["before"] == datetime(2025, 12, 31)
 
 
@@ -720,9 +716,7 @@ async def sample_headings(db_session: AsyncSession, sample_doc):
     """Create headings for the sample document's version."""
     _, version = sample_doc
     headings = []
-    for i, (level, title) in enumerate(
-        [(1, "Introduction"), (2, "Background"), (2, "Methods"), (1, "Results")]
-    ):
+    for i, (level, title) in enumerate([(1, "Introduction"), (2, "Background"), (2, "Methods"), (1, "Results")]):
         h = DocumentHeading(
             version_id=version.version_id,
             level=level,
@@ -905,9 +899,7 @@ async def test_entity_overview_happy(
     assert "GPE" in result["type_distribution"]
     assert len(result["top_entities"]) > 0
     # John Smith has 2 mentions, should be at or near top
-    john = next(
-        (e for e in result["top_entities"] if e["entity_text"] == "John Smith"), None
-    )
+    john = next((e for e in result["top_entities"] if e["entity_text"] == "John Smith"), None)
     assert john is not None
     assert john["mention_count"] == 2
 

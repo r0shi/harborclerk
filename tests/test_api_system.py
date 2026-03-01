@@ -1,9 +1,5 @@
 """Tests for /api/system/* endpoints."""
 
-import pytest
-
-from tests.conftest import auth_header
-
 
 async def test_setup_status_no_users(client):
     resp = await client.get("/api/system/setup-status")

@@ -164,21 +164,13 @@ async def hybrid_search(
 
     # --- 4. Load chunk data + apply boosts ---
     chunk_ids_list = list(all_chunk_ids)
-    chunks_result = await session.execute(
-        select(Chunk).where(Chunk.chunk_id.in_(chunk_ids_list))
-    )
-    chunks_by_id: dict[uuid.UUID, Chunk] = {
-        c.chunk_id: c for c in chunks_result.scalars().all()
-    }
+    chunks_result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(chunk_ids_list)))
+    chunks_by_id: dict[uuid.UUID, Chunk] = {c.chunk_id: c for c in chunks_result.scalars().all()}
 
     # Load documents for latest_version_id check and titles
     doc_ids = {c.doc_id for c in chunks_by_id.values()}
-    docs_result = await session.execute(
-        select(Document).where(Document.doc_id.in_(list(doc_ids)))
-    )
-    docs_by_id: dict[uuid.UUID, Document] = {
-        d.doc_id: d for d in docs_result.scalars().all()
-    }
+    docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
+    docs_by_id: dict[uuid.UUID, Document] = {d.doc_id: d for d in docs_result.scalars().all()}
 
     for cid, score in combined.items():
         chunk = chunks_by_id.get(cid)

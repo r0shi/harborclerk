@@ -130,9 +130,7 @@ async def read_passages(
 
     # Load doc titles
     doc_ids = {c.doc_id for c in chunks.values()}
-    docs_result = await session.execute(
-        select(Document).where(Document.doc_id.in_(list(doc_ids)))
-    )
+    docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
     docs_by_id = {d.doc_id: d for d in docs_result.scalars().all()}
 
     # Optionally load surrounding chunks for context

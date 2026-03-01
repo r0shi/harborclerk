@@ -4,7 +4,7 @@ from sqlalchemy import ForeignKey, Index, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from harbor_clerk.models.base import Base, uuid_pk, created_at, updated_at
+from harbor_clerk.models.base import Base, created_at, updated_at, uuid_pk
 
 
 class Conversation(Base):

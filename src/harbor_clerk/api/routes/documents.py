@@ -105,11 +105,7 @@ async def corpus_overview(
 ):
     """Corpus-level statistics: counts, language distribution, mime types, date range, and document list."""
     doc_count = (
-        await session.execute(
-            select(func.count())
-            .select_from(Document)
-            .where(Document.status == "active")
-        )
+        await session.execute(select(func.count()).select_from(Document).where(Document.status == "active"))
     ).scalar() or 0
 
     chunk_count = (
@@ -154,9 +150,7 @@ async def corpus_overview(
 
     date_row = (
         await session.execute(
-            select(func.min(Document.updated_at), func.max(Document.updated_at)).where(
-                Document.status == "active"
-            )
+            select(func.min(Document.updated_at), func.max(Document.updated_at)).where(Document.status == "active")
         )
     ).one()
 
@@ -211,23 +205,17 @@ async def get_document(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Document)
-        .where(Document.doc_id == doc_id)
-        .options(selectinload(Document.versions))
+        select(Document).where(Document.doc_id == doc_id).options(selectinload(Document.versions))
     )
     doc = result.scalar_one_or_none()
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     # Load jobs for each version
     version_ids = [v.version_id for v in (doc.versions or [])]
     jobs_by_version: dict[uuid.UUID, list[IngestionJob]] = {}
     if version_ids:
-        jobs_result = await session.execute(
-            select(IngestionJob).where(IngestionJob.version_id.in_(version_ids))
-        )
+        jobs_result = await session.execute(select(IngestionJob).where(IngestionJob.version_id.in_(version_ids)))
         for job in jobs_result.scalars().all():
             jobs_by_version.setdefault(job.version_id, []).append(job)
 
@@ -290,24 +278,16 @@ async def get_document_content(
     )
     doc = result.scalar_one_or_none()
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     version_id = doc.latest_version_id
     if version_id is None and doc.versions:
         version_id = doc.versions[-1].version_id
     if version_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No versions available"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No versions available")
 
     # Build page query
-    query = (
-        select(DocumentPage)
-        .where(DocumentPage.version_id == version_id)
-        .order_by(DocumentPage.page_num)
-    )
+    query = select(DocumentPage).where(DocumentPage.version_id == version_id).order_by(DocumentPage.page_num)
 
     if pages is not None:
         # Parse "1-3" or "5"
@@ -380,30 +360,22 @@ async def get_document_outline(
     )
     doc = result.scalar_one_or_none()
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     version_id = doc.latest_version_id
     if version_id is None and doc.versions:
         version_id = doc.versions[-1].version_id
     if version_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No versions available"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No versions available")
 
     # Fetch headings, page count, chunk count
     headings_result = await session.execute(
-        select(DocumentHeading)
-        .where(DocumentHeading.version_id == version_id)
-        .order_by(DocumentHeading.position)
+        select(DocumentHeading).where(DocumentHeading.version_id == version_id).order_by(DocumentHeading.position)
     )
     headings = headings_result.scalars().all()
 
     page_count_result = await session.execute(
-        select(func.count())
-        .select_from(DocumentPage)
-        .where(DocumentPage.version_id == version_id)
+        select(func.count()).select_from(DocumentPage).where(DocumentPage.version_id == version_id)
     )
     page_count = page_count_result.scalar_one()
 
@@ -418,10 +390,7 @@ async def get_document_outline(
         title=doc.title,
         page_count=page_count,
         chunk_count=chunk_count,
-        headings=[
-            HeadingOut(level=h.level, title=h.title, page_num=h.page_num)
-            for h in headings
-        ],
+        headings=[HeadingOut(level=h.level, title=h.title, page_num=h.page_num) for h in headings],
     )
 
 
@@ -442,17 +411,13 @@ async def get_document_entities(
     )
     doc = result.scalar_one_or_none()
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     version_id = doc.latest_version_id
     if version_id is None and doc.versions:
         version_id = doc.versions[-1].version_id
     if version_id is None:
-        return DocumentEntitiesResponse(
-            doc_id=str(doc_id), entities=[], total=0, entity_types=[]
-        )
+        return DocumentEntitiesResponse(doc_id=str(doc_id), entities=[], total=0, entity_types=[])
 
     filters = [Entity.version_id == version_id]
     if entity_type:
@@ -469,19 +434,11 @@ async def get_document_entities(
         .group_by(Entity.entity_text, Entity.entity_type)
     )
 
-    total = (
-        await session.execute(select(func.count()).select_from(count_q.subquery()))
-    ).scalar() or 0
+    total = (await session.execute(select(func.count()).select_from(count_q.subquery()))).scalar() or 0
 
-    rows = (
-        await session.execute(
-            count_q.order_by(func.count().desc()).offset(offset).limit(limit)
-        )
-    ).all()
+    rows = (await session.execute(count_q.order_by(func.count().desc()).offset(offset).limit(limit))).all()
 
-    entities = [
-        EntityOut(entity_text=r[0], entity_type=r[1], mention_count=r[2]) for r in rows
-    ]
+    entities = [EntityOut(entity_text=r[0], entity_type=r[1], mention_count=r[2]) for r in rows]
 
     # Get all distinct entity types for this version
     type_rows = (
@@ -514,22 +471,14 @@ async def find_related_documents(
 ):
     """Find documents most similar to the given document by embedding cosine similarity."""
     doc = (
-        await session.execute(
-            select(Document).where(
-                Document.doc_id == doc_id, Document.status == "active"
-            )
-        )
+        await session.execute(select(Document).where(Document.doc_id == doc_id, Document.status == "active"))
     ).scalar_one_or_none()
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     version_id = doc.latest_version_id
     if version_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No versions available"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No versions available")
 
     # Get embeddings for this document
     rows = (
@@ -577,9 +526,7 @@ async def find_related_documents(
     distances = {row[0]: float(row[1]) for row in nearest}
 
     docs_result = await session.execute(
-        select(Document)
-        .options(selectinload(Document.versions))
-        .where(Document.doc_id.in_(related_ids))
+        select(Document).options(selectinload(Document.versions)).where(Document.doc_id.in_(related_ids))
     )
     related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
 
@@ -620,21 +567,15 @@ async def download_document(
     )
     doc = result.scalar_one_or_none()
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     version_id = doc.latest_version_id
     if version_id is None and doc.versions:
         version_id = doc.versions[-1].version_id
     if version_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No versions available"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No versions available")
 
-    ver_result = await session.execute(
-        select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-    )
+    ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id))
     version = ver_result.scalar_one()
 
     storage = get_storage()
@@ -665,9 +606,7 @@ async def delete_document(
     result = await session.execute(select(Document).where(Document.doc_id == doc_id))
     doc = result.scalar_one_or_none()
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     doc.status = "deleted"
     await log_audit(
@@ -693,22 +632,16 @@ async def reprocess_document(
     )
     doc = result.scalar_one_or_none()
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     version_id = doc.latest_version_id
     if version_id is None and doc.versions:
         version_id = doc.versions[-1].version_id
     if version_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="No version to reprocess"
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No version to reprocess")
 
     # Reset version status
-    ver_result = await session.execute(
-        select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-    )
+    ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id))
     version = ver_result.scalar_one()
     version.status = VersionStatus.queued
     version.error = None
@@ -748,9 +681,7 @@ async def cancel_processing(
     )
     doc = result.scalar_one_or_none()
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     from harbor_clerk.worker.pipeline import cancel_version_jobs
 

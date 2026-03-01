@@ -1,7 +1,7 @@
 """Tests for auth module: password hashing, API keys, JWT tokens."""
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
@@ -17,7 +17,6 @@ from harbor_clerk.auth import (
     verify_password,
 )
 from harbor_clerk.config import get_settings
-
 
 # --- Password hashing ---
 
@@ -92,7 +91,7 @@ def test_expired_token():
     payload = {
         "sub": str(uuid.uuid4()),
         "type": "access",
-        "exp": datetime.now(timezone.utc) - timedelta(hours=1),
+        "exp": datetime.now(UTC) - timedelta(hours=1),
     }
     token = jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
     with pytest.raises(jwt.ExpiredSignatureError):
@@ -108,7 +107,7 @@ def test_wrong_secret():
     payload = {
         "sub": str(uuid.uuid4()),
         "type": "access",
-        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        "exp": datetime.now(UTC) + timedelta(hours=1),
     }
     token = jwt.encode(payload, "wrong-secret", algorithm="HS256")
     with pytest.raises(jwt.PyJWTError):

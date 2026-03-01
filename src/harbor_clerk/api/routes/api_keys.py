@@ -55,8 +55,11 @@ async def create_api_key(
     )
     session.add(key_obj)
     await log_audit(
-        session, user_id=admin.id, action="create_api_key",
-        target_type="api_key", target_id=key_obj.key_id,
+        session,
+        user_id=admin.id,
+        action="create_api_key",
+        target_type="api_key",
+        target_id=key_obj.key_id,
     )
     await session.commit()
     await session.refresh(key_obj)
@@ -82,7 +85,10 @@ async def delete_api_key(
 
     key_obj.is_active = False
     await log_audit(
-        session, user_id=admin.id, action="delete_api_key",
-        target_type="api_key", target_id=key_id,
+        session,
+        user_id=admin.id,
+        action="delete_api_key",
+        target_type="api_key",
+        target_id=key_id,
     )
     await session.commit()

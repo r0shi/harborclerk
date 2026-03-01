@@ -1,15 +1,6 @@
 import { useLocation, useNavigate } from 'react-router-dom'
 
-const TOP_LEVEL = new Set([
-  '/',
-  '/upload',
-  '/docs',
-  '/search',
-  '/admin',
-  '/preferences',
-  '/login',
-  '/setup',
-])
+const TOP_LEVEL = new Set(['/', '/upload', '/docs', '/search', '/admin', '/preferences', '/login', '/setup'])
 
 function isTopLevel(pathname: string): boolean {
   if (TOP_LEVEL.has(pathname)) return true

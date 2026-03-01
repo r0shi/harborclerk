@@ -5,13 +5,14 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import selectinload
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
+from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.models import (
     ApiKey,
@@ -24,7 +25,6 @@ from harbor_clerk.models import (
     IngestionJob,
 )
 from harbor_clerk.models.enums import JobStage, VersionStatus
-from harbor_clerk.config import get_settings
 from harbor_clerk.search import hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -78,9 +78,7 @@ async def _resolve_principal(token: str) -> Principal | None:
         if api_key is None:
             return None
         await session.execute(
-            update(ApiKey)
-            .where(ApiKey.key_id == api_key.key_id)
-            .values(last_used_at=datetime.now(timezone.utc))
+            update(ApiKey).where(ApiKey.key_id == api_key.key_id).values(last_used_at=datetime.now(UTC))
         )
         await session.commit()
         return Principal(type="api_key", id=api_key.key_id, role="user")
@@ -268,11 +266,7 @@ async def kb_search(
             "language": h.language,
         }
         if h.page_start is not None:
-            hit["pages"] = (
-                f"{h.page_start}-{h.page_end}"
-                if h.page_end != h.page_start
-                else str(h.page_start)
-            )
+            hit["pages"] = f"{h.page_start}-{h.page_end}" if h.page_end != h.page_start else str(h.page_start)
         # Detail mode formatting
         if detail == "full":
             hit["text"] = h.chunk_text
@@ -318,8 +312,7 @@ async def kb_search(
         if result.possible_conflict:
             resp["possible_conflict"] = True
             resp["conflict_sources"] = [
-                {"doc_id": cs.doc_id, "version_id": cs.version_id, "title": cs.title}
-                for cs in result.conflict_sources
+                {"doc_id": cs.doc_id, "version_id": cs.version_id, "title": cs.title} for cs in result.conflict_sources
             ]
 
     # Runtime stats
@@ -371,9 +364,7 @@ async def kb_read_passages(
 
         # Doc titles
         doc_ids = {c.doc_id for c in chunks.values()}
-        docs_result = await session.execute(
-            select(Document).where(Document.doc_id.in_(list(doc_ids)))
-        )
+        docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
         docs = {d.doc_id: d for d in docs_result.scalars().all()}
 
         passages = []
@@ -434,9 +425,7 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
     target_id = uuid.UUID(chunk_id)
 
     async with async_session_factory() as session:
-        target = (
-            await session.execute(select(Chunk).where(Chunk.chunk_id == target_id))
-        ).scalar_one_or_none()
+        target = (await session.execute(select(Chunk).where(Chunk.chunk_id == target_id))).scalar_one_or_none()
         if target is None:
             return json.dumps({"error": "Chunk not found"})
 
@@ -450,11 +439,7 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
         )
         neighbours = result.scalars().all()
 
-        doc = (
-            await session.execute(
-                select(Document).where(Document.doc_id == target.doc_id)
-            )
-        ).scalar_one_or_none()
+        doc = (await session.execute(select(Document).where(Document.doc_id == target.doc_id))).scalar_one_or_none()
 
         chunks = []
         for c in neighbours:
@@ -465,11 +450,7 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
                 "language": c.language,
             }
             if c.page_start is not None:
-                entry["pages"] = (
-                    f"{c.page_start}-{c.page_end}"
-                    if c.page_end != c.page_start
-                    else str(c.page_start)
-                )
+                entry["pages"] = f"{c.page_start}-{c.page_end}" if c.page_end != c.page_start else str(c.page_start)
             if c.chunk_id == target_id:
                 entry["is_target"] = True
             chunks.append(entry)
@@ -494,9 +475,7 @@ async def kb_get_document(doc_id: str) -> str:
 
     async with async_session_factory() as session:
         result = await session.execute(
-            select(Document)
-            .options(selectinload(Document.versions))
-            .where(Document.doc_id == did)
+            select(Document).options(selectinload(Document.versions)).where(Document.doc_id == did)
         )
         doc = result.scalar_one_or_none()
         if doc is None:
@@ -504,9 +483,7 @@ async def kb_get_document(doc_id: str) -> str:
 
         versions = []
         for v in doc.versions or []:
-            jobs_result = await session.execute(
-                select(IngestionJob).where(IngestionJob.version_id == v.version_id)
-            )
+            jobs_result = await session.execute(select(IngestionJob).where(IngestionJob.version_id == v.version_id))
             jobs = [
                 {"stage": j.stage.value, "status": j.status.value, "error": j.error}
                 for j in jobs_result.scalars().all()
@@ -530,9 +507,7 @@ async def kb_get_document(doc_id: str) -> str:
             "doc_id": str(doc.doc_id),
             "title": doc.title,
             "status": doc.status,
-            "latest_version_id": str(doc.latest_version_id)
-            if doc.latest_version_id
-            else None,
+            "latest_version_id": str(doc.latest_version_id) if doc.latest_version_id else None,
             "versions": versions,
         },
         indent=2,
@@ -591,9 +566,7 @@ async def kb_corpus_overview() -> str:
 
     async with async_session_factory() as session:
         doc_count_result = await session.execute(
-            select(func.count())
-            .select_from(Document)
-            .where(Document.status == "active")
+            select(func.count()).select_from(Document).where(Document.status == "active")
         )
         doc_count = doc_count_result.scalar() or 0
 
@@ -629,9 +602,7 @@ async def kb_corpus_overview() -> str:
         mime_rows = (
             await session.execute(
                 select(DocumentVersion.mime_type, func.count())
-                .join(
-                    Document, Document.latest_version_id == DocumentVersion.version_id
-                )
+                .join(Document, Document.latest_version_id == DocumentVersion.version_id)
                 .where(Document.status == "active")
                 .group_by(DocumentVersion.mime_type)
                 .order_by(func.count().desc())
@@ -641,9 +612,7 @@ async def kb_corpus_overview() -> str:
 
         # Date range
         date_result = await session.execute(
-            select(func.min(Document.updated_at), func.max(Document.updated_at)).where(
-                Document.status == "active"
-            )
+            select(func.min(Document.updated_at), func.max(Document.updated_at)).where(Document.status == "active")
         )
         date_row = date_result.one()
         oldest = date_row[0].isoformat() if date_row[0] else None
@@ -711,23 +680,17 @@ async def kb_ingest_status(doc_id: str) -> str:
         if vid is None:
             return json.dumps({"error": "No versions"})
 
-        ver_result = await session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == vid)
-        )
+        ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == vid))
         version = ver_result.scalar_one()
 
         jobs_result = await session.execute(
-            select(IngestionJob)
-            .where(IngestionJob.version_id == vid)
-            .order_by(IngestionJob.created_at)
+            select(IngestionJob).where(IngestionJob.version_id == vid).order_by(IngestionJob.created_at)
         )
         jobs = [
             {
                 "stage": j.stage.value,
                 "status": j.status.value,
-                "progress": f"{j.progress_current}/{j.progress_total}"
-                if j.progress_total
-                else None,
+                "progress": f"{j.progress_current}/{j.progress_total}" if j.progress_total else None,
                 "error": j.error,
                 "started_at": j.started_at.isoformat() if j.started_at else None,
                 "finished_at": j.finished_at.isoformat() if j.finished_at else None,
@@ -753,9 +716,7 @@ async def kb_reprocess(doc_id: str) -> str:
     did = uuid.UUID(doc_id)
 
     async with async_session_factory() as session:
-        result = await session.execute(
-            select(Document).where(Document.doc_id == did, Document.status == "active")
-        )
+        result = await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
         doc = result.scalar_one_or_none()
         if doc is None:
             return json.dumps({"error": "Document not found"})
@@ -766,9 +727,7 @@ async def kb_reprocess(doc_id: str) -> str:
         if vid is None:
             return json.dumps({"error": "No version to reprocess"})
 
-        ver_result = await session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == vid)
-        )
+        ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == vid))
         version = ver_result.scalar_one()
         version.status = VersionStatus.queued
         version.error = None
@@ -816,24 +775,16 @@ async def kb_document_outline(doc_id: str) -> str:
             return json.dumps({"error": "No versions available"})
 
         headings_result = await session.execute(
-            select(DocumentHeading)
-            .where(DocumentHeading.version_id == vid)
-            .order_by(DocumentHeading.position)
+            select(DocumentHeading).where(DocumentHeading.version_id == vid).order_by(DocumentHeading.position)
         )
         headings = headings_result.scalars().all()
 
         page_count = (
-            await session.execute(
-                select(func.count())
-                .select_from(DocumentPage)
-                .where(DocumentPage.version_id == vid)
-            )
+            await session.execute(select(func.count()).select_from(DocumentPage).where(DocumentPage.version_id == vid))
         ).scalar_one()
 
         chunk_count = (
-            await session.execute(
-                select(func.count()).select_from(Chunk).where(Chunk.version_id == vid)
-            )
+            await session.execute(select(func.count()).select_from(Chunk).where(Chunk.version_id == vid))
         ).scalar_one()
 
     return json.dumps(
@@ -879,11 +830,7 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
     async with async_session_factory() as session:
         # Verify document exists and get latest version
         doc = (
-            await session.execute(
-                select(Document).where(
-                    Document.doc_id == target_id, Document.status == "active"
-                )
-            )
+            await session.execute(select(Document).where(Document.doc_id == target_id, Document.status == "active"))
         ).scalar_one_or_none()
         if doc is None:
             return json.dumps({"error": "Document not found"})
@@ -903,9 +850,7 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         ).all()
 
         if not rows:
-            return json.dumps(
-                {"doc_id": doc_id, "related": [], "note": "No embeddings available"}
-            )
+            return json.dumps({"doc_id": doc_id, "related": [], "note": "No embeddings available"})
 
         # Compute average embedding in Python
         dim = len(rows[0][0])
@@ -944,9 +889,7 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         distances = {row[0]: float(row[1]) for row in nearest}
 
         docs_result = await session.execute(
-            select(Document)
-            .options(selectinload(Document.versions))
-            .where(Document.doc_id.in_(related_ids))
+            select(Document).options(selectinload(Document.versions)).where(Document.doc_id.in_(related_ids))
         )
         related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
 
@@ -1015,11 +958,7 @@ async def kb_entity_search(
             did = uuid.UUID(doc_id)
             # Scope to latest version of the document
             doc = (
-                await session.execute(
-                    select(Document).where(
-                        Document.doc_id == did, Document.status == "active"
-                    )
-                )
+                await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
             ).scalar_one_or_none()
             if doc is None:
                 return json.dumps({"error": "Document not found"})
@@ -1052,11 +991,7 @@ async def kb_entity_search(
             total_q = select(func.count()).select_from(count_q.subquery())
             total = (await session.execute(total_q)).scalar() or 0
 
-            rows = (
-                await session.execute(
-                    count_q.order_by(func.count().desc()).offset(offset).limit(limit)
-                )
-            ).all()
+            rows = (await session.execute(count_q.order_by(func.count().desc()).offset(offset).limit(limit))).all()
             entities = [
                 {
                     "entity_text": r[0],
@@ -1067,20 +1002,12 @@ async def kb_entity_search(
             ]
         else:
             # Total count
-            total = (
-                await session.execute(
-                    select(func.count()).select_from(Entity).where(*base_filter)
-                )
-            ).scalar() or 0
+            total = (await session.execute(select(func.count()).select_from(Entity).where(*base_filter))).scalar() or 0
 
             rows = (
                 (
                     await session.execute(
-                        select(Entity)
-                        .where(*base_filter)
-                        .order_by(Entity.entity_text)
-                        .offset(offset)
-                        .limit(limit)
+                        select(Entity).where(*base_filter).order_by(Entity.entity_text).offset(offset).limit(limit)
                     )
                 )
                 .scalars()
@@ -1127,11 +1054,7 @@ async def kb_entity_overview(doc_id: str | None = None) -> str:
         if doc_id:
             did = uuid.UUID(doc_id)
             doc = (
-                await session.execute(
-                    select(Document).where(
-                        Document.doc_id == did, Document.status == "active"
-                    )
-                )
+                await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
             ).scalar_one_or_none()
             if doc is None:
                 return json.dumps({"error": "Document not found"})
@@ -1156,21 +1079,11 @@ async def kb_entity_overview(doc_id: str | None = None) -> str:
             ]
 
         # Total entities
-        total = (
-            await session.execute(
-                select(func.count()).select_from(Entity).where(*version_filter)
-            )
-        ).scalar() or 0
+        total = (await session.execute(select(func.count()).select_from(Entity).where(*version_filter))).scalar() or 0
 
         # Unique entities
-        unique_q = (
-            select(Entity.entity_text, Entity.entity_type)
-            .where(*version_filter)
-            .distinct()
-        )
-        unique = (
-            await session.execute(select(func.count()).select_from(unique_q.subquery()))
-        ).scalar() or 0
+        unique_q = select(Entity.entity_text, Entity.entity_type).where(*version_filter).distinct()
+        unique = (await session.execute(select(func.count()).select_from(unique_q.subquery()))).scalar() or 0
 
         # Type distribution
         type_rows = (

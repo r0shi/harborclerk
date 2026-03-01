@@ -3,9 +3,10 @@
 import os
 
 import pytest
-from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect
+
+from alembic import command
 
 # Sync URL for Alembic (which runs its own event loop)
 _SYNC_URL = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
@@ -33,9 +34,17 @@ def test_upgrade_to_head(alembic_cfg, sync_engine):
     """Upgrade from current state to head; verify key tables exist."""
     command.upgrade(alembic_cfg, "head")
     tables = _table_names(sync_engine)
-    for expected in ("users", "api_keys", "documents", "document_versions",
-                     "document_pages", "chunks", "ingestion_jobs", "uploads",
-                     "audit_log"):
+    for expected in (
+        "users",
+        "api_keys",
+        "documents",
+        "document_versions",
+        "document_pages",
+        "chunks",
+        "ingestion_jobs",
+        "uploads",
+        "audit_log",
+    ):
         assert expected in tables, f"Table {expected} missing after upgrade"
 
 

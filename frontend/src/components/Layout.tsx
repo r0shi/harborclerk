@@ -60,16 +60,19 @@ export default function Layout() {
         <div className="mx-auto max-w-7xl px-4">
           <div className="flex h-12 items-center justify-between">
             <div className="flex items-center space-x-1">
-              <Link to="/" className="mr-3 flex items-center text-[15px] font-semibold text-[var(--color-text-primary)]">
+              <Link
+                to="/"
+                className="mr-3 flex items-center text-[15px] font-semibold text-[var(--color-text-primary)]"
+              >
                 <img src="/favicon.svg" alt="" className="h-5 w-5" />
               </Link>
-              <TabLink to="/" end>Harbor Clerk</TabLink>
+              <TabLink to="/" end>
+                Harbor Clerk
+              </TabLink>
               <TabLink to="/upload">Upload</TabLink>
               <TabLink to="/docs">Documents</TabLink>
               <TabLink to="/search">Raw Search</TabLink>
-              {isAdmin && (
-                <TabLink to="/admin">System Settings</TabLink>
-              )}
+              {isAdmin && <TabLink to="/admin">System Settings</TabLink>}
             </div>
             <div className="flex items-center space-x-3">
               {isAdmin && (

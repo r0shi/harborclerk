@@ -40,7 +40,7 @@ export default function StageRing({ stages, size = 36 }: StageRingProps) {
   const radius = (size - strokeWidth) / 2
   const circumference = 2 * Math.PI * radius
 
-  const activeStages = PIPELINE_STAGES.filter(s => {
+  const activeStages = PIPELINE_STAGES.filter((s) => {
     const st = stages.get(s)
     return !st || st.status !== 'skipped'
   })
@@ -56,7 +56,7 @@ export default function StageRing({ stages, size = 36 }: StageRingProps) {
     if (st?.status === 'done') doneCount++
     else break
   }
-  const runningStage = activeStages.find(s => stages.get(s)?.status === 'running')
+  const runningStage = activeStages.find((s) => stages.get(s)?.status === 'running')
   const currentStep = runningStage ? doneCount + 1 : doneCount
 
   let currentAngle = -90

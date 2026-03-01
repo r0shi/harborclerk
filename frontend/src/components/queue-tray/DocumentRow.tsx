@@ -11,11 +11,10 @@ export default function DocumentRow({ item }: DocumentRowProps) {
   const [expanded, setExpanded] = useState(false)
 
   const currentState = item.stages.get(item.current_stage)
-  const hasSubProgress =
-    currentState?.status === 'running' && currentState.total != null && currentState.total > 0
+  const hasSubProgress = currentState?.status === 'running' && currentState.total != null && currentState.total > 0
 
   // Count active (non-skipped) stages and current step
-  const activeStages = PIPELINE_STAGES.filter(s => {
+  const activeStages = PIPELINE_STAGES.filter((s) => {
     const st = item.stages.get(s)
     return !st || st.status !== 'skipped'
   })
@@ -25,7 +24,7 @@ export default function DocumentRow({ item }: DocumentRowProps) {
     if (st?.status === 'done') doneCount++
     else break
   }
-  const runningStage = activeStages.find(s => item.stages.get(s)?.status === 'running')
+  const runningStage = activeStages.find((s) => item.stages.get(s)?.status === 'running')
   const currentStep = runningStage ? doneCount + 1 : doneCount
 
   return (
@@ -35,9 +34,7 @@ export default function DocumentRow({ item }: DocumentRowProps) {
         <StageRing stages={item.stages} size={36} />
 
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-[var(--color-text-primary)] truncate">
-            {item.filename}
-          </div>
+          <div className="text-sm font-medium text-[var(--color-text-primary)] truncate">{item.filename}</div>
           <div className="text-xs text-[var(--color-text-secondary)]">
             {item.status === 'queued' ? (
               'Queued'
@@ -119,7 +116,11 @@ function StageIcon({ status, stage }: { status: string; stage?: string }) {
       return <span className="text-red-500 font-medium leading-none">&times;</span>
     case 'skipped':
       if (stage === 'entities')
-        return <span className="text-amber-500 leading-none" title="NER not available">&#9888;</span>
+        return (
+          <span className="text-amber-500 leading-none" title="NER not available">
+            &#9888;
+          </span>
+        )
       return <span className="text-[var(--color-text-secondary)] leading-none">&ndash;</span>
     default:
       return <span className="text-[var(--color-text-secondary)] leading-none">&#9675;</span>

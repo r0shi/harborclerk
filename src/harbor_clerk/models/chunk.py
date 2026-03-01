@@ -1,6 +1,6 @@
 import uuid
-from typing import Optional
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Boolean,
     Computed,
@@ -14,9 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from pgvector.sqlalchemy import Vector
-
-from harbor_clerk.models.base import Base, uuid_pk, created_at
+from harbor_clerk.models.base import Base, created_at, uuid_pk
 
 
 class Chunk(Base):
@@ -34,10 +32,10 @@ class Chunk(Base):
         nullable=False,
     )
     chunk_num: Mapped[int] = mapped_column(Integer, nullable=False)
-    page_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    page_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    char_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    char_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    char_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    char_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     language: Mapped[str] = mapped_column(
         Text,
@@ -49,14 +47,14 @@ class Chunk(Base):
         nullable=False,
         server_default=text("false"),
     )
-    ocr_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Dual tsvector columns for bilingual FTS (read-only, generated)
-    fts_en: Mapped[Optional[str]] = mapped_column(
+    fts_en: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('english', coalesce(chunk_text, ''))", persisted=True),
     )
-    fts_fr: Mapped[Optional[str]] = mapped_column(
+    fts_fr: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('french', coalesce(chunk_text, ''))", persisted=True),
     )
@@ -66,10 +64,6 @@ class Chunk(Base):
 
     created_at: Mapped[created_at]
 
-    entities = relationship(
-        "Entity", back_populates="chunk", cascade="all, delete-orphan"
-    )
+    entities = relationship("Entity", back_populates="chunk", cascade="all, delete-orphan")
 
-    __table_args__ = (
-        UniqueConstraint("version_id", "chunk_num", name="uq_chunks_version_num"),
-    )
+    __table_args__ = (UniqueConstraint("version_id", "chunk_num", name="uq_chunks_version_num"),)

@@ -6,7 +6,6 @@ from sqlalchemy import DateTime, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, mapped_column
 
-
 # Reusable annotated types for common column patterns
 uuid_pk = Annotated[
     uuid.UUID,

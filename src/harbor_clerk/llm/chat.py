@@ -79,9 +79,7 @@ async def chat_stream(
 
         # Load conversation history
         history_result = await session.execute(
-            select(ChatMessage)
-            .where(ChatMessage.conversation_id == conversation_id)
-            .order_by(ChatMessage.created_at)
+            select(ChatMessage).where(ChatMessage.conversation_id == conversation_id).order_by(ChatMessage.created_at)
         )
         history_rows = history_result.scalars().all()
 
@@ -96,11 +94,7 @@ async def chat_stream(
                     user_message,
                     k=settings.rag_auto_k,
                 )
-                good_hits = [
-                    h
-                    for h in search_result.hits
-                    if h.score >= settings.rag_auto_threshold
-                ]
+                good_hits = [h for h in search_result.hits if h.score >= settings.rag_auto_threshold]
                 if good_hits:
                     rag_chunks = [
                         {
@@ -127,16 +121,11 @@ async def chat_stream(
                             location = f" ({pages})"
                         else:
                             location = ""
-                        context_lines.append(
-                            f'Document: "{h.doc_title or "Untitled"}"{location}\n'
-                            f"{h.chunk_text}\n"
-                        )
+                        context_lines.append(f'Document: "{h.doc_title or "Untitled"}"{location}\n{h.chunk_text}\n')
                     context_lines.append(
                         "[End of context — use search_documents for additional investigation if needed]"
                     )
-                    system_content = SYSTEM_PROMPT_WITH_CONTEXT + "\n".join(
-                        context_lines
-                    )
+                    system_content = SYSTEM_PROMPT_WITH_CONTEXT + "\n".join(context_lines)
             except Exception:
                 logger.debug(
                     "RAG auto-inject search failed, continuing without context",
@@ -169,8 +158,9 @@ async def chat_stream(
             text_buffer = ""
 
             try:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-                    async with client.stream(
+                async with (
+                    httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client,
+                    client.stream(
                         "POST",
                         f"{settings.llama_server_url}/v1/chat/completions",
                         json={
@@ -179,57 +169,54 @@ async def chat_stream(
                             "stream": True,
                             "temperature": 0.3,
                         },
-                    ) as response:
-                        response.raise_for_status()
-                        async for line in response.aiter_lines():
-                            if not line.startswith("data: "):
-                                continue
-                            data = line[6:]
-                            if data.strip() == "[DONE]":
-                                break
+                    ) as response,
+                ):
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data = line[6:]
+                        if data.strip() == "[DONE]":
+                            break
 
-                            try:
-                                chunk = json.loads(data)
-                            except json.JSONDecodeError:
-                                continue
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
 
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            usage = chunk.get("usage")
-                            if usage:
-                                total_tokens += usage.get("total_tokens", 0)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        usage = chunk.get("usage")
+                        if usage:
+                            total_tokens += usage.get("total_tokens", 0)
 
-                            # Accumulate tool calls from deltas
-                            if "tool_calls" in delta:
-                                for tc in delta["tool_calls"]:
-                                    idx = tc.get("index", 0)
-                                    while len(tool_calls_accumulated) <= idx:
-                                        tool_calls_accumulated.append(
-                                            {
-                                                "id": "",
-                                                "type": "function",
-                                                "function": {
-                                                    "name": "",
-                                                    "arguments": "",
-                                                },
-                                            }
-                                        )
-                                    if "id" in tc and tc["id"]:
-                                        tool_calls_accumulated[idx]["id"] = tc["id"]
-                                    fn = tc.get("function", {})
-                                    if "name" in fn and fn["name"]:
-                                        tool_calls_accumulated[idx]["function"][
-                                            "name"
-                                        ] = fn["name"]
-                                    if "arguments" in fn:
-                                        tool_calls_accumulated[idx]["function"][
-                                            "arguments"
-                                        ] += fn["arguments"]
+                        # Accumulate tool calls from deltas
+                        if "tool_calls" in delta:
+                            for tc in delta["tool_calls"]:
+                                idx = tc.get("index", 0)
+                                while len(tool_calls_accumulated) <= idx:
+                                    tool_calls_accumulated.append(
+                                        {
+                                            "id": "",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "",
+                                                "arguments": "",
+                                            },
+                                        }
+                                    )
+                                if "id" in tc and tc["id"]:
+                                    tool_calls_accumulated[idx]["id"] = tc["id"]
+                                fn = tc.get("function", {})
+                                if "name" in fn and fn["name"]:
+                                    tool_calls_accumulated[idx]["function"]["name"] = fn["name"]
+                                if "arguments" in fn:
+                                    tool_calls_accumulated[idx]["function"]["arguments"] += fn["arguments"]
 
-                            # Stream text tokens
-                            if "content" in delta and delta["content"]:
-                                token_text = delta["content"]
-                                text_buffer += token_text
-                                yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
+                        # Stream text tokens
+                        if "content" in delta and delta["content"]:
+                            token_text = delta["content"]
+                            text_buffer += token_text
+                            yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
 
             except httpx.HTTPStatusError as e:
                 yield f"data: {json.dumps({'type': 'error', 'message': f'LLM server error: {e.response.status_code}'})}\n\n"

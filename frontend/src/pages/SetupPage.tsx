@@ -11,8 +11,7 @@ const PASSWORD_CHECKS: PasswordCheck[] = [
   { label: 'At least 12 characters', test: (pw) => pw.length >= 12 },
   {
     label: 'Does not contain email',
-    test: (pw, email) =>
-      !email || !pw.toLowerCase().includes(email.toLowerCase()),
+    test: (pw, email) => !email || !pw.toLowerCase().includes(email.toLowerCase()),
   },
   { label: 'One uppercase letter', test: (pw) => /[A-Z]/.test(pw) },
   { label: 'One lowercase letter', test: (pw) => /[a-z]/.test(pw) },
@@ -84,24 +83,17 @@ export default function SetupPage() {
     <div className="flex min-h-screen items-center justify-center bg-[var(--color-bg-secondary)]">
       <div className="w-full max-w-sm">
         <img src="/logo.png" alt="Harbor Clerk" className="mx-auto mb-4 h-16 object-contain" />
-        <h1 className="mb-2 text-center text-2xl font-bold text-gray-900 dark:text-gray-100">
-          Harbor Clerk
-        </h1>
+        <h1 className="mb-2 text-center text-2xl font-bold text-gray-900 dark:text-gray-100">Harbor Clerk</h1>
         <p className="mb-6 text-center text-sm text-gray-500 dark:text-gray-400">
           Create your admin account to get started.
         </p>
-        <form
-          onSubmit={handleSubmit}
-          className="rounded-xl bg-white dark:bg-[#2c2c2e] p-6 shadow-mac-lg"
-        >
+        <form onSubmit={handleSubmit} className="rounded-xl bg-white dark:bg-[#2c2c2e] p-6 shadow-mac-lg">
           {error && (
             <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
               {error}
             </div>
           )}
-          <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Email
-          </label>
+          <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
           <input
             type="email"
             value={email}
@@ -112,9 +104,7 @@ export default function SetupPage() {
             autoCapitalize="off"
             className="mb-4 w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-2 text-sm focus:outline-none"
           />
-          <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Password
-          </label>
+          <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
           <input
             type="password"
             value={password}
@@ -137,9 +127,7 @@ export default function SetupPage() {
               ))}
             </ul>
           )}
-          <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Confirm password
-          </label>
+          <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Confirm password</label>
           <input
             type="password"
             value={confirmPassword}

@@ -15,7 +15,7 @@ from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 logger = logging.getLogger(__name__)
 
 # Sentence boundary pattern
-SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
+SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def _split_text(text: str, target: int = 1000, overlap: int = 150) -> list[tuple[int, int]]:
@@ -65,6 +65,7 @@ def _detect_language(text: str) -> str:
     """Detect language of a text chunk. Returns 'english' or 'french'."""
     try:
         from langdetect import detect
+
         lang = detect(text)
         if lang == "fr":
             return "french"
@@ -74,7 +75,8 @@ def _detect_language(text: str) -> str:
 
 
 def _find_page_range(
-    char_start: int, char_end: int,
+    char_start: int,
+    char_end: int,
     page_offsets: list[tuple[int, int, int]],
 ) -> tuple[int, int]:
     """Given char range, find page_start and page_end.
@@ -104,15 +106,15 @@ def run_chunk(version_id: uuid.UUID) -> None:
 
     session = get_sync_session()
     try:
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one()
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
 
-        pages = session.execute(
-            select(DocumentPage)
-            .where(DocumentPage.version_id == version_id)
-            .order_by(DocumentPage.page_num)
-        ).scalars().all()
+        pages = (
+            session.execute(
+                select(DocumentPage).where(DocumentPage.version_id == version_id).order_by(DocumentPage.page_num)
+            )
+            .scalars()
+            .all()
+        )
 
         if not pages:
             logger.warning("No pages to chunk for version %s", version_id)
@@ -137,9 +139,7 @@ def run_chunk(version_id: uuid.UUID) -> None:
         full_text = full_text.rstrip()
 
         # Delete existing chunks (idempotency)
-        existing = session.execute(
-            select(Chunk).where(Chunk.version_id == version_id)
-        ).scalars().all()
+        existing = session.execute(select(Chunk).where(Chunk.version_id == version_id)).scalars().all()
         for c in existing:
             session.delete(c)
         session.flush()

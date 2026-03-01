@@ -1,5 +1,4 @@
 import uuid
-from typing import Optional
 
 from sqlalchemy import (
     Boolean,
@@ -29,16 +28,16 @@ class DocumentPage(Base):
     page_num: Mapped[int] = mapped_column(Integer, nullable=False)
     page_text: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     ocr_used: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false"),
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
     )
-    ocr_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    char_count: Mapped[Optional[int]] = mapped_column(
+    ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    char_count: Mapped[int | None] = mapped_column(
         Integer,
         Computed("char_length(page_text)", persisted=True),
     )
 
     version = relationship("DocumentVersion", back_populates="pages")
 
-    __table_args__ = (
-        UniqueConstraint("version_id", "page_num", name="uq_pages_version_page"),
-    )
+    __table_args__ = (UniqueConstraint("version_id", "page_num", name="uq_pages_version_page"),)

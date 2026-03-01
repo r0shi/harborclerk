@@ -27,11 +27,13 @@ def run_embed(version_id: uuid.UUID) -> None:
     session = get_sync_session()
     try:
         # Load chunks missing embeddings
-        chunks = session.execute(
-            select(Chunk)
-            .where(Chunk.version_id == version_id, Chunk.embedding.is_(None))
-            .order_by(Chunk.chunk_num)
-        ).scalars().all()
+        chunks = (
+            session.execute(
+                select(Chunk).where(Chunk.version_id == version_id, Chunk.embedding.is_(None)).order_by(Chunk.chunk_num)
+            )
+            .scalars()
+            .all()
+        )
 
         if not chunks:
             logger.info("No chunks to embed for version %s", version_id)
@@ -70,8 +72,11 @@ def run_embed(version_id: uuid.UUID) -> None:
             job.progress_current = processed
             session.commit()
             publish_job_event(
-                version_id, "embed", "running",
-                progress=processed, total=len(chunks),
+                version_id,
+                "embed",
+                "running",
+                progress=processed,
+                total=len(chunks),
             )
 
         logger.info("Embedded %d chunks for version %s", len(chunks), version_id)

@@ -19,10 +19,20 @@ interface DocSummary {
 }
 
 const PROCESSING_STATUSES = new Set([
-  'queued', 'extracting', 'extracted', 'ocr_running', 'ocr_done',
-  'chunking', 'chunked', 'extracting_entities', 'entities_done',
-  'embedding', 'embedded', 'finalizing',
-  'summarizing', 'summarized',
+  'queued',
+  'extracting',
+  'extracted',
+  'ocr_running',
+  'ocr_done',
+  'chunking',
+  'chunked',
+  'extracting_entities',
+  'entities_done',
+  'embedding',
+  'embedded',
+  'finalizing',
+  'summarizing',
+  'summarized',
 ])
 
 function normalizeStatus(status?: string): string {
@@ -38,15 +48,17 @@ function StatusBadge({ status }: { status: string }) {
   else if (display === 'error') cls = 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
   else if (display === 'processing') cls = 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
 
-  return (
-    <span className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>
-      {display}
-    </span>
-  )
+  return <span className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>{display}</span>
 }
 
-function Pagination({ currentPage, totalPages, onPageChange }: {
-  currentPage: number; totalPages: number; onPageChange: (p: number) => void
+function Pagination({
+  currentPage,
+  totalPages,
+  onPageChange,
+}: {
+  currentPage: number
+  totalPages: number
+  onPageChange: (p: number) => void
 }) {
   if (totalPages <= 1) return null
 
@@ -70,7 +82,9 @@ function Pagination({ currentPage, totalPages, onPageChange }: {
       </button>
       {pages.map((p, i) =>
         p === '...' ? (
-          <span key={`e${i}`} className="px-2 text-sm text-gray-400">...</span>
+          <span key={`e${i}`} className="px-2 text-sm text-gray-400">
+            ...
+          </span>
         ) : (
           <button
             key={p}
@@ -83,7 +97,7 @@ function Pagination({ currentPage, totalPages, onPageChange }: {
           >
             {p}
           </button>
-        )
+        ),
       )}
       <button
         onClick={() => onPageChange(currentPage + 1)}
@@ -122,12 +136,17 @@ export default function DocumentsPage() {
 
   // Live-update when ingestion completes
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  useJobEvents(useCallback((event) => {
-    if (event.stage === 'finalize' && event.status === 'done') {
-      clearTimeout(debounceRef.current)
-      debounceRef.current = setTimeout(() => loadDocs(), 1000)
-    }
-  }, [loadDocs]))
+  useJobEvents(
+    useCallback(
+      (event) => {
+        if (event.stage === 'finalize' && event.status === 'done') {
+          clearTimeout(debounceRef.current)
+          debounceRef.current = setTimeout(() => loadDocs(), 1000)
+        }
+      },
+      [loadDocs],
+    ),
+  )
 
   async function handleCancel(docId: string) {
     try {
@@ -155,7 +174,7 @@ export default function DocumentsPage() {
   }
 
   function toggleSelect(docId: string) {
-    setSelected(prev => {
+    setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(docId)) next.delete(docId)
       else next.add(docId)
@@ -219,15 +238,14 @@ export default function DocumentsPage() {
   const filteredDocs = docs.filter((d) => {
     if (!filter) return true
     const q = filter.toLowerCase()
-    return d.title.toLowerCase().includes(q) ||
-      (d.canonical_filename?.toLowerCase().includes(q) ?? false)
+    return d.title.toLowerCase().includes(q) || (d.canonical_filename?.toLowerCase().includes(q) ?? false)
   })
 
   const totalPages = Math.max(1, Math.ceil(filteredDocs.length / pageSize))
   const effectivePage = Math.min(currentPage, totalPages)
   const startIdx = (effectivePage - 1) * pageSize
   const visibleDocs = filteredDocs.slice(startIdx, startIdx + pageSize)
-  const visibleDocIds = new Set(visibleDocs.map(d => d.doc_id))
+  const visibleDocIds = new Set(visibleDocs.map((d) => d.doc_id))
 
   // Sync state when page exceeds total (e.g. after doc count changes)
   useEffect(() => {
@@ -238,7 +256,9 @@ export default function DocumentsPage() {
   try {
     const raw = sessionStorage.getItem('lastDoc')
     if (raw) lastDoc = JSON.parse(raw)
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   if (loading) return <div className="text-gray-500 dark:text-gray-400">Loading documents...</div>
   if (error) return <div className="text-red-600 dark:text-red-400">Error: {error}</div>
@@ -248,10 +268,7 @@ export default function DocumentsPage() {
       {lastDoc && (
         <div className="mb-3 text-sm text-gray-500 dark:text-gray-400">
           Continue viewing:{' '}
-          <Link
-            to={`/docs/${lastDoc.doc_id}`}
-            className="text-blue-600 dark:text-blue-400 hover:underline"
-          >
+          <Link to={`/docs/${lastDoc.doc_id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
             {lastDoc.title}
           </Link>
         </div>
@@ -263,7 +280,10 @@ export default function DocumentsPage() {
             type="text"
             placeholder="Filter by filename..."
             value={filter}
-            onChange={(e) => { setFilter(e.target.value); setCurrentPage(1) }}
+            onChange={(e) => {
+              setFilter(e.target.value)
+              setCurrentPage(1)
+            }}
             className="w-64 rounded-lg border border-[var(--color-border)] bg-white dark:bg-[#2c2c2e] px-3 py-1.5 text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/30"
           />
           <Link
@@ -295,7 +315,10 @@ export default function DocumentsPage() {
               onDelete={handleBulkDelete}
               onCancelDelete={() => setConfirmingDelete(false)}
               onDownload={handleBulkDownload}
-              onClear={() => { setSelected(new Set()); setConfirmingDelete(false) }}
+              onClear={() => {
+                setSelected(new Set())
+                setConfirmingDelete(false)
+              }}
             />
           )}
 
@@ -306,7 +329,7 @@ export default function DocumentsPage() {
                   <th className="w-10 px-4 py-3">
                     <input
                       type="checkbox"
-                      checked={visibleDocs.length > 0 && visibleDocs.every(d => selected.has(d.doc_id))}
+                      checked={visibleDocs.length > 0 && visibleDocs.every((d) => selected.has(d.doc_id))}
                       onChange={toggleSelectAll}
                       className="h-3.5 w-3.5 rounded border-gray-300 text-[var(--color-accent)] focus:ring-[var(--color-accent)]/30"
                     />
@@ -343,18 +366,23 @@ export default function DocumentsPage() {
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
                             <button
-                              onClick={() => setExpanded(prev => {
-                                const next = new Set(prev)
-                                if (next.has(doc.doc_id)) next.delete(doc.doc_id)
-                                else next.add(doc.doc_id)
-                                return next
-                              })}
+                              onClick={() =>
+                                setExpanded((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(doc.doc_id)) next.delete(doc.doc_id)
+                                  else next.add(doc.doc_id)
+                                  return next
+                                })
+                              }
                               className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                               title="Toggle details"
                             >
                               <svg
                                 className={`h-3.5 w-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-                                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={2}
                               >
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                               </svg>
@@ -367,9 +395,7 @@ export default function DocumentsPage() {
                                 {doc.title}
                               </Link>
                               {doc.canonical_filename && (
-                                <div className="text-xs text-gray-400">
-                                  {doc.canonical_filename}
-                                </div>
+                                <div className="text-xs text-gray-400">{doc.canonical_filename}</div>
                               )}
                             </div>
                           </div>
@@ -386,16 +412,20 @@ export default function DocumentsPage() {
                                 className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                                 title="Cancel processing"
                               >
-                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <svg
+                                  className="h-3.5 w-3.5"
+                                  fill="none"
+                                  viewBox="0 0 24 24"
+                                  stroke="currentColor"
+                                  strokeWidth={2}
+                                >
                                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                                 </svg>
                               </button>
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
-                          {doc.version_count}
-                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{doc.version_count}</td>
                         <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                           {new Date(doc.updated_at).toLocaleDateString()}
                         </td>
@@ -405,8 +435,18 @@ export default function DocumentsPage() {
                             className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
                             title="Download original"
                           >
-                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                            <svg
+                              className="h-4 w-4"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                              strokeWidth={2}
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+                              />
                             </svg>
                           </button>
                         </td>
@@ -416,18 +456,33 @@ export default function DocumentsPage() {
                           <td colSpan={6} className="px-4 py-3 pl-14">
                             <div className="space-y-1 text-sm">
                               <div>
-                                <span className="font-medium text-gray-500 dark:text-gray-400">Summary{doc.summary_model ? <span className="font-normal text-gray-400 dark:text-gray-500"> ({doc.summary_model})</span> : ''}: </span>
-                                {doc.summary
-                                  ? <span className="text-gray-700 dark:text-gray-300">{doc.summary}</span>
-                                  : <span className="italic text-gray-400 dark:text-gray-500">No summary</span>
-                                }
+                                <span className="font-medium text-gray-500 dark:text-gray-400">
+                                  Summary
+                                  {doc.summary_model ? (
+                                    <span className="font-normal text-gray-400 dark:text-gray-500">
+                                      {' '}
+                                      ({doc.summary_model})
+                                    </span>
+                                  ) : (
+                                    ''
+                                  )}
+                                  :{' '}
+                                </span>
+                                {doc.summary ? (
+                                  <span className="text-gray-700 dark:text-gray-300">{doc.summary}</span>
+                                ) : (
+                                  <span className="italic text-gray-400 dark:text-gray-500">No summary</span>
+                                )}
                               </div>
                               <div>
                                 <span className="font-medium text-gray-500 dark:text-gray-400">Source: </span>
-                                {doc.source_path
-                                  ? <span className="text-gray-700 dark:text-gray-300 font-mono text-xs">{doc.source_path}</span>
-                                  : <span className="italic text-gray-400 dark:text-gray-500">Unknown</span>
-                                }
+                                {doc.source_path ? (
+                                  <span className="text-gray-700 dark:text-gray-300 font-mono text-xs">
+                                    {doc.source_path}
+                                  </span>
+                                ) : (
+                                  <span className="italic text-gray-400 dark:text-gray-500">Unknown</span>
+                                )}
                               </div>
                             </div>
                           </td>
@@ -450,13 +505,18 @@ export default function DocumentsPage() {
               onDelete={handleBulkDelete}
               onCancelDelete={() => setConfirmingDelete(false)}
               onDownload={handleBulkDownload}
-              onClear={() => { setSelected(new Set()); setConfirmingDelete(false) }}
+              onClear={() => {
+                setSelected(new Set())
+                setConfirmingDelete(false)
+              }}
             />
           )}
 
           <div className="mt-2 flex items-center justify-center gap-3 text-xs text-gray-400">
             <span>
-              Showing {filteredDocs.length === 0 ? 0 : startIdx + 1}–{Math.min(startIdx + pageSize, filteredDocs.length)} of {filteredDocs.length}{filter && ` (filtered from ${docs.length})`}
+              Showing {filteredDocs.length === 0 ? 0 : startIdx + 1}–
+              {Math.min(startIdx + pageSize, filteredDocs.length)} of {filteredDocs.length}
+              {filter && ` (filtered from ${docs.length})`}
             </span>
             <span className="text-gray-300 dark:text-gray-600">|</span>
             <label className="flex items-center gap-1.5">
@@ -472,7 +532,9 @@ export default function DocumentsPage() {
                 className="rounded border-0 bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 text-xs focus:ring-2 focus:ring-[var(--color-accent)]/30"
               >
                 {[10, 25, 50, 100].map((n) => (
-                  <option key={n} value={n}>{n}</option>
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
                 ))}
               </select>
               per page
@@ -485,7 +547,17 @@ export default function DocumentsPage() {
   )
 }
 
-function BulkActionsBar({ count, isAdmin, bulkAction, confirmingDelete, onReprocess, onDelete, onCancelDelete, onDownload, onClear }: {
+function BulkActionsBar({
+  count,
+  isAdmin,
+  bulkAction,
+  confirmingDelete,
+  onReprocess,
+  onDelete,
+  onCancelDelete,
+  onDownload,
+  onClear,
+}: {
   count: number
   isAdmin: boolean
   bulkAction: string
@@ -498,9 +570,7 @@ function BulkActionsBar({ count, isAdmin, bulkAction, confirmingDelete, onReproc
 }) {
   return (
     <div className="my-2 flex items-center gap-2 rounded-lg bg-[var(--color-bg-secondary)] px-3 py-2">
-      <span className="text-xs font-medium text-[var(--color-text-secondary)]">
-        {count} selected
-      </span>
+      <span className="text-xs font-medium text-[var(--color-text-secondary)]">{count} selected</span>
       <div className="flex-1" />
       {isAdmin && (
         <button
@@ -518,8 +588,8 @@ function BulkActionsBar({ count, isAdmin, bulkAction, confirmingDelete, onReproc
       >
         {bulkAction === 'download' ? 'Downloading...' : 'Download'}
       </button>
-      {isAdmin && (
-        confirmingDelete ? (
+      {isAdmin &&
+        (confirmingDelete ? (
           <div className="flex items-center gap-1.5">
             <button
               onClick={onDelete}
@@ -543,12 +613,8 @@ function BulkActionsBar({ count, isAdmin, bulkAction, confirmingDelete, onReproc
           >
             Delete
           </button>
-        )
-      )}
-      <button
-        onClick={onClear}
-        className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-      >
+        ))}
+      <button onClick={onClear} className="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
         Clear
       </button>
     </div>

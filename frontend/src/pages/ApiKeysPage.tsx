@@ -132,9 +132,7 @@ export default function ApiKeysPage() {
                   {new Date(k.created_at).toLocaleDateString()}
                 </td>
                 <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                  {k.last_used_at
-                    ? new Date(k.last_used_at).toLocaleString()
-                    : 'Never'}
+                  {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : 'Never'}
                 </td>
                 <td className="px-4 py-3 text-right">
                   {k.is_active && (
@@ -150,10 +148,7 @@ export default function ApiKeysPage() {
             ))}
             {keys.length === 0 && (
               <tr>
-                <td
-                  colSpan={5}
-                  className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400"
-                >
+                <td colSpan={5} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
                   No API keys yet.
                 </td>
               </tr>
@@ -194,9 +189,7 @@ function CreateKeyForm({
       className="mb-4 flex items-end space-x-3 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4"
     >
       <div className="flex-1">
-        <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
-          Key Name
-        </label>
+        <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Key Name</label>
         <input
           type="text"
           value={name}
