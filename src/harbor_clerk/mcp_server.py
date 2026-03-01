@@ -400,7 +400,10 @@ async def kb_batch_search(
     if doc_id is not None and doc_ids is not None:
         return json.dumps({"error": "Cannot specify both doc_id and doc_ids"})
 
-    did = uuid.UUID(doc_id) if doc_id else None
+    try:
+        did = uuid.UUID(doc_id) if doc_id else None
+    except ValueError:
+        return json.dumps({"error": f"Invalid UUID for doc_id: {doc_id}"})
 
     # Parse doc_ids
     parsed_doc_ids = None
@@ -459,6 +462,20 @@ async def kb_batch_search(
             if k >= settings.mcp_max_k:
                 _search_stats["cap_hits"] += 1
             _search_stats[f"detail_{detail}"] += 1
+
+    if _search_stats["calls"] % _STATS_LOG_INTERVAL == 0 and _search_stats["calls"] > 0:
+        n = _search_stats["calls"]
+        logger.info(
+            "kb_search stats (%d calls): avg_k=%.0f, max_k=%d, cap_hit_rate=%.0f%%, "
+            "detail: full=%d brief=%d compact=%d",
+            n,
+            _search_stats["total_k"] / n,
+            _search_stats["max_k"],
+            100 * _search_stats["cap_hits"] / n,
+            _search_stats["detail_full"],
+            _search_stats["detail_brief"],
+            _search_stats["detail_compact"],
+        )
 
     return json.dumps({"results": results}, indent=2)
 

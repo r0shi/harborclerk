@@ -34,7 +34,7 @@ from harbor_clerk.models import (
     Entity,
 )
 from harbor_clerk.models.enums import VersionStatus
-from harbor_clerk.search import SearchHit, SearchResult
+from harbor_clerk.search import ConflictSource, SearchHit, SearchResult
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -880,6 +880,62 @@ async def test_batch_search_invalid_filter(
 
     assert "error" in result
     assert "Invalid ISO datetime" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_batch_search_conflict_forwarded(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search_multi,
+):
+    """possible_conflict and conflict_sources propagate in batch results."""
+    calls, result_obj = mock_hybrid_search_multi
+    result_obj.possible_conflict = True
+    result_obj.conflict_sources = [ConflictSource(doc_id="d1", version_id="v1", title="T")]
+    _set_result(result_obj, [_make_hit()])
+
+    raw = await kb_batch_search(queries=["q1"])
+    result = json.loads(raw)
+
+    assert result["results"][0]["possible_conflict"] is True
+    assert len(result["results"][0]["conflict_sources"]) == 1
+    assert result["results"][0]["conflict_sources"][0]["doc_id"] == "d1"
+
+
+@pytest.mark.asyncio
+async def test_batch_search_doc_id_doc_ids_mutual_exclusion(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Cannot specify both doc_id and doc_ids."""
+    raw = await kb_batch_search(queries=["q1"], doc_id="abc", doc_ids=["def"])
+    result = json.loads(raw)
+
+    assert "error" in result
+    assert "both" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_batch_search_has_more(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search_multi,
+):
+    """has_more is True when total_candidates exceeds k."""
+    calls, result_obj = mock_hybrid_search_multi
+    _set_result(result_obj, [_make_hit()], total=100)
+
+    raw = await kb_batch_search(queries=["q1"], k=5)
+    result = json.loads(raw)
+
+    assert result["results"][0]["has_more"] is True
+    assert result["results"][0]["total_candidates"] == 100
 
 
 # ---------------------------------------------------------------------------
