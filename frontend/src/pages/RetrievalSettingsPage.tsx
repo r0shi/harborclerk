@@ -77,8 +77,8 @@ function NumberField({ field, value, onChange }: { field: FieldDef; value: numbe
   return (
     <div className="flex items-center justify-between gap-4 py-3">
       <div className="min-w-0">
-        <div className="text-sm font-medium text-[var(--color-text-primary)]">{field.label}</div>
-        <div className="text-xs text-[var(--color-text-secondary)] mt-0.5">{field.description}</div>
+        <div className="text-sm font-medium text-(--color-text-primary)">{field.label}</div>
+        <div className="text-xs text-(--color-text-secondary) mt-0.5">{field.description}</div>
       </div>
       <input
         type="number"
@@ -87,7 +87,7 @@ function NumberField({ field, value, onChange }: { field: FieldDef; value: numbe
         step={field.step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-24 shrink-0 rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-1.5 text-sm text-right text-[var(--color-text-primary)] tabular-nums"
+        className="w-24 shrink-0 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm text-right text-(--color-text-primary) tabular-nums"
       />
     </div>
   )
@@ -111,7 +111,7 @@ export default function RetrievalSettingsPage() {
       .finally(() => setLoading(false))
   }, [])
 
-  if (loading) return <div className="text-sm text-[var(--color-text-secondary)]">Loading...</div>
+  if (loading) return <div className="text-sm text-(--color-text-secondary)">Loading...</div>
   if (!form || !saved) return <div className="text-sm text-red-500">{error || 'Failed to load settings'}</div>
 
   const dirty = JSON.stringify(form) !== JSON.stringify(saved)
@@ -146,7 +146,7 @@ export default function RetrievalSettingsPage() {
   return (
     <div className="animate-slide-in">
       <h1 className="mb-4 text-xl font-bold">Retrieval Settings</h1>
-      <p className="mb-4 text-sm text-[var(--color-text-secondary)]">
+      <p className="mb-4 text-sm text-(--color-text-secondary)">
         Tune how chat and MCP search tools retrieve passages from the knowledge base.
       </p>
 
@@ -162,22 +162,22 @@ export default function RetrievalSettingsPage() {
       )}
 
       <div className="space-y-6">
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac border border-[var(--color-border)] overflow-hidden">
-          <div className="px-4 py-3 bg-[var(--color-bg-secondary)]">
-            <h2 className="text-sm font-medium text-[var(--color-text-primary)]">Chat Retrieval</h2>
+        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac border border-(--color-border) overflow-hidden">
+          <div className="px-4 py-3 bg-(--color-bg-secondary)">
+            <h2 className="text-sm font-medium text-(--color-text-primary)">Chat Retrieval</h2>
           </div>
-          <div className="px-4 divide-y divide-[var(--color-border)]">
+          <div className="px-4 divide-y divide-(--color-border)">
             {CHAT_FIELDS.map((f) => (
               <NumberField key={f.key} field={f} value={form[f.key]} onChange={(v) => update(f.key, v)} />
             ))}
           </div>
         </div>
 
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac border border-[var(--color-border)] overflow-hidden">
-          <div className="px-4 py-3 bg-[var(--color-bg-secondary)]">
-            <h2 className="text-sm font-medium text-[var(--color-text-primary)]">MCP API</h2>
+        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac border border-(--color-border) overflow-hidden">
+          <div className="px-4 py-3 bg-(--color-bg-secondary)">
+            <h2 className="text-sm font-medium text-(--color-text-primary)">MCP API</h2>
           </div>
-          <div className="px-4 divide-y divide-[var(--color-border)]">
+          <div className="px-4 divide-y divide-(--color-border)">
             {MCP_FIELDS.map((f) => (
               <NumberField key={f.key} field={f} value={form[f.key]} onChange={(v) => update(f.key, v)} />
             ))}
@@ -189,14 +189,14 @@ export default function RetrievalSettingsPage() {
         <button
           onClick={handleSave}
           disabled={!dirty || saving}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
         <button
           onClick={handleReset}
           disabled={!dirty}
-          className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-secondary)] disabled:opacity-50 disabled:cursor-not-allowed"
+          className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm font-medium text-(--color-text-primary) hover:bg-(--color-bg-secondary) disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Reset
         </button>

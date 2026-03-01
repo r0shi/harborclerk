@@ -97,7 +97,7 @@ export default function StageRing({ stages, size = 36 }: StageRingProps) {
         y={cy}
         textAnchor="middle"
         dominantBaseline="central"
-        className="fill-[var(--color-text-primary)]"
+        className="fill-(--color-text-primary)"
         fontSize={size * 0.28}
         fontWeight={600}
       >

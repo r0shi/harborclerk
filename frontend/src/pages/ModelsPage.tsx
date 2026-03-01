@@ -212,14 +212,14 @@ export default function ModelsPage() {
       </p>
 
       {error && (
-        <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+        <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
 
       <div className="overflow-hidden rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac">
         <table className="w-full text-sm">
-          <thead className="bg-[var(--color-bg-secondary)]">
+          <thead className="bg-(--color-bg-secondary)">
             <tr>
               <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Model</th>
               <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Size</th>
@@ -285,7 +285,7 @@ export default function ModelsPage() {
                       {model.active && (
                         <button
                           onClick={() => handleDeactivate()}
-                          className="rounded-lg border border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 shadow-sm hover:bg-gray-50 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-700/50"
+                          className="rounded-lg border border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 shadow-xs hover:bg-gray-50 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-700/50"
                         >
                           Deactivate
                         </button>
@@ -293,7 +293,7 @@ export default function ModelsPage() {
                       {!model.downloaded && !downloading.has(model.id) && (
                         <button
                           onClick={() => handleDownload(model.id)}
-                          className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-blue-700"
+                          className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-blue-700"
                         >
                           Download
                         </button>
@@ -302,13 +302,13 @@ export default function ModelsPage() {
                         <>
                           <button
                             onClick={() => handleActivate(model.id)}
-                            className="rounded-lg border border-blue-600 px-3 py-1 text-xs font-medium text-blue-600 shadow-sm hover:bg-blue-50 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/20"
+                            className="rounded-lg border border-blue-600 px-3 py-1 text-xs font-medium text-blue-600 shadow-xs hover:bg-blue-50 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/20"
                           >
                             Activate
                           </button>
                           <button
                             onClick={() => handleDelete(model.id)}
-                            className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-red-700"
+                            className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-red-700"
                           >
                             Delete
                           </button>

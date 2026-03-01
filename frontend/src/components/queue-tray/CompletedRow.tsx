@@ -43,8 +43,8 @@ export default function CompletedRow({ item }: CompletedRowProps) {
 
       {/* Middle: filename + stats */}
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium text-[var(--color-text-primary)] truncate">{item.filename}</div>
-        <div className="text-xs text-[var(--color-text-secondary)]">
+        <div className="text-sm font-medium text-(--color-text-primary) truncate">{item.filename}</div>
+        <div className="text-xs text-(--color-text-secondary)">
           {isError ? (
             <span className="text-red-500">
               Error in {item.error_stage ? stageLabel(item.error_stage) : 'unknown stage'}
@@ -65,11 +65,11 @@ export default function CompletedRow({ item }: CompletedRowProps) {
 
       {/* Right: time ago + arrow link */}
       <div className="flex items-center gap-1.5 shrink-0">
-        <span className="text-xs text-[var(--color-text-secondary)] opacity-60">{formatAge(item.finished_at)}</span>
+        <span className="text-xs text-(--color-text-secondary) opacity-60">{formatAge(item.finished_at)}</span>
         {item.doc_id && (
           <Link
             to={`/docs/${item.doc_id}`}
-            className="text-[var(--color-text-secondary)] hover:translate-x-1 hover:text-[var(--color-accent)] transition-transform"
+            className="text-(--color-text-secondary) hover:translate-x-1 hover:text-(--color-accent) transition-transform"
           >
             <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />

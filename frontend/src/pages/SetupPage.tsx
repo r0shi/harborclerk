@@ -80,7 +80,7 @@ export default function SetupPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[var(--color-bg-secondary)]">
+    <div className="flex min-h-screen items-center justify-center bg-(--color-bg-secondary)">
       <div className="w-full max-w-sm">
         <img src="/logo.png" alt="Harbor Clerk" className="mx-auto mb-4 h-16 object-contain" />
         <h1 className="mb-2 text-center text-2xl font-bold text-gray-900 dark:text-gray-100">Harbor Clerk</h1>
@@ -89,7 +89,7 @@ export default function SetupPage() {
         </p>
         <form onSubmit={handleSubmit} className="rounded-xl bg-white dark:bg-[#2c2c2e] p-6 shadow-mac-lg">
           {error && (
-            <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+            <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
               {error}
             </div>
           )}
@@ -102,7 +102,7 @@ export default function SetupPage() {
             autoFocus
             autoComplete="username"
             autoCapitalize="off"
-            className="mb-4 w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-2 text-sm focus:outline-none"
+            className="mb-4 w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
           />
           <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
           <input
@@ -113,7 +113,7 @@ export default function SetupPage() {
             autoComplete="new-password"
             autoCapitalize="off"
             passwordrules="minlength: 12; required: upper; required: lower; required: digit;"
-            className="mb-2 w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-2 text-sm focus:outline-none"
+            className="mb-2 w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
           />
           {password.length > 0 && (
             <ul className="mb-4 space-y-1 text-xs">
@@ -136,7 +136,7 @@ export default function SetupPage() {
             autoComplete="new-password"
             autoCapitalize="off"
             passwordrules="minlength: 12; required: upper; required: lower; required: digit;"
-            className="mb-1 w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-2 text-sm focus:outline-none"
+            className="mb-1 w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
           />
           {confirmPassword.length > 0 && !passwordsMatch && (
             <p className="mb-4 text-xs text-red-500 dark:text-red-400">Passwords do not match</p>
@@ -144,7 +144,7 @@ export default function SetupPage() {
           <button
             type="submit"
             disabled={submitting || !allPassed || !passwordsMatch}
-            className="mt-4 w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+            className="mt-4 w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
           >
             {submitting ? 'Creating account...' : 'Create admin account'}
           </button>

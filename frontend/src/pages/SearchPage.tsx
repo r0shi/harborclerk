@@ -130,7 +130,7 @@ export default function SearchPage() {
             }}
             placeholder="Search documents..."
             autoFocus
-            className="w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-4 py-2 text-sm"
+            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-4 py-2 text-sm"
           />
           {showHistory && history.length > 0 && (
             <div className="absolute z-10 mt-1 w-full rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
@@ -142,10 +142,10 @@ export default function SearchPage() {
                     e.preventDefault()
                     selectHistoryItem(q)
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-black/[0.02] dark:hover:bg-white/[0.02]"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-black/2 dark:hover:bg-white/2"
                 >
                   <svg
-                    className="h-3.5 w-3.5 flex-shrink-0 text-gray-400"
+                    className="h-3.5 w-3.5 shrink-0 text-gray-400"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -176,14 +176,14 @@ export default function SearchPage() {
         <button
           type="submit"
           disabled={loading}
-          className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+          className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
         >
           {loading ? 'Searching...' : 'Search'}
         </button>
       </form>
 
       {error && (
-        <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+        <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
@@ -191,7 +191,7 @@ export default function SearchPage() {
       {results && (
         <>
           {results.possible_conflict && results.conflict_sources.length > 0 && (
-            <div className="mb-4 rounded bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-400">
+            <div className="mb-4 rounded-sm bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-400">
               <strong>Possible conflict:</strong> Similar content found across multiple sources:{' '}
               {results.conflict_sources.map((s, i) => (
                 <span key={s.version_id}>

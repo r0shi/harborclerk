@@ -13,9 +13,9 @@ export default function QueuePill({ activeCount, completedCount, isPulsing, onCl
       onClick={onClick}
       className={`
         flex items-center space-x-1.5 rounded-full px-3 py-1.5
-        bg-[var(--bg-vibrancy)] backdrop-blur-xl shadow-mac-lg
-        ring-1 ring-[var(--color-border)]
-        text-[13px] font-medium text-[var(--color-text-primary)]
+        bg-(--bg-vibrancy) backdrop-blur-xl shadow-mac-lg
+        ring-1 ring-(--color-border)
+        text-[13px] font-medium text-(--color-text-primary)
         transition-all hover:shadow-mac active:scale-95
         ${isPulsing ? 'pill-pulse' : ''}
       `}
@@ -31,7 +31,7 @@ export default function QueuePill({ activeCount, completedCount, isPulsing, onCl
       ) : (
         <>
           <svg
-            className="h-3.5 w-3.5 text-[var(--color-text-secondary)]"
+            className="h-3.5 w-3.5 text-(--color-text-secondary)"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -43,7 +43,7 @@ export default function QueuePill({ activeCount, completedCount, isPulsing, onCl
               d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z"
             />
           </svg>
-          <span className="text-[var(--color-text-secondary)]">{completedCount}</span>
+          <span className="text-(--color-text-secondary)">{completedCount}</span>
         </>
       )}
     </button>

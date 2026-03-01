@@ -65,7 +65,7 @@ function Disclosure({ label, defaultOpen, children }: { label: ReactNode; defaul
         className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
       >
         <svg
-          className={`h-3.5 w-3.5 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+          className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
           fill="currentColor"
           viewBox="0 0 20 20"
         >
@@ -101,7 +101,7 @@ function VersionBanner({ version }: { version: VersionInfo }) {
   if (version.status === 'ready' || allDone) {
     return (
       <div className="mb-3 flex items-center gap-2 rounded-lg bg-green-50 dark:bg-green-900/20 px-3 py-2 text-sm text-green-700 dark:text-green-400">
-        <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+        <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
         </svg>
         Ingestion complete
@@ -113,7 +113,7 @@ function VersionBanner({ version }: { version: VersionInfo }) {
     const errorJob = version.jobs.find((j) => j.status === 'error')
     return (
       <div className="mb-3 flex items-center gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
-        <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+        <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
         Error in {errorJob?.stage}
@@ -162,14 +162,14 @@ function Pagination({
     pages.push(totalPages)
   }
 
-  const btn = 'inline-flex items-center justify-center min-w-[2rem] h-8 rounded text-sm font-medium'
+  const btn = 'inline-flex items-center justify-center min-w-8 h-8 rounded-sm text-sm font-medium'
 
   return (
     <div className="flex items-center gap-1">
       <button
         onClick={() => onPageChange(1)}
         disabled={currentPage === 1}
-        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-default`}
+        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/4 dark:hover:bg-white/6 disabled:opacity-30 disabled:cursor-default`}
         title="First page"
       >
         &laquo;
@@ -177,7 +177,7 @@ function Pagination({
       <button
         onClick={() => onPageChange(currentPage - 1)}
         disabled={currentPage === 1}
-        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-default`}
+        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/4 dark:hover:bg-white/6 disabled:opacity-30 disabled:cursor-default`}
         title="Previous page"
       >
         &lsaquo;
@@ -194,7 +194,7 @@ function Pagination({
             className={`${btn} px-1.5 ${
               p === currentPage
                 ? 'bg-blue-600 text-white'
-                : 'text-gray-700 dark:text-gray-300 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+                : 'text-gray-700 dark:text-gray-300 hover:bg-black/4 dark:hover:bg-white/6'
             }`}
           >
             {p}
@@ -204,7 +204,7 @@ function Pagination({
       <button
         onClick={() => onPageChange(currentPage + 1)}
         disabled={currentPage === totalPages}
-        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-default`}
+        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/4 dark:hover:bg-white/6 disabled:opacity-30 disabled:cursor-default`}
         title="Next page"
       >
         &rsaquo;
@@ -212,7 +212,7 @@ function Pagination({
       <button
         onClick={() => onPageChange(totalPages)}
         disabled={currentPage === totalPages}
-        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-default`}
+        className={`${btn} px-1.5 text-gray-600 dark:text-gray-400 hover:bg-black/4 dark:hover:bg-white/6 disabled:opacity-30 disabled:cursor-default`}
         title="Last page"
       >
         &raquo;
@@ -405,7 +405,7 @@ export default function DocumentDetailPage() {
               <button
                 onClick={handleCancel}
                 disabled={actionLoading}
-                className="rounded-lg bg-gray-500 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-gray-600 disabled:opacity-50"
+                className="rounded-lg bg-gray-500 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-gray-600 disabled:opacity-50"
               >
                 Cancel Processing
               </button>
@@ -413,7 +413,7 @@ export default function DocumentDetailPage() {
             <button
               onClick={handleReprocess}
               disabled={actionLoading}
-              className="rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-amber-600 disabled:opacity-50"
+              className="rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-amber-600 disabled:opacity-50"
             >
               Reprocess
             </button>
@@ -429,7 +429,7 @@ export default function DocumentDetailPage() {
       </div>
 
       {error && (
-        <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+        <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
@@ -520,7 +520,7 @@ export default function DocumentDetailPage() {
       {!showContent ? (
         <button
           onClick={loadContent}
-          className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-[var(--color-text-secondary)] hover:opacity-80"
+          className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-(--color-text-secondary) hover:opacity-80"
         >
           View Content
         </button>
@@ -548,7 +548,7 @@ export default function DocumentDetailPage() {
                       setPageSize(Number(e.target.value))
                       setContentPage(1)
                     }}
-                    className="rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
+                    className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
                   >
                     {PAGE_SIZE_OPTIONS.map((n) => (
                       <option key={n} value={n}>
@@ -574,7 +574,7 @@ export default function DocumentDetailPage() {
                 <div
                   key={page.page_num}
                   className={`rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4 transition-all duration-500 ${
-                    highlightPage === page.page_num ? 'ring-2 ring-[var(--color-accent)]/40' : ''
+                    highlightPage === page.page_num ? 'ring-2 ring-(--color-accent)/40' : ''
                   }`}
                 >
                   <div className="mb-2 flex items-center justify-between">
