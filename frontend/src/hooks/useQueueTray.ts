@@ -84,10 +84,11 @@ export function useQueueTray() {
   const [completed, setCompleted] = useState<CompletedItem[]>([])
 
   const trayStateRef = useRef(trayState)
-  trayStateRef.current = trayState
-
   const activeItemsRef = useRef(activeItems)
-  activeItemsRef.current = activeItems
+  useEffect(() => {
+    trayStateRef.current = trayState
+    activeItemsRef.current = activeItems
+  })
 
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const lastToastRef = useRef(0)

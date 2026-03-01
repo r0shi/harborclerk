@@ -247,10 +247,7 @@ export default function DocumentsPage() {
   const visibleDocs = filteredDocs.slice(startIdx, startIdx + pageSize)
   const visibleDocIds = new Set(visibleDocs.map((d) => d.doc_id))
 
-  // Sync state when page exceeds total (e.g. after doc count changes)
-  useEffect(() => {
-    if (currentPage > totalPages) setCurrentPage(totalPages)
-  }, [totalPages, currentPage])
+  if (currentPage !== effectivePage) setCurrentPage(effectivePage)
 
   let lastDoc: { doc_id: string; title: string } | null = null
   try {
