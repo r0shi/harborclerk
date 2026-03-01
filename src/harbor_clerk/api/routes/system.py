@@ -1,6 +1,8 @@
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -434,3 +436,50 @@ async def update_retrieval_settings(
         mcp_max_k=s.mcp_max_k,
         mcp_brief_chars=s.mcp_brief_chars,
     )
+
+
+@router.get("/system/logs")
+async def list_logs(
+    admin: Principal = Depends(require_admin),
+) -> dict[str, Any]:
+    """List service log files with sizes and paths."""
+    config_file = os.environ.get("NATIVE_CONFIG_FILE", "")
+    if not config_file:
+        return {"mode": "docker", "logs_dir": None, "files": []}
+
+    logs_dir = Path(config_file).parent / "logs"
+    if not logs_dir.is_dir():
+        return {"mode": "native", "logs_dir": str(logs_dir), "files": []}
+
+    service_labels = {
+        "api": "API Server",
+        "worker": "Worker",
+        "embedder": "Embedder",
+        "postgres": "PostgreSQL",
+    }
+
+    files = []
+    for p in sorted(logs_dir.iterdir()):
+        if not p.is_file() or not p.name.endswith(".log"):
+            continue
+        stat = p.stat()
+        # Match service from filename (e.g. "api.log", "worker-io.log", "postgres-Mon.log")
+        stem = p.stem.split("-")[0] if "-" in p.stem else p.stem
+        label = service_labels.get(stem, stem.title())
+        if stem == "worker" and "-io" in p.name:
+            label = "Worker (IO)"
+        elif stem == "worker" and "-cpu" in p.name:
+            label = "Worker (CPU)"
+        files.append(
+            {
+                "name": p.name,
+                "path": str(p),
+                "size_bytes": stat.st_size,
+                "modified": datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat(),
+                "service": label,
+            }
+        )
+
+    return {"mode": "native", "logs_dir": str(logs_dir), "files": files}

@@ -160,21 +160,23 @@ final class PostgresService: ManagedService {
 
     // MARK: - Logging Config
 
-    /// Ensure conf.d/harbor_clerk.conf exists with logging_collector settings.
-    /// Idempotent — safe to call on every start for upgrades from pre-0.4.1.
+    /// Write conf.d/harbor_clerk.conf with logging_collector settings.
+    /// Always overwrites to pick up config changes on upgrade.
     private func ensureLoggingConfig() throws {
         let confDir = dataDir.appendingPathComponent("conf.d")
         let confFile = confDir.appendingPathComponent("harbor_clerk.conf")
-        guard !FileManager.default.fileExists(atPath: confFile.path) else { return }
 
         let logsDir = AppSettings.shared.logsDir.path
+        // Day-of-week filenames: postgres-Mon.log … postgres-Sun.log (7 files max)
+        // Each truncated when that day comes around again.
+        // 7 × 20 MB ≈ 140 MB worst case.
         let conf = """
         # Harbor Clerk: built-in log rotation
         logging_collector = on
         log_directory = '\(logsDir)'
-        log_filename = 'postgres.log'
+        log_filename = 'postgres-%a.log'
         log_rotation_age = 1d
-        log_rotation_size = 10MB
+        log_rotation_size = 20MB
         log_truncate_on_rotation = on
         log_file_mode = 0600
         """
@@ -188,8 +190,6 @@ final class PostgresService: ManagedService {
             try (existing + "\ninclude_dir = 'conf.d'\n").write(
                 to: pgConf, atomically: true, encoding: .utf8)
         }
-
-        Log.logger("postgresql").info("Configured logging_collector with daily rotation")
     }
 
     // MARK: - Setup
@@ -220,24 +220,10 @@ final class PostgresService: ManagedService {
             throw ServiceError.startFailed(name, "initdb failed with \(exitCode)")
         }
 
-        // Configure logging_collector for built-in log rotation
-        let logsDir = AppSettings.shared.logsDir.path
-        let conf = """
-        # Harbor Clerk: built-in log rotation
-        logging_collector = on
-        log_directory = '\(logsDir)'
-        log_filename = 'postgres.log'
-        log_rotation_age = 1d
-        log_rotation_size = 10MB
-        log_truncate_on_rotation = on
-        log_file_mode = 0600
-        """
-        let confURL = dataDir.appendingPathComponent("conf.d/harbor_clerk.conf")
-        try FileManager.default.createDirectory(
-            at: confURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try conf.write(to: confURL, atomically: true, encoding: .utf8)
-
-        // Include conf.d in postgresql.conf
+        // Configure logging_collector — ensureLoggingConfig() writes the actual
+        // settings on every start, but we need include_dir in postgresql.conf now.
+        let confDir = dataDir.appendingPathComponent("conf.d")
+        try FileManager.default.createDirectory(at: confDir, withIntermediateDirectories: true)
         let pgConf = dataDir.appendingPathComponent("postgresql.conf")
         let existing = try String(contentsOf: pgConf, encoding: .utf8)
         try (existing + "\ninclude_dir = 'conf.d'\n").write(to: pgConf, atomically: true, encoding: .utf8)
