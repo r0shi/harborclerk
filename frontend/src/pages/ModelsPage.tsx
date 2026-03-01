@@ -23,9 +23,7 @@ export default function ModelsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [downloading, setDownloading] = useState<Set<string>>(new Set())
-  const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(
-    new Map(),
-  )
+  const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(new Map())
 
   const loadModelsRef = useRef(loadModels)
   loadModelsRef.current = loadModels
@@ -88,9 +86,7 @@ export default function ModelsPage() {
               if (event.status === 'downloading') {
                 setDownloading((prev) => new Set(prev).add(event.model_id))
                 if (event.progress != null) {
-                  setDownloadProgress((prev) =>
-                    new Map(prev).set(event.model_id, event.progress),
-                  )
+                  setDownloadProgress((prev) => new Map(prev).set(event.model_id, event.progress))
                 }
               } else if (event.status === 'complete') {
                 setDownloading((prev) => {
@@ -143,13 +139,8 @@ export default function ModelsPage() {
     setDownloading((prev) => new Set(prev).add(modelId))
     setDownloadProgress((prev) => new Map(prev).set(modelId, 0))
     try {
-      const result = await post<{ status: string }>(
-        `/api/chat/models/${modelId}/download`,
-      )
-      if (
-        result.status === 'already_downloading' ||
-        result.status === 'already_downloaded'
-      ) {
+      const result = await post<{ status: string }>(`/api/chat/models/${modelId}/download`)
+      if (result.status === 'already_downloading' || result.status === 'already_downloaded') {
         setDownloading((prev) => {
           const next = new Set(prev)
           next.delete(modelId)
@@ -210,19 +201,14 @@ export default function ModelsPage() {
   }
 
   if (loading) {
-    return (
-      <div className="text-sm text-gray-500 dark:text-gray-400">
-        Loading models...
-      </div>
-    )
+    return <div className="text-sm text-gray-500 dark:text-gray-400">Loading models...</div>
   }
 
   return (
     <div className="animate-slide-in">
       <h1 className="mb-4 text-xl font-bold">LLM Models</h1>
       <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-        Download and manage models for the built-in chat assistant. Models run
-        locally on this machine.
+        Download and manage models for the built-in chat assistant. Models run locally on this machine.
       </p>
 
       {error && (
@@ -235,24 +221,12 @@ export default function ModelsPage() {
         <table className="w-full text-sm">
           <thead className="bg-[var(--color-bg-secondary)]">
             <tr>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
-                Model
-              </th>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
-                Size
-              </th>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
-                Context
-              </th>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
-                Tools
-              </th>
-              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">
-                Status
-              </th>
-              <th className="px-4 py-3 text-right font-medium text-gray-700 dark:text-gray-300">
-                Actions
-              </th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Model</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Size</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Context</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Tools</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Status</th>
+              <th className="px-4 py-3 text-right font-medium text-gray-700 dark:text-gray-300">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
@@ -261,16 +235,10 @@ export default function ModelsPage() {
               return (
                 <tr key={model.id} className="bg-white dark:bg-[#2c2c2e]">
                   <td className="px-4 py-3">
-                    <div className="font-medium text-gray-900 dark:text-gray-100">
-                      {model.name}
-                    </div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">
-                      {model.id}
-                    </div>
+                    <div className="font-medium text-gray-900 dark:text-gray-100">{model.name}</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">{model.id}</div>
                   </td>
-                  <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
-                    {formatSize(model.size_bytes)}
-                  </td>
+                  <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{formatSize(model.size_bytes)}</td>
                   <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
                     {model.context_window.toLocaleString()}
                   </td>
@@ -309,9 +277,7 @@ export default function ModelsPage() {
                         </span>
                       </div>
                     ) : (
-                      <span className="text-xs text-gray-400">
-                        Not downloaded
-                      </span>
+                      <span className="text-xs text-gray-400">Not downloaded</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-right">

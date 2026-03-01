@@ -8,10 +8,10 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.storage import get_storage
 from harbor_clerk.models import DocumentHeading, DocumentPage, DocumentVersion
-from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
 from harbor_clerk.models.enums import JobStage
+from harbor_clerk.storage import get_storage
+from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
 from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
@@ -64,15 +64,12 @@ def _extract_txt(data: bytes) -> list[tuple[int, str]]:
     return _paginate_text(text, settings.synthetic_page_chars)
 
 
-def _extract_via_tika(
-    data: bytes, mime_type: str, is_pdf: bool = False
-) -> list[tuple[int, str]]:
+def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list[tuple[int, str]]:
     """Extract text via Apache Tika. For PDFs, splits on form feed characters."""
     settings = get_settings()
     if not settings.tika_url:
         raise RuntimeError(
-            "Tika is required for extraction (TIKA_URL not set). "
-            "Only plain text and images work without Tika."
+            "Tika is required for extraction (TIKA_URL not set). Only plain text and images work without Tika."
         )
     resp = httpx.put(
         f"{settings.tika_url}/tika",
@@ -139,7 +136,7 @@ def _extract_headings_via_tika(
         result = []
         for h in raw_headings:
             page_num = None
-            for start, end, pnum in cum_offsets:
+            for _start, end, pnum in cum_offsets:
                 if h.position < end:
                     page_num = pnum
                     break
@@ -168,24 +165,18 @@ def run_extract(version_id: uuid.UUID) -> None:
 
     session = get_sync_session()
     try:
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one()
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
 
         # Download from storage
         storage = get_storage()
-        response = storage.get_object(
-            version.original_bucket, version.original_object_key
-        )
+        response = storage.get_object(version.original_bucket, version.original_object_key)
         data = response.read()
 
         mime = (version.mime_type or "").lower()
 
         # Sniff RTF content regardless of extension/MIME
         is_rtf = data[:5] == b"{\\rtf"
-        is_pdf = mime == "application/pdf" or version.original_object_key.endswith(
-            ".pdf"
-        )
+        is_pdf = mime == "application/pdf" or version.original_object_key.endswith(".pdf")
         is_image = mime in IMAGE_MIMES
 
         # Dispatch by type
@@ -200,9 +191,7 @@ def run_extract(version_id: uuid.UUID) -> None:
         elif mime == "text/plain" or obj_key.endswith((".txt", ".md", ".csv")):
             # Plain text / Markdown / CSV — no Tika needed
             pages = _extract_txt(data)
-        elif (
-            is_rtf or mime == "text/rtf" or version.original_object_key.endswith(".rtf")
-        ):
+        elif is_rtf or mime == "text/rtf" or version.original_object_key.endswith(".rtf"):
             pages = _extract_via_tika(data, "text/rtf")
         elif is_pdf:
             pages = _extract_via_tika(data, "application/pdf", is_pdf=True)
@@ -212,8 +201,7 @@ def run_extract(version_id: uuid.UUID) -> None:
         ) or version.original_object_key.endswith(".docx"):
             pages = _extract_via_tika(
                 data,
-                mime
-                or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                mime or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
         else:
             # Unknown type — try Tika
@@ -221,11 +209,7 @@ def run_extract(version_id: uuid.UUID) -> None:
 
         # Delete existing pages for this version (idempotency)
         existing_pages = (
-            session.execute(
-                select(DocumentPage).where(DocumentPage.version_id == version_id)
-            )
-            .scalars()
-            .all()
+            session.execute(select(DocumentPage).where(DocumentPage.version_id == version_id)).scalars().all()
         )
         for p in existing_pages:
             session.delete(p)
@@ -244,27 +228,17 @@ def run_extract(version_id: uuid.UUID) -> None:
             total_chars += len(text)
 
         # Extract headings from Tika XHTML (skip images and plain text)
-        skip_headings = (
-            is_image
-            or mime in _SKIP_HEADINGS_MIMES
-            or obj_key.endswith(_SKIP_HEADINGS_EXTS)
-        )
+        skip_headings = is_image or mime in _SKIP_HEADINGS_MIMES or obj_key.endswith(_SKIP_HEADINGS_EXTS)
         # Delete existing headings (idempotency)
         existing_headings = (
-            session.execute(
-                select(DocumentHeading).where(DocumentHeading.version_id == version_id)
-            )
-            .scalars()
-            .all()
+            session.execute(select(DocumentHeading).where(DocumentHeading.version_id == version_id)).scalars().all()
         )
         for h in existing_headings:
             session.delete(h)
         session.flush()
 
         if not skip_headings:
-            headings = _extract_headings_via_tika(
-                data, mime or "application/octet-stream", pages
-            )
+            headings = _extract_headings_via_tika(data, mime or "application/octet-stream", pages)
             for hd in headings:
                 session.add(
                     DocumentHeading(
@@ -323,9 +297,7 @@ def run_extract(version_id: uuid.UUID) -> None:
             ".htm",
             ".eml",
         )
-        is_never_ocr = (
-            is_rtf or mime in _NEVER_OCR_MIMES or obj_key.endswith(_NEVER_OCR_EXTS)
-        )
+        is_never_ocr = is_rtf or mime in _NEVER_OCR_MIMES or obj_key.endswith(_NEVER_OCR_EXTS)
 
         if is_image:
             version.needs_ocr = True

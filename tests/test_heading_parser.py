@@ -4,14 +4,10 @@ from harbor_clerk.worker.heading_parser import Heading, parse_headings_from_xhtm
 
 
 def test_basic_headings():
-    xhtml = (
-        "<html><body><h1>Introduction</h1><p>text</p><h2>Background</h2></body></html>"
-    )
+    xhtml = "<html><body><h1>Introduction</h1><p>text</p><h2>Background</h2></body></html>"
     result = parse_headings_from_xhtml(xhtml)
     assert len(result) == 2
-    assert result[0] == Heading(
-        level=1, title="Introduction", position=result[0].position
-    )
+    assert result[0] == Heading(level=1, title="Introduction", position=result[0].position)
     assert result[1].level == 2
     assert result[1].title == "Background"
 

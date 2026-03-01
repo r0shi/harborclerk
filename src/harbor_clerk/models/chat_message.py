@@ -1,11 +1,11 @@
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from harbor_clerk.models.base import Base, uuid_pk, created_at
+from harbor_clerk.models.base import Base, created_at, uuid_pk
 
 
 class ChatMessage(Base):
@@ -19,10 +19,10 @@ class ChatMessage(Base):
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
-    tool_calls: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
-    tool_call_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    rag_context: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
-    tokens_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tool_calls: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    rag_context: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[created_at]
 
     __table_args__ = (Index("idx_messages_conv", "conversation_id", "created_at"),)

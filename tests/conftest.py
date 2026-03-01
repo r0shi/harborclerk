@@ -14,31 +14,26 @@ import os
 # Must be set BEFORE any harbor_clerk import — db.py reads settings at module level.
 # Respect DATABASE_URL if already set (e.g. macOS native server on port 5433).
 if "DATABASE_URL" not in os.environ:
-    os.environ["DATABASE_URL"] = (
-        "postgresql+asyncpg://lka:lka_dev_password@localhost:5432/lka_test"
-    )
+    os.environ["DATABASE_URL"] = "postgresql+asyncpg://lka:lka_dev_password@localhost:5432/lka_test"
 os.environ["STORAGE_BACKEND"] = "filesystem"
 os.environ["STORAGE_PATH"] = "/tmp/harbor_clerk_test_storage"
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["STATIC_DIR"] = "/tmp/harbor_clerk_test_static"
 
-import uuid
 from collections.abc import AsyncGenerator
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
-    AsyncConnection,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
 
+from harbor_clerk.auth import create_access_token, hash_password
 from harbor_clerk.config import get_settings
 from harbor_clerk.models import Base, User
 from harbor_clerk.models.enums import UserRole
-from harbor_clerk.auth import create_access_token, hash_password
 
 
 @pytest.fixture(scope="session")
@@ -88,6 +83,7 @@ async def db_session(
 async def client(db_session: AsyncSession):
     """ASGI test client with DB session override."""
     from httpx import ASGITransport, AsyncClient
+
     from harbor_clerk.api.app import create_app
     from harbor_clerk.db import get_session
 

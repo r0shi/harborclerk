@@ -36,9 +36,7 @@ export function useChat() {
 
   const loadMessages = useCallback((msgs: ChatMessage[]) => {
     // Filter out tool messages for display — they're shown inline as tool cards
-    setMessages(
-      msgs.filter((m) => m.role !== 'tool'),
-    )
+    setMessages(msgs.filter((m) => m.role !== 'tool'))
   }, [])
 
   const sendMessage = useCallback(
@@ -65,18 +63,15 @@ export function useChat() {
       setMessages((prev) => [...prev, assistantMsg])
 
       try {
-        const res = await fetch(
-          `/api/chat/conversations/${conversationId}/messages`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({ content }),
-            signal: controller.signal,
+        const res = await fetch(`/api/chat/conversations/${conversationId}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
           },
-        )
+          body: JSON.stringify({ content }),
+          signal: controller.signal,
+        })
 
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }))

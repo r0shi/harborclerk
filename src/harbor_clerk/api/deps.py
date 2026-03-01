@@ -2,7 +2,7 @@
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
@@ -69,9 +69,7 @@ async def get_current_principal(
 
     # API key lookup
     key_hash = hash_api_key(token)
-    result = await session.execute(
-        select(ApiKey).where(ApiKey.key_hash == key_hash, ApiKey.is_active.is_(True))
-    )
+    result = await session.execute(select(ApiKey).where(ApiKey.key_hash == key_hash, ApiKey.is_active.is_(True)))
     api_key = result.scalar_one_or_none()
     if api_key is None:
         raise HTTPException(
@@ -79,11 +77,7 @@ async def get_current_principal(
             detail="Invalid API key",
         )
     # Update last_used_at
-    await session.execute(
-        update(ApiKey)
-        .where(ApiKey.key_id == api_key.key_id)
-        .values(last_used_at=datetime.now(timezone.utc))
-    )
+    await session.execute(update(ApiKey).where(ApiKey.key_id == api_key.key_id).values(last_used_at=datetime.now(UTC)))
     await session.commit()
     return Principal(type="api_key", id=api_key.key_id, role="user")
 

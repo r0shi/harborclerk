@@ -13,12 +13,8 @@ export default function PreferencesPage() {
 
       <div className="space-y-6">
         <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-6">
-          <h2 className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">
-            Theme
-          </h2>
-          <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">
-            Choose between light and dark appearance.
-          </p>
+          <h2 className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Theme</h2>
+          <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">Choose between light and dark appearance.</p>
           <div className="flex space-x-2">
             <button
               onClick={() => updatePreferences({ theme: 'light' })}
@@ -44,17 +40,11 @@ export default function PreferencesPage() {
         </div>
 
         <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-6">
-          <h2 className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">
-            Default page size
-          </h2>
-          <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">
-            Number of items shown per page by default.
-          </p>
+          <h2 className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Default page size</h2>
+          <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">Number of items shown per page by default.</p>
           <select
             value={pageSize}
-            onChange={(e) =>
-              updatePreferences({ page_size: Number(e.target.value) })
-            }
+            onChange={(e) => updatePreferences({ page_size: Number(e.target.value) })}
             className="rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
           >
             {PAGE_SIZE_OPTIONS.map((n) => (

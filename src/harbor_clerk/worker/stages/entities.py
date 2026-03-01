@@ -22,34 +22,22 @@ def run_entities(version_id: uuid.UUID) -> None:
 
     session = get_sync_session()
     try:
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one()
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
 
         chunks = (
-            session.execute(
-                select(Chunk)
-                .where(Chunk.version_id == version_id)
-                .order_by(Chunk.chunk_num)
-            )
+            session.execute(select(Chunk).where(Chunk.version_id == version_id).order_by(Chunk.chunk_num))
             .scalars()
             .all()
         )
 
         if not chunks:
-            logger.warning(
-                "No chunks to extract entities from for version %s", version_id
-            )
+            logger.warning("No chunks to extract entities from for version %s", version_id)
             session.close()
             mark_stage_done(version_id, JobStage.entities, entity_count=0)
             return
 
         # Delete existing entities for idempotency
-        existing = (
-            session.execute(select(Entity).where(Entity.version_id == version_id))
-            .scalars()
-            .all()
-        )
+        existing = session.execute(select(Entity).where(Entity.version_id == version_id)).scalars().all()
         for e in existing:
             session.delete(e)
         session.flush()

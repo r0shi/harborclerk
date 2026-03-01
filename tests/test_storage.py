@@ -1,14 +1,11 @@
 """Tests for storage backends: FilesystemBackend and MinIOBackend."""
 
 import io
-import tempfile
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from harbor_clerk.storage import FilesystemBackend, MinIOBackend, StorageResponse
-
 
 # --- StorageResponse ---
 
@@ -165,7 +162,11 @@ def test_minio_put_object(minio_backend, minio_client):
     data = io.BytesIO(b"hello")
     minio_backend.put_object("originals", "key.txt", data, 5, "text/plain")
     minio_client.put_object.assert_called_once_with(
-        "originals", "key.txt", data, 5, content_type="text/plain",
+        "originals",
+        "key.txt",
+        data,
+        5,
+        content_type="text/plain",
     )
 
 
@@ -202,7 +203,9 @@ def test_minio_list_objects(minio_backend, minio_client):
     result = minio_backend.list_objects("originals", prefix="v/", recursive=True)
     assert result == [{"key": "file.txt", "size": 42}]
     minio_client.list_objects.assert_called_once_with(
-        "originals", prefix="v/", recursive=True,
+        "originals",
+        prefix="v/",
+        recursive=True,
     )
 
 

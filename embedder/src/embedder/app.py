@@ -65,25 +65,19 @@ async def embed(request: EmbedRequest):
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     # File logging when running inside macOS native app
     config_file = os.environ.get("NATIVE_CONFIG_FILE", "")
     if config_file:
-        from pathlib import Path
         from logging.handlers import RotatingFileHandler
+        from pathlib import Path
 
         logs_dir = Path(config_file).parent / "logs"
         try:
             logs_dir.mkdir(parents=True, exist_ok=True)
-            fh = RotatingFileHandler(
-                logs_dir / "embedder.log", maxBytes=5 * 1024 * 1024, backupCount=3
-            )
-            fh.setFormatter(
-                logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-            )
+            fh = RotatingFileHandler(logs_dir / "embedder.log", maxBytes=5 * 1024 * 1024, backupCount=3)
+            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
             logging.getLogger().addHandler(fh)
         except OSError:
             pass

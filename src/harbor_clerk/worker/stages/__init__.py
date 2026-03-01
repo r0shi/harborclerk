@@ -2,8 +2,8 @@
 
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.stages.chunk import run_chunk
-from harbor_clerk.worker.stages.entities import run_entities
 from harbor_clerk.worker.stages.embed import run_embed
+from harbor_clerk.worker.stages.entities import run_entities
 from harbor_clerk.worker.stages.extract import run_extract
 from harbor_clerk.worker.stages.finalize import run_finalize
 from harbor_clerk.worker.stages.ocr import run_ocr

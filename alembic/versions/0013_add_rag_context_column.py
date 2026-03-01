@@ -1,8 +1,9 @@
 """Add rag_context JSONB column to chat_messages."""
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
+
+from alembic import op
 
 revision = "0013"
 down_revision = "0012"

@@ -1,7 +1,7 @@
 import logging
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,19 +19,16 @@ from harbor_clerk.api.schemas.system import (
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings, sync_native_config
 from harbor_clerk.db import get_session
-from harbor_clerk.models import User
-from harbor_clerk.storage import get_storage
 from harbor_clerk.models import (
     Chunk,
     Document,
-    DocumentHeading,
     DocumentPage,
     DocumentVersion,
-    Entity,
     IngestionJob,
-    Upload,
+    User,
 )
 from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
+from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
@@ -76,9 +73,7 @@ async def health_check(
         settings = get_settings()
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{settings.tika_url}/tika", timeout=5)
-            checks["tika"] = (
-                "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
-            )
+            checks["tika"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
     except Exception as e:
         logger.error("Tika health check failed: %s", e)
         checks["tika"] = f"error: {e}"
@@ -103,14 +98,10 @@ async def system_stats(
 
     # ── PostgreSQL stats ──
     try:
-        row = await session.execute(
-            text("SELECT pg_database_size(current_database()) AS db_size")
-        )
+        row = await session.execute(text("SELECT pg_database_size(current_database()) AS db_size"))
         db_size = row.scalar() or 0
 
-        row = await session.execute(
-            text("SELECT count(*) FROM pg_stat_activity WHERE state IS NOT NULL")
-        )
+        row = await session.execute(text("SELECT count(*) FROM pg_stat_activity WHERE state IS NOT NULL"))
         active_conns = row.scalar() or 0
 
         row = await session.execute(
@@ -125,17 +116,13 @@ async def system_stats(
         row = await session.execute(text("SELECT count(*) FROM chunks"))
         total_chunks = row.scalar() or 0
 
-        row = await session.execute(
-            text("SELECT coalesce(sum(n_dead_tup), 0) FROM pg_stat_user_tables")
-        )
+        row = await session.execute(text("SELECT coalesce(sum(n_dead_tup), 0) FROM pg_stat_user_tables"))
         dead_tuples = row.scalar() or 0
 
         result["postgres"] = {
             "db_size_mb": round(db_size / (1024 * 1024), 1),
             "active_connections": int(active_conns),
-            "cache_hit_ratio": round(float(cache_hit), 4)
-            if cache_hit is not None
-            else None,
+            "cache_hit_ratio": round(float(cache_hit), 4) if cache_hit is not None else None,
             "total_chunks": int(total_chunks),
             "dead_tuples": int(dead_tuples),
         }
@@ -146,16 +133,11 @@ async def system_stats(
     # ── Queue stats (from ingestion_jobs table) ──
     try:
         rows = await session.execute(
-            text(
-                "SELECT stage, count(*) FROM ingestion_jobs "
-                "WHERE status = 'queued' GROUP BY stage"
-            )
+            text("SELECT stage, count(*) FROM ingestion_jobs WHERE status = 'queued' GROUP BY stage")
         )
         queue_depths = {row[0]: row[1] for row in rows}
         result["queues"] = {
-            "io_queued": sum(
-                queue_depths.get(s, 0) for s in ("extract", "chunk", "finalize")
-            ),
+            "io_queued": sum(queue_depths.get(s, 0) for s in ("extract", "chunk", "finalize")),
             "cpu_queued": sum(queue_depths.get(s, 0) for s in ("ocr", "embed")),
         }
     except Exception as e:
@@ -185,7 +167,7 @@ async def purge_run(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Hard-delete documents soft-deleted more than 60 days ago, including MinIO objects."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=60)
+    cutoff = datetime.now(UTC) - timedelta(days=60)
 
     result = await session.execute(
         select(Document).where(
@@ -203,9 +185,7 @@ async def purge_run(
 
     for doc in docs:
         # Load versions for storage cleanup
-        versions_result = await session.execute(
-            select(DocumentVersion).where(DocumentVersion.doc_id == doc.doc_id)
-        )
+        versions_result = await session.execute(select(DocumentVersion).where(DocumentVersion.doc_id == doc.doc_id))
         versions = versions_result.scalars().all()
 
         for ver in versions:
@@ -221,20 +201,12 @@ async def purge_run(
                 )
 
             # Cascade delete DB rows: chunks, pages, ingestion_jobs
-            await session.execute(
-                delete(Chunk).where(Chunk.version_id == ver.version_id)
-            )
-            await session.execute(
-                delete(DocumentPage).where(DocumentPage.version_id == ver.version_id)
-            )
-            await session.execute(
-                delete(IngestionJob).where(IngestionJob.version_id == ver.version_id)
-            )
+            await session.execute(delete(Chunk).where(Chunk.version_id == ver.version_id))
+            await session.execute(delete(DocumentPage).where(DocumentPage.version_id == ver.version_id))
+            await session.execute(delete(IngestionJob).where(IngestionJob.version_id == ver.version_id))
 
         # Delete versions and document
-        await session.execute(
-            delete(DocumentVersion).where(DocumentVersion.doc_id == doc.doc_id)
-        )
+        await session.execute(delete(DocumentVersion).where(DocumentVersion.doc_id == doc.doc_id))
         await session.delete(doc)
         purged += 1
 
@@ -259,15 +231,13 @@ async def reaper_run(
     from harbor_clerk.worker.pipeline import STAGE_CONFIG, enqueue_stage
 
     # Get all currently running jobs from DB
-    result = await session.execute(
-        select(IngestionJob).where(IngestionJob.status == JobStatus.running)
-    )
+    result = await session.execute(select(IngestionJob).where(IngestionJob.status == JobStatus.running))
     running_jobs = result.scalars().all()
 
     if not running_jobs:
         return {"reaped": 0}
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     orphans: list[tuple[uuid.UUID, JobStage]] = []
     for job in running_jobs:
         if job.heartbeat_at is not None:
@@ -326,9 +296,7 @@ async def reprocess_all(
         if version_id is None:
             continue
 
-        ver_result = await session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        )
+        ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id))
         version = ver_result.scalar_one_or_none()
         if version is None:
             continue
@@ -475,9 +443,7 @@ async def list_logs(
                 "name": p.name,
                 "path": str(p),
                 "size_bytes": stat.st_size,
-                "modified": datetime.fromtimestamp(
-                    stat.st_mtime, tz=timezone.utc
-                ).isoformat(),
+                "modified": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
                 "service": label,
             }
         )

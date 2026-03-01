@@ -65,7 +65,9 @@ export default function SystemMaintenancePage() {
 
       <div className="space-y-4">
         <div>
-          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Permanently remove documents deleted more than 60 days ago, including stored files.</p>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
+            Permanently remove documents deleted more than 60 days ago, including stored files.
+          </p>
           <button
             onClick={handlePurge}
             className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
@@ -74,7 +76,9 @@ export default function SystemMaintenancePage() {
           </button>
         </div>
         <div>
-          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Recover ingestion jobs that got stuck due to a crashed or killed worker.</p>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
+            Recover ingestion jobs that got stuck due to a crashed or killed worker.
+          </p>
           <button
             onClick={handleReaper}
             className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
@@ -83,7 +87,9 @@ export default function SystemMaintenancePage() {
           </button>
         </div>
         <div>
-          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">Re-run the full ingestion pipeline on every document from the original files.</p>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
+            Re-run the full ingestion pipeline on every document from the original files.
+          </p>
           <div className="flex items-center gap-2">
             <button
               onClick={handleReprocessAll}
@@ -142,7 +148,11 @@ export default function SystemMaintenancePage() {
           {deleteStep === 2 && (
             <div className="space-y-2">
               <p className="text-sm text-red-600 dark:text-red-400">
-                Type <code className="font-mono bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded text-xs">DELETE EVERYTHING</code> to confirm:
+                Type{' '}
+                <code className="font-mono bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded text-xs">
+                  DELETE EVERYTHING
+                </code>{' '}
+                to confirm:
               </p>
               <div className="flex items-center gap-2">
                 <input
@@ -174,7 +184,10 @@ export default function SystemMaintenancePage() {
                   {deleting ? 'Deleting...' : 'Delete'}
                 </button>
                 <button
-                  onClick={() => { setDeleteStep(0); setDeleteInput('') }}
+                  onClick={() => {
+                    setDeleteStep(0)
+                    setDeleteInput('')
+                  }}
                   className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
                 >
                   Cancel

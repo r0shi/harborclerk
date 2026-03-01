@@ -71,8 +71,11 @@ async def create_user(
     )
     session.add(user)
     await log_audit(
-        session, user_id=admin.id, action="create_user",
-        target_type="user", target_id=user.user_id,
+        session,
+        user_id=admin.id,
+        action="create_user",
+        target_type="user",
+        target_id=user.user_id,
     )
     await session.commit()
     await session.refresh(user)
@@ -120,9 +123,7 @@ async def update_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     if body.email is not None:
-        dup = await session.execute(
-            select(User).where(User.email == body.email, User.user_id != user_id)
-        )
+        dup = await session.execute(select(User).where(User.email == body.email, User.user_id != user_id))
         if dup.scalar_one_or_none() is not None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already in use")
         user.email = body.email
@@ -143,8 +144,11 @@ async def update_user(
         user.is_active = body.is_active
 
     await log_audit(
-        session, user_id=admin.id, action="update_user",
-        target_type="user", target_id=user_id,
+        session,
+        user_id=admin.id,
+        action="update_user",
+        target_type="user",
+        target_id=user_id,
     )
     await session.commit()
     await session.refresh(user)
@@ -176,7 +180,10 @@ async def delete_user(
 
     user.is_active = False
     await log_audit(
-        session, user_id=admin.id, action="delete_user",
-        target_type="user", target_id=user_id,
+        session,
+        user_id=admin.id,
+        action="delete_user",
+        target_type="user",
+        target_id=user_id,
     )
     await session.commit()

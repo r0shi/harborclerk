@@ -142,9 +142,7 @@ export default function UsersPage() {
                   </button>
                 </td>
                 <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                  {u.last_login_at
-                    ? new Date(u.last_login_at).toLocaleString()
-                    : 'Never'}
+                  {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <button
@@ -163,13 +161,7 @@ export default function UsersPage() {
   )
 }
 
-function CreateUserForm({
-  onCreated,
-  onError,
-}: {
-  onCreated: () => void
-  onError: (msg: string) => void
-}) {
+function CreateUserForm({ onCreated, onError }: { onCreated: () => void; onError: (msg: string) => void }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState('user')
@@ -189,15 +181,10 @@ function CreateUserForm({
   }
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="mb-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4"
-    >
+    <form onSubmit={handleSubmit} className="mb-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
       <div className="grid grid-cols-3 gap-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
-            Email
-          </label>
+          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Email</label>
           <input
             type="email"
             value={email}
@@ -207,9 +194,7 @@ function CreateUserForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
-            Password
-          </label>
+          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Password</label>
           <input
             type="password"
             value={password}
@@ -219,9 +204,7 @@ function CreateUserForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">
-            Role
-          </label>
+          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Role</label>
           <select
             value={role}
             onChange={(e) => setRole(e.target.value)}

@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin, require_user
@@ -45,9 +45,7 @@ async def list_conversations(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Conversation)
-        .where(Conversation.user_id == principal.id)
-        .order_by(Conversation.updated_at.desc())
+        select(Conversation).where(Conversation.user_id == principal.id).order_by(Conversation.updated_at.desc())
     )
     return [
         ConversationSummary(
@@ -86,14 +84,10 @@ async def get_conversation(
 ):
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
     msgs_result = await session.execute(
-        select(ChatMessage)
-        .where(ChatMessage.conversation_id == conv_id)
-        .order_by(ChatMessage.created_at)
+        select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
     )
     messages = [
         ChatMessageOut(
@@ -126,9 +120,7 @@ async def delete_conversation(
 ):
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     await session.delete(conv)
     await session.commit()
 
@@ -142,9 +134,7 @@ async def send_message(
 ):
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
     settings = get_settings()
     if not settings.llm_model_id:
@@ -200,9 +190,7 @@ async def start_model_download(
 
     info = get_model(model_id)
     if info is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown model")
 
     if get_model_path(model_id) is not None:
         return {"status": "already_downloaded"}
@@ -228,9 +216,7 @@ async def activate_model(
     principal: Principal = Depends(require_admin),
 ):
     if get_model_path(model_id) is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded")
     settings = get_settings()
     settings.llm_model_id = model_id
     sync_native_config("llm_model_id", model_id)
@@ -289,7 +275,7 @@ async def download_progress_stream(
                 try:
                     payload = await asyncio.wait_for(queue.get(), timeout=15)
                     yield f"data: {payload}\n\n"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield ": keepalive\n\n"
         except asyncio.CancelledError:
             pass

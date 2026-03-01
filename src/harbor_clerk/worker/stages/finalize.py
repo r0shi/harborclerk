@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
@@ -25,23 +25,15 @@ def run_finalize(version_id: uuid.UUID) -> None:
 
     session = get_sync_session()
     try:
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one()
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
 
         # Update document.latest_version_id
-        doc = session.execute(
-            select(Document).where(Document.doc_id == version.doc_id)
-        ).scalar_one()
+        doc = session.execute(select(Document).where(Document.doc_id == version.doc_id)).scalar_one()
         doc.latest_version_id = version_id
-        doc.updated_at = datetime.now(timezone.utc)
+        doc.updated_at = datetime.now(UTC)
 
         # Mark related uploads as done
-        uploads = (
-            session.execute(select(Upload).where(Upload.version_id == version_id))
-            .scalars()
-            .all()
-        )
+        uploads = session.execute(select(Upload).where(Upload.version_id == version_id)).scalars().all()
         for u in uploads:
             if u.status == "processing":
                 u.status = "done"
@@ -49,14 +41,10 @@ def run_finalize(version_id: uuid.UUID) -> None:
         session.commit()
 
         page_count = session.execute(
-            select(func.count())
-            .select_from(DocumentPage)
-            .where(DocumentPage.version_id == version_id)
+            select(func.count()).select_from(DocumentPage).where(DocumentPage.version_id == version_id)
         ).scalar_one()
         chunk_count = session.execute(
-            select(func.count())
-            .select_from(Chunk)
-            .where(Chunk.version_id == version_id)
+            select(func.count()).select_from(Chunk).where(Chunk.version_id == version_id)
         ).scalar_one()
         doc_id = doc.doc_id
 

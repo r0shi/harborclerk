@@ -49,18 +49,12 @@ export default function ChatPage() {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const skipNextFetchRef = useRef(false)
 
-  const {
-    messages,
-    isStreaming,
-    currentToolCall,
-    sendMessage,
-    stopStreaming,
-    loadMessages,
-    lastTitle,
-  } = useChat()
+  const { messages, isStreaming, currentToolCall, sendMessage, stopStreaming, loadMessages, lastTitle } = useChat()
 
   useEffect(() => {
-    get<ConversationSummary[]>('/api/chat/conversations').then(setConversations).catch(() => {})
+    get<ConversationSummary[]>('/api/chat/conversations')
+      .then(setConversations)
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -121,14 +115,12 @@ export default function ChatPage() {
       await sendMessage(activeConvId, text).finally(() => {
         if (lastTitle.current && activeConvId) {
           setConversations((prev) =>
-            prev.map((c) =>
-              c.conversation_id === activeConvId
-                ? { ...c, title: lastTitle.current! }
-                : c,
-            ),
+            prev.map((c) => (c.conversation_id === activeConvId ? { ...c, title: lastTitle.current! } : c)),
           )
         }
-        get<ConversationSummary[]>('/api/chat/conversations').then(setConversations).catch(() => {})
+        get<ConversationSummary[]>('/api/chat/conversations')
+          .then(setConversations)
+          .catch(() => {})
       })
 
       // Navigate AFTER streaming completes — messages are saved to DB now
@@ -194,9 +186,7 @@ export default function ChatPage() {
 
         <div className="flex-1 overflow-y-auto px-2 pb-2 chat-sidebar-scroll">
           {conversations.length === 0 && (
-            <div className="px-3 py-8 text-center text-xs text-gray-400 dark:text-gray-500">
-              No conversations yet
-            </div>
+            <div className="px-3 py-8 text-center text-xs text-gray-400 dark:text-gray-500">No conversations yet</div>
           )}
           {conversations.map((conv) => {
             const isActive = conv.conversation_id === conversationId
@@ -209,15 +199,12 @@ export default function ChatPage() {
                     : 'hover:bg-white/60 dark:hover:bg-gray-800/40'
                 }`}
               >
-                <Link
-                  to={`/c/${conv.conversation_id}`}
-                  className="flex-1 min-w-0"
-                >
-                  <div className={`text-[13px] font-medium truncate ${
-                    isActive
-                      ? 'text-gray-900 dark:text-gray-100'
-                      : 'text-gray-600 dark:text-gray-400'
-                  }`}>
+                <Link to={`/c/${conv.conversation_id}`} className="flex-1 min-w-0">
+                  <div
+                    className={`text-[13px] font-medium truncate ${
+                      isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'
+                    }`}
+                  >
                     {conv.title}
                   </div>
                   <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
@@ -234,7 +221,11 @@ export default function ChatPage() {
                   title="Delete conversation"
                 >
                   <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                    />
                   </svg>
                 </button>
               </div>
@@ -261,13 +252,9 @@ export default function ChatPage() {
             </svg>
           </button>
           {activeConvTitle ? (
-            <h2 className="text-[13px] font-semibold text-gray-700 dark:text-gray-300 truncate">
-              {activeConvTitle}
-            </h2>
+            <h2 className="text-[13px] font-semibold text-gray-700 dark:text-gray-300 truncate">{activeConvTitle}</h2>
           ) : (
-            <h2 className="text-[13px] font-medium text-gray-400 dark:text-gray-500">
-              New conversation
-            </h2>
+            <h2 className="text-[13px] font-medium text-gray-400 dark:text-gray-500">New conversation</h2>
           )}
           {isStreaming && (
             <div className="ml-auto flex items-center gap-1.5">
@@ -363,29 +350,35 @@ function EmptyState() {
     <div className="flex h-full items-center justify-center p-8">
       <div className="text-center max-w-md empty-state-appear">
         <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-100 dark:bg-gray-800">
-          <svg className="h-7 w-7 text-gray-400 dark:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m5.231 13.481L15 17.25m-4.5-15H5.625c-.621 0-1.125.504-1.125 1.125v16.5c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9zm3.75 11.625a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+          <svg
+            className="h-7 w-7 text-gray-400 dark:text-gray-500"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.2}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m5.231 13.481L15 17.25m-4.5-15H5.625c-.621 0-1.125.504-1.125 1.125v16.5c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9zm3.75 11.625a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
+            />
           </svg>
         </div>
-        <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-1.5">
-          Ask your documents
-        </h3>
+        <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-1.5">Ask your documents</h3>
         <p className="text-[13px] text-gray-400 dark:text-gray-500 leading-relaxed mb-6">
           Start a conversation to search, read, and reason over your document library using a local LLM.
         </p>
         <div className="flex flex-wrap justify-center gap-2">
-          {[
-            'What documents mention compliance?',
-            'Summarize the latest report',
-            'Find conflicting information',
-          ].map((q) => (
-            <span
-              key={q}
-              className="inline-block rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-[12px] text-gray-500 dark:text-gray-400 shadow-sm cursor-default"
-            >
-              {q}
-            </span>
-          ))}
+          {['What documents mention compliance?', 'Summarize the latest report', 'Find conflicting information'].map(
+            (q) => (
+              <span
+                key={q}
+                className="inline-block rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-[12px] text-gray-500 dark:text-gray-400 shadow-sm cursor-default"
+              >
+                {q}
+              </span>
+            ),
+          )}
         </div>
       </div>
     </div>
@@ -401,18 +394,28 @@ function MessageBubble({ message }: { message: ChatMessage }) {
     <div className={`message-appear py-2.5 ${isUser ? '' : ''}`}>
       <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
         {/* Avatar */}
-        <div className={`flex-shrink-0 mt-0.5 h-7 w-7 rounded-lg flex items-center justify-center text-xs font-semibold ${
-          isUser
-            ? 'bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800'
-            : 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 ring-1 ring-amber-200/60 dark:ring-amber-700/40'
-        }`}>
+        <div
+          className={`flex-shrink-0 mt-0.5 h-7 w-7 rounded-lg flex items-center justify-center text-xs font-semibold ${
+            isUser
+              ? 'bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800'
+              : 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 ring-1 ring-amber-200/60 dark:ring-amber-700/40'
+          }`}
+        >
           {isUser ? (
             <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"
+              />
             </svg>
           ) : (
             <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"
+              />
             </svg>
           )}
         </div>
@@ -420,11 +423,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         {/* Content */}
         <div className={`min-w-0 max-w-[85%] ${isUser ? 'text-right' : ''}`}>
           {/* Role label */}
-          <div className={`text-[11px] font-medium mb-1 ${
-            isUser
-              ? 'text-gray-400 dark:text-gray-500 mr-1'
-              : 'text-gray-400 dark:text-gray-500 ml-1'
-          }`}>
+          <div
+            className={`text-[11px] font-medium mb-1 ${
+              isUser ? 'text-gray-400 dark:text-gray-500 mr-1' : 'text-gray-400 dark:text-gray-500 ml-1'
+            }`}
+          >
             {isUser ? 'You' : 'Assistant'}
           </div>
 
@@ -435,11 +438,13 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             </div>
           )}
 
-          <div className={`rounded-xl px-4 py-2.5 text-[13.5px] leading-relaxed ${
-            isUser
-              ? 'bg-gray-800 dark:bg-gray-700 text-gray-100 dark:text-gray-200 rounded-tr-sm'
-              : 'bg-gray-50 dark:bg-gray-800/60 text-gray-700 dark:text-gray-300 ring-1 ring-gray-100 dark:ring-gray-700/50 rounded-tl-sm'
-          }`}>
+          <div
+            className={`rounded-xl px-4 py-2.5 text-[13.5px] leading-relaxed ${
+              isUser
+                ? 'bg-gray-800 dark:bg-gray-700 text-gray-100 dark:text-gray-200 rounded-tr-sm'
+                : 'bg-gray-50 dark:bg-gray-800/60 text-gray-700 dark:text-gray-300 ring-1 ring-gray-100 dark:ring-gray-700/50 rounded-tl-sm'
+            }`}
+          >
             {/* Tool calls shown as inline cards */}
             {message.tool_calls && message.tool_calls.length > 0 && (
               <div className="mb-2.5 space-y-1.5">
@@ -449,9 +454,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               </div>
             )}
 
-            {message.content && (
-              <div className="whitespace-pre-wrap break-words">{message.content}</div>
-            )}
+            {message.content && <div className="whitespace-pre-wrap break-words">{message.content}</div>}
 
             {message.isStreaming && !message.content && (
               <div className="flex items-center gap-1.5 py-0.5">
@@ -474,19 +477,28 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 function ToolCallCard({ tool, active }: { tool: ToolCallInfo; active: boolean }) {
   const [expanded, setExpanded] = useState(false)
 
-  const icon = tool.name === 'search_documents' ? (
-    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-    </svg>
-  ) : tool.name === 'read_passages' ? (
-    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
-    </svg>
-  ) : (
-    <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17l-5.1-5.1m0 0L11.42 4.97m-5.1 5.1H20.8" />
-    </svg>
-  )
+  const icon =
+    tool.name === 'search_documents' ? (
+      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
+        />
+      </svg>
+    ) : tool.name === 'read_passages' ? (
+      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"
+        />
+      </svg>
+    ) : (
+      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M11.42 15.17l-5.1-5.1m0 0L11.42 4.97m-5.1 5.1H20.8" />
+      </svg>
+    )
 
   const label =
     tool.name === 'search_documents'
@@ -503,32 +515,33 @@ function ToolCallCard({ tool, active }: { tool: ToolCallInfo; active: boolean })
           : 'bg-white/60 dark:bg-gray-700/30 ring-1 ring-gray-200/60 dark:ring-gray-600/30'
       }`}
     >
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5"
-      >
-        <span className={`flex-shrink-0 ${
-          active
-            ? 'text-blue-500 dark:text-blue-400 animate-pulse'
-            : 'text-emerald-500 dark:text-emerald-400'
-        }`}>
-          {active ? icon : (
+      <button onClick={() => setExpanded(!expanded)} className="flex w-full items-center gap-2 px-2.5 py-1.5">
+        <span
+          className={`flex-shrink-0 ${
+            active ? 'text-blue-500 dark:text-blue-400 animate-pulse' : 'text-emerald-500 dark:text-emerald-400'
+          }`}
+        >
+          {active ? (
+            icon
+          ) : (
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
             </svg>
           )}
         </span>
         <span className="font-medium text-gray-600 dark:text-gray-300">
-          {label}{active ? '...' : ''}
+          {label}
+          {active ? '...' : ''}
         </span>
         {tool.result && (
-          <span className="ml-auto text-gray-400 dark:text-gray-500 truncate max-w-[200px]">
-            {tool.result}
-          </span>
+          <span className="ml-auto text-gray-400 dark:text-gray-500 truncate max-w-[200px]">{tool.result}</span>
         )}
         <svg
           className={`h-3 w-3 flex-shrink-0 text-gray-300 dark:text-gray-600 transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
         >
           <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
         </svg>

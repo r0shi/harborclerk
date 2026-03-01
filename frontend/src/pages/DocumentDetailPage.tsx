@@ -54,15 +54,7 @@ interface ContentResponse {
   total_chars: number
 }
 
-function Disclosure({
-  label,
-  defaultOpen,
-  children,
-}: {
-  label: ReactNode
-  defaultOpen: boolean
-  children: ReactNode
-}) {
+function Disclosure({ label, defaultOpen, children }: { label: ReactNode; defaultOpen: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(defaultOpen)
 
   return (
@@ -97,11 +89,7 @@ function JobStatusBadge({ status }: { status: string }) {
   else if (status === 'running') cls = 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 animate-pulse'
   else if (status === 'queued') cls = 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
 
-  return (
-    <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>
-      {status}
-    </span>
-  )
+  return <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>{status}</span>
 }
 
 function VersionBanner({ version }: { version: VersionInfo }) {
@@ -128,7 +116,8 @@ function VersionBanner({ version }: { version: VersionInfo }) {
         <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
-        Error in {errorJob?.stage}{errorJob?.error ? `: ${errorJob.error}` : ''}
+        Error in {errorJob?.stage}
+        {errorJob?.error ? `: ${errorJob.error}` : ''}
       </div>
     )
   }
@@ -173,8 +162,7 @@ function Pagination({
     pages.push(totalPages)
   }
 
-  const btn =
-    'inline-flex items-center justify-center min-w-[2rem] h-8 rounded text-sm font-medium'
+  const btn = 'inline-flex items-center justify-center min-w-[2rem] h-8 rounded text-sm font-medium'
 
   return (
     <div className="flex items-center gap-1">
@@ -270,10 +258,7 @@ export default function DocumentDetailPage() {
   // Write to sessionStorage when doc loads for state preservation
   useEffect(() => {
     if (doc) {
-      sessionStorage.setItem(
-        'lastDoc',
-        JSON.stringify({ doc_id: doc.doc_id, title: doc.title }),
-      )
+      sessionStorage.setItem('lastDoc', JSON.stringify({ doc_id: doc.doc_id, title: doc.title }))
     }
   }, [doc])
 
@@ -283,9 +268,7 @@ export default function DocumentDetailPage() {
       setDoc((prev) => {
         if (!prev) return prev
         // Find the version this event belongs to
-        const vIdx = prev.versions.findIndex(
-          (v) => v.version_id === event.version_id,
-        )
+        const vIdx = prev.versions.findIndex((v) => v.version_id === event.version_id)
         if (vIdx === -1) return prev
 
         const versions = [...prev.versions]
@@ -302,8 +285,7 @@ export default function DocumentDetailPage() {
         if (event.total !== undefined) job.progress_total = event.total
         if (event.error) job.error = event.error
         if (event.status === 'done') job.finished_at = new Date().toISOString()
-        if (event.status === 'running' && !job.started_at)
-          job.started_at = new Date().toISOString()
+        if (event.status === 'running' && !job.started_at) job.started_at = new Date().toISOString()
         version.jobs[jIdx] = job
 
         // Check if all jobs are done → refresh from API for final state
@@ -353,9 +335,7 @@ export default function DocumentDetailPage() {
     }
   }, [urlShowContent, urlTargetPage, loading])
 
-  const hasProcessing = doc?.versions.some(
-    (v) => v.status !== 'ready' && v.status !== 'error',
-  )
+  const hasProcessing = doc?.versions.some((v) => v.status !== 'ready' && v.status !== 'error')
 
   async function handleCancel() {
     setActionLoading(true)
@@ -455,8 +435,7 @@ export default function DocumentDetailPage() {
       )}
 
       <div className="mb-2 text-sm text-gray-500 dark:text-gray-400">
-        Created {new Date(doc.created_at).toLocaleString()} | Updated{' '}
-        {new Date(doc.updated_at).toLocaleString()}
+        Created {new Date(doc.created_at).toLocaleString()} | Updated {new Date(doc.updated_at).toLocaleString()}
       </div>
 
       <div className="mt-6 mb-6">
@@ -468,10 +447,7 @@ export default function DocumentDetailPage() {
             {versionsWithNumber.map((v) => {
               const versionNotReady = v.status !== 'ready'
               return (
-                <div
-                  key={v.version_id}
-                  className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-5"
-                >
+                <div key={v.version_id} className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-5">
                   <div className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
                     Version {v.versionNumber}{' '}
                     <span className="font-normal text-gray-500 dark:text-gray-400">
@@ -481,9 +457,7 @@ export default function DocumentDetailPage() {
                   <VersionBanner version={v} />
                   <div className="mb-2 flex items-center justify-between">
                     <div className="text-sm">
-                      <span className="font-medium">
-                        {v.mime_type || 'unknown type'}
-                      </span>
+                      <span className="font-medium">{v.mime_type || 'unknown type'}</span>
                       {v.size_bytes != null && (
                         <span className="ml-2 text-gray-500 dark:text-gray-400">
                           {(v.size_bytes / 1024).toFixed(0)} KB
@@ -492,28 +466,16 @@ export default function DocumentDetailPage() {
                     </div>
                     <JobStatusBadge status={v.status} />
                   </div>
-                  {v.error && (
-                    <div className="mb-2 text-sm text-red-600 dark:text-red-400">Error: {v.error}</div>
-                  )}
+                  {v.error && <div className="mb-2 text-sm text-red-600 dark:text-red-400">Error: {v.error}</div>}
                   <div className="text-xs text-gray-400">
-                    {v.extracted_chars != null && (
-                      <span>Chars: {v.extracted_chars} | </span>
-                    )}
-                    OCR: {v.needs_ocr ? 'yes' : 'no'} | Text layer:{' '}
-                    {v.has_text_layer ? 'yes' : 'no'}
+                    {v.extracted_chars != null && <span>Chars: {v.extracted_chars} | </span>}
+                    OCR: {v.needs_ocr ? 'yes' : 'no'} | Text layer: {v.has_text_layer ? 'yes' : 'no'}
                   </div>
-                  {v.source_path && (
-                    <div className="mt-1 text-xs text-gray-400 break-all">
-                      Source: {v.source_path}
-                    </div>
-                  )}
+                  {v.source_path && <div className="mt-1 text-xs text-gray-400 break-all">Source: {v.source_path}</div>}
 
                   {v.jobs.length > 0 && (
                     <div className="mt-3">
-                      <Disclosure
-                        label="Ingestion Jobs"
-                        defaultOpen={versionNotReady}
-                      >
+                      <Disclosure label="Ingestion Jobs" defaultOpen={versionNotReady}>
                         <table className="w-full text-sm">
                           <thead>
                             <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-xs text-gray-500 dark:text-gray-400">
@@ -531,9 +493,7 @@ export default function DocumentDetailPage() {
                                   <JobStatusBadge status={j.status} />
                                 </td>
                                 <td className="py-1 pr-3 text-gray-500 dark:text-gray-400">
-                                  {j.progress_total
-                                    ? `${j.progress_current || 0}/${j.progress_total}`
-                                    : '\u2014'}
+                                  {j.progress_total ? `${j.progress_current || 0}/${j.progress_total}` : '\u2014'}
                                 </td>
                                 <td className="py-1 text-xs text-gray-400">
                                   {j.finished_at
@@ -575,8 +535,7 @@ export default function DocumentDetailPage() {
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  {content.total_chars.toLocaleString()} total characters,{' '}
-                  {content.pages.length} pages
+                  {content.total_chars.toLocaleString()} total characters, {content.pages.length} pages
                 </p>
                 <div className="flex items-center gap-2 text-sm">
                   <label htmlFor="page-size" className="text-gray-500 dark:text-gray-400">
@@ -605,14 +564,9 @@ export default function DocumentDetailPage() {
                 <div className="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
                   <span>
                     Pages {startIdx + 1}&ndash;
-                    {Math.min(startIdx + pageSize, content.pages.length)} of{' '}
-                    {content.pages.length}
+                    {Math.min(startIdx + pageSize, content.pages.length)} of {content.pages.length}
                   </span>
-                  <Pagination
-                    currentPage={clampedPage}
-                    totalPages={totalPages}
-                    onPageChange={setContentPage}
-                  />
+                  <Pagination currentPage={clampedPage} totalPages={totalPages} onPageChange={setContentPage} />
                 </div>
               )}
 
@@ -620,37 +574,24 @@ export default function DocumentDetailPage() {
                 <div
                   key={page.page_num}
                   className={`rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4 transition-all duration-500 ${
-                    highlightPage === page.page_num
-                      ? 'ring-2 ring-[var(--color-accent)]/40'
-                      : ''
+                    highlightPage === page.page_num ? 'ring-2 ring-[var(--color-accent)]/40' : ''
                   }`}
                 >
                   <div className="mb-2 flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      Page {page.page_num}
-                    </span>
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Page {page.page_num}</span>
                     {page.ocr_used && (
                       <span className="text-xs text-gray-400">
-                        OCR{' '}
-                        {page.ocr_confidence != null
-                          ? `(${(page.ocr_confidence * 100).toFixed(0)}%)`
-                          : ''}
+                        OCR {page.ocr_confidence != null ? `(${(page.ocr_confidence * 100).toFixed(0)}%)` : ''}
                       </span>
                     )}
                   </div>
-                  <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">
-                    {page.text}
-                  </pre>
+                  <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">{page.text}</pre>
                 </div>
               ))}
 
               {totalPages > 1 && (
                 <div className="flex justify-end">
-                  <Pagination
-                    currentPage={clampedPage}
-                    totalPages={totalPages}
-                    onPageChange={setContentPage}
-                  />
+                  <Pagination currentPage={clampedPage} totalPages={totalPages} onPageChange={setContentPage} />
                 </div>
               )}
             </div>

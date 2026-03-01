@@ -1,12 +1,4 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { configureApi, patch, post } from './api'
 
 interface User {
@@ -111,10 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const login = useCallback(async (email: string, password: string) => {
-    const data: { access_token: string; user: User } = await post(
-      '/api/auth/login',
-      { email, password },
-    )
+    const data: { access_token: string; user: User } = await post('/api/auth/login', { email, password })
     tokenRef.current = data.access_token
     setToken(data.access_token)
     setUser(data.user)
@@ -131,14 +120,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     applyTheme('light')
   }, [clearAuth])
 
-  const updatePreferences = useCallback(
-    async (prefs: Partial<User['preferences']>) => {
-      const updated: User = await patch('/api/me/preferences', prefs)
-      setUser(updated)
-      applyTheme(updated.preferences?.theme)
-    },
-    [],
-  )
+  const updatePreferences = useCallback(async (prefs: Partial<User['preferences']>) => {
+    const updated: User = await patch('/api/me/preferences', prefs)
+    setUser(updated)
+    applyTheme(updated.preferences?.theme)
+  }, [])
 
   return (
     <AuthContext.Provider

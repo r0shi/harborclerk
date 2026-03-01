@@ -2,7 +2,6 @@
 
 from harbor_clerk.worker.stages.extract import _alpha_ratio, _paginate_text
 
-
 # --- _paginate_text ---
 
 

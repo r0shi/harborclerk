@@ -9,7 +9,7 @@ import os
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,9 +27,9 @@ from harbor_clerk.api.schemas.uploads import (
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import Settings, get_settings
 from harbor_clerk.db import get_session
-from harbor_clerk.storage import get_storage
 from harbor_clerk.models import Document, DocumentVersion, Upload
 from harbor_clerk.models.enums import JobStage, VersionStatus
+from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["uploads"])
@@ -138,17 +138,11 @@ async def upload_files(
             )
 
         sha256_bytes = sha.digest()
-        mime = (
-            file.content_type
-            or mimetypes.guess_type(file.filename or "")[0]
-            or "application/octet-stream"
-        )
+        mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
 
         # Check for duplicate by SHA256
         dup_result = await session.execute(
-            select(DocumentVersion).where(
-                DocumentVersion.original_sha256 == sha256_bytes
-            )
+            select(DocumentVersion).where(DocumentVersion.original_sha256 == sha256_bytes)
         )
         dup_version = dup_result.scalar_one_or_none()
 
@@ -240,14 +234,10 @@ async def _confirm_single(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid upload_id: not a valid UUID",
         )
-    result = await session.execute(
-        select(Upload).where(Upload.upload_id == upload_uuid)
-    )
+    result = await session.execute(select(Upload).where(Upload.upload_id == upload_uuid))
     upload = result.scalar_one_or_none()
     if upload is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
     if upload.status != "pending_confirmation":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -264,9 +254,7 @@ async def _confirm_single(
 
     elif action == "new_version":
         if existing_doc_id is None:
-            raise HTTPException(
-                status_code=422, detail="existing_doc_id required for new_version"
-            )
+            raise HTTPException(status_code=422, detail="existing_doc_id required for new_version")
         try:
             doc_id = uuid.UUID(existing_doc_id)
         except ValueError:
@@ -275,19 +263,13 @@ async def _confirm_single(
                 detail="Invalid existing_doc_id: not a valid UUID",
             )
         doc_result = await session.execute(
-            select(Document).where(
-                Document.doc_id == doc_id, Document.status == "active"
-            )
+            select(Document).where(Document.doc_id == doc_id, Document.status == "active")
         )
         doc = doc_result.scalar_one_or_none()
         if doc is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
-            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     else:
-        raise HTTPException(
-            status_code=422, detail="action must be 'new_document' or 'new_version'"
-        )
+        raise HTTPException(status_code=422, detail="action must be 'new_document' or 'new_version'")
 
     version = DocumentVersion(
         doc_id=doc_id,

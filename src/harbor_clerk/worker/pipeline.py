@@ -3,7 +3,7 @@
 import logging
 import posixpath
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 
@@ -96,9 +96,7 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
             session.add(job)
 
         # Update version status
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one()
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
         version.status = running_status
         version.error = None
 
@@ -116,22 +114,14 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
         session.close()
 
     publish_job_event(version_id, stage.value, "queued", filename=filename)
-    logger.info(
-        "Enqueued %s for version %s on queue %s", stage.value, version_id, queue_name
-    )
+    logger.info("Enqueued %s for version %s on queue %s", stage.value, version_id, queue_name)
 
 
 def reset_jobs(version_id: uuid.UUID) -> None:
     """Delete all ingestion jobs for a version so the pipeline starts fresh."""
     session = get_sync_session()
     try:
-        jobs = (
-            session.execute(
-                select(IngestionJob).where(IngestionJob.version_id == version_id)
-            )
-            .scalars()
-            .all()
-        )
+        jobs = session.execute(select(IngestionJob).where(IngestionJob.version_id == version_id)).scalars().all()
         for j in jobs:
             session.delete(j)
         session.commit()
@@ -144,9 +134,7 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
     """Determine the next stage and enqueue it, skipping OCR if not needed."""
     session = get_sync_session()
     try:
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one()
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
 
         # Find the last completed stage
         completed_stages = set()
@@ -181,20 +169,18 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
                         version_id=version_id,
                         stage=JobStage.ocr,
                         status=JobStatus.done,
-                        started_at=datetime.now(timezone.utc),
-                        finished_at=datetime.now(timezone.utc),
+                        started_at=datetime.now(UTC),
+                        finished_at=datetime.now(UTC),
                         metrics={"skipped": True},
                     )
                     session.add(skipped_job)
                 else:
                     existing.status = JobStatus.done
-                    existing.finished_at = datetime.now(timezone.utc)
+                    existing.finished_at = datetime.now(UTC)
                     existing.metrics = {"skipped": True}
                 version.status = VersionStatus.ocr_done
                 session.commit()
-                publish_job_event(
-                    version_id, "ocr", "done", filename=_version_filename(version)
-                )
+                publish_job_event(version_id, "ocr", "done", filename=_version_filename(version))
                 continue
 
             # Skip entities stage if spaCy NER is not available
@@ -210,20 +196,18 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
                         version_id=version_id,
                         stage=JobStage.entities,
                         status=JobStatus.done,
-                        started_at=datetime.now(timezone.utc),
-                        finished_at=datetime.now(timezone.utc),
+                        started_at=datetime.now(UTC),
+                        finished_at=datetime.now(UTC),
                         metrics={"skipped": True, "reason": "spacy_unavailable"},
                     )
                     session.add(skipped_job)
                 else:
                     existing.status = JobStatus.done
-                    existing.finished_at = datetime.now(timezone.utc)
+                    existing.finished_at = datetime.now(UTC)
                     existing.metrics = {"skipped": True, "reason": "spacy_unavailable"}
                 version.status = VersionStatus.entities_done
                 session.commit()
-                publish_job_event(
-                    version_id, "entities", "done", filename=_version_filename(version)
-                )
+                publish_job_event(version_id, "entities", "done", filename=_version_filename(version))
                 continue
 
             # Commit skip changes (if any) before enqueuing next stage,
@@ -239,9 +223,7 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
         session.close()
 
 
-def mark_stage_done(
-    version_id: uuid.UUID, stage: JobStage, **extra_event_fields
-) -> None:
+def mark_stage_done(version_id: uuid.UUID, stage: JobStage, **extra_event_fields) -> None:
     """Mark a stage as done and advance the pipeline."""
     done_status = STAGE_DONE_STATUS[stage]
 
@@ -254,11 +236,9 @@ def mark_stage_done(
             )
         ).scalar_one()
         job.status = JobStatus.done
-        job.finished_at = datetime.now(timezone.utc)
+        job.finished_at = datetime.now(UTC)
 
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one()
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
         version.status = done_status
         filename = _version_filename(version)
 
@@ -266,9 +246,7 @@ def mark_stage_done(
     finally:
         session.close()
 
-    publish_job_event(
-        version_id, stage.value, "done", filename=filename, **extra_event_fields
-    )
+    publish_job_event(version_id, stage.value, "done", filename=filename, **extra_event_fields)
     logger.info("Stage %s done for version %s", stage.value, version_id)
 
     # Advance to next stage (unless this was finalize)
@@ -294,9 +272,7 @@ def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> bool:
                 version_id,
             )
             return False
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one()
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
         filename = _version_filename(version)
         session.commit()
     finally:
@@ -324,7 +300,7 @@ def cancel_version_jobs(version_id: uuid.UUID) -> int:
             .all()
         )
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for j in jobs:
             j.status = JobStatus.error
             j.error = "Cancelled by user"

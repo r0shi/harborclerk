@@ -1,7 +1,7 @@
 """First-time setup endpoint: create initial admin when no users exist."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
@@ -60,11 +60,7 @@ async def setup(
     await session.refresh(user)
 
     # Update last_login_at
-    await session.execute(
-        update(User)
-        .where(User.user_id == user.user_id)
-        .values(last_login_at=datetime.now(timezone.utc))
-    )
+    await session.execute(update(User).where(User.user_id == user.user_id).values(last_login_at=datetime.now(UTC)))
     await session.commit()
 
     logger.info("Initial admin created via setup: %s", body.email)

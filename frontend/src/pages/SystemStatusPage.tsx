@@ -114,11 +114,7 @@ export default function SystemStatusPage() {
             stats={stats?.storage}
             statsLoading={statsLoading}
           />
-          <HealthCard
-            name="Tika"
-            status={health.checks.tika}
-            statsLoading={false}
-          />
+          <HealthCard name="Tika" status={health.checks.tika} statsLoading={false} />
         </div>
       )}
 
@@ -151,16 +147,12 @@ function HealthCard({
   statsLoading: boolean
 }) {
   const ok = status === 'ok'
-  const statEntries = stats
-    ? Object.entries(stats).filter(([k]) => k !== 'error')
-    : []
+  const statEntries = stats ? Object.entries(stats).filter(([k]) => k !== 'error') : []
 
   return (
     <div
       className={`rounded-xl shadow-mac p-4 ${
-        ok
-          ? 'bg-green-50 dark:bg-green-900/20'
-          : 'bg-red-50 dark:bg-red-900/20'
+        ok ? 'bg-green-50 dark:bg-green-900/20' : 'bg-red-50 dark:bg-red-900/20'
       }`}
     >
       <div className="text-sm font-medium text-gray-700 dark:text-gray-300">{name}</div>
@@ -169,22 +161,14 @@ function HealthCard({
       >
         {ok ? 'OK' : status}
       </div>
-      {statsLoading && !stats && (
-        <div className="mt-2 text-xs text-gray-400">Loading stats...</div>
-      )}
-      {stats?.error && (
-        <div className="mt-2 text-xs text-red-500">{String(stats.error)}</div>
-      )}
+      {statsLoading && !stats && <div className="mt-2 text-xs text-gray-400">Loading stats...</div>}
+      {stats?.error && <div className="mt-2 text-xs text-red-500">{String(stats.error)}</div>}
       {statEntries.length > 0 && (
         <dl className="mt-3 space-y-1 border-t border-gray-200 dark:border-gray-700 pt-2">
           {statEntries.map(([key, value]) => (
             <div key={key} className="flex justify-between text-xs">
-              <dt className="text-gray-500 dark:text-gray-400">
-                {STAT_LABELS[key] || key}
-              </dt>
-              <dd className="font-medium text-gray-700 dark:text-gray-300">
-                {formatStatValue(key, value)}
-              </dd>
+              <dt className="text-gray-500 dark:text-gray-400">{STAT_LABELS[key] || key}</dt>
+              <dd className="font-medium text-gray-700 dark:text-gray-300">{formatStatValue(key, value)}</dd>
             </div>
           ))}
         </dl>

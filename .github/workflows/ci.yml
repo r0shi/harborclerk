@@ -1,0 +1,59 @@
+name: CI
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: lka
+          POSTGRES_DB: lka_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --extra test
+      - name: Ruff check
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+      - name: Create PG extensions
+        run: |
+          PGPASSWORD="" psql -h localhost -U lka -d lka_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS citext;"
+      - name: Run tests
+        env:
+          DATABASE_URL: "postgresql+asyncpg://lka@localhost:5432/lka_test"
+          SYNC_DATABASE_URL: "postgresql://lka@localhost:5432/lka_test"
+          STORAGE_BACKEND: filesystem
+          STORAGE_PATH: /tmp/hc-test-storage
+          TIKA_URL: "http://localhost:9998"
+        run: uv run pytest tests/ -v --tb=short
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: frontend
+      - name: ESLint
+        run: npm run lint
+        working-directory: frontend
+      - name: Prettier check
+        run: npm run format:check
+        working-directory: frontend
+      - name: Type check
+        run: npm run type-check
+        working-directory: frontend

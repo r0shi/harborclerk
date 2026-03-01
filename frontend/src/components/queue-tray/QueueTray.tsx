@@ -14,11 +14,7 @@ export default function QueueTray() {
   // Click outside to collapse
   const handleClickOutside = useCallback(
     (e: MouseEvent) => {
-      if (
-        trayState === 'expanded' &&
-        containerRef.current &&
-        !containerRef.current.contains(e.target as Node)
-      ) {
+      if (trayState === 'expanded' && containerRef.current && !containerRef.current.contains(e.target as Node)) {
         collapse()
       }
     },
@@ -54,21 +50,10 @@ export default function QueueTray() {
   return (
     <div ref={containerRef} className="fixed bottom-4 left-4 z-50 flex flex-col items-start">
       {/* Panel (expanded state) */}
-      {trayState === 'expanded' && (
-        <QueuePanel
-          activeItems={activeItems}
-          completed={completed}
-          onClose={collapse}
-        />
-      )}
+      {trayState === 'expanded' && <QueuePanel activeItems={activeItems} completed={completed} onClose={collapse} />}
 
       {/* Toast (toasting state, hidden when expanded) */}
-      {trayState === 'toasting' && (
-        <QueueToastPopup
-          items={Array.from(activeItems.values())}
-          onDismiss={collapse}
-        />
-      )}
+      {trayState === 'toasting' && <QueueToastPopup items={Array.from(activeItems.values())} onDismiss={collapse} />}
 
       {/* Pill (always visible when there's content) */}
       <QueuePill

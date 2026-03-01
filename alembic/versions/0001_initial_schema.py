@@ -5,16 +5,17 @@ Revises:
 Create Date: 2026-02-10
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
+
 revision: str = "0001"
-down_revision: Union[str, None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -33,24 +34,40 @@ def upgrade() -> None:
     upload_source.create(op.get_bind(), checkfirst=True)
 
     version_status = postgresql.ENUM(
-        "queued", "extracting", "extracted",
-        "ocr_running", "ocr_done",
-        "chunking", "chunked",
-        "embedding", "embedded",
-        "ready", "error",
-        name="version_status", create_type=False,
+        "queued",
+        "extracting",
+        "extracted",
+        "ocr_running",
+        "ocr_done",
+        "chunking",
+        "chunked",
+        "embedding",
+        "embedded",
+        "ready",
+        "error",
+        name="version_status",
+        create_type=False,
     )
     version_status.create(op.get_bind(), checkfirst=True)
 
     job_stage = postgresql.ENUM(
-        "extract", "ocr", "chunk", "embed", "finalize",
-        name="job_stage", create_type=False,
+        "extract",
+        "ocr",
+        "chunk",
+        "embed",
+        "finalize",
+        name="job_stage",
+        create_type=False,
     )
     job_stage.create(op.get_bind(), checkfirst=True)
 
     job_status = postgresql.ENUM(
-        "queued", "running", "done", "error",
-        name="job_status", create_type=False,
+        "queued",
+        "running",
+        "done",
+        "error",
+        name="job_status",
+        create_type=False,
     )
     job_status.create(op.get_bind(), checkfirst=True)
 
@@ -138,15 +155,19 @@ def upgrade() -> None:
     op.create_table(
         "document_pages",
         sa.Column("page_id", postgresql.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("version_id", postgresql.UUID, sa.ForeignKey("document_versions.version_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "version_id",
+            postgresql.UUID,
+            sa.ForeignKey("document_versions.version_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("page_num", sa.Integer, nullable=False),
         sa.Column("page_text", sa.Text, nullable=False, server_default=""),
         sa.Column("ocr_used", sa.Boolean, nullable=False, server_default=sa.text("false")),
         sa.Column("ocr_confidence", sa.Float),
     )
     op.execute(
-        "ALTER TABLE document_pages ADD COLUMN char_count INT "
-        "GENERATED ALWAYS AS (char_length(page_text)) STORED"
+        "ALTER TABLE document_pages ADD COLUMN char_count INT GENERATED ALWAYS AS (char_length(page_text)) STORED"
     )
     op.create_unique_constraint("uq_pages_version_page", "document_pages", ["version_id", "page_num"])
     op.create_index("pages_version_page_idx", "document_pages", ["version_id", "page_num"])
@@ -155,7 +176,12 @@ def upgrade() -> None:
     op.create_table(
         "chunks",
         sa.Column("chunk_id", postgresql.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("version_id", postgresql.UUID, sa.ForeignKey("document_versions.version_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "version_id",
+            postgresql.UUID,
+            sa.ForeignKey("document_versions.version_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("doc_id", postgresql.UUID, sa.ForeignKey("documents.doc_id", ondelete="CASCADE"), nullable=False),
         sa.Column("chunk_num", sa.Integer, nullable=False),
         sa.Column("page_start", sa.Integer),
@@ -191,7 +217,12 @@ def upgrade() -> None:
     op.create_table(
         "ingestion_jobs",
         sa.Column("job_id", postgresql.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("version_id", postgresql.UUID, sa.ForeignKey("document_versions.version_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "version_id",
+            postgresql.UUID,
+            sa.ForeignKey("document_versions.version_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("stage", job_stage, nullable=False),
         sa.Column("status", job_status, nullable=False, server_default="queued"),
         sa.Column("progress_current", sa.Integer, server_default=sa.text("0")),

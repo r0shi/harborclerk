@@ -20,15 +20,57 @@ interface FieldDef {
 }
 
 const CHAT_FIELDS: FieldDef[] = [
-  { key: 'rag_auto_k', label: 'RAG context passages', description: 'Number of passages auto-injected into chat context (0 to disable)', min: 0, max: 10, step: 1 },
-  { key: 'rag_auto_threshold', label: 'RAG relevance threshold', description: 'Minimum score for a passage to be included', min: 0, max: 1, step: 0.05 },
-  { key: 'max_tool_rounds', label: 'Max tool rounds', description: 'Maximum tool-calling iterations per chat turn', min: 1, max: 10, step: 1 },
-  { key: 'max_history_messages', label: 'Conversation history depth', description: 'Number of previous messages sent to the LLM', min: 10, max: 100, step: 5 },
+  {
+    key: 'rag_auto_k',
+    label: 'RAG context passages',
+    description: 'Number of passages auto-injected into chat context (0 to disable)',
+    min: 0,
+    max: 10,
+    step: 1,
+  },
+  {
+    key: 'rag_auto_threshold',
+    label: 'RAG relevance threshold',
+    description: 'Minimum score for a passage to be included',
+    min: 0,
+    max: 1,
+    step: 0.05,
+  },
+  {
+    key: 'max_tool_rounds',
+    label: 'Max tool rounds',
+    description: 'Maximum tool-calling iterations per chat turn',
+    min: 1,
+    max: 10,
+    step: 1,
+  },
+  {
+    key: 'max_history_messages',
+    label: 'Conversation history depth',
+    description: 'Number of previous messages sent to the LLM',
+    min: 10,
+    max: 100,
+    step: 5,
+  },
 ]
 
 const MCP_FIELDS: FieldDef[] = [
-  { key: 'mcp_max_k', label: 'Max search results', description: 'Maximum passages returned by MCP search tools', min: 10, max: 1000, step: 10 },
-  { key: 'mcp_brief_chars', label: 'Brief mode length', description: 'Character limit for brief passage text in MCP responses', min: 50, max: 1000, step: 50 },
+  {
+    key: 'mcp_max_k',
+    label: 'Max search results',
+    description: 'Maximum passages returned by MCP search tools',
+    min: 10,
+    max: 1000,
+    step: 10,
+  },
+  {
+    key: 'mcp_brief_chars',
+    label: 'Brief mode length',
+    description: 'Character limit for brief passage text in MCP responses',
+    min: 50,
+    max: 1000,
+    step: 50,
+  },
 ]
 
 function NumberField({ field, value, onChange }: { field: FieldDef; value: number; onChange: (v: number) => void }) {
@@ -61,7 +103,10 @@ export default function RetrievalSettingsPage() {
 
   useEffect(() => {
     get<RetrievalSettings>('/api/system/retrieval-settings')
-      .then((data) => { setSaved(data); setForm(data) })
+      .then((data) => {
+        setSaved(data)
+        setForm(data)
+      })
       .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load'))
       .finally(() => setLoading(false))
   }, [])
@@ -72,7 +117,7 @@ export default function RetrievalSettingsPage() {
   const dirty = JSON.stringify(form) !== JSON.stringify(saved)
 
   function update(key: keyof RetrievalSettings, value: number) {
-    setForm((prev) => prev ? { ...prev, [key]: value } : prev)
+    setForm((prev) => (prev ? { ...prev, [key]: value } : prev))
     setSuccess('')
   }
 

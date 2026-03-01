@@ -8,9 +8,7 @@ from harbor_clerk.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = (
-    "Summarize the following document excerpt in 1-2 sentences. Be concise. /no_think"
-)
+_SYSTEM_PROMPT = "Summarize the following document excerpt in 1-2 sentences. Be concise. /no_think"
 
 
 def _extractive_fallback(text: str, max_chars: int) -> str:
@@ -24,9 +22,7 @@ def _extractive_fallback(text: str, max_chars: int) -> str:
     return text[:max_chars].strip()
 
 
-def generate_summary(
-    chunks_text: str, max_chars: int | None = None
-) -> tuple[str, str]:
+def generate_summary(chunks_text: str, max_chars: int | None = None) -> tuple[str, str]:
     """Generate a summary for a document from its chunk text.
 
     Uses the local LLM when available, falls back to extractive heuristic.

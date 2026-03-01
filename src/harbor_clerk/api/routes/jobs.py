@@ -37,7 +37,7 @@ async def _event_generator() -> AsyncGenerator[str, None]:
             try:
                 payload = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_INTERVAL)
                 yield f"data: {payload}\n\n"
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 yield ": keepalive\n\n"
     except asyncio.CancelledError:
         pass

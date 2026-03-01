@@ -78,9 +78,7 @@ export default function RagContextCard({ chunks }: { chunks: RagContextChunk[] }
 function ChunkRow({ chunk }: { chunk: RagContextChunk }) {
   const filled = scoreDots(chunk.score)
   const pages = formatPages(chunk.page_start, chunk.page_end)
-  const tooltip = pages
-    ? `${chunk.doc_title}, ${pages.replace('\u00A0', ' ')}`
-    : chunk.doc_title
+  const tooltip = pages ? `${chunk.doc_title}, ${pages.replace('\u00A0', ' ')}` : chunk.doc_title
 
   return (
     <div className="text-[11px] leading-relaxed">
@@ -105,9 +103,7 @@ function ChunkRow({ chunk }: { chunk: RagContextChunk }) {
             <span
               key={n}
               className={`inline-block h-1 w-1 rounded-full ${
-                n <= filled
-                  ? 'bg-stone-400 dark:bg-stone-500'
-                  : 'bg-stone-200 dark:bg-stone-700'
+                n <= filled ? 'bg-stone-400 dark:bg-stone-500' : 'bg-stone-200 dark:bg-stone-700'
               }`}
             />
           ))}
@@ -115,7 +111,8 @@ function ChunkRow({ chunk }: { chunk: RagContextChunk }) {
       </div>
       {/* Text preview */}
       <p className="text-stone-400 dark:text-stone-500 line-clamp-2 leading-snug">
-        &ldquo;{chunk.text.slice(0, 160).trim()}{chunk.text.length > 160 ? '...' : ''}&rdquo;
+        &ldquo;{chunk.text.slice(0, 160).trim()}
+        {chunk.text.length > 160 ? '...' : ''}&rdquo;
       </p>
     </div>
   )

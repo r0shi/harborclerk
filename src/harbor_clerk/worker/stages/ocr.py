@@ -11,9 +11,9 @@ from sqlalchemy import select
 
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.events import publish_job_event
-from harbor_clerk.storage import get_storage
 from harbor_clerk.models import DocumentPage, DocumentVersion, IngestionJob
 from harbor_clerk.models.enums import JobStage
+from harbor_clerk.storage import get_storage
 from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
@@ -57,9 +57,7 @@ def run_ocr(version_id: uuid.UUID) -> None:
 
     session = get_sync_session()
     try:
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-        ).scalar_one()
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
 
         # If OCR not needed, just mark done
         if not version.needs_ocr:
@@ -110,11 +108,13 @@ def run_ocr(version_id: uuid.UUID) -> None:
             job.progress_total = len(images)
             session.commit()
 
-            pages = session.execute(
-                select(DocumentPage)
-                .where(DocumentPage.version_id == version_id)
-                .order_by(DocumentPage.page_num)
-            ).scalars().all()
+            pages = (
+                session.execute(
+                    select(DocumentPage).where(DocumentPage.version_id == version_id).order_by(DocumentPage.page_num)
+                )
+                .scalars()
+                .all()
+            )
 
             total_chars = 0
             for i, img in enumerate(images):

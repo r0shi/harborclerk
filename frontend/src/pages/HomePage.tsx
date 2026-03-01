@@ -21,7 +21,9 @@ export default function HomePage() {
       .catch(() => {
         if (!cancelled) setReady(true) // on error, show chat anyway
       })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [navigate])
 
   if (!ready) return null
