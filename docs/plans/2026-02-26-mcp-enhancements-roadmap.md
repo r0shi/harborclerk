@@ -73,7 +73,7 @@ Features 1–9 shipped in v0.4.0. Features 10–12 are the next batch.
 | 9 | Auto-Inject RAG | **Done** |
 | 10 | Entity Co-occurrence | **Done** |
 | 11 | Full-Document Retrieval | **Done** |
-| 12 | Batch Search | Planned |
+| 12 | Batch Search | **Done** |
 
 ---
 
