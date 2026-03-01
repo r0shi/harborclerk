@@ -27,6 +27,9 @@ final class PostgresService: ManagedService {
             try await createDatabaseAndExtensions()
         }
 
+        // Ensure logging_collector config exists (upgrade from pre-0.4.1)
+        try ensureLoggingConfig()
+
         // Remove stale PID file if no process is actually running
         let pidFile = dataDir.appendingPathComponent("postmaster.pid")
         if fm.fileExists(atPath: pidFile.path) {
@@ -57,13 +60,13 @@ final class PostgresService: ManagedService {
         }
 
         // Start PostgreSQL via pg_ctl
+        // Logs are handled by logging_collector (configured in conf.d/harbor_clerk.conf)
         let pgCtl = pgBinDir.appendingPathComponent("pg_ctl")
         let proc = Process()
         proc.executableURL = pgCtl
         proc.arguments = [
             "-D", dataDir.path,
             "-o", "-p \(port) -k /tmp",
-            "-l", AppSettings.shared.logsDir.appendingPathComponent("postgres.log").path,
             "start",
         ]
         proc.environment = pgEnvironment()
@@ -155,6 +158,40 @@ final class PostgresService: ManagedService {
         }
     }
 
+    // MARK: - Logging Config
+
+    /// Ensure conf.d/harbor_clerk.conf exists with logging_collector settings.
+    /// Idempotent — safe to call on every start for upgrades from pre-0.4.1.
+    private func ensureLoggingConfig() throws {
+        let confDir = dataDir.appendingPathComponent("conf.d")
+        let confFile = confDir.appendingPathComponent("harbor_clerk.conf")
+        guard !FileManager.default.fileExists(atPath: confFile.path) else { return }
+
+        let logsDir = AppSettings.shared.logsDir.path
+        let conf = """
+        # Harbor Clerk: built-in log rotation
+        logging_collector = on
+        log_directory = '\(logsDir)'
+        log_filename = 'postgres.log'
+        log_rotation_age = 1d
+        log_rotation_size = 10MB
+        log_truncate_on_rotation = on
+        log_file_mode = 0600
+        """
+        try FileManager.default.createDirectory(at: confDir, withIntermediateDirectories: true)
+        try conf.write(to: confFile, atomically: true, encoding: .utf8)
+
+        // Ensure include_dir is in postgresql.conf
+        let pgConf = dataDir.appendingPathComponent("postgresql.conf")
+        let existing = try String(contentsOf: pgConf, encoding: .utf8)
+        if !existing.contains("include_dir") {
+            try (existing + "\ninclude_dir = 'conf.d'\n").write(
+                to: pgConf, atomically: true, encoding: .utf8)
+        }
+
+        Log.logger("postgresql").info("Configured logging_collector with daily rotation")
+    }
+
     // MARK: - Setup
 
     private func initializeDatabase() async throws {
@@ -182,6 +219,28 @@ final class PostgresService: ManagedService {
         if exitCode != 0 {
             throw ServiceError.startFailed(name, "initdb failed with \(exitCode)")
         }
+
+        // Configure logging_collector for built-in log rotation
+        let logsDir = AppSettings.shared.logsDir.path
+        let conf = """
+        # Harbor Clerk: built-in log rotation
+        logging_collector = on
+        log_directory = '\(logsDir)'
+        log_filename = 'postgres.log'
+        log_rotation_age = 1d
+        log_rotation_size = 10MB
+        log_truncate_on_rotation = on
+        log_file_mode = 0600
+        """
+        let confURL = dataDir.appendingPathComponent("conf.d/harbor_clerk.conf")
+        try FileManager.default.createDirectory(
+            at: confURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try conf.write(to: confURL, atomically: true, encoding: .utf8)
+
+        // Include conf.d in postgresql.conf
+        let pgConf = dataDir.appendingPathComponent("postgresql.conf")
+        let existing = try String(contentsOf: pgConf, encoding: .utf8)
+        try (existing + "\ninclude_dir = 'conf.d'\n").write(to: pgConf, atomically: true, encoding: .utf8)
     }
 
     private func createDatabaseAndExtensions() async throws {
@@ -192,7 +251,6 @@ final class PostgresService: ManagedService {
         startProc.arguments = [
             "-D", dataDir.path,
             "-o", "-p \(port) -k /tmp",
-            "-l", AppSettings.shared.logsDir.appendingPathComponent("postgres.log").path,
             "start",
         ]
         startProc.environment = pgEnvironment()
