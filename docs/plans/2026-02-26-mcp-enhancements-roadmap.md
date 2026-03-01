@@ -58,7 +58,7 @@
 
 ## Status
 
-All 9 features shipped in v0.4.0.
+Features 1–9 shipped in v0.4.0. Features 10–12 are the next batch.
 
 | # | Feature | Status |
 |---|---------|--------|
@@ -71,6 +71,43 @@ All 9 features shipped in v0.4.0.
 | 7 | Cross-Document Similarity | **Done** |
 | 8 | Entity Extraction | **Done** |
 | 9 | Auto-Inject RAG | **Done** |
+| 10 | Entity Co-occurrence | Planned |
+| 11 | Full-Document Retrieval | Planned |
+| 12 | Batch Search | Planned |
+
+---
+
+## Feature List (next batch)
+
+### 10. Entity Co-occurrence Queries
+
+New `kb_entity_cooccurrence` tool: given an entity (text + optional type), find other entities that co-occur with it. Configurable scope — same chunk (tight proximity, strong signal) or same document (broader net).
+
+- **Impact: High.** "Which organizations are mentioned alongside John Smith?" is a daily question for law firms, researchers, policy analysts. This is the relationship-discovery layer on top of Feature 8.
+- **Effort: Low-Medium.** Query-layer feature only — self-join on existing `entities` table, no new ingestion stage, no schema migration, no CPU cost.
+- **Parameters:** `entity_text` (required), `entity_type` (optional filter on the target entity), `scope` (chunk | document, default chunk), `cooccur_type` (optional filter on co-occurring entity types), `doc_id` (optional scoping), `limit`, `offset`
+- **Returns:** Co-occurring entities with mention counts, scoped appropriately. Each result includes entity_text, entity_type, cooccurrence_count, and sample doc_ids/chunk_ids for citation.
+- **YAGNI risk: Low.** If you have entity extraction, co-occurrence is the natural next question.
+
+### 11. Full-Document Retrieval
+
+New `kb_read_document` tool: retrieve the full extracted text of a document, paginated by page range. For short documents (memos, policies, one-page letters), an LLM needs to read the whole thing without chaining chunk-by-chunk reads.
+
+- **Impact: Medium.** "Summarize this document" is a common request. Currently requires chaining `kb_expand_context` or guessing chunk IDs.
+- **Effort: Low.** Query all chunks for a version ordered by chunk_num, paginate by page range. All data already exists.
+- **Parameters:** `doc_id` (required), `page_start` (optional, default 1), `page_end` (optional, default last page)
+- **Returns:** doc_id, version_id, title, page_count, total_chars, pages requested, and concatenated text (with page break markers). Caps output to prevent returning a 500-page PDF in one call.
+- **YAGNI risk: Low-Medium.** Short documents are common in all target use cases.
+
+### 12. Batch Search
+
+New `kb_batch_search` tool: run multiple search queries in a single call, returning results grouped by query. Saves round-trips during comparative analysis ("do any of these case files mention X, Y, or Z?").
+
+- **Impact: Medium.** Reduces latency for cross-cutting analysis. Each round-trip is time the user waits.
+- **Effort: Low.** Loop over existing `hybrid_search`, return grouped results.
+- **Parameters:** `queries` (list of strings, max 5), plus shared filter params (doc_id, doc_ids, after, before, language, mime_type), `k` per query, `detail`
+- **Returns:** Array of result sets, one per query, same shape as `kb_search` response.
+- **YAGNI risk: Medium.** LLMs can call `kb_search` sequentially, but batching is a genuine convenience for multi-query patterns.
 
 ---
 
@@ -110,9 +147,20 @@ Possible approaches:
 
 No good automatic heuristic yet — context window size correlates loosely with tool-handling ability but isn't a reliable proxy. For now, the simplified schemas work and the full MCP tools remain available to external agents (Claude, etc.) that can handle the complexity.
 
-### Entity Co-occurrence Graph
+### DATE Entity Filtering Improvements
 
-Once Feature 8 (Entity Extraction) is in place, a natural extension is a `kb_entity_graph` tool that finds entities mentioned near a given entity (within N chunks). This enables relationship discovery — e.g., "which organizations are mentioned alongside John Smith?" Deferred because the core entity search + overview tools cover the primary use case; co-occurrence is a power-user feature that can be layered on top of the same `entities` table without schema changes.
+Improve `kb_entity_search` for date-type queries. Currently DATE entities are stored as raw text ("March 2020", "2019-01-15"), making them hard to filter or sort meaningfully. Low-effort improvements without a new pipeline stage:
+- Sort DATE entities chronologically when `entity_type=DATE` (best-effort parsing of common date formats)
+- Add a `sort` param to `kb_entity_search` (e.g., `sort=chronological` for dates, `sort=frequency` for others)
+- No date normalization or temporal range extraction — that's a separate, high-effort feature (see below)
+
+**Decision:** Low-effort query improvement. No new ingestion, no CPU cost. Useful but not urgent — DATE entities are already queryable via substring search.
+
+### Temporal Awareness (Date Range Extraction)
+
+Full chunk-level temporal awareness: extract and normalize date references during ingestion, store as queryable date ranges, enable "find chunks about events in 2020-2021" queries. Would require NLP date extraction (beyond spaCy's NER), normalization to ISO ranges, disambiguation (document date vs event date), new schema, new query interface.
+
+**Decision:** Deferred. High effort, high ambiguity (does "March 2020" mean authored then or describes an event then?), highly corpus-dependent. The existing DATE entity extraction from Feature 8 captures the raw strings; this would be a major extension. Revisit if user feedback shows strong demand.
 
 ### PostgreSQL 17 Upgrade (target: v0.5.0)
 

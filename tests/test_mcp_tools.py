@@ -13,6 +13,7 @@ from harbor_clerk.mcp_server import (
     _mcp_principal,
     kb_corpus_overview,
     kb_document_outline,
+    kb_entity_cooccurrence,
     kb_entity_overview,
     kb_entity_search,
     kb_expand_context,
@@ -916,3 +917,142 @@ async def test_entity_overview_empty(
     assert result["unique_entities"] == 0
     assert result["type_distribution"] == {}
     assert result["top_entities"] == []
+
+
+# ---------------------------------------------------------------------------
+# Entity co-occurrence tests
+# ---------------------------------------------------------------------------
+
+
+async def test_entity_cooccurrence_chunk_scope(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Chunk scope: entities in same chunk as 'John Smith'."""
+    result = json.loads(await kb_entity_cooccurrence("John Smith", scope="chunk"))
+    assert result["scope"] == "chunk"
+    texts = {c["entity_text"] for c in result["cooccurrences"]}
+    assert "Acme Corp" in texts
+    assert "New York" in texts
+    assert "Paris" not in texts  # Paris is in a different chunk
+    for c in result["cooccurrences"]:
+        assert c["cooccurrence_count"] == 1
+
+
+async def test_entity_cooccurrence_document_scope(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Document scope: all entities in same version as 'Paris'."""
+    result = json.loads(await kb_entity_cooccurrence("Paris", scope="document"))
+    texts = {c["entity_text"] for c in result["cooccurrences"]}
+    assert "John Smith" in texts
+    assert "Acme Corp" in texts
+    assert "New York" in texts
+    # John Smith appears in 2 chunks in the same version
+    john = next(c for c in result["cooccurrences"] if c["entity_text"] == "John Smith")
+    assert john["cooccurrence_count"] == 2
+
+
+async def test_entity_cooccurrence_cooccur_type_filter(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Filter co-occurring entities by type."""
+    result = json.loads(await kb_entity_cooccurrence("John Smith", cooccur_type="ORG"))
+    assert all(c["entity_type"] == "ORG" for c in result["cooccurrences"])
+    texts = {c["entity_text"] for c in result["cooccurrences"]}
+    assert "Acme Corp" in texts
+    assert "New York" not in texts
+
+
+async def test_entity_cooccurrence_source_type_filter(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Filter source entity by type."""
+    result = json.loads(await kb_entity_cooccurrence("John", entity_type="PERSON", scope="chunk"))
+    texts = {c["entity_text"] for c in result["cooccurrences"]}
+    assert "Acme Corp" in texts
+    assert "New York" in texts
+
+
+async def test_entity_cooccurrence_no_results_chunk(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Paris is alone in its chunk — no co-occurrences at chunk scope."""
+    result = json.loads(await kb_entity_cooccurrence("Paris", scope="chunk"))
+    assert result["cooccurrences"] == []
+    assert result["total"] == 0
+
+
+async def test_entity_cooccurrence_invalid_scope(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Invalid scope returns error."""
+    result = json.loads(await kb_entity_cooccurrence("John", scope="paragraph"))
+    assert "error" in result
+
+
+async def test_entity_cooccurrence_doc_id_scoped(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Scope to a specific document."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_entity_cooccurrence("John Smith", doc_id=str(doc.doc_id)))
+    texts = {c["entity_text"] for c in result["cooccurrences"]}
+    assert "Acme Corp" in texts
+    assert "New York" in texts
+
+
+async def test_entity_cooccurrence_entity_not_found(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+    sample_entities,
+):
+    """Nonexistent entity returns empty results."""
+    result = json.loads(await kb_entity_cooccurrence("Nonexistent Entity XYZ"))
+    assert result["cooccurrences"] == []
+    assert result["total"] == 0
