@@ -1,4 +1,20 @@
-"""Chat tool definitions and executor — delegates to MCP tool functions."""
+"""Chat tool definitions and executor — delegates to MCP tool functions.
+
+Chat tools are simplified versions of the full MCP tools, tailored for
+small local LLMs (4-8B params). Not all MCP tools are exposed here:
+
+  Omitted (MCP-only):
+    - kb_batch_search: multi-query patterns unlikely from small models
+    - kb_reprocess / kb_system_health: admin-only, not useful in chat
+
+  Simplified:
+    - entity_cooccurrence: hardcodes scope="chunk" (no document scope)
+    - search_documents: caps k=10, no pagination/faceted/detail modes
+
+  TODO: revisit these simplifications when upgrading LLM models.
+  Larger models may benefit from kb_batch_search, document-scope
+  co-occurrence, and richer search parameters.
+"""
 
 import json
 import logging
@@ -201,6 +217,60 @@ CHAT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "entity_cooccurrence",
+            "description": "Find entities that co-occur with a given entity in the same text passage.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_text": {
+                        "type": "string",
+                        "description": "Entity name or partial name to find co-occurrences for",
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description": "Filter source entity by type: PERSON, ORG, GPE, LOC, DATE, etc.",
+                    },
+                    "cooccur_type": {
+                        "type": "string",
+                        "description": "Filter co-occurring entities by type",
+                    },
+                    "doc_id": {
+                        "type": "string",
+                        "description": "Restrict to a specific document",
+                    },
+                },
+                "required": ["entity_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_document",
+            "description": "Read the full text of a document or a specific page range.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {
+                        "type": "string",
+                        "description": "Document ID",
+                    },
+                    "page_start": {
+                        "type": "integer",
+                        "description": "First page to read (default: first page)",
+                    },
+                    "page_end": {
+                        "type": "integer",
+                        "description": "Last page to read (default: last page)",
+                    },
+                },
+                "required": ["doc_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ingest_status",
             "description": "Check document processing status and pipeline progress.",
             "parameters": {
@@ -278,6 +348,26 @@ def _map_args_entity_overview(args: dict) -> dict:
     return mapped
 
 
+def _map_args_entity_cooccurrence(args: dict) -> dict:
+    mapped: dict = {"entity_text": args["entity_text"], "scope": "chunk"}
+    if args.get("entity_type"):
+        mapped["entity_type"] = args["entity_type"]
+    if args.get("cooccur_type"):
+        mapped["cooccur_type"] = args["cooccur_type"]
+    if args.get("doc_id"):
+        mapped["doc_id"] = args["doc_id"]
+    return mapped
+
+
+def _map_args_read_document(args: dict) -> dict:
+    mapped: dict = {"doc_id": args["doc_id"]}
+    if args.get("page_start") is not None:
+        mapped["page_start"] = args["page_start"]
+    if args.get("page_end") is not None:
+        mapped["page_end"] = args["page_end"]
+    return mapped
+
+
 def _map_args_ingest_status(args: dict) -> dict:
     return {"doc_id": args["doc_id"]}
 
@@ -293,6 +383,8 @@ _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
     "find_related": ("kb_find_related", _map_args_find_related),
     "entity_search": ("kb_entity_search", _map_args_entity_search),
     "entity_overview": ("kb_entity_overview", _map_args_entity_overview),
+    "entity_cooccurrence": ("kb_entity_cooccurrence", _map_args_entity_cooccurrence),
+    "read_document": ("kb_read_document", _map_args_read_document),
     "ingest_status": ("kb_ingest_status", _map_args_ingest_status),
 }
 

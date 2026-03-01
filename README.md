@@ -12,7 +12,7 @@ No SaaS account. No background sync. No shared tenancy. Your documents stay loca
 
 Designed for small offices, independent operators, and privacy-focused individuals, Harbor Clerk runs comfortably on a Mac mini or similar hardware. It handles text extraction and OCR, builds hybrid full-text and vector search, and includes a built-in chat assistant powered by a local LLM — no cloud required. Chat responses automatically surface relevant passages from your knowledge base, with transparent sourcing you can click through to verify.
 
-Harbor Clerk also exposes a comprehensive MCP endpoint with 13 tools for external AI agents (Claude, GPT, etc.) to search, navigate, and explore your corpus. They receive only cited snippets, never your full documents.
+Harbor Clerk also exposes a comprehensive MCP endpoint with 16 tools for external AI agents (Claude, GPT, etc.) to search, navigate, and explore your corpus. They receive only cited snippets, never your full documents.
 
 This isn't a platform. It's a tool.
 It keeps your documents where they belong — and makes them useful.
@@ -234,6 +234,9 @@ Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
 | `kb_find_related` | Find similar documents via embedding similarity |
 | `kb_entity_search` | Search named entities across the corpus |
 | `kb_entity_overview` | Entity type breakdown (per-doc or corpus-wide) |
+| `kb_entity_cooccurrence` | Find entities that co-occur in the same chunk or document |
+| `kb_read_document` | Read full document text or a page range |
+| `kb_batch_search` | Run up to 5 search queries in a single call |
 | `kb_ingest_status` | Check ingestion progress |
 | `kb_reprocess` | Re-run ingestion on a document |
 | `kb_system_health` | System health check |
