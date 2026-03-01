@@ -1,0 +1,50 @@
+name: Security
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Python deps
+        run: uv sync --extra test
+
+      - uses: pypa/gh-action-pip-audit@v1.1.0
+        with:
+          inputs: .
+          severity: HIGH
+
+      - name: npm audit (high/critical)
+        run: cd frontend && npm ci && npm audit --audit-level=high
+
+  container-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app image
+        run: docker build -f docker/app.Dockerfile -t harborclerk-app:ci .
+
+      - name: Build embedder image
+        run: docker build -f docker/embedder.Dockerfile -t harborclerk-embedder:ci .
+
+      - name: Trivy scan app
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: harborclerk-app:ci
+          severity: HIGH,CRITICAL
+          exit-code: 1
+
+      - name: Trivy scan embedder
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: harborclerk-embedder:ci
+          severity: HIGH,CRITICAL
+          exit-code: 1
