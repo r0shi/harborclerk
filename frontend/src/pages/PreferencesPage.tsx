@@ -20,8 +20,8 @@ export default function PreferencesPage() {
               onClick={() => updatePreferences({ theme: 'light' })}
               className={`rounded-lg px-4 py-2 text-sm font-medium ${
                 theme === 'light'
-                  ? 'bg-blue-600 text-white shadow-sm'
-                  : 'bg-[var(--color-bg-tertiary)] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-(--color-bg-tertiary) text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
               }`}
             >
               Light
@@ -30,8 +30,8 @@ export default function PreferencesPage() {
               onClick={() => updatePreferences({ theme: 'dark' })}
               className={`rounded-lg px-4 py-2 text-sm font-medium ${
                 theme === 'dark'
-                  ? 'bg-blue-600 text-white shadow-sm'
-                  : 'bg-[var(--color-bg-tertiary)] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-(--color-bg-tertiary) text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
               }`}
             >
               Dark
@@ -45,7 +45,7 @@ export default function PreferencesPage() {
           <select
             value={pageSize}
             onChange={(e) => updatePreferences({ page_size: Number(e.target.value) })}
-            className="rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+            className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
           >
             {PAGE_SIZE_OPTIONS.map((n) => (
               <option key={n} value={n}>

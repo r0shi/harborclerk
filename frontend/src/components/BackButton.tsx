@@ -17,7 +17,7 @@ export default function BackButton() {
   return (
     <button
       onClick={() => navigate(-1)}
-      className="mb-4 inline-flex items-center gap-0.5 text-[14px] font-medium text-[var(--color-accent)] hover:opacity-70 transition-opacity"
+      className="mb-4 inline-flex items-center gap-0.5 text-[14px] font-medium text-(--color-accent) hover:opacity-70 transition-opacity"
     >
       <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
         <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />

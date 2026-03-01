@@ -34,8 +34,8 @@ export default function DocumentRow({ item }: DocumentRowProps) {
         <StageRing stages={item.stages} size={36} />
 
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-[var(--color-text-primary)] truncate">{item.filename}</div>
-          <div className="text-xs text-[var(--color-text-secondary)]">
+          <div className="text-sm font-medium text-(--color-text-primary) truncate">{item.filename}</div>
+          <div className="text-xs text-(--color-text-secondary)">
             {item.status === 'queued' ? (
               'Queued'
             ) : (
@@ -46,7 +46,7 @@ export default function DocumentRow({ item }: DocumentRowProps) {
                     — {currentState.progress}/{currentState.total} pages
                   </span>
                 )}
-                <span className="ml-1 text-[var(--color-text-secondary)]">
+                <span className="ml-1 text-(--color-text-secondary)">
                   (Step {currentStep}/{activeStages.length})
                 </span>
               </>
@@ -56,7 +56,7 @@ export default function DocumentRow({ item }: DocumentRowProps) {
 
         <button
           onClick={() => setExpanded((p) => !p)}
-          className="shrink-0 rounded-md p-0.5 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+          className="shrink-0 rounded-md p-0.5 text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-black/4 dark:hover:bg-white/6 transition-colors"
         >
           <svg
             className={`h-3.5 w-3.5 queue-chevron ${expanded ? 'expanded' : ''}`}
@@ -83,15 +83,15 @@ export default function DocumentRow({ item }: DocumentRowProps) {
                   <span
                     className={
                       status === 'skipped'
-                        ? 'text-[var(--color-text-secondary)] italic'
+                        ? 'text-(--color-text-secondary) italic'
                         : status === 'queued'
-                          ? 'text-[var(--color-text-secondary)]'
-                          : 'text-[var(--color-text-primary)]'
+                          ? 'text-(--color-text-secondary)'
+                          : 'text-(--color-text-primary)'
                     }
                   >
                     {stageName(stage)}
                     {status === 'running' && state?.total != null && state.total > 0 && (
-                      <span className="text-[var(--color-text-secondary)] ml-1">
+                      <span className="text-(--color-text-secondary) ml-1">
                         {state.progress}/{state.total}
                       </span>
                     )}
@@ -111,7 +111,7 @@ function StageIcon({ status, stage }: { status: string; stage?: string }) {
     case 'done':
       return <span className="text-green-500 font-medium leading-none">&check;</span>
     case 'running':
-      return <span className="text-[var(--color-accent)] leading-none">&bull;</span>
+      return <span className="text-(--color-accent) leading-none">&bull;</span>
     case 'error':
       return <span className="text-red-500 font-medium leading-none">&times;</span>
     case 'skipped':
@@ -121,9 +121,9 @@ function StageIcon({ status, stage }: { status: string; stage?: string }) {
             &#9888;
           </span>
         )
-      return <span className="text-[var(--color-text-secondary)] leading-none">&ndash;</span>
+      return <span className="text-(--color-text-secondary) leading-none">&ndash;</span>
     default:
-      return <span className="text-[var(--color-text-secondary)] leading-none">&#9675;</span>
+      return <span className="text-(--color-text-secondary) leading-none">&#9675;</span>
   }
 }
 

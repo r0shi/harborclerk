@@ -52,13 +52,13 @@ export default function SystemMaintenancePage() {
       <h1 className="mb-4 text-xl font-bold">System Maintenance</h1>
 
       {error && (
-        <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+        <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
 
       {actionResult && (
-        <div className="mb-4 rounded bg-green-50 dark:bg-green-900/20 px-3 py-2 text-sm text-green-700 dark:text-green-400">
+        <div className="mb-4 rounded-sm bg-green-50 dark:bg-green-900/20 px-3 py-2 text-sm text-green-700 dark:text-green-400">
           {actionResult}
         </div>
       )}
@@ -70,7 +70,7 @@ export default function SystemMaintenancePage() {
           </p>
           <button
             onClick={handlePurge}
-            className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+            className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
           >
             Purge
           </button>
@@ -81,7 +81,7 @@ export default function SystemMaintenancePage() {
           </p>
           <button
             onClick={handleReaper}
-            className="rounded-lg bg-[var(--color-bg-tertiary)] px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+            className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
           >
             Reap
           </button>
@@ -96,7 +96,7 @@ export default function SystemMaintenancePage() {
               className={`rounded-lg px-4 py-2 text-sm font-medium ${
                 confirmingReprocess
                   ? 'bg-red-600 text-white hover:bg-red-700'
-                  : 'bg-[var(--color-bg-tertiary)] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+                  : 'bg-(--color-bg-tertiary) text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
               }`}
             >
               {confirmingReprocess ? 'Click again to confirm' : 'Reprocess All'}
@@ -149,7 +149,7 @@ export default function SystemMaintenancePage() {
             <div className="space-y-2">
               <p className="text-sm text-red-600 dark:text-red-400">
                 Type{' '}
-                <code className="font-mono bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded text-xs">
+                <code className="font-mono bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded-sm text-xs">
                   DELETE EVERYTHING
                 </code>{' '}
                 to confirm:
@@ -160,7 +160,7 @@ export default function SystemMaintenancePage() {
                   value={deleteInput}
                   onChange={(e) => setDeleteInput(e.target.value)}
                   placeholder="DELETE EVERYTHING"
-                  className="w-56 rounded-lg border border-red-300 dark:border-red-700 bg-white dark:bg-[#2c2c2e] px-3 py-1.5 text-sm text-[var(--color-text-primary)] placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                  className="w-56 rounded-lg border border-red-300 dark:border-red-700 bg-white dark:bg-[#2c2c2e] px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-red-500/30"
                 />
                 <button
                   onClick={async () => {

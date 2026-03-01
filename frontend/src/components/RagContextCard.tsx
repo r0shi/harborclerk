@@ -37,7 +37,7 @@ export default function RagContextCard({ chunks }: { chunks: RagContextChunk[] }
       >
         {/* Layers icon */}
         <svg
-          className="h-3 w-3 flex-shrink-0 text-stone-400 dark:text-stone-500"
+          className="h-3 w-3 shrink-0 text-stone-400 dark:text-stone-500"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -51,7 +51,7 @@ export default function RagContextCard({ chunks }: { chunks: RagContextChunk[] }
         </svg>
         <span className="font-medium">{summarize(chunks)}</span>
         <svg
-          className={`ml-auto h-3 w-3 flex-shrink-0 text-stone-300 dark:text-stone-600 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+          className={`ml-auto h-3 w-3 shrink-0 text-stone-300 dark:text-stone-600 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -86,19 +86,19 @@ function ChunkRow({ chunk }: { chunk: RagContextChunk }) {
       <div className="flex items-center gap-1.5 mb-0.5">
         <Link
           to={`/docs/${chunk.doc_id}`}
-          className="font-medium text-stone-600 dark:text-stone-300 hover:text-[var(--color-accent)] dark:hover:text-[var(--color-accent)] transition-colors duration-150 truncate"
+          className="font-medium text-stone-600 dark:text-stone-300 hover:text-(--color-accent) dark:hover:text-(--color-accent) transition-colors duration-150 truncate"
           title={tooltip}
         >
           {chunk.doc_title}
           <span className="inline-block ml-0.5 text-[9px] opacity-50">&#x2197;</span>
         </Link>
         {pages && (
-          <span className="flex-shrink-0 rounded px-1 py-px bg-stone-200/60 dark:bg-stone-700/40 text-stone-400 dark:text-stone-500 text-[10px] tabular-nums">
+          <span className="shrink-0 rounded-sm px-1 py-px bg-stone-200/60 dark:bg-stone-700/40 text-stone-400 dark:text-stone-500 text-[10px] tabular-nums">
             {pages}
           </span>
         )}
         {/* Score dots */}
-        <span className="ml-auto flex gap-px flex-shrink-0" title={`Relevance: ${(chunk.score * 100).toFixed(0)}%`}>
+        <span className="ml-auto flex gap-px shrink-0" title={`Relevance: ${(chunk.score * 100).toFixed(0)}%`}>
           {[1, 2, 3, 4].map((n) => (
             <span
               key={n}

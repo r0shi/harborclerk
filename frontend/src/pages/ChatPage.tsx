@@ -168,14 +168,14 @@ export default function ChatPage() {
     <div className="chat-page flex h-[calc(100vh-3.5rem)] -mx-4 -my-6 overflow-hidden">
       {/* Sidebar */}
       <div
-        className={`chat-sidebar flex-shrink-0 flex flex-col border-r border-gray-200/80 dark:border-gray-700/60 bg-stone-50 dark:bg-gray-900/80 transition-all duration-300 ease-in-out ${
+        className={`chat-sidebar shrink-0 flex flex-col border-r border-gray-200/80 dark:border-gray-700/60 bg-stone-50 dark:bg-gray-900/80 transition-all duration-300 ease-in-out ${
           sidebarOpen ? 'w-72' : 'w-0'
         } overflow-hidden`}
       >
         <div className="p-3 pb-2">
           <button
             onClick={handleNewChat}
-            className="group w-full flex items-center gap-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-[13px] font-medium text-gray-600 dark:text-gray-300 shadow-sm hover:shadow-md hover:border-gray-300 dark:hover:border-gray-600 transition-all duration-200"
+            className="group w-full flex items-center gap-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-[13px] font-medium text-gray-600 dark:text-gray-300 shadow-xs hover:shadow-md hover:border-gray-300 dark:hover:border-gray-600 transition-all duration-200"
           >
             <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800 text-xs transition-transform duration-200 group-hover:scale-110">
               +
@@ -195,7 +195,7 @@ export default function ChatPage() {
                 key={conv.conversation_id}
                 className={`group relative flex items-start rounded-lg px-3 py-2.5 mb-0.5 cursor-pointer transition-all duration-150 ${
                   isActive
-                    ? 'bg-white dark:bg-gray-800 shadow-sm ring-1 ring-gray-200/80 dark:ring-gray-700/60'
+                    ? 'bg-white dark:bg-gray-800 shadow-xs ring-1 ring-gray-200/80 dark:ring-gray-700/60'
                     : 'hover:bg-white/60 dark:hover:bg-gray-800/40'
                 }`}
               >
@@ -289,7 +289,7 @@ export default function ChatPage() {
         <div className="border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
           <div className="max-w-3xl mx-auto px-4 py-3">
             <form onSubmit={handleSubmit} className="relative">
-              <div className="chat-input-container rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-sm focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
+              <div className="chat-input-container rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-xs focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -297,7 +297,7 @@ export default function ChatPage() {
                   onKeyDown={handleKeyDown}
                   placeholder="Ask about your documents..."
                   rows={1}
-                  className="w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none"
+                  className="w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden"
                   style={{ maxHeight: '160px' }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement
@@ -373,7 +373,7 @@ function EmptyState() {
             (q) => (
               <span
                 key={q}
-                className="inline-block rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-[12px] text-gray-500 dark:text-gray-400 shadow-sm cursor-default"
+                className="inline-block rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-[12px] text-gray-500 dark:text-gray-400 shadow-xs cursor-default"
               >
                 {q}
               </span>
@@ -395,7 +395,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
         {/* Avatar */}
         <div
-          className={`flex-shrink-0 mt-0.5 h-7 w-7 rounded-lg flex items-center justify-center text-xs font-semibold ${
+          className={`shrink-0 mt-0.5 h-7 w-7 rounded-lg flex items-center justify-center text-xs font-semibold ${
             isUser
               ? 'bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800'
               : 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 ring-1 ring-amber-200/60 dark:ring-amber-700/40'
@@ -454,7 +454,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               </div>
             )}
 
-            {message.content && <div className="whitespace-pre-wrap break-words">{message.content}</div>}
+            {message.content && <div className="whitespace-pre-wrap wrap-break-word">{message.content}</div>}
 
             {message.isStreaming && !message.content && (
               <div className="flex items-center gap-1.5 py-0.5">
@@ -517,7 +517,7 @@ function ToolCallCard({ tool, active }: { tool: ToolCallInfo; active: boolean })
     >
       <button onClick={() => setExpanded(!expanded)} className="flex w-full items-center gap-2 px-2.5 py-1.5">
         <span
-          className={`flex-shrink-0 ${
+          className={`shrink-0 ${
             active ? 'text-blue-500 dark:text-blue-400 animate-pulse' : 'text-emerald-500 dark:text-emerald-400'
           }`}
         >
@@ -537,7 +537,7 @@ function ToolCallCard({ tool, active }: { tool: ToolCallInfo; active: boolean })
           <span className="ml-auto text-gray-400 dark:text-gray-500 truncate max-w-[200px]">{tool.result}</span>
         )}
         <svg
-          className={`h-3 w-3 flex-shrink-0 text-gray-300 dark:text-gray-600 transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}
+          className={`h-3 w-3 shrink-0 text-gray-300 dark:text-gray-600 transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"

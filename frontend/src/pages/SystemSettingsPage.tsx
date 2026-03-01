@@ -14,19 +14,19 @@ export default function SystemSettingsPage() {
   return (
     <div>
       <h1 className="mb-4 text-xl font-bold">System Settings</h1>
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden divide-y divide-[var(--color-border)]">
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden divide-y divide-(--color-border)">
         {ITEMS.map((item) => (
           <Link
             key={item.to}
             to={item.to}
-            className="flex items-center justify-between px-4 py-3.5 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
+            className="flex items-center justify-between px-4 py-3.5 hover:bg-black/2 dark:hover:bg-white/2 transition-colors"
           >
             <div>
-              <div className="text-[14px] font-medium text-[var(--color-text-primary)]">{item.label}</div>
-              <div className="text-[12px] text-[var(--color-text-secondary)] mt-0.5">{item.description}</div>
+              <div className="text-[14px] font-medium text-(--color-text-primary)">{item.label}</div>
+              <div className="text-[12px] text-(--color-text-secondary) mt-0.5">{item.description}</div>
             </div>
             <svg
-              className="h-4 w-4 text-gray-300 dark:text-gray-600 flex-shrink-0"
+              className="h-4 w-4 text-gray-300 dark:text-gray-600 shrink-0"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"

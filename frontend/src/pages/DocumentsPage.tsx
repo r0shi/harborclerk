@@ -91,7 +91,7 @@ function Pagination({
             onClick={() => onPageChange(p)}
             className={`rounded-lg px-2.5 py-1 text-sm font-medium ${
               p === currentPage
-                ? 'bg-[var(--color-accent)] text-white'
+                ? 'bg-(--color-accent) text-white'
                 : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
             }`}
           >
@@ -281,11 +281,11 @@ export default function DocumentsPage() {
               setFilter(e.target.value)
               setCurrentPage(1)
             }}
-            className="w-64 rounded-lg border border-[var(--color-border)] bg-white dark:bg-[#2c2c2e] px-3 py-1.5 text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/30"
+            className="w-64 rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
           />
           <Link
             to="/upload"
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
           >
             Upload
           </Link>
@@ -320,15 +320,15 @@ export default function DocumentsPage() {
           )}
 
           <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
-            <table className="min-w-full divide-y divide-[var(--color-border)]">
-              <thead className="bg-[var(--color-bg-secondary)]">
+            <table className="min-w-full divide-y divide-(--color-border)">
+              <thead className="bg-(--color-bg-secondary)">
                 <tr>
                   <th className="w-10 px-4 py-3">
                     <input
                       type="checkbox"
                       checked={visibleDocs.length > 0 && visibleDocs.every((d) => selected.has(d.doc_id))}
                       onChange={toggleSelectAll}
-                      className="h-3.5 w-3.5 rounded border-gray-300 text-[var(--color-accent)] focus:ring-[var(--color-accent)]/30"
+                      className="h-3.5 w-3.5 rounded-sm border-gray-300 text-(--color-accent) focus:ring-(--color-accent)/30"
                     />
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
@@ -346,18 +346,18 @@ export default function DocumentsPage() {
                   <th className="w-10"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[var(--color-border)] bg-white dark:bg-[#2c2c2e]">
+              <tbody className="divide-y divide-(--color-border) bg-white dark:bg-[#2c2c2e]">
                 {visibleDocs.map((doc) => {
                   const isExpanded = expanded.has(doc.doc_id)
                   return (
                     <Fragment key={doc.doc_id}>
-                      <tr className="hover:bg-black/[0.02] dark:hover:bg-white/[0.02]">
+                      <tr className="hover:bg-black/2 dark:hover:bg-white/2">
                         <td className="w-10 px-4 py-3">
                           <input
                             type="checkbox"
                             checked={selected.has(doc.doc_id)}
                             onChange={() => toggleSelect(doc.doc_id)}
-                            className="h-3.5 w-3.5 rounded border-gray-300 text-[var(--color-accent)] focus:ring-[var(--color-accent)]/30"
+                            className="h-3.5 w-3.5 rounded-sm border-gray-300 text-(--color-accent) focus:ring-(--color-accent)/30"
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -371,7 +371,7 @@ export default function DocumentsPage() {
                                   return next
                                 })
                               }
-                              className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                              className="rounded-sm p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                               title="Toggle details"
                             >
                               <svg
@@ -406,7 +406,7 @@ export default function DocumentsPage() {
                                   e.preventDefault()
                                   handleCancel(doc.doc_id)
                                 }}
-                                className="rounded p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                                className="rounded-sm p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                                 title="Cancel processing"
                               >
                                 <svg
@@ -429,7 +429,7 @@ export default function DocumentsPage() {
                         <td className="px-4 py-3 text-right">
                           <button
                             onClick={() => handleDownload(doc.doc_id)}
-                            className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                            className="rounded-sm p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
                             title="Download original"
                           >
                             <svg
@@ -449,7 +449,7 @@ export default function DocumentsPage() {
                         </td>
                       </tr>
                       {isExpanded && (
-                        <tr className="bg-gray-50/50 dark:bg-white/[0.02]">
+                        <tr className="bg-gray-50/50 dark:bg-white/2">
                           <td colSpan={6} className="px-4 py-3 pl-14">
                             <div className="space-y-1 text-sm">
                               <div>
@@ -526,7 +526,7 @@ export default function DocumentsPage() {
                   setCurrentPage(1)
                   updatePreferences({ page_size: n }).catch(() => {})
                 }}
-                className="rounded border-0 bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 text-xs focus:ring-2 focus:ring-[var(--color-accent)]/30"
+                className="rounded-sm border-0 bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 text-xs focus:ring-2 focus:ring-(--color-accent)/30"
               >
                 {[10, 25, 50, 100].map((n) => (
                   <option key={n} value={n}>
@@ -566,8 +566,8 @@ function BulkActionsBar({
   onClear: () => void
 }) {
   return (
-    <div className="my-2 flex items-center gap-2 rounded-lg bg-[var(--color-bg-secondary)] px-3 py-2">
-      <span className="text-xs font-medium text-[var(--color-text-secondary)]">{count} selected</span>
+    <div className="my-2 flex items-center gap-2 rounded-lg bg-(--color-bg-secondary) px-3 py-2">
+      <span className="text-xs font-medium text-(--color-text-secondary)">{count} selected</span>
       <div className="flex-1" />
       {isAdmin && (
         <button

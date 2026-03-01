@@ -418,7 +418,7 @@ export default function UploadPage() {
       <h1 className="mb-4 text-xl font-bold">Upload Documents</h1>
 
       {error && (
-        <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+        <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
@@ -445,7 +445,7 @@ export default function UploadPage() {
               Drag and drop files or folders here, or click to browse
             </p>
             <p className="mb-4 text-xs text-gray-400">PDF, Office, text, images, eBooks, and more</p>
-            <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700">
+            <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700">
               Choose Files
               <input
                 type="file"
@@ -512,7 +512,7 @@ export default function UploadPage() {
                   <button
                     onClick={() => batchConfirm(unconfirmedPending)}
                     disabled={confirming}
-                    className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+                    className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
                   >
                     {confirming
                       ? confirmProgress
@@ -554,7 +554,7 @@ export default function UploadPage() {
                 <button
                   onClick={() => batchConfirm(unconfirmedPending)}
                   disabled={confirming}
-                  className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+                  className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
                 >
                   {confirming
                     ? confirmProgress

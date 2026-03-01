@@ -35,13 +35,13 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
 
   return (
     <div className={`mb-2 ${exiting ? 'panel-exit' : 'panel-enter'}`} onAnimationEnd={handleAnimationEnd}>
-      <div className="w-[360px] max-h-[60vh] flex flex-col rounded-2xl bg-[var(--bg-vibrancy)] backdrop-blur-xl shadow-mac-lg ring-1 ring-[var(--color-border)] overflow-hidden">
+      <div className="w-[360px] max-h-[60vh] flex flex-col rounded-2xl bg-(--bg-vibrancy) backdrop-blur-xl shadow-mac-lg ring-1 ring-(--color-border) overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
-          <span className="text-[13px] font-semibold text-[var(--color-text-primary)]">Processing</span>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border)">
+          <span className="text-[13px] font-semibold text-(--color-text-primary)">Processing</span>
           <button
             onClick={handleClose}
-            className="rounded-md p-0.5 text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors"
+            className="rounded-md p-0.5 text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-black/4 dark:hover:bg-white/6 transition-colors"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -54,7 +54,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
           {/* Active section */}
           {hasActive && (
             <div className="px-4 py-2">
-              <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">
+              <div className="text-[11px] font-medium uppercase tracking-wider text-(--color-text-secondary) mb-2">
                 Active
               </div>
               <div className="space-y-1">
@@ -66,12 +66,12 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
           )}
 
           {/* Divider */}
-          {hasActive && hasCompleted && <div className="border-b border-[var(--color-border)]" />}
+          {hasActive && hasCompleted && <div className="border-b border-(--color-border)" />}
 
           {/* Completed section */}
           {hasCompleted && (
             <div className="px-4 py-2">
-              <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-secondary)] mb-2">
+              <div className="text-[11px] font-medium uppercase tracking-wider text-(--color-text-secondary) mb-2">
                 Completed ({completed.length})
               </div>
               <div className="space-y-2">
@@ -84,9 +84,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
 
           {/* Empty state */}
           {!hasActive && !hasCompleted && (
-            <div className="px-4 py-6 text-center text-[13px] text-[var(--color-text-secondary)]">
-              No items in queue
-            </div>
+            <div className="px-4 py-6 text-center text-[13px] text-(--color-text-secondary)">No items in queue</div>
           )}
         </div>
       </div>

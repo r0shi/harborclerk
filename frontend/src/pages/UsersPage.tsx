@@ -70,14 +70,14 @@ export default function UsersPage() {
         <h1 className="text-xl font-bold">Users</h1>
         <button
           onClick={() => setShowCreate(!showCreate)}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
+          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
         >
           {showCreate ? 'Cancel' : 'Create User'}
         </button>
       </div>
 
       {error && (
-        <div className="mb-4 rounded bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
+        <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
@@ -94,7 +94,7 @@ export default function UsersPage() {
 
       <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
         <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-          <thead className="bg-[var(--color-bg-secondary)]">
+          <thead className="bg-(--color-bg-secondary)">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
                 Email
@@ -115,7 +115,7 @@ export default function UsersPage() {
           </thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-[#2c2c2e]">
             {users.map((u) => (
-              <tr key={u.user_id} className="hover:bg-black/[0.02] dark:hover:bg-white/[0.02]">
+              <tr key={u.user_id} className="hover:bg-black/2 dark:hover:bg-white/2">
                 <td className="px-4 py-3 text-sm">{u.email}</td>
                 <td className="px-4 py-3">
                   <button
@@ -190,7 +190,7 @@ function CreateUserForm({ onCreated, onError }: { onCreated: () => void; onError
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
-            className="w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-1.5 text-sm"
+            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
           />
         </div>
         <div>
@@ -200,7 +200,7 @@ function CreateUserForm({ onCreated, onError }: { onCreated: () => void; onError
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
-            className="w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-1.5 text-sm"
+            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
           />
         </div>
         <div>
@@ -208,7 +208,7 @@ function CreateUserForm({ onCreated, onError }: { onCreated: () => void; onError
           <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            className="w-full rounded-lg border-0 bg-[var(--color-bg-secondary)] dark:bg-[var(--color-bg-tertiary)] shadow-mac focus:ring-2 focus:ring-[var(--color-accent)]/30 px-3 py-1.5 text-sm"
+            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
           >
             <option value="user">user</option>
             <option value="admin">admin</option>
@@ -218,7 +218,7 @@ function CreateUserForm({ onCreated, onError }: { onCreated: () => void; onError
       <button
         type="submit"
         disabled={submitting}
-        className="mt-3 rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+        className="mt-3 rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
       >
         Create
       </button>
