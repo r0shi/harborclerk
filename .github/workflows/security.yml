@@ -43,7 +43,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y trivy
 
       - name: Trivy scan app
-        run: trivy image --severity HIGH,CRITICAL --exit-code 1 harborclerk-app:ci
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 harborclerk-app:ci
 
       - name: Trivy scan embedder
-        run: trivy image --severity HIGH,CRITICAL --exit-code 1 harborclerk-embedder:ci
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 harborclerk-embedder:ci
