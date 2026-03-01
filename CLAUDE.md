@@ -100,6 +100,23 @@ Key tables: `users`, `api_keys`, `documents`, `document_versions`, `document_pag
 
 Storage bucket: `originals`, key pattern: `originals/versions/<version_id>/<original_filename>`.
 
+## Linting & Formatting
+
+**Python:** Ruff (config in `pyproject.toml`). Rules: E/F/W/I/UP/B/SIM. Line length 120.
+- `uv run ruff check .` — lint
+- `uv run ruff format .` — format
+- Ruff is in `[project.optional-dependencies] test`
+
+**Frontend:** ESLint 9 (flat config) + Prettier. Config in `frontend/eslint.config.js` and `frontend/.prettierrc`.
+- `npm run lint` / `npm run format:check` / `npm run type-check`
+
+## CI
+
+GitHub Actions workflow: `.github/workflows/ci.yml` runs on PRs to `main`.
+- **python** job: ruff check, ruff format --check, pytest (with pgvector service container)
+- **frontend** job: eslint, prettier --check, tsc --noEmit
+- Branch protection on `main`: requires PR + both checks passing, no force push
+
 ## Worker Presets (C = logical cores)
 
 - **Quiet**: io=1, cpu=1
