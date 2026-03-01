@@ -1164,6 +1164,80 @@ async def test_read_document_chunk_fallback(
     assert result["truncated"] is False
 
 
+async def test_read_document_chunk_fallback_with_page_range_note(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+):
+    """Chunk fallback warns when page_start/page_end are provided."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id), page_start=1, page_end=2))
+    assert result["source"] == "chunks"
+    assert "note" in result
+    assert "ignored" in result["note"]
+
+
+async def test_read_document_chunk_fallback_truncation(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+):
+    """max_chars truncation works in the chunk fallback path."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id), max_chars=20))
+    assert result["source"] == "chunks"
+    assert result["truncated"] is True
+    assert result["total_chars"] <= 20
+
+
+async def test_read_document_invalid_uuid(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Malformed doc_id returns error, not an exception."""
+    result = json.loads(await kb_read_document("not-a-uuid"))
+    assert "error" in result
+    assert "Invalid doc_id" in result["error"]
+
+
+async def test_read_document_inactive_not_found(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+):
+    """Archived/inactive document returns not found."""
+    doc, _ = sample_doc
+    doc.status = "archived"
+    await db_session.flush()
+    result = json.loads(await kb_read_document(str(doc.doc_id)))
+    assert "error" in result
+    assert result["error"] == "Document not found"
+
+
+async def test_read_document_pages_source_field(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_pages,
+):
+    """Pages path includes source='pages' for consistent response shape."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id)))
+    assert result["source"] == "pages"
+
+
 async def test_read_document_page_range_beyond_bounds(
     db_session,
     admin_user,

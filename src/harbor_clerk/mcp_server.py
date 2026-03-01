@@ -1271,7 +1271,10 @@ async def kb_read_document(
     (default 50 000, max 100 000).
     """
     _get_principal()
-    did = uuid.UUID(doc_id)
+    try:
+        did = uuid.UUID(doc_id)
+    except ValueError:
+        return json.dumps({"error": f"Invalid doc_id: {doc_id}"})
     max_chars = max(1, min(max_chars, 100_000))
 
     async with async_session_factory() as session:
@@ -1296,12 +1299,16 @@ async def kb_read_document(
         ).scalar_one()
 
         if page_count == 0:
-            # Fallback: concatenate chunks
+            # Fallback: concatenate chunks (page_start/page_end not applicable)
             chunk_rows = (
                 (await session.execute(select(Chunk).where(Chunk.version_id == vid).order_by(Chunk.chunk_num)))
                 .scalars()
                 .all()
             )
+
+            note = None
+            if page_start is not None or page_end is not None:
+                note = "page_start/page_end ignored: document has no page records, returning chunk text"
 
             pages_out: list[dict] = []
             total_chars = 0
@@ -1317,20 +1324,20 @@ async def kb_read_document(
                 pages_out.append({"chunk_num": c.chunk_num, "text": text})
                 total_chars += len(text)
 
-            return json.dumps(
-                {
-                    "doc_id": str(doc.doc_id),
-                    "version_id": str(vid),
-                    "title": doc.title,
-                    "source": "chunks",
-                    "page_count": 0,
-                    "pages_returned": len(pages_out),
-                    "total_chars": total_chars,
-                    "truncated": truncated,
-                    "pages": pages_out,
-                },
-                indent=2,
-            )
+            resp: dict = {
+                "doc_id": str(doc.doc_id),
+                "version_id": str(vid),
+                "title": doc.title,
+                "source": "chunks",
+                "page_count": 0,
+                "pages_returned": len(pages_out),
+                "total_chars": total_chars,
+                "truncated": truncated,
+                "pages": pages_out,
+            }
+            if note:
+                resp["note"] = note
+            return json.dumps(resp, indent=2)
 
         # Query pages with optional range filter
         query = select(DocumentPage).where(DocumentPage.version_id == vid).order_by(DocumentPage.page_num)
@@ -1374,6 +1381,7 @@ async def kb_read_document(
             "doc_id": str(doc.doc_id),
             "version_id": str(vid),
             "title": doc.title,
+            "source": "pages",
             "page_count": page_count,
             "pages_returned": len(pages_out),
             "total_chars": total_chars,
