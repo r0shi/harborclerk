@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
@@ -1125,6 +1125,132 @@ async def kb_entity_overview(doc_id: str | None = None) -> str:
             "unique_entities": unique,
             "type_distribution": type_distribution,
             "top_entities": top_entities,
+        },
+        indent=2,
+    )
+
+
+@mcp.tool()
+async def kb_entity_cooccurrence(
+    entity_text: str,
+    entity_type: str | None = None,
+    scope: str = "chunk",
+    cooccur_type: str | None = None,
+    doc_id: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    """Find entities that co-occur with a given entity.
+
+    Discovers relationships by finding which other entities appear alongside
+    the specified entity in the same chunk or document.
+
+    Args:
+        entity_text: The entity text to find co-occurrences for (case-insensitive).
+        entity_type: Optional — filter the source entity by type (PERSON, ORG, etc.).
+        scope: "chunk" (same chunk) or "document" (same document version). Default "chunk".
+        cooccur_type: Optional — filter co-occurring entities by type.
+        doc_id: Optional — scope to a single document's latest version.
+        limit: Max results (1-100, default 20).
+        offset: Pagination offset.
+    """
+    _get_principal()
+
+    if scope not in ("chunk", "document"):
+        return json.dumps({"error": f"Invalid scope '{scope}'. Must be 'chunk' or 'document'."})
+
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    escaped_text = re.sub(r"([%_\\])", r"\\\1", entity_text)
+
+    e1 = aliased(Entity, name="e1")
+    e2 = aliased(Entity, name="e2")
+
+    async with async_session_factory() as session:
+        # Version filter: active docs' latest versions
+        if doc_id:
+            did = uuid.UUID(doc_id)
+            doc = (
+                await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
+            ).scalar_one_or_none()
+            if doc is None:
+                return json.dumps({"error": "Document not found"})
+            if not doc.latest_version_id:
+                return json.dumps(
+                    {"entity_text": entity_text, "scope": scope, "cooccurrences": [], "total": 0, "has_more": False}
+                )
+            version_filter_e1 = [e1.version_id == doc.latest_version_id]
+            version_filter_e2 = [e2.version_id == doc.latest_version_id]
+        else:
+            active_versions = select(Document.latest_version_id).where(
+                Document.status == "active",
+                Document.latest_version_id.isnot(None),
+            )
+            version_filter_e1 = [e1.version_id.in_(active_versions)]
+            version_filter_e2 = [e2.version_id.in_(active_versions)]
+
+        # Source entity filter
+        source_filter = [e1.entity_text.ilike(f"%{escaped_text}%"), *version_filter_e1]
+        if entity_type:
+            source_filter.append(e1.entity_type == entity_type)
+
+        # Join condition based on scope
+        if scope == "chunk":
+            join_cond = e2.chunk_id == e1.chunk_id
+        else:
+            join_cond = e2.version_id == e1.version_id
+
+        # Co-occurring entity filters
+        cooccur_filter = [*version_filter_e2]
+        if cooccur_type:
+            cooccur_filter.append(e2.entity_type == cooccur_type)
+
+        # Exclude self-matches
+        self_exclude = ~(
+            (func.lower(e2.entity_text) == func.lower(e1.entity_text)) & (e2.entity_type == e1.entity_type)
+        )
+
+        # Build the query
+        base_q = (
+            select(
+                e2.entity_text,
+                e2.entity_type,
+                func.count().label("cooccurrence_count"),
+                func.array_agg(func.distinct(e2.chunk_id)).label("sample_chunk_ids"),
+                func.array_agg(func.distinct(e2.doc_id)).label("sample_doc_ids"),
+            )
+            .join(e1, join_cond)
+            .where(*source_filter, *cooccur_filter, self_exclude)
+            .group_by(e2.entity_text, e2.entity_type)
+        )
+
+        # Total count
+        total = (await session.execute(select(func.count()).select_from(base_q.subquery()))).scalar() or 0
+
+        # Paginated results
+        rows = (
+            await session.execute(base_q.order_by(func.count().desc(), e2.entity_text).offset(offset).limit(limit))
+        ).all()
+
+        cooccurrences = [
+            {
+                "entity_text": r.entity_text,
+                "entity_type": r.entity_type,
+                "cooccurrence_count": r.cooccurrence_count,
+                "sample_chunk_ids": [str(cid) for cid in r.sample_chunk_ids[:3]],
+                "sample_doc_ids": [str(did) for did in list(dict.fromkeys(r.sample_doc_ids))[:3]],
+            }
+            for r in rows
+        ]
+
+    return json.dumps(
+        {
+            "entity_text": entity_text,
+            "scope": scope,
+            "cooccurrences": cooccurrences,
+            "total": total,
+            "has_more": offset + limit < total,
         },
         indent=2,
     )
