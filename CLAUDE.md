@@ -87,7 +87,7 @@ Hybrid search: Postgres FTS (bilingual, queries both `fts_en` and `fts_fr` colum
 ## Key API Surface
 
 - REST: `/api/auth/login`, `/api/uploads`, `/api/docs`, `/api/search`, `/api/passages/read`, `/api/system/health`
-- MCP: `POST /mcp` — tools: `kb_search`, `kb_read_passages`, `kb_get_document`, `kb_list_recent`, `kb_ingest_status`, `kb_reprocess`, `kb_system_health`
+- MCP: `POST /mcp` — 16 tools: `kb_search`, `kb_batch_search`, `kb_read_passages`, `kb_expand_context`, `kb_get_document`, `kb_list_recent`, `kb_corpus_overview`, `kb_document_outline`, `kb_find_related`, `kb_entity_search`, `kb_entity_overview`, `kb_entity_cooccurrence`, `kb_read_document`, `kb_ingest_status`, `kb_reprocess`, `kb_system_health`
 - SSE: `GET /api/jobs/stream` — streams job progress events (server→client only)
 
 ## Database
