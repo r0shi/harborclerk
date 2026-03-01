@@ -1257,6 +1257,142 @@ async def kb_entity_cooccurrence(
 
 
 @mcp.tool()
+async def kb_read_document(
+    doc_id: str,
+    page_start: int | None = None,
+    page_end: int | None = None,
+    max_chars: int = 50000,
+) -> str:
+    """Read the full text of a document (or a page range).
+
+    Returns page-level text from DocumentPage rows for the latest version.
+    If no pages exist (e.g. plain-text files), falls back to concatenated chunks.
+    Use page_start/page_end to limit the range. max_chars caps total output
+    (default 50 000, max 100 000).
+    """
+    _get_principal()
+    try:
+        did = uuid.UUID(doc_id)
+    except ValueError:
+        return json.dumps({"error": f"Invalid doc_id: {doc_id}"})
+    max_chars = max(1, min(max_chars, 100_000))
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Document)
+            .options(selectinload(Document.versions))
+            .where(Document.doc_id == did, Document.status == "active")
+        )
+        doc = result.scalar_one_or_none()
+        if doc is None:
+            return json.dumps({"error": "Document not found"})
+
+        vid = doc.latest_version_id
+        if vid is None and doc.versions:
+            vid = doc.versions[-1].version_id
+        if vid is None:
+            return json.dumps({"error": "No versions available"})
+
+        # Total page count
+        page_count = (
+            await session.execute(select(func.count()).select_from(DocumentPage).where(DocumentPage.version_id == vid))
+        ).scalar_one()
+
+        if page_count == 0:
+            # Fallback: concatenate chunks (page_start/page_end not applicable)
+            chunk_rows = (
+                (await session.execute(select(Chunk).where(Chunk.version_id == vid).order_by(Chunk.chunk_num)))
+                .scalars()
+                .all()
+            )
+
+            note = None
+            if page_start is not None or page_end is not None:
+                note = "page_start/page_end ignored: document has no page records, returning chunk text"
+
+            pages_out: list[dict] = []
+            total_chars = 0
+            truncated = False
+            for c in chunk_rows:
+                text = c.chunk_text
+                if total_chars + len(text) > max_chars:
+                    text = text[: max_chars - total_chars]
+                    pages_out.append({"chunk_num": c.chunk_num, "text": text})
+                    total_chars += len(text)
+                    truncated = True
+                    break
+                pages_out.append({"chunk_num": c.chunk_num, "text": text})
+                total_chars += len(text)
+
+            resp: dict = {
+                "doc_id": str(doc.doc_id),
+                "version_id": str(vid),
+                "title": doc.title,
+                "source": "chunks",
+                "page_count": 0,
+                "pages_returned": len(pages_out),
+                "total_chars": total_chars,
+                "truncated": truncated,
+                "pages": pages_out,
+            }
+            if note:
+                resp["note"] = note
+            return json.dumps(resp, indent=2)
+
+        # Query pages with optional range filter
+        query = select(DocumentPage).where(DocumentPage.version_id == vid).order_by(DocumentPage.page_num)
+        if page_start is not None:
+            query = query.where(DocumentPage.page_num >= page_start)
+        if page_end is not None:
+            query = query.where(DocumentPage.page_num <= page_end)
+
+        page_rows = (await session.execute(query)).scalars().all()
+
+        pages_out = []
+        total_chars = 0
+        truncated = False
+        for p in page_rows:
+            text = p.page_text
+            if total_chars + len(text) > max_chars:
+                text = text[: max_chars - total_chars]
+                pages_out.append(
+                    {
+                        "page_num": p.page_num,
+                        "text": text,
+                        "ocr_used": p.ocr_used,
+                        "ocr_confidence": p.ocr_confidence,
+                    }
+                )
+                total_chars += len(text)
+                truncated = True
+                break
+            pages_out.append(
+                {
+                    "page_num": p.page_num,
+                    "text": text,
+                    "ocr_used": p.ocr_used,
+                    "ocr_confidence": p.ocr_confidence,
+                }
+            )
+            total_chars += len(text)
+
+    return json.dumps(
+        {
+            "doc_id": str(doc.doc_id),
+            "version_id": str(vid),
+            "title": doc.title,
+            "source": "pages",
+            "page_count": page_count,
+            "pages_returned": len(pages_out),
+            "total_chars": total_chars,
+            "truncated": truncated,
+            "pages": pages_out,
+        },
+        indent=2,
+    )
+
+
+@mcp.tool()
 async def kb_system_health() -> str:
     """Check system health (Postgres, storage). Admin only."""
     _require_admin()

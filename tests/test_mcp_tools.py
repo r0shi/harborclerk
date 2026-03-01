@@ -20,6 +20,7 @@ from harbor_clerk.mcp_server import (
     kb_find_related,
     kb_get_document,
     kb_list_recent,
+    kb_read_document,
     kb_read_passages,
     kb_search,
 )
@@ -1056,3 +1057,199 @@ async def test_entity_cooccurrence_entity_not_found(
     result = json.loads(await kb_entity_cooccurrence("Nonexistent Entity XYZ"))
     assert result["cooccurrences"] == []
     assert result["total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# kb_read_document
+# ---------------------------------------------------------------------------
+
+
+async def test_read_document_full(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_pages,
+):
+    """Full document returns all pages in order."""
+    doc, version = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id)))
+    assert result["doc_id"] == str(doc.doc_id)
+    assert result["version_id"] == str(version.version_id)
+    assert result["title"] == "Test Document"
+    assert result["page_count"] == 3
+    assert result["pages_returned"] == 3
+    assert result["total_chars"] > 0
+    assert result["truncated"] is False
+    assert result["pages"][0]["page_num"] == 1
+    assert result["pages"][1]["page_num"] == 2
+    assert result["pages"][2]["page_num"] == 3
+
+
+async def test_read_document_page_range(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_pages,
+):
+    """Page range returns only requested pages."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id), page_start=1, page_end=2))
+    assert result["pages_returned"] == 2
+    assert [p["page_num"] for p in result["pages"]] == [1, 2]
+
+
+async def test_read_document_single_page(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_pages,
+):
+    """Single page request returns exactly that page."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id), page_start=2, page_end=2))
+    assert result["pages_returned"] == 1
+    assert result["pages"][0]["page_num"] == 2
+    assert result["pages"][0]["text"] == "Page 2 content."
+
+
+async def test_read_document_max_chars_truncation(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_pages,
+):
+    """max_chars truncates output and sets truncated=true."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id), max_chars=20))
+    assert result["truncated"] is True
+    assert result["total_chars"] <= 20
+
+
+async def test_read_document_not_found(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Non-existent doc_id returns error."""
+    fake_id = "00000000-0000-0000-0000-000000000000"
+    result = json.loads(await kb_read_document(fake_id))
+    assert "error" in result
+    assert result["error"] == "Document not found"
+
+
+async def test_read_document_chunk_fallback(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+):
+    """When no pages exist, falls back to chunks."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id)))
+    assert result["source"] == "chunks"
+    assert result["page_count"] == 0
+    assert result["pages_returned"] == 5
+    assert result["pages"][0]["chunk_num"] == 0
+    assert result["truncated"] is False
+
+
+async def test_read_document_chunk_fallback_with_page_range_note(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+):
+    """Chunk fallback warns when page_start/page_end are provided."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id), page_start=1, page_end=2))
+    assert result["source"] == "chunks"
+    assert "note" in result
+    assert "ignored" in result["note"]
+
+
+async def test_read_document_chunk_fallback_truncation(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_chunks,
+):
+    """max_chars truncation works in the chunk fallback path."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id), max_chars=20))
+    assert result["source"] == "chunks"
+    assert result["truncated"] is True
+    assert result["total_chars"] <= 20
+
+
+async def test_read_document_invalid_uuid(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Malformed doc_id returns error, not an exception."""
+    result = json.loads(await kb_read_document("not-a-uuid"))
+    assert "error" in result
+    assert "Invalid doc_id" in result["error"]
+
+
+async def test_read_document_inactive_not_found(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+):
+    """Archived/inactive document returns not found."""
+    doc, _ = sample_doc
+    doc.status = "archived"
+    await db_session.flush()
+    result = json.loads(await kb_read_document(str(doc.doc_id)))
+    assert "error" in result
+    assert result["error"] == "Document not found"
+
+
+async def test_read_document_pages_source_field(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_pages,
+):
+    """Pages path includes source='pages' for consistent response shape."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id)))
+    assert result["source"] == "pages"
+
+
+async def test_read_document_page_range_beyond_bounds(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    sample_doc,
+    sample_pages,
+):
+    """Page range beyond actual pages returns empty."""
+    doc, _ = sample_doc
+    result = json.loads(await kb_read_document(str(doc.doc_id), page_start=10, page_end=20))
+    assert result["pages_returned"] == 0
+    assert result["pages"] == []
+    assert result["total_chars"] == 0
+    assert result["truncated"] is False
