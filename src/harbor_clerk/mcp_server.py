@@ -25,7 +25,7 @@ from harbor_clerk.models import (
     IngestionJob,
 )
 from harbor_clerk.models.enums import JobStage, VersionStatus
-from harbor_clerk.search import hybrid_search
+from harbor_clerk.search import SearchResult, hybrid_search
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,56 @@ mcp = FastMCP(
 )
 
 
+def _format_search_response(
+    result: SearchResult,
+    detail: str,
+    effective_brief_chars: int,
+    k: int,
+    offset: int,
+) -> dict:
+    """Build the non-faceted search response dict from a SearchResult.
+
+    Shared between kb_search and kb_batch_search.
+    """
+    hits = []
+    for h in result.hits:
+        hit: dict = {
+            "chunk_id": h.chunk_id,
+            "doc_id": h.doc_id,
+            "doc_title": h.doc_title,
+            "version_id": h.version_id,
+            "score": h.score,
+            "language": h.language,
+        }
+        if h.page_start is not None:
+            hit["pages"] = f"{h.page_start}-{h.page_end}" if h.page_end != h.page_start else str(h.page_start)
+        # Detail mode formatting
+        if detail == "full":
+            hit["text"] = h.chunk_text
+        elif detail == "brief":
+            text = h.chunk_text
+            if len(text) > effective_brief_chars:
+                hit["text"] = text[:effective_brief_chars] + "\u2026"
+            else:
+                hit["text"] = text
+        # compact: no text field
+        hits.append(hit)
+
+    has_more = offset + k < result.total_candidates
+
+    resp: dict = {
+        "hits": hits,
+        "total_candidates": result.total_candidates,
+        "has_more": has_more,
+    }
+    if result.possible_conflict:
+        resp["possible_conflict"] = True
+        resp["conflict_sources"] = [
+            {"doc_id": cs.doc_id, "version_id": cs.version_id, "title": cs.title} for cs in result.conflict_sources
+        ]
+    return resp
+
+
 @mcp.tool()
 async def kb_search(
     query: str,
@@ -255,36 +305,12 @@ async def kb_search(
     # Resolve brief_chars for brief mode
     effective_brief_chars = brief_chars if brief_chars > 0 else settings.mcp_brief_chars
 
-    hits = []
-    for h in result.hits:
-        hit: dict = {
-            "chunk_id": h.chunk_id,
-            "doc_id": h.doc_id,
-            "doc_title": h.doc_title,
-            "version_id": h.version_id,
-            "score": h.score,
-            "language": h.language,
-        }
-        if h.page_start is not None:
-            hit["pages"] = f"{h.page_start}-{h.page_end}" if h.page_end != h.page_start else str(h.page_start)
-        # Detail mode formatting
-        if detail == "full":
-            hit["text"] = h.chunk_text
-        elif detail == "brief":
-            text = h.chunk_text
-            if len(text) > effective_brief_chars:
-                hit["text"] = text[:effective_brief_chars] + "\u2026"
-            else:
-                hit["text"] = text
-        # compact: no text field
-        hits.append(hit)
-
-    has_more = offset + k < result.total_candidates
+    base_resp = _format_search_response(result, detail, effective_brief_chars, k, offset)
 
     if faceted:
         # Group hits by doc_id
         groups: dict[str, list[dict]] = {}
-        for h in hits:
+        for h in base_resp["hits"]:
             groups.setdefault(h["doc_id"], []).append(h)
         doc_groups = []
         for did_str, group_hits in groups.items():
@@ -301,19 +327,10 @@ async def kb_search(
         resp: dict = {
             "documents": doc_groups,
             "total_candidates": result.total_candidates,
-            "has_more": has_more,
+            "has_more": base_resp["has_more"],
         }
     else:
-        resp = {
-            "hits": hits,
-            "total_candidates": result.total_candidates,
-            "has_more": has_more,
-        }
-        if result.possible_conflict:
-            resp["possible_conflict"] = True
-            resp["conflict_sources"] = [
-                {"doc_id": cs.doc_id, "version_id": cs.version_id, "title": cs.title} for cs in result.conflict_sources
-            ]
+        resp = base_resp
 
     # Runtime stats
     _search_stats["calls"] += 1
@@ -344,6 +361,106 @@ async def kb_search(
         )
 
     return json.dumps(resp, indent=2)
+
+
+@mcp.tool()
+async def kb_batch_search(
+    queries: list[str],
+    k: int = 10,
+    detail: str = "full",
+    brief_chars: int = 0,
+    doc_id: str | None = None,
+    doc_ids: list[str] | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    language: str | None = None,
+    mime_type: str | None = None,
+) -> str:
+    """Run multiple search queries in one call (max 5).
+
+    Returns results grouped by query — useful for comparative analysis
+    ("do any of these case files mention X, Y, or Z?") without
+    sequential round-trips.
+
+    All filters are shared across queries. Each query gets its own
+    result set with hits, total_candidates, and has_more.
+
+    See kb_search for filter and detail level documentation.
+    """
+    _get_principal()
+    settings = get_settings()
+
+    # Validate query count
+    if not queries:
+        return json.dumps({"error": "queries must contain at least 1 query"})
+    if len(queries) > 5:
+        return json.dumps({"error": "queries limited to max 5 per call"})
+
+    # Mutual exclusion check
+    if doc_id is not None and doc_ids is not None:
+        return json.dumps({"error": "Cannot specify both doc_id and doc_ids"})
+
+    did = uuid.UUID(doc_id) if doc_id else None
+
+    # Parse doc_ids
+    parsed_doc_ids = None
+    if doc_ids is not None:
+        if len(doc_ids) > 50:
+            return json.dumps({"error": "doc_ids limited to 50 entries"})
+        try:
+            parsed_doc_ids = [uuid.UUID(d) for d in doc_ids]
+        except ValueError:
+            return json.dumps({"error": "Invalid UUID in doc_ids"})
+
+    # Parse dates
+    parsed_after = None
+    parsed_before = None
+    if after is not None:
+        try:
+            parsed_after = datetime.fromisoformat(after)
+        except ValueError:
+            return json.dumps({"error": f"Invalid ISO datetime for after: {after}"})
+    if before is not None:
+        try:
+            parsed_before = datetime.fromisoformat(before)
+        except ValueError:
+            return json.dumps({"error": f"Invalid ISO datetime for before: {before}"})
+
+    # Clamp parameters
+    k = max(1, min(k, settings.mcp_max_k))
+    if detail not in ("full", "brief", "compact"):
+        detail = "full"
+
+    effective_brief_chars = brief_chars if brief_chars > 0 else settings.mcp_brief_chars
+
+    results = []
+    async with async_session_factory() as session:
+        for query in queries:
+            result = await hybrid_search(
+                session,
+                query,
+                k=k,
+                doc_id=did,
+                offset=0,
+                doc_ids=parsed_doc_ids,
+                after=parsed_after,
+                before=parsed_before,
+                language=language,
+                mime_type=mime_type,
+            )
+            resp = _format_search_response(result, detail, effective_brief_chars, k, 0)
+            resp["query"] = query
+            results.append(resp)
+
+            # Runtime stats per query
+            _search_stats["calls"] += 1
+            _search_stats["total_k"] += k
+            _search_stats["max_k"] = max(_search_stats["max_k"], k)
+            if k >= settings.mcp_max_k:
+                _search_stats["cap_hits"] += 1
+            _search_stats[f"detail_{detail}"] += 1
+
+    return json.dumps({"results": results}, indent=2)
 
 
 @mcp.tool()

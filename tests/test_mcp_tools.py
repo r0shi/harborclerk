@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.mcp_server import (
     _mcp_principal,
+    kb_batch_search,
     kb_corpus_overview,
     kb_document_outline,
     kb_entity_cooccurrence,
@@ -706,6 +707,179 @@ async def test_kb_search_faceted_detail_modes(
     doc = result["documents"][0]
     text = doc["hits"][0]["text"]
     assert len(text) <= 51  # 50 chars + ellipsis
+
+
+# ---------------------------------------------------------------------------
+# kb_batch_search tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_hybrid_search_multi(monkeypatch):
+    """Mock for hybrid_search that captures a list of calls (for batch tests)."""
+    calls: list[dict] = []
+    result_override = SearchResult(hits=[], total_candidates=0)
+
+    async def _mock(
+        session,
+        query,
+        k=10,
+        doc_id=None,
+        version_id=None,
+        offset=0,
+        *,
+        doc_ids=None,
+        after=None,
+        before=None,
+        language=None,
+        mime_type=None,
+    ):
+        calls.append(
+            dict(
+                query=query,
+                k=k,
+                doc_id=doc_id,
+                version_id=version_id,
+                offset=offset,
+                doc_ids=doc_ids,
+                after=after,
+                before=before,
+                language=language,
+                mime_type=mime_type,
+            )
+        )
+        return result_override
+
+    monkeypatch.setattr("harbor_clerk.mcp_server.hybrid_search", _mock)
+    return calls, result_override
+
+
+@pytest.mark.asyncio
+async def test_batch_search_happy_path(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search_multi,
+):
+    """Two queries return two grouped results."""
+    calls, result_obj = mock_hybrid_search_multi
+    hit = _make_hit()
+    _set_result(result_obj, [hit])
+
+    raw = await kb_batch_search(queries=["foo", "bar"])
+    result = json.loads(raw)
+
+    assert "results" in result
+    assert len(result["results"]) == 2
+    assert result["results"][0]["query"] == "foo"
+    assert result["results"][1]["query"] == "bar"
+    assert len(result["results"][0]["hits"]) == 1
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_search_max_queries(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search_multi,
+):
+    """Five queries (the maximum) all succeed."""
+    calls, result_obj = mock_hybrid_search_multi
+    _set_result(result_obj, [_make_hit()])
+
+    raw = await kb_batch_search(queries=["a", "b", "c", "d", "e"])
+    result = json.loads(raw)
+
+    assert len(result["results"]) == 5
+    assert len(calls) == 5
+
+
+@pytest.mark.asyncio
+async def test_batch_search_too_many_queries(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Six queries return an error."""
+    raw = await kb_batch_search(queries=["a"] * 6)
+    result = json.loads(raw)
+
+    assert "error" in result
+    assert "max 5" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_batch_search_empty_queries(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Empty query list returns an error."""
+    raw = await kb_batch_search(queries=[])
+    result = json.loads(raw)
+
+    assert "error" in result
+    assert "at least 1" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_batch_search_shared_filters(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search_multi,
+):
+    """Shared filters are passed to every hybrid_search call."""
+    calls, result_obj = mock_hybrid_search_multi
+    _set_result(result_obj, [])
+
+    await kb_batch_search(queries=["q1", "q2"], language="french")
+
+    assert len(calls) == 2
+    assert calls[0]["language"] == "french"
+    assert calls[1]["language"] == "french"
+
+
+@pytest.mark.asyncio
+async def test_batch_search_detail_mode(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search_multi,
+):
+    """Brief detail mode truncates text in batch results."""
+    calls, result_obj = mock_hybrid_search_multi
+    hit = _make_hit()
+    hit.chunk_text = "x" * 500
+    _set_result(result_obj, [hit])
+
+    raw = await kb_batch_search(queries=["q1"], detail="brief", brief_chars=10)
+    result = json.loads(raw)
+
+    text = result["results"][0]["hits"][0]["text"]
+    assert len(text) <= 11  # 10 chars + ellipsis
+
+
+@pytest.mark.asyncio
+async def test_batch_search_invalid_filter(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+):
+    """Invalid date filter returns an error."""
+    raw = await kb_batch_search(queries=["q1"], after="bad-date")
+    result = json.loads(raw)
+
+    assert "error" in result
+    assert "Invalid ISO datetime" in result["error"]
 
 
 # ---------------------------------------------------------------------------
