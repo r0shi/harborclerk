@@ -59,19 +59,20 @@ export default function StageRing({ stages, size = 36 }: StageRingProps) {
   const runningStage = activeStages.find((s) => stages.get(s)?.status === 'running')
   const currentStep = runningStage ? doneCount + 1 : doneCount
 
-  let currentAngle = -90
-
   return (
     <svg width={size} height={size} className="shrink-0">
-      {activeStages.map((stage) => {
+      {activeStages.map((stage, idx) => {
         const st = stages.get(stage)
         const status = st?.status || 'queued'
         const weight = STAGE_WEIGHTS[stage] || 1
         const segDeg = (weight / totalWeight) * availableDeg
         const segLen = (segDeg / 360) * circumference
 
-        const startAngle = currentAngle
-        currentAngle += segDeg + GAP_DEG
+        const startAngle =
+          -90 +
+          activeStages
+            .slice(0, idx)
+            .reduce((sum, s) => sum + ((STAGE_WEIGHTS[s] || 1) / totalWeight) * availableDeg + GAP_DEG, 0)
 
         const offset = -(((startAngle + 90) / 360) * circumference)
 

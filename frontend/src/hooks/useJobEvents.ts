@@ -25,7 +25,9 @@ type Listener = (event: JobEvent) => void
 export function useJobEvents(listener: Listener) {
   const { token } = useAuth()
   const listenerRef = useRef(listener)
-  listenerRef.current = listener
+  useEffect(() => {
+    listenerRef.current = listener
+  })
 
   useEffect(() => {
     if (!token) return
