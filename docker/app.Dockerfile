@@ -1,7 +1,7 @@
 # ── Frontend build ──
 FROM node:22-alpine AS frontend
 WORKDIR /frontend
-COPY frontend/package.json frontend/package-lock.json* ./
+COPY frontend/package.json frontend/package-lock.json* frontend/.npmrc ./
 RUN npm ci
 COPY frontend/ .
 RUN npm run build
