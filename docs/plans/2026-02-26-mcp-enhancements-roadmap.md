@@ -71,8 +71,8 @@ Features 1–9 shipped in v0.4.0. Features 10–12 are the next batch.
 | 7 | Cross-Document Similarity | **Done** |
 | 8 | Entity Extraction | **Done** |
 | 9 | Auto-Inject RAG | **Done** |
-| 10 | Entity Co-occurrence | Planned |
-| 11 | Full-Document Retrieval | Planned |
+| 10 | Entity Co-occurrence | **Done** |
+| 11 | Full-Document Retrieval | **Done** |
 | 12 | Batch Search | Planned |
 
 ---
