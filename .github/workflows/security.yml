@@ -35,16 +35,12 @@ jobs:
       - name: Build embedder image
         run: docker build -f docker/embedder.Dockerfile -t harborclerk-embedder:ci .
 
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/master/contrib/install.sh | sh -s -- -b /usr/local/bin
+
       - name: Trivy scan app
-        uses: aquasecurity/trivy-action@0.34.1
-        with:
-          image-ref: harborclerk-app:ci
-          severity: HIGH,CRITICAL
-          exit-code: 1
+        run: trivy image --severity HIGH,CRITICAL --exit-code 1 harborclerk-app:ci
 
       - name: Trivy scan embedder
-        uses: aquasecurity/trivy-action@0.34.1
-        with:
-          image-ref: harborclerk-embedder:ci
-          severity: HIGH,CRITICAL
-          exit-code: 1
+        run: trivy image --severity HIGH,CRITICAL --exit-code 1 harborclerk-embedder:ci
