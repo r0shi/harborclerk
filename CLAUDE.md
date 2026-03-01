@@ -112,10 +112,22 @@ Storage bucket: `originals`, key pattern: `originals/versions/<version_id>/<orig
 
 ## CI
 
-GitHub Actions workflow: `.github/workflows/ci.yml` runs on PRs to `main`.
+GitHub Actions workflows run on PRs to `main`. Branch protection requires all 5 checks to pass.
+
+**`.github/workflows/ci.yml`:**
 - **python** job: ruff check, ruff format --check, pytest (with pgvector service container)
 - **frontend** job: eslint, prettier --check, tsc --noEmit
-- Branch protection on `main`: requires PR + both checks passing, no force push
+
+**`.github/workflows/codeql.yml`:**
+- **codeql** job: Python SAST via CodeQL (`security-and-quality` queries). Also runs weekly (Monday 6am UTC)
+
+**`.github/workflows/security.yml`:**
+- **dependency-audit** job: `pip-audit` (HIGH severity, via `pypa/gh-action-pip-audit`) + `npm audit` (high/critical)
+- **container-scan** job: builds app + embedder Docker images, scans with Trivy (HIGH/CRITICAL, `--ignore-unfixed`)
+
+**Dependabot** (`.github/dependabot.yml`): weekly pip + npm dependency update PRs. Security updates (auto-PRs for CVEs) also enabled.
+
+**Secret scanning** + **push protection** enabled at repo level.
 
 ## Worker Presets (C = logical cores)
 
