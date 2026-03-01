@@ -1,6 +1,6 @@
 [project]
 name = "harbor-clerk"
-version = "0.4.2"
+version = "0.4.3"
 description = "Harbor Clerk - document dropbox with hybrid retrieval"
 requires-python = ">=3.12"
 dependencies = [
