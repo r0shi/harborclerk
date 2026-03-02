@@ -59,6 +59,16 @@ export default function StageRing({ stages, size = 36 }: StageRingProps) {
   const runningStage = activeStages.find((s) => stages.get(s)?.status === 'running')
   const currentStep = runningStage ? doneCount + 1 : doneCount
 
+  // Helper: compute start angle for a given stage index
+  function startAngleFor(idx: number): number {
+    return (
+      -90 +
+      activeStages
+        .slice(0, idx)
+        .reduce((sum, s) => sum + ((STAGE_WEIGHTS[s] || 1) / totalWeight) * availableDeg + GAP_DEG, 0)
+    )
+  }
+
   return (
     <svg width={size} height={size} className="shrink-0">
       {activeStages.map((stage, idx) => {
@@ -67,14 +77,45 @@ export default function StageRing({ stages, size = 36 }: StageRingProps) {
         const weight = STAGE_WEIGHTS[stage] || 1
         const segDeg = (weight / totalWeight) * availableDeg
         const segLen = (segDeg / 360) * circumference
-
-        const startAngle =
-          -90 +
-          activeStages
-            .slice(0, idx)
-            .reduce((sum, s) => sum + ((STAGE_WEIGHTS[s] || 1) / totalWeight) * availableDeg + GAP_DEG, 0)
-
+        const startAngle = startAngleFor(idx)
         const offset = -(((startAngle + 90) / 360) * circumference)
+
+        // For running stages with progress data, render a background track + filled portion
+        if (status === 'running' && st?.total && st.total > 0) {
+          const fraction = Math.min(1, (st.progress || 0) / st.total)
+          const filledLen = segLen * fraction
+          return (
+            <g key={stage}>
+              {/* Background track (unfilled portion) */}
+              <circle
+                cx={cx}
+                cy={cy}
+                r={radius}
+                fill="none"
+                stroke="rgba(128,128,128,0.2)"
+                strokeWidth={strokeWidth}
+                strokeDasharray={`${segLen} ${circumference - segLen}`}
+                strokeDashoffset={offset}
+                strokeLinecap="round"
+              />
+              {/* Filled portion */}
+              {filledLen > 0.5 && (
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={radius}
+                  fill="none"
+                  stroke="var(--color-accent)"
+                  strokeWidth={strokeWidth}
+                  strokeDasharray={`${filledLen} ${circumference - filledLen}`}
+                  strokeDashoffset={offset}
+                  strokeLinecap="round"
+                  className="transition-[stroke-dasharray] duration-500 ease-out"
+                />
+              )}
+            </g>
+          )
+        }
 
         return (
           <circle

@@ -23,15 +23,16 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
     }
   }
 
-  // Sort: running items first, then queued
-  const active = Array.from(activeItems.values()).sort((a, b) => {
-    if (a.status === 'running' && b.status !== 'running') return -1
-    if (a.status !== 'running' && b.status === 'running') return 1
-    return b.updated_at - a.updated_at
-  })
+  // Sort active items by enqueue order (oldest first = stable ordering)
+  const active = Array.from(activeItems.values()).sort((a, b) => a.enqueued_at - b.enqueued_at)
+
+  // Split completed into done vs errors
+  const completedDone = completed.filter((c) => c.status === 'done')
+  const completedErrors = completed.filter((c) => c.status === 'error')
 
   const hasActive = active.length > 0
-  const hasCompleted = completed.length > 0
+  const hasCompleted = completedDone.length > 0
+  const hasErrors = completedErrors.length > 0
 
   return (
     <div className={`mb-2 ${exiting ? 'panel-exit' : 'panel-enter'}`} onAnimationEnd={handleAnimationEnd}>
@@ -68,14 +69,31 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
           {/* Divider */}
           {hasActive && hasCompleted && <div className="border-b border-(--color-border)" />}
 
-          {/* Completed section */}
+          {/* Completed section (done items only) */}
           {hasCompleted && (
             <div className="px-4 py-2">
               <div className="text-[11px] font-medium uppercase tracking-wider text-(--color-text-secondary) mb-2">
-                Completed ({completed.length})
+                Completed ({completedDone.length})
               </div>
               <div className="space-y-2">
-                {completed.map((item) => (
+                {completedDone.map((item) => (
+                  <CompletedRow key={item.version_id} item={item} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Divider */}
+          {(hasActive || hasCompleted) && hasErrors && <div className="border-b border-(--color-border)" />}
+
+          {/* Errors section */}
+          {hasErrors && (
+            <div className="px-4 py-2">
+              <div className="text-[11px] font-medium uppercase tracking-wider text-red-500/80 mb-2">
+                Errors ({completedErrors.length})
+              </div>
+              <div className="space-y-2">
+                {completedErrors.map((item) => (
                   <CompletedRow key={item.version_id} item={item} />
                 ))}
               </div>
@@ -83,7 +101,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
           )}
 
           {/* Empty state */}
-          {!hasActive && !hasCompleted && (
+          {!hasActive && !hasCompleted && !hasErrors && (
             <div className="px-4 py-6 text-center text-[13px] text-(--color-text-secondary)">No items in queue</div>
           )}
         </div>
