@@ -1,4 +1,4 @@
-"""Summarize stage — generate document summary from first chunks."""
+"""Summarize stage — generate adaptive document summary from all chunks."""
 
 import logging
 import uuid
@@ -15,23 +15,20 @@ logger = logging.getLogger(__name__)
 
 
 def run_summarize(version_id: uuid.UUID) -> None:
-    """Generate a summary for the document version from its first chunks."""
+    """Generate a summary for the document version from all its chunks."""
     if not mark_stage_running(version_id, JobStage.summarize):
         return
 
     session = get_sync_session()
     try:
         chunks = (
-            session.execute(
-                select(Chunk.chunk_text).where(Chunk.version_id == version_id).order_by(Chunk.chunk_num).limit(5)
-            )
+            session.execute(select(Chunk.chunk_text).where(Chunk.version_id == version_id).order_by(Chunk.chunk_num))
             .scalars()
             .all()
         )
         if chunks:
-            combined = "\n\n".join(chunks)
             try:
-                summary, model_used = generate_summary(combined)
+                summary, model_used = generate_summary(list(chunks))
             except Exception:
                 logger.warning("Summary generation failed for %s", version_id, exc_info=True)
                 summary, model_used = None, None
