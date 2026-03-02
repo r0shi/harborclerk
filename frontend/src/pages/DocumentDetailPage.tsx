@@ -239,11 +239,14 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
   EVENT: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
 }
 
+const DEFAULT_HIDDEN_ENTITY_TYPES = new Set(['CARDINAL', 'ORDINAL', 'QUANTITY'])
+
 function DocumentStatsDisclosure({ docId }: { docId: string }) {
   const [stats, setStats] = useState<DocStats | null>(null)
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
   const loadedRef = useRef(false)
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set(DEFAULT_HIDDEN_ENTITY_TYPES))
 
   function handleToggle() {
     const willOpen = !open
@@ -251,7 +254,7 @@ function DocumentStatsDisclosure({ docId }: { docId: string }) {
     if (willOpen && !loadedRef.current) {
       loadedRef.current = true
       setLoading(true)
-      get<DocStats>(`/api/docs/${docId}/stats`)
+      get<DocStats>(`/api/docs/${docId}/stats?exclude_types=`)
         .then(setStats)
         .catch(() => {})
         .finally(() => setLoading(false))
@@ -311,35 +314,62 @@ function DocumentStatsDisclosure({ docId }: { docId: string }) {
                 </div>
               )}
 
-              {stats.top_entities.length > 0 && (
+              {Object.keys(stats.entity_types).length > 0 && (
+                <div>
+                  <p className="mb-1.5 text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide">
+                    Entity Types
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {Object.entries(stats.entity_types)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([type, count]) => {
+                        const isHidden = hiddenTypes.has(type)
+                        return (
+                          <button
+                            key={type}
+                            type="button"
+                            onClick={() =>
+                              setHiddenTypes((prev) => {
+                                const next = new Set(prev)
+                                if (next.has(type)) next.delete(type)
+                                else next.add(type)
+                                return next
+                              })
+                            }
+                            className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-opacity ${
+                              isHidden
+                                ? 'bg-gray-100 text-gray-400 dark:bg-gray-700/50 dark:text-gray-500 opacity-60'
+                                : ENTITY_TYPE_COLORS[type] ||
+                                  'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+                            }`}
+                          >
+                            {type}: {count}
+                          </button>
+                        )
+                      })}
+                  </div>
+                </div>
+              )}
+
+              {stats.top_entities.filter((e) => !hiddenTypes.has(e.type)).length > 0 && (
                 <div>
                   <p className="mb-1.5 text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide">
                     Top Entities
                   </p>
                   <div className="flex flex-wrap gap-1.5">
-                    {stats.top_entities.map((e, i) => {
-                      const cls =
-                        ENTITY_TYPE_COLORS[e.type] || 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
-                      return (
-                        <span key={i} className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>
-                          {e.text}
-                          <span className="ml-1 opacity-60">{e.mentions}</span>
-                        </span>
-                      )
-                    })}
+                    {stats.top_entities
+                      .filter((e) => !hiddenTypes.has(e.type))
+                      .map((e, i) => {
+                        const cls =
+                          ENTITY_TYPE_COLORS[e.type] || 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+                        return (
+                          <span key={i} className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>
+                            {e.text}
+                            <span className="ml-1 opacity-60">{e.mentions}</span>
+                          </span>
+                        )
+                      })}
                   </div>
-                </div>
-              )}
-
-              {Object.keys(stats.entity_types).length > 0 && (
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-(--color-text-secondary)">
-                  {Object.entries(stats.entity_types)
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([type, count]) => (
-                      <span key={type}>
-                        {type}: {count}
-                      </span>
-                    ))}
                 </div>
               )}
             </div>

@@ -22,6 +22,17 @@ from harbor_clerk.models import (
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["stats"])
 
+_DEFAULT_EXCLUDED_ENTITY_TYPES = {"CARDINAL", "ORDINAL", "QUANTITY"}
+
+
+def _parse_exclude_types(exclude_types: str | None) -> set[str]:
+    """Parse comma-separated exclude_types query param into a set."""
+    if exclude_types is None:
+        return _DEFAULT_EXCLUDED_ENTITY_TYPES
+    if exclude_types == "":
+        return set()
+    return {t.strip() for t in exclude_types.split(",")}
+
 
 def _latest_version_filter():
     """Return a join condition ensuring we only look at chunks/entities for the latest version."""
@@ -30,11 +41,16 @@ def _latest_version_filter():
 
 @router.get("/stats")
 async def corpus_stats(
+    exclude_types: str | None = Query(
+        default=None,
+        description="Comma-separated entity types to exclude (default: CARDINAL,ORDINAL,QUANTITY). Pass empty string to include all.",
+    ),
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
     """Return aggregate corpus-level statistics."""
     active = Document.status == "active"
+    excluded = _parse_exclude_types(exclude_types)
 
     # Document count
     doc_count = (await session.execute(select(func.count()).select_from(Document).where(active))).scalar() or 0
@@ -174,27 +190,29 @@ async def corpus_stats(
         pipeline_timing[stage_name] = {"avg_secs": round(float(avg_secs), 2), "count": count}
 
     # Entity type counts
-    entity_type_rows = (
-        await session.execute(
-            select(Entity.entity_type, func.count())
-            .join(Document, Entity.doc_id == Document.doc_id)
-            .join(DocumentVersion, Entity.version_id == DocumentVersion.version_id)
-            .where(active, _latest_version_filter())
-            .group_by(Entity.entity_type)
-        )
-    ).all()
+    entity_type_q = (
+        select(Entity.entity_type, func.count())
+        .join(Document, Entity.doc_id == Document.doc_id)
+        .join(DocumentVersion, Entity.version_id == DocumentVersion.version_id)
+        .where(active, _latest_version_filter())
+    )
+    if excluded:
+        entity_type_q = entity_type_q.where(Entity.entity_type.notin_(excluded))
+    entity_type_rows = (await session.execute(entity_type_q.group_by(Entity.entity_type))).all()
     entity_type_counts = {row[0]: row[1] for row in entity_type_rows}
 
     # Top 20 entities
+    top_entity_q = (
+        select(Entity.entity_text, Entity.entity_type, func.count().label("mentions"))
+        .join(Document, Entity.doc_id == Document.doc_id)
+        .join(DocumentVersion, Entity.version_id == DocumentVersion.version_id)
+        .where(active, _latest_version_filter())
+    )
+    if excluded:
+        top_entity_q = top_entity_q.where(Entity.entity_type.notin_(excluded))
     top_entity_rows = (
         await session.execute(
-            select(Entity.entity_text, Entity.entity_type, func.count().label("mentions"))
-            .join(Document, Entity.doc_id == Document.doc_id)
-            .join(DocumentVersion, Entity.version_id == DocumentVersion.version_id)
-            .where(active, _latest_version_filter())
-            .group_by(Entity.entity_text, Entity.entity_type)
-            .order_by(func.count().desc())
-            .limit(20)
+            top_entity_q.group_by(Entity.entity_text, Entity.entity_type).order_by(func.count().desc()).limit(20)
         )
     ).all()
     top_entities = [{"text": row[0], "type": row[1], "mentions": row[2]} for row in top_entity_rows]
@@ -262,24 +280,32 @@ async def document_clusters(
 @router.get("/stats/entity-network")
 async def entity_network(
     limit: int = Query(default=50, ge=10, le=100, description="Number of top entities"),
+    exclude_types: str | None = Query(
+        default=None,
+        description="Comma-separated entity types to exclude (default: CARDINAL,ORDINAL,QUANTITY). Pass empty string to include all.",
+    ),
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
     """Return force-graph-ready entity co-occurrence network."""
+    excluded = _parse_exclude_types(exclude_types)
+
     # Step 1: Get top N entities by mention count (scoped to active docs)
+    top_q = (
+        select(
+            Entity.entity_text,
+            Entity.entity_type,
+            func.count().label("mentions"),
+        )
+        .join(Document, Entity.doc_id == Document.doc_id)
+        .join(DocumentVersion, Entity.version_id == DocumentVersion.version_id)
+        .where(Document.status == "active", _latest_version_filter())
+    )
+    if excluded:
+        top_q = top_q.where(Entity.entity_type.notin_(excluded))
     top_rows = (
         await session.execute(
-            select(
-                Entity.entity_text,
-                Entity.entity_type,
-                func.count().label("mentions"),
-            )
-            .join(Document, Entity.doc_id == Document.doc_id)
-            .join(DocumentVersion, Entity.version_id == DocumentVersion.version_id)
-            .where(Document.status == "active", _latest_version_filter())
-            .group_by(Entity.entity_text, Entity.entity_type)
-            .order_by(func.count().desc())
-            .limit(limit)
+            top_q.group_by(Entity.entity_text, Entity.entity_type).order_by(func.count().desc()).limit(limit)
         )
     ).all()
 
@@ -336,10 +362,15 @@ async def entity_network(
 @router.get("/docs/{doc_id}/stats")
 async def document_stats(
     doc_id: uuid.UUID,
+    exclude_types: str | None = Query(
+        default=None,
+        description="Comma-separated entity types to exclude (default: CARDINAL,ORDINAL,QUANTITY). Pass empty string to include all.",
+    ),
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
     """Return per-document statistics."""
+    excluded = _parse_exclude_types(exclude_types)
     # Verify doc exists and is active
     doc = (
         await session.execute(select(Document).where(Document.doc_id == doc_id, Document.status == "active"))
@@ -379,21 +410,21 @@ async def document_stats(
     languages = {row[0]: row[1] for row in lang_rows}
 
     # Entity type counts
-    etype_rows = (
-        await session.execute(
-            select(Entity.entity_type, func.count()).where(Entity.version_id == version_id).group_by(Entity.entity_type)
-        )
-    ).all()
+    etype_q = select(Entity.entity_type, func.count()).where(Entity.version_id == version_id)
+    if excluded:
+        etype_q = etype_q.where(Entity.entity_type.notin_(excluded))
+    etype_rows = (await session.execute(etype_q.group_by(Entity.entity_type))).all()
     entity_types = {row[0]: row[1] for row in etype_rows}
 
     # Top 10 entities
+    top_q = select(Entity.entity_text, Entity.entity_type, func.count().label("mentions")).where(
+        Entity.version_id == version_id
+    )
+    if excluded:
+        top_q = top_q.where(Entity.entity_type.notin_(excluded))
     top_rows = (
         await session.execute(
-            select(Entity.entity_text, Entity.entity_type, func.count().label("mentions"))
-            .where(Entity.version_id == version_id)
-            .group_by(Entity.entity_text, Entity.entity_type)
-            .order_by(func.count().desc())
-            .limit(10)
+            top_q.group_by(Entity.entity_text, Entity.entity_type).order_by(func.count().desc()).limit(10)
         )
     ).all()
     top_entities = [{"text": row[0], "type": row[1], "mentions": row[2]} for row in top_rows]
