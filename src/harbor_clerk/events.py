@@ -24,6 +24,7 @@ def publish_job_event(
     doc_id: uuid.UUID | None = None,
     page_count: int | None = None,
     chunk_count: int | None = None,
+    entity_count: int | None = None,
 ) -> None:
     """Publish a job progress event via PostgreSQL NOTIFY (sync, for workers)."""
     payload = {
@@ -45,6 +46,8 @@ def publish_job_event(
         payload["page_count"] = page_count
     if chunk_count is not None:
         payload["chunk_count"] = chunk_count
+    if entity_count is not None:
+        payload["entity_count"] = entity_count
 
     try:
         session = get_sync_session()
