@@ -5,6 +5,8 @@ final class LlamaService: ManagedService {
     let name = "LLM"
     var state: ServiceState = .stopped
     private var process: Process?
+    /// Called after process exits unexpectedly and state is set to .errored.
+    var onUnexpectedExit: (@MainActor () -> Void)?
 
     private var llamaBin: URL {
         Bundle.main.resourceURL!.appendingPathComponent("llama/llama-server")
@@ -44,10 +46,10 @@ final class LlamaService: ManagedService {
         let llmLogger = Log.logger("llm")
         proc.terminationHandler = { [weak self] p in
             Task { @MainActor in
-                if self?.state == .running {
-                    self?.state = .errored
-                    llmLogger.error("Process exited unexpectedly (\(p.terminationStatus, privacy: .public))")
-                }
+                guard let self, self.state == .running else { return }
+                self.state = .errored
+                llmLogger.error("Process exited unexpectedly (\(p.terminationStatus, privacy: .public))")
+                self.onUnexpectedExit?()
             }
         }
 

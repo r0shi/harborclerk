@@ -5,6 +5,8 @@ final class TikaService: ManagedService {
     let name = "Tika"
     var state: ServiceState = .stopped
     private var process: Process?
+    /// Called after process exits unexpectedly and state is set to .errored.
+    var onUnexpectedExit: (@MainActor () -> Void)?
 
     private var javaBin: URL {
         Bundle.main.resourceURL!.appendingPathComponent("java/Contents/Home/bin/java")
@@ -30,10 +32,10 @@ final class TikaService: ManagedService {
         let tikaLogger = Log.logger("tika")
         proc.terminationHandler = { [weak self] p in
             Task { @MainActor in
-                if self?.state == .running {
-                    self?.state = .errored
-                    tikaLogger.error("Process exited unexpectedly (\(p.terminationStatus, privacy: .public))")
-                }
+                guard let self, self.state == .running else { return }
+                self.state = .errored
+                tikaLogger.error("Process exited unexpectedly (\(p.terminationStatus, privacy: .public))")
+                self.onUnexpectedExit?()
             }
         }
 

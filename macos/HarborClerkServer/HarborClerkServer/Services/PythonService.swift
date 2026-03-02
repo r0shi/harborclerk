@@ -10,6 +10,8 @@ class PythonService: ManagedService {
 
     /// Seconds to wait after SIGTERM before sending SIGKILL.
     var shutdownGracePeriod: TimeInterval = 5.0
+    /// Called after process exits unexpectedly and internal restarts are exhausted.
+    var onUnexpectedExit: (@MainActor () -> Void)?
 
     private var restartCount = 0
     private let maxRestarts = 3
@@ -57,6 +59,7 @@ class PythonService: ManagedService {
                 } else if self.state == .running {
                     self.state = .errored
                     serviceLogger.error("Process exited, max restarts reached")
+                    self.onUnexpectedExit?()
                 }
             }
         }
