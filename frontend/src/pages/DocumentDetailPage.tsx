@@ -221,6 +221,137 @@ function Pagination({
   )
 }
 
+interface DocStats {
+  chunk_count: number
+  page_count: number
+  languages: Record<string, number>
+  entity_types: Record<string, number>
+  top_entities: { text: string; type: string; mentions: number }[]
+  ocr_confidence: { avg: number; min: number; max: number } | null
+}
+
+const ENTITY_TYPE_COLORS: Record<string, string> = {
+  PERSON: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+  ORG: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+  GPE: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+  LOC: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
+  DATE: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400',
+  EVENT: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
+}
+
+function DocumentStatsDisclosure({ docId }: { docId: string }) {
+  const [stats, setStats] = useState<DocStats | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [open, setOpen] = useState(false)
+  const loadedRef = useRef(false)
+
+  function handleToggle() {
+    const willOpen = !open
+    setOpen(willOpen)
+    if (willOpen && !loadedRef.current) {
+      loadedRef.current = true
+      setLoading(true)
+      get<DocStats>(`/api/docs/${docId}/stats`)
+        .then(setStats)
+        .catch(() => {})
+        .finally(() => setLoading(false))
+    }
+  }
+
+  const langEntries = stats ? Object.entries(stats.languages) : []
+  const langText =
+    langEntries.length === 1
+      ? `${langEntries[0][0]} (${langEntries[0][1]} chunks)`
+      : langEntries.map(([lang, count]) => `${lang}: ${count}`).join(', ')
+
+  return (
+    <div className="mt-4 mb-2">
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
+      >
+        <svg
+          className={`h-3.5 w-3.5 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+          fill="currentColor"
+          viewBox="0 0 20 20"
+        >
+          <path
+            fillRule="evenodd"
+            d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
+            clipRule="evenodd"
+          />
+        </svg>
+        Document Statistics
+      </button>
+      {open && (
+        <div className="mt-2 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+          {loading ? (
+            <p className="text-sm text-(--color-text-secondary)">Loading statistics...</p>
+          ) : stats ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-(--color-text-secondary)">
+                <span>
+                  <span className="font-medium text-(--color-text-primary)">{stats.chunk_count}</span> chunks
+                </span>
+                <span>
+                  <span className="font-medium text-(--color-text-primary)">{stats.page_count}</span> pages
+                </span>
+                {langText && <span>Language: {langText}</span>}
+              </div>
+
+              {stats.ocr_confidence && (
+                <div className="text-sm text-(--color-text-secondary)">
+                  OCR confidence: avg{' '}
+                  <span className="font-medium text-(--color-text-primary)">
+                    {(stats.ocr_confidence.avg * 100).toFixed(0)}%
+                  </span>
+                  , min {(stats.ocr_confidence.min * 100).toFixed(0)}%, max{' '}
+                  {(stats.ocr_confidence.max * 100).toFixed(0)}%
+                </div>
+              )}
+
+              {stats.top_entities.length > 0 && (
+                <div>
+                  <p className="mb-1.5 text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide">
+                    Top Entities
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {stats.top_entities.map((e, i) => {
+                      const cls =
+                        ENTITY_TYPE_COLORS[e.type] || 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+                      return (
+                        <span key={i} className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>
+                          {e.text}
+                          <span className="ml-1 opacity-60">{e.mentions}</span>
+                        </span>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {Object.keys(stats.entity_types).length > 0 && (
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-(--color-text-secondary)">
+                  {Object.entries(stats.entity_types)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([type, count]) => (
+                      <span key={type}>
+                        {type}: {count}
+                      </span>
+                    ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-(--color-text-secondary)">No statistics available</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -437,6 +568,8 @@ export default function DocumentDetailPage() {
       <div className="mb-2 text-sm text-gray-500 dark:text-gray-400">
         Created {new Date(doc.created_at).toLocaleString()} | Updated {new Date(doc.updated_at).toLocaleString()}
       </div>
+
+      <DocumentStatsDisclosure docId={doc.doc_id} />
 
       <div className="mt-6 mb-6">
         <Disclosure

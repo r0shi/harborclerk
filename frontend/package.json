@@ -14,9 +14,19 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "@types/d3-drag": "^3.0.7",
+    "@types/d3-force": "^3.0.10",
+    "@types/d3-scale": "^4.0.9",
+    "@types/d3-selection": "^3.0.11",
+    "d3-drag": "^3.0.0",
+    "d3-force": "^3.0.0",
+    "d3-scale": "^4.0.2",
+    "d3-selection": "^3.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-router-dom": "^7.13.1"
+    "react-router-dom": "^7.13.1",
+    "recharts": "^3.7.0",
+    "umap-js": "^1.4.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
