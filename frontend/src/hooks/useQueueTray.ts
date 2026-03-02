@@ -16,6 +16,7 @@ export interface DocumentQueueItem {
   current_stage: string
   overall_progress: number // 0-100
   status: 'running' | 'queued' | 'error'
+  enqueued_at: number
   updated_at: number
 }
 
@@ -30,8 +31,8 @@ export interface CompletedItem {
   finished_at: number
 }
 
-const HISTORY_CAP = 20
-const HISTORY_TTL = 3_600_000 // 1 hour
+const COMPLETED_TTL = 3_600_000 // 60 minutes
+const ERROR_TTL = 10_800_000 // 3 hours
 const TOAST_DURATION = 4_000 // 4s
 const TOAST_DEBOUNCE = 500 // ms
 export const PIPELINE_STAGES = ['extract', 'ocr', 'chunk', 'entities', 'embed', 'summarize', 'finalize']
@@ -94,15 +95,15 @@ export function useQueueTray() {
   const lastToastRef = useRef(0)
   const purgeTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
-  // Schedule purge of a completed item after TTL
-  const schedulePurge = useCallback((versionId: string) => {
+  // Schedule purge of a completed item after TTL (different for done vs error)
+  const schedulePurge = useCallback((versionId: string, ttl: number) => {
     const existing = purgeTimersRef.current.get(versionId)
     if (existing) clearTimeout(existing)
 
     const timer = setTimeout(() => {
       setCompleted((prev) => prev.filter((c) => c.version_id !== versionId))
       purgeTimersRef.current.delete(versionId)
-    }, HISTORY_TTL)
+    }, ttl)
     purgeTimersRef.current.set(versionId, timer)
   }, [])
 
@@ -151,9 +152,9 @@ export function useQueueTray() {
         })
         setCompleted((prev) => {
           const filtered = prev.filter((c) => c.version_id !== vid)
-          return [entry, ...filtered].slice(0, HISTORY_CAP)
+          return [entry, ...filtered]
         })
-        schedulePurge(vid)
+        schedulePurge(vid, COMPLETED_TTL)
         triggerToast()
         return
       }
@@ -178,9 +179,9 @@ export function useQueueTray() {
         })
         setCompleted((prev) => {
           const filtered = prev.filter((c) => c.version_id !== vid)
-          return [entry, ...filtered].slice(0, HISTORY_CAP)
+          return [entry, ...filtered]
         })
-        schedulePurge(vid)
+        schedulePurge(vid, ERROR_TTL)
         triggerToast()
         return
       }
@@ -214,6 +215,7 @@ export function useQueueTray() {
           current_stage,
           overall_progress,
           status: itemStatus,
+          enqueued_at: existing?.enqueued_at || Date.now(),
           updated_at: Date.now(),
         })
         return next

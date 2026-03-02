@@ -85,6 +85,8 @@ function formatAge(timestamp: number): string {
   const seconds = Math.round((Date.now() - timestamp) / 1000)
   if (seconds < 5) return 'now'
   if (seconds < 60) return `${seconds}s ago`
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`
-  return '1h ago'
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  return `${hours}h ago`
 }
