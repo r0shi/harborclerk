@@ -25,6 +25,8 @@ Harbor Clerk includes or depends on the following third-party software.
 - **Vite** — frontend build tool
 - **Tailwind CSS** — utility-first CSS framework
 - **Lucide React** — icon library
+- **Recharts** — composable charting library
+- **react-is** — React element type checks
 
 ## Apache License 2.0
 
@@ -37,6 +39,11 @@ Harbor Clerk includes or depends on the following third-party software.
 - **all-MiniLM-L6-v2** — embedding model (384-dim)
 - **huggingface_hub** — HuggingFace model download
 - **llama.cpp** — LLM inference engine
+- **umap-js** — UMAP dimensionality reduction
+
+## ISC License
+
+- **d3-force** / **d3-scale** / **d3-drag** / **d3-selection** — D3 visualization modules
 
 ## BSD 3-Clause License
 

@@ -173,6 +173,7 @@ Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
 - **Entity index** — people, places, and organizations extracted by spaCy, searchable and browsable
 - **Cross-document similarity** — find related documents using embedding-based nearest neighbors
 - **Corpus overview** — aggregate stats (language distribution, MIME types, page counts, date ranges)
+- **Stats dashboard** — visual corpus analytics: language/file type/OCR charts, pipeline timing, entity co-occurrence network (d3-force), and UMAP document cluster map
 
 ### Auth
 
@@ -205,6 +206,10 @@ Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
 | `/api/docs/{id}` | DELETE | Soft-delete a document |
 | `/api/docs/{id}/reprocess` | POST | Re-run ingestion |
 | `/api/docs/{id}/cancel` | POST | Cancel in-progress ingestion |
+| `/api/stats` | GET | Corpus-level aggregate statistics |
+| `/api/stats/clusters` | GET | Document centroid embeddings for UMAP clustering |
+| `/api/stats/entity-network` | GET | Entity co-occurrence network graph |
+| `/api/docs/{id}/stats` | GET | Per-document statistics |
 | `/api/search` | POST | Hybrid search (with optional filtering and facets) |
 | `/api/passages/read` | POST | Read passages by chunk IDs |
 | `/api/chat/conversations` | GET/POST | List or create chat conversations |
