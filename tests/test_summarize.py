@@ -25,7 +25,7 @@ class TestComputeMaxInputChars:
         assert _compute_max_input_chars(128_000) == 80_000
 
     def test_default_context(self):
-        # None → 32768 * 0.75 * 3.5 = 85960, capped at 80000
+        # None → 32768 * 0.75 * 3.5 = 86016, capped at 80000
         assert _compute_max_input_chars(None) == 80_000
 
     def test_32k_context(self):

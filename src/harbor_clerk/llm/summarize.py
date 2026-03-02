@@ -131,7 +131,7 @@ def _sample_chunks(chunks: list[str], max_chars: int) -> str:
     total = 0
     for idx in indices:
         chunk = chunks[idx]
-        addition = len(chunk) + 2  # +2 for \n\n separator
+        addition = len(chunk) + (2 if parts else 0)  # +2 for \n\n separator
         if total + addition > max_chars:
             remaining = max_chars - total
             if remaining > 100:
@@ -179,19 +179,19 @@ def _extractive_fallback(chunks: list[str], max_chars: int) -> str:
 # --- Tier implementations ---
 
 
-def _summarize_short(chunks: list[str], max_chars: int, max_input_chars: int) -> str | None:
+def _summarize_short(chunks: list[str], max_input_chars: int) -> str | None:
     """Short docs: concat all chunks, single LLM call."""
     text = "\n\n".join(chunks)[:max_input_chars]
     return _call_llm(_PROMPT_SHORT, text, max_tokens=250, timeout=60.0)
 
 
-def _summarize_medium(chunks: list[str], max_chars: int, max_input_chars: int) -> str | None:
+def _summarize_medium(chunks: list[str], max_input_chars: int) -> str | None:
     """Medium docs: strategic sampling, single LLM call."""
     text = _sample_chunks(chunks, max_input_chars)
     return _call_llm(_PROMPT_MEDIUM, text, max_tokens=250, timeout=60.0)
 
 
-def _summarize_long(chunks: list[str], max_chars: int, max_input_chars: int) -> str | None:
+def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
     """Long docs: map-reduce — group summaries then final summary."""
     groups = _group_chunks_for_mapreduce(chunks, max_input_chars)
     logger.info("Map-reduce summarization: %d groups from %d chunks", len(groups), len(chunks))
@@ -259,11 +259,11 @@ def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[s
         )
 
         if tier == _Tier.SHORT:
-            result = _summarize_short(chunks, max_chars, max_input_chars)
+            result = _summarize_short(chunks, max_input_chars)
         elif tier == _Tier.MEDIUM:
-            result = _summarize_medium(chunks, max_chars, max_input_chars)
+            result = _summarize_medium(chunks, max_input_chars)
         else:
-            result = _summarize_long(chunks, max_chars, max_input_chars)
+            result = _summarize_long(chunks, max_input_chars)
 
         if result:
             return result[:max_chars], settings.llm_model_id
