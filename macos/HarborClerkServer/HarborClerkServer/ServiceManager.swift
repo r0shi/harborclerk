@@ -33,12 +33,26 @@ final class ServiceManager: ObservableObject {
     private var ioWorkers: [WorkerService] = []
     private var cpuWorkers: [WorkerService] = []
 
+    /// Set by AppDelegate after creating the HealthChecker.
+    weak var healthChecker: HealthChecker?
+
     private var startAllInProgress = false
     private var configWatcherSource: DispatchSourceFileSystemObject?
     private var configFileDescriptor: Int32 = -1
     private var configChangeTask: Task<Void, Never>?
     private var configWatcherActive = false
     private var lastLlmModelId: String = ""
+
+    // MARK: - Auto-restart flap detection
+
+    /// Sliding-window restart history per service name.
+    private var restartHistory: [String: [Date]] = [:]
+    /// Max auto-restarts allowed within the window before declaring flapping.
+    private let maxRestartsInWindow = 5
+    /// Window duration for flap detection.
+    private let restartWindowSeconds: TimeInterval = 300 // 5 minutes
+    /// Guards against concurrent auto-restarts for the same service.
+    private var autoRestartInProgress: Set<String> = []
 
     var overallState: ServiceState {
         Self.computeOverallState(services.map(\.state))
@@ -236,6 +250,41 @@ final class ServiceManager: ObservableObject {
         await startService(service)
     }
 
+    /// Auto-restart an errored service with flap detection.
+    /// Called from HealthChecker (consecutive failures) and onUnexpectedExit callbacks (crash).
+    func attemptAutoRestart(_ service: any ManagedService) async {
+        // Don't auto-restart Postgres (data safety) or during shutdown
+        guard !(service is PostgresService) else { return }
+        guard service.state != .shutdownPending else { return }
+        // Prevent concurrent auto-restarts for the same service
+        guard !autoRestartInProgress.contains(service.name) else { return }
+        autoRestartInProgress.insert(service.name)
+        defer { autoRestartInProgress.remove(service.name) }
+
+        // Flap detection: trim old entries, check rate
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-restartWindowSeconds)
+        var history = restartHistory[service.name, default: []].filter { $0 > cutoff }
+
+        if history.count >= maxRestartsInWindow {
+            Log.logger("lifecycle").error(
+                "[\(service.name, privacy: .public)] Flapping (\(history.count, privacy: .public) restarts in 5m) — not restarting")
+            return
+        }
+
+        history.append(now)
+        restartHistory[service.name] = history
+
+        Log.logger("lifecycle").info(
+            "[\(service.name, privacy: .public)] Auto-restarting (attempt \(history.count, privacy: .public)/\(self.maxRestartsInWindow, privacy: .public) in window)")
+
+        // Pause health checker for this service during restart
+        healthChecker?.pausedServices.insert(service.name)
+        defer { healthChecker?.pausedServices.remove(service.name) }
+
+        await restartService(service)
+    }
+
     func startService(_ service: any ManagedService) async {
         // Bail if a shutdown was requested while we were waiting to start
         guard service.state != .shutdownPending else { return }
@@ -246,6 +295,24 @@ final class ServiceManager: ObservableObject {
         }
         service.state = .starting
         notifyStateChanged()
+
+        // Wire up auto-restart callback for crash recovery
+        if let tika = service as? TikaService {
+            tika.onUnexpectedExit = { [weak self, weak tika] in
+                guard let self, let svc = tika else { return }
+                Task { @MainActor in await self.attemptAutoRestart(svc) }
+            }
+        } else if let llama = service as? LlamaService {
+            llama.onUnexpectedExit = { [weak self, weak llama] in
+                guard let self, let svc = llama else { return }
+                Task { @MainActor in await self.attemptAutoRestart(svc) }
+            }
+        } else if let pySvc = service as? PythonService {
+            pySvc.onUnexpectedExit = { [weak self, weak pySvc] in
+                guard let self, let svc = pySvc else { return }
+                Task { @MainActor in await self.attemptAutoRestart(svc) }
+            }
+        }
 
         do {
             try await service.start()
@@ -449,6 +516,11 @@ final class ServiceManager: ObservableObject {
 
     /// Tear down old workers and create new ones based on current preset.
     func recreateWorkers() {
+        // Clear restart history for old workers so new ones don't inherit stale flap state
+        for worker in ioWorkers + cpuWorkers {
+            restartHistory[worker.name] = nil
+        }
+
         // Remove old workers from services array
         let oldWorkerIds = Set((ioWorkers + cpuWorkers).map { ObjectIdentifier($0) })
         services.removeAll { oldWorkerIds.contains(ObjectIdentifier($0)) }

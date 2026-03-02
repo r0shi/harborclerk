@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         serviceManager = ServiceManager()
         healthChecker = HealthChecker(serviceManager: serviceManager)
+        serviceManager.healthChecker = healthChecker
 
         setupStatusItem()
 
