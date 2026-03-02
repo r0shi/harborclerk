@@ -43,7 +43,7 @@ STAGE_CONFIG: dict[JobStage, tuple[str, int, VersionStatus]] = {
     JobStage.finalize: ("io", 600, VersionStatus.finalizing),
 }
 
-# Ordered pipeline stages
+# Ordered pipeline stages (documentation; actual execution uses fan-out after chunk)
 STAGE_ORDER = [
     JobStage.extract,
     JobStage.ocr,
@@ -53,6 +53,12 @@ STAGE_ORDER = [
     JobStage.summarize,
     JobStage.finalize,
 ]
+
+# Sequential prefix: these stages run one after another
+_SEQUENTIAL_STAGES = [JobStage.extract, JobStage.ocr, JobStage.chunk]
+
+# Parallel stages: fan out after chunk, fan in before finalize
+_PARALLEL_STAGES = frozenset({JobStage.entities, JobStage.embed, JobStage.summarize})
 
 # Status after stage completes
 STAGE_DONE_STATUS: dict[JobStage, VersionStatus] = {
@@ -81,6 +87,10 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
         ).scalar_one_or_none()
 
         if existing is not None:
+            if existing.status in (JobStatus.queued, JobStatus.running):
+                # Already enqueued or running (e.g. concurrent advance_pipeline calls) — skip
+                session.close()
+                return
             existing.status = JobStatus.queued
             existing.error = None
             existing.progress_current = 0
@@ -130,91 +140,118 @@ def reset_jobs(version_id: uuid.UUID) -> None:
         session.close()
 
 
+def _mark_skipped(
+    session,
+    version_id: uuid.UUID,
+    stage: JobStage,
+    version_status: VersionStatus,
+    filename: str,
+    *,
+    reason: str | None = None,
+) -> None:
+    """Mark a stage as skipped (done without running) and publish the event."""
+    now = datetime.now(UTC)
+    metrics: dict = {"skipped": True}
+    if reason:
+        metrics["reason"] = reason
+
+    existing = session.execute(
+        select(IngestionJob).where(
+            IngestionJob.version_id == version_id,
+            IngestionJob.stage == stage,
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        session.add(
+            IngestionJob(
+                version_id=version_id,
+                stage=stage,
+                status=JobStatus.done,
+                started_at=now,
+                finished_at=now,
+                metrics=metrics,
+            )
+        )
+    else:
+        existing.status = JobStatus.done
+        existing.finished_at = now
+        existing.metrics = metrics
+
+    version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
+    version.status = version_status
+    session.commit()
+    publish_job_event(version_id, stage.value, "done", filename=filename)
+
+
 def advance_pipeline(version_id: uuid.UUID) -> None:
-    """Determine the next stage and enqueue it, skipping OCR if not needed."""
+    """Determine the next stage(s) and enqueue them.
+
+    Three phases:
+      1. Sequential prefix: extract → [ocr] → chunk (linear, same as before)
+      2. Fan-out: entities + embed + summarize (all enqueued at once after chunk)
+      3. Fan-in: finalize (only when all parallel stages are done)
+    """
     session = get_sync_session()
     try:
         version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
+        filename = _version_filename(version)
 
-        # Find the last completed stage
-        completed_stages = set()
-        jobs = (
-            session.execute(
-                select(IngestionJob).where(
-                    IngestionJob.version_id == version_id,
-                    IngestionJob.status == JobStatus.done,
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for j in jobs:
-            completed_stages.add(j.stage)
+        # Gather completed and in-flight stages
+        all_jobs = session.execute(select(IngestionJob).where(IngestionJob.version_id == version_id)).scalars().all()
+        completed = {j.stage for j in all_jobs if j.status == JobStatus.done}
+        in_flight = {j.stage for j in all_jobs if j.status in (JobStatus.queued, JobStatus.running)}
 
-        # Find next stage
-        for stage in STAGE_ORDER:
-            if stage in completed_stages:
+        # --- Phase 1: Sequential prefix (extract → ocr → chunk) ---
+        for stage in _SEQUENTIAL_STAGES:
+            if stage in completed:
                 continue
+            if stage in in_flight:
+                return  # already queued/running, wait
+
             # Skip OCR if not needed
             if stage == JobStage.ocr and not version.needs_ocr:
-                # Mark OCR as done without running
-                existing = session.execute(
-                    select(IngestionJob).where(
-                        IngestionJob.version_id == version_id,
-                        IngestionJob.stage == JobStage.ocr,
-                    )
-                ).scalar_one_or_none()
-                if existing is None:
-                    skipped_job = IngestionJob(
-                        version_id=version_id,
-                        stage=JobStage.ocr,
-                        status=JobStatus.done,
-                        started_at=datetime.now(UTC),
-                        finished_at=datetime.now(UTC),
-                        metrics={"skipped": True},
-                    )
-                    session.add(skipped_job)
-                else:
-                    existing.status = JobStatus.done
-                    existing.finished_at = datetime.now(UTC)
-                    existing.metrics = {"skipped": True}
-                version.status = VersionStatus.ocr_done
-                session.commit()
-                publish_job_event(version_id, "ocr", "done", filename=_version_filename(version))
+                _mark_skipped(session, version_id, JobStage.ocr, VersionStatus.ocr_done, filename)
+                completed.add(JobStage.ocr)
                 continue
 
-            # Skip entities stage if spaCy NER is not available
-            if stage == JobStage.entities and not _is_ner_available():
-                existing = session.execute(
-                    select(IngestionJob).where(
-                        IngestionJob.version_id == version_id,
-                        IngestionJob.stage == JobStage.entities,
-                    )
-                ).scalar_one_or_none()
-                if existing is None:
-                    skipped_job = IngestionJob(
-                        version_id=version_id,
-                        stage=JobStage.entities,
-                        status=JobStatus.done,
-                        started_at=datetime.now(UTC),
-                        finished_at=datetime.now(UTC),
-                        metrics={"skipped": True, "reason": "spacy_unavailable"},
-                    )
-                    session.add(skipped_job)
-                else:
-                    existing.status = JobStatus.done
-                    existing.finished_at = datetime.now(UTC)
-                    existing.metrics = {"skipped": True, "reason": "spacy_unavailable"}
-                version.status = VersionStatus.entities_done
-                session.commit()
-                publish_job_event(version_id, "entities", "done", filename=_version_filename(version))
-                continue
-
-            # Commit skip changes (if any) before enqueuing next stage,
-            # which creates its own session.
+            # Enqueue this sequential stage — close session first since
+            # enqueue_stage() creates its own session.
             session.commit()
             session.close()
             enqueue_stage(version_id, stage)
+            return
+
+        # --- Phase 2: Fan-out (entities + embed + summarize) ---
+        to_enqueue: list[JobStage] = []
+        for stage in _PARALLEL_STAGES:
+            if stage in completed or stage in in_flight:
+                continue
+            # Skip entities if spaCy NER unavailable
+            if stage == JobStage.entities and not _is_ner_available():
+                _mark_skipped(
+                    session,
+                    version_id,
+                    JobStage.entities,
+                    VersionStatus.entities_done,
+                    filename,
+                    reason="spacy_unavailable",
+                )
+                completed.add(JobStage.entities)
+                continue
+            to_enqueue.append(stage)
+
+        if to_enqueue:
+            session.commit()
+            session.close()
+            for stage in to_enqueue:
+                enqueue_stage(version_id, stage)
+            return
+
+        # --- Phase 3: Fan-in (finalize) ---
+        if completed >= _PARALLEL_STAGES and JobStage.finalize not in completed and JobStage.finalize not in in_flight:
+            session.commit()
+            session.close()
+            enqueue_stage(version_id, JobStage.finalize)
             return
 
         session.commit()
