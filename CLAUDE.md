@@ -57,13 +57,15 @@ Entry points:
 
 ## Ingestion Pipeline
 
-Five idempotent stages, each guarded by row-level lock on `(version_id, stage)` in `ingestion_jobs`:
+Seven idempotent stages, each guarded by row-level lock on `(version_id, stage)` in `ingestion_jobs`:
 
-1. **extract** (io) — Apache Tika for PDF/Office/eBook/HTML/email, plain text fallback for TXT/MD/CSV
-2. **ocr** (cpu) — conditional: always for images (JPEG/PNG/TIFF); PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for text-native formats. Uses pypdfium2 + Tesseract (eng+fra)
-3. **chunk** (io) — ~1000 char target, 150 char overlap, preserves page ranges + char offsets. Detects language per chunk
-4. **embed** (cpu) — calls embedder container over HTTP, 384-dim vectors stored in pgvector
-5. **finalize** (io) — completes ingestion
+1. **extract** (io, 600s) — Apache Tika for PDF/Office/eBook/HTML/email, plain text fallback for TXT/MD/CSV
+2. **ocr** (cpu, 7200s) — conditional: always for images (JPEG/PNG/TIFF); PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for text-native formats. Uses pypdfium2 + Tesseract (eng+fra). Skipped if not needed.
+3. **chunk** (io, 1200s) — ~1000 char target, 150 char overlap, preserves page ranges + char offsets. Detects language per chunk
+4. **entities** (io, 900s) — spaCy NER (en_core_web_sm / fr_core_news_sm). Skipped if spaCy unavailable.
+5. **embed** (cpu, 1800s) — calls embedder container over HTTP, 384-dim vectors stored in pgvector
+6. **summarize** (io, 120s) — generates document summary
+7. **finalize** (io, 600s) — completes ingestion
 
 **Job timeouts:** `signal.alarm()` per stage with error handling updating `ingestion_jobs` to error. Workers send heartbeats every 30s. Reaper detects orphans via stale heartbeat (>90s) or 2x timeout fallback.
 
@@ -107,7 +109,7 @@ Storage bucket: `originals`, key pattern: `originals/versions/<version_id>/<orig
 - `uv run ruff format .` — format
 - Ruff is in `[project.optional-dependencies] test`
 
-**Frontend:** ESLint 9 (flat config) + Prettier. Config in `frontend/eslint.config.js` and `frontend/.prettierrc`.
+**Frontend:** ESLint 10 (flat config) + Prettier. Config in `frontend/eslint.config.js` and `frontend/.prettierrc`. `frontend/.npmrc` has `legacy-peer-deps=true` for peer dep compatibility.
 - `npm run lint` / `npm run format:check` / `npm run type-check`
 
 ## CI
