@@ -82,9 +82,9 @@ final class ServiceManager: ObservableObject {
         case "quiet":
             return (1, 1)
         case "fast":
-            return (min(8, max(2, cores / 2)), min(2, max(1, cores / 4)))
+            return (min(8, max(2, cores / 2)), 3)
         default: // balanced
-            return (min(8, max(2, cores / 4)), 1)
+            return (min(8, max(2, cores / 4)), 2)
         }
     }
 

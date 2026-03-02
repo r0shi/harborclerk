@@ -134,6 +134,6 @@ GitHub Actions workflows run on PRs to `main`. Branch protection requires all 5 
 ## Worker Presets (C = logical cores)
 
 - **Quiet**: io=1, cpu=1
-- **Balanced**: io=max(2, C//4), cpu=1
-- **Fast**: io=max(2, C//2), cpu=min(2, max(1, C//4))
-- Hard caps: io_workers ≤ 8, cpu_workers ≤ 2
+- **Balanced**: io=max(2, C//4), cpu=2
+- **Fast**: io=max(2, C//2), cpu=3
+- Hard caps: io_workers ≤ 8, cpu_workers ≤ 4
