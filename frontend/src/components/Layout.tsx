@@ -65,21 +65,21 @@ export default function Layout() {
               <TabLink to="/upload">Upload</TabLink>
               <TabLink to="/docs">Documents</TabLink>
               <TabLink to="/search">Raw Search</TabLink>
-              <TabLink to="/stats">Stats</TabLink>
-              {isAdmin && <TabLink to="/admin">System Settings</TabLink>}
             </div>
-            <div className="flex items-center space-x-3">
-              {isAdmin && (
-                <span className="rounded-md bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-                  admin
-                </span>
-              )}
-              <div className="relative" ref={menuRef}>
+            <div className="flex items-center space-x-1">
+              <TabLink to="/stats">Observatory</TabLink>
+              {isAdmin && <TabLink to="/admin">System Settings</TabLink>}
+              <div className="relative ml-2" ref={menuRef}>
                 <button
                   onClick={() => setMenuOpen(!menuOpen)}
                   className="flex items-center space-x-1 rounded-lg px-2.5 py-1.5 text-[13px] text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6 transition-colors"
                 >
-                  <span>{user?.email}</span>
+                  <div className="flex flex-col items-end">
+                    <span>{user?.email}</span>
+                    {isAdmin && (
+                      <span className="text-[10px] leading-tight text-amber-600 dark:text-amber-400">admin</span>
+                    )}
+                  </div>
                   <svg
                     className={`h-3.5 w-3.5 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
                     fill="none"
