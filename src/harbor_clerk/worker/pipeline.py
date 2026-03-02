@@ -39,7 +39,7 @@ STAGE_CONFIG: dict[JobStage, tuple[str, int, VersionStatus]] = {
     JobStage.chunk: ("io", 1200, VersionStatus.chunking),
     JobStage.entities: ("io", 900, VersionStatus.extracting_entities),
     JobStage.embed: ("cpu", 1800, VersionStatus.embedding),
-    JobStage.summarize: ("io", 120, VersionStatus.summarizing),
+    JobStage.summarize: ("io", 900, VersionStatus.summarizing),
     JobStage.finalize: ("io", 600, VersionStatus.finalizing),
 }
 
