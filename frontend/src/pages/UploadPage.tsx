@@ -170,9 +170,9 @@ export default function UploadPage() {
   const [confirmProgress, setConfirmProgress] = useState<{ done: number; total: number } | null>(null)
 
   useEffect(() => {
-    get<DocSummary[]>('/api/docs')
-      .then((d) => {
-        setDocs(d)
+    get<{ items: DocSummary[] }>('/api/docs', { limit: 0 })
+      .then((data) => {
+        setDocs(data.items)
         setDocsLoaded(true)
       })
       .catch(() => setDocsLoaded(true))
