@@ -96,13 +96,8 @@ async function request(url: string, options: RequestInit = {}, retry = true): Pr
   return res
 }
 
-export async function get<T = unknown>(
-  url: string,
-  params?: Record<string, string | number>,
-): Promise<T> {
-  const u = params
-    ? `${url}?${new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]))}`
-    : url
+export async function get<T = unknown>(url: string, params?: Record<string, string | number>): Promise<T> {
+  const u = params ? `${url}?${new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)]))}` : url
   const res = await request(u)
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))

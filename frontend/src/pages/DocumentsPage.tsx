@@ -131,23 +131,20 @@ export default function DocumentsPage() {
   const [bulkAction, setBulkAction] = useState('')
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
-  const loadDocs = useCallback(
-    (page: number, size: number, q: string) => {
-      const params: Record<string, string | number> = {
-        limit: size,
-        offset: (page - 1) * size,
-      }
-      if (q) params.q = q
-      return get<PaginatedDocs>('/api/docs', params)
-        .then((data) => {
-          setDocs(data.items)
-          setTotal(data.total)
-        })
-        .catch((e) => setError(e.message))
-        .finally(() => setLoading(false))
-    },
-    [],
-  )
+  const loadDocs = useCallback((page: number, size: number, q: string) => {
+    const params: Record<string, string | number> = {
+      limit: size,
+      offset: (page - 1) * size,
+    }
+    if (q) params.q = q
+    return get<PaginatedDocs>('/api/docs', params)
+      .then((data) => {
+        setDocs(data.items)
+        setTotal(data.total)
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false))
+  }, [])
 
   useEffect(() => {
     loadDocs(currentPage, pageSize, filter)
