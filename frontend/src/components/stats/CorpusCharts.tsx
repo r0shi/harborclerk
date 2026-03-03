@@ -11,6 +11,7 @@ import {
   Area,
   ResponsiveContainer,
 } from 'recharts'
+import { InfoTip } from '../../pages/StatsPage'
 
 interface CorpusStats {
   languages: Record<string, number>
@@ -25,7 +26,7 @@ interface CorpusStats {
 
 const PIE_COLORS = ['#007aff', '#34c759', '#ff9500', '#ff3b30', '#af52de', '#5ac8fa', '#ff2d55', '#ffcc00']
 
-const ENTITY_COLORS: Record<string, string> = {
+export const ENTITY_COLORS: Record<string, string> = {
   PERSON: '#007aff',
   ORG: '#34c759',
   GPE: '#ff9500',
@@ -38,14 +39,46 @@ const ENTITY_COLORS: Record<string, string> = {
   PRODUCT: '#64d2ff',
 }
 
+export const ENTITY_TYPE_LABELS: Record<string, string> = {
+  PERSON: 'Person',
+  ORG: 'Organization',
+  GPE: 'Country / City / State',
+  LOC: 'Location',
+  DATE: 'Date',
+  EVENT: 'Event',
+  FAC: 'Facility',
+  PRODUCT: 'Product',
+  WORK_OF_ART: 'Work of Art',
+  LAW: 'Law / Regulation',
+  NORP: 'Group / Nationality',
+  LANGUAGE: 'Language',
+  MONEY: 'Money',
+  PERCENT: 'Percentage',
+  TIME: 'Time',
+}
+
 function entityColor(type: string): string {
   return ENTITY_COLORS[type] || '#98989d'
 }
 
-function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+const TICK_STYLE = { fontSize: 10, fill: 'var(--color-chart-tick)' }
+const TICK_STYLE_11 = { fontSize: 11, fill: 'var(--color-chart-tick)' }
+
+function ChartCard({
+  title,
+  children,
+  tip,
+}: {
+  title: string
+  children: React.ReactNode
+  tip?: string
+}) {
   return (
     <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
-      <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">{title}</h3>
+      <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">
+        {title}
+        {tip && <InfoTip text={tip} />}
+      </h3>
       {children}
     </div>
   )
@@ -192,11 +225,11 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
                   dataKey="name"
                   type="category"
                   width={50}
-                  tick={{ fontSize: 11 }}
+                  tick={TICK_STYLE_11}
                   axisLine={false}
                   tickLine={false}
                 />
-                <Tooltip content={<CustomTooltip />} />
+                <Tooltip content={<CustomTooltip />} cursor={false} />
                 <Bar dataKey="count" fill="#007aff" radius={[0, 4, 4, 0]} barSize={14} />
               </BarChart>
             </ResponsiveContainer>
@@ -247,9 +280,9 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
         <ChartCard title="Document Sizes">
           <ResponsiveContainer width="100%" height={180}>
             <BarChart data={stats.size_buckets} margin={{ left: -10, right: 8, top: 0, bottom: 0 }}>
-              <XAxis dataKey="label" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<CustomTooltip />} />
+              <XAxis dataKey="label" tick={TICK_STYLE} axisLine={false} tickLine={false} />
+              <YAxis tick={TICK_STYLE} axisLine={false} tickLine={false} />
+              <Tooltip content={<CustomTooltip />} cursor={false} />
               <Bar dataKey="count" fill="#34c759" radius={[4, 4, 0, 0]} barSize={20} />
             </BarChart>
           </ResponsiveContainer>
@@ -265,8 +298,8 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
                     <stop offset="100%" stopColor="#007aff" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <XAxis dataKey="month" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                <XAxis dataKey="month" tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                <YAxis tick={TICK_STYLE} axisLine={false} tickLine={false} />
                 <Tooltip content={<CustomTooltip />} />
                 <Area type="monotone" dataKey="total" stroke="#007aff" fill="url(#growthGrad)" strokeWidth={2} />
               </AreaChart>
@@ -280,9 +313,10 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
           {timingData.length > 0 ? (
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={timingData} margin={{ left: -10, right: 8, top: 0, bottom: 0 }}>
-                <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} unit="s" />
+                <XAxis dataKey="name" tick={TICK_STYLE} axisLine={false} tickLine={false} />
+                <YAxis tick={TICK_STYLE} axisLine={false} tickLine={false} unit="s" />
                 <Tooltip
+                  cursor={false}
                   content={({ active, payload, label }) => {
                     if (!active || !payload?.length) return null
                     return (
@@ -304,12 +338,15 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
       {/* Top Entities */}
       {topEntitiesData.length > 0 && (
         <div className="mt-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
-          <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Top Entities</h3>
+          <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">
+            Top Entities
+            <InfoTip text="The most frequently mentioned named entities across your documents, grouped by type. Entities are people, organizations, places, dates, and other proper nouns identified automatically." />
+          </h3>
           <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-(--color-text-secondary)">
             {[...new Set(topEntitiesData.map((e) => e.type))].map((type) => (
               <span key={type} className="flex items-center gap-1">
                 <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: entityColor(type) }} />
-                {type}
+                <span title={ENTITY_TYPE_LABELS[type] ?? type}>{type}</span>
               </span>
             ))}
           </div>
@@ -320,17 +357,19 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
                 dataKey="name"
                 type="category"
                 width={140}
-                tick={{ fontSize: 11 }}
+                tick={TICK_STYLE_11}
                 axisLine={false}
                 tickLine={false}
               />
               <Tooltip
+                cursor={false}
                 content={({ active, payload }) => {
                   if (!active || !payload?.length) return null
                   const d = payload[0].payload as { name: string; mentions: number; type: string }
                   return (
                     <div className="rounded-lg bg-white dark:bg-[#3a3a3c] shadow-mac-lg px-3 py-1.5 text-[12px] text-(--color-text-primary) ring-1 ring-(--color-border)">
-                      <span className="font-medium">{d.name}</span> ({d.type}): {d.mentions.toLocaleString()} mentions
+                      <span className="font-medium">{d.name}</span> ({ENTITY_TYPE_LABELS[d.type] ?? d.type}):{' '}
+                      {d.mentions.toLocaleString()} mentions
                     </div>
                   )
                 }}

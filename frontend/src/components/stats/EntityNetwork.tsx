@@ -12,6 +12,8 @@ import {
 import { scaleLinear } from 'd3-scale'
 import { drag as d3Drag } from 'd3-drag'
 import { select } from 'd3-selection'
+import { InfoTip } from '../../pages/StatsPage'
+import { ENTITY_TYPE_LABELS } from './CorpusCharts'
 
 interface EntityNode extends SimulationNodeDatum {
   id: string
@@ -54,8 +56,11 @@ export default function EntityNetwork() {
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<NetworkData | null>(null)
   const [hoveredNode, setHoveredNode] = useState<EntityNode | null>(null)
+  const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
   const containerRef = useRef<HTMLDivElement>(null)
+  // Store selected node in a ref so the D3 tick function can read it without re-creating the simulation
+  const selectedNodeRef = useRef<string | null>(null)
 
   // Responsive sizing
   useEffect(() => {
@@ -132,7 +137,34 @@ export default function EntityNetwork() {
     // Clear existing
     svg.selectAll('*').remove()
 
+    // Background rect for click-to-deselect
+    svg
+      .append('rect')
+      .attr('width', width)
+      .attr('height', height)
+      .attr('fill', 'transparent')
+      .on('click', () => {
+        selectedNodeRef.current = null
+        setSelectedNode(null)
+        applyHighlight()
+      })
+
     const g = svg.append('g')
+
+    // Build adjacency set for neighbor lookup
+    const neighborSet = new Set<string>()
+    function addNeighborKey(a: string, b: string) {
+      neighborSet.add(`${a}|${b}`)
+      neighborSet.add(`${b}|${a}`)
+    }
+    edges.forEach((e) => {
+      const src = typeof e.source === 'object' ? (e.source as EntityNode).id : (e.source as string)
+      const tgt = typeof e.target === 'object' ? (e.target as EntityNode).id : (e.target as string)
+      addNeighborKey(src, tgt)
+    })
+    function isNeighbor(a: string, b: string) {
+      return neighborSet.has(`${a}|${b}`)
+    }
 
     // Edges
     const link = g
@@ -154,9 +186,16 @@ export default function EntityNetwork() {
       .attr('fill', (d: EntityNode) => typeColor(d.type))
       .attr('stroke', 'var(--color-bg-primary)')
       .attr('stroke-width', 1.5)
-      .style('cursor', 'grab')
+      .style('cursor', 'pointer')
       .on('mouseenter', (_event: MouseEvent, d: EntityNode) => setHoveredNode(d))
       .on('mouseleave', () => setHoveredNode(null))
+      .on('click', (_event: MouseEvent, d: EntityNode) => {
+        _event.stopPropagation()
+        const newSelection = selectedNodeRef.current === d.id ? null : d.id
+        selectedNodeRef.current = newSelection
+        setSelectedNode(newSelection)
+        applyHighlight()
+      })
 
     // Labels for larger nodes
     const label = g
@@ -170,6 +209,51 @@ export default function EntityNetwork() {
       .attr('font-size', 10)
       .attr('fill', 'var(--color-text-secondary)')
       .attr('pointer-events', 'none')
+
+    // Apply highlight based on selectedNodeRef
+    function applyHighlight() {
+      const sel = selectedNodeRef.current
+      if (!sel) {
+        // Reset to normal
+        node
+          .attr('opacity', 1)
+          .attr('r', (d: EntityNode) => radiusScale(d.mentions))
+        link.attr('stroke-opacity', 0.2).attr('stroke-width', (d: EntityEdge) =>
+          Math.min(4, Math.max(1, d.weight / 3)),
+        )
+        label.attr('opacity', 1)
+      } else {
+        node
+          .attr('opacity', (d: EntityNode) => {
+            if (d.id === sel) return 1
+            if (isNeighbor(d.id, sel)) return 1
+            return 0.15
+          })
+          .attr('r', (d: EntityNode) => {
+            const base = radiusScale(d.mentions)
+            return d.id === sel ? base + 2 : base
+          })
+
+        link
+          .attr('stroke-opacity', (d: EntityEdge) => {
+            const src = (d.source as EntityNode).id
+            const tgt = (d.target as EntityNode).id
+            return src === sel || tgt === sel ? 0.6 : 0.08
+          })
+          .attr('stroke-width', (d: EntityEdge) => {
+            const src = (d.source as EntityNode).id
+            const tgt = (d.target as EntityNode).id
+            const base = Math.min(4, Math.max(1, d.weight / 3))
+            return src === sel || tgt === sel ? base + 1 : base
+          })
+
+        label.attr('opacity', (d: EntityNode) => {
+          if (d.id === sel) return 1
+          if (isNeighbor(d.id, sel)) return 1
+          return 0.15
+        })
+      }
+    }
 
     // Drag behavior
     const dragBehavior = d3Drag<SVGCircleElement, EntityNode>()
@@ -222,7 +306,10 @@ export default function EntityNetwork() {
   return (
     <div ref={containerRef} className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-[13px] font-semibold text-(--color-text-primary)">Entity Network</h3>
+        <h3 className="text-[13px] font-semibold text-(--color-text-primary)">
+          Entity Network
+          <InfoTip text="This network shows how entities appear together in your documents. Lines connect entities that are mentioned in the same text segments. Thicker lines mean they co-occur more often. Click a node to highlight its connections." />
+        </h3>
         <div className="flex items-center gap-2">
           <label className="text-[11px] text-(--color-text-secondary)">Entities:</label>
           <input
@@ -244,7 +331,7 @@ export default function EntityNetwork() {
           {types.map((type) => (
             <span key={type} className="flex items-center gap-1">
               <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: typeColor(type) }} />
-              {type}
+              <span title={ENTITY_TYPE_LABELS[type] ?? type}>{type}</span>
             </span>
           ))}
         </div>
@@ -275,8 +362,16 @@ export default function EntityNetwork() {
           <div className="pointer-events-none absolute left-3 top-3 rounded-lg bg-white dark:bg-[#3a3a3c] shadow-mac-lg px-3 py-1.5 text-[12px] text-(--color-text-primary) ring-1 ring-(--color-border)">
             <span className="font-medium">{hoveredNode.text}</span>
             <span className="ml-1 text-(--color-text-secondary)">
-              ({hoveredNode.type}) — {hoveredNode.mentions.toLocaleString()} mentions
+              ({ENTITY_TYPE_LABELS[hoveredNode.type] ?? hoveredNode.type}) —{' '}
+              {hoveredNode.mentions.toLocaleString()} mentions
             </span>
+          </div>
+        )}
+
+        {/* Selected node indicator */}
+        {selectedNode && (
+          <div className="absolute right-3 top-3 rounded-md bg-white/90 dark:bg-[#3a3a3c]/90 px-2 py-1 text-[11px] text-(--color-text-secondary)">
+            Click node or background to deselect
           </div>
         )}
       </div>

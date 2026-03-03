@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { get } from '../api'
 import CorpusCharts from '../components/stats/CorpusCharts'
 import EntityNetwork from '../components/stats/EntityNetwork'
@@ -18,10 +18,51 @@ interface CorpusStats {
   top_entities: { text: string; type: string; mentions: number }[]
 }
 
-function StatBadge({ label, value }: { label: string; value: string | number }) {
+export function InfoTip({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div className="relative inline-block" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="ml-1.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[11px] leading-none text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+      >
+        &#9432;
+      </button>
+      {open && (
+        <div className="absolute z-20 right-0 top-6 w-64 rounded-lg bg-white dark:bg-[#2c2c2e] shadow-mac-lg p-3 text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+          {text}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function StatBadge({
+  label,
+  value,
+  tip,
+}: {
+  label: string
+  value: string | number
+  tip?: string
+}) {
   return (
     <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac px-4 py-3">
-      <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide">{label}</p>
+      <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide">
+        {label}
+        {tip && <InfoTip text={tip} />}
+      </p>
       <p className="mt-0.5 text-xl font-semibold text-(--color-text-primary) tabular-nums">
         {typeof value === 'number' ? value.toLocaleString() : value}
       </p>
@@ -71,14 +112,29 @@ export default function StatsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-lg font-semibold text-(--color-text-primary)">Corpus Statistics</h1>
+      <h1 className="text-lg font-semibold text-(--color-text-primary)">
+        Corpus Statistics
+        <InfoTip text="These are facts and statistics about your entire document collection — how many documents, pages, and text segments (chunks) have been processed." />
+      </h1>
 
       {/* Summary badges */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatBadge label="Documents" value={stats.document_count} />
-        <StatBadge label="Chunks" value={stats.total_chunks} />
-        <StatBadge label="Pages" value={stats.total_pages} />
-        <StatBadge label="Entities" value={Object.values(stats.entity_type_counts).reduce((a, b) => a + b, 0)} />
+        <StatBadge
+          label="Chunks"
+          value={stats.total_chunks}
+          tip="Your documents are split into overlapping text segments called chunks (~1,000 characters each) for search and analysis."
+        />
+        <StatBadge
+          label="Pages"
+          value={stats.total_pages}
+          tip="Total pages across all documents. PDFs use their real page breaks; plain text files get synthetic pages at regular intervals."
+        />
+        <StatBadge
+          label="Entities"
+          value={Object.values(stats.entity_type_counts).reduce((a, b) => a + b, 0)}
+          tip="Named entities — people, organizations, places, dates, etc. — automatically extracted from your documents using natural language processing."
+        />
       </div>
 
       {/* Charts */}
