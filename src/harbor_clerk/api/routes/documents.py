@@ -2,6 +2,7 @@
 
 import logging
 import posixpath
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -54,7 +55,8 @@ async def list_documents(
 ):
     base = select(Document).where(Document.status == "active")
     if q:
-        pattern = f"%{q}%"
+        escaped = re.sub(r"([%_\\])", r"\\\1", q)
+        pattern = f"%{escaped}%"
         base = base.where(Document.title.ilike(pattern) | Document.canonical_filename.ilike(pattern))
 
     total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0

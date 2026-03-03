@@ -85,6 +85,32 @@ async def test_list_documents_pagination(client, admin_user, admin_token, db_ses
     assert data2["offset"] == 2
 
 
+async def test_list_documents_limit_zero_returns_all(client, admin_user, admin_token, db_session):
+    for i in range(3):
+        db_session.add(Document(title=f"Doc {i}", status="active"))
+    await db_session.flush()
+
+    resp = await client.get("/api/docs?limit=0", headers=auth_header(admin_token))
+    data = resp.json()
+    assert data["total"] == 3
+    assert len(data["items"]) == 3
+
+
+async def test_list_documents_filter_special_chars(client, admin_user, admin_token, db_session):
+    db_session.add_all(
+        [
+            Document(title="100% Complete", canonical_filename="report.pdf", status="active"),
+            Document(title="Other Doc", canonical_filename="other.pdf", status="active"),
+        ]
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/docs?q=100%25", headers=auth_header(admin_token))
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["title"] == "100% Complete"
+
+
 async def test_get_document_not_found(client, admin_user, admin_token):
     fake_id = uuid.uuid4()
     resp = await client.get(f"/api/docs/{fake_id}", headers=auth_header(admin_token))
