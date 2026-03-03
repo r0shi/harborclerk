@@ -9,10 +9,10 @@ export default function HomePage() {
 
   useEffect(() => {
     let cancelled = false
-    get<{ doc_id: string }[]>('/api/docs')
-      .then((docs) => {
+    get<{ total: number }>('/api/docs', { limit: 1 })
+      .then((data) => {
         if (cancelled) return
-        if (docs.length === 0) {
+        if (data.total === 0) {
           navigate('/upload', { replace: true })
         } else {
           setReady(true)

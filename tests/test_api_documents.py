@@ -10,7 +10,11 @@ from tests.conftest import auth_header
 async def test_list_documents_empty(client, admin_user, admin_token):
     resp = await client.get("/api/docs", headers=auth_header(admin_token))
     assert resp.status_code == 200
-    assert resp.json() == []
+    data = resp.json()
+    assert data["items"] == []
+    assert data["total"] == 0
+    assert "limit" in data
+    assert "offset" in data
 
 
 async def test_list_documents_with_doc(client, admin_user, admin_token, db_session):
@@ -21,8 +25,9 @@ async def test_list_documents_with_doc(client, admin_user, admin_token, db_sessi
     resp = await client.get("/api/docs", headers=auth_header(admin_token))
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) == 1
-    assert data[0]["title"] == "Test Doc"
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["title"] == "Test Doc"
 
 
 async def test_list_documents_excludes_deleted(client, admin_user, admin_token, db_session):
@@ -33,14 +38,51 @@ async def test_list_documents_excludes_deleted(client, admin_user, admin_token, 
 
     resp = await client.get("/api/docs", headers=auth_header(admin_token))
     assert resp.status_code == 200
-    titles = [d["title"] for d in resp.json()]
+    data = resp.json()
+    titles = [d["title"] for d in data["items"]]
     assert "Active" in titles
     assert "Deleted" not in titles
+    assert data["total"] == 1
 
 
 async def test_list_documents_requires_auth(client):
     resp = await client.get("/api/docs")
     assert resp.status_code == 401
+
+
+async def test_list_documents_filter(client, admin_user, admin_token, db_session):
+    db_session.add_all(
+        [
+            Document(title="Budget Report 2024", canonical_filename="budget_2024.pdf", status="active"),
+            Document(title="Meeting Notes", canonical_filename="notes.txt", status="active"),
+        ]
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/docs?q=budget", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["title"] == "Budget Report 2024"
+
+
+async def test_list_documents_pagination(client, admin_user, admin_token, db_session):
+    for i in range(5):
+        db_session.add(Document(title=f"Doc {i}", status="active"))
+    await db_session.flush()
+
+    resp = await client.get("/api/docs?limit=2&offset=0", headers=auth_header(admin_token))
+    data = resp.json()
+    assert data["total"] == 5
+    assert len(data["items"]) == 2
+    assert data["limit"] == 2
+    assert data["offset"] == 0
+
+    resp2 = await client.get("/api/docs?limit=2&offset=2", headers=auth_header(admin_token))
+    data2 = resp2.json()
+    assert data2["total"] == 5
+    assert len(data2["items"]) == 2
+    assert data2["offset"] == 2
 
 
 async def test_get_document_not_found(client, admin_user, admin_token):

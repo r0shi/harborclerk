@@ -22,6 +22,7 @@ from harbor_clerk.api.schemas.documents import (
     HeadingOut,
     JobInfo,
     PageContent,
+    PaginatedDocuments,
     RelatedDocumentsResponse,
     VersionInfo,
 )
@@ -43,18 +44,26 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["documents"])
 
 
-@router.get("/docs", response_model=list[DocumentSummary])
+@router.get("/docs", response_model=PaginatedDocuments)
 async def list_documents(
+    limit: int = Query(50, ge=0, le=500),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(None),
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(Document)
-        .where(Document.status == "active")
-        .options(selectinload(Document.versions))
-        .order_by(Document.updated_at.desc())
-        .limit(200)
-    )
+    base = select(Document).where(Document.status == "active")
+    if q:
+        pattern = f"%{q}%"
+        base = base.where(Document.title.ilike(pattern) | Document.canonical_filename.ilike(pattern))
+
+    total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
+
+    query = base.options(selectinload(Document.versions)).order_by(Document.updated_at.desc()).offset(offset)
+    if limit > 0:
+        query = query.limit(limit)
+
+    result = await session.execute(query)
     docs = result.scalars().all()
 
     summaries = []
@@ -94,7 +103,7 @@ async def list_documents(
                 source_path=latest_source_path,
             )
         )
-    return summaries
+    return PaginatedDocuments(items=summaries, total=total, limit=limit, offset=offset)
 
 
 # Must be defined before /docs/{doc_id} to avoid path capture

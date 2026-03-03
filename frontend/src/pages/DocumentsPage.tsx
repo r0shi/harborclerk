@@ -18,6 +18,13 @@ interface DocSummary {
   source_path?: string
 }
 
+interface PaginatedDocs {
+  items: DocSummary[]
+  total: number
+  limit: number
+  offset: number
+}
+
 const PROCESSING_STATUSES = new Set([
   'queued',
   'extracting',
@@ -114,6 +121,7 @@ export default function DocumentsPage() {
   const { user, isAdmin, updatePreferences } = useAuth()
   const [pageSize, setPageSize] = useState(user?.preferences?.page_size || 10)
   const [docs, setDocs] = useState<DocSummary[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('')
@@ -123,16 +131,40 @@ export default function DocumentsPage() {
   const [bulkAction, setBulkAction] = useState('')
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
-  const loadDocs = useCallback(() => {
-    return get<DocSummary[]>('/api/docs')
-      .then(setDocs)
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
-  }, [])
+  const loadDocs = useCallback(
+    (page: number, size: number, q: string) => {
+      const params: Record<string, string | number> = {
+        limit: size,
+        offset: (page - 1) * size,
+      }
+      if (q) params.q = q
+      return get<PaginatedDocs>('/api/docs', params)
+        .then((data) => {
+          setDocs(data.items)
+          setTotal(data.total)
+        })
+        .catch((e) => setError(e.message))
+        .finally(() => setLoading(false))
+    },
+    [],
+  )
 
   useEffect(() => {
-    loadDocs()
-  }, [loadDocs])
+    loadDocs(currentPage, pageSize, filter)
+  }, [loadDocs, currentPage, pageSize, filter])
+
+  // Debounce filter input
+  const filterTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const [filterInput, setFilterInput] = useState('')
+
+  function handleFilterChange(value: string) {
+    setFilterInput(value)
+    clearTimeout(filterTimerRef.current)
+    filterTimerRef.current = setTimeout(() => {
+      setFilter(value)
+      setCurrentPage(1)
+    }, 300)
+  }
 
   // Live-update when ingestion completes
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -141,17 +173,17 @@ export default function DocumentsPage() {
       (event) => {
         if (event.stage === 'finalize' && event.status === 'done') {
           clearTimeout(debounceRef.current)
-          debounceRef.current = setTimeout(() => loadDocs(), 1000)
+          debounceRef.current = setTimeout(() => loadDocs(currentPage, pageSize, filter), 1000)
         }
       },
-      [loadDocs],
+      [loadDocs, currentPage, pageSize, filter],
     ),
   )
 
   async function handleCancel(docId: string) {
     try {
       await post(`/api/docs/${docId}/cancel`)
-      loadDocs()
+      loadDocs(currentPage, pageSize, filter)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Cancel failed')
     }
@@ -202,7 +234,7 @@ export default function DocumentsPage() {
     }
     if (errors.length > 0) setError(errors.join('; '))
     setSelected(new Set())
-    loadDocs()
+    loadDocs(currentPage, pageSize, filter)
     setBulkAction('')
   }
 
@@ -223,7 +255,7 @@ export default function DocumentsPage() {
     }
     if (errors.length > 0) setError(errors.join('; '))
     setSelected(new Set())
-    loadDocs()
+    loadDocs(currentPage, pageSize, filter)
     setBulkAction('')
   }
 
@@ -235,19 +267,10 @@ export default function DocumentsPage() {
     setBulkAction('')
   }
 
-  const filteredDocs = docs.filter((d) => {
-    if (!filter) return true
-    const q = filter.toLowerCase()
-    return d.title.toLowerCase().includes(q) || (d.canonical_filename?.toLowerCase().includes(q) ?? false)
-  })
-
-  const totalPages = Math.max(1, Math.ceil(filteredDocs.length / pageSize))
-  const effectivePage = Math.min(currentPage, totalPages)
-  const startIdx = (effectivePage - 1) * pageSize
-  const visibleDocs = filteredDocs.slice(startIdx, startIdx + pageSize)
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const visibleDocs = docs
   const visibleDocIds = new Set(visibleDocs.map((d) => d.doc_id))
-
-  if (currentPage !== effectivePage) setCurrentPage(effectivePage)
+  const startIdx = (currentPage - 1) * pageSize
 
   let lastDoc: { doc_id: string; title: string } | null = null
   try {
@@ -276,11 +299,8 @@ export default function DocumentsPage() {
           <input
             type="text"
             placeholder="Filter by filename..."
-            value={filter}
-            onChange={(e) => {
-              setFilter(e.target.value)
-              setCurrentPage(1)
-            }}
+            value={filterInput}
+            onChange={(e) => handleFilterChange(e.target.value)}
             className="w-64 rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
           />
           <Link
@@ -291,7 +311,7 @@ export default function DocumentsPage() {
           </Link>
         </div>
       </div>
-      {docs.length === 0 ? (
+      {total === 0 && !filter ? (
         <p className="text-gray-500 dark:text-gray-400">
           No documents yet.{' '}
           <Link to="/upload" className="text-blue-600 dark:text-blue-400 hover:underline">
@@ -511,9 +531,8 @@ export default function DocumentsPage() {
 
           <div className="mt-2 flex items-center justify-center gap-3 text-xs text-gray-400">
             <span>
-              Showing {filteredDocs.length === 0 ? 0 : startIdx + 1}–
-              {Math.min(startIdx + pageSize, filteredDocs.length)} of {filteredDocs.length}
-              {filter && ` (filtered from ${docs.length})`}
+              Showing {total === 0 ? 0 : startIdx + 1}–{Math.min(startIdx + pageSize, total)} of {total}
+              {filter && ' (filtered)'}
             </span>
             <span className="text-gray-300 dark:text-gray-600">|</span>
             <label className="flex items-center gap-1.5">
@@ -537,7 +556,7 @@ export default function DocumentsPage() {
               per page
             </label>
           </div>
-          <Pagination currentPage={effectivePage} totalPages={totalPages} onPageChange={setCurrentPage} />
+          <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
         </>
       )}
     </div>

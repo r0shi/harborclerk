@@ -131,3 +131,10 @@ class RelatedDocument(BaseModel):
 class RelatedDocumentsResponse(BaseModel):
     doc_id: str
     related: list[RelatedDocument]
+
+
+class PaginatedDocuments(BaseModel):
+    items: list[DocumentSummary]
+    total: int
+    limit: int
+    offset: int
