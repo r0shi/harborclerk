@@ -11,7 +11,7 @@ import {
   Area,
   ResponsiveContainer,
 } from 'recharts'
-import { InfoTip } from '../../pages/StatsPage'
+import { InfoTip } from '../InfoTip'
 
 interface CorpusStats {
   languages: Record<string, number>
@@ -64,15 +64,7 @@ function entityColor(type: string): string {
 const TICK_STYLE = { fontSize: 10, fill: 'var(--color-chart-tick)' }
 const TICK_STYLE_11 = { fontSize: 11, fill: 'var(--color-chart-tick)' }
 
-function ChartCard({
-  title,
-  children,
-  tip,
-}: {
-  title: string
-  children: React.ReactNode
-  tip?: string
-}) {
+function ChartCard({ title, children, tip }: { title: string; children: React.ReactNode; tip?: string }) {
   return (
     <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
       <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">

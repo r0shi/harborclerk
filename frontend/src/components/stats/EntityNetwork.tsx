@@ -12,8 +12,8 @@ import {
 import { scaleLinear } from 'd3-scale'
 import { drag as d3Drag } from 'd3-drag'
 import { select } from 'd3-selection'
-import { InfoTip } from '../../pages/StatsPage'
-import { ENTITY_TYPE_LABELS } from './CorpusCharts'
+import { InfoTip } from '../InfoTip'
+import { ENTITY_COLORS, ENTITY_TYPE_LABELS } from './CorpusCharts'
 
 interface EntityNode extends SimulationNodeDatum {
   id: string
@@ -31,21 +31,8 @@ interface NetworkData {
   edges: { source: string; target: string; weight: number }[]
 }
 
-const TYPE_COLORS: Record<string, string> = {
-  PERSON: '#007aff',
-  ORG: '#34c759',
-  GPE: '#ff9500',
-  LOC: '#af52de',
-  DATE: '#5ac8fa',
-  EVENT: '#ff2d55',
-  WORK_OF_ART: '#ffcc00',
-  FAC: '#ff3b30',
-  NORP: '#30d158',
-  PRODUCT: '#64d2ff',
-}
-
 function typeColor(type: string): string {
-  return TYPE_COLORS[type] || '#98989d'
+  return ENTITY_COLORS[type] || '#98989d'
 }
 
 export default function EntityNetwork() {
@@ -106,6 +93,10 @@ export default function EntityNetwork() {
       simRef.current.stop()
       simRef.current = null
     }
+
+    // Clear stale selection when graph is re-rendered (e.g. data or dimensions changed)
+    selectedNodeRef.current = null
+    setSelectedNode(null)
 
     const nodes: EntityNode[] = data.nodes.map((n) => ({ ...n }))
     const edges: EntityEdge[] = data.edges.map((e) => ({ ...e }))
@@ -176,6 +167,9 @@ export default function EntityNetwork() {
       .attr('stroke-opacity', 0.2)
       .attr('stroke-width', (d: EntityEdge) => Math.min(4, Math.max(1, d.weight / 3)))
 
+    // Track drag to suppress click after drag
+    let wasDragged = false
+
     // Nodes
     const node = g
       .append('g')
@@ -190,6 +184,10 @@ export default function EntityNetwork() {
       .on('mouseenter', (_event: MouseEvent, d: EntityNode) => setHoveredNode(d))
       .on('mouseleave', () => setHoveredNode(null))
       .on('click', (_event: MouseEvent, d: EntityNode) => {
+        if (wasDragged) {
+          wasDragged = false
+          return
+        }
         _event.stopPropagation()
         const newSelection = selectedNodeRef.current === d.id ? null : d.id
         selectedNodeRef.current = newSelection
@@ -215,12 +213,8 @@ export default function EntityNetwork() {
       const sel = selectedNodeRef.current
       if (!sel) {
         // Reset to normal
-        node
-          .attr('opacity', 1)
-          .attr('r', (d: EntityNode) => radiusScale(d.mentions))
-        link.attr('stroke-opacity', 0.2).attr('stroke-width', (d: EntityEdge) =>
-          Math.min(4, Math.max(1, d.weight / 3)),
-        )
+        node.attr('opacity', 1).attr('r', (d: EntityNode) => radiusScale(d.mentions))
+        link.attr('stroke-opacity', 0.2).attr('stroke-width', (d: EntityEdge) => Math.min(4, Math.max(1, d.weight / 3)))
         label.attr('opacity', 1)
       } else {
         node
@@ -258,11 +252,13 @@ export default function EntityNetwork() {
     // Drag behavior
     const dragBehavior = d3Drag<SVGCircleElement, EntityNode>()
       .on('start', (event, d) => {
+        wasDragged = false
         if (!event.active) sim.alphaTarget(0.3).restart()
         d.fx = d.x
         d.fy = d.y
       })
       .on('drag', (event, d) => {
+        wasDragged = true
         d.fx = event.x
         d.fy = event.y
       })
@@ -362,8 +358,8 @@ export default function EntityNetwork() {
           <div className="pointer-events-none absolute left-3 top-3 rounded-lg bg-white dark:bg-[#3a3a3c] shadow-mac-lg px-3 py-1.5 text-[12px] text-(--color-text-primary) ring-1 ring-(--color-border)">
             <span className="font-medium">{hoveredNode.text}</span>
             <span className="ml-1 text-(--color-text-secondary)">
-              ({ENTITY_TYPE_LABELS[hoveredNode.type] ?? hoveredNode.type}) —{' '}
-              {hoveredNode.mentions.toLocaleString()} mentions
+              ({ENTITY_TYPE_LABELS[hoveredNode.type] ?? hoveredNode.type}) — {hoveredNode.mentions.toLocaleString()}{' '}
+              mentions
             </span>
           </div>
         )}
