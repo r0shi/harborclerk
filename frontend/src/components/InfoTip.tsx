@@ -32,7 +32,7 @@ export function InfoTip({ text }: { text: string }) {
         &#9432;
       </button>
       {open && (
-        <div className="absolute z-20 right-0 top-6 w-64 rounded-lg bg-white dark:bg-[#2c2c2e] shadow-mac-lg p-3 text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+        <div className="absolute z-20 left-0 top-6 w-64 rounded-lg bg-white dark:bg-[#2c2c2e] shadow-mac-lg p-3 text-xs leading-relaxed text-gray-600 dark:text-gray-300">
           {text}
         </div>
       )}
