@@ -104,6 +104,7 @@ struct WebView: NSViewRepresentable {
         config.preferences.isTextInteractionEnabled = true
 
         let webView = WKWebView(frame: .zero, configuration: config)
+        webView.allowsMagnification = true
         webView.allowsBackForwardNavigationGestures = true
         webView.uiDelegate = context.coordinator
         webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
