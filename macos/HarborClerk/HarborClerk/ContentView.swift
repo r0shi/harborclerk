@@ -142,6 +142,29 @@ struct WebView: NSViewRepresentable {
                     self?.webView?.goForward()
                 }
             )
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: .webViewZoomIn, object: nil, queue: .main
+                ) { [weak self] _ in
+                    guard let wv = self?.webView else { return }
+                    wv.magnification = min(wv.magnification + 0.1, 3.0)
+                }
+            )
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: .webViewZoomOut, object: nil, queue: .main
+                ) { [weak self] _ in
+                    guard let wv = self?.webView else { return }
+                    wv.magnification = max(wv.magnification - 0.1, 0.5)
+                }
+            )
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: .webViewZoomReset, object: nil, queue: .main
+                ) { [weak self] _ in
+                    self?.webView?.magnification = 1.0
+                }
+            )
         }
 
         /// Observe the webView's URL via KVO to detect client-side (pushState)
