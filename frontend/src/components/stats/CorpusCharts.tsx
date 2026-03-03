@@ -230,7 +230,10 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
           )}
         </ChartCard>
 
-        <ChartCard title="OCR Breakdown">
+        <ChartCard
+          title="OCR Breakdown"
+          tip="OCR (Optical Character Recognition) extracts text from scanned images. 'Born digital' means the document already contained selectable text (e.g. a Word file saved as PDF) and didn't need OCR."
+        >
           {ocrData.length > 0 ? (
             <ResponsiveContainer width="100%" height={180}>
               <PieChart>
@@ -301,7 +304,10 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
           )}
         </ChartCard>
 
-        <ChartCard title="Avg. Pipeline Timing">
+        <ChartCard
+          title="Avg. Pipeline Timing"
+          tip="Average time spent in each processing step when a document is ingested — extracting text, running OCR, splitting into chunks, identifying entities, generating embeddings, and summarizing."
+        >
           {timingData.length > 0 ? (
             <ResponsiveContainer width="100%" height={180}>
               <BarChart data={timingData} margin={{ left: -10, right: 8, top: 0, bottom: 0 }}>
@@ -336,9 +342,12 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
           </h3>
           <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-(--color-text-secondary)">
             {[...new Set(topEntitiesData.map((e) => e.type))].map((type) => (
-              <span key={type} className="flex items-center gap-1">
+              <span key={type} className="group relative flex items-center gap-1">
                 <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: entityColor(type) }} />
-                <span title={ENTITY_TYPE_LABELS[type] ?? type}>{type}</span>
+                {type}
+                <span className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-gray-800 dark:bg-gray-700 px-1.5 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+                  {ENTITY_TYPE_LABELS[type] ?? type}
+                </span>
               </span>
             ))}
           </div>
