@@ -46,6 +46,11 @@ final class HealthChecker {
             guard !pausedServices.contains(service.name) else { continue }
 
             let healthy = await service.healthCheck()
+            // Re-check after await — state may have changed during shutdown
+            guard service.state == .running else {
+                failureCounts[service.name] = nil
+                continue
+            }
             if healthy {
                 failureCounts[service.name] = nil
             } else {
