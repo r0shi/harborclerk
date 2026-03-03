@@ -106,7 +106,7 @@ struct WebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
         webView.uiDelegate = context.coordinator
-        webView.load(URLRequest(url: url))
+        webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
 
         context.coordinator.webView = webView
         context.coordinator.startObservingURL()
