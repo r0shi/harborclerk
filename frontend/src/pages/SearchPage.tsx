@@ -25,12 +25,15 @@ interface ConflictSource {
 
 interface SearchResponse {
   hits: SearchHit[]
+  total_candidates: number
+  has_more: boolean
   possible_conflict: boolean
   conflict_sources: ConflictSource[]
 }
 
 const HISTORY_KEY = 'search_history'
 const MAX_HISTORY = 10
+const PAGE_SIZES = [10, 25, 50]
 
 function getHistory(): string[] {
   try {
@@ -55,6 +58,63 @@ function addToHistory(query: string) {
   saveHistory(history.slice(0, MAX_HISTORY))
 }
 
+function Pagination({
+  currentPage,
+  totalPages,
+  onPageChange,
+}: {
+  currentPage: number
+  totalPages: number
+  onPageChange: (p: number) => void
+}) {
+  if (totalPages <= 1) return null
+  const pages: (number | '...')[] = []
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || Math.abs(i - currentPage) <= 1) {
+      pages.push(i)
+    } else if (pages[pages.length - 1] !== '...') {
+      pages.push('...')
+    }
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        onClick={() => onPageChange(currentPage - 1)}
+        disabled={currentPage <= 1}
+        className="rounded-lg px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+      >
+        &lsaquo;
+      </button>
+      {pages.map((p, idx) =>
+        p === '...' ? (
+          <span key={`e${idx}`} className="px-1 text-sm text-gray-400">
+            &hellip;
+          </span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onPageChange(p)}
+            className={`rounded-lg px-2.5 py-1 text-sm font-medium ${
+              p === currentPage
+                ? 'bg-(--color-accent) text-white'
+                : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+            }`}
+          >
+            {p}
+          </button>
+        ),
+      )}
+      <button
+        onClick={() => onPageChange(currentPage + 1)}
+        disabled={currentPage >= totalPages}
+        className="rounded-lg px-2 py-1 text-sm text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30"
+      >
+        &rsaquo;
+      </button>
+    </div>
+  )
+}
+
 export default function SearchPage() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResponse | null>(null)
@@ -62,6 +122,9 @@ export default function SearchPage() {
   const [error, setError] = useState('')
   const [history, setHistory] = useState<string[]>(getHistory)
   const [showHistory, setShowHistory] = useState(false)
+  const [pageSize, setPageSize] = useState(25)
+  const [currentPage, setCurrentPage] = useState(1)
+  const lastQuery = useRef('')
   const wrapperRef = useRef<HTMLDivElement>(null)
 
   // Close dropdown on outside click
@@ -75,17 +138,20 @@ export default function SearchPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  async function doSearch(q: string) {
+  async function doSearch(q: string, page: number, size: number) {
     const trimmed = q.trim()
     if (!trimmed) return
     setError('')
     setLoading(true)
     addToHistory(trimmed)
     setHistory(getHistory())
+    lastQuery.current = trimmed
     try {
+      const offset = (page - 1) * size
       const data = await post<SearchResponse>('/api/search', {
         query: trimmed,
-        k: 10,
+        k: size,
+        offset,
       })
       setResults(data)
     } catch (e) {
@@ -98,13 +164,28 @@ export default function SearchPage() {
   function handleSearch(e: FormEvent) {
     e.preventDefault()
     setShowHistory(false)
-    doSearch(query)
+    setCurrentPage(1)
+    doSearch(query, 1, pageSize)
+  }
+
+  function handlePageChange(page: number) {
+    setCurrentPage(page)
+    doSearch(lastQuery.current, page, pageSize)
+  }
+
+  function handlePageSizeChange(size: number) {
+    setPageSize(size)
+    setCurrentPage(1)
+    if (lastQuery.current) {
+      doSearch(lastQuery.current, 1, size)
+    }
   }
 
   function selectHistoryItem(q: string) {
     setQuery(q)
     setShowHistory(false)
-    doSearch(q)
+    setCurrentPage(1)
+    doSearch(q, 1, pageSize)
   }
 
   function clearHistory() {
@@ -114,6 +195,8 @@ export default function SearchPage() {
   }
 
   const maxScore = results?.hits[0]?.score || 1
+  const totalPages = results ? Math.max(1, Math.ceil(results.total_candidates / pageSize)) : 1
+  const startIdx = (currentPage - 1) * pageSize
 
   return (
     <div>
@@ -204,11 +287,10 @@ export default function SearchPage() {
             </div>
           )}
 
-          {results.hits.length === 0 ? (
+          {results.hits.length === 0 && currentPage === 1 ? (
             <p className="text-gray-500 dark:text-gray-400">No results found.</p>
           ) : (
             <div className="space-y-3">
-              <p className="text-sm text-gray-500 dark:text-gray-400">{results.hits.length} results</p>
               {results.hits.map((hit) => {
                 const linkTo =
                   hit.page_start != null
@@ -251,6 +333,28 @@ export default function SearchPage() {
                   </div>
                 )
               })}
+
+              {/* Status bar + pagination */}
+              <div className="flex items-center justify-between pt-2">
+                <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+                  <span>
+                    Showing {results.total_candidates === 0 ? 0 : startIdx + 1}&ndash;
+                    {Math.min(startIdx + pageSize, results.total_candidates)} of {results.total_candidates} results
+                  </span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                    className="rounded-md border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) py-0.5 pl-2 pr-6 text-sm"
+                  >
+                    {PAGE_SIZES.map((s) => (
+                      <option key={s} value={s}>
+                        {s} / page
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={handlePageChange} />
+              </div>
             </div>
           )}
         </>
