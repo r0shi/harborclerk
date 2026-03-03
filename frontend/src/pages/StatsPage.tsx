@@ -3,6 +3,7 @@ import { get } from '../api'
 import CorpusCharts from '../components/stats/CorpusCharts'
 import EntityNetwork from '../components/stats/EntityNetwork'
 import ClusterMap from '../components/stats/ClusterMap'
+import { InfoTip } from '../components/InfoTip'
 
 interface CorpusStats {
   document_count: number
@@ -18,10 +19,13 @@ interface CorpusStats {
   top_entities: { text: string; type: string; mentions: number }[]
 }
 
-function StatBadge({ label, value }: { label: string; value: string | number }) {
+function StatBadge({ label, value, tip }: { label: string; value: string | number; tip?: string }) {
   return (
     <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac px-4 py-3">
-      <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide">{label}</p>
+      <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide">
+        {label}
+        {tip && <InfoTip text={tip} />}
+      </p>
       <p className="mt-0.5 text-xl font-semibold text-(--color-text-primary) tabular-nums">
         {typeof value === 'number' ? value.toLocaleString() : value}
       </p>
@@ -71,14 +75,29 @@ export default function StatsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-lg font-semibold text-(--color-text-primary)">Corpus Statistics</h1>
+      <h1 className="text-lg font-semibold text-(--color-text-primary)">
+        Corpus Statistics
+        <InfoTip text="These are facts and statistics about your entire document collection — how many documents, pages, and text segments (chunks) have been processed." />
+      </h1>
 
       {/* Summary badges */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatBadge label="Documents" value={stats.document_count} />
-        <StatBadge label="Chunks" value={stats.total_chunks} />
-        <StatBadge label="Pages" value={stats.total_pages} />
-        <StatBadge label="Entities" value={Object.values(stats.entity_type_counts).reduce((a, b) => a + b, 0)} />
+        <StatBadge
+          label="Chunks"
+          value={stats.total_chunks}
+          tip="Your documents are split into overlapping text segments called chunks (~1,000 characters each) for search and analysis."
+        />
+        <StatBadge
+          label="Pages"
+          value={stats.total_pages}
+          tip="Total pages across all documents. PDFs use their real page breaks; plain text files get synthetic pages at regular intervals."
+        />
+        <StatBadge
+          label="Entities"
+          value={Object.values(stats.entity_type_counts).reduce((a, b) => a + b, 0)}
+          tip="Named entities — people, organizations, places, dates, etc. — automatically extracted from your documents using natural language processing."
+        />
       </div>
 
       {/* Charts */}
