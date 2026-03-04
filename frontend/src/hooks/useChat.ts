@@ -17,6 +17,7 @@ export interface ChatMessage {
   content: string
   tool_calls?: ToolCallInfo[]
   rag_context?: RagContextChunk[]
+  errorDetail?: string
   isStreaming?: boolean
 }
 
@@ -179,6 +180,7 @@ export function useChat() {
                       updated[updated.length - 1] = {
                         ...last,
                         content: `Error: ${event.message}`,
+                        errorDetail: event.detail || undefined,
                         isStreaming: false,
                       }
                     }
