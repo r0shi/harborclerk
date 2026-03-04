@@ -41,6 +41,7 @@ class Upload(Base):
         UUID(as_uuid=True),
         ForeignKey("upload_sessions.session_id", ondelete="SET NULL"),
         nullable=True,
+        index=True,
     )
     source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(

@@ -239,6 +239,7 @@ export async function uploadFileToSession(
   file: File,
   sourcePath: string | null,
   signal?: AbortSignal,
+  _retry = true,
 ): Promise<SessionFileResult> {
   const formData = new FormData()
   formData.append('file', file)
@@ -260,10 +261,10 @@ export async function uploadFileToSession(
 
   checkBuildHash(res)
 
-  if (res.status === 401) {
+  if (res.status === 401 && _retry) {
     const refreshed = await refreshToken()
     if (refreshed) {
-      return uploadFileToSession(sessionId, file, sourcePath, signal)
+      return uploadFileToSession(sessionId, file, sourcePath, signal, false)
     }
     onUnauthorized()
   }

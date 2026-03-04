@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_user
@@ -445,6 +445,13 @@ def _session_response(s: UploadSession) -> SessionResponse:
     )
 
 
+async def _increment_session_counters(db: AsyncSession, session_id: uuid.UUID, **increments: int) -> None:
+    """Atomically increment session counters via SQL UPDATE."""
+    values = {k: getattr(UploadSession, k) + v for k, v in increments.items() if v}
+    values["updated_at"] = datetime.now(UTC)
+    await db.execute(update(UploadSession).where(UploadSession.session_id == session_id).values(**values))
+
+
 async def _get_session_or_404(session_id_str: str, db: AsyncSession, principal: Principal) -> UploadSession:
     try:
         sid = uuid.UUID(session_id_str)
@@ -500,6 +507,10 @@ async def upload_file_to_session(
     if us.status != "active":
         raise HTTPException(status_code=400, detail=f"Session status is '{us.status}', not active")
 
+    # Validate source_path length to prevent abuse
+    if source_path and len(source_path) > 1024:
+        raise HTTPException(status_code=400, detail="source_path exceeds 1024 character limit")
+
     settings = get_settings()
     max_file_bytes = settings.max_file_size_mb * 1024 * 1024
 
@@ -553,8 +564,7 @@ async def upload_file_to_session(
             status="duplicate",
         )
         db.add(upload_row)
-        us.uploaded = us.uploaded + 1
-        us.updated_at = datetime.now(UTC)
+        await _increment_session_counters(db, us.session_id, uploaded=1)
         await db.flush()
         await db.commit()
         return SessionFileUploadResponse(
@@ -592,8 +602,9 @@ async def upload_file_to_session(
         canonical_key = f"versions/{version.version_id}/{safe_name}"
         content = b"".join(chunks)
         storage = get_storage()
-        storage.put_object(
-            settings.minio_bucket, canonical_key, io.BytesIO(content), length=total_size, content_type=mime
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, storage.put_object, settings.minio_bucket, canonical_key, io.BytesIO(content), total_size, mime
         )
         version.original_object_key = canonical_key
 
@@ -612,9 +623,7 @@ async def upload_file_to_session(
             status="processing",
         )
         db.add(upload_row)
-        us.uploaded = us.uploaded + 1
-        us.confirmed = us.confirmed + 1
-        us.updated_at = datetime.now(UTC)
+        await _increment_session_counters(db, us.session_id, uploaded=1, confirmed=1)
 
         await log_audit(
             db,
@@ -629,7 +638,6 @@ async def upload_file_to_session(
         # Enqueue extraction outside the session
         from harbor_clerk.worker.pipeline import enqueue_stage
 
-        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, enqueue_stage, version.version_id, JobStage.extract)
 
         return SessionFileUploadResponse(
@@ -648,7 +656,10 @@ async def upload_file_to_session(
         temp_key = f"tmp/uploads/{uuid.uuid4()}/{safe_name}"
         content = b"".join(chunks)
         storage = get_storage()
-        storage.put_object(settings.minio_bucket, temp_key, io.BytesIO(content), length=total_size, content_type=mime)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, storage.put_object, settings.minio_bucket, temp_key, io.BytesIO(content), total_size, mime
+        )
 
         upload_row = Upload(
             user_id=principal.id if principal.type == "user" else None,
@@ -663,8 +674,7 @@ async def upload_file_to_session(
             status="pending_confirmation",
         )
         db.add(upload_row)
-        us.uploaded = us.uploaded + 1
-        us.updated_at = datetime.now(UTC)
+        await _increment_session_counters(db, us.session_id, uploaded=1)
         await db.flush()
         await db.commit()
 
@@ -701,6 +711,8 @@ async def confirm_session(
     results: list[BatchConfirmResultItem] = []
     version_ids_to_enqueue: list[uuid.UUID] = []
 
+    confirmed_count = 0
+    failed_count = 0
     for upload in pending:
         try:
             confirm_result = await _confirm_single(
@@ -721,7 +733,7 @@ async def confirm_session(
                 )
             )
             version_ids_to_enqueue.append(uuid.UUID(confirm_result.version_id))
-            us.confirmed = us.confirmed + 1
+            confirmed_count += 1
         except HTTPException as exc:
             results.append(
                 BatchConfirmResultItem(
@@ -730,10 +742,18 @@ async def confirm_session(
                     error=exc.detail,
                 )
             )
-            us.failed = us.failed + 1
+            failed_count += 1
 
-    us.status = "completed"
-    us.updated_at = datetime.now(UTC)
+    await db.execute(
+        update(UploadSession)
+        .where(UploadSession.session_id == us.session_id)
+        .values(
+            confirmed=UploadSession.confirmed + confirmed_count,
+            failed=UploadSession.failed + failed_count,
+            status="completed",
+            updated_at=datetime.now(UTC),
+        )
+    )
     await db.commit()
 
     from harbor_clerk.worker.pipeline import enqueue_stage

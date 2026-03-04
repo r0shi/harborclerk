@@ -47,10 +47,12 @@ def upgrade() -> None:
     op.create_foreign_key(
         "fk_uploads_session_id", "uploads", "upload_sessions", ["session_id"], ["session_id"], ondelete="SET NULL"
     )
+    op.create_index("ix_uploads_session_id", "uploads", ["session_id"])
     op.add_column("uploads", sa.Column("source_path", sa.Text(), nullable=True))
 
 
 def downgrade() -> None:
+    op.drop_index("ix_uploads_session_id", "uploads", if_exists=True)
     op.drop_constraint("fk_uploads_session_id", "uploads", type_="foreignkey")
     op.drop_column("uploads", "source_path")
     op.drop_column("uploads", "session_id")
