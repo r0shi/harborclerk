@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import uvicorn
@@ -30,6 +32,68 @@ from harbor_clerk.mcp_server import create_mcp_app  # noqa: E402
 _mcp_asgi, _mcp_session_manager = create_mcp_app()
 
 
+async def _session_reaper_loop() -> None:
+    """Background task: clean up stale upload sessions every 15 minutes."""
+    while True:
+        await asyncio.sleep(15 * 60)
+        try:
+            from harbor_clerk.db import async_session_factory
+            from harbor_clerk.models import Upload, UploadSession
+
+            async with async_session_factory() as db:
+                from sqlalchemy import select
+
+                now = datetime.now(UTC)
+
+                # Cancel sessions still active after 24h
+                stale_cutoff = now - timedelta(hours=24)
+                result = await db.execute(
+                    select(UploadSession).where(
+                        UploadSession.status == "active",
+                        UploadSession.created_at < stale_cutoff,
+                    )
+                )
+                stale_sessions = result.scalars().all()
+                for us in stale_sessions:
+                    logger.info("Reaper: cancelling stale session %s (created %s)", us.session_id, us.created_at)
+                    us.status = "cancelled"
+                    us.updated_at = now
+
+                # Delete temp files for cancelled/completed sessions older than 1h
+                cleanup_cutoff = now - timedelta(hours=1)
+                result = await db.execute(
+                    select(UploadSession).where(
+                        UploadSession.status.in_(["cancelled", "completed"]),
+                        UploadSession.updated_at < cleanup_cutoff,
+                    )
+                )
+                done_sessions = result.scalars().all()
+                storage = get_storage()
+                settings = get_settings()
+                for us in done_sessions:
+                    upload_result = await db.execute(
+                        select(Upload).where(
+                            Upload.session_id == us.session_id,
+                            Upload.minio_object_key.like("tmp/%"),
+                        )
+                    )
+                    for upload in upload_result.scalars().all():
+                        try:
+                            storage.remove_object(settings.minio_bucket, upload.minio_object_key)
+                            upload.minio_object_key = ""
+                        except Exception:
+                            logger.warning("Reaper: failed to delete %s", upload.minio_object_key)
+
+                await db.commit()
+                total = len(stale_sessions) + len(done_sessions)
+                if total > 0:
+                    logger.info(
+                        "Session reaper: cancelled %d stale, cleaned %d done", len(stale_sessions), len(done_sessions)
+                    )
+        except Exception:
+            logger.exception("Session reaper error")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -46,12 +110,22 @@ async def lifespan(app: FastAPI):
     # Ensure storage bucket exists
     get_storage().ensure_bucket(settings.minio_bucket)
 
-    # Start MCP session manager (required for Streamable HTTP transport)
-    if _mcp_session_manager is not None:
-        async with _mcp_session_manager.run():
+    # Start session reaper background task
+    reaper_task = asyncio.create_task(_session_reaper_loop())
+
+    try:
+        # Start MCP session manager (required for Streamable HTTP transport)
+        if _mcp_session_manager is not None:
+            async with _mcp_session_manager.run():
+                yield
+        else:
             yield
-    else:
-        yield
+    finally:
+        reaper_task.cancel()
+        try:
+            await reaper_task
+        except asyncio.CancelledError:
+            pass
 
     logger.info("Shutting down Harbor Clerk API")
 

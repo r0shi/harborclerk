@@ -192,3 +192,100 @@ export class ApiError extends Error {
     this.name = 'ApiError'
   }
 }
+
+// --- Upload Sessions ---
+
+export interface UploadSessionInfo {
+  session_id: string
+  user_id: string
+  label: string | null
+  auto_confirm: boolean
+  status: string
+  total_files: number
+  uploaded: number
+  confirmed: number
+  failed: number
+  created_at: string
+  updated_at: string
+}
+
+export interface SessionFileResult {
+  upload_id: string
+  source_path: string | null
+  status: string
+  sha256: string
+  filename: string
+  size_bytes: number
+  duplicate_doc_id?: string
+  duplicate_version_id?: string
+  doc_id?: string
+  version_id?: string
+}
+
+export async function createUploadSession(body: {
+  total_files: number
+  auto_confirm?: boolean
+  label?: string
+}): Promise<UploadSessionInfo> {
+  return post('/api/uploads/sessions', body)
+}
+
+export async function getUploadSession(sessionId: string): Promise<UploadSessionInfo> {
+  return get(`/api/uploads/sessions/${sessionId}`)
+}
+
+export async function uploadFileToSession(
+  sessionId: string,
+  file: File,
+  sourcePath: string | null,
+  signal?: AbortSignal,
+  _retry = true,
+): Promise<SessionFileResult> {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (sourcePath) {
+    formData.append('source_path', sourcePath)
+  }
+
+  const token = getToken()
+  const headers: HeadersInit = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const res = await fetch(`/api/uploads/sessions/${sessionId}/files`, {
+    method: 'POST',
+    headers,
+    body: formData,
+    credentials: 'include',
+    signal,
+  })
+
+  checkBuildHash(res)
+
+  if (res.status === 401 && _retry) {
+    const refreshed = await refreshToken()
+    if (refreshed) {
+      return uploadFileToSession(sessionId, file, sourcePath, signal, false)
+    }
+    onUnauthorized()
+  }
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new ApiError(res.status, err.detail || res.statusText)
+  }
+  return res.json()
+}
+
+export async function confirmSession(sessionId: string): Promise<{
+  results: Array<{ upload_id: string; doc_id?: string; version_id?: string; status: string; error?: string }>
+}> {
+  return post(`/api/uploads/sessions/${sessionId}/confirm`)
+}
+
+export async function cancelSession(sessionId: string): Promise<void> {
+  return del(`/api/uploads/sessions/${sessionId}`)
+}
+
+export async function getResumeInfo(sessionId: string): Promise<{ completed_paths: string[] }> {
+  return get(`/api/uploads/sessions/${sessionId}/resume`)
+}

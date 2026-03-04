@@ -1,64 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { get, post, postForm } from '../api'
+import { get, getUploadSession, UploadSessionInfo } from '../api'
+import { FileItem, useUploadSession } from '../hooks/useUploadSession'
 
 // --- Types ---
-
-interface UploadFileResult {
-  upload_id: string
-  filename: string
-  size_bytes: number
-  mime_type?: string
-  status: 'pending_confirmation' | 'duplicate' | 'skipped'
-  duplicate_doc_id?: string
-  duplicate_version_id?: string
-}
-
-interface DocSummary {
-  doc_id: string
-  title: string
-  canonical_filename: string | null
-}
-
-interface ConfirmResult {
-  doc_id: string
-  version_id: string
-  status: string
-}
-
-interface BatchConfirmResultItem {
-  upload_id: string
-  doc_id?: string
-  version_id?: string
-  status: string
-  error?: string
-}
 
 interface FileWithFolder {
   file: File
   folderPath: string
 }
 
-interface MatchCandidate {
-  doc: DocSummary
-  score: number
-  reason: string
-}
-
-interface PendingFile {
-  uploadId: string
-  filename: string
-  sizeBytes: number
-  folderPath: string
-  matchCandidates: MatchCandidate[]
-  action: 'new_document' | 'new_version'
-  selectedDocId?: string
-}
-
 // --- Constants ---
 
 const SUPPORTED_EXTENSIONS = new Set([
-  // Documents
   '.pdf',
   '.docx',
   '.doc',
@@ -67,31 +21,27 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.md',
   '.odt',
   '.pages',
-  // Spreadsheets
   '.xlsx',
   '.xls',
   '.ods',
   '.numbers',
   '.csv',
-  // Presentations
   '.pptx',
   '.ppt',
   '.odp',
   '.key',
-  // Images (OCR)
   '.jpg',
   '.jpeg',
   '.png',
   '.tiff',
   '.tif',
-  // eBooks
   '.epub',
-  // Web
   '.html',
   '.htm',
-  // Email
   '.eml',
 ])
+
+const AUTO_CONFIRM_THRESHOLD = 50
 
 // --- Utilities ---
 
@@ -105,26 +55,6 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
-function findMatchCandidates(filename: string, docs: DocSummary[]): MatchCandidate[] {
-  const stem = filename.replace(/\.[^.]+$/, '').toLowerCase()
-  const candidates: MatchCandidate[] = []
-
-  for (const doc of docs) {
-    const docFilename = (doc.canonical_filename || '').toLowerCase()
-    const docStem = docFilename.replace(/\.[^.]+$/, '')
-
-    if (filename.toLowerCase() === docFilename) {
-      candidates.push({ doc, score: 1.0, reason: 'Exact filename match' })
-    } else if (stem === docStem) {
-      candidates.push({ doc, score: 0.8, reason: 'Same name, different format' })
-    } else if (stem.length > 3 && (docStem.includes(stem) || stem.includes(docStem))) {
-      candidates.push({ doc, score: 0.5, reason: 'Similar name' })
-    }
-  }
-
-  return candidates.sort((a, b) => b.score - a.score)
 }
 
 /** Drain all entries from a directory reader (spec requires repeated calls). */
@@ -158,131 +88,69 @@ async function collectFiles(entry: FileSystemEntry, basePath = ''): Promise<File
 // --- Components ---
 
 export default function UploadPage() {
-  const [results, setResults] = useState<UploadFileResult[]>([])
-  const [uploading, setUploading] = useState(false)
-  const [confirming, setConfirming] = useState(false)
-  const [error, setError] = useState('')
+  const hook = useUploadSession()
   const [dragOver, setDragOver] = useState(false)
-  const [confirmed, setConfirmed] = useState<Map<string, ConfirmResult>>(new Map())
-  const [docs, setDocs] = useState<DocSummary[]>([])
+  const [collectingFiles, setCollectingFiles] = useState(false)
+  const [collectedFiles, setCollectedFiles] = useState<FileWithFolder[] | null>(null)
+  const [cancelConfirm, setCancelConfirm] = useState(false)
   const [docsLoaded, setDocsLoaded] = useState(false)
-  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
-  const [confirmProgress, setConfirmProgress] = useState<{ done: number; total: number } | null>(null)
+  const [docCount, setDocCount] = useState(0)
 
+  // Check existing doc count for auto-confirm heuristic
   useEffect(() => {
-    get<{ items: DocSummary[] }>('/api/docs', { limit: 0 })
+    get<{ items: { doc_id: string }[] }>('/api/docs', { limit: 0 })
       .then((data) => {
-        setDocs(data.items)
+        setDocCount(data.items.length)
         setDocsLoaded(true)
       })
       .catch(() => setDocsLoaded(true))
   }, [])
 
-  const unconfirmedPending = useMemo(
-    () => pendingFiles.filter((p) => !confirmed.has(p.uploadId)),
-    [pendingFiles, confirmed],
-  )
+  // Check for resumable session on mount
+  const [resumeInfo, setResumeInfo] = useState<UploadSessionInfo | null>(null)
+  const [resumeChecked, setResumeChecked] = useState(false)
 
-  const hasMatchSuggestions = useMemo(
-    () => unconfirmedPending.some((p) => p.matchCandidates.length > 0),
-    [unconfirmedPending],
-  )
-
-  const CONFIRM_BATCH_SIZE = 20
-
-  async function batchConfirm(items: PendingFile[]) {
-    setConfirming(true)
-    setError('')
-    setConfirmProgress(null)
-    const allErrors: string[] = []
-
-    try {
-      for (let i = 0; i < items.length; i += CONFIRM_BATCH_SIZE) {
-        const chunk = items.slice(i, i + CONFIRM_BATCH_SIZE)
-        setConfirmProgress({ done: i, total: items.length })
-
-        const body = {
-          items: chunk.map((p) => ({
-            upload_id: p.uploadId,
-            action: p.action,
-            existing_doc_id: p.action === 'new_version' ? p.selectedDocId : undefined,
-          })),
-        }
-        const data = await post<{ results: BatchConfirmResultItem[] }>('/api/uploads/confirm-batch', body)
-        setConfirmed((prev) => {
-          const next = new Map(prev)
-          for (const r of data.results) {
-            if (r.status !== 'error' && r.doc_id && r.version_id) {
-              next.set(r.upload_id, {
-                doc_id: r.doc_id,
-                version_id: r.version_id,
-                status: r.status,
-              })
-            }
-          }
-          return next
-        })
-        const errors = data.results.filter((r) => r.status === 'error')
-        allErrors.push(...errors.map((e) => e.error ?? 'Unknown error'))
-      }
-
-      if (allErrors.length > 0) {
-        setError(allErrors.join('; '))
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Confirm failed')
-    } finally {
-      setConfirming(false)
-      setConfirmProgress(null)
+  useEffect(() => {
+    const sid = hook.sessionId
+    if (!sid || hook.session) {
+      setResumeChecked(true)
+      return
     }
-  }
-
-  const uploadFiles = useCallback(
-    async (filesWithFolders: FileWithFolder[]) => {
-      setError('')
-      setUploading(true)
-      setResults([])
-      setConfirmed(new Map())
-      setPendingFiles([])
-
-      try {
-        const formData = new FormData()
-        for (const { file } of filesWithFolders) {
-          formData.append('files', file)
+    getUploadSession(sid)
+      .then((info) => {
+        if (info.status === 'active') {
+          setResumeInfo(info)
+        } else {
+          // Session is done, clear it
+          hook.clearSession()
         }
-        const data = await postForm<{ files: UploadFileResult[] }>('/api/uploads', formData)
-        setResults(data.files)
+      })
+      .catch(() => {
+        hook.clearSession()
+      })
+      .finally(() => setResumeChecked(true))
+    // Only run on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-        // Build pending files with folder paths and match candidates
-        const pending: PendingFile[] = []
-        data.files.forEach((r, i) => {
-          if (r.status !== 'pending_confirmation') return
-          const folderPath = filesWithFolders[i]?.folderPath || ''
-          const matches = findMatchCandidates(r.filename, docs)
-          const bestMatch = matches.length > 0 && matches[0].score >= 0.8 ? matches[0] : null
-          pending.push({
-            uploadId: r.upload_id,
-            filename: r.filename,
-            sizeBytes: r.size_bytes,
-            folderPath,
-            matchCandidates: matches,
-            action: bestMatch ? 'new_version' : 'new_document',
-            selectedDocId: bestMatch ? bestMatch.doc.doc_id : undefined,
-          })
-        })
-        setPendingFiles(pending)
-        setUploading(false)
+  const handleFilesSelected = useCallback(
+    (filesWithFolders: FileWithFolder[]) => {
+      if (filesWithFolders.length === 0) return
 
-        // Auto-confirm if no existing docs
-        if (docsLoaded && docs.length === 0 && pending.length > 0) {
-          await batchConfirm(pending)
-        }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Upload failed')
-        setUploading(false)
+      const autoConfirm = filesWithFolders.length > AUTO_CONFIRM_THRESHOLD || (docsLoaded && docCount === 0)
+      const inputs = filesWithFolders.map((f) => ({
+        file: f.file,
+        sourcePath: f.folderPath ? `${f.folderPath}/${f.file.name}` : f.file.name,
+      }))
+
+      // If review mode, save files for potential resume
+      if (!autoConfirm) {
+        setCollectedFiles(filesWithFolders)
       }
+
+      hook.startSession(inputs, autoConfirm)
     },
-    [docs, docsLoaded],
+    [hook, docsLoaded, docCount],
   )
 
   async function handleDrop(e: React.DragEvent) {
@@ -299,351 +167,428 @@ export default function UploadPage() {
       }
     }
 
-    if (entries.length > 0) {
-      const allNested = await Promise.all(entries.map((ent) => collectFiles(ent)))
-      const files = allNested.flat()
-      if (files.length === 0) {
-        setError(
-          'No supported files found. Supported types: PDF, DOCX, DOC, RTF, TXT, MD, ODT, XLSX, XLS, CSV, PPTX, PPT, JPEG, PNG, TIFF, EPUB, HTML, EML',
-        )
-        return
+    setCollectingFiles(true)
+    try {
+      let files: FileWithFolder[] = []
+      if (entries.length > 0) {
+        const allNested = await Promise.all(entries.map((ent) => collectFiles(ent)))
+        files = allNested.flat()
+      } else if (e.dataTransfer.files.length > 0) {
+        files = Array.from(e.dataTransfer.files)
+          .filter((f) => f.size > 0 && isSupportedFile(f.name))
+          .map((f) => ({ file: f, folderPath: '' }))
       }
-      uploadFiles(files)
-      return
-    }
 
-    if (e.dataTransfer.files.length > 0) {
-      const supported = Array.from(e.dataTransfer.files).filter(
-        (f) =>
-          // Skip likely folder entries: 0-byte with empty type or no extension
-          f.size > 0 && isSupportedFile(f.name),
-      )
-      if (supported.length === 0) {
-        setError(
-          'No supported files found. Supported types: PDF, DOCX, DOC, RTF, TXT, MD, ODT, XLSX, XLS, CSV, PPTX, PPT, JPEG, PNG, TIFF, EPUB, HTML, EML',
-        )
+      if (files.length === 0) {
+        hook.clearSession()
         return
       }
-      uploadFiles(supported.map((f) => ({ file: f, folderPath: '' })))
+      handleFilesSelected(files)
+    } finally {
+      setCollectingFiles(false)
     }
   }
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (e.target.files && e.target.files.length > 0) {
-      uploadFiles(Array.from(e.target.files).map((f) => ({ file: f, folderPath: '' })))
+      const files = Array.from(e.target.files)
+        .filter((f) => isSupportedFile(f.name))
+        .map((f) => ({ file: f, folderPath: '' }))
+      handleFilesSelected(files)
     }
   }
 
-  function updatePendingAction(uploadId: string, value: string) {
-    setPendingFiles((prev) =>
-      prev.map((p) => {
-        if (p.uploadId !== uploadId) return p
-        if (value === 'new') {
-          return {
-            ...p,
-            action: 'new_document' as const,
-            selectedDocId: undefined,
-          }
-        }
-        const docId = value.replace('version:', '')
-        return {
-          ...p,
-          action: 'new_version' as const,
-          selectedDocId: docId,
-        }
-      }),
-    )
-  }
-
-  function setAllToNew() {
-    setPendingFiles((prev) =>
-      prev.map((p) => ({
-        ...p,
-        action: 'new_document' as const,
-        selectedDocId: undefined,
-      })),
-    )
-  }
-
-  function acceptAllSuggestions() {
-    setPendingFiles((prev) =>
-      prev.map((p) => {
-        if (p.matchCandidates.length > 0) {
-          return {
-            ...p,
-            action: 'new_version' as const,
-            selectedDocId: p.matchCandidates[0].doc.doc_id,
-          }
-        }
-        return p
-      }),
-    )
-  }
-
-  function setFolderToNew(folderPath: string) {
-    setPendingFiles((prev) =>
-      prev.map((p) =>
-        p.folderPath === folderPath
-          ? {
-              ...p,
-              action: 'new_document' as const,
-              selectedDocId: undefined,
-            }
-          : p,
-      ),
-    )
-  }
-
-  // Group unconfirmed pending files by folder
-  const folderGroups = useMemo(() => {
-    const groups: [string, PendingFile[]][] = []
-    const map = new Map<string, PendingFile[]>()
-    for (const p of unconfirmedPending) {
-      const key = p.folderPath
-      if (!map.has(key)) {
-        const arr: PendingFile[] = []
-        map.set(key, arr)
-        groups.push([key, arr])
-      }
-      map.get(key)!.push(p)
+  function handleResume() {
+    if (!collectedFiles && !resumeInfo) return
+    // For resume, we need the user to re-select files (browser security prevents storing File refs)
+    // Show them a message to re-drop the same folder
+    setResumeInfo(null)
+    if (collectedFiles) {
+      const inputs = collectedFiles.map((f) => ({
+        file: f.file,
+        sourcePath: f.folderPath ? `${f.folderPath}/${f.file.name}` : f.file.name,
+      }))
+      hook.resumeSession(inputs)
     }
-    return groups
-  }, [unconfirmedPending])
+  }
 
-  const confirmedFiles = pendingFiles.filter((p) => confirmed.has(p.uploadId))
-  const nonPendingResults = results.filter((r) => r.status === 'duplicate' || r.status === 'skipped')
+  function handleStartFresh() {
+    hook.clearSession()
+    setResumeInfo(null)
+    setCollectedFiles(null)
+    setCancelConfirm(false)
+  }
+
+  async function handleCancel() {
+    if (!cancelConfirm) {
+      setCancelConfirm(true)
+      return
+    }
+    await hook.cancel()
+    setCancelConfirm(false)
+  }
+
+  const showDropZone = !hook.session || hook.session.status === 'completed' || hook.session.status === 'cancelled'
+
+  if (!resumeChecked) return null
 
   return (
     <div>
       <h1 className="mb-4 text-xl font-bold">Upload Documents</h1>
 
-      {error && (
+      {hook.error && (
         <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
-          {error}
+          {hook.error}
         </div>
       )}
 
-      {/* Drop zone */}
-      <div
-        onDragOver={(e) => {
-          e.preventDefault()
-          setDragOver(true)
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
-        className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-12 transition-colors ${
-          dragOver
-            ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-            : 'border-gray-300/60 dark:border-gray-600/60 bg-white dark:bg-[#2c2c2e] shadow-mac'
-        }`}
-      >
-        {uploading || confirming ? (
-          <p className="text-gray-500 dark:text-gray-400">{uploading ? 'Uploading...' : 'Starting processing...'}</p>
-        ) : (
-          <>
-            <p className="mb-2 text-gray-600 dark:text-gray-400">
-              Drag and drop files or folders here, or click to browse
-            </p>
-            <p className="mb-4 text-xs text-gray-400">PDF, Office, text, images, eBooks, and more</p>
-            <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700">
-              Choose Files
-              <input
-                type="file"
-                multiple
-                onChange={handleFileChange}
-                className="hidden"
-                accept=".pdf,.docx,.doc,.rtf,.txt,.md,.odt,.pages,.xlsx,.xls,.ods,.numbers,.csv,.pptx,.ppt,.odp,.key,.jpg,.jpeg,.png,.tiff,.tif,.epub,.html,.htm,.eml"
-              />
-            </label>
-          </>
-        )}
-      </div>
+      {/* Resume banner */}
+      {resumeInfo && !hook.session && (
+        <div className="mb-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4 shadow-mac">
+          <p className="text-sm font-medium text-blue-700 dark:text-blue-400">
+            You have an in-progress upload ({resumeInfo.uploaded}/{resumeInfo.total_files} files).
+          </p>
+          <p className="mt-1 text-xs text-blue-600 dark:text-blue-500">
+            Drop the same folder again to resume, or start fresh.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <button
+              onClick={handleStartFresh}
+              className="rounded-lg border border-blue-300 dark:border-blue-600 px-3 py-1 text-xs font-medium text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40"
+            >
+              Start Fresh
+            </button>
+          </div>
+        </div>
+      )}
 
-      {/* Results */}
-      {results.length > 0 && (
-        <div className="mt-6 space-y-3">
-          {/* Non-pending results (duplicates, skipped) */}
-          {nonPendingResults.map((r) => (
-            <StatusCard key={r.upload_id} result={r} />
-          ))}
-
-          {/* Confirmed files */}
-          {confirmedFiles.map((p) => {
-            const c = confirmed.get(p.uploadId)!
-            return (
-              <div
-                key={p.uploadId}
-                className="rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4 shadow-mac"
-              >
-                <p className="text-sm font-medium text-green-700 dark:text-green-400">
-                  {p.filename} — Processing started
-                </p>
-                <Link to={`/docs/${c.doc_id}`} className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
-                  View document
-                </Link>
-              </div>
-            )
-          })}
-
-          {/* Batch confirm UI */}
-          {unconfirmedPending.length > 0 && (
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
-              {/* Header */}
-              <div className="border-b border-gray-100 dark:border-gray-700/50 px-4 py-3 flex items-center justify-between flex-wrap gap-2">
-                <h2 className="text-sm font-semibold">
-                  {unconfirmedPending.length} file
-                  {unconfirmedPending.length !== 1 ? 's' : ''} ready to import
-                </h2>
-                <div className="flex gap-2">
-                  {hasMatchSuggestions && (
-                    <button
-                      onClick={acceptAllSuggestions}
-                      className="rounded-lg border border-amber-300 dark:border-amber-600 px-3 py-1 text-xs font-medium text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/20"
-                    >
-                      Accept All Suggestions
-                    </button>
-                  )}
-                  <button
-                    onClick={setAllToNew}
-                    className="rounded-lg border border-gray-200 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
-                  >
-                    All as New Documents
-                  </button>
-                  <button
-                    onClick={() => batchConfirm(unconfirmedPending)}
-                    disabled={confirming}
-                    className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    {confirming
-                      ? confirmProgress
-                        ? `${Math.min(confirmProgress.done + CONFIRM_BATCH_SIZE, confirmProgress.total)}/${confirmProgress.total}`
-                        : 'Confirming...'
-                      : `Confirm ${unconfirmedPending.length}`}
-                  </button>
-                </div>
-              </div>
-
-              {/* File groups */}
-              <div className="divide-y divide-gray-50 dark:divide-gray-700/30">
-                {folderGroups.map(([folder, files]) => (
-                  <div key={folder || '__root__'}>
-                    {(folder || folderGroups.length > 1) && (
-                      <div className="flex items-center justify-between px-4 py-2 bg-gray-50/50 dark:bg-gray-800/30">
-                        <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                          {folder || 'Files'}
-                        </span>
-                        {files.length > 1 && (
-                          <button
-                            onClick={() => setFolderToNew(folder)}
-                            className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                          >
-                            All as new
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    {files.map((p) => (
-                      <FileRow key={p.uploadId} pending={p} docs={docs} onChange={updatePendingAction} />
-                    ))}
-                  </div>
-                ))}
-              </div>
-
-              {/* Confirm button */}
-              <div className="border-t border-gray-100 dark:border-gray-700/50 px-4 py-3 flex justify-end">
-                <button
-                  onClick={() => batchConfirm(unconfirmedPending)}
-                  disabled={confirming}
-                  className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {confirming
-                    ? confirmProgress
-                      ? `Confirming... ${Math.min(confirmProgress.done + CONFIRM_BATCH_SIZE, confirmProgress.total)}/${confirmProgress.total}`
-                      : 'Confirming...'
-                    : `Confirm ${unconfirmedPending.length} file${unconfirmedPending.length !== 1 ? 's' : ''}`}
-                </button>
-              </div>
-            </div>
+      {/* Drop zone — shown when no active session */}
+      {showDropZone && (
+        <div
+          onDragOver={(e) => {
+            e.preventDefault()
+            setDragOver(true)
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-12 transition-colors ${
+            dragOver
+              ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+              : 'border-gray-300/60 dark:border-gray-600/60 bg-white dark:bg-[#2c2c2e] shadow-mac'
+          }`}
+        >
+          {collectingFiles ? (
+            <p className="text-gray-500 dark:text-gray-400">Scanning files...</p>
+          ) : (
+            <>
+              <p className="mb-2 text-gray-600 dark:text-gray-400">
+                Drag and drop files or folders here, or click to browse
+              </p>
+              <p className="mb-4 text-xs text-gray-400">PDF, Office, text, images, eBooks, and more</p>
+              <label className="cursor-pointer rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700">
+                Choose Files
+                <input
+                  type="file"
+                  multiple
+                  onChange={handleFileChange}
+                  className="hidden"
+                  accept=".pdf,.docx,.doc,.rtf,.txt,.md,.odt,.pages,.xlsx,.xls,.ods,.numbers,.csv,.pptx,.ppt,.odp,.key,.jpg,.jpeg,.png,.tiff,.tif,.epub,.html,.htm,.eml"
+                />
+              </label>
+            </>
           )}
         </div>
       )}
-    </div>
-  )
-}
 
-function FileRow({
-  pending,
-  docs,
-  onChange,
-}: {
-  pending: PendingFile
-  docs: DocSummary[]
-  onChange: (uploadId: string, value: string) => void
-}) {
-  const otherDocs = docs.filter((d) => !pending.matchCandidates.some((m) => m.doc.doc_id === d.doc_id))
-  const matchReason =
-    pending.action === 'new_version'
-      ? pending.matchCandidates.find((m) => m.doc.doc_id === pending.selectedDocId)?.reason
-      : null
-
-  return (
-    <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50/50 dark:hover:bg-gray-800/20">
-      <div className="min-w-0 flex-1">
-        <span className="text-sm truncate block">{pending.filename}</span>
-        <span className="text-xs text-gray-400">{formatSize(pending.sizeBytes)}</span>
-      </div>
-      {matchReason && (
-        <span className="text-xs text-amber-600 dark:text-amber-400 shrink-0 hidden sm:inline">{matchReason}</span>
+      {/* Active upload session */}
+      {hook.session && hook.session.status !== 'completed' && hook.session.status !== 'cancelled' && (
+        <SessionProgress
+          session={hook.session}
+          files={hook.files}
+          progress={hook.progress}
+          isUploading={hook.isUploading}
+          isConfirming={hook.isConfirming}
+          cancelConfirm={cancelConfirm}
+          onCancel={handleCancel}
+          onCancelDismiss={() => setCancelConfirm(false)}
+          onConfirmAll={hook.confirmAll}
+          onResume={handleResume}
+        />
       )}
-      <select
-        value={pending.action === 'new_document' ? 'new' : `version:${pending.selectedDocId}`}
-        onChange={(e) => onChange(pending.uploadId, e.target.value)}
-        className="shrink-0 rounded-lg border-0 bg-gray-100 dark:bg-gray-700/50 px-2 py-1 text-xs focus:ring-2 focus:ring-blue-500/30"
-      >
-        <option value="new">New document</option>
-        {pending.matchCandidates.length > 0 && (
-          <optgroup label="Suggested">
-            {pending.matchCandidates.map((m) => (
-              <option key={m.doc.doc_id} value={`version:${m.doc.doc_id}`}>
-                Update &ldquo;{m.doc.title}&rdquo;
-              </option>
-            ))}
-          </optgroup>
-        )}
-        {otherDocs.length > 0 && (
-          <optgroup label="Other documents">
-            {otherDocs.map((d) => (
-              <option key={d.doc_id} value={`version:${d.doc_id}`}>
-                {d.title}
-              </option>
-            ))}
-          </optgroup>
-        )}
-      </select>
+
+      {/* Completed session */}
+      {hook.session?.status === 'completed' && (
+        <div className="mt-6 space-y-3">
+          <div className="rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4 shadow-mac">
+            <p className="text-sm font-medium text-green-700 dark:text-green-400">
+              Upload complete — {hook.progress.uploaded} file{hook.progress.uploaded !== 1 ? 's' : ''} uploaded
+              {hook.progress.failed > 0 && (
+                <span className="text-red-600 dark:text-red-400"> ({hook.progress.failed} failed)</span>
+              )}
+            </p>
+            <div className="mt-2 flex gap-2">
+              <Link to="/docs" className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
+                View documents
+              </Link>
+              <button onClick={handleStartFresh} className="text-sm text-gray-500 dark:text-gray-400 hover:underline">
+                Upload more
+              </button>
+            </div>
+          </div>
+          <FileList files={hook.files} />
+        </div>
+      )}
+
+      {/* Cancelled */}
+      {hook.session?.status === 'cancelled' && (
+        <div className="mt-6">
+          <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/30 p-4 shadow-mac">
+            <p className="text-sm text-gray-600 dark:text-gray-400">Upload cancelled.</p>
+            <button
+              onClick={handleStartFresh}
+              className="mt-2 text-sm text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              Start new upload
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function StatusCard({ result }: { result: UploadFileResult }) {
-  if (result.status === 'duplicate') {
-    return (
-      <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-4 shadow-mac">
-        <p className="text-sm font-medium text-amber-700 dark:text-amber-400">{result.filename} — Duplicate</p>
-        {result.duplicate_doc_id && (
-          <Link
-            to={`/docs/${result.duplicate_doc_id}`}
-            className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
-          >
-            View existing document
-          </Link>
-        )}
-      </div>
-    )
-  }
+// --- Session Progress Panel ---
+
+function SessionProgress({
+  session,
+  files,
+  progress,
+  isUploading,
+  isConfirming,
+  cancelConfirm,
+  onCancel,
+  onCancelDismiss,
+  onConfirmAll,
+}: {
+  session: UploadSessionInfo
+  files: FileItem[]
+  progress: { total: number; uploaded: number; confirmed: number; failed: number; currentFiles: string[] }
+  isUploading: boolean
+  isConfirming: boolean
+  cancelConfirm: boolean
+  onCancel: () => void
+  onCancelDismiss: () => void
+  onConfirmAll: () => void
+  onResume: () => void
+}) {
+  const pct = progress.total > 0 ? Math.round(((progress.uploaded + progress.failed) / progress.total) * 100) : 0
 
   return (
-    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
-      <p className="text-sm text-gray-500 dark:text-gray-400">{result.filename} — Skipped (unsupported type)</p>
+    <div className="mt-6 space-y-3">
+      {/* Auto-confirm banner */}
+      {session.auto_confirm && isUploading && (
+        <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-xs text-blue-700 dark:text-blue-400">
+          Bulk import mode — files are being processed immediately as they upload.
+        </div>
+      )}
+
+      {/* Progress bar */}
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
+        <div className="px-4 py-3 flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold">
+              {isUploading
+                ? 'Uploading...'
+                : isConfirming
+                  ? 'Confirming...'
+                  : `${progress.uploaded} of ${progress.total} files uploaded`}
+            </h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {progress.uploaded} uploaded
+              {progress.failed > 0 && <span className="text-red-500"> · {progress.failed} failed</span>}
+              {session.auto_confirm && <span> · {progress.confirmed} processing</span>}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Confirm button for review mode */}
+            {!session.auto_confirm && !isUploading && progress.uploaded > 0 && session.status === 'active' && (
+              <button
+                onClick={onConfirmAll}
+                disabled={isConfirming}
+                className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
+              >
+                {isConfirming ? 'Confirming...' : `Confirm ${progress.uploaded - progress.confirmed}`}
+              </button>
+            )}
+            {/* Cancel */}
+            {isUploading && (
+              <>
+                {cancelConfirm ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-gray-500">Cancel upload?</span>
+                    <button
+                      onClick={onCancel}
+                      className="rounded-lg bg-red-600 px-2 py-1 text-xs font-medium text-white hover:bg-red-700"
+                    >
+                      Yes
+                    </button>
+                    <button
+                      onClick={onCancelDismiss}
+                      className="rounded-lg border border-gray-200 dark:border-gray-600 px-2 py-1 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                    >
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={onCancel}
+                    className="rounded-lg border border-gray-200 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        <div className="h-1 bg-gray-100 dark:bg-gray-700">
+          <div className="h-full bg-blue-600 transition-all duration-300" style={{ width: `${pct}%` }} />
+        </div>
+
+        {/* Currently uploading files */}
+        {progress.currentFiles.length > 0 && (
+          <div className="px-4 py-2 border-t border-gray-50 dark:border-gray-700/30">
+            <p className="text-xs text-gray-400">Uploading: {progress.currentFiles.join(', ')}</p>
+          </div>
+        )}
+      </div>
+
+      {/* File list */}
+      <FileList files={files} />
+    </div>
+  )
+}
+
+// --- File List ---
+
+function FileList({ files }: { files: FileItem[] }) {
+  const [showAll, setShowAll] = useState(false)
+
+  const failed = useMemo(() => files.filter((f) => f.status === 'error'), [files])
+  const duplicates = useMemo(() => files.filter((f) => f.status === 'duplicate'), [files])
+  const done = useMemo(() => files.filter((f) => f.status === 'done'), [files])
+  const pending = useMemo(() => files.filter((f) => f.status === 'pending' || f.status === 'uploading'), [files])
+
+  // Show compact summary unless expanded
+  const displayFiles = showAll ? files : files.slice(0, 20)
+  const hasMore = files.length > 20 && !showAll
+
+  return (
+    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
+      {/* Summary row */}
+      <div className="px-4 py-2 border-b border-gray-50 dark:border-gray-700/30 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
+        {done.length > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+            {done.length} done
+          </span>
+        )}
+        {duplicates.length > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+            {duplicates.length} duplicate{duplicates.length !== 1 ? 's' : ''}
+          </span>
+        )}
+        {pending.length > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-gray-400" />
+            {pending.length} pending
+          </span>
+        )}
+        {failed.length > 0 && (
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-red-500" />
+            {failed.length} failed
+          </span>
+        )}
+      </div>
+
+      {/* Failed files first */}
+      {failed.length > 0 && (
+        <div className="border-b border-red-100 dark:border-red-900/30">
+          {failed.map((f) => (
+            <FileItemRow key={f.id} item={f} />
+          ))}
+        </div>
+      )}
+
+      {/* All files */}
+      <div className="divide-y divide-gray-50 dark:divide-gray-700/30">
+        {displayFiles
+          .filter((f) => f.status !== 'error')
+          .map((f) => (
+            <FileItemRow key={f.id} item={f} />
+          ))}
+      </div>
+
+      {hasMore && (
+        <div className="px-4 py-2 border-t border-gray-50 dark:border-gray-700/30">
+          <button onClick={() => setShowAll(true)} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+            Show all {files.length} files
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// --- Single file row ---
+
+const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
+  pending: { dot: 'bg-gray-400', label: 'Pending' },
+  uploading: { dot: 'bg-blue-500 animate-pulse', label: 'Uploading' },
+  done: { dot: 'bg-green-500', label: 'Done' },
+  error: { dot: 'bg-red-500', label: 'Failed' },
+  duplicate: { dot: 'bg-amber-500', label: 'Duplicate' },
+}
+
+function FileItemRow({ item }: { item: FileItem }) {
+  const style = STATUS_STYLES[item.status] || STATUS_STYLES.pending
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-2 hover:bg-gray-50/50 dark:hover:bg-gray-800/20">
+      <span className={`inline-block h-2 w-2 rounded-full shrink-0 ${style.dot}`} />
+      <div className="min-w-0 flex-1">
+        <span className="text-sm truncate block">{item.file.name}</span>
+        {item.sourcePath && item.sourcePath !== item.file.name && (
+          <span className="text-xs text-gray-400 truncate block">{item.sourcePath}</span>
+        )}
+      </div>
+      <span className="text-xs text-gray-400 shrink-0">{formatSize(item.file.size)}</span>
+      <span className="text-xs text-gray-500 dark:text-gray-400 shrink-0 w-16 text-right">{style.label}</span>
+      {item.status === 'error' && item.error && (
+        <span className="text-xs text-red-500 shrink-0 max-w-[200px] truncate" title={item.error}>
+          {item.error}
+        </span>
+      )}
+      {item.status === 'done' && item.result?.doc_id && (
+        <Link
+          to={`/docs/${item.result.doc_id}`}
+          className="text-xs text-blue-600 dark:text-blue-400 hover:underline shrink-0"
+        >
+          View
+        </Link>
+      )}
+      {item.status === 'duplicate' && item.result?.duplicate_doc_id && (
+        <Link
+          to={`/docs/${item.result.duplicate_doc_id}`}
+          className="text-xs text-amber-600 dark:text-amber-400 hover:underline shrink-0"
+        >
+          Existing
+        </Link>
+      )}
     </div>
   )
 }
