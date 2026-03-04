@@ -176,7 +176,34 @@ async def chat_stream(
                         },
                     ) as response,
                 ):
-                    response.raise_for_status()
+                    if response.status_code >= 400:
+                        await response.aread()
+                        detail = response.text[:2000]
+                        error_summary = f"LLM error ({response.status_code})"
+                        error_content = f"Error: {error_summary}"
+                        if detail:
+                            error_content += f"\n\n{detail}"
+                        session.add(
+                            ChatMessage(
+                                conversation_id=conversation_id,
+                                role="assistant",
+                                content=error_content,
+                            )
+                        )
+                        conv = await session.get(Conversation, conversation_id)
+                        if conv and conv.title == "New conversation":
+                            conv.title = _generate_title(user_message)
+                        await session.commit()
+                        error_event: dict = {"type": "error", "message": error_summary}
+                        if detail:
+                            error_event["detail"] = detail
+                        yield f"data: {json.dumps(error_event)}\n\n"
+                        done_payload: dict = {"type": "done"}
+                        if conv and conv.title != "New conversation":
+                            done_payload["title"] = conv.title
+                        yield f"data: {json.dumps(done_payload)}\n\n"
+                        return
+
                     async for line in response.aiter_lines():
                         if not line.startswith("data: "):
                             continue
@@ -223,23 +250,24 @@ async def chat_stream(
                             text_buffer += token_text
                             yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
 
-            except httpx.HTTPStatusError as e:
-                detail = ""
-                try:
-                    await e.response.aread()
-                    detail = e.response.text[:2000]
-                except Exception:
-                    pass
-                error_event: dict = {
-                    "type": "error",
-                    "message": f"LLM error ({e.response.status_code})",
-                }
-                if detail:
-                    error_event["detail"] = detail
-                yield f"data: {json.dumps(error_event)}\n\n"
-                return
             except (httpx.ConnectError, httpx.ReadTimeout):
-                yield f"data: {json.dumps({'type': 'error', 'message': 'LLM server is not running. Select and activate a model in Settings.'})}\n\n"
+                error_summary = "LLM server is not running. Select and activate a model in Settings."
+                session.add(
+                    ChatMessage(
+                        conversation_id=conversation_id,
+                        role="assistant",
+                        content=f"Error: {error_summary}",
+                    )
+                )
+                conv = await session.get(Conversation, conversation_id)
+                if conv and conv.title == "New conversation":
+                    conv.title = _generate_title(user_message)
+                await session.commit()
+                yield f"data: {json.dumps({'type': 'error', 'message': error_summary})}\n\n"
+                done_payload: dict = {"type": "done"}
+                if conv and conv.title != "New conversation":
+                    done_payload["title"] = conv.title
+                yield f"data: {json.dumps(done_payload)}\n\n"
                 return
 
             # If we got tool calls, execute them and loop
@@ -335,7 +363,7 @@ def _generate_title(user_message: str) -> str:
 _LARGE_ARRAY_KEYS = ("documents", "results", "entities", "related", "passages", "chunks", "headings")
 
 
-def _truncate_for_llm(result_str: str, max_chars: int = 24_000) -> str:
+def _truncate_for_llm(result_str: str, max_chars: int = 8_000) -> str:
     """Truncate a tool result so it fits within the LLM context window.
 
     For JSON with large array fields, truncates the array and adds metadata.
