@@ -181,6 +181,7 @@ export function useUploadSession(): UseUploadSessionReturn {
           retries: 0,
         }))
         setFiles(items)
+        filesRef.current = items // sync ref immediately so runPool can find items before re-render
         setIsUploading(true)
 
         const abort = new AbortController()
@@ -234,6 +235,7 @@ export function useUploadSession(): UseUploadSessionReturn {
           retries: 0,
         }))
         setFiles(items)
+        filesRef.current = items // sync ref immediately so runPool can find items before re-render
 
         const pending = items.filter((f) => f.status === 'pending')
         if (pending.length === 0) {
