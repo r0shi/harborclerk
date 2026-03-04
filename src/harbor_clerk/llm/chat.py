@@ -139,7 +139,8 @@ async def chat_stream(
         # Build messages for the LLM
         messages: list[dict] = [{"role": "system", "content": system_content}]
         for msg in history_rows[-settings.max_history_messages :]:
-            entry: dict = {"role": msg.role, "content": msg.content}
+            content = _truncate_for_llm(msg.content) if msg.role == "tool" else msg.content
+            entry: dict = {"role": msg.role, "content": content}
             if msg.tool_calls:
                 entry["tool_calls"] = msg.tool_calls
                 entry.pop("content", None)
@@ -223,7 +224,19 @@ async def chat_stream(
                             yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
 
             except httpx.HTTPStatusError as e:
-                yield f"data: {json.dumps({'type': 'error', 'message': f'LLM server error: {e.response.status_code}'})}\n\n"
+                detail = ""
+                try:
+                    await e.response.aread()
+                    detail = e.response.text[:2000]
+                except Exception:
+                    pass
+                error_event: dict = {
+                    "type": "error",
+                    "message": f"LLM error ({e.response.status_code})",
+                }
+                if detail:
+                    error_event["detail"] = detail
+                yield f"data: {json.dumps(error_event)}\n\n"
                 return
             except (httpx.ConnectError, httpx.ReadTimeout):
                 yield f"data: {json.dumps({'type': 'error', 'message': 'LLM server is not running. Select and activate a model in Settings.'})}\n\n"
@@ -260,7 +273,7 @@ async def chat_stream(
 
                     yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': _summarize_result(result_str)})}\n\n"
 
-                    # Save tool result message
+                    # Save full result to DB, but truncate for LLM context
                     tool_msg = ChatMessage(
                         conversation_id=conversation_id,
                         role="tool",
@@ -268,10 +281,11 @@ async def chat_stream(
                         tool_call_id=tc.get("id", f"call_{fn_name}"),
                     )
                     session.add(tool_msg)
+                    truncated_result = _truncate_for_llm(result_str)
                     messages.append(
                         {
                             "role": "tool",
-                            "content": result_str,
+                            "content": truncated_result,
                             "tool_call_id": tc.get("id", f"call_{fn_name}"),
                         }
                     )
@@ -316,6 +330,58 @@ def _generate_title(user_message: str) -> str:
     if len(title) > 80:
         title = title[:77] + "..."
     return title
+
+
+_LARGE_ARRAY_KEYS = ("documents", "results", "entities", "related", "passages", "chunks", "headings")
+
+
+def _truncate_for_llm(result_str: str, max_chars: int = 24_000) -> str:
+    """Truncate a tool result so it fits within the LLM context window.
+
+    For JSON with large array fields, truncates the array and adds metadata.
+    For non-JSON or unrecognised structure, hard-truncates the string.
+    """
+    if len(result_str) <= max_chars:
+        return result_str
+
+    try:
+        data = json.loads(result_str)
+    except (json.JSONDecodeError, TypeError):
+        return result_str[:max_chars] + f"\n... [truncated — {len(result_str)} chars total]"
+
+    if not isinstance(data, dict):
+        return result_str[:max_chars] + f"\n... [truncated — {len(result_str)} chars total]"
+
+    # Find the largest array field to truncate
+    target_key = None
+    target_len = 0
+    for key in _LARGE_ARRAY_KEYS:
+        if key in data and isinstance(data[key], list) and len(data[key]) > target_len:
+            target_key = key
+            target_len = len(data[key])
+
+    if not target_key or target_len == 0:
+        return result_str[:max_chars] + f"\n... [truncated — {len(result_str)} chars total]"
+
+    # Binary-search for how many items fit
+    original_array = data[target_key]
+    original_count = len(original_array)
+    data["_truncated"] = True
+    data["_original_count"] = original_count
+    lo, hi = 0, original_count
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        data[target_key] = original_array[:mid]
+        if len(json.dumps(data, ensure_ascii=False)) <= max_chars:
+            lo = mid
+        else:
+            hi = mid - 1
+
+    data[target_key] = original_array[:lo] if lo > 0 else []
+    result = json.dumps(data, ensure_ascii=False)
+    if len(result) > max_chars:
+        return result_str[:max_chars] + f"\n... [truncated — {len(result_str)} chars total]"
+    return result
 
 
 def _summarize_result(result_str: str) -> str:
