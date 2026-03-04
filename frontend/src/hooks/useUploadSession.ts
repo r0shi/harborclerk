@@ -194,9 +194,10 @@ export function useUploadSession(): UseUploadSessionReturn {
         setSession(updated)
         setIsUploading(false)
 
-        // If auto-confirm, mark session complete
+        // If auto-confirm, mark session complete and clear from storage (nothing to resume)
         if (autoConfirm) {
           setSession((prev) => (prev ? { ...prev, status: 'completed' } : prev))
+          setSessionId(null)
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to start upload session')
