@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 import psycopg2
 import psycopg2.extensions
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import _make_sync_url, get_sync_session
@@ -90,13 +90,23 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
     """Atomically claim the next queued job using SELECT ... FOR UPDATE SKIP LOCKED."""
     session = get_sync_session()
     try:
+        # Prioritise stages closest to completion so fast final stages
+        # (finalize, entities) aren't starved by slow ones (summarize).
+        stage_priority = case(
+            (IngestionJob.stage == JobStage.finalize, 0),
+            (IngestionJob.stage == JobStage.entities, 1),
+            (IngestionJob.stage == JobStage.extract, 2),
+            (IngestionJob.stage == JobStage.chunk, 3),
+            (IngestionJob.stage == JobStage.summarize, 4),
+            else_=5,
+        )
         row = session.execute(
             select(IngestionJob)
             .where(
                 IngestionJob.status == JobStatus.queued,
                 IngestionJob.stage.in_(stages),
             )
-            .order_by(IngestionJob.created_at)
+            .order_by(stage_priority, IngestionJob.created_at)
             .limit(1)
             .with_for_update(skip_locked=True)
         ).scalar_one_or_none()
