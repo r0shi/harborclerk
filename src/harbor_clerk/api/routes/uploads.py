@@ -7,9 +7,9 @@ import logging
 import mimetypes
 import os
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,10 @@ from harbor_clerk.api.schemas.uploads import (
     BatchConfirmResultItem,
     ConfirmUploadRequest,
     ConfirmUploadResponse,
+    CreateSessionRequest,
+    ResumeResponse,
+    SessionFileUploadResponse,
+    SessionResponse,
     UploadFileResult,
     UploadResponse,
     UploadStatusResponse,
@@ -27,7 +31,7 @@ from harbor_clerk.api.schemas.uploads import (
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import Settings, get_settings
 from harbor_clerk.db import get_session
-from harbor_clerk.models import Document, DocumentVersion, Upload
+from harbor_clerk.models import Document, DocumentVersion, Upload, UploadSession
 from harbor_clerk.models.enums import JobStage, VersionStatus
 from harbor_clerk.storage import get_storage
 
@@ -420,3 +424,378 @@ async def list_uploads(
         )
         for u in uploads
     ]
+
+
+# ── Upload Sessions ──────────────────────────────────────────────
+
+
+def _session_response(s: UploadSession) -> SessionResponse:
+    return SessionResponse(
+        session_id=str(s.session_id),
+        user_id=str(s.user_id),
+        label=s.label,
+        auto_confirm=s.auto_confirm,
+        status=s.status,
+        total_files=s.total_files,
+        uploaded=s.uploaded,
+        confirmed=s.confirmed,
+        failed=s.failed,
+        created_at=s.created_at,
+        updated_at=s.updated_at,
+    )
+
+
+async def _get_session_or_404(session_id_str: str, db: AsyncSession, principal: Principal) -> UploadSession:
+    try:
+        sid = uuid.UUID(session_id_str)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid session_id")
+    result = await db.execute(select(UploadSession).where(UploadSession.session_id == sid))
+    us = result.scalar_one_or_none()
+    if us is None:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    if principal.type == "user" and us.user_id != principal.id:
+        raise HTTPException(status_code=403, detail="Not your session")
+    return us
+
+
+@router.post("/uploads/sessions", response_model=SessionResponse)
+async def create_session(
+    body: CreateSessionRequest,
+    principal: Principal = Depends(require_user),
+    db: AsyncSession = Depends(get_session),
+):
+    us = UploadSession(
+        user_id=principal.id,
+        label=body.label,
+        auto_confirm=body.auto_confirm,
+        total_files=body.total_files,
+    )
+    db.add(us)
+    await db.flush()
+    await db.commit()
+    await db.refresh(us)
+    return _session_response(us)
+
+
+@router.get("/uploads/sessions/{session_id}", response_model=SessionResponse)
+async def get_upload_session(
+    session_id: str,
+    principal: Principal = Depends(require_user),
+    db: AsyncSession = Depends(get_session),
+):
+    us = await _get_session_or_404(session_id, db, principal)
+    return _session_response(us)
+
+
+@router.post("/uploads/sessions/{session_id}/files", response_model=SessionFileUploadResponse)
+async def upload_file_to_session(
+    session_id: str,
+    file: UploadFile = File(..., max_part_size=200 * 1024 * 1024),
+    source_path: str | None = Form(default=None),
+    principal: Principal = Depends(require_user),
+    db: AsyncSession = Depends(get_session),
+):
+    us = await _get_session_or_404(session_id, db, principal)
+    if us.status != "active":
+        raise HTTPException(status_code=400, detail=f"Session status is '{us.status}', not active")
+
+    settings = get_settings()
+    max_file_bytes = settings.max_file_size_mb * 1024 * 1024
+
+    fname = file.filename or ""
+    dot = fname.rfind(".")
+    ext = fname[dot:].lower() if dot != -1 else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file extension: {ext}")
+
+    # Stream file, compute SHA256
+    sha = hashlib.sha256()
+    chunks: list[bytes] = []
+    total_size = 0
+    while True:
+        chunk = await file.read(64 * 1024)
+        if not chunk:
+            break
+        sha.update(chunk)
+        chunks.append(chunk)
+        total_size += len(chunk)
+        if total_size > max_file_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File exceeds {settings.max_file_size_mb}MB limit",
+            )
+
+    if total_size == 0:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    sha256_bytes = sha.digest()
+    sha256_hex = sha.hexdigest()
+    mime = file.content_type or mimetypes.guess_type(fname)[0] or "application/octet-stream"
+
+    # Duplicate check
+    dup_result = await db.execute(select(DocumentVersion).where(DocumentVersion.original_sha256 == sha256_bytes))
+    dup_version = dup_result.scalar_one_or_none()
+
+    if dup_version is not None:
+        upload_row = Upload(
+            user_id=principal.id if principal.type == "user" else None,
+            session_id=us.session_id,
+            source_path=source_path,
+            original_filename=fname or "unknown",
+            mime_type=mime,
+            size_bytes=total_size,
+            sha256=sha256_bytes,
+            minio_bucket=settings.minio_bucket,
+            minio_object_key="",
+            doc_id=dup_version.doc_id,
+            version_id=dup_version.version_id,
+            status="duplicate",
+        )
+        db.add(upload_row)
+        us.uploaded = us.uploaded + 1
+        us.updated_at = datetime.now(UTC)
+        await db.flush()
+        await db.commit()
+        return SessionFileUploadResponse(
+            upload_id=str(upload_row.upload_id),
+            source_path=source_path,
+            status="duplicate",
+            sha256=sha256_hex,
+            filename=fname,
+            size_bytes=total_size,
+            duplicate_doc_id=str(dup_version.doc_id),
+            duplicate_version_id=str(dup_version.version_id),
+        )
+
+    if us.auto_confirm:
+        # Auto-confirm: create document + version immediately
+        safe_name = os.path.basename(fname) or "file"
+        title = safe_name.rsplit(".", 1)[0] if "." in safe_name else safe_name
+        doc = Document(title=title, canonical_filename=safe_name)
+        db.add(doc)
+        await db.flush()
+
+        version = DocumentVersion(
+            doc_id=doc.doc_id,
+            original_sha256=sha256_bytes,
+            original_bucket=settings.minio_bucket,
+            original_object_key="",
+            mime_type=mime,
+            size_bytes=total_size,
+            status=VersionStatus.queued,
+            source_path=source_path,
+        )
+        db.add(version)
+        await db.flush()
+
+        canonical_key = f"versions/{version.version_id}/{safe_name}"
+        content = b"".join(chunks)
+        storage = get_storage()
+        storage.put_object(
+            settings.minio_bucket, canonical_key, io.BytesIO(content), length=total_size, content_type=mime
+        )
+        version.original_object_key = canonical_key
+
+        upload_row = Upload(
+            user_id=principal.id if principal.type == "user" else None,
+            session_id=us.session_id,
+            source_path=source_path,
+            original_filename=fname or "unknown",
+            mime_type=mime,
+            size_bytes=total_size,
+            sha256=sha256_bytes,
+            minio_bucket=settings.minio_bucket,
+            minio_object_key=canonical_key,
+            doc_id=doc.doc_id,
+            version_id=version.version_id,
+            status="processing",
+        )
+        db.add(upload_row)
+        us.uploaded = us.uploaded + 1
+        us.confirmed = us.confirmed + 1
+        us.updated_at = datetime.now(UTC)
+
+        await log_audit(
+            db,
+            user_id=principal.id if principal.type == "user" else None,
+            action="confirm_upload",
+            target_type="document_version",
+            target_id=version.version_id,
+            detail={"action": "new_document", "doc_id": str(doc.doc_id), "session_id": str(us.session_id)},
+        )
+        await db.commit()
+
+        # Enqueue extraction outside the session
+        from harbor_clerk.worker.pipeline import enqueue_stage
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, enqueue_stage, version.version_id, JobStage.extract)
+
+        return SessionFileUploadResponse(
+            upload_id=str(upload_row.upload_id),
+            source_path=source_path,
+            status="processing",
+            sha256=sha256_hex,
+            filename=fname,
+            size_bytes=total_size,
+            doc_id=str(doc.doc_id),
+            version_id=str(version.version_id),
+        )
+    else:
+        # Review mode: store to temp location
+        safe_name = os.path.basename(fname) or "file"
+        temp_key = f"tmp/uploads/{uuid.uuid4()}/{safe_name}"
+        content = b"".join(chunks)
+        storage = get_storage()
+        storage.put_object(settings.minio_bucket, temp_key, io.BytesIO(content), length=total_size, content_type=mime)
+
+        upload_row = Upload(
+            user_id=principal.id if principal.type == "user" else None,
+            session_id=us.session_id,
+            source_path=source_path,
+            original_filename=fname or "unknown",
+            mime_type=mime,
+            size_bytes=total_size,
+            sha256=sha256_bytes,
+            minio_bucket=settings.minio_bucket,
+            minio_object_key=temp_key,
+            status="pending_confirmation",
+        )
+        db.add(upload_row)
+        us.uploaded = us.uploaded + 1
+        us.updated_at = datetime.now(UTC)
+        await db.flush()
+        await db.commit()
+
+        return SessionFileUploadResponse(
+            upload_id=str(upload_row.upload_id),
+            source_path=source_path,
+            status="pending_confirmation",
+            sha256=sha256_hex,
+            filename=fname,
+            size_bytes=total_size,
+        )
+
+
+@router.post("/uploads/sessions/{session_id}/confirm", response_model=BatchConfirmResponse)
+async def confirm_session(
+    session_id: str,
+    principal: Principal = Depends(require_user),
+    db: AsyncSession = Depends(get_session),
+):
+    us = await _get_session_or_404(session_id, db, principal)
+    if us.auto_confirm:
+        raise HTTPException(status_code=400, detail="Session uses auto-confirm, no manual confirmation needed")
+
+    # Find all pending uploads in this session
+    result = await db.execute(
+        select(Upload).where(Upload.session_id == us.session_id, Upload.status == "pending_confirmation")
+    )
+    pending = result.scalars().all()
+
+    if not pending:
+        raise HTTPException(status_code=400, detail="No pending files to confirm")
+
+    settings = get_settings()
+    results: list[BatchConfirmResultItem] = []
+    version_ids_to_enqueue: list[uuid.UUID] = []
+
+    for upload in pending:
+        try:
+            confirm_result = await _confirm_single(
+                db,
+                str(upload.upload_id),
+                "new_document",
+                None,
+                principal,
+                settings,
+                source_path=upload.source_path,
+            )
+            results.append(
+                BatchConfirmResultItem(
+                    upload_id=str(upload.upload_id),
+                    doc_id=confirm_result.doc_id,
+                    version_id=confirm_result.version_id,
+                    status=confirm_result.status,
+                )
+            )
+            version_ids_to_enqueue.append(uuid.UUID(confirm_result.version_id))
+            us.confirmed = us.confirmed + 1
+        except HTTPException as exc:
+            results.append(
+                BatchConfirmResultItem(
+                    upload_id=str(upload.upload_id),
+                    status="error",
+                    error=exc.detail,
+                )
+            )
+            us.failed = us.failed + 1
+
+    us.status = "completed"
+    us.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    from harbor_clerk.worker.pipeline import enqueue_stage
+
+    loop = asyncio.get_running_loop()
+
+    def _enqueue_all():
+        for vid in version_ids_to_enqueue:
+            enqueue_stage(vid, JobStage.extract)
+
+    await loop.run_in_executor(None, _enqueue_all)
+
+    return BatchConfirmResponse(results=results)
+
+
+@router.delete("/uploads/sessions/{session_id}")
+async def cancel_session(
+    session_id: str,
+    principal: Principal = Depends(require_user),
+    db: AsyncSession = Depends(get_session),
+):
+    us = await _get_session_or_404(session_id, db, principal)
+    if us.status in ("completed", "cancelled"):
+        raise HTTPException(status_code=400, detail=f"Session already {us.status}")
+
+    settings = get_settings()
+    storage = get_storage()
+
+    # Delete temp files for pending uploads
+    result = await db.execute(
+        select(Upload).where(Upload.session_id == us.session_id, Upload.status == "pending_confirmation")
+    )
+    pending = result.scalars().all()
+    for upload in pending:
+        if upload.minio_object_key and upload.minio_object_key.startswith("tmp/"):
+            try:
+                storage.remove_object(settings.minio_bucket, upload.minio_object_key)
+            except Exception:
+                logger.warning("Failed to delete temp file %s", upload.minio_object_key)
+        upload.status = "cancelled"
+
+    us.status = "cancelled"
+    us.updated_at = datetime.now(UTC)
+    await db.commit()
+    return {"status": "cancelled"}
+
+
+@router.get("/uploads/sessions/{session_id}/resume", response_model=ResumeResponse)
+async def get_resume_info(
+    session_id: str,
+    principal: Principal = Depends(require_user),
+    db: AsyncSession = Depends(get_session),
+):
+    us = await _get_session_or_404(session_id, db, principal)
+
+    # Return source_paths of all successfully uploaded files
+    result = await db.execute(
+        select(Upload.source_path).where(
+            Upload.session_id == us.session_id,
+            Upload.source_path.isnot(None),
+            Upload.status.in_(["pending_confirmation", "processing", "duplicate"]),
+        )
+    )
+    paths = [row[0] for row in result.all()]
+    return ResumeResponse(completed_paths=paths)

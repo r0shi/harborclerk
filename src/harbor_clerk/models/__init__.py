@@ -20,6 +20,7 @@ from harbor_clerk.models.enums import (
 )
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
+from harbor_clerk.models.upload_session import UploadSession
 from harbor_clerk.models.user import User
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "ApiKey",
     "Document",
     "Upload",
+    "UploadSession",
     "DocumentVersion",
     "DocumentPage",
     "DocumentHeading",
