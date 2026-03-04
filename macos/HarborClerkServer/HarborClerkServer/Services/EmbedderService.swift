@@ -19,7 +19,7 @@ final class EmbedderService: PythonService {
 
     override func healthCheck() async -> Bool {
         let port = AppSettings.shared.embedderPort
-        guard let url = URL(string: "http://localhost:\(port)/health") else { return false }
+        guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
         do {
             let (_, response) = try await URLSession.shared.data(from: url)
             return (response as? HTTPURLResponse)?.statusCode == 200
