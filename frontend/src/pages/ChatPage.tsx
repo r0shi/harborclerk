@@ -412,7 +412,9 @@ function ThinkingSection({ thinking, isStreaming }: { thinking: string; isStream
           />
         </svg>
         <span>Reasoning</span>
-        <span className="text-gray-300 dark:text-gray-600">({lineCount} {lineCount === 1 ? 'line' : 'lines'})</span>
+        <span className="text-gray-300 dark:text-gray-600">
+          ({lineCount} {lineCount === 1 ? 'line' : 'lines'})
+        </span>
       </summary>
       <div className="mt-1.5 max-h-48 overflow-y-auto rounded-md bg-gray-100/50 dark:bg-gray-900/40 px-3 py-2 text-xs text-gray-400 dark:text-gray-500 italic whitespace-pre-wrap">
         {thinking}
@@ -426,7 +428,9 @@ function ThinkingSection({ thinking, isStreaming }: { thinking: string; isStream
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user'
   const isError = !isUser && message.content.startsWith('Error:')
-  const { thinking, response } = !isUser ? parseThinking(message.content) : { thinking: null, response: message.content }
+  const { thinking, response } = !isUser
+    ? parseThinking(message.content)
+    : { thinking: null, response: message.content }
 
   return (
     <div className={`message-appear py-2.5 ${isUser ? '' : ''}`}>

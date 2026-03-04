@@ -139,7 +139,8 @@ async def chat_stream(
         # Build messages for the LLM
         messages: list[dict] = [{"role": "system", "content": system_content}]
         for msg in history_rows[-settings.max_history_messages :]:
-            entry: dict = {"role": msg.role, "content": msg.content}
+            content = _truncate_for_llm(msg.content) if msg.role == "tool" else msg.content
+            entry: dict = {"role": msg.role, "content": content}
             if msg.tool_calls:
                 entry["tool_calls"] = msg.tool_calls
                 entry.pop("content", None)
@@ -225,6 +226,7 @@ async def chat_stream(
             except httpx.HTTPStatusError as e:
                 detail = ""
                 try:
+                    await e.response.aread()
                     detail = e.response.text[:2000]
                 except Exception:
                     pass
@@ -362,22 +364,24 @@ def _truncate_for_llm(result_str: str, max_chars: int = 24_000) -> str:
         return result_str[:max_chars] + f"\n... [truncated — {len(result_str)} chars total]"
 
     # Binary-search for how many items fit
-    original_count = target_len
-    lo, hi = 0, target_len
+    original_array = data[target_key]
+    original_count = len(original_array)
+    data["_truncated"] = True
+    data["_original_count"] = original_count
+    lo, hi = 0, original_count
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        data[target_key] = data[target_key][:mid]
-        data["_truncated"] = True
-        data["_original_count"] = original_count
+        data[target_key] = original_array[:mid]
         if len(json.dumps(data, ensure_ascii=False)) <= max_chars:
             lo = mid
         else:
             hi = mid - 1
 
-    data[target_key] = json.loads(result_str)[target_key][:lo] if lo > 0 else []
-    data["_truncated"] = True
-    data["_original_count"] = original_count
-    return json.dumps(data, ensure_ascii=False)
+    data[target_key] = original_array[:lo] if lo > 0 else []
+    result = json.dumps(data, ensure_ascii=False)
+    if len(result) > max_chars:
+        return result_str[:max_chars] + f"\n... [truncated — {len(result_str)} chars total]"
+    return result
 
 
 def _summarize_result(result_str: str) -> str:
