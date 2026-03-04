@@ -276,9 +276,7 @@ export async function uploadFileToSession(
   return res.json()
 }
 
-export async function confirmSession(
-  sessionId: string,
-): Promise<{
+export async function confirmSession(sessionId: string): Promise<{
   results: Array<{ upload_id: string; doc_id?: string; version_id?: string; status: string; error?: string }>
 }> {
   return post(`/api/uploads/sessions/${sessionId}/confirm`)
