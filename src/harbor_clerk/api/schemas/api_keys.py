@@ -13,6 +13,7 @@ class ApiKeyCreatedResponse(BaseModel):
     key_id: str
     name: str
     raw_key: str  # shown once on creation
+    mcp_path: str  # URL path for authless MCP clients: /t/<key>
     created_at: datetime
 
 

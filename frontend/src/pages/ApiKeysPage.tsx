@@ -13,6 +13,7 @@ interface ApiKeyCreated {
   key_id: string
   name: string
   raw_key: string
+  mcp_path: string
   created_at: string
 }
 
@@ -76,9 +77,24 @@ export default function ApiKeysPage() {
           <p className="mb-2 text-sm font-medium text-green-800 dark:text-green-400">
             API key created! Copy it now — it won't be shown again.
           </p>
-          <code className="block rounded-sm bg-white dark:bg-gray-700 px-3 py-2 text-sm font-mono text-gray-800 dark:text-gray-200 select-all">
-            {newKey.raw_key}
-          </code>
+          <div className="space-y-3">
+            <div>
+              <p className="mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">
+                API Key (for Authorization header)
+              </p>
+              <code className="block rounded-sm bg-white dark:bg-gray-700 px-3 py-2 text-sm font-mono text-gray-800 dark:text-gray-200 select-all">
+                {newKey.raw_key}
+              </code>
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">
+                MCP URL path (for cloud AI connectors like Claude, ChatGPT, Gemini)
+              </p>
+              <code className="block rounded-sm bg-white dark:bg-gray-700 px-3 py-2 text-sm font-mono text-gray-800 dark:text-gray-200 select-all">
+                {newKey.mcp_path}
+              </code>
+            </div>
+          </div>
         </div>
       )}
 
