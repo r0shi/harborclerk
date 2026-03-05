@@ -94,9 +94,9 @@ Hybrid search: Postgres FTS (bilingual, queries both `fts_en` and `fts_fr` colum
 
 ## Database
 
-PostgreSQL with extensions: `pgcrypto`, `vector`, `pg_trgm`. No tenant table or tenant_id columns.
+PostgreSQL 18 with extensions: `vector`, `pg_trgm`, `citext`. No tenant table or tenant_id columns.
 
-Key tables: `users`, `api_keys`, `documents`, `document_versions`, `document_pages`, `chunks`, `ingestion_jobs`, `uploads`, `audit_log`.
+Key tables: `users`, `api_keys`, `documents`, `document_versions`, `document_pages`, `document_headings`, `chunks`, `entities`, `ingestion_jobs`, `uploads`, `upload_sessions`, `audit_log`, `conversations`, `chat_messages`.
 
 `chunks` has dual FTS columns (`fts_en` TSVECTOR, `fts_fr` TSVECTOR) both as generated stored columns with GIN indexes, plus `embedding vector(384)` with HNSW index. Full DDL in `spec.txt` section I.
 

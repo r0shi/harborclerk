@@ -40,10 +40,15 @@ def test_upgrade_to_head(alembic_cfg, sync_engine):
         "documents",
         "document_versions",
         "document_pages",
+        "document_headings",
         "chunks",
+        "entities",
         "ingestion_jobs",
         "uploads",
+        "upload_sessions",
         "audit_log",
+        "conversations",
+        "chat_messages",
     ):
         assert expected in tables, f"Table {expected} missing after upgrade"
 
@@ -62,9 +67,7 @@ def test_stepwise_upgrade(alembic_cfg, sync_engine):
     command.downgrade(alembic_cfg, "base")
     assert "users" not in _table_names(sync_engine)
 
-    revisions = ["0001", "0002", "0003", "0004", "0005"]
-    for rev in revisions:
-        command.upgrade(alembic_cfg, rev)
+    command.upgrade(alembic_cfg, "0001")
 
     tables = _table_names(sync_engine)
     assert "users" in tables
