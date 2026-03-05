@@ -1,8 +1,8 @@
-"""Initial schema.
+"""Initial schema (consolidated).
 
 Revision ID: 0001
 Revises:
-Create Date: 2026-02-10
+Create Date: 2026-03-04
 """
 
 from collections.abc import Sequence
@@ -19,14 +19,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Extensions
-    # pgcrypto is optional — gen_random_uuid() is built-in on PG 13+
-    op.execute("DO $$ BEGIN CREATE EXTENSION IF NOT EXISTS pgcrypto; EXCEPTION WHEN OTHERS THEN NULL; END $$")
+    # ── Extensions ──
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
     op.execute("CREATE EXTENSION IF NOT EXISTS citext")
 
-    # Enum types
+    # ── Enum types ──
     user_role = postgresql.ENUM("admin", "user", name="user_role", create_type=False)
     user_role.create(op.get_bind(), checkfirst=True)
 
@@ -41,8 +39,13 @@ def upgrade() -> None:
         "ocr_done",
         "chunking",
         "chunked",
+        "extracting_entities",
+        "entities_done",
         "embedding",
         "embedded",
+        "summarizing",
+        "summarized",
+        "finalizing",
         "ready",
         "error",
         name="version_status",
@@ -54,7 +57,9 @@ def upgrade() -> None:
         "extract",
         "ocr",
         "chunk",
+        "entities",
         "embed",
+        "summarize",
         "finalize",
         name="job_stage",
         create_type=False,
@@ -81,6 +86,7 @@ def upgrade() -> None:
         sa.Column("is_active", sa.Boolean, nullable=False, server_default=sa.text("true")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
         sa.Column("last_login_at", sa.DateTime(timezone=True)),
+        sa.Column("preferences", postgresql.JSONB(), nullable=False, server_default=sa.text("'{}'::jsonb")),
     )
     op.execute("ALTER TABLE users ALTER COLUMN email TYPE CITEXT")
     op.create_unique_constraint("uq_users_email", "users", ["email"])
@@ -109,6 +115,23 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
     op.execute("CREATE INDEX documents_updated_idx ON documents (updated_at DESC)")
+    op.execute("CREATE INDEX documents_status_updated_idx ON documents (status, updated_at DESC)")
+
+    # ── upload_sessions ──
+    op.create_table(
+        "upload_sessions",
+        sa.Column("session_id", postgresql.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column("user_id", postgresql.UUID, sa.ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False),
+        sa.Column("label", sa.Text, nullable=True),
+        sa.Column("auto_confirm", sa.Boolean, nullable=False, server_default="false"),
+        sa.Column("status", sa.Text, nullable=False, server_default="active"),
+        sa.Column("total_files", sa.Integer, nullable=False, server_default="0"),
+        sa.Column("uploaded", sa.Integer, nullable=False, server_default="0"),
+        sa.Column("confirmed", sa.Integer, nullable=False, server_default="0"),
+        sa.Column("failed", sa.Integer, nullable=False, server_default="0"),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    )
 
     # ── uploads ──
     op.create_table(
@@ -124,11 +147,18 @@ def upgrade() -> None:
         sa.Column("minio_object_key", sa.Text, nullable=False),
         sa.Column("doc_id", postgresql.UUID, sa.ForeignKey("documents.doc_id", ondelete="SET NULL")),
         sa.Column("version_id", postgresql.UUID),
+        sa.Column(
+            "session_id",
+            postgresql.UUID,
+            sa.ForeignKey("upload_sessions.session_id", ondelete="SET NULL"),
+        ),
+        sa.Column("source_path", sa.Text),
         sa.Column("status", sa.Text, nullable=False, server_default="queued"),
         sa.Column("error", sa.Text),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
     op.execute("CREATE INDEX uploads_created_idx ON uploads (created_at DESC)")
+    op.create_index("ix_uploads_session_id", "uploads", ["session_id"])
 
     # ── document_versions ──
     op.create_table(
@@ -145,6 +175,9 @@ def upgrade() -> None:
         sa.Column("has_text_layer", sa.Boolean),
         sa.Column("needs_ocr", sa.Boolean),
         sa.Column("extracted_chars", sa.BigInteger, server_default=sa.text("0")),
+        sa.Column("source_path", sa.Text),
+        sa.Column("summary", sa.Text),
+        sa.Column("summary_model", sa.Text),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     )
@@ -171,6 +204,23 @@ def upgrade() -> None:
     )
     op.create_unique_constraint("uq_pages_version_page", "document_pages", ["version_id", "page_num"])
     op.create_index("pages_version_page_idx", "document_pages", ["version_id", "page_num"])
+
+    # ── document_headings ──
+    op.create_table(
+        "document_headings",
+        sa.Column("heading_id", postgresql.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column(
+            "version_id",
+            postgresql.UUID,
+            sa.ForeignKey("document_versions.version_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("level", sa.Integer, nullable=False),
+        sa.Column("title", sa.Text, nullable=False),
+        sa.Column("page_num", sa.Integer),
+        sa.Column("position", sa.Integer, nullable=False),
+    )
+    op.create_index("ix_document_headings_version_id", "document_headings", ["version_id"])
 
     # ── chunks ──
     op.create_table(
@@ -209,9 +259,44 @@ def upgrade() -> None:
 
     op.create_index("chunks_doc_idx", "chunks", ["doc_id"])
     op.create_index("chunks_version_idx", "chunks", ["version_id"])
+    op.create_index("chunks_language_idx", "chunks", ["language"])
     op.execute("CREATE INDEX chunks_fts_en_idx ON chunks USING GIN(fts_en)")
     op.execute("CREATE INDEX chunks_fts_fr_idx ON chunks USING GIN(fts_fr)")
-    op.execute("CREATE INDEX chunks_embedding_hnsw_idx ON chunks USING hnsw (embedding vector_cosine_ops)")
+    op.execute(
+        "CREATE INDEX chunks_embedding_hnsw_idx ON chunks "
+        "USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)"
+    )
+    op.execute("CREATE INDEX chunks_doc_embedding_idx ON chunks (doc_id) WHERE embedding IS NOT NULL")
+
+    # ── entities ──
+    op.create_table(
+        "entities",
+        sa.Column("entity_id", postgresql.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column(
+            "version_id",
+            postgresql.UUID,
+            sa.ForeignKey("document_versions.version_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "chunk_id",
+            postgresql.UUID,
+            sa.ForeignKey("chunks.chunk_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("doc_id", postgresql.UUID, sa.ForeignKey("documents.doc_id", ondelete="CASCADE"), nullable=False),
+        sa.Column("entity_text", sa.Text, nullable=False),
+        sa.Column("entity_type", sa.Text, nullable=False),
+        sa.Column("start_char", sa.Integer, nullable=False),
+        sa.Column("end_char", sa.Integer, nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    )
+    op.create_index("ix_entities_version_id", "entities", ["version_id"])
+    op.create_index("ix_entities_chunk_id", "entities", ["chunk_id"])
+    op.create_index("ix_entities_doc_id", "entities", ["doc_id"])
+    op.create_index("ix_entities_type_text", "entities", ["entity_type", "entity_text"])
+    op.create_index("ix_entities_text_chunk", "entities", ["entity_text", "chunk_id"])
+    op.execute("CREATE INDEX ix_entities_text_trgm ON entities USING gin (entity_text gin_trgm_ops)")
 
     # ── ingestion_jobs ──
     op.create_table(
@@ -232,6 +317,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
         sa.Column("started_at", sa.DateTime(timezone=True)),
         sa.Column("finished_at", sa.DateTime(timezone=True)),
+        sa.Column("heartbeat_at", sa.DateTime(timezone=True)),
     )
     op.create_unique_constraint("uq_jobs_version_stage", "ingestion_jobs", ["version_id", "stage"])
     op.create_index("jobs_status_idx", "ingestion_jobs", ["status"])
@@ -250,14 +336,50 @@ def upgrade() -> None:
     )
     op.execute("CREATE INDEX audit_created_idx ON audit_log (created_at DESC)")
 
+    # ── conversations ──
+    op.create_table(
+        "conversations",
+        sa.Column("conversation_id", postgresql.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column("user_id", postgresql.UUID, sa.ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False),
+        sa.Column("title", sa.String(200), nullable=False, server_default="New conversation"),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    )
+    op.create_index("ix_conversations_user_updated", "conversations", ["user_id", "updated_at"])
+
+    # ── chat_messages ──
+    op.create_table(
+        "chat_messages",
+        sa.Column("message_id", postgresql.UUID, primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column(
+            "conversation_id",
+            postgresql.UUID,
+            sa.ForeignKey("conversations.conversation_id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("role", sa.String(20), nullable=False),
+        sa.Column("content", sa.Text, nullable=False, server_default=""),
+        sa.Column("tool_calls", postgresql.JSONB),
+        sa.Column("tool_call_id", sa.String(100)),
+        sa.Column("rag_context", postgresql.JSONB),
+        sa.Column("tokens_used", sa.Integer),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    )
+    op.create_index("idx_messages_conv", "chat_messages", ["conversation_id", "created_at"])
+
 
 def downgrade() -> None:
+    op.drop_table("chat_messages")
+    op.drop_table("conversations")
     op.drop_table("audit_log")
     op.drop_table("ingestion_jobs")
+    op.drop_table("entities")
     op.drop_table("chunks")
+    op.drop_table("document_headings")
     op.drop_table("document_pages")
     op.drop_table("document_versions")
     op.drop_table("uploads")
+    op.drop_table("upload_sessions")
     op.drop_table("documents")
     op.drop_table("api_keys")
     op.drop_table("users")

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build PostgreSQL 16 + pgvector from source for arm64 macOS.
+# Build PostgreSQL 18 + pgvector from source for arm64 macOS.
 # Output: $DEST_DIR/{bin,lib/postgresql,share}
 set -euo pipefail
 
-PG_VERSION="${PG_VERSION:-16.13}"
+PG_VERSION="${PG_VERSION:-18.3}"
 PGVECTOR_VERSION="${PGVECTOR_VERSION:-0.8.2}"
 ARCH="${ARCH:-arm64}"
 

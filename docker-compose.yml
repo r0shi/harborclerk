@@ -80,7 +80,7 @@ services:
       - harbor-clerk
 
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-harbor_clerk}
