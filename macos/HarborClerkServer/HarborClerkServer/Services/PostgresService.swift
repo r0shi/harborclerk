@@ -20,9 +20,28 @@ final class PostgresService: ManagedService {
 
     func start() async throws {
         let fm = FileManager.default
+        let pgVersionFile = dataDir.appendingPathComponent("PG_VERSION")
 
-        // First run: initdb
-        if !fm.fileExists(atPath: dataDir.appendingPathComponent("PG_VERSION").path) {
+        // Determine bundled PG major version (e.g. "18" from "postgres (PostgreSQL) 18.3")
+        let expectedMajor = bundledPgMajorVersion()
+
+        // Check if data directory needs (re-)initialization
+        var needsInit = false
+        if fm.fileExists(atPath: pgVersionFile.path) {
+            let stored = (try? String(contentsOf: pgVersionFile, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if stored != expectedMajor {
+                Log.logger("postgresql").warning(
+                    "Data directory version mismatch: found \(stored ?? "?", privacy: .public), expected \(expectedMajor, privacy: .public). Reinitializing."
+                )
+                try? fm.removeItem(at: dataDir)
+                needsInit = true
+            }
+        } else {
+            needsInit = true
+        }
+
+        if needsInit {
             try await initializeDatabase()
             try await createDatabaseAndExtensions()
         }
@@ -240,12 +259,18 @@ final class PostgresService: ManagedService {
             "start",
         ]
         startProc.environment = pgEnvironment()
+        startProc.standardOutput = FileHandle.nullDevice
+        startProc.standardError = FileHandle.nullDevice
         try startProc.run()
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async { startProc.waitUntilExit(); c.resume() }
         }
 
-        // Wait for ready
+        guard startProc.terminationStatus == 0 else {
+            throw ServiceError.startFailed(name, "pg_ctl start (setup) exited with \(startProc.terminationStatus)")
+        }
+
+        // Wait for ready (pg_ctl -w already waits, but belt-and-suspenders)
         for _ in 0..<30 {
             if await healthCheck() { break }
             try await Task.sleep(for: .seconds(1))
@@ -257,6 +282,8 @@ final class PostgresService: ManagedService {
         createProc.executableURL = createdb
         createProc.arguments = ["-p", String(port), "-h", "localhost", "-U", "lka", "lka"]
         createProc.environment = pgEnvironment()
+        createProc.standardOutput = FileHandle.nullDevice
+        createProc.standardError = FileHandle.nullDevice
         try? createProc.run()
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async { createProc.waitUntilExit(); c.resume() }
@@ -287,6 +314,8 @@ final class PostgresService: ManagedService {
         stopProc.executableURL = pgCtl
         stopProc.arguments = ["-D", dataDir.path, "stop", "-m", "fast"]
         stopProc.environment = pgEnvironment()
+        stopProc.standardOutput = FileHandle.nullDevice
+        stopProc.standardError = FileHandle.nullDevice
         try? stopProc.run()
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async { stopProc.waitUntilExit(); c.resume() }
@@ -324,6 +353,28 @@ final class PostgresService: ManagedService {
             "DYLD_LIBRARY_PATH": pgLibDir.path,
             "PGSHARE": pgShareDir.path,
         ]
+    }
+
+    /// Extract the major version from the bundled postgres binary (e.g. "18").
+    private func bundledPgMajorVersion() -> String {
+        let proc = Process()
+        proc.executableURL = pgBinDir.appendingPathComponent("postgres")
+        proc.arguments = ["--version"]
+        proc.environment = pgEnvironment()
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return ""
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // Output: "postgres (PostgreSQL) 18.3\n"
+        guard let output = String(data: data, encoding: .utf8) else { return "" }
+        guard let versionStr = output.split(separator: " ").last else { return "" }
+        return String(versionStr.split(separator: ".").first ?? "")
     }
 }
 
