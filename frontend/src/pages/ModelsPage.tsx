@@ -10,6 +10,8 @@ interface ModelInfo {
   downloaded: boolean
   active: boolean
   downloading: boolean
+  yarn_available: boolean
+  yarn_extended_context: number | null
 }
 
 function formatSize(bytes: number): string {
@@ -24,6 +26,7 @@ export default function ModelsPage() {
   const [error, setError] = useState('')
   const [downloading, setDownloading] = useState<Set<string>>(new Set())
   const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(new Map())
+  const [yarnEnabled, setYarnEnabled] = useState(false)
 
   const loadModelsRef = useRef(loadModels)
   loadModelsRef.current = loadModels
@@ -32,6 +35,8 @@ export default function ModelsPage() {
     try {
       const data = await get<ModelInfo[]>('/api/chat/models')
       setModels(data)
+      const yarnStatus = await get<{ yarn_enabled: boolean }>('/api/chat/models/yarn')
+      setYarnEnabled(yarnStatus.yarn_enabled)
       // Seed downloading set from server state
       setDownloading((prev) => {
         const next = new Set(prev)
@@ -190,6 +195,16 @@ export default function ModelsPage() {
     }
   }
 
+  async function handleYarnToggle(enabled: boolean) {
+    setError('')
+    try {
+      await put(`/api/chat/models/yarn?enabled=${enabled}`)
+      setYarnEnabled(enabled)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to toggle YaRN')
+    }
+  }
+
   async function handleDeactivate() {
     setError('')
     try {
@@ -240,7 +255,14 @@ export default function ModelsPage() {
                   </td>
                   <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{formatSize(model.size_bytes)}</td>
                   <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
-                    {model.context_window.toLocaleString()}
+                    <span>{model.context_window.toLocaleString()}</span>
+                    {model.yarn_available && model.yarn_extended_context && (
+                      <span className="ml-1 text-xs text-gray-400 dark:text-gray-500">
+                        ({yarnEnabled ? '' : '→ '}
+                        {model.yarn_extended_context.toLocaleString()}
+                        {yarnEnabled ? ' via YaRN' : ' w/ YaRN'})
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     {model.supports_tools ? (
@@ -322,6 +344,40 @@ export default function ModelsPage() {
           </tbody>
         </table>
       </div>
+
+      {/* YaRN Extended Context */}
+      {models.some((m) => m.yarn_available) && (
+        <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="font-medium text-gray-900 dark:text-gray-100">Extended Context (YaRN)</div>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                Extends context window from 32K to 131K tokens for supported models. Uses more memory and may reduce
+                quality on shorter inputs.
+              </p>
+            </div>
+            <button
+              onClick={() => handleYarnToggle(!yarnEnabled)}
+              className={`relative ml-4 inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
+                yarnEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+              }`}
+              role="switch"
+              aria-checked={yarnEnabled}
+            >
+              <span
+                className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                  yarnEnabled ? 'translate-x-[22px]' : 'translate-x-[2px]'
+                } mt-[2px]`}
+              />
+            </button>
+          </div>
+          {yarnEnabled && (
+            <p className="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+              LLM server will restart with extended context. Not recommended if most prompts are under 32K tokens.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

@@ -404,7 +404,7 @@ final class ServiceManager: ObservableObject {
                 infraToRestart.append(llamaService)
                 pythonToRestart.insert(ObjectIdentifier(apiService))
 
-            case "llm_model_id":
+            case "llm_model_id", "llm_yarn_enabled":
                 infraToRestart.append(llamaService)
 
             case "api_port", "allow_remote_web", "allow_remote_mcp":
@@ -664,6 +664,7 @@ final class ServiceManager: ObservableObject {
             "TESSDATA_PREFIX": bundle.appendingPathComponent("tesseract/share/tessdata").path,
             "LLAMA_SERVER_URL": "http://localhost:\(settings.llamaPort)",
             "LLM_MODEL_ID": settings.llmModelId,
+            "LLM_YARN_ENABLED": settings.llmYarnEnabled ? "true" : "",
             "MODELS_DIR": settings.modelsDir.path,
             "NATIVE_CONFIG_FILE": settings.configURL.path,
         ]

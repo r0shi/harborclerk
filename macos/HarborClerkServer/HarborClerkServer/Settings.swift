@@ -73,6 +73,11 @@ final class AppSettings: @unchecked Sendable {
         set { lock.withLock { data["llm_model_id"] = newValue }; save() }
     }
 
+    var llmYarnEnabled: Bool {
+        get { lock.withLock { data["llm_yarn_enabled"] as? Bool ?? false } }
+        set { lock.withLock { data["llm_yarn_enabled"] = newValue }; save() }
+    }
+
     // MARK: - Derived paths
 
     static let dataDir: URL = {
@@ -117,6 +122,26 @@ final class AppSettings: @unchecked Sendable {
             "llama3.1-8b": 128000,
         ]
         return contextWindows[modelId] ?? 32768
+    }
+
+    /// YaRN configuration for models that support context extension.
+    struct YarnConfig {
+        let extendedContext: Int
+        let ropeScale: Double
+        let originalContext: Int
+        let attnFactor: Double?
+    }
+
+    /// YaRN parameters for models that support it. nil = not applicable.
+    var activeModelYarn: YarnConfig? {
+        let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
+        let configs: [String: YarnConfig] = [
+            "qwen3-8b": YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: nil),
+            "qwen3-4b": YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: nil),
+            "deepseek-r1-0528-8b": YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: 0.8782),
+            "smollm3-3b": YarnConfig(extendedContext: 131072, ropeScale: 2.0, originalContext: 65536, attnFactor: nil),
+        ]
+        return configs[modelId]
     }
 
     // MARK: - Init
