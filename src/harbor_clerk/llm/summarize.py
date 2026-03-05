@@ -9,6 +9,8 @@ Three tiers based on document length:
 from __future__ import annotations
 
 import logging
+import random
+import time
 from enum import Enum
 
 import httpx
@@ -73,30 +75,63 @@ def _call_llm(
     user_content: str,
     *,
     max_tokens: int = 250,
-    timeout: float = 60.0,
+    timeout: float = 90.0,
+    max_attempts: int = 3,
 ) -> str | None:
-    """Make a single LLM call. Returns response text or None on failure."""
+    """Make an LLM call with retries for transient failures.
+
+    llama-server runs single-slot, so concurrent summarize requests queue up.
+    Retries with jittered delays give the queue time to drain.
+    """
     settings = get_settings()
-    try:
-        resp = httpx.post(
-            f"{settings.llama_server_url}/v1/chat/completions",
-            json={
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                "stream": False,
-                "temperature": 0.3,
-                "max_tokens": max_tokens,
-            },
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"].strip()
-        return content if content else None
-    except Exception:
-        logger.warning("LLM call failed", exc_info=True)
-        return None
+    url = f"{settings.llama_server_url}/v1/chat/completions"
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "stream": False,
+        "temperature": 0.3,
+        "max_tokens": max_tokens,
+    }
+
+    last_err: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = httpx.post(url, json=payload, timeout=timeout)
+            if resp.status_code in {503, 429} and attempt < max_attempts:
+                delay = 5 + random.uniform(0, 10 * attempt)
+                logger.info(
+                    "LLM returned %d on attempt %d/%d, retrying in %.0fs",
+                    resp.status_code,
+                    attempt,
+                    max_attempts,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"].strip()
+            return content if content else None
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            last_err = e
+            if attempt < max_attempts:
+                delay = 5 + random.uniform(0, 10 * attempt)
+                logger.info(
+                    "LLM call attempt %d/%d failed (%s), retrying in %.0fs",
+                    attempt,
+                    max_attempts,
+                    type(e).__name__,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+        except Exception:
+            logger.warning("LLM call failed (non-retryable)", exc_info=True)
+            return None
+
+    logger.warning("LLM call failed after %d attempts: %s", max_attempts, last_err)
+    return None
 
 
 def _sample_chunks(chunks: list[str], max_chars: int) -> str:
@@ -182,13 +217,13 @@ def _extractive_fallback(chunks: list[str], max_chars: int) -> str:
 def _summarize_short(chunks: list[str], max_input_chars: int) -> str | None:
     """Short docs: concat all chunks, single LLM call."""
     text = "\n\n".join(chunks)[:max_input_chars]
-    return _call_llm(_PROMPT_SHORT, text, max_tokens=250, timeout=60.0)
+    return _call_llm(_PROMPT_SHORT, text, max_tokens=250, timeout=90.0)
 
 
 def _summarize_medium(chunks: list[str], max_input_chars: int) -> str | None:
     """Medium docs: strategic sampling, single LLM call."""
     text = _sample_chunks(chunks, max_input_chars)
-    return _call_llm(_PROMPT_MEDIUM, text, max_tokens=250, timeout=60.0)
+    return _call_llm(_PROMPT_MEDIUM, text, max_tokens=250, timeout=90.0)
 
 
 def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
@@ -196,10 +231,10 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
     groups = _group_chunks_for_mapreduce(chunks, max_input_chars)
     logger.info("Map-reduce summarization: %d groups from %d chunks", len(groups), len(chunks))
 
-    # Map step: summarize each group
+    # Map step: summarize each group (fewer retries to stay within stage timeout)
     section_summaries: list[str] = []
     for group in groups:
-        result = _call_llm(_PROMPT_MAP, group, max_tokens=150, timeout=45.0)
+        result = _call_llm(_PROMPT_MAP, group, max_tokens=150, timeout=60.0, max_attempts=2)
         if result:
             section_summaries.append(result[:300])
         else:
@@ -214,7 +249,7 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
     # Reduce step: combine section summaries into final
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(section_summaries))
     reduce_input = numbered[:max_input_chars]
-    return _call_llm(_PROMPT_REDUCE, reduce_input, max_tokens=250, timeout=60.0)
+    return _call_llm(_PROMPT_REDUCE, reduce_input, max_tokens=250, timeout=90.0)
 
 
 # --- Main entry point ---
