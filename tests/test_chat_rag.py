@@ -45,6 +45,7 @@ def _mock_llm_streaming(response_text="Hello!"):
     must be a MagicMock (not AsyncMock) for .stream().
     """
     mock_response = MagicMock()
+    mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
 
     async def fake_lines():
