@@ -76,7 +76,10 @@ async def chat_stream(
     # Reserve ~25% of context for tool results (rest: system prompt, tools, history, response).
     # ~3.5 chars per token as a conservative estimate.
     model = get_model(settings.llm_model_id) if settings.llm_model_id else None
-    context_tokens = model.context_window if model else 32768
+    if model and settings.llm_yarn_enabled and model.yarn:
+        context_tokens = model.yarn.extended_context
+    else:
+        context_tokens = model.context_window if model else 32768
     tool_result_max_chars = min(int(context_tokens * 0.25 * 3.5), 80_000)
 
     async with async_session_factory() as session:

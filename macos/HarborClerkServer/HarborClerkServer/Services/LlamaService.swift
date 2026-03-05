@@ -28,11 +28,14 @@ final class LlamaService: ManagedService {
             return
         }
 
-        let contextWindow = settings.activeModelContextWindow
+        let yarnEnabled = settings.llmYarnEnabled
+        let yarnConfig = settings.activeModelYarn
+        let useYarn = yarnEnabled && yarnConfig != nil
+        let contextWindow = useYarn ? yarnConfig!.extendedContext : settings.activeModelContextWindow
 
         let proc = Process()
         proc.executableURL = llamaBin
-        proc.arguments = [
+        var args = [
             "-m", modelPath,
             "--host", "127.0.0.1",
             "--port", String(port),
@@ -40,6 +43,17 @@ final class LlamaService: ManagedService {
             "-c", String(contextWindow),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
+        if useYarn, let yarn = yarnConfig {
+            args += [
+                "--rope-scaling", "yarn",
+                "--rope-scale", String(yarn.ropeScale),
+                "--yarn-orig-ctx", String(yarn.originalContext),
+            ]
+            if let attn = yarn.attnFactor {
+                args += ["--yarn-attn-factor", String(attn)]
+            }
+        }
+        proc.arguments = args
 
         let pipe = Log.createPipe(category: "llm")
         proc.standardOutput = pipe

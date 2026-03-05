@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     # LLM
     llama_server_url: str = Field(default="http://localhost:8102")
     llm_model_id: str = Field(default="")
+    llm_yarn_enabled: bool = Field(default=False)
     models_dir: str = Field(default="./data/models")
 
     # Native macOS app config file (set by Swift via env var)
@@ -96,7 +97,7 @@ def get_settings() -> Settings:
     return _settings
 
 
-def sync_native_config(key: str, value: str) -> None:
+def sync_native_config(key: str, value: str | bool | int) -> None:
     """Write a key back to the shared config.json used by the macOS app.
 
     Only operates when ``native_config_file`` is set (i.e. running inside the

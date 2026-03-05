@@ -54,3 +54,5 @@ class ModelOut(BaseModel):
     downloaded: bool
     active: bool
     downloading: bool = False
+    yarn_available: bool = False
+    yarn_extended_context: int | None = None

@@ -1,6 +1,18 @@
 """Curated model registry for local LLM inference."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class YarnConfig:
+    """YaRN context extension parameters for llama-server."""
+
+    extended_context: int  # target context size with YaRN enabled
+    rope_scale: float  # RoPE scaling factor (e.g. 4.0 for 32K→131K)
+    original_context: int  # original training context
+    attn_factor: float | None = None  # attention scaling (model-specific)
 
 
 @dataclass(frozen=True)
@@ -12,6 +24,7 @@ class ModelInfo:
     size_bytes: int
     context_window: int
     supports_tools: bool
+    yarn: YarnConfig | None = None  # None = YaRN not applicable
 
 
 MODELS: dict[str, ModelInfo] = {
@@ -25,6 +38,7 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=5_030_000_000,
             context_window=32768,
             supports_tools=True,
+            yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768),
         ),
         ModelInfo(
             id="qwen3-4b",
@@ -34,6 +48,7 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=2_500_000_000,
             context_window=32768,
             supports_tools=True,
+            yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768),
         ),
         ModelInfo(
             id="phi4-mini",
@@ -52,6 +67,7 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=5_400_000_000,
             context_window=32768,
             supports_tools=True,
+            yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768, attn_factor=0.8782),
         ),
         ModelInfo(
             id="gemma3-4b",
@@ -70,6 +86,7 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=2_060_000_000,
             context_window=65536,
             supports_tools=True,
+            yarn=YarnConfig(extended_context=131072, rope_scale=2.0, original_context=65536),
         ),
         ModelInfo(
             id="llama3.1-8b",

@@ -176,6 +176,8 @@ async def list_available_models(
             downloaded=m.id in downloaded,
             active=m.id == settings.llm_model_id,
             downloading=is_downloading(m.id),
+            yarn_available=m.yarn is not None,
+            yarn_extended_context=m.yarn.extended_context if m.yarn else None,
         )
         for m in list_models()
     ]
@@ -231,6 +233,25 @@ async def deactivate_model(
     settings.llm_model_id = ""
     sync_native_config("llm_model_id", "")
     return {"status": "deactivated"}
+
+
+@router.put("/chat/models/yarn", status_code=200)
+async def toggle_yarn(
+    principal: Principal = Depends(require_admin),
+    enabled: bool = True,
+):
+    settings = get_settings()
+    settings.llm_yarn_enabled = enabled
+    sync_native_config("llm_yarn_enabled", enabled)
+    return {"status": "enabled" if enabled else "disabled", "yarn_enabled": enabled}
+
+
+@router.get("/chat/models/yarn", status_code=200)
+async def get_yarn_status(
+    principal: Principal = Depends(require_user),
+):
+    settings = get_settings()
+    return {"yarn_enabled": settings.llm_yarn_enabled}
 
 
 @router.delete("/chat/models/{model_id}", status_code=204)
