@@ -664,7 +664,7 @@ final class ServiceManager: ObservableObject {
             "TESSDATA_PREFIX": bundle.appendingPathComponent("tesseract/share/tessdata").path,
             "LLAMA_SERVER_URL": "http://localhost:\(settings.llamaPort)",
             "LLM_MODEL_ID": settings.llmModelId,
-            "LLM_YARN_ENABLED": settings.llmYarnEnabled ? "true" : "",
+            "LLM_YARN_ENABLED": settings.llmYarnEnabled ? "true" : "false",
             "MODELS_DIR": settings.modelsDir.path,
             "NATIVE_CONFIG_FILE": settings.configURL.path,
         ]
