@@ -64,8 +64,17 @@ else
     echo "==> striprtf already installed, skipping"
 fi
 
-# Make the venv relocatable by patching shebangs
-echo "==> Patching shebangs for relocatability"
+# Make the venv relocatable
+echo "==> Making venv relocatable"
+
+# Fix python3 symlink: venv creates an absolute symlink to the build Python;
+# repoint it to a relative path so the bundle is self-contained.
+if [ -L "$VENV_DIR/bin/python3" ]; then
+    rm "$VENV_DIR/bin/python3"
+    ln -s ../../python/bin/python3 "$VENV_DIR/bin/python3"
+fi
+
+# Patch shebangs
 for script in "$VENV_DIR/bin/"*; do
     if [ -f "$script" ] && head -1 "$script" | grep -q "^#!.*$VENV_DIR"; then
         sed -i '' "1s|.*|#!/usr/bin/env python3|" "$script"
