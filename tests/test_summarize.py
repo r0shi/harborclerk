@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 from harbor_clerk.llm.summarize import (
     _compute_max_input_chars,
     _extractive_fallback,
@@ -129,6 +131,108 @@ class TestExtractiveFallback:
         assert "chunk_0" in result
         assert "chunk_4" in result
         assert "chunk_5" not in result
+
+
+class TestCallLlmRetry:
+    """Test retry behavior of _call_llm for transient failures."""
+
+    def test_succeeds_first_attempt(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"choices": [{"message": {"content": "Summary."}}]}
+
+        with patch("harbor_clerk.llm.summarize.httpx.post", return_value=mock_response) as mock_post:
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+            assert result == "Summary."
+            assert mock_post.call_count == 1
+
+    def test_retries_on_timeout(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"choices": [{"message": {"content": "Summary."}}]}
+
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                side_effect=[httpx.TimeoutException("timeout"), mock_response],
+            ) as mock_post,
+            patch("harbor_clerk.llm.summarize.time.sleep"),
+        ):
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+            assert result == "Summary."
+            assert mock_post.call_count == 2
+
+    def test_retries_on_connect_error(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"choices": [{"message": {"content": "Summary."}}]}
+
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                side_effect=[httpx.ConnectError("refused"), mock_response],
+            ) as mock_post,
+            patch("harbor_clerk.llm.summarize.time.sleep"),
+        ):
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+            assert result == "Summary."
+            assert mock_post.call_count == 2
+
+    def test_retries_on_503(self):
+        busy_response = MagicMock()
+        busy_response.status_code = 503
+
+        ok_response = MagicMock()
+        ok_response.status_code = 200
+        ok_response.raise_for_status = MagicMock()
+        ok_response.json.return_value = {"choices": [{"message": {"content": "Summary."}}]}
+
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                side_effect=[busy_response, ok_response],
+            ) as mock_post,
+            patch("harbor_clerk.llm.summarize.time.sleep"),
+        ):
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+            assert result == "Summary."
+            assert mock_post.call_count == 2
+
+    def test_gives_up_after_max_attempts(self):
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                side_effect=httpx.TimeoutException("timeout"),
+            ) as mock_post,
+            patch("harbor_clerk.llm.summarize.time.sleep"),
+        ):
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+            assert result is None
+            assert mock_post.call_count == 3
+
+    def test_no_retry_on_non_retryable_error(self):
+        with patch(
+            "harbor_clerk.llm.summarize.httpx.post",
+            side_effect=ValueError("bad json"),
+        ) as mock_post:
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+            assert result is None
+            assert mock_post.call_count == 1
 
 
 # --- generate_summary tests ---
