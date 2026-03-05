@@ -28,6 +28,8 @@ final class LlamaService: ManagedService {
             return
         }
 
+        let contextWindow = settings.activeModelContextWindow
+
         let proc = Process()
         proc.executableURL = llamaBin
         proc.arguments = [
@@ -35,7 +37,7 @@ final class LlamaService: ManagedService {
             "--host", "127.0.0.1",
             "--port", String(port),
             "-ngl", "99",
-            "-c", "8192",
+            "-c", String(contextWindow),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
 

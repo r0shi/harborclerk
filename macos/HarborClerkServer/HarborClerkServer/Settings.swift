@@ -104,6 +104,21 @@ final class AppSettings: @unchecked Sendable {
         return modelsDir.appendingPathComponent(filename).path
     }
 
+    /// Native context window (tokens) for the active model. Mirrors Python registry.
+    var activeModelContextWindow: Int {
+        let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
+        let contextWindows: [String: Int] = [
+            "qwen3-8b": 32768,
+            "qwen3-4b": 32768,
+            "phi4-mini": 128000,
+            "deepseek-r1-0528-8b": 32768,
+            "gemma3-4b": 128000,
+            "smollm3-3b": 65536,
+            "llama3.1-8b": 128000,
+        ]
+        return contextWindows[modelId] ?? 32768
+    }
+
     // MARK: - Init
 
     private init() {

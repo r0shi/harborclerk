@@ -399,10 +399,33 @@ function parseThinking(content: string): { thinking: string | null; response: st
   return { thinking: null, response: content }
 }
 
-function ThinkingSection({ thinking, isStreaming }: { thinking: string; isStreaming?: boolean }) {
+function ThinkingSection({
+  thinking,
+  isStreaming,
+  hasResponse,
+}: {
+  thinking: string
+  isStreaming?: boolean
+  hasResponse: boolean
+}) {
+  const ref = useRef<HTMLDetailsElement>(null)
+  const userToggled = useRef(false)
   const lineCount = thinking.split('\n').filter((l) => l.trim()).length
+
+  // Auto-open while actively thinking (no response yet), auto-close when response starts
+  useEffect(() => {
+    if (userToggled.current || !ref.current) return
+    ref.current.open = !!isStreaming && !hasResponse
+  }, [isStreaming, hasResponse])
+
   return (
-    <details open={isStreaming} className="mb-2 group/thinking">
+    <details
+      ref={ref}
+      onToggle={() => {
+        userToggled.current = true
+      }}
+      className="mb-2 group/thinking"
+    >
       <summary className="flex items-center gap-1.5 cursor-pointer text-[11px] font-medium text-gray-400 dark:text-gray-500 select-none hover:text-gray-500 dark:hover:text-gray-400 transition-colors">
         <svg className="h-3 w-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path
@@ -497,7 +520,13 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             )}
 
             {/* Thinking/reasoning section */}
-            {thinking && <ThinkingSection thinking={thinking} isStreaming={message.isStreaming} />}
+            {thinking && (
+              <ThinkingSection
+                thinking={thinking}
+                isStreaming={message.isStreaming}
+                hasResponse={response.length > 0}
+              />
+            )}
 
             {/* Main response content */}
             {response && <div className="whitespace-pre-wrap wrap-break-word">{response}</div>}
