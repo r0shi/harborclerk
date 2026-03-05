@@ -6,16 +6,31 @@
 
 **Keep your data. Ask it anything.**
 
-Harbor Clerk is a safe harbor for your documents — and a capable clerk who knows where everything is. Drop in PDFs, scans, notes, or research files, and it turns them into a searchable, citation-backed knowledge base that runs entirely on your machine.
+Harbor Clerk is a safe harbor for your documents — and a capable clerk who knows where everything is. Drop in PDFs, scans, notes, contracts, or research files, and Harbor Clerk turns them into a searchable knowledge base you can actually talk to.
 
-No SaaS account. No background sync. No shared tenancy. Your documents stay local.
+It reads your files, extracts text (including OCR for scanned documents), splits them into searchable passages, and indexes everything locally so you can search or ask questions across your entire collection. Results always come with clear citations so you can jump straight back to the original document and verify the source.
 
-Designed for small offices, independent operators, and privacy-focused individuals, Harbor Clerk runs comfortably on a Mac mini or similar hardware. It handles text extraction and OCR, builds hybrid full-text and vector search, and includes a built-in chat assistant powered by a local LLM — no cloud required. Chat responses automatically surface relevant passages from your knowledge base, with transparent sourcing you can click through to verify.
+Everything runs on your machine. No SaaS account. No background sync. No shared tenancy. Your documents stay local.
 
-Harbor Clerk also exposes a comprehensive MCP endpoint with 16 tools for external AI agents (Claude, GPT, etc.) to search, navigate, and explore your corpus. They receive only cited snippets, never your full documents.
+Harbor Clerk is designed for small offices, independent operators, and privacy-focused individuals. It runs comfortably on a Mac mini or similar hardware and includes a built-in chat assistant powered by a local LLM, so you can explore your documents conversationally without sending anything to the cloud.
+
+If you do want to use external AI tools, Harbor Clerk can expose a secure MCP endpoint that lets them search and navigate your knowledge base. They receive only the specific snippets needed to answer a question — never your full documents.
 
 This isn't a platform. It's a tool.
 It keeps your documents where they belong — and makes them useful.
+
+---
+
+### Why Harbor Clerk?
+
+**Your documents stay private**
+Everything runs locally. No uploads to SaaS services, no background syncing, and no shared infrastructure.
+
+**Your files become searchable knowledge**
+Harbor Clerk reads documents, performs OCR when needed, builds hybrid full-text and semantic search, and lets you explore everything through search or chat — always with citations.
+
+**Use any model you trust**
+Chat locally with built-in models, or connect external AI tools through MCP. They see only the passages needed to answer a question — never your full corpus.
 
 ---
 
