@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Create MCP app + session manager at module level so we can wire lifespan
 from harbor_clerk.mcp_server import create_mcp_app  # noqa: E402
 
-_mcp_asgi, _mcp_session_manager = create_mcp_app()
+_mcp_asgi, _mcp_token_asgi, _mcp_session_manager = create_mcp_app()
 
 
 async def _session_reaper_loop() -> None:
@@ -161,8 +161,9 @@ def create_app() -> FastAPI:
     app.include_router(stats_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
 
-    # Mount MCP Streamable HTTP endpoint
-    app.mount("/mcp", _mcp_asgi)
+    # Mount MCP Streamable HTTP endpoints
+    app.mount("/mcp", _mcp_asgi)  # Header-based auth (Authorization: Bearer <key>)
+    app.mount("/t", _mcp_token_asgi)  # URL-token auth for authless MCP clients (/t/<api_key>)
 
     # Serve SPA static files (must be last — catches all unmatched routes)
     settings = get_settings()

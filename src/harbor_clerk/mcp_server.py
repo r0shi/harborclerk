@@ -124,6 +124,65 @@ class MCPAuthMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
+class MCPTokenPathAuth:
+    """ASGI middleware that extracts an API key from the URL path.
+
+    Intended for authless MCP clients (Claude.ai, ChatGPT) that cannot
+    send custom Authorization headers.  The user pastes a URL like
+    ``https://tunnel.example.com/t/hc_abc123...`` into the client's
+    connector settings.  This middleware extracts the key from the first
+    path segment, validates it, and rewrites the path before forwarding
+    to the inner MCP ASGI app.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        parts = path.strip("/").split("/", 1)
+        token = parts[0] if parts else ""
+
+        if not token or not token.startswith(API_KEY_PREFIXES):
+            await self._send_401(send)
+            return
+
+        principal = await _resolve_principal(token)
+        if principal is None:
+            await self._send_401(send)
+            return
+
+        # Rewrite path: strip the token, keep the rest (if any)
+        remaining = "/" + parts[1] if len(parts) > 1 else "/"
+        scope = dict(scope)
+        scope["path"] = remaining
+
+        reset_token = _mcp_principal.set(principal)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _mcp_principal.reset(reset_token)
+
+    @staticmethod
+    async def _send_401(send):
+        body = json.dumps({"error": "Invalid or missing API key in URL path"}).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    [b"content-type", b"application/json"],
+                    [b"content-length", str(len(body)).encode()],
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
 def _get_principal() -> Principal:
     """Get the current MCP principal or raise."""
     p = _mcp_principal.get()
@@ -1562,12 +1621,14 @@ async def kb_system_health() -> str:
 
 
 def create_mcp_app():
-    """Create the MCP ASGI app wrapped with auth middleware.
+    """Create MCP ASGI apps with auth middleware.
 
-    Returns (asgi_app, session_manager) — the session_manager must be
-    started via ``async with session_manager.run():`` in the host
-    application's lifespan, since FastAPI does not propagate lifespan
-    events to mounted sub-apps.
+    Returns (header_auth_app, token_path_app, session_manager).
+
+    - header_auth_app: expects ``Authorization: Bearer <key>`` header (mounted at ``/mcp``)
+    - token_path_app: expects API key in URL path (mounted at ``/t`` for authless MCP clients)
+    - session_manager: must be started via ``async with session_manager.run():``
+      in the host application's lifespan
     """
     mcp_http = mcp.streamable_http_app()
     # Dig out the session manager so the host can run it
@@ -1577,4 +1638,4 @@ def create_mcp_app():
         if hasattr(inner, "session_manager"):
             session_manager = inner.session_manager
             break
-    return MCPAuthMiddleware(mcp_http), session_manager
+    return MCPAuthMiddleware(mcp_http), MCPTokenPathAuth(mcp_http), session_manager

@@ -68,6 +68,7 @@ async def create_api_key(
         key_id=str(key_obj.key_id),
         name=key_obj.name,
         raw_key=raw_key,
+        mcp_path=f"/t/{raw_key}",
         created_at=key_obj.created_at,
     )
 
