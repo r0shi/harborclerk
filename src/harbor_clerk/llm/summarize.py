@@ -200,6 +200,22 @@ def _group_chunks_for_mapreduce(chunks: list[str], chars_per_group: int) -> list
     return groups
 
 
+def _truncate_at_sentence(text: str, max_chars: int) -> str:
+    """Truncate text at the last sentence boundary within max_chars."""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    # Find the last sentence-ending punctuation
+    for i in range(len(truncated) - 1, -1, -1):
+        if truncated[i] in ".!?" and (i + 1 >= len(truncated) or truncated[i + 1] in " \n\t"):
+            return truncated[: i + 1]
+    # No sentence boundary found — fall back to last space to avoid mid-word
+    last_space = truncated.rfind(" ")
+    if last_space > max_chars // 2:
+        return truncated[:last_space] + "\u2026"
+    return truncated
+
+
 def _extractive_fallback(chunks: list[str], max_chars: int) -> str:
     """Take first substantial paragraph from initial chunks as summary."""
     text = "\n\n".join(chunks[:5])
@@ -217,13 +233,13 @@ def _extractive_fallback(chunks: list[str], max_chars: int) -> str:
 def _summarize_short(chunks: list[str], max_input_chars: int) -> str | None:
     """Short docs: concat all chunks, single LLM call."""
     text = "\n\n".join(chunks)[:max_input_chars]
-    return _call_llm(_PROMPT_SHORT, text, max_tokens=250, timeout=90.0)
+    return _call_llm(_PROMPT_SHORT, text, max_tokens=350, timeout=90.0)
 
 
 def _summarize_medium(chunks: list[str], max_input_chars: int) -> str | None:
     """Medium docs: strategic sampling, single LLM call."""
     text = _sample_chunks(chunks, max_input_chars)
-    return _call_llm(_PROMPT_MEDIUM, text, max_tokens=250, timeout=90.0)
+    return _call_llm(_PROMPT_MEDIUM, text, max_tokens=350, timeout=90.0)
 
 
 def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
@@ -249,7 +265,7 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
     # Reduce step: combine section summaries into final
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(section_summaries))
     reduce_input = numbered[:max_input_chars]
-    return _call_llm(_PROMPT_REDUCE, reduce_input, max_tokens=250, timeout=90.0)
+    return _call_llm(_PROMPT_REDUCE, reduce_input, max_tokens=350, timeout=90.0)
 
 
 # --- Main entry point ---
@@ -301,7 +317,7 @@ def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[s
             result = _summarize_long(chunks, max_input_chars)
 
         if result:
-            return result[:max_chars], settings.llm_model_id
+            return _truncate_at_sentence(result, max_chars), settings.llm_model_id
         logger.warning("LLM summarization returned no result — falling back to extractive")
     else:
         logger.warning(

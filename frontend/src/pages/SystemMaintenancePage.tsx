@@ -5,6 +5,7 @@ export default function SystemMaintenancePage() {
   const [error, setError] = useState('')
   const [actionResult, setActionResult] = useState('')
   const [confirmingReprocess, setConfirmingReprocess] = useState(false)
+  const [confirmingResummarize, setConfirmingResummarize] = useState(false)
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
   const [deleteInput, setDeleteInput] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -44,6 +45,22 @@ export default function SystemMaintenancePage() {
       setActionResult(`Reprocess all complete: ${data.reprocessed} documents queued`)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Reprocess all failed')
+    }
+  }
+
+  async function handleResummarizeAll() {
+    if (!confirmingResummarize) {
+      setConfirmingResummarize(true)
+      return
+    }
+    setConfirmingResummarize(false)
+    setError('')
+    setActionResult('')
+    try {
+      const data = await post<{ resummarized: number }>('/api/system/resummarize-all')
+      setActionResult(`Resummarize complete: ${data.resummarized} documents queued for summarization`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Resummarize failed')
     }
   }
 
@@ -104,6 +121,33 @@ export default function SystemMaintenancePage() {
             {confirmingReprocess && (
               <button
                 onClick={() => setConfirmingReprocess(false)}
+                className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
+            Re-generate summaries for all documents using the current model. Useful after changing the
+            LLM model. Much faster than a full reprocess.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleResummarizeAll}
+              className={`rounded-lg px-4 py-2 text-sm font-medium ${
+                confirmingResummarize
+                  ? 'bg-amber-600 text-white hover:bg-amber-700'
+                  : 'bg-(--color-bg-tertiary) text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+              }`}
+            >
+              {confirmingResummarize ? 'Click again to confirm' : 'Resummarize All'}
+            </button>
+            {confirmingResummarize && (
+              <button
+                onClick={() => setConfirmingResummarize(false)}
                 className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
               >
                 Cancel
