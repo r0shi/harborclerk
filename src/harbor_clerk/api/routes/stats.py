@@ -1,7 +1,13 @@
 """Corpus and per-document statistics endpoints."""
 
+from __future__ import annotations
+
 import logging
 import uuid
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import Text, case, cast, extract, func, select, text
@@ -359,7 +365,7 @@ async def entity_network(
     return {"nodes": nodes, "edges": edges}
 
 
-def _kmeans(data: object, k: int, max_iter: int = 50) -> list[int]:
+def _kmeans(data: np.ndarray, k: int, max_iter: int = 50) -> list[int]:
     """Simple k-means clustering using numpy. Returns list of cluster labels."""
     import numpy as np
 
@@ -368,7 +374,11 @@ def _kmeans(data: object, k: int, max_iter: int = 50) -> list[int]:
     indices = [rng.integers(n)]
     for _ in range(1, k):
         dists = np.min([np.sum((data - data[i]) ** 2, axis=1) for i in indices], axis=0)
-        probs = dists / dists.sum()
+        total = dists.sum()
+        if total == 0:
+            probs = np.ones(n) / n
+        else:
+            probs = dists / total
         indices.append(rng.choice(n, p=probs))
     centroids = data[indices].copy()
 
@@ -415,6 +425,10 @@ async def topic_clusters(
         )
     ).all()
 
+    if len(rows) < 3:
+        return {"clusters": [], "doc_count": len(rows)}
+
+    rows = [r for r in rows if r[4] is not None]
     if len(rows) < 3:
         return {"clusters": [], "doc_count": len(rows)}
 
