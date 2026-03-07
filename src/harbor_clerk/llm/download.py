@@ -18,6 +18,8 @@ DOWNLOAD_CHANNEL = "model_downloads"
 
 _lock = threading.Lock()
 _active: set[str] = set()
+_progress: dict[str, float] = {}  # model_id -> progress percentage
+_errors: dict[str, str] = {}  # model_id -> error message (transient, cleared on next poll)
 
 
 def is_downloading(model_id: str) -> bool:
@@ -32,13 +34,52 @@ def _models_dir() -> Path:
     return d
 
 
+def get_download_status() -> list[dict]:
+    """Return current download status for all active/recently-finished downloads.
+
+    Each entry has keys: model_id, status ("downloading"|"complete"|"error"),
+    progress (float 0-100), and optionally error (str).
+    Completed/errored entries are returned once then cleared.
+    """
+    with _lock:
+        results: list[dict] = []
+        for model_id in _active:
+            results.append(
+                {
+                    "model_id": model_id,
+                    "status": "downloading",
+                    "progress": _progress.get(model_id, 0),
+                }
+            )
+        for model_id, error_msg in list(_errors.items()):
+            results.append(
+                {
+                    "model_id": model_id,
+                    "status": "error",
+                    "error": error_msg,
+                }
+            )
+            del _errors[model_id]
+        return results
+
+
 def _publish_progress(
     model_id: str,
     status: str,
     progress: float | None = None,
     error: str | None = None,
 ) -> None:
-    """Publish download progress via PostgreSQL NOTIFY."""
+    """Update in-memory progress and publish via PostgreSQL NOTIFY."""
+    # Update in-memory state (always works, even if PG NOTIFY fails)
+    with _lock:
+        if progress is not None:
+            _progress[model_id] = round(progress, 2)
+        if status == "error" and error:
+            _errors[model_id] = error
+        if status == "complete":
+            _progress.pop(model_id, None)
+
+    # Also try PG NOTIFY for multi-process setups (best-effort)
     payload: dict = {"model_id": model_id, "status": status}
     if progress is not None:
         payload["progress"] = round(progress, 2)
@@ -55,7 +96,7 @@ def _publish_progress(
         finally:
             session.close()
     except Exception:
-        logger.exception("Failed to publish download progress")
+        logger.debug("PG NOTIFY failed (in-memory progress still works)", exc_info=True)
 
 
 def get_model_path(model_id: str) -> Path | None:
@@ -143,6 +184,7 @@ def download_model(model_id: str) -> Path:
     finally:
         with _lock:
             _active.discard(model_id)
+            _progress.pop(model_id, None)
 
 
 def delete_model(model_id: str) -> bool:
