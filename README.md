@@ -33,9 +33,9 @@ It keeps your documents where they belong — and makes them useful.
 
 ```mermaid
 graph LR
-    docs["1. Add your documents\nPDFs, scans, notes"]
-    process["2. Harbor Clerk organizes them\ntext extraction, OCR, chunking\nhybrid search + embeddings"]
-    ask["3. Search or chat with your knowledge\nanswers include citations"]
+    docs["1. Add your documents<br/>PDFs, scans, notes"]
+    process["2. Harbor Clerk organizes them<br/>text extraction, OCR, chunking<br/>hybrid search + embeddings"]
+    ask["3. Search or chat with your knowledge<br/>answers include citations"]
     docs --> process --> ask
 ```
 
@@ -47,7 +47,7 @@ External models can ask questions — they don't get your archive.
 graph LR
     subgraph local["Stays Local"]
         docs["Your Documents"]
-        harbor["Harbor Clerk\nOCR · Search · Chat"]
+        harbor["Harbor Clerk<br/>OCR · Search · Chat"]
     end
     subgraph external["Optional External Models"]
         models["Claude / GPT / other MCP clients"]
