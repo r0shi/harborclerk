@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { get, post, del, downloadBlob } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents } from '../hooks/useJobEvents'
@@ -16,6 +16,7 @@ interface DocSummary {
   summary?: string
   summary_model?: string
   source_path?: string
+  doc_type?: string
 }
 
 interface PaginatedDocs {
@@ -119,6 +120,7 @@ function Pagination({
 
 export default function DocumentsPage() {
   const { user, isAdmin, updatePreferences } = useAuth()
+  const [searchParams] = useSearchParams()
   const [pageSize, setPageSize] = useState(user?.preferences?.page_size || 10)
   const [docs, setDocs] = useState<DocSummary[]>([])
   const [total, setTotal] = useState(0)
@@ -131,20 +133,113 @@ export default function DocumentsPage() {
   const [bulkAction, setBulkAction] = useState('')
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
-  const loadDocs = useCallback((page: number, size: number, q: string) => {
-    const params: Record<string, string | number> = {
-      limit: size,
-      offset: (page - 1) * size,
-    }
-    if (q) params.q = q
-    return get<PaginatedDocs>('/api/docs', params)
-      .then((data) => {
-        setDocs(data.items)
-        setTotal(data.total)
-      })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
+  // Filter & sort state
+  const [filterOptions, setFilterOptions] = useState<{
+    mime_types: { value: string; count: number }[]
+    doc_types: { value: string; count: number }[]
+    languages: { value: string; count: number }[]
+    entity_types: { value: string; count: number }[]
+  }>({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
+
+  const [mimeFilter, setMimeFilter] = useState('')
+  const [langFilter, setLangFilter] = useState('')
+  const [docTypeFilter, setDocTypeFilter] = useState('')
+  const [entityFilter, setEntityFilter] = useState('')
+  const [sortField, setSortField] = useState<'updated' | 'created' | 'title'>('updated')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  // Entity autocomplete
+  const [entityInput, setEntityInput] = useState('')
+  const [entitySuggestions, setEntitySuggestions] = useState<
+    { entity_text: string; entity_type: string; doc_count: number }[]
+  >([])
+  const [showEntityDropdown, setShowEntityDropdown] = useState(false)
+
+  // Load filter options on mount
+  useEffect(() => {
+    get<typeof filterOptions>('/api/docs/filters')
+      .then(setFilterOptions)
+      .catch(() => {})
   }, [])
+
+  // Initialize filters from URL params on mount
+  useEffect(() => {
+    async function initFromUrl() {
+      const urlEntity = searchParams.get('entity')
+      const urlMime = searchParams.get('mime_type')
+      const urlLang = searchParams.get('language')
+      const urlDocType = searchParams.get('doc_type')
+      if (urlEntity) {
+        setEntityFilter(urlEntity)
+        setEntityInput(urlEntity)
+      }
+      if (urlMime) setMimeFilter(urlMime)
+      if (urlLang) setLangFilter(urlLang)
+      if (urlDocType) setDocTypeFilter(urlDocType)
+    }
+    initFromUrl()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const entityTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
+  function handleEntityInputChange(value: string) {
+    setEntityInput(value)
+    if (value.length < 2) {
+      setEntitySuggestions([])
+      return
+    }
+    clearTimeout(entityTimerRef.current)
+    entityTimerRef.current = setTimeout(async () => {
+      try {
+        const results = await get<typeof entitySuggestions>('/api/docs/entities/autocomplete', {
+          q: value,
+          limit: 10,
+        })
+        setEntitySuggestions(results)
+        setShowEntityDropdown(true)
+      } catch {
+        /* ignore */
+      }
+    }, 200)
+  }
+
+  function selectEntity(text: string) {
+    setEntityFilter(text)
+    setEntityInput(text)
+    setShowEntityDropdown(false)
+    setCurrentPage(1)
+  }
+
+  function clearEntityFilter() {
+    setEntityFilter('')
+    setEntityInput('')
+    setEntitySuggestions([])
+    setCurrentPage(1)
+  }
+
+  const loadDocs = useCallback(
+    (page: number, size: number, q: string) => {
+      const params: Record<string, string | number> = {
+        limit: size,
+        offset: (page - 1) * size,
+        sort: sortField,
+        sort_dir: sortDir,
+      }
+      if (q) params.q = q
+      if (mimeFilter) params.mime_type = mimeFilter
+      if (langFilter) params.language = langFilter
+      if (docTypeFilter) params.doc_type = docTypeFilter
+      if (entityFilter) params.entity = entityFilter
+      return get<PaginatedDocs>('/api/docs', params)
+        .then((data) => {
+          setDocs(data.items)
+          setTotal(data.total)
+        })
+        .catch((e) => setError(e.message))
+        .finally(() => setLoading(false))
+    },
+    [sortField, sortDir, mimeFilter, langFilter, docTypeFilter, entityFilter],
+  )
 
   useEffect(() => {
     loadDocs(currentPage, pageSize, filter)
@@ -268,6 +363,7 @@ export default function DocumentsPage() {
   const visibleDocs = docs
   const visibleDocIds = new Set(visibleDocs.map((d) => d.doc_id))
   const startIdx = (currentPage - 1) * pageSize
+  const hasFilters = !!(filter || mimeFilter || langFilter || docTypeFilter || entityFilter)
 
   let lastDoc: { doc_id: string; title: string } | null = null
   try {
@@ -308,7 +404,153 @@ export default function DocumentsPage() {
           </Link>
         </div>
       </div>
-      {total === 0 && !filter ? (
+      {/* Filter bar */}
+      {(filterOptions.mime_types.length > 0 ||
+        filterOptions.doc_types.length > 0 ||
+        filterOptions.languages.length > 0) && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          {/* Entity search */}
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Filter by entity..."
+              value={entityInput}
+              onChange={(e) => handleEntityInputChange(e.target.value)}
+              onFocus={() => entitySuggestions.length > 0 && setShowEntityDropdown(true)}
+              onBlur={() => setTimeout(() => setShowEntityDropdown(false), 200)}
+              className="w-48 rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2.5 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+            />
+            {entityFilter && (
+              <button
+                onClick={clearEntityFilter}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+            {showEntityDropdown && entitySuggestions.length > 0 && (
+              <div className="absolute z-50 mt-1 w-64 rounded-lg bg-white dark:bg-[#2c2c2e] shadow-mac-lg ring-1 ring-(--color-border) max-h-48 overflow-y-auto">
+                {entitySuggestions.map((s) => (
+                  <button
+                    key={`${s.entity_type}-${s.entity_text}`}
+                    onMouseDown={() => selectEntity(s.entity_text)}
+                    className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                  >
+                    <span className="truncate text-(--color-text-primary)">{s.entity_text}</span>
+                    <span className="ml-2 shrink-0 text-gray-400">
+                      {s.entity_type} ({s.doc_count})
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* File type dropdown */}
+          {filterOptions.mime_types.length > 0 && (
+            <select
+              value={mimeFilter}
+              onChange={(e) => {
+                setMimeFilter(e.target.value)
+                setCurrentPage(1)
+              }}
+              className="rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+            >
+              <option value="">All types</option>
+              {filterOptions.mime_types.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.value.split('/').pop()} ({m.count})
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Language dropdown */}
+          {filterOptions.languages.length > 0 && (
+            <select
+              value={langFilter}
+              onChange={(e) => {
+                setLangFilter(e.target.value)
+                setCurrentPage(1)
+              }}
+              className="rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+            >
+              <option value="">All languages</option>
+              {filterOptions.languages.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.value.toUpperCase()} ({l.count})
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Doc type dropdown */}
+          {filterOptions.doc_types.length > 0 && (
+            <select
+              value={docTypeFilter}
+              onChange={(e) => {
+                setDocTypeFilter(e.target.value)
+                setCurrentPage(1)
+              }}
+              className="rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+            >
+              <option value="">All categories</option>
+              {filterOptions.doc_types.map((d) => (
+                <option key={d.value} value={d.value}>
+                  {d.value} ({d.count})
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Sort controls */}
+          <div className="ml-auto flex items-center gap-1 text-xs text-gray-400">
+            <span>Sort:</span>
+            {(['updated', 'created', 'title'] as const).map((field) => (
+              <button
+                key={field}
+                onClick={() => {
+                  if (sortField === field) {
+                    setSortDir(sortDir === 'desc' ? 'asc' : 'desc')
+                  } else {
+                    setSortField(field)
+                    setSortDir(field === 'title' ? 'asc' : 'desc')
+                  }
+                  setCurrentPage(1)
+                }}
+                className={`rounded px-1.5 py-0.5 ${
+                  sortField === field
+                    ? 'bg-gray-200 dark:bg-gray-700 text-(--color-text-primary) font-medium'
+                    : 'hover:bg-gray-100 dark:hover:bg-gray-700/50'
+                }`}
+              >
+                {field === 'updated' ? 'Updated' : field === 'created' ? 'Created' : 'Name'}
+                {sortField === field && <span className="ml-0.5">{sortDir === 'desc' ? '\u2193' : '\u2191'}</span>}
+              </button>
+            ))}
+          </div>
+
+          {/* Clear all filters */}
+          {(mimeFilter || langFilter || docTypeFilter || entityFilter) && (
+            <button
+              onClick={() => {
+                setMimeFilter('')
+                setLangFilter('')
+                setDocTypeFilter('')
+                clearEntityFilter()
+                setCurrentPage(1)
+              }}
+              className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      )}
+
+      {total === 0 && !hasFilters ? (
         <p className="text-gray-500 dark:text-gray-400">
           No documents yet.{' '}
           <Link to="/upload" className="text-blue-600 dark:text-blue-400 hover:underline">
@@ -529,7 +771,7 @@ export default function DocumentsPage() {
           <div className="mt-2 flex items-center justify-center gap-3 text-xs text-gray-400">
             <span>
               Showing {total === 0 ? 0 : startIdx + 1}–{Math.min(startIdx + pageSize, total)} of {total}
-              {filter && ' (filtered)'}
+              {hasFilters && ' (filtered)'}
             </span>
             <span className="text-gray-300 dark:text-gray-600">|</span>
             <label className="flex items-center gap-1.5">
