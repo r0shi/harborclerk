@@ -11,6 +11,7 @@ from harbor_clerk.llm.summarize import (
     _sample_chunks,
     _select_tier,
     _Tier,
+    _truncate_at_sentence,
     generate_summary,
 )
 
@@ -329,3 +330,33 @@ class TestGenerateSummary:
             chunks = ["Some text"]
             summary, model = generate_summary(chunks, max_chars=100)
             assert len(summary) <= 100
+
+
+class TestTruncateAtSentence:
+    def test_short_text_unchanged(self):
+        assert _truncate_at_sentence("Hello world.", 100) == "Hello world."
+
+    def test_truncates_at_sentence_boundary(self):
+        text = "First sentence. Second sentence. Third sentence."
+        result = _truncate_at_sentence(text, 35)
+        assert result == "First sentence. Second sentence."
+
+    def test_truncates_at_period_with_space(self):
+        text = "Version 3.5 is here. It has new features."
+        result = _truncate_at_sentence(text, 25)
+        assert result == "Version 3.5 is here."
+
+    def test_falls_back_to_word_boundary(self):
+        text = "no punctuation at all in this text"
+        result = _truncate_at_sentence(text, 20)
+        assert result.endswith("\u2026")
+        assert " " not in result[-2:]  # didn't cut mid-word
+
+    def test_handles_exclamation_and_question(self):
+        text = "What is this? It is great! Done."
+        assert _truncate_at_sentence(text, 16) == "What is this?"
+        assert _truncate_at_sentence(text, 28) == "What is this? It is great!"
+
+    def test_exact_length_no_truncation(self):
+        text = "Exact."
+        assert _truncate_at_sentence(text, 6) == "Exact."

@@ -324,6 +324,47 @@ async def reprocess_all(
     return {"reprocessed": count}
 
 
+@router.post("/system/resummarize-all")
+async def resummarize_all(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Re-run only the summarize stage on every active document's latest version.
+
+    Useful after upgrading the LLM model or changing summary settings.
+    Skips documents that have no chunks (not yet fully ingested).
+    """
+    from harbor_clerk.worker.pipeline import enqueue_stage
+
+    # Find active documents with ready versions that have chunks
+    result = await session.execute(
+        select(DocumentVersion.version_id)
+        .join(Document, Document.latest_version_id == DocumentVersion.version_id)
+        .where(
+            Document.status == "active",
+            DocumentVersion.status == VersionStatus.ready,
+        )
+    )
+    version_ids = [row[0] for row in result.all()]
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="resummarize_all",
+        detail={"resummarized_count": len(version_ids)},
+    )
+    await session.commit()
+
+    # Enqueue summarize jobs outside the async session (sync calls)
+    count = 0
+    for vid in version_ids:
+        enqueue_stage(vid, JobStage.summarize)
+        count += 1
+
+    logger.info("Resummarize-all: %d documents queued", count)
+    return {"resummarized": count}
+
+
 @router.post("/system/delete-all-documents")
 async def delete_all_documents(
     body: DeleteAllRequest,

@@ -89,6 +89,15 @@ MODELS: dict[str, ModelInfo] = {
             yarn=YarnConfig(extended_context=131072, rope_scale=2.0, original_context=65536),
         ),
         ModelInfo(
+            id="gpt-oss-20b",
+            name="GPT-OSS 20B",
+            huggingface_repo="unsloth/gpt-oss-20b-GGUF",
+            filename="gpt-oss-20b-Q4_K_M.gguf",
+            size_bytes=11_600_000_000,
+            context_window=128000,
+            supports_tools=True,
+        ),
+        ModelInfo(
             id="llama3.1-8b",
             name="Llama 3.1 8B Instruct",
             huggingface_repo="bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
