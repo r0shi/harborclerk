@@ -42,6 +42,7 @@ class DocumentSummary(BaseModel):
     updated_at: datetime
     summary: str | None = None
     summary_model: str | None = None
+    doc_type: str | None = None
     source_path: str | None = None
 
 

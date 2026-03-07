@@ -73,6 +73,7 @@ async def list_documents(
         latest_status = None
         latest_summary = None
         latest_summary_model = None
+        latest_doc_type = None
         latest_source_path = None
         version_count = len(doc.versions) if doc.versions else 0
         if doc.latest_version_id and doc.versions:
@@ -81,6 +82,7 @@ async def list_documents(
                     latest_status = v.status.value
                     latest_summary = v.summary
                     latest_summary_model = v.summary_model
+                    latest_doc_type = v.doc_type
                     latest_source_path = v.source_path
                     break
         if latest_status is None and doc.versions:
@@ -88,6 +90,7 @@ async def list_documents(
             latest_status = latest_v.status.value
             latest_summary = latest_v.summary
             latest_summary_model = latest_v.summary_model
+            latest_doc_type = latest_v.doc_type
             latest_source_path = latest_v.source_path
 
         summaries.append(
@@ -102,6 +105,7 @@ async def list_documents(
                 updated_at=doc.updated_at,
                 summary=latest_summary,
                 summary_model=latest_summary_model,
+                doc_type=latest_doc_type,
                 source_path=latest_source_path,
             )
         )
