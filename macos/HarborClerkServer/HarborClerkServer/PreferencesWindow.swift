@@ -16,6 +16,7 @@ private let modelOptions: [(id: String, name: String)] = [
     ("deepseek-r1-0528-8b", "DeepSeek R1 0528 8B (5.0 GB)"),
     ("gemma3-4b", "Gemma 3 4B (2.5 GB)"),
     ("smollm3-3b", "SmolLM3 3B (1.9 GB)"),
+    ("gpt-oss-20b", "GPT-OSS 20B (11.6 GB)"),
     ("llama3.1-8b", "Llama 3.1 8B Instruct (4.9 GB)"),
 ]
 
