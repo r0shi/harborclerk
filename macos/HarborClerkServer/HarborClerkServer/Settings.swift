@@ -104,6 +104,7 @@ final class AppSettings: @unchecked Sendable {
             "gemma3-4b": "google_gemma-3-4b-it-Q4_K_M.gguf",
             "smollm3-3b": "HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
+            "qwen3-30b-a3b": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
             "llama3.1-8b": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         ]
         guard let filename = filenames[modelId] else { return "" }
@@ -121,6 +122,7 @@ final class AppSettings: @unchecked Sendable {
             "gemma3-4b": 128000,
             "smollm3-3b": 65536,
             "gpt-oss-20b": 128000,
+            "qwen3-30b-a3b": 262144,
             "llama3.1-8b": 128000,
         ]
         return contextWindows[modelId] ?? 32768
