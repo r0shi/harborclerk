@@ -24,6 +24,7 @@ from harbor_clerk.llm.chat import chat_stream
 from harbor_clerk.llm.download import (
     delete_model,
     download_model,
+    get_download_status,
     get_model_path,
     is_downloading,
     list_downloaded,
@@ -276,33 +277,30 @@ async def remove_model(
 async def download_progress_stream(
     principal: Principal = Depends(require_user),
 ):
-    """SSE stream for model download progress events via PostgreSQL LISTEN/NOTIFY."""
-    import asyncpg
-
-    from harbor_clerk.llm.download import DOWNLOAD_CHANNEL
-
-    dsn = get_settings().database_url.replace("postgresql+asyncpg://", "postgresql://")
+    """SSE stream for model download progress via in-memory polling."""
+    import json
 
     async def event_generator():
-        queue: asyncio.Queue[str] = asyncio.Queue()
-
-        def _on_notify(conn, pid, channel, payload):
-            queue.put_nowait(payload)
-
-        conn = await asyncpg.connect(dsn)
+        prev_active: set[str] = set()
+        errored: set[str] = set()
         try:
-            await conn.add_listener(DOWNLOAD_CHANNEL, _on_notify)
             while True:
-                try:
-                    payload = await asyncio.wait_for(queue.get(), timeout=15)
-                    yield f"data: {payload}\n\n"
-                except TimeoutError:
-                    yield ": keepalive\n\n"
+                entries = get_download_status()
+                current_active: set[str] = set()
+                for entry in entries:
+                    yield f"data: {json.dumps(entry)}\n\n"
+                    if entry["status"] == "downloading":
+                        current_active.add(entry["model_id"])
+                    elif entry["status"] == "error":
+                        errored.add(entry["model_id"])
+                # Detect completions: was downloading, now gone (and not errored)
+                for model_id in prev_active - current_active - errored:
+                    yield f"data: {json.dumps({'model_id': model_id, 'status': 'complete', 'progress': 100})}\n\n"
+                prev_active = current_active
+                errored.clear()
+                await asyncio.sleep(1)
         except asyncio.CancelledError:
             pass
-        finally:
-            await conn.remove_listener(DOWNLOAD_CHANNEL, _on_notify)
-            await conn.close()
 
     return StreamingResponse(
         event_generator(),
