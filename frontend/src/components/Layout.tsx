@@ -64,6 +64,7 @@ export default function Layout() {
               </TabLink>
               <TabLink to="/upload">Upload</TabLink>
               <TabLink to="/docs">Documents</TabLink>
+              <TabLink to="/explore">Explore</TabLink>
               <TabLink to="/search">Raw Search</TabLink>
             </div>
             <div className="flex items-center space-x-1">
