@@ -213,6 +213,64 @@ async def corpus_overview(
     )
 
 
+@router.get("/docs/entities/autocomplete")
+async def entity_autocomplete(
+    q: str = Query(min_length=1, max_length=100),
+    entity_type: str | None = Query(default=None),
+    limit: int = Query(default=15, ge=1, le=50),
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Fast entity autocomplete with ILIKE matching across all active documents."""
+    if len(q) < 2:
+        return []
+
+    filters = [
+        Document.status == "active",
+        Document.latest_version_id == Entity.version_id,
+        Entity.entity_text.ilike(f"%{q}%"),
+    ]
+    if entity_type:
+        filters.append(Entity.entity_type == entity_type)
+
+    result = await session.execute(
+        select(
+            Entity.entity_text,
+            Entity.entity_type,
+            func.count(func.distinct(Entity.doc_id)).label("doc_count"),
+        )
+        .join(Document, Document.doc_id == Entity.doc_id)
+        .where(*filters)
+        .group_by(Entity.entity_text, Entity.entity_type)
+        .order_by(func.count(func.distinct(Entity.doc_id)).desc())
+        .limit(limit)
+    )
+    rows = result.all()
+    return [{"entity_text": r.entity_text, "entity_type": r.entity_type, "doc_count": r.doc_count} for r in rows]
+
+
+@router.get("/docs/entities/top")
+async def top_entities(
+    entity_type: str = Query(...),
+    limit: int = Query(default=30, ge=1, le=100),
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Top entities of a given type across active documents."""
+    result = await session.execute(
+        select(
+            Entity.entity_text,
+            func.count(func.distinct(Entity.doc_id)).label("doc_count"),
+        )
+        .join(Document, Document.doc_id == Entity.doc_id)
+        .where(Document.status == "active", Entity.entity_type == entity_type)
+        .group_by(Entity.entity_text)
+        .order_by(func.count(func.distinct(Entity.doc_id)).desc())
+        .limit(limit)
+    )
+    return [{"entity_text": r[0], "doc_count": r[1]} for r in result.all()]
+
+
 @router.get("/docs/{doc_id}", response_model=DocumentDetail)
 async def get_document(
     doc_id: uuid.UUID,
