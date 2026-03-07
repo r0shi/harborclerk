@@ -271,6 +271,59 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
 # --- Main entry point ---
 
 
+_MIME_TYPE_MAP = {
+    "application/pdf": "PDF Document",
+    "text/plain": "Text File",
+    "text/markdown": "Text File",
+    "text/csv": "Spreadsheet",
+    "image/jpeg": "Image",
+    "image/png": "Image",
+    "image/tiff": "Image",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word Document",
+    "application/msword": "Word Document",
+    "application/vnd.oasis.opendocument.text": "Word Document",
+    "application/rtf": "Word Document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Spreadsheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "Presentation",
+    "application/epub+zip": "E-Book",
+    "text/html": "Web Page",
+    "message/rfc822": "Email",
+}
+
+
+def _mime_to_doc_type(mime_type: str) -> str:
+    if mime_type in _MIME_TYPE_MAP:
+        return _MIME_TYPE_MAP[mime_type]
+    if mime_type.startswith("image/"):
+        return "Image"
+    if mime_type.startswith("text/"):
+        return "Text File"
+    return "Document"
+
+
+def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
+    """Classify document type using LLM, with MIME-based fallback."""
+    settings = get_settings()
+    if not settings.llm_model_id:
+        return _mime_to_doc_type(mime_type)
+
+    sample = "\n\n".join(chunks)[:2000]
+    prompt = (
+        "What type of document is this? Respond with ONLY a short phrase (2-4 words) "
+        "like: Legal Contract, Tax Return, Meeting Notes, Research Paper, Invoice, "
+        "Recipe, Resume, Technical Manual, News Article, Personal Letter, etc. "
+        "Do not explain, just the type. /no_think"
+    )
+
+    result = _call_llm(prompt, sample, max_tokens=20, max_attempts=1)
+    if result:
+        doc_type = result.strip().strip("\"'.")
+        if len(doc_type) > 50:
+            doc_type = doc_type[:50]
+        return doc_type
+    return _mime_to_doc_type(mime_type)
+
+
 def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[str, str]:
     """Generate a summary for a document from its chunks.
 

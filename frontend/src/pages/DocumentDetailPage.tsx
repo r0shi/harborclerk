@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { get, post, del } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents, type JobEvent } from '../hooks/useJobEvents'
@@ -397,6 +397,9 @@ export default function DocumentDetailPage() {
   const [pageSize, setPageSize] = useState(user?.preferences?.page_size || 10)
   const [highlightPage, setHighlightPage] = useState<number | null>(null)
   const contentLoadedRef = useRef(false)
+  const [related, setRelated] = useState<
+    { doc_id: string; title: string; summary: string | null; similarity: number }[]
+  >([])
 
   // URL params for deep linking from search results
   const urlShowContent = searchParams.get('showContent') === 'true'
@@ -422,6 +425,14 @@ export default function DocumentDetailPage() {
       sessionStorage.setItem('lastDoc', JSON.stringify({ doc_id: doc.doc_id, title: doc.title }))
     }
   }, [doc])
+
+  // Fetch related documents
+  useEffect(() => {
+    if (!id) return
+    get<{ related: typeof related }>(`/api/docs/${id}/related`, { k: 5 })
+      .then((data) => setRelated(data.related))
+      .catch(() => {})
+  }, [id])
 
   // SSE: live job updates
   const onJobEvent = useCallback(
@@ -600,6 +611,33 @@ export default function DocumentDetailPage() {
       </div>
 
       <DocumentStatsDisclosure docId={doc.doc_id} />
+
+      {related.length > 0 && (
+        <details className="group mt-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac" open>
+          <summary className="cursor-pointer px-5 py-3 text-sm font-semibold text-(--color-text-primary)">
+            Related Documents ({related.length})
+          </summary>
+          <div className="border-t border-(--color-border) px-5 py-3 space-y-1">
+            {related.map((r) => (
+              <Link
+                key={r.doc_id}
+                to={`/docs/${r.doc_id}`}
+                className="block rounded-lg px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-(--color-text-primary) truncate">{r.title}</span>
+                  <span className="ml-2 shrink-0 text-xs tabular-nums text-gray-400">
+                    {Math.round(r.similarity * 100)}% match
+                  </span>
+                </div>
+                {r.summary && (
+                  <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{r.summary}</p>
+                )}
+              </Link>
+            ))}
+          </div>
+        </details>
+      )}
 
       <div className="mt-6 mb-6">
         <Disclosure

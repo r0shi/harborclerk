@@ -360,3 +360,54 @@ class TestTruncateAtSentence:
     def test_exact_length_no_truncation(self):
         text = "Exact."
         assert _truncate_at_sentence(text, 6) == "Exact."
+
+
+class TestClassifyDocType:
+    def test_mime_fallback_pdf(self):
+        from harbor_clerk.llm.summarize import _mime_to_doc_type
+
+        assert _mime_to_doc_type("application/pdf") == "PDF Document"
+
+    def test_mime_fallback_text(self):
+        from harbor_clerk.llm.summarize import _mime_to_doc_type
+
+        assert _mime_to_doc_type("text/plain") == "Text File"
+
+    def test_mime_fallback_csv(self):
+        from harbor_clerk.llm.summarize import _mime_to_doc_type
+
+        assert _mime_to_doc_type("text/csv") == "Spreadsheet"
+
+    def test_mime_fallback_image(self):
+        from harbor_clerk.llm.summarize import _mime_to_doc_type
+
+        assert _mime_to_doc_type("image/jpeg") == "Image"
+
+    def test_mime_fallback_unknown_image(self):
+        from harbor_clerk.llm.summarize import _mime_to_doc_type
+
+        assert _mime_to_doc_type("image/webp") == "Image"
+
+    def test_mime_fallback_word(self):
+        from harbor_clerk.llm.summarize import _mime_to_doc_type
+
+        assert "Word" in _mime_to_doc_type("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    def test_mime_fallback_email(self):
+        from harbor_clerk.llm.summarize import _mime_to_doc_type
+
+        assert _mime_to_doc_type("message/rfc822") == "Email"
+
+    def test_mime_fallback_unknown(self):
+        from harbor_clerk.llm.summarize import _mime_to_doc_type
+
+        assert _mime_to_doc_type("application/x-unknown-thing") == "Document"
+
+    def test_classify_falls_back_without_llm(self):
+        """When no LLM model is configured, classify_doc_type uses MIME fallback."""
+        from harbor_clerk.llm.summarize import classify_doc_type
+
+        with patch("harbor_clerk.llm.summarize.get_settings") as mock_settings:
+            mock_settings.return_value.llm_model_id = ""
+            result = classify_doc_type(["Some text content"], mime_type="application/pdf")
+            assert result == "PDF Document"

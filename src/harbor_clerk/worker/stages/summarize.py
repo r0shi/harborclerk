@@ -6,7 +6,7 @@ import uuid
 from sqlalchemy import select
 
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.llm.summarize import generate_summary
+from harbor_clerk.llm.summarize import classify_doc_type, generate_summary
 from harbor_clerk.models import Chunk, DocumentVersion
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
@@ -26,7 +26,11 @@ def run_summarize(version_id: uuid.UUID) -> None:
             .scalars()
             .all()
         )
+
+        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
+
         if chunks:
+            # Generate summary
             try:
                 summary, model_used = generate_summary(list(chunks))
             except Exception:
@@ -34,12 +38,17 @@ def run_summarize(version_id: uuid.UUID) -> None:
                 summary, model_used = None, None
 
             if summary:
-                version = session.execute(
-                    select(DocumentVersion).where(DocumentVersion.version_id == version_id)
-                ).scalar_one()
                 version.summary = summary
                 version.summary_model = model_used
-                session.commit()
+
+            # Classify document type
+            try:
+                doc_type = classify_doc_type(list(chunks), mime_type=version.mime_type or "")
+                version.doc_type = doc_type
+            except Exception:
+                logger.warning("Doc type classification failed for %s", version_id, exc_info=True)
+
+            session.commit()
     finally:
         session.close()
 

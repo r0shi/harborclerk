@@ -42,6 +42,7 @@ class DocumentVersion(Base):
     source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    doc_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[created_at]
     updated_at: Mapped[updated_at]
 
