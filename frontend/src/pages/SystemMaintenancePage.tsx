@@ -131,8 +131,8 @@ export default function SystemMaintenancePage() {
 
         <div>
           <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
-            Re-generate summaries for all documents using the current model. Useful after changing the
-            LLM model. Much faster than a full reprocess.
+            Re-generate summaries for all documents using the current model. Useful after changing the LLM model. Much
+            faster than a full reprocess.
           </p>
           <div className="flex items-center gap-2">
             <button
