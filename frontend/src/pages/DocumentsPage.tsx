@@ -145,6 +145,7 @@ export default function DocumentsPage() {
   const [langFilter, setLangFilter] = useState('')
   const [docTypeFilter, setDocTypeFilter] = useState('')
   const [entityFilter, setEntityFilter] = useState('')
+  const [entityTypeFilter, setEntityTypeFilter] = useState('')
   const [sortField, setSortField] = useState<'updated' | 'created' | 'title'>('updated')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -169,10 +170,12 @@ export default function DocumentsPage() {
       const urlMime = searchParams.get('mime_type')
       const urlLang = searchParams.get('language')
       const urlDocType = searchParams.get('doc_type')
+      const urlEntityType = searchParams.get('entity_type')
       if (urlEntity) {
         setEntityFilter(urlEntity)
         setEntityInput(urlEntity)
       }
+      if (urlEntityType) setEntityTypeFilter(urlEntityType)
       if (urlMime) setMimeFilter(urlMime)
       if (urlLang) setLangFilter(urlLang)
       if (urlDocType) setDocTypeFilter(urlDocType)
@@ -212,6 +215,7 @@ export default function DocumentsPage() {
 
   function clearEntityFilter() {
     setEntityFilter('')
+    setEntityTypeFilter('')
     setEntityInput('')
     setEntitySuggestions([])
     setCurrentPage(1)
@@ -230,6 +234,7 @@ export default function DocumentsPage() {
       if (langFilter) params.language = langFilter
       if (docTypeFilter) params.doc_type = docTypeFilter
       if (entityFilter) params.entity = entityFilter
+      if (entityTypeFilter) params.entity_type = entityTypeFilter
       return get<PaginatedDocs>('/api/docs', params)
         .then((data) => {
           setDocs(data.items)
@@ -238,7 +243,7 @@ export default function DocumentsPage() {
         .catch((e) => setError(e.message))
         .finally(() => setLoading(false))
     },
-    [sortField, sortDir, mimeFilter, langFilter, docTypeFilter, entityFilter],
+    [sortField, sortDir, mimeFilter, langFilter, docTypeFilter, entityFilter, entityTypeFilter],
   )
 
   useEffect(() => {
@@ -533,7 +538,7 @@ export default function DocumentsPage() {
           </div>
 
           {/* Clear all filters */}
-          {(mimeFilter || langFilter || docTypeFilter || entityFilter) && (
+          {(mimeFilter || langFilter || docTypeFilter || entityFilter || entityTypeFilter) && (
             <button
               onClick={() => {
                 setMimeFilter('')
