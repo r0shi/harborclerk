@@ -50,6 +50,13 @@ async def list_documents(
     limit: int = Query(50, ge=0, le=500),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None),
+    entity: str | None = Query(default=None, description="Filter by entity text (ILIKE)"),
+    entity_type: str | None = Query(default=None, description="Filter by entity type"),
+    mime_type: str | None = Query(default=None, description="Filter by MIME type"),
+    language: str | None = Query(default=None, description="Filter by chunk language"),
+    doc_type: str | None = Query(default=None, description="Filter by doc type"),
+    sort: str = Query(default="updated", pattern="^(updated|created|title)$"),
+    sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
@@ -59,9 +66,41 @@ async def list_documents(
         pattern = f"%{escaped}%"
         base = base.where(Document.title.ilike(pattern) | Document.canonical_filename.ilike(pattern))
 
+    # Version-based filters: join to latest version
+    if mime_type or doc_type:
+        base = base.join(
+            DocumentVersion,
+            Document.latest_version_id == DocumentVersion.version_id,
+        )
+        if mime_type:
+            base = base.where(DocumentVersion.mime_type == mime_type)
+        if doc_type:
+            base = base.where(DocumentVersion.doc_type == doc_type)
+
+    # Language filter: docs that have chunks in this language
+    if language:
+        lang_subq = select(Chunk.doc_id).where(Chunk.language == language).group_by(Chunk.doc_id).subquery()
+        base = base.where(Document.doc_id.in_(select(lang_subq.c.doc_id)))
+
+    # Entity filter: docs containing matching entities
+    if entity:
+        entity_filters = [Entity.entity_text.ilike(f"%{entity}%")]
+        if entity_type:
+            entity_filters.append(Entity.entity_type == entity_type)
+        entity_subq = select(Entity.doc_id).where(*entity_filters).group_by(Entity.doc_id).subquery()
+        base = base.where(Document.doc_id.in_(select(entity_subq.c.doc_id)))
+
     total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
 
-    query = base.options(selectinload(Document.versions)).order_by(Document.updated_at.desc()).offset(offset)
+    # Sorting
+    sort_column = {
+        "updated": Document.updated_at,
+        "created": Document.created_at,
+        "title": Document.title,
+    }[sort]
+    order = sort_column.asc() if sort_dir == "asc" else sort_column.desc()
+
+    query = base.options(selectinload(Document.versions)).order_by(order).offset(offset)
     if limit > 0:
         query = query.limit(limit)
 
@@ -269,6 +308,64 @@ async def top_entities(
         .limit(limit)
     )
     return [{"entity_text": r[0], "doc_count": r[1]} for r in result.all()]
+
+
+@router.get("/docs/filters")
+async def document_filters(
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Return available filter values for the documents list."""
+    # MIME types
+    mime_rows = (
+        await session.execute(
+            select(DocumentVersion.mime_type, func.count())
+            .join(Document, Document.latest_version_id == DocumentVersion.version_id)
+            .where(Document.status == "active", DocumentVersion.mime_type.isnot(None))
+            .group_by(DocumentVersion.mime_type)
+            .order_by(func.count().desc())
+        )
+    ).all()
+
+    # Doc types
+    doc_type_rows = (
+        await session.execute(
+            select(DocumentVersion.doc_type, func.count())
+            .join(Document, Document.latest_version_id == DocumentVersion.version_id)
+            .where(Document.status == "active", DocumentVersion.doc_type.isnot(None))
+            .group_by(DocumentVersion.doc_type)
+            .order_by(func.count().desc())
+        )
+    ).all()
+
+    # Languages
+    lang_rows = (
+        await session.execute(
+            select(Chunk.language, func.count(func.distinct(Chunk.doc_id)))
+            .join(Document, Document.doc_id == Chunk.doc_id)
+            .where(Document.status == "active", Chunk.language.isnot(None))
+            .group_by(Chunk.language)
+            .order_by(func.count(func.distinct(Chunk.doc_id)).desc())
+        )
+    ).all()
+
+    # Entity types
+    ent_type_rows = (
+        await session.execute(
+            select(Entity.entity_type, func.count(func.distinct(Entity.doc_id)))
+            .join(Document, Document.doc_id == Entity.doc_id)
+            .where(Document.status == "active")
+            .group_by(Entity.entity_type)
+            .order_by(func.count(func.distinct(Entity.doc_id)).desc())
+        )
+    ).all()
+
+    return {
+        "mime_types": [{"value": r[0], "count": r[1]} for r in mime_rows],
+        "doc_types": [{"value": r[0], "count": r[1]} for r in doc_type_rows],
+        "languages": [{"value": r[0], "count": r[1]} for r in lang_rows],
+        "entity_types": [{"value": r[0], "count": r[1]} for r in ent_type_rows],
+    }
 
 
 @router.get("/docs/{doc_id}", response_model=DocumentDetail)
