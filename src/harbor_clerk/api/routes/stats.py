@@ -491,7 +491,7 @@ async def document_timeline(
     rows = (
         await session.execute(
             select(
-                func.date_trunc("month", Document.created_at).label("month"),
+                func.to_char(func.date_trunc("month", Document.created_at), "YYYY-MM").label("month"),
                 func.count().label("count"),
             )
             .where(Document.status == "active")
@@ -499,7 +499,7 @@ async def document_timeline(
             .order_by(func.date_trunc("month", Document.created_at))
         )
     ).all()
-    return [{"month": r[0].isoformat(), "count": r[1]} for r in rows]
+    return [{"month": r[0], "count": r[1]} for r in rows]
 
 
 @router.get("/docs/{doc_id}/stats")
