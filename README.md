@@ -33,9 +33,9 @@ It keeps your documents where they belong — and makes them useful.
 
 ```mermaid
 graph LR
-    docs["1. Add your documents<br/>PDFs, scans, notes"]
-    process["2. Harbor Clerk organizes them<br/>text extraction, OCR, chunking<br/>hybrid search + embeddings"]
-    ask["3. Search or chat with your knowledge<br/>answers include citations"]
+    docs["1️⃣ Add your documents<br/>PDFs • Scans • Notes"]
+    process["2️⃣ Harbor Clerk organizes them:<br/>Text Extraction • OCR • Chunking • Hybrid Search + Embeddings"]
+    ask["3️⃣ Search or chat with your knowledge, answers include citations"]
     docs --> process --> ask
 ```
 
