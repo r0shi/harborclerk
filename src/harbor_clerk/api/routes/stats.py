@@ -4,7 +4,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import case, cast, extract, func, select, text
+from sqlalchemy import Text, case, cast, extract, func, select, text
 from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -357,6 +357,135 @@ async def entity_network(
             edges.append({"source": source, "target": target, "weight": weight})
 
     return {"nodes": nodes, "edges": edges}
+
+
+def _kmeans(data: object, k: int, max_iter: int = 50) -> list[int]:
+    """Simple k-means clustering using numpy. Returns list of cluster labels."""
+    import numpy as np
+
+    n = len(data)
+    rng = np.random.default_rng(42)
+    indices = [rng.integers(n)]
+    for _ in range(1, k):
+        dists = np.min([np.sum((data - data[i]) ** 2, axis=1) for i in indices], axis=0)
+        probs = dists / dists.sum()
+        indices.append(rng.choice(n, p=probs))
+    centroids = data[indices].copy()
+
+    labels = np.zeros(n, dtype=int)
+    for _ in range(max_iter):
+        dists = np.stack([np.sum((data - c) ** 2, axis=1) for c in centroids], axis=1)
+        new_labels = np.argmin(dists, axis=1)
+        if np.array_equal(new_labels, labels):
+            break
+        labels = new_labels
+        for j in range(k):
+            mask = labels == j
+            if mask.any():
+                centroids[j] = data[mask].mean(axis=0)
+
+    return labels.tolist()
+
+
+@router.get("/stats/topics")
+async def topic_clusters(
+    k: int = Query(default=0, ge=0, le=30, description="Number of clusters (0=auto)"),
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Cluster documents by embedding similarity and auto-name each cluster."""
+    from collections import Counter
+
+    import numpy as np
+
+    # Fetch centroids (same query as /stats/clusters but with doc_type)
+    rows = (
+        await session.execute(
+            select(
+                Chunk.doc_id,
+                Document.title,
+                DocumentVersion.mime_type,
+                DocumentVersion.doc_type,
+                func.avg(Chunk.embedding).cast(Text).label("centroid"),
+            )
+            .join(Document, Document.doc_id == Chunk.doc_id)
+            .join(DocumentVersion, Document.latest_version_id == DocumentVersion.version_id)
+            .where(Document.status == "active", Chunk.embedding.isnot(None))
+            .group_by(Chunk.doc_id, Document.title, DocumentVersion.mime_type, DocumentVersion.doc_type)
+        )
+    ).all()
+
+    if len(rows) < 3:
+        return {"clusters": [], "doc_count": len(rows)}
+
+    doc_ids = [str(r[0]) for r in rows]
+    titles = [r[1] for r in rows]
+    doc_types = [r[3] for r in rows]
+    centroids = np.array([[float(x) for x in r[4].strip("[]").split(",")] for r in rows])
+
+    # Auto-select k if not specified: sqrt(n) clamped to 3-15
+    n = len(rows)
+    if k == 0:
+        k = max(3, min(15, int(n**0.5)))
+    k = min(k, n)
+
+    # Simple k-means (numpy only, no sklearn dependency)
+    labels = _kmeans(centroids, k, max_iter=50)
+
+    # Build clusters
+    clusters: dict[int, dict] = {}
+    for i, label in enumerate(labels):
+        if label not in clusters:
+            clusters[label] = {"doc_ids": [], "titles": [], "doc_types": []}
+        clusters[label]["doc_ids"].append(doc_ids[i])
+        clusters[label]["titles"].append(titles[i])
+        clusters[label]["doc_types"].append(doc_types[i])
+
+    # Name each cluster from most common doc_type, or most common title words
+    result = []
+    for label, info in sorted(clusters.items()):
+        type_counts = Counter(t for t in info["doc_types"] if t)
+        if type_counts:
+            name = type_counts.most_common(1)[0][0]
+        else:
+            words = []
+            for t in info["titles"]:
+                words.extend(w for w in t.lower().split() if len(w) > 3)
+            word_counts = Counter(words)
+            name = word_counts.most_common(1)[0][0].title() if word_counts else f"Group {label + 1}"
+
+        result.append(
+            {
+                "cluster_id": label,
+                "name": name,
+                "doc_count": len(info["doc_ids"]),
+                "doc_ids": info["doc_ids"],
+                "sample_titles": info["titles"][:5],
+            }
+        )
+
+    result.sort(key=lambda c: c["doc_count"], reverse=True)
+    return {"clusters": result, "doc_count": n}
+
+
+@router.get("/stats/timeline")
+async def document_timeline(
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Document count by month for timeline visualization."""
+    rows = (
+        await session.execute(
+            select(
+                func.date_trunc("month", Document.created_at).label("month"),
+                func.count().label("count"),
+            )
+            .where(Document.status == "active")
+            .group_by(func.date_trunc("month", Document.created_at))
+            .order_by(func.date_trunc("month", Document.created_at))
+        )
+    ).all()
+    return [{"month": r[0].isoformat(), "count": r[1]} for r in rows]
 
 
 @router.get("/docs/{doc_id}/stats")
