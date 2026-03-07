@@ -98,6 +98,15 @@ MODELS: dict[str, ModelInfo] = {
             supports_tools=True,
         ),
         ModelInfo(
+            id="qwen3-30b-a3b",
+            name="Qwen3 30B-A3B Instruct",
+            huggingface_repo="unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF",
+            filename="Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+            size_bytes=18_556_686_752,
+            context_window=262144,
+            supports_tools=True,
+        ),
+        ModelInfo(
             id="llama3.1-8b",
             name="Llama 3.1 8B Instruct",
             huggingface_repo="bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",

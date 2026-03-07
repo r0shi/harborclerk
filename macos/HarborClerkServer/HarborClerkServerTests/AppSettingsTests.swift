@@ -98,6 +98,7 @@ final class AppSettingsTests: XCTestCase {
             "gemma3-4b": "google_gemma-3-4b-it-Q4_K_M.gguf",
             "smollm3-3b": "HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
+            "qwen3-30b-a3b": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
             "llama3.1-8b": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
         ]
         for (modelId, filename) in expected {
