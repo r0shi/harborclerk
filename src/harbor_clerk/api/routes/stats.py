@@ -488,15 +488,13 @@ async def document_timeline(
     session: AsyncSession = Depends(get_session),
 ):
     """Document count by month for timeline visualization."""
+    month_col = func.to_char(func.date_trunc("month", Document.created_at), "YYYY-MM").label("month")
     rows = (
         await session.execute(
-            select(
-                func.to_char(func.date_trunc("month", Document.created_at), "YYYY-MM").label("month"),
-                func.count().label("count"),
-            )
+            select(month_col, func.count().label("count"))
             .where(Document.status == "active")
-            .group_by(func.date_trunc("month", Document.created_at))
-            .order_by(func.date_trunc("month", Document.created_at))
+            .group_by(month_col)
+            .order_by(month_col)
         )
     ).all()
     return [{"month": r[0], "count": r[1]} for r in rows]
