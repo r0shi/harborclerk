@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useAuth } from '../auth'
 import { del, get, post, put } from '../api'
 
 interface ModelInfo {
@@ -21,6 +22,7 @@ function formatSize(bytes: number): string {
 }
 
 export default function ModelsPage() {
+  const { token } = useAuth()
   const [models, setModels] = useState<ModelInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -57,17 +59,20 @@ export default function ModelsPage() {
   }, [])
 
   // Subscribe to download progress via SSE with auto-reconnect
+  const tokenRef = useRef(token)
+  tokenRef.current = token
   useEffect(() => {
-    const token = localStorage.getItem('token')
     if (!token) return
 
     const controller = new AbortController()
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined
 
     async function connect() {
+      const currentToken = tokenRef.current
+      if (!currentToken) return
       try {
         const res = await fetch('/api/chat/models/download-progress', {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${currentToken}` },
           signal: controller.signal,
         })
         if (!res.ok || !res.body) return
@@ -137,7 +142,7 @@ export default function ModelsPage() {
       controller.abort()
       if (reconnectTimer) clearTimeout(reconnectTimer)
     }
-  }, [])
+  }, [token])
 
   async function handleDownload(modelId: string) {
     setError('')
