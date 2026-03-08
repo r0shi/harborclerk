@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { get } from '../api'
@@ -37,6 +37,9 @@ interface DocSummary {
   latest_version_status?: string
   version_count: number
   updated_at: string
+  summary?: string
+  summary_model?: string
+  doc_type?: string
 }
 
 interface PaginatedDocs {
@@ -178,12 +181,12 @@ function ExploreMain({
 
       {/* Entity sections — People / Places / Organizations */}
       <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden divide-y divide-(--color-border)">
-        {ENTITY_SECTIONS.map((section, idx) => (
+        {ENTITY_SECTIONS.map((section) => (
           <EntitySection
             key={section.type}
             label={section.label}
             items={entities[section.type] || []}
-            defaultOpen={idx < 2}
+            defaultOpen
             onSelect={(entityText) =>
               onOpenSubPane({
                 type: 'entity',
@@ -203,42 +206,70 @@ function ExploreMain({
             Topic Clusters
           </h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {clusters.map((cluster) => (
-              <button
-                key={cluster.cluster_id}
-                onClick={() =>
-                  onOpenSubPane({
-                    type: 'cluster',
-                    label: cluster.name,
-                    docIds: cluster.doc_ids,
-                  })
-                }
-                className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac px-5 py-4 hover:shadow-mac-lg transition-shadow text-left group"
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <h3 className="text-[13px] font-semibold text-(--color-text-primary)">{cluster.name}</h3>
-                  <svg
-                    className="h-3.5 w-3.5 text-(--color-text-secondary) opacity-0 group-hover:opacity-100 transition-opacity"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                  </svg>
-                </div>
-                <p className="text-[11px] text-(--color-text-secondary) mb-2">
-                  {cluster.doc_count} {cluster.doc_count === 1 ? 'document' : 'documents'}
-                </p>
-                <ul className="space-y-0.5">
-                  {cluster.sample_titles.slice(0, 3).map((title, i) => (
-                    <li key={i} className="text-[12px] text-(--color-text-secondary) truncate">
-                      {title}
-                    </li>
-                  ))}
-                </ul>
-              </button>
-            ))}
+            {clusters.map((cluster) => {
+              const remaining = cluster.doc_count - Math.min(3, cluster.sample_titles.length)
+              return (
+                <button
+                  key={cluster.cluster_id}
+                  onClick={() =>
+                    onOpenSubPane({
+                      type: 'cluster',
+                      label: cluster.name,
+                      docIds: cluster.doc_ids,
+                    })
+                  }
+                  className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac px-5 py-4 hover:shadow-mac-lg transition-shadow text-left group"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="text-[13px] font-semibold text-(--color-text-primary)">{cluster.name}</h3>
+                    <svg
+                      className="h-3.5 w-3.5 text-(--color-text-secondary) opacity-0 group-hover:opacity-100 transition-opacity"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                  <p className="text-[11px] text-(--color-text-secondary) mb-2">
+                    {cluster.doc_count} {cluster.doc_count === 1 ? 'document' : 'documents'}
+                  </p>
+                  <ul className="ml-3 space-y-0.5">
+                    {cluster.sample_titles.slice(0, 3).map((title, i) => {
+                      const ext = title.includes('.') ? title.slice(title.lastIndexOf('.')) : ''
+                      const name = ext ? title.slice(0, title.lastIndexOf('.')) : title
+                      return (
+                        <li key={i} className="text-[12px] text-(--color-text-secondary) truncate flex items-center">
+                          <svg
+                            className="h-3 w-3 mr-1.5 shrink-0 text-(--color-text-secondary) opacity-50"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={1.5}
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
+                            />
+                          </svg>
+                          <span className="truncate">{name}</span>
+                          {ext && (
+                            <span className="ml-0.5 shrink-0 text-[10px] text-(--color-text-secondary) opacity-60">
+                              {ext}
+                            </span>
+                          )}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                  {remaining > 0 && (
+                    <p className="ml-3 mt-1 text-[11px] text-(--color-text-secondary) italic">and {remaining} more</p>
+                  )}
+                </button>
+              )
+            })}
           </div>
         </section>
       )}
@@ -357,16 +388,48 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [currentPage, setCurrentPage] = useState(1)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const pageSize = 25
+
+  // Filter & sort state (subset of Documents page — no entity filter, no upload)
+  const [filterOptions, setFilterOptions] = useState<{
+    mime_types: { value: string; count: number }[]
+  }>({ mime_types: [] })
+  const [filterInput, setFilterInput] = useState('')
+  const [filter, setFilter] = useState('')
+  const [mimeFilter, setMimeFilter] = useState('')
+  const [sortField, setSortField] = useState<'updated' | 'created' | 'title'>('updated')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const filterTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
+  function handleFilterChange(value: string) {
+    setFilterInput(value)
+    clearTimeout(filterTimerRef.current)
+    filterTimerRef.current = setTimeout(() => {
+      setFilter(value)
+      setCurrentPage(1)
+    }, 300)
+  }
+
+  // Load filter options on mount
+  useEffect(() => {
+    get<{ mime_types: { value: string; count: number }[] }>('/api/docs/filters')
+      .then((data) => setFilterOptions({ mime_types: data.mime_types }))
+      .catch(() => {})
+  }, [])
 
   const loadDocs = useCallback(
     (page: number) => {
       const params: Record<string, string | number> = {
         limit: pageSize,
         offset: (page - 1) * pageSize,
-        sort: 'updated',
-        sort_dir: 'desc',
+        sort: sortField,
+        sort_dir: sortDir,
       }
+
+      if (filter) params.q = filter
+      if (mimeFilter) params.mime_type = mimeFilter
 
       if (subPane.type === 'entity' && subPane.entityText) {
         params.entity = subPane.entityText
@@ -383,7 +446,7 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
         .catch(() => {})
         .finally(() => setLoading(false))
     },
-    [subPane, pageSize],
+    [subPane, pageSize, sortField, sortDir, filter, mimeFilter],
   )
 
   useEffect(() => {
@@ -409,9 +472,81 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
         <h1 className="text-lg font-semibold text-(--color-text-primary)">{subPane.label}</h1>
       </div>
 
-      <p className="mb-3 text-[12px] text-(--color-text-secondary)">
-        {total} {total === 1 ? 'document' : 'documents'}
-      </p>
+      {/* Filter bar */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="text-[12px] text-(--color-text-secondary)">
+          {total} {total === 1 ? 'document' : 'documents'}
+        </span>
+
+        <div className="flex-1" />
+
+        <input
+          type="text"
+          placeholder="Filter by filename..."
+          value={filterInput}
+          onChange={(e) => handleFilterChange(e.target.value)}
+          className="w-52 rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-3 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+        />
+
+        {filterOptions.mime_types.length > 0 && (
+          <select
+            value={mimeFilter}
+            onChange={(e) => {
+              setMimeFilter(e.target.value)
+              setCurrentPage(1)
+            }}
+            className="rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+          >
+            <option value="">All types</option>
+            {filterOptions.mime_types.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.value.split('/').pop()} ({m.count})
+              </option>
+            ))}
+          </select>
+        )}
+
+        {/* Sort controls */}
+        <div className="flex items-center gap-1 text-xs text-gray-400">
+          <span>Sort:</span>
+          {(['updated', 'created', 'title'] as const).map((field) => (
+            <button
+              key={field}
+              onClick={() => {
+                if (sortField === field) {
+                  setSortDir(sortDir === 'desc' ? 'asc' : 'desc')
+                } else {
+                  setSortField(field)
+                  setSortDir(field === 'title' ? 'asc' : 'desc')
+                }
+                setCurrentPage(1)
+              }}
+              className={`rounded px-1.5 py-0.5 ${
+                sortField === field
+                  ? 'bg-gray-200 dark:bg-gray-700 text-(--color-text-primary) font-medium'
+                  : 'hover:bg-gray-100 dark:hover:bg-gray-700/50'
+              }`}
+            >
+              {field === 'updated' ? 'Updated' : field === 'created' ? 'Created' : 'Name'}
+              {sortField === field && <span className="ml-0.5">{sortDir === 'desc' ? '\u2193' : '\u2191'}</span>}
+            </button>
+          ))}
+        </div>
+
+        {(filter || mimeFilter) && (
+          <button
+            onClick={() => {
+              setFilterInput('')
+              setFilter('')
+              setMimeFilter('')
+              setCurrentPage(1)
+            }}
+            className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
 
       {loading && docs.length === 0 ? (
         <div className="flex min-h-[200px] items-center justify-center">
@@ -442,28 +577,92 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
                 </tr>
               </thead>
               <tbody className="divide-y divide-(--color-border)">
-                {docs.map((doc) => (
-                  <tr key={doc.doc_id} className="hover:bg-black/2 dark:hover:bg-white/2">
-                    <td className="px-4 py-3">
-                      <Link
-                        to={`/docs/${doc.doc_id}`}
-                        className="font-medium text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
-                      >
-                        {doc.title}
-                      </Link>
-                      {doc.canonical_filename && (
-                        <div className="text-[11px] text-gray-400 mt-0.5">{doc.canonical_filename}</div>
+                {docs.map((doc) => {
+                  const isExpanded = expanded.has(doc.doc_id)
+                  return (
+                    <Fragment key={doc.doc_id}>
+                      <tr className="hover:bg-black/2 dark:hover:bg-white/2">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() =>
+                                setExpanded((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(doc.doc_id)) next.delete(doc.doc_id)
+                                  else next.add(doc.doc_id)
+                                  return next
+                                })
+                              }
+                              className="rounded-sm p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                              title="Toggle details"
+                            >
+                              <svg
+                                className={`h-3.5 w-3.5 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={2}
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                              </svg>
+                            </button>
+                            <div>
+                              <Link
+                                to={`/docs/${doc.doc_id}`}
+                                className="font-medium text-[13px] text-blue-600 dark:text-blue-400 hover:underline"
+                              >
+                                {doc.title}
+                              </Link>
+                              {doc.canonical_filename && (
+                                <div className="text-[11px] text-gray-400 mt-0.5">{doc.canonical_filename}</div>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusBadge status={doc.latest_version_status || doc.status} />
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{doc.version_count}</td>
+                        <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
+                          {new Date(doc.updated_at).toLocaleDateString()}
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-gray-50/50 dark:bg-white/2">
+                          <td colSpan={4} className="px-4 py-3 pl-14">
+                            <div className="space-y-1 text-sm">
+                              {doc.doc_type && (
+                                <div>
+                                  <span className="font-medium text-gray-500 dark:text-gray-400">Type: </span>
+                                  <span className="text-gray-700 dark:text-gray-300">{doc.doc_type}</span>
+                                </div>
+                              )}
+                              <div>
+                                <span className="font-medium text-gray-500 dark:text-gray-400">
+                                  Summary
+                                  {doc.summary_model ? (
+                                    <span className="font-normal text-gray-400 dark:text-gray-500">
+                                      {' '}
+                                      ({doc.summary_model})
+                                    </span>
+                                  ) : (
+                                    ''
+                                  )}
+                                  :{' '}
+                                </span>
+                                {doc.summary ? (
+                                  <span className="text-gray-700 dark:text-gray-300">{doc.summary}</span>
+                                ) : (
+                                  <span className="italic text-gray-400 dark:text-gray-500">No summary</span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={doc.latest_version_status || doc.status} />
-                    </td>
-                    <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{doc.version_count}</td>
-                    <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                      {new Date(doc.updated_at).toLocaleDateString()}
-                    </td>
-                  </tr>
-                ))}
+                    </Fragment>
+                  )
+                })}
               </tbody>
             </table>
           </div>

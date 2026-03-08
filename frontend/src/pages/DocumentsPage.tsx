@@ -719,6 +719,12 @@ export default function DocumentsPage() {
                         <tr className="bg-gray-50/50 dark:bg-white/2">
                           <td colSpan={6} className="px-4 py-3 pl-14">
                             <div className="space-y-1 text-sm">
+                              {doc.doc_type && (
+                                <div>
+                                  <span className="font-medium text-gray-500 dark:text-gray-400">Type: </span>
+                                  <span className="text-gray-700 dark:text-gray-300">{doc.doc_type}</span>
+                                </div>
+                              )}
                               <div>
                                 <span className="font-medium text-gray-500 dark:text-gray-400">
                                   Summary
