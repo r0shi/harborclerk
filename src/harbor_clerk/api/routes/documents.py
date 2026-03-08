@@ -55,12 +55,27 @@ async def list_documents(
     mime_type: str | None = Query(default=None, description="Filter by MIME type"),
     language: str | None = Query(default=None, description="Filter by chunk language"),
     doc_type: str | None = Query(default=None, description="Filter by doc type"),
+    doc_ids: str | None = Query(default=None, description="Comma-separated document IDs"),
     sort: str = Query(default="updated", pattern="^(updated|created|title)$"),
     sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
     base = select(Document).where(Document.status == "active")
+
+    # Filter by explicit document IDs (e.g. from topic clusters)
+    if doc_ids:
+        id_list = []
+        for d in doc_ids.split(","):
+            d = d.strip()
+            if d:
+                try:
+                    id_list.append(uuid.UUID(d))
+                except ValueError:
+                    pass
+        if id_list:
+            base = base.where(Document.doc_id.in_(id_list))
+
     if q:
         escaped = re.sub(r"([%_\\])", r"\\\1", q)
         pattern = f"%{escaped}%"

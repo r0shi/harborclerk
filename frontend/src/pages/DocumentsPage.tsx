@@ -416,6 +416,9 @@ export default function DocumentsPage() {
         <div className="mb-3 flex flex-wrap items-center gap-2">
           {/* Entity search */}
           <div className="relative">
+            <label className="absolute -top-4 left-0 text-[10px] font-medium uppercase tracking-wider text-(--color-text-secondary)">
+              Entities
+            </label>
             <input
               type="text"
               placeholder="Filter by entity..."
