@@ -216,7 +216,7 @@ export default function SearchPage() {
             className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-4 py-2 text-sm"
           />
           {showHistory && history.length > 0 && (
-            <div className="absolute z-10 mt-1 w-full rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
+            <div className="absolute z-10 mt-1 w-full rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac-lg ring-1 ring-(--color-border) overflow-hidden">
               {history.map((q) => (
                 <button
                   key={q}
@@ -225,7 +225,7 @@ export default function SearchPage() {
                     e.preventDefault()
                     selectHistoryItem(q)
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-black/2 dark:hover:bg-white/2"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 dark:text-gray-300 hover:bg-black/3 dark:hover:bg-white/3"
                 >
                   <svg
                     className="h-3.5 w-3.5 shrink-0 text-gray-400"
@@ -298,7 +298,10 @@ export default function SearchPage() {
                     : `/docs/${hit.doc_id}?showContent=true`
 
                 return (
-                  <div key={hit.chunk_id} className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+                  <div
+                    key={hit.chunk_id}
+                    className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
+                  >
                     <div className="mb-2 flex items-center justify-between">
                       <Link to={linkTo} className="font-medium text-blue-600 dark:text-blue-400 hover:underline">
                         {hit.doc_title || 'Untitled'}

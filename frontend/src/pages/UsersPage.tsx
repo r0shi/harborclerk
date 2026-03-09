@@ -92,8 +92,8 @@ export default function UsersPage() {
         />
       )}
 
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+        <table className="min-w-full divide-y divide-(--color-border)">
           <thead className="bg-(--color-bg-secondary)">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
@@ -113,9 +113,9 @@ export default function UsersPage() {
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-[#2c2c2e]">
+          <tbody className="divide-y divide-(--color-border) bg-white dark:bg-[#2c2c2e]">
             {users.map((u) => (
-              <tr key={u.user_id} className="hover:bg-black/2 dark:hover:bg-white/2">
+              <tr key={u.user_id} className="hover:bg-black/3 dark:hover:bg-white/3">
                 <td className="px-4 py-3 text-sm">{u.email}</td>
                 <td className="px-4 py-3">
                   <button
@@ -181,7 +181,10 @@ function CreateUserForm({ onCreated, onError }: { onCreated: () => void; onError
   }
 
   return (
-    <form onSubmit={handleSubmit} className="mb-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+    <form
+      onSubmit={handleSubmit}
+      className="mb-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
+    >
       <div className="grid grid-cols-3 gap-3">
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Email</label>

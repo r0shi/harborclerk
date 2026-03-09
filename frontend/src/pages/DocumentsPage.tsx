@@ -496,7 +496,7 @@ export default function DocumentsPage() {
             placeholder="Filter by filename..."
             value={filterInput}
             onChange={(e) => handleFilterChange(e.target.value)}
-            className="w-64 rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+            className="w-64 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
           />
           <Link
             to="/upload"
@@ -523,7 +523,7 @@ export default function DocumentsPage() {
               onChange={(e) => handleEntityInputChange(e.target.value)}
               onFocus={() => entitySuggestions.length > 0 && setShowEntityDropdown(true)}
               onBlur={() => setTimeout(() => setShowEntityDropdown(false), 200)}
-              className="w-48 rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2.5 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+              className="w-48 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2.5 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
             />
             {entityFilter && (
               <button
@@ -561,7 +561,7 @@ export default function DocumentsPage() {
                 setMimeFilter(e.target.value)
                 setCurrentPage(1)
               }}
-              className="rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+              className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
             >
               <option value="">All types</option>
               {filterOptions.mime_types.map((m) => (
@@ -580,7 +580,7 @@ export default function DocumentsPage() {
                 setLangFilter(e.target.value)
                 setCurrentPage(1)
               }}
-              className="rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+              className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
             >
               <option value="">All languages</option>
               {filterOptions.languages.map((l) => (
@@ -599,7 +599,7 @@ export default function DocumentsPage() {
                 setDocTypeFilter(e.target.value)
                 setCurrentPage(1)
               }}
-              className="rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+              className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
             >
               <option value="">All categories</option>
               {filterOptions.doc_types.map((d) => (
@@ -683,7 +683,7 @@ export default function DocumentsPage() {
             />
           )}
 
-          <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
+          <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
             <table className="min-w-full divide-y divide-(--color-border)">
               <thead className="bg-(--color-bg-secondary)">
                 <tr>
@@ -715,7 +715,7 @@ export default function DocumentsPage() {
                   const isExpanded = expanded.has(doc.doc_id)
                   return (
                     <Fragment key={doc.doc_id}>
-                      <tr className="hover:bg-black/2 dark:hover:bg-white/2">
+                      <tr className="hover:bg-black/3 dark:hover:bg-white/3">
                         <td className="w-10 px-4 py-3">
                           <input
                             type="checkbox"
@@ -891,7 +891,7 @@ export default function DocumentsPage() {
                   setCurrentPage(1)
                   updatePreferences({ page_size: n }).catch(() => {})
                 }}
-                className="rounded-sm border-0 bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 text-xs focus:ring-2 focus:ring-(--color-accent)/30"
+                className="rounded-md border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-1.5 py-0.5 text-xs focus:ring-2 focus:ring-(--color-accent)/30"
               >
                 {[10, 25, 50, 100].map((n) => (
                   <option key={n} value={n}>

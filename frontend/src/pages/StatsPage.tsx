@@ -21,7 +21,7 @@ interface CorpusStats {
 
 function StatBadge({ label, value, tip }: { label: string; value: string | number; tip?: string }) {
   return (
-    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac px-4 py-3">
+    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-4 py-3">
       <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide">
         {label}
         {tip && <InfoTip text={tip} />}

@@ -300,7 +300,10 @@ export default function EntityNetwork() {
   const types = data ? [...new Set(data.nodes.map((n) => n.type))] : []
 
   return (
-    <div ref={containerRef} className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+    <div
+      ref={containerRef}
+      className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
+    >
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-[13px] font-semibold text-(--color-text-primary)">
           Entity Network

@@ -393,7 +393,7 @@ function SessionProgress({
       )}
 
       {/* Progress bar */}
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
         <div className="px-4 py-3 flex items-center justify-between">
           <div>
             <h2 className="text-sm font-semibold">
@@ -486,7 +486,7 @@ function FileList({ files }: { files: FileItem[] }) {
   const hasMore = files.length > 20 && !showAll
 
   return (
-    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
+    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
       {/* Summary row */}
       <div className="px-4 py-2 border-b border-gray-50 dark:border-gray-700/30 flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
         {done.length > 0 && (
