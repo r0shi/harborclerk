@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { get, post, del } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents, type JobEvent } from '../hooks/useJobEvents'
+import { ENTITY_TYPE_LABELS } from '../components/stats/CorpusCharts'
 
 interface JobInfo {
   job_id: string
@@ -328,6 +329,7 @@ function DocumentStatsDisclosure({ docId }: { docId: string }) {
                           <button
                             key={type}
                             type="button"
+                            title={ENTITY_TYPE_LABELS[type] ?? type}
                             onClick={() =>
                               setHiddenTypes((prev) => {
                                 const next = new Set(prev)

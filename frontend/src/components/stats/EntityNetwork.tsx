@@ -325,7 +325,11 @@ export default function EntityNetwork() {
       {types.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-(--color-text-secondary)">
           {types.map((type) => (
-            <span key={type} className="group relative flex items-center gap-1">
+            <span
+              key={type}
+              className="group relative flex items-center gap-1 cursor-default"
+              title={ENTITY_TYPE_LABELS[type] ?? type}
+            >
               <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: typeColor(type) }} />
               {type}
               <span className="pointer-events-none absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-gray-800 dark:bg-gray-700 px-1.5 py-0.5 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100">

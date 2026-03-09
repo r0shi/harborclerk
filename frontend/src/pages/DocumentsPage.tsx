@@ -416,6 +416,9 @@ export default function DocumentsPage() {
         <div className="mb-3 flex flex-wrap items-center gap-2">
           {/* Entity search */}
           <div className="relative">
+            <label className="absolute -top-4 left-0 text-[10px] font-medium uppercase tracking-wider text-(--color-text-secondary)">
+              Entities
+            </label>
             <input
               type="text"
               placeholder="Filter by entity..."
@@ -716,6 +719,12 @@ export default function DocumentsPage() {
                         <tr className="bg-gray-50/50 dark:bg-white/2">
                           <td colSpan={6} className="px-4 py-3 pl-14">
                             <div className="space-y-1 text-sm">
+                              {doc.doc_type && (
+                                <div>
+                                  <span className="font-medium text-gray-500 dark:text-gray-400">Type: </span>
+                                  <span className="text-gray-700 dark:text-gray-300">{doc.doc_type}</span>
+                                </div>
+                              )}
                               <div>
                                 <span className="font-medium text-gray-500 dark:text-gray-400">
                                   Summary
