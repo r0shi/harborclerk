@@ -55,7 +55,6 @@ export default function ChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const skipNextFetchRef = useRef(false)
 
   const { token } = useAuth()
   const { messages, isStreaming, currentToolCall, sendMessage, stopStreaming, loadMessages, lastTitle } = useChat()
@@ -79,15 +78,12 @@ export default function ChatPage() {
       loadMessages([])
       return
     }
-    if (skipNextFetchRef.current) {
-      skipNextFetchRef.current = false
-      return
-    }
     get<ConversationDetail>(`/api/chat/conversations/${conversationId}`)
       .then((conv) => {
         loadMessages(
           conv.messages
             .filter((m) => m.role !== 'tool')
+            .filter((m) => m.role !== 'assistant' || m.content || (m.tool_calls && m.tool_calls.length > 0))
             .map((m) => ({
               message_id: m.message_id,
               role: m.role as ChatMessage['role'],
@@ -119,15 +115,16 @@ export default function ChatPage() {
       }
 
       let activeConvId = conversationId
-      let isNewConversation = false
       if (!activeConvId) {
+        // Use the user's query as the title immediately (truncated)
+        const eagerTitle = text.length > 80 ? text.slice(0, 77) + '...' : text
         const conv = await post<ConversationSummary>('/api/chat/conversations', {
-          title: 'New conversation',
+          title: eagerTitle,
         })
         activeConvId = conv.conversation_id
         setConversations((prev) => [conv, ...prev])
-        isNewConversation = true
-        // Don't navigate yet — keep this component instance alive for streaming
+        // Update URL immediately without React Router remount (preserves streaming state)
+        window.history.replaceState(null, '', `/c/${activeConvId}`)
       }
 
       await sendMessage(activeConvId, text).finally(() => {
@@ -140,14 +137,8 @@ export default function ChatPage() {
           .then(setConversations)
           .catch(() => {})
       })
-
-      // Navigate AFTER streaming completes — messages are saved to DB now
-      if (isNewConversation) {
-        skipNextFetchRef.current = true
-        navigate(`/c/${activeConvId}`, { replace: true })
-      }
     },
-    [isStreaming, conversationId, sendMessage, navigate, lastTitle],
+    [isStreaming, conversationId, sendMessage, lastTitle],
   )
 
   const handleNewChat = useCallback(() => {
@@ -327,7 +318,7 @@ export default function ChatPage() {
           {messages.length === 0 ? (
             <EmptyState />
           ) : (
-            <div className="max-w-3xl mx-auto px-4 py-6 space-y-1">
+            <div className="max-w-5xl mx-auto px-4 py-6 space-y-1">
               {messages.map((msg, i) => (
                 <MessageBubble key={msg.message_id || i} message={msg} modelNames={modelNames} />
               ))}
@@ -341,7 +332,7 @@ export default function ChatPage() {
 
         {/* Input area */}
         <div className="border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
-          <div className="max-w-3xl mx-auto px-4 py-3">
+          <div className="max-w-5xl mx-auto px-4 py-3">
             <form onSubmit={handleSubmit} className="relative">
               <div className="chat-input-container rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-xs focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
                 <textarea
@@ -504,6 +495,18 @@ function ThinkingSection({
 
 function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNames: Record<string, string> }) {
   const isUser = message.role === 'user'
+
+  // Skip empty assistant messages from multi-round tool calling history
+  if (
+    !isUser &&
+    !message.content &&
+    !message.isStreaming &&
+    (!message.tool_calls || message.tool_calls.length === 0) &&
+    (!message.rag_context || message.rag_context.length === 0)
+  ) {
+    return null
+  }
+
   const isError = !isUser && message.content.startsWith('Error:')
   const { thinking, response } = !isUser
     ? parseThinking(message.content)
@@ -542,7 +545,7 @@ function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNam
         </div>
 
         {/* Content */}
-        <div className={`min-w-0 max-w-[85%] ${isUser ? 'text-right' : ''}`}>
+        <div className={`min-w-0 max-w-[92%] ${isUser ? 'text-right' : ''}`}>
           {/* Role label */}
           <div
             className={`text-[11px] font-medium mb-1 ${
