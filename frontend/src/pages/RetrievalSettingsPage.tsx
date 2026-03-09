@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react'
 import { get, put } from '../api'
 
 interface RetrievalSettings {
-  rag_auto_k: number
-  rag_auto_threshold: number
   max_tool_rounds: number
   max_history_messages: number
   mcp_max_k: number
@@ -20,22 +18,6 @@ interface FieldDef {
 }
 
 const CHAT_FIELDS: FieldDef[] = [
-  {
-    key: 'rag_auto_k',
-    label: 'RAG context passages',
-    description: 'Number of passages auto-injected into chat context (0 to disable)',
-    min: 0,
-    max: 10,
-    step: 1,
-  },
-  {
-    key: 'rag_auto_threshold',
-    label: 'RAG relevance threshold',
-    description: 'Minimum score for a passage to be included',
-    min: 0,
-    max: 1,
-    step: 0.05,
-  },
   {
     key: 'max_tool_rounds',
     label: 'Max tool rounds',

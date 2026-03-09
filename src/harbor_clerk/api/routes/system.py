@@ -416,8 +416,6 @@ async def get_retrieval_settings(
     """Return current retrieval-related settings."""
     s = get_settings()
     return RetrievalSettingsResponse(
-        rag_auto_k=s.rag_auto_k,
-        rag_auto_threshold=s.rag_auto_threshold,
         max_tool_rounds=s.max_tool_rounds,
         max_history_messages=s.max_history_messages,
         mcp_max_k=s.mcp_max_k,
@@ -438,8 +436,6 @@ async def update_retrieval_settings(
         sync_native_config(key, str(value))
 
     return RetrievalSettingsResponse(
-        rag_auto_k=s.rag_auto_k,
-        rag_auto_threshold=s.rag_auto_threshold,
         max_tool_rounds=s.max_tool_rounds,
         max_history_messages=s.max_history_messages,
         mcp_max_k=s.mcp_max_k,
