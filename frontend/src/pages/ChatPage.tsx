@@ -24,6 +24,7 @@ interface ConversationDetail extends ConversationSummary {
     rag_context?: RagContextChunk[]
     tokens_used?: number
     model_id?: string
+    context_pct?: number
     created_at: string
   }[]
 }
@@ -90,8 +91,10 @@ export default function ChatPage() {
               message_id: m.message_id,
               role: m.role as ChatMessage['role'],
               content: m.content,
+              tool_calls: (m.tool_calls as ToolCallInfo[] | undefined) || undefined,
               rag_context: m.rag_context,
               model_id: m.model_id || undefined,
+              context_pct: m.context_pct,
             })),
         )
       })
@@ -556,6 +559,20 @@ function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNam
           >
             {isUser ? 'You' : 'Assistant'}
             {modelLabel && <span className="ml-1 font-normal text-gray-300 dark:text-gray-600">({modelLabel})</span>}
+            {!isUser && message.context_pct != null && (
+              <span
+                className={`ml-1.5 font-normal ${
+                  message.context_pct >= 90
+                    ? 'text-red-400 dark:text-red-500'
+                    : message.context_pct >= 70
+                      ? 'text-amber-400 dark:text-amber-500'
+                      : 'text-gray-300 dark:text-gray-600'
+                }`}
+                title={`${message.context_pct}% of model context window used`}
+              >
+                · {message.context_pct}% context
+              </span>
+            )}
           </div>
 
           {/* RAG context card shown above the message bubble */}
@@ -702,9 +719,12 @@ function ToolCallCard({ tool, active }: { tool: ToolCallInfo; active: boolean })
           <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
         </svg>
       </button>
-      {expanded && tool.arguments && Object.keys(tool.arguments).length > 0 && (
-        <div className="border-t border-gray-100 dark:border-gray-700/50 px-2.5 py-1.5 font-mono text-[11px] text-gray-400 dark:text-gray-500 bg-gray-50/50 dark:bg-gray-800/30">
-          {JSON.stringify(tool.arguments, null, 2)}
+      {expanded && (
+        <div className="border-t border-gray-100 dark:border-gray-700/50 px-2.5 py-1.5 text-[11px] bg-gray-50/50 dark:bg-gray-800/30 space-y-1">
+          {tool.arguments && Object.keys(tool.arguments).length > 0 && (
+            <div className="font-mono text-gray-400 dark:text-gray-500">{JSON.stringify(tool.arguments, null, 2)}</div>
+          )}
+          {tool.result && <div className="text-gray-500 dark:text-gray-400">{tool.result}</div>}
         </div>
       )}
     </div>

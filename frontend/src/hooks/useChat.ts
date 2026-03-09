@@ -20,6 +20,7 @@ export interface ChatMessage {
   errorDetail?: string
   isStreaming?: boolean
   model_id?: string
+  context_pct?: number
 }
 
 export interface ToolCallInfo {
@@ -168,6 +169,7 @@ export function useChat() {
                         ...last,
                         isStreaming: false,
                         model_id: event.model_id || last.model_id,
+                        context_pct: event.context_pct,
                       }
                     }
                     return updated

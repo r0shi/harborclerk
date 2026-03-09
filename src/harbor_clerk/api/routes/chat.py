@@ -1,6 +1,7 @@
 """Chat and model management API routes."""
 
 import asyncio
+import json
 import logging
 import uuid
 
@@ -35,6 +36,43 @@ from harbor_clerk.models.conversation import Conversation
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
+
+
+def _summarize_tool_result(content: str) -> str:
+    """Create a short human-readable summary of a tool result."""
+    from harbor_clerk.llm.chat import _summarize_result
+
+    return _summarize_result(content)
+
+
+def _enrich_tool_calls(tool_calls: list[dict], results: dict[str, str]) -> list[dict]:
+    """Add result summaries to tool calls in the frontend-friendly format.
+
+    Converts from OpenAI format ({id, type, function: {name, arguments}})
+    to the display format ({name, arguments, result}) that ToolCallCard expects.
+    """
+    enriched = []
+    for tc in tool_calls:
+        func = tc.get("function", {})
+        name = func.get("name", tc.get("name", ""))
+        # Parse arguments from JSON string (OpenAI format) or dict (already parsed)
+        raw_args = func.get("arguments", tc.get("arguments", {}))
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args)
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+        else:
+            args = raw_args
+        tc_id = tc.get("id", "")
+        enriched.append(
+            {
+                "name": name,
+                "arguments": args,
+                "result": results.get(tc_id),
+            }
+        )
+    return enriched
 
 
 # --- Conversations ---
@@ -90,20 +128,37 @@ async def get_conversation(
     msgs_result = await session.execute(
         select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
     )
-    messages = [
-        ChatMessageOut(
-            message_id=str(m.message_id),
-            role=m.role,
-            content=m.content,
-            tool_calls=m.tool_calls,
-            tool_call_id=m.tool_call_id,
-            rag_context=m.rag_context,
-            tokens_used=m.tokens_used,
-            model_id=m.model_id,
-            created_at=m.created_at,
+    all_msgs = msgs_result.scalars().all()
+
+    # Build a lookup of tool_call_id → result summary for enrichment.
+    # This uses the already-fetched message set (no extra query), and the
+    # idx_messages_conv(conversation_id, created_at) index covers the query.
+    tool_results_by_id: dict[str, str] = {}
+    for m in all_msgs:
+        if m.role == "tool" and m.tool_call_id and m.content:
+            tool_results_by_id[m.tool_call_id] = _summarize_tool_result(m.content)
+
+    messages = []
+    for m in all_msgs:
+        tc = m.tool_calls
+        # Enrich tool_calls with result summaries so the frontend can
+        # display them in disclosure triangles after page reload.
+        if tc and isinstance(tc, list):
+            tc = _enrich_tool_calls(tc, tool_results_by_id)
+        messages.append(
+            ChatMessageOut(
+                message_id=str(m.message_id),
+                role=m.role,
+                content=m.content,
+                tool_calls=tc,
+                tool_call_id=m.tool_call_id,
+                rag_context=m.rag_context,
+                tokens_used=m.tokens_used,
+                model_id=m.model_id,
+                context_pct=m.context_pct,
+                created_at=m.created_at,
+            )
         )
-        for m in msgs_result.scalars().all()
-    ]
 
     return ConversationDetail(
         conversation_id=str(conv.conversation_id),
