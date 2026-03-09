@@ -156,8 +156,7 @@ async def export_conversation(
             model_label = ""
             if m.model_id:
                 model_info = get_model(m.model_id)
-                model_label = f" ({model_info.name if model_info else m.model_id})"
-                model_label = f" *{model_label.strip()}*"
+                model_label = f" *({model_info.name if model_info else m.model_id})*"
             # Strip <think> blocks for export
             content = m.content
             if content.startswith("<think>") and "</think>" in content:
@@ -168,10 +167,13 @@ async def export_conversation(
     safe_title = "".join(c if c.isalnum() or c in " -_" else "" for c in conv.title).strip()[:60] or "conversation"
     filename = f"{safe_title}.md"
 
+    from urllib.parse import quote
+
+    encoded_filename = quote(filename)
     return Response(
         content=transcript,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
     )
 
 

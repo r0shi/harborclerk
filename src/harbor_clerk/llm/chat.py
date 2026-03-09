@@ -364,7 +364,7 @@ async def chat_stream(
 
         done_payload: dict = {
             "type": "done",
-            "message_id": str(user_msg.message_id) if assistant_content else None,
+            "message_id": str(assistant_msg.message_id) if assistant_content else None,
         }
         if conv and conv.title != "New conversation":
             done_payload["title"] = conv.title
