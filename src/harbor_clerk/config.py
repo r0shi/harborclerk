@@ -77,9 +77,7 @@ class Settings(BaseSettings):
     mcp_brief_chars: int = Field(default=200)
     mcp_max_k: int = Field(default=350)
 
-    # RAG auto-inject in chat
-    rag_auto_k: int = Field(default=3)
-    rag_auto_threshold: float = Field(default=0.3)
+    # Chat tool-calling
     max_tool_rounds: int = Field(default=5)
     max_history_messages: int = Field(default=40)
 
