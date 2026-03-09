@@ -230,6 +230,27 @@ interface DocStats {
   ocr_confidence: { avg: number; min: number; max: number } | null
 }
 
+const ENTITY_TYPE_LABELS: Record<string, string> = {
+  PERSON: 'Person',
+  ORG: 'Organization',
+  GPE: 'Country / City / State',
+  LOC: 'Location',
+  DATE: 'Date',
+  EVENT: 'Event',
+  WORK_OF_ART: 'Work of Art',
+  FAC: 'Facility',
+  NORP: 'Nationality / Religion / Political Group',
+  PRODUCT: 'Product',
+  LAW: 'Law / Regulation',
+  LANGUAGE: 'Language',
+  MONEY: 'Monetary Value',
+  CARDINAL: 'Cardinal Number',
+  ORDINAL: 'Ordinal Number',
+  QUANTITY: 'Quantity / Measurement',
+  PERCENT: 'Percentage',
+  TIME: 'Time',
+}
+
 const ENTITY_TYPE_COLORS: Record<string, string> = {
   PERSON: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
   ORG: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
@@ -328,6 +349,7 @@ function DocumentStatsDisclosure({ docId }: { docId: string }) {
                           <button
                             key={type}
                             type="button"
+                            title={ENTITY_TYPE_LABELS[type] ?? type}
                             onClick={() =>
                               setHiddenTypes((prev) => {
                                 const next = new Set(prev)
