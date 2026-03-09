@@ -280,7 +280,22 @@ async def chat_stream(
             assistant_content = text_buffer
             break
 
+        # If the loop exhausted max_tool_rounds without a text response,
+        # synthesize a fallback so the user sees what happened.
+        if not assistant_content and _round == settings.max_tool_rounds - 1:
+            logger.warning(
+                "Chat loop exhausted %d tool rounds without text response (conversation=%s)",
+                settings.max_tool_rounds,
+                conversation_id,
+            )
+            assistant_content = (
+                "I used all available tool calls but wasn't able to formulate a complete response. "
+                "You can try rephrasing your question or asking something more specific."
+            )
+            yield f"data: {json.dumps({'type': 'token', 'content': assistant_content})}\n\n"
+
         # Save assistant response
+        assistant_msg = None
         if assistant_content:
             assistant_msg = ChatMessage(
                 conversation_id=conversation_id,
@@ -301,7 +316,7 @@ async def chat_stream(
 
         done_payload: dict = {
             "type": "done",
-            "message_id": str(assistant_msg.message_id) if assistant_content else None,
+            "message_id": str(assistant_msg.message_id) if assistant_msg else None,
         }
         if conv and conv.title != "New conversation":
             done_payload["title"] = conv.title
@@ -376,6 +391,8 @@ def _summarize_result(result_str: str) -> str:
         data = json.loads(result_str)
         if "error" in data:
             return f"Error: {data['error']}"
+        if "hits" in data:
+            return f"Found {len(data['hits'])} results"
         if "results" in data:
             return f"Found {data.get('count', len(data['results']))} results"
         if "passages" in data:
