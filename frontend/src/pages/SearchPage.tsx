@@ -298,7 +298,10 @@ export default function SearchPage() {
                     : `/docs/${hit.doc_id}?showContent=true`
 
                 return (
-                  <div key={hit.chunk_id} className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+                  <div
+                    key={hit.chunk_id}
+                    className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
+                  >
                     <div className="mb-2 flex items-center justify-between">
                       <Link to={linkTo} className="font-medium text-blue-600 dark:text-blue-400 hover:underline">
                         {hit.doc_title || 'Untitled'}

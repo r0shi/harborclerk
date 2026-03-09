@@ -181,7 +181,10 @@ function CreateUserForm({ onCreated, onError }: { onCreated: () => void; onError
   }
 
   return (
-    <form onSubmit={handleSubmit} className="mb-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+    <form
+      onSubmit={handleSubmit}
+      className="mb-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
+    >
       <div className="grid grid-cols-3 gap-3">
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Email</label>

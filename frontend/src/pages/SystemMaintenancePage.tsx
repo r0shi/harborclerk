@@ -155,7 +155,6 @@ export default function SystemMaintenancePage() {
             )}
           </div>
         </div>
-
       </div>
 
       {/* Delete All Documents */}
