@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { get } from '../api'
@@ -89,8 +89,8 @@ export default function ExplorePage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Sub-pane state with sessionStorage persistence
-  const [subPane, setSubPane] = useState<SubPaneState | null>(() => {
+  // Sub-pane state with sessionStorage persistence + browser history integration
+  const [subPane, setSubPaneRaw] = useState<SubPaneState | null>(() => {
     try {
       const saved = sessionStorage.getItem(SUB_PANE_KEY)
       return saved ? JSON.parse(saved) : null
@@ -98,6 +98,41 @@ export default function ExplorePage() {
       return null
     }
   })
+
+  // Wrap setSubPane to push/pop browser history entries
+  const openSubPane = useMemo(
+    () => (state: SubPaneState) => {
+      setSubPaneRaw(state)
+      window.history.pushState({ exploreSubPane: true }, '')
+    },
+    [],
+  )
+
+  // Listen for browser back (swipe gesture, keyboard shortcut, etc.)
+  useEffect(() => {
+    function onPopState() {
+      // If we're showing a sub-pane, close it on back navigation
+      setSubPaneRaw((current) => {
+        if (current) {
+          // Sub-pane was open, close it — this consumes the back action
+          return null
+        }
+        return current
+      })
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
+
+  // If component mounts with a restored sub-pane from sessionStorage,
+  // push a history entry so back gesture works
+  const didPushRestoredRef = useRef(false)
+  useEffect(() => {
+    if (subPane && !didPushRestoredRef.current) {
+      didPushRestoredRef.current = true
+      window.history.pushState({ exploreSubPane: true }, '')
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (subPane) {
@@ -151,10 +186,10 @@ export default function ExplorePage() {
   }
 
   if (subPane) {
-    return <ExploreDocList subPane={subPane} onBack={() => setSubPane(null)} />
+    return <ExploreDocList subPane={subPane} onBack={() => window.history.back()} />
   }
 
-  return <ExploreMain entities={entities} clusters={clusters} timeline={timeline} onOpenSubPane={setSubPane} />
+  return <ExploreMain entities={entities} clusters={clusters} timeline={timeline} onOpenSubPane={openSubPane} />
 }
 
 /* ──────────────────────────────── Main explore view ──────────────────────────────── */
