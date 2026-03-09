@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from harbor_clerk.api.deps import Principal
@@ -25,7 +26,7 @@ from harbor_clerk.models import (
     IngestionJob,
 )
 from harbor_clerk.models.enums import JobStage, VersionStatus
-from harbor_clerk.search import SearchResult, hybrid_search
+from harbor_clerk.search import SearchHit, SearchResult, hybrid_search
 
 logger = logging.getLogger(__name__)
 
@@ -212,12 +213,60 @@ mcp = FastMCP(
 )
 
 
+async def _resolve_headings(
+    session: AsyncSession,
+    hits: list[SearchHit],
+) -> dict[tuple[str, int], str]:
+    """Bulk-resolve the nearest heading at or before each hit's page.
+
+    Returns a map of (version_id_str, page_start) → heading title.
+    """
+    # Collect unique (version_id, page_start) pairs that have pages
+    pairs: set[tuple[uuid.UUID, int]] = set()
+    for h in hits:
+        if h.page_start is not None:
+            pairs.add((uuid.UUID(h.version_id), h.page_start))
+
+    if not pairs:
+        return {}
+
+    # Load all headings for the relevant versions
+    version_ids = list({vid for vid, _ in pairs})
+    heading_result = await session.execute(
+        select(DocumentHeading)
+        .where(DocumentHeading.version_id.in_(version_ids))
+        .order_by(DocumentHeading.version_id, DocumentHeading.position)
+    )
+    headings = heading_result.scalars().all()
+
+    # Group headings by version_id
+    headings_by_version: dict[uuid.UUID, list[DocumentHeading]] = {}
+    for heading in headings:
+        headings_by_version.setdefault(heading.version_id, []).append(heading)
+
+    # For each (version_id, page), find the nearest heading at or before that page
+    result_map: dict[tuple[str, int], str] = {}
+    for vid, page in pairs:
+        version_headings = headings_by_version.get(vid, [])
+        best: DocumentHeading | None = None
+        for heading in version_headings:
+            if heading.page_num is not None and heading.page_num <= page:
+                best = heading
+            elif heading.page_num is not None and heading.page_num > page:
+                break
+        if best is not None:
+            result_map[(str(vid), page)] = best.title
+
+    return result_map
+
+
 def _format_search_response(
     result: SearchResult,
     detail: str,
     effective_brief_chars: int,
     k: int,
     offset: int,
+    heading_map: dict[tuple[str, int], str] | None = None,
 ) -> dict:
     """Build the non-faceted search response dict from a SearchResult.
 
@@ -235,6 +284,11 @@ def _format_search_response(
         }
         if h.page_start is not None:
             hit["pages"] = f"{h.page_start}-{h.page_end}" if h.page_end != h.page_start else str(h.page_start)
+            # Include nearest heading for document context
+            if heading_map:
+                heading = heading_map.get((h.version_id, h.page_start))
+                if heading:
+                    hit["section"] = heading
         # Detail mode formatting
         if detail == "full":
             hit["text"] = h.chunk_text
@@ -279,7 +333,11 @@ async def kb_search(
 ) -> str:
     """Search the knowledge base with hybrid FTS + vector search.
 
-    Returns ranked chunks with citations (page numbers, scores).
+    Returns ranked chunks with citations (page numbers, scores, section
+    headings). Each hit includes the nearest document heading above the
+    chunk's page (in the "section" field), so you can see where in the
+    document the passage comes from without a separate outline call.
+
     Use this as the primary tool to find information.
 
     Filters (all optional):
@@ -360,11 +418,12 @@ async def kb_search(
             language=language,
             mime_type=mime_type,
         )
+        heading_map = await _resolve_headings(session, result.hits)
 
     # Resolve brief_chars for brief mode
     effective_brief_chars = brief_chars if brief_chars > 0 else settings.mcp_brief_chars
 
-    base_resp = _format_search_response(result, detail, effective_brief_chars, k, offset)
+    base_resp = _format_search_response(result, detail, effective_brief_chars, k, offset, heading_map)
 
     if faceted:
         # Group hits by doc_id
@@ -510,7 +569,8 @@ async def kb_batch_search(
                 language=language,
                 mime_type=mime_type,
             )
-            resp = _format_search_response(result, detail, effective_brief_chars, k, 0)
+            heading_map = await _resolve_headings(session, result.hits)
+            resp = _format_search_response(result, detail, effective_brief_chars, k, 0, heading_map)
             resp["query"] = query
             results.append(resp)
 
@@ -544,9 +604,15 @@ async def kb_read_passages(
     chunk_ids: list[str],
     include_context: bool = False,
 ) -> str:
-    """Read specific passages by chunk ID. Use after kb_search to get full text.
+    """Read full text of specific passages by their chunk IDs.
 
-    Set include_context=True to also get the surrounding chunks.
+    Use after kb_search (especially with detail="brief" or "compact")
+    to fetch the complete text of interesting results. Returns each
+    passage with its document title, language, and page numbers.
+
+    Set include_context=True to also get the immediately preceding and
+    following chunks — useful for understanding a passage in context
+    without a separate kb_expand_context call.
     """
     _get_principal()
     uuids = [uuid.UUID(cid) for cid in chunk_ids]
@@ -662,7 +728,13 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
 
 @mcp.tool()
 async def kb_get_document(doc_id: str) -> str:
-    """Get document details including all versions and their status."""
+    """Get full metadata for a document: title, status, and all versions.
+
+    Each version includes its processing status, summary, MIME type,
+    file size, extracted character count, and ingestion pipeline jobs.
+    Use this to inspect a specific document after finding it via search
+    or kb_list_recent.
+    """
     _get_principal()
     did = uuid.UUID(doc_id)
 
@@ -709,7 +781,12 @@ async def kb_get_document(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_list_recent(limit: int = 20) -> str:
-    """List recently updated documents."""
+    """List documents ordered by most recently updated, with summaries.
+
+    Returns title, summary, status, version count, and update timestamp
+    for each document. Use this to see what's new or recently changed,
+    or as a paginated document browser (max 100 per call).
+    """
     _get_principal()
 
     async with async_session_factory() as session:
@@ -748,14 +825,26 @@ async def kb_list_recent(limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def kb_corpus_overview() -> str:
+async def kb_corpus_overview(limit: int = 50) -> str:
     """Get a bird's-eye view of the knowledge base.
 
-    Returns corpus-level statistics and a summary of each document.
-    Includes document count, chunk/page totals, language distribution,
-    file type breakdown, and date range.
-    Use this to understand what's in the corpus before searching."""
+    Returns corpus-level statistics: document count, chunk/page totals,
+    language distribution, file type breakdown, date range, and a list
+    of documents with titles and summaries.
+
+    Use this as your first call when exploring an unfamiliar corpus.
+    The statistics section is always complete; only the document list
+    is subject to the limit.
+
+    Args:
+        limit: Maximum number of documents to include in the list
+            (default 50, max 500). Increase if you need to scan more
+            documents; decrease for faster responses with large corpora.
+            The response includes a 'truncated' flag and total
+            'document_count' so you know if more exist."""
     _get_principal()
+
+    limit = max(1, min(limit, 500))
 
     async with async_session_factory() as session:
         doc_count_result = await session.execute(
@@ -816,7 +905,7 @@ async def kb_corpus_overview() -> str:
             .options(selectinload(Document.versions))
             .where(Document.status == "active")
             .order_by(Document.updated_at.desc())
-            .limit(200)
+            .limit(limit)
         )
         docs = result.scalars().all()
 
@@ -857,7 +946,13 @@ async def kb_corpus_overview() -> str:
 
 @mcp.tool()
 async def kb_ingest_status(doc_id: str) -> str:
-    """Check ingestion pipeline status for a document's latest version."""
+    """Check ingestion pipeline progress for a document's latest version.
+
+    Returns the status of each pipeline stage (extract → ocr → chunk →
+    entities → embed → summarize → finalize) with progress counts,
+    timestamps, and any error messages. Use this to check if a document
+    is still being processed or to diagnose ingestion failures.
+    """
     _get_principal()
     did = uuid.UUID(doc_id)
 
@@ -904,7 +999,12 @@ async def kb_ingest_status(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_reprocess(doc_id: str) -> str:
-    """Re-run the full ingestion pipeline for a document. Admin only."""
+    """Re-run the full ingestion pipeline for a document (admin only).
+
+    Resets all pipeline stages and re-queues from the beginning.
+    Use when a document's content appears stale or ingestion failed
+    and you want to retry from scratch.
+    """
     _require_admin()
     did = uuid.UUID(doc_id)
 

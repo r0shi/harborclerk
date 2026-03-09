@@ -27,7 +27,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "search_documents",
-            "description": "Search the knowledge base for relevant passages by keyword or topic.",
+            "description": "Search the knowledge base for passages matching a query. Uses hybrid keyword + semantic search. Returns ranked results with document titles, page numbers, scores, and section headings. This is your primary tool for finding information.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -52,7 +52,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_passages",
-            "description": "Read full text of specific passages by chunk IDs. Use after search to get complete content.",
+            "description": "Read full text of specific passages by chunk IDs. Use after search_documents to fetch complete text of interesting results. Set include_context=true to also get surrounding text.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -95,7 +95,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_document",
-            "description": "Get full metadata and version history for a specific document.",
+            "description": "Get full metadata for a document: title, status, summary, MIME type, file size, and version history with pipeline status. Use to inspect a document after finding it via search.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -112,7 +112,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "list_documents",
-            "description": "List documents in the knowledge base, most recently updated first.",
+            "description": "List documents ordered by most recently updated. Returns title, summary, status, version count, and update timestamp. Use to browse the corpus or see what changed recently.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -128,10 +128,15 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "corpus_overview",
-            "description": "Get collection statistics: document count, languages, file types, date range.",
+            "description": "Get collection statistics and document list: document count, languages, file types, date range, plus titles and summaries.",
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max documents to list (default 20, max 50)",
+                    },
+                },
             },
         },
     },
@@ -139,7 +144,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "document_outline",
-            "description": "Get a document's structure: headings, page count, chunk count.",
+            "description": "Get a document's heading hierarchy (h1-h6), page count, and chunk count. Use to understand document structure before reading specific sections with read_document.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -156,7 +161,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "find_related",
-            "description": "Find documents similar to a given document based on content.",
+            "description": "Find documents most similar to a given document by content similarity. Returns related documents with titles, summaries, and similarity scores. Use to discover related content or topic clusters.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -177,7 +182,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "entity_search",
-            "description": "Search for people, places, organizations, and other named entities.",
+            "description": "Search for named entities (people, organizations, places, dates, etc.) by name. Returns entity mentions with document and chunk references. Filter by entity_type (PERSON, ORG, GPE, LOC, DATE) and/or doc_id.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -202,7 +207,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "entity_overview",
-            "description": "Get an overview of named entities in the corpus or a specific document.",
+            "description": "Get entity statistics: type distribution (PERSON, ORG, GPE, etc.), total/unique counts, and top 20 most-mentioned entities. Omit doc_id for corpus-wide overview.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -218,7 +223,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "entity_cooccurrence",
-            "description": "Find entities that co-occur with a given entity in the same text passage.",
+            "description": "Find entities that appear alongside a given entity in the same text chunk. Reveals relationships (e.g., which people are mentioned with an organization). Filter co-occurring entities by type.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -247,7 +252,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_document",
-            "description": "Read the full text of a document or a specific page range.",
+            "description": "Read the full text of a document or a specific page range. Use page_start/page_end to read specific sections (e.g., after checking document_outline). Returns page-level text with OCR metadata.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -272,7 +277,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "ingest_status",
-            "description": "Check document processing status and pipeline progress.",
+            "description": "Check ingestion pipeline progress for a document: shows each stage (extract→ocr→chunk→entities→embed→summarize→finalize) with status, progress counts, and errors.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -321,7 +326,8 @@ def _map_args_list_documents(args: dict) -> dict:
 
 
 def _map_args_corpus_overview(args: dict) -> dict:
-    return {}
+    # Chat LLMs get a smaller default to avoid context overflow
+    return {"limit": min(args.get("limit", 20), 50)}
 
 
 def _map_args_document_outline(args: dict) -> dict:
