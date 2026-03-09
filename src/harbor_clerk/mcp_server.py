@@ -1556,7 +1556,11 @@ async def kb_read_document(
     page_end: int | None = None,
     max_chars: int = 50000,
 ) -> str:
-    """Read the full text of a document (or a page range).
+    """Read a document's text by page range.
+
+    CAUTION: Full documents can be very large. Prefer kb_search +
+    kb_read_passages for targeted retrieval. Use this only for specific
+    page ranges after checking kb_document_outline.
 
     Returns page-level text from DocumentPage rows for the latest version.
     If no pages exist (e.g. plain-text files), falls back to concatenated chunks.

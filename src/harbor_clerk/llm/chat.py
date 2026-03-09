@@ -125,6 +125,12 @@ _CORE_INSTRUCTIONS = (
     "  ingest_status\n\n"
     "When a query is broad or ambiguous, start with corpus_overview or "
     "list_documents to understand what is available before searching.\n\n"
+    "## Context management\n\n"
+    "Strongly prefer searching for specific passages over reading entire "
+    "documents. The workflow search_documents → read_passages → expand_context "
+    "uses far less context than read_document. Only use read_document for "
+    "specific page ranges after checking document_outline — never to read "
+    "a full document end-to-end.\n\n"
     "## Language\n\n"
     "Respond in the same language as the user's question."
 )

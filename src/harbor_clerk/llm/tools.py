@@ -252,7 +252,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "read_document",
-            "description": "Read the full text of a document or a specific page range. Use page_start/page_end to read specific sections (e.g., after checking document_outline). Returns page-level text with OCR metadata.",
+            "description": "Read a document's text by page range. CAUTION: full documents can be very large and exhaust context. Always prefer search_documents + read_passages for targeted retrieval. Only use this for specific page ranges after checking document_outline.",
             "parameters": {
                 "type": "object",
                 "properties": {
