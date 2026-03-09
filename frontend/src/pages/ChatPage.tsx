@@ -502,21 +502,14 @@ function ThinkingSection({
 
 /* ---- Message bubble ---- */
 
-function MessageBubble({
-  message,
-  modelNames,
-}: {
-  message: ChatMessage
-  modelNames: Record<string, string>
-}) {
+function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNames: Record<string, string> }) {
   const isUser = message.role === 'user'
   const isError = !isUser && message.content.startsWith('Error:')
   const { thinking, response } = !isUser
     ? parseThinking(message.content)
     : { thinking: null, response: message.content }
 
-  const modelLabel =
-    !isUser && message.model_id ? modelNames[message.model_id] || message.model_id : null
+  const modelLabel = !isUser && message.model_id ? modelNames[message.model_id] || message.model_id : null
 
   return (
     <div className={`message-appear py-2.5 ${isUser ? '' : ''}`}>
@@ -557,9 +550,7 @@ function MessageBubble({
             }`}
           >
             {isUser ? 'You' : 'Assistant'}
-            {modelLabel && (
-              <span className="ml-1 font-normal text-gray-300 dark:text-gray-600">({modelLabel})</span>
-            )}
+            {modelLabel && <span className="ml-1 font-normal text-gray-300 dark:text-gray-600">({modelLabel})</span>}
           </div>
 
           {/* RAG context card shown above the message bubble */}
