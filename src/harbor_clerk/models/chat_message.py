@@ -23,6 +23,7 @@ class ChatMessage(Base):
     tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     rag_context: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
     tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[created_at]
 
     __table_args__ = (Index("idx_messages_conv", "conversation_id", "created_at"),)

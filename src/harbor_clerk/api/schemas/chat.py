@@ -27,6 +27,7 @@ class ChatMessageOut(BaseModel):
     tool_call_id: str | None = None
     rag_context: Any | None = None
     tokens_used: int | None = None
+    model_id: str | None = None
     created_at: datetime
 
 

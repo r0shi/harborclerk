@@ -97,6 +97,28 @@ def get_settings() -> Settings:
     return _settings
 
 
+def refresh_llm_settings() -> None:
+    """Re-read mutable LLM settings from the native config.json file.
+
+    Workers are separate processes from the API server, so when the user
+    changes the active model via the API, the worker's cached Settings
+    object is stale.  Call this before any LLM-dependent stage.
+    """
+    settings = get_settings()
+    path = settings.native_config_file
+    if not path or not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.loads(f.read())
+        if "llm_model_id" in data:
+            settings.llm_model_id = data["llm_model_id"]
+        if "llm_yarn_enabled" in data:
+            settings.llm_yarn_enabled = bool(data["llm_yarn_enabled"])
+    except Exception:
+        logger.debug("Failed to refresh LLM settings from %s", path, exc_info=True)
+
+
 def sync_native_config(key: str, value: str | bool | int) -> None:
     """Write a key back to the shared config.json used by the macOS app.
 

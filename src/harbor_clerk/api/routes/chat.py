@@ -5,7 +5,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,7 +29,7 @@ from harbor_clerk.llm.download import (
     is_downloading,
     list_downloaded,
 )
-from harbor_clerk.llm.models import list_models
+from harbor_clerk.llm.models import get_model, list_models
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 
@@ -99,6 +99,7 @@ async def get_conversation(
             tool_call_id=m.tool_call_id,
             rag_context=m.rag_context,
             tokens_used=m.tokens_used,
+            model_id=m.model_id,
             created_at=m.created_at,
         )
         for m in msgs_result.scalars().all()
@@ -124,6 +125,56 @@ async def delete_conversation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     await session.delete(conv)
     await session.commit()
+
+
+@router.get("/chat/conversations/{conv_id}/export")
+async def export_conversation(
+    conv_id: uuid.UUID,
+    principal: Principal = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Export conversation as a Markdown transcript."""
+    conv = await session.get(Conversation, conv_id)
+    if conv is None or conv.user_id != principal.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    msgs_result = await session.execute(
+        select(ChatMessage).where(ChatMessage.conversation_id == conv_id).order_by(ChatMessage.created_at)
+    )
+    msgs = msgs_result.scalars().all()
+
+    lines: list[str] = [f"# {conv.title}\n"]
+    lines.append(f"*Exported {conv.created_at.strftime('%Y-%m-%d %H:%M')}*\n")
+    lines.append("---\n")
+
+    for m in msgs:
+        if m.role == "tool":
+            continue
+        if m.role == "user":
+            lines.append(f"**You:**\n\n{m.content}\n")
+        elif m.role == "assistant":
+            model_label = ""
+            if m.model_id:
+                model_info = get_model(m.model_id)
+                model_label = f" *({model_info.name if model_info else m.model_id})*"
+            # Strip <think> blocks for export
+            content = m.content
+            if content.startswith("<think>") and "</think>" in content:
+                content = content[content.index("</think>") + len("</think>") :].strip()
+            lines.append(f"**Assistant{model_label}:**\n\n{content}\n")
+
+    transcript = "\n".join(lines)
+    safe_title = "".join(c if c.isalnum() or c in " -_" else "" for c in conv.title).strip()[:60] or "conversation"
+    filename = f"{safe_title}.md"
+
+    from urllib.parse import quote
+
+    encoded_filename = quote(filename)
+    return Response(
+        content=transcript,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+    )
 
 
 @router.post("/chat/conversations/{conv_id}/messages")

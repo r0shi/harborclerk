@@ -19,6 +19,7 @@ export interface ChatMessage {
   rag_context?: RagContextChunk[]
   errorDetail?: string
   isStreaming?: boolean
+  model_id?: string
 }
 
 export interface ToolCallInfo {
@@ -166,6 +167,7 @@ export function useChat() {
                       updated[updated.length - 1] = {
                         ...last,
                         isStreaming: false,
+                        model_id: event.model_id || last.model_id,
                       }
                     }
                     return updated

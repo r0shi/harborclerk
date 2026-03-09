@@ -5,6 +5,7 @@ import uuid
 
 from sqlalchemy import select
 
+from harbor_clerk.config import refresh_llm_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.llm.summarize import classify_doc_type, generate_summary
 from harbor_clerk.models import Chunk, DocumentVersion
@@ -18,6 +19,9 @@ def run_summarize(version_id: uuid.UUID) -> None:
     """Generate a summary for the document version from all its chunks."""
     if not mark_stage_running(version_id, JobStage.summarize):
         return
+
+    # Re-read LLM model from config.json in case user changed it via API
+    refresh_llm_settings()
 
     session = get_sync_session()
     try:
