@@ -1,7 +1,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text
+from sqlalchemy import ForeignKey, Index, Integer, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,6 +24,7 @@ class ChatMessage(Base):
     rag_context: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
     tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
     model_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    context_pct: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[created_at]
 
     __table_args__ = (Index("idx_messages_conv", "conversation_id", "created_at"),)

@@ -17,6 +17,89 @@ from harbor_clerk.models.conversation import Conversation
 
 logger = logging.getLogger(__name__)
 
+# Rough chars-per-token estimate for budget calculations.
+# Conservative (undercounts tokens → keeps us safely under the limit).
+_CHARS_PER_TOKEN = 3.5
+
+# Reserve this fraction of context window for the model's response.
+_RESPONSE_RESERVE = 0.20
+
+# Approximate token overhead for the tool schema (CHAT_TOOLS JSON).
+# Computed once at module load to avoid re-serializing every call.
+_TOOL_SCHEMA_TOKENS: int | None = None
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimate token count from character length."""
+    return int(len(text) / _CHARS_PER_TOKEN)
+
+
+def _estimate_messages_tokens(messages: list[dict]) -> int:
+    """Estimate total tokens for a message list."""
+    total = 0
+    for msg in messages:
+        total += _estimate_tokens(msg.get("content", ""))
+        if msg.get("tool_calls"):
+            total += _estimate_tokens(json.dumps(msg["tool_calls"]))
+    # Per-message overhead (~4 tokens each for role, separators)
+    total += len(messages) * 4
+    return total
+
+
+def _get_tool_schema_tokens() -> int:
+    """Lazily compute and cache the tool schema token estimate."""
+    global _TOOL_SCHEMA_TOKENS
+    if _TOOL_SCHEMA_TOKENS is None:
+        _TOOL_SCHEMA_TOKENS = _estimate_tokens(json.dumps(CHAT_TOOLS))
+    return _TOOL_SCHEMA_TOKENS
+
+
+def _trim_to_budget(messages: list[dict], context_window: int) -> list[dict]:
+    """Trim oldest history messages to fit within context budget.
+
+    Keeps the system prompt (index 0) and the most recent user message
+    (last entry). Removes messages from the front of history, keeping
+    tool call/result pairs together.
+
+    Returns a new list (does not mutate the input).
+    """
+    budget = int(context_window * (1 - _RESPONSE_RESERVE))
+    budget -= _get_tool_schema_tokens()
+
+    if _estimate_messages_tokens(messages) <= budget:
+        return messages
+
+    # System prompt is always kept (index 0). Trim from index 1 onward.
+    system = messages[:1]
+    history = messages[1:]
+
+    # Remove from the front of history until we fit
+    while history and _estimate_messages_tokens(system + history) > budget:
+        removed = history.pop(0)
+        # If we removed an assistant message with tool_calls, also remove
+        # the following tool result messages (they reference it).
+        while history and history[0].get("role") == "tool":
+            history.pop(0)
+        # If we removed a tool result, check if the preceding assistant
+        # message's tool calls are now orphaned (skip — rare edge case).
+        if removed.get("role") == "tool":
+            continue
+
+    if not history:
+        # Extreme case: even system + user message exceeds budget.
+        # Keep them anyway — llama-server will handle the overflow.
+        return messages
+
+    trimmed = system + history
+    if len(trimmed) < len(messages):
+        logger.info(
+            "Trimmed %d messages from history to fit context budget (%d tokens)",
+            len(messages) - len(trimmed),
+            budget,
+        )
+    return trimmed
+
+
 _CORE_INSTRUCTIONS = (
     "You are Harbor Clerk, a document assistant for a local knowledge base.\n\n"
     "## How to answer questions\n\n"
@@ -102,6 +185,9 @@ async def chat_stream(
             if msg.tool_call_id:
                 entry["tool_call_id"] = msg.tool_call_id
             messages.append(entry)
+
+        # Trim history to fit within context budget
+        messages = _trim_to_budget(messages, context_tokens)
 
         # Tool-calling loop
         assistant_content = ""
@@ -294,6 +380,13 @@ async def chat_stream(
             )
             yield f"data: {json.dumps({'type': 'token', 'content': assistant_content})}\n\n"
 
+        # Estimate context usage for the UI indicator.
+        # Include tool schema, all messages sent to the LLM, and the response.
+        input_tokens = _estimate_messages_tokens(messages) + _get_tool_schema_tokens()
+        response_tokens = _estimate_tokens(assistant_content) if assistant_content else 0
+        used_tokens = input_tokens + response_tokens
+        context_pct = round(min(used_tokens / context_tokens, 1.0) * 100) if context_tokens > 0 else 0
+
         # Save assistant response
         assistant_msg = None
         if assistant_content:
@@ -304,6 +397,7 @@ async def chat_stream(
                 tokens_used=total_tokens or None,
                 rag_context=None,
                 model_id=active_model_id,
+                context_pct=context_pct,
             )
             session.add(assistant_msg)
 
@@ -317,6 +411,7 @@ async def chat_stream(
         done_payload: dict = {
             "type": "done",
             "message_id": str(assistant_msg.message_id) if assistant_msg else None,
+            "context_pct": context_pct,
         }
         if conv and conv.title != "New conversation":
             done_payload["title"] = conv.title

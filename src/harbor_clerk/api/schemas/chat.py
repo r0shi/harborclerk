@@ -28,6 +28,7 @@ class ChatMessageOut(BaseModel):
     rag_context: Any | None = None
     tokens_used: int | None = None
     model_id: str | None = None
+    context_pct: int | None = None
     created_at: datetime
 
 

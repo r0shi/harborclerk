@@ -155,6 +155,7 @@ async def get_conversation(
                 rag_context=m.rag_context,
                 tokens_used=m.tokens_used,
                 model_id=m.model_id,
+                context_pct=m.context_pct,
                 created_at=m.created_at,
             )
         )

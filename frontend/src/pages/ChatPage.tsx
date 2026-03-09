@@ -24,6 +24,7 @@ interface ConversationDetail extends ConversationSummary {
     rag_context?: RagContextChunk[]
     tokens_used?: number
     model_id?: string
+    context_pct?: number
     created_at: string
   }[]
 }
@@ -93,6 +94,7 @@ export default function ChatPage() {
               tool_calls: (m.tool_calls as ToolCallInfo[] | undefined) || undefined,
               rag_context: m.rag_context,
               model_id: m.model_id || undefined,
+              context_pct: m.context_pct,
             })),
         )
       })
@@ -557,6 +559,20 @@ function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNam
           >
             {isUser ? 'You' : 'Assistant'}
             {modelLabel && <span className="ml-1 font-normal text-gray-300 dark:text-gray-600">({modelLabel})</span>}
+            {!isUser && message.context_pct != null && (
+              <span
+                className={`ml-1.5 font-normal ${
+                  message.context_pct >= 90
+                    ? 'text-red-400 dark:text-red-500'
+                    : message.context_pct >= 70
+                      ? 'text-amber-400 dark:text-amber-500'
+                      : 'text-gray-300 dark:text-gray-600'
+                }`}
+                title={`${message.context_pct}% of model context window used`}
+              >
+                · {message.context_pct}% context
+              </span>
+            )}
           </div>
 
           {/* RAG context card shown above the message bubble */}
