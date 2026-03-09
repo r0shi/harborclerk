@@ -1,5 +1,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { del, get, post } from '../api'
 import { useAuth } from '../auth'
 import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../hooks/useChat'
@@ -318,7 +320,7 @@ export default function ChatPage() {
           {messages.length === 0 ? (
             <EmptyState />
           ) : (
-            <div className="max-w-5xl mx-auto px-4 py-6 space-y-1">
+            <div className="mx-auto px-6 py-6 space-y-1" style={{ maxWidth: 'min(100%, 72rem)' }}>
               {messages.map((msg, i) => (
                 <MessageBubble key={msg.message_id || i} message={msg} modelNames={modelNames} />
               ))}
@@ -332,7 +334,7 @@ export default function ChatPage() {
 
         {/* Input area */}
         <div className="border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
-          <div className="max-w-5xl mx-auto px-4 py-3">
+          <div className="mx-auto px-6 py-3" style={{ maxWidth: 'min(100%, 72rem)' }}>
             <form onSubmit={handleSubmit} className="relative">
               <div className="chat-input-container rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-xs focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
                 <textarea
@@ -589,7 +591,14 @@ function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNam
             )}
 
             {/* Main response content */}
-            {response && <div className="whitespace-pre-wrap wrap-break-word">{response}</div>}
+            {response &&
+              (isUser ? (
+                <div className="whitespace-pre-wrap wrap-break-word">{response}</div>
+              ) : (
+                <div className="prose-chat">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{response}</ReactMarkdown>
+                </div>
+              ))}
 
             {/* Error detail disclosure */}
             {isError && message.errorDetail && (

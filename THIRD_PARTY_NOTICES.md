@@ -27,6 +27,8 @@ Harbor Clerk includes or depends on the following third-party software.
 - **Lucide React** — icon library
 - **Recharts** — composable charting library
 - **react-is** — React element type checks
+- **react-markdown** — Markdown renderer for React
+- **remark-gfm** — GitHub Flavored Markdown support (tables, strikethrough)
 
 ## Apache License 2.0
 
