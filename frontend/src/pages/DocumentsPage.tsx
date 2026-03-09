@@ -4,6 +4,23 @@ import { get, post, del, downloadBlob } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents } from '../hooks/useJobEvents'
 
+const DOCS_STATE_KEY = 'docs-page-state'
+
+interface SavedDocsState {
+  currentPage: number
+  filter: string
+  filterInput: string
+  mimeFilter: string
+  langFilter: string
+  docTypeFilter: string
+  entityFilter: string
+  entityTypeFilter: string
+  entityInput: string
+  sortField: 'updated' | 'created' | 'title'
+  sortDir: 'asc' | 'desc'
+  scrollY: number
+}
+
 interface DocSummary {
   doc_id: string
   title: string
@@ -126,12 +143,44 @@ export default function DocumentsPage() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [filter, setFilter] = useState('')
-  const [currentPage, setCurrentPage] = useState(1)
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkAction, setBulkAction] = useState('')
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+
+  // Inline expand state
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  // Restore saved state from sessionStorage (URL params override)
+  const hasUrlParams =
+    searchParams.has('entity') ||
+    searchParams.has('mime_type') ||
+    searchParams.has('language') ||
+    searchParams.has('doc_type') ||
+    searchParams.has('entity_type')
+
+  // Helper: read a field from saved state or URL params
+  function initField<K extends keyof SavedDocsState>(
+    key: K,
+    fallback: SavedDocsState[K],
+    urlKey?: string,
+  ): SavedDocsState[K] {
+    // URL params take priority
+    if (urlKey) {
+      const urlVal = searchParams.get(urlKey)
+      if (urlVal) return urlVal as SavedDocsState[K]
+    }
+    if (hasUrlParams) return fallback
+    try {
+      const raw = sessionStorage.getItem(DOCS_STATE_KEY)
+      if (raw) return (JSON.parse(raw) as SavedDocsState)[key] ?? fallback
+    } catch {
+      /* ignore */
+    }
+    return fallback
+  }
+
+  const [filter, setFilter] = useState(() => initField('filter', ''))
+  const [currentPage, setCurrentPage] = useState(() => initField('currentPage', 1))
 
   // Filter & sort state
   const [filterOptions, setFilterOptions] = useState<{
@@ -141,20 +190,35 @@ export default function DocumentsPage() {
     entity_types: { value: string; count: number }[]
   }>({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
 
-  const [mimeFilter, setMimeFilter] = useState('')
-  const [langFilter, setLangFilter] = useState('')
-  const [docTypeFilter, setDocTypeFilter] = useState('')
-  const [entityFilter, setEntityFilter] = useState('')
-  const [entityTypeFilter, setEntityTypeFilter] = useState('')
-  const [sortField, setSortField] = useState<'updated' | 'created' | 'title'>('updated')
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [mimeFilter, setMimeFilter] = useState(() => initField('mimeFilter', '', 'mime_type'))
+  const [langFilter, setLangFilter] = useState(() => initField('langFilter', '', 'language'))
+  const [docTypeFilter, setDocTypeFilter] = useState(() => initField('docTypeFilter', '', 'doc_type'))
+  const [entityFilter, setEntityFilter] = useState(() => initField('entityFilter', '', 'entity'))
+  const [entityTypeFilter, setEntityTypeFilter] = useState(() => initField('entityTypeFilter', '', 'entity_type'))
+  const [sortField, setSortField] = useState<'updated' | 'created' | 'title'>(() => initField('sortField', 'updated'))
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => initField('sortDir', 'desc'))
 
   // Entity autocomplete
-  const [entityInput, setEntityInput] = useState('')
+  const [entityInput, setEntityInput] = useState(() => initField('entityInput', '', 'entity'))
   const [entitySuggestions, setEntitySuggestions] = useState<
     { entity_text: string; entity_type: string; doc_count: number }[]
   >([])
   const [showEntityDropdown, setShowEntityDropdown] = useState(false)
+
+  // Restore scroll position after initial data load
+  const pendingScrollRef = useRef(0)
+  const didRestoreScrollRef = useRef(false)
+
+  // Read saved scroll position once on mount
+  useEffect(() => {
+    if (hasUrlParams) return
+    try {
+      const raw = sessionStorage.getItem(DOCS_STATE_KEY)
+      if (raw) pendingScrollRef.current = (JSON.parse(raw) as SavedDocsState).scrollY ?? 0
+    } catch {
+      /* ignore */
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load filter options on mount
   useEffect(() => {
@@ -163,25 +227,51 @@ export default function DocumentsPage() {
       .catch(() => {})
   }, [])
 
-  // Initialize filters from URL params on mount
+  // Save state to sessionStorage on changes
   useEffect(() => {
-    async function initFromUrl() {
-      const urlEntity = searchParams.get('entity')
-      const urlMime = searchParams.get('mime_type')
-      const urlLang = searchParams.get('language')
-      const urlDocType = searchParams.get('doc_type')
-      const urlEntityType = searchParams.get('entity_type')
-      if (urlEntity) {
-        setEntityFilter(urlEntity)
-        setEntityInput(urlEntity)
-      }
-      if (urlEntityType) setEntityTypeFilter(urlEntityType)
-      if (urlMime) setMimeFilter(urlMime)
-      if (urlLang) setLangFilter(urlLang)
-      if (urlDocType) setDocTypeFilter(urlDocType)
+    const state: SavedDocsState = {
+      currentPage,
+      filter,
+      filterInput: entityInput,
+      mimeFilter,
+      langFilter,
+      docTypeFilter,
+      entityFilter,
+      entityTypeFilter,
+      entityInput,
+      sortField,
+      sortDir,
+      scrollY: window.scrollY,
     }
-    initFromUrl()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    sessionStorage.setItem(DOCS_STATE_KEY, JSON.stringify(state))
+  }, [
+    currentPage,
+    filter,
+    mimeFilter,
+    langFilter,
+    docTypeFilter,
+    entityFilter,
+    entityTypeFilter,
+    entityInput,
+    sortField,
+    sortDir,
+  ])
+
+  // Save scroll position before unmount
+  useEffect(() => {
+    return () => {
+      try {
+        const raw = sessionStorage.getItem(DOCS_STATE_KEY)
+        if (raw) {
+          const state = JSON.parse(raw)
+          state.scrollY = window.scrollY
+          sessionStorage.setItem(DOCS_STATE_KEY, JSON.stringify(state))
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [])
 
   const entityTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
@@ -241,7 +331,14 @@ export default function DocumentsPage() {
           setTotal(data.total)
         })
         .catch((e) => setError(e.message))
-        .finally(() => setLoading(false))
+        .finally(() => {
+          setLoading(false)
+          // Restore scroll position after initial load
+          if (!didRestoreScrollRef.current && pendingScrollRef.current > 0) {
+            didRestoreScrollRef.current = true
+            requestAnimationFrame(() => window.scrollTo(0, pendingScrollRef.current))
+          }
+        })
     },
     [sortField, sortDir, mimeFilter, langFilter, docTypeFilter, entityFilter, entityTypeFilter],
   )
@@ -252,7 +349,7 @@ export default function DocumentsPage() {
 
   // Debounce filter input
   const filterTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const [filterInput, setFilterInput] = useState('')
+  const [filterInput, setFilterInput] = useState(() => initField('filterInput', ''))
 
   function handleFilterChange(value: string) {
     setFilterInput(value)
@@ -717,43 +814,39 @@ export default function DocumentsPage() {
                       </tr>
                       {isExpanded && (
                         <tr className="bg-gray-50/50 dark:bg-white/2">
-                          <td colSpan={6} className="px-4 py-3 pl-14">
-                            <div className="space-y-1 text-sm">
+                          <td colSpan={6} className="px-4 py-4 pl-14">
+                            <div className="space-y-3">
                               {doc.doc_type && (
                                 <div>
-                                  <span className="font-medium text-gray-500 dark:text-gray-400">Type: </span>
-                                  <span className="text-gray-700 dark:text-gray-300">{doc.doc_type}</span>
+                                  <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">
+                                    Document Type
+                                  </p>
+                                  <p className="text-sm text-(--color-text-primary)">{doc.doc_type}</p>
                                 </div>
                               )}
                               <div>
-                                <span className="font-medium text-gray-500 dark:text-gray-400">
+                                <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">
                                   Summary
-                                  {doc.summary_model ? (
-                                    <span className="font-normal text-gray-400 dark:text-gray-500">
-                                      {' '}
+                                  {doc.summary_model && (
+                                    <span className="font-normal normal-case tracking-normal ml-1">
                                       ({doc.summary_model})
                                     </span>
-                                  ) : (
-                                    ''
                                   )}
-                                  :{' '}
-                                </span>
+                                </p>
                                 {doc.summary ? (
-                                  <span className="text-gray-700 dark:text-gray-300">{doc.summary}</span>
+                                  <p className="text-sm text-(--color-text-primary) leading-relaxed">{doc.summary}</p>
                                 ) : (
-                                  <span className="italic text-gray-400 dark:text-gray-500">No summary</span>
+                                  <p className="text-sm italic text-(--color-text-secondary)">No summary available</p>
                                 )}
                               </div>
-                              <div>
-                                <span className="font-medium text-gray-500 dark:text-gray-400">Source: </span>
-                                {doc.source_path ? (
-                                  <span className="text-gray-700 dark:text-gray-300 font-mono text-xs">
-                                    {doc.source_path}
-                                  </span>
-                                ) : (
-                                  <span className="italic text-gray-400 dark:text-gray-500">Unknown</span>
-                                )}
-                              </div>
+                              {doc.source_path && (
+                                <div>
+                                  <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">
+                                    Source
+                                  </p>
+                                  <p className="text-xs text-(--color-text-primary) font-mono">{doc.source_path}</p>
+                                </div>
+                              )}
                             </div>
                           </td>
                         </tr>
