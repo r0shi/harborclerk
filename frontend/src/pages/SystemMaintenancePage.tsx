@@ -80,8 +80,8 @@ export default function SystemMaintenancePage() {
         </div>
       )}
 
-      <div className="space-y-4">
-        <div>
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) divide-y divide-(--color-border) overflow-hidden">
+        <div className="px-5 py-4">
           <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
             Permanently remove documents deleted more than 60 days ago, including stored files.
           </p>
@@ -92,7 +92,7 @@ export default function SystemMaintenancePage() {
             Purge
           </button>
         </div>
-        <div>
+        <div className="px-5 py-4">
           <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
             Recover ingestion jobs that got stuck due to a crashed or killed worker.
           </p>
@@ -103,7 +103,7 @@ export default function SystemMaintenancePage() {
             Reap
           </button>
         </div>
-        <div>
+        <div className="px-5 py-4">
           <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
             Re-run the full ingestion pipeline on every document from the original files.
           </p>
@@ -129,7 +129,7 @@ export default function SystemMaintenancePage() {
           </div>
         </div>
 
-        <div>
+        <div className="px-5 py-4">
           <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
             Re-generate summaries for all documents using the current model. Useful after changing the LLM model. Much
             faster than a full reprocess.
@@ -156,90 +156,91 @@ export default function SystemMaintenancePage() {
           </div>
         </div>
 
-        {/* Delete All Documents */}
-        <div className="mt-6 border-t border-red-200 dark:border-red-800/50 pt-6">
-          <h2 className="text-lg font-semibold text-red-700 dark:text-red-400 mb-2">Danger Zone</h2>
-          <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
-            Permanently delete <strong>all</strong> documents, versions, chunks, and uploaded files.
-            <br />
-            Users, API keys, conversations, and audit logs are preserved.
-          </p>
-          {deleteStep === 0 && (
+      </div>
+
+      {/* Delete All Documents */}
+      <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-red-200 dark:ring-red-800/50 p-5">
+        <h2 className="text-lg font-semibold text-red-700 dark:text-red-400 mb-2">Danger Zone</h2>
+        <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
+          Permanently delete <strong>all</strong> documents, versions, chunks, and uploaded files.
+          <br />
+          Users, API keys, conversations, and audit logs are preserved.
+        </p>
+        {deleteStep === 0 && (
+          <button
+            onClick={() => setDeleteStep(1)}
+            className="rounded-lg border border-red-300 dark:border-red-700 px-4 py-2 text-sm font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+          >
+            Delete All Documents
+          </button>
+        )}
+        {deleteStep === 1 && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-red-600 dark:text-red-400 font-medium">Are you sure?</span>
             <button
-              onClick={() => setDeleteStep(1)}
-              className="rounded-lg border border-red-300 dark:border-red-700 px-4 py-2 text-sm font-medium text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
+              onClick={() => setDeleteStep(2)}
+              className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
             >
-              Delete All Documents
+              Yes, continue
             </button>
-          )}
-          {deleteStep === 1 && (
+            <button
+              onClick={() => setDeleteStep(0)}
+              className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+        {deleteStep === 2 && (
+          <div className="space-y-2">
+            <p className="text-sm text-red-600 dark:text-red-400">
+              Type{' '}
+              <code className="font-mono bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded-sm text-xs">
+                DELETE EVERYTHING
+              </code>{' '}
+              to confirm:
+            </p>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-red-600 dark:text-red-400 font-medium">Are you sure?</span>
+              <input
+                type="text"
+                value={deleteInput}
+                onChange={(e) => setDeleteInput(e.target.value)}
+                placeholder="DELETE EVERYTHING"
+                className="w-56 rounded-lg border border-red-300 dark:border-red-700 bg-white dark:bg-[#2c2c2e] px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-red-500/30"
+              />
               <button
-                onClick={() => setDeleteStep(2)}
-                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
+                onClick={async () => {
+                  setDeleting(true)
+                  setError('')
+                  setActionResult('')
+                  try {
+                    await post('/api/system/delete-all-documents', { confirmation: deleteInput })
+                    setActionResult('All documents deleted successfully')
+                    setDeleteStep(0)
+                    setDeleteInput('')
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : 'Delete failed')
+                  } finally {
+                    setDeleting(false)
+                  }
+                }}
+                disabled={deleteInput !== 'DELETE EVERYTHING' || deleting}
+                className="rounded-lg bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Yes, continue
+                {deleting ? 'Deleting...' : 'Delete'}
               </button>
               <button
-                onClick={() => setDeleteStep(0)}
+                onClick={() => {
+                  setDeleteStep(0)
+                  setDeleteInput('')
+                }}
                 className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
               >
                 Cancel
               </button>
             </div>
-          )}
-          {deleteStep === 2 && (
-            <div className="space-y-2">
-              <p className="text-sm text-red-600 dark:text-red-400">
-                Type{' '}
-                <code className="font-mono bg-red-50 dark:bg-red-900/30 px-1.5 py-0.5 rounded-sm text-xs">
-                  DELETE EVERYTHING
-                </code>{' '}
-                to confirm:
-              </p>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={deleteInput}
-                  onChange={(e) => setDeleteInput(e.target.value)}
-                  placeholder="DELETE EVERYTHING"
-                  className="w-56 rounded-lg border border-red-300 dark:border-red-700 bg-white dark:bg-[#2c2c2e] px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-gray-400 focus:outline-hidden focus:ring-2 focus:ring-red-500/30"
-                />
-                <button
-                  onClick={async () => {
-                    setDeleting(true)
-                    setError('')
-                    setActionResult('')
-                    try {
-                      await post('/api/system/delete-all-documents', { confirmation: deleteInput })
-                      setActionResult('All documents deleted successfully')
-                      setDeleteStep(0)
-                      setDeleteInput('')
-                    } catch (e) {
-                      setError(e instanceof Error ? e.message : 'Delete failed')
-                    } finally {
-                      setDeleting(false)
-                    }
-                  }}
-                  disabled={deleteInput !== 'DELETE EVERYTHING' || deleting}
-                  className="rounded-lg bg-red-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {deleting ? 'Deleting...' : 'Delete'}
-                </button>
-                <button
-                  onClick={() => {
-                    setDeleteStep(0)
-                    setDeleteInput('')
-                  }}
-                  className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
     </div>
   )

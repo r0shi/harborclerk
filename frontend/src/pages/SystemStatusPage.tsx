@@ -151,7 +151,7 @@ function HealthCard({
 
   return (
     <div
-      className={`rounded-xl shadow-mac p-4 ${
+      className={`rounded-xl shadow-mac ring-1 ring-(--color-border) p-4 ${
         ok ? 'bg-green-50 dark:bg-green-900/20' : 'bg-red-50 dark:bg-red-900/20'
       }`}
     >

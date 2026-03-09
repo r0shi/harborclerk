@@ -237,7 +237,7 @@ export default function ModelsPage() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac">
+      <div className="overflow-hidden rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border)">
         <table className="w-full text-sm">
           <thead className="bg-(--color-bg-secondary)">
             <tr>
@@ -249,7 +249,7 @@ export default function ModelsPage() {
               <th className="px-4 py-3 text-right font-medium text-gray-700 dark:text-gray-300">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+          <tbody className="divide-y divide-(--color-border)">
             {models.map((model) => {
               const progress = downloadProgress.get(model.id)
               return (
@@ -352,7 +352,7 @@ export default function ModelsPage() {
 
       {/* YaRN Extended Context */}
       {models.some((m) => m.yarn_available) && (
-        <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+        <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
           <div className="flex items-center justify-between">
             <div>
               <div className="font-medium text-gray-900 dark:text-gray-100">Extended Context (YaRN)</div>

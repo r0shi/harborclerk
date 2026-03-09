@@ -162,7 +162,7 @@ export default function RetrievalSettingsPage() {
       )}
 
       <div className="space-y-6">
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac border border-(--color-border) overflow-hidden">
+        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
           <div className="px-4 py-3 bg-(--color-bg-secondary)">
             <h2 className="text-sm font-medium text-(--color-text-primary)">Chat Retrieval</h2>
           </div>
@@ -173,7 +173,7 @@ export default function RetrievalSettingsPage() {
           </div>
         </div>
 
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac border border-(--color-border) overflow-hidden">
+        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
           <div className="px-4 py-3 bg-(--color-bg-secondary)">
             <h2 className="text-sm font-medium text-(--color-text-primary)">MCP API</h2>
           </div>

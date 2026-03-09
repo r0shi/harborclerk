@@ -69,7 +69,7 @@ const TICK_STYLE_11 = { fontSize: 11, fill: 'var(--color-chart-tick)' }
 
 function ChartCard({ title, children, tip }: { title: string; children: React.ReactNode; tip?: string }) {
   return (
-    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
       <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">
         {title}
         {tip && <InfoTip text={tip} />}
@@ -338,7 +338,7 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
 
       {/* Top Entities */}
       {topEntitiesData.length > 0 && (
-        <div className="mt-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+        <div className="mt-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
           <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">
             Top Entities
             <InfoTip text="The most frequently mentioned named entities across your documents, grouped by type. Entities are people, organizations, places, dates, and other proper nouns identified automatically." />

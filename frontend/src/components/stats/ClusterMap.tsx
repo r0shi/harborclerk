@@ -205,7 +205,7 @@ export default function ClusterMap() {
   const mimeTypes = [...new Set(docs.map((d) => d.mime_type))]
 
   return (
-    <div ref={containerRef} className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+    <div ref={containerRef} className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
       <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Document Clusters</h3>
 
       {/* Legend */}

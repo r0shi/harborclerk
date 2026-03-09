@@ -212,7 +212,7 @@ function ExploreMain({
       <h1 className="text-lg font-semibold text-(--color-text-primary)">Explore</h1>
 
       {/* Entity sections — People / Places / Organizations */}
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden divide-y divide-(--color-border)">
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden divide-y divide-(--color-border)">
         {ENTITY_SECTIONS.map((section) => (
           <EntitySection
             key={section.type}
@@ -250,7 +250,7 @@ function ExploreMain({
                       docIds: cluster.doc_ids,
                     })
                   }
-                  className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac px-5 py-4 hover:shadow-mac-lg transition-shadow text-left group"
+                  className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-4 hover:shadow-mac-lg hover:ring-(--color-border)/80 transition-all text-left group"
                 >
                   <div className="flex items-center justify-between mb-1">
                     <h3 className="text-[13px] font-semibold text-(--color-text-primary)">{cluster.name}</h3>
@@ -311,7 +311,7 @@ function ExploreMain({
         <h2 className="text-[13px] font-semibold text-(--color-text-secondary) uppercase tracking-wider mb-3">
           Timeline
         </h2>
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac px-5 py-4">
+        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-4">
           {timelineData.length <= 2 ? (
             timelineData.length === 0 ? (
               <p className="py-4 text-center text-sm text-(--color-text-secondary)">No timeline data yet.</p>
@@ -373,7 +373,7 @@ function EntitySection({
     <div>
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center px-5 py-3 text-left hover:bg-black/2 dark:hover:bg-white/2 transition-colors"
+        className="w-full flex items-center px-5 py-3 text-left hover:bg-black/3 dark:hover:bg-white/3 transition-colors"
       >
         <svg
           className={`h-3 w-3 mr-2.5 text-(--color-text-secondary) transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
@@ -517,7 +517,7 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
           placeholder="Filter by filename..."
           value={filterInput}
           onChange={(e) => handleFilterChange(e.target.value)}
-          className="w-52 rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-3 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+          className="w-52 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-3 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
         />
 
         {filterOptions.mime_types.length > 0 && (
@@ -527,7 +527,7 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
               setMimeFilter(e.target.value)
               setCurrentPage(1)
             }}
-            className="rounded-lg border border-(--color-border) bg-white dark:bg-[#2c2c2e] px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+            className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
           >
             <option value="">All types</option>
             {filterOptions.mime_types.map((m) => (
@@ -585,12 +585,12 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
           <p className="text-sm text-(--color-text-secondary)">Loading...</p>
         </div>
       ) : docs.length === 0 ? (
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac px-5 py-8 text-center">
+        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-8 text-center">
           <p className="text-sm text-(--color-text-secondary)">No documents found.</p>
         </div>
       ) : (
         <>
-          <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden">
+          <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
             <table className="min-w-full divide-y divide-(--color-border)">
               <thead className="bg-(--color-bg-secondary)">
                 <tr>
@@ -613,7 +613,7 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
                   const isExpanded = expanded.has(doc.doc_id)
                   return (
                     <Fragment key={doc.doc_id}>
-                      <tr className="hover:bg-black/2 dark:hover:bg-white/2">
+                      <tr className="hover:bg-black/3 dark:hover:bg-white/3">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
                             <button

@@ -14,12 +14,12 @@ export default function SystemSettingsPage() {
   return (
     <div>
       <h1 className="mb-4 text-xl font-bold">System Settings</h1>
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac overflow-hidden divide-y divide-(--color-border)">
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden divide-y divide-(--color-border)">
         {ITEMS.map((item) => (
           <Link
             key={item.to}
             to={item.to}
-            className="flex items-center justify-between px-4 py-3.5 hover:bg-black/2 dark:hover:bg-white/2 transition-colors"
+            className="flex items-center justify-between px-4 py-3.5 hover:bg-black/3 dark:hover:bg-white/3 transition-colors"
           >
             <div>
               <div className="text-[14px] font-medium text-(--color-text-primary)">{item.label}</div>
