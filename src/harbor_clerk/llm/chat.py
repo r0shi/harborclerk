@@ -71,6 +71,7 @@ async def chat_stream(
     has finished streaming).
     """
     settings = get_settings()
+    active_model_id = settings.llm_model_id or None
 
     # Compute per-tool-result truncation limit from model context window.
     # Reserve ~25% of context for tool results (rest: system prompt, tools, history, response).
@@ -199,6 +200,7 @@ async def chat_stream(
                                 conversation_id=conversation_id,
                                 role="assistant",
                                 content=error_content,
+                                model_id=active_model_id,
                             )
                         )
                         conv = await session.get(Conversation, conversation_id)
@@ -212,6 +214,8 @@ async def chat_stream(
                         done_payload: dict = {"type": "done"}
                         if conv and conv.title != "New conversation":
                             done_payload["title"] = conv.title
+                        if active_model_id:
+                            done_payload["model_id"] = active_model_id
                         yield f"data: {json.dumps(done_payload)}\n\n"
                         return
 
@@ -268,6 +272,7 @@ async def chat_stream(
                         conversation_id=conversation_id,
                         role="assistant",
                         content=f"Error: {error_summary}",
+                        model_id=active_model_id,
                     )
                 )
                 conv = await session.get(Conversation, conversation_id)
@@ -278,6 +283,8 @@ async def chat_stream(
                 done_payload: dict = {"type": "done"}
                 if conv and conv.title != "New conversation":
                     done_payload["title"] = conv.title
+                if active_model_id:
+                    done_payload["model_id"] = active_model_id
                 yield f"data: {json.dumps(done_payload)}\n\n"
                 return
 
@@ -344,6 +351,7 @@ async def chat_stream(
                 content=assistant_content,
                 tokens_used=total_tokens or None,
                 rag_context=rag_chunks,
+                model_id=active_model_id,
             )
             session.add(assistant_msg)
 
@@ -360,6 +368,8 @@ async def chat_stream(
         }
         if conv and conv.title != "New conversation":
             done_payload["title"] = conv.title
+        if active_model_id:
+            done_payload["model_id"] = active_model_id
         yield f"data: {json.dumps(done_payload)}\n\n"
 
 

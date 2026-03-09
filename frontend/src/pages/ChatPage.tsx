@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { del, get, post } from '../api'
+import { useAuth } from '../auth'
 import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../hooks/useChat'
 import RagContextCard from '../components/RagContextCard'
 
@@ -20,8 +21,15 @@ interface ConversationDetail extends ConversationSummary {
     tool_call_id?: string
     rag_context?: RagContextChunk[]
     tokens_used?: number
+    model_id?: string
     created_at: string
   }[]
+}
+
+interface ModelInfo {
+  id: string
+  name: string
+  active: boolean
 }
 
 function formatRelativeDate(dateStr: string): string {
@@ -49,11 +57,20 @@ export default function ChatPage() {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const skipNextFetchRef = useRef(false)
 
+  const { token } = useAuth()
   const { messages, isStreaming, currentToolCall, sendMessage, stopStreaming, loadMessages, lastTitle } = useChat()
+  const [modelNames, setModelNames] = useState<Record<string, string>>({})
 
   useEffect(() => {
     get<ConversationSummary[]>('/api/chat/conversations')
       .then(setConversations)
+      .catch(() => {})
+    get<ModelInfo[]>('/api/chat/models')
+      .then((models) => {
+        const map: Record<string, string> = {}
+        for (const m of models) map[m.id] = m.name
+        setModelNames(map)
+      })
       .catch(() => {})
   }, [])
 
@@ -76,6 +93,7 @@ export default function ChatPage() {
               role: m.role as ChatMessage['role'],
               content: m.content,
               rag_context: m.rag_context,
+              model_id: m.model_id || undefined,
             })),
         )
       })
@@ -256,16 +274,52 @@ export default function ChatPage() {
           ) : (
             <h2 className="text-[13px] font-medium text-gray-400 dark:text-gray-500">New conversation</h2>
           )}
-          {isStreaming && (
-            <div className="ml-auto flex items-center gap-1.5">
-              <div className="streaming-dots flex gap-0.5">
-                <span className="h-1 w-1 rounded-full bg-blue-500" />
-                <span className="h-1 w-1 rounded-full bg-blue-500" />
-                <span className="h-1 w-1 rounded-full bg-blue-500" />
+          <div className="ml-auto flex items-center gap-2">
+            {isStreaming && (
+              <div className="flex items-center gap-1.5">
+                <div className="streaming-dots flex gap-0.5">
+                  <span className="h-1 w-1 rounded-full bg-blue-500" />
+                  <span className="h-1 w-1 rounded-full bg-blue-500" />
+                  <span className="h-1 w-1 rounded-full bg-blue-500" />
+                </div>
+                <span className="text-[11px] text-gray-400">Generating</span>
               </div>
-              <span className="text-[11px] text-gray-400">Generating</span>
-            </div>
-          )}
+            )}
+            {conversationId && !isStreaming && messages.length > 0 && (
+              <button
+                onClick={() => {
+                  if (!token || !conversationId) return
+                  const a = document.createElement('a')
+                  a.href = `/api/chat/conversations/${conversationId}/export`
+                  a.download = ''
+                  // Need auth header — use fetch instead
+                  fetch(`/api/chat/conversations/${conversationId}/export`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                  })
+                    .then((r) => r.blob())
+                    .then((blob) => {
+                      const url = URL.createObjectURL(blob)
+                      const link = document.createElement('a')
+                      link.href = url
+                      link.download = `${activeConvTitle || 'conversation'}.md`
+                      link.click()
+                      URL.revokeObjectURL(url)
+                    })
+                    .catch(() => {})
+                }}
+                className="rounded-lg p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
+                title="Download transcript"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+                  />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Messages */}
@@ -275,7 +329,7 @@ export default function ChatPage() {
           ) : (
             <div className="max-w-3xl mx-auto px-4 py-6 space-y-1">
               {messages.map((msg, i) => (
-                <MessageBubble key={msg.message_id || i} message={msg} />
+                <MessageBubble key={msg.message_id || i} message={msg} modelNames={modelNames} />
               ))}
 
               {currentToolCall && <ToolCallCard tool={currentToolCall} active />}
@@ -448,12 +502,21 @@ function ThinkingSection({
 
 /* ---- Message bubble ---- */
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  modelNames,
+}: {
+  message: ChatMessage
+  modelNames: Record<string, string>
+}) {
   const isUser = message.role === 'user'
   const isError = !isUser && message.content.startsWith('Error:')
   const { thinking, response } = !isUser
     ? parseThinking(message.content)
     : { thinking: null, response: message.content }
+
+  const modelLabel =
+    !isUser && message.model_id ? modelNames[message.model_id] || message.model_id : null
 
   return (
     <div className={`message-appear py-2.5 ${isUser ? '' : ''}`}>
@@ -494,6 +557,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             }`}
           >
             {isUser ? 'You' : 'Assistant'}
+            {modelLabel && (
+              <span className="ml-1 font-normal text-gray-300 dark:text-gray-600">({modelLabel})</span>
+            )}
           </div>
 
           {/* RAG context card shown above the message bubble */}
