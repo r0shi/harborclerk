@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, useMemo } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { get } from '../api'
@@ -100,13 +100,10 @@ export default function ExplorePage() {
   })
 
   // Wrap setSubPane to push/pop browser history entries
-  const openSubPane = useMemo(
-    () => (state: SubPaneState) => {
-      setSubPaneRaw(state)
-      window.history.pushState({ exploreSubPane: true }, '')
-    },
-    [],
-  )
+  const openSubPane = useCallback((state: SubPaneState) => {
+    setSubPaneRaw(state)
+    window.history.pushState({ exploreSubPane: true }, '')
+  }, [])
 
   // Listen for browser back (swipe gesture, keyboard shortcut, etc.)
   useEffect(() => {

@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { get, post, del } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents, type JobEvent } from '../hooks/useJobEvents'
+import { ENTITY_TYPE_LABELS } from '../components/stats/CorpusCharts'
 
 interface JobInfo {
   job_id: string
@@ -228,27 +229,6 @@ interface DocStats {
   entity_types: Record<string, number>
   top_entities: { text: string; type: string; mentions: number }[]
   ocr_confidence: { avg: number; min: number; max: number } | null
-}
-
-const ENTITY_TYPE_LABELS: Record<string, string> = {
-  PERSON: 'Person',
-  ORG: 'Organization',
-  GPE: 'Country / City / State',
-  LOC: 'Location',
-  DATE: 'Date',
-  EVENT: 'Event',
-  WORK_OF_ART: 'Work of Art',
-  FAC: 'Facility',
-  NORP: 'Nationality / Religion / Political Group',
-  PRODUCT: 'Product',
-  LAW: 'Law / Regulation',
-  LANGUAGE: 'Language',
-  MONEY: 'Monetary Value',
-  CARDINAL: 'Cardinal Number',
-  ORDINAL: 'Ordinal Number',
-  QUANTITY: 'Quantity / Measurement',
-  PERCENT: 'Percentage',
-  TIME: 'Time',
 }
 
 const ENTITY_TYPE_COLORS: Record<string, string> = {
