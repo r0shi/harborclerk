@@ -20,6 +20,7 @@ interface ResearchDetail extends ResearchSummary {
   question: string
   report: string | null
   model_id: string | null
+  progress: Record<string, number> | null
 }
 
 function formatRelativeDate(dateStr: string): string {
@@ -81,6 +82,7 @@ export default function ResearchPage() {
     startResearch,
     resumeResearch,
     cancelResearch,
+    reset,
   } = useResearch()
 
   // Fetch history on mount
@@ -111,25 +113,20 @@ export default function ResearchPage() {
     loadTask()
   }, [researchId, navigate])
 
-  // Update the eager sidebar entry once we get the real conversation ID
+  // Refresh sidebar when a research task starts, completes, or errors
   useEffect(() => {
-    async function updateEagerEntry() {
-      if (conversationId && isRunning) {
-        setHistory((prev) =>
-          prev.map((t) => (t.conversation_id === '' ? { ...t, conversation_id: conversationId } : t)),
-        )
+    if (conversationId) {
+      fetchHistory()
+      if (!isRunning && report) {
+        navigate(`/research/${conversationId}`)
       }
     }
-    updateEagerEntry()
-  }, [conversationId, isRunning])
+  }, [conversationId, isRunning, report, fetchHistory, navigate])
 
-  // When research completes, refresh history and navigate to result
+  // Refresh sidebar on error (e.g. 409 conflict reveals blocking task)
   useEffect(() => {
-    if (!isRunning && conversationId && report) {
-      fetchHistory()
-      navigate(`/research/${conversationId}`)
-    }
-  }, [isRunning, conversationId, report, fetchHistory, navigate])
+    if (error) fetchHistory()
+  }, [error, fetchHistory])
 
   // Auto-scroll tool log
   useEffect(() => {
@@ -148,19 +145,6 @@ export default function ResearchPage() {
     if (!q) return
     setSelectedTask(null)
     setQuestion('')
-    // Add to sidebar immediately with eager title
-    const eagerTitle = q.length > 80 ? q.slice(0, 77) + '...' : q
-    const eagerEntry: ResearchSummary = {
-      conversation_id: '', // will be set when conversationId updates
-      title: eagerTitle,
-      status: 'running',
-      strategy,
-      current_round: 0,
-      max_rounds: 0,
-      created_at: new Date().toISOString(),
-      completed_at: null,
-    }
-    setHistory((prev) => [eagerEntry, ...prev])
     await startResearch(q, strategy)
   }, [question, strategy, startResearch])
 
@@ -193,8 +177,9 @@ export default function ResearchPage() {
   const handleNewResearch = useCallback(() => {
     setSelectedTask(null)
     setQuestion('')
+    reset()
     navigate('/research')
-  }, [navigate])
+  }, [navigate, reset])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -206,8 +191,26 @@ export default function ResearchPage() {
     [handleStartResearch],
   )
 
+  // Poll for updates when viewing a running task we're not streaming
+  const isViewingRunning = !isRunning && selectedTask?.status === 'running'
+  useEffect(() => {
+    if (!isViewingRunning || !researchId) return
+    const interval = setInterval(async () => {
+      try {
+        const detail = await get<ResearchDetail>(`/api/research/${researchId}`)
+        setSelectedTask(detail)
+        if (detail.status !== 'running') {
+          fetchHistory()
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [isViewingRunning, researchId, fetchHistory])
+
   // Determine UI state
-  const isIdle = !isRunning && !selectedTask
+  const isIdle = !isRunning && !selectedTask && !error
   const isViewingCompleted = !isRunning && selectedTask?.status === 'completed'
   const isViewingInterrupted = !isRunning && selectedTask?.status === 'interrupted'
 
@@ -237,19 +240,14 @@ export default function ResearchPage() {
           )}
           {history.map((task) => {
             const isActive = task.conversation_id === researchId
-            const isEager = task.conversation_id === ''
             return (
               <div
-                key={task.conversation_id || 'eager'}
-                onClick={() => {
-                  if (!isEager) navigate(`/research/${task.conversation_id}`)
-                }}
-                className={`group relative flex items-start rounded-lg px-3 py-2.5 mb-0.5 transition-all duration-150 ${
-                  isEager
-                    ? 'bg-amber-50/50 dark:bg-amber-900/10 ring-1 ring-amber-200/40 dark:ring-amber-700/30'
-                    : isActive
-                      ? 'bg-white dark:bg-gray-800 shadow-xs ring-1 ring-gray-200/80 dark:ring-gray-700/60 cursor-pointer'
-                      : 'hover:bg-white/60 dark:hover:bg-gray-800/40 cursor-pointer'
+                key={task.conversation_id}
+                onClick={() => navigate(`/research/${task.conversation_id}`)}
+                className={`group relative flex items-start rounded-lg px-3 py-2.5 mb-0.5 cursor-pointer transition-all duration-150 ${
+                  isActive
+                    ? 'bg-white dark:bg-gray-800 shadow-xs ring-1 ring-gray-200/80 dark:ring-gray-700/60'
+                    : 'hover:bg-white/60 dark:hover:bg-gray-800/40'
                 }`}
               >
                 <div className="flex-1 min-w-0">
@@ -257,7 +255,7 @@ export default function ResearchPage() {
                     <span className={`shrink-0 h-1.5 w-1.5 rounded-full ${statusColor(task.status)}`} />
                     <div
                       className={`text-[13px] font-medium truncate ${
-                        isActive || isEager ? 'text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'
+                        isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'
                       }`}
                     >
                       {task.title}
@@ -267,24 +265,22 @@ export default function ResearchPage() {
                     {formatRelativeDate(task.completed_at || task.created_at)}
                   </div>
                 </div>
-                {!isEager && !isRunning && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleDiscard(task.conversation_id)
-                    }}
-                    className={`shrink-0 ml-1 mt-0.5 rounded p-0.5 transition-colors duration-150 ${
-                      discardConfirm === task.conversation_id
-                        ? 'text-red-500 bg-red-50 dark:bg-red-900/20'
-                        : 'text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 dark:hover:text-red-400'
-                    }`}
-                    title={discardConfirm === task.conversation_id ? 'Click again to confirm' : 'Delete'}
-                  >
-                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    handleDiscard(task.conversation_id)
+                  }}
+                  className={`shrink-0 ml-1 mt-0.5 rounded p-0.5 transition-colors duration-150 ${
+                    discardConfirm === task.conversation_id
+                      ? 'text-red-500 bg-red-50 dark:bg-red-900/20'
+                      : 'text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 dark:hover:text-red-400'
+                  }`}
+                  title={discardConfirm === task.conversation_id ? 'Click again to confirm' : 'Delete'}
+                >
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
             )
           })}
@@ -309,9 +305,9 @@ export default function ResearchPage() {
             </svg>
           </button>
           <h2 className="text-[13px] font-semibold text-gray-700 dark:text-gray-300 truncate">
-            {isRunning ? 'Research in progress...' : selectedTask ? selectedTask.title : 'Research'}
+            {isRunning || isViewingRunning ? 'Research in progress...' : selectedTask ? selectedTask.title : 'Research'}
           </h2>
-          {isRunning && (
+          {(isRunning || isViewingRunning) && (
             <div className="ml-auto flex items-center gap-1.5">
               <div className="flex gap-0.5">
                 <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse" />
@@ -326,7 +322,7 @@ export default function ResearchPage() {
         {/* Content area */}
         <div className="flex-1 overflow-y-auto">
           {/* State 1: Idle */}
-          {isIdle && !isRunning && (
+          {isIdle && (
             <div className="flex h-full items-center justify-center p-8">
               <div className="text-center max-w-lg">
                 <div className="mx-auto mb-6">
@@ -487,6 +483,52 @@ export default function ResearchPage() {
                   {error}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* State 2b: Viewing a running task (reconnected via polling) */}
+          {isViewingRunning && selectedTask && (
+            <div className="flex flex-col items-center p-8">
+              <div className="mb-4">
+                <img src="/research-octopus.png" alt="" className="h-48 mx-auto" />
+              </div>
+
+              <div className="w-full max-w-lg space-y-4">
+                <div className="text-center">
+                  <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                    Round {selectedTask.current_round} of {selectedTask.max_rounds}
+                  </span>
+                  {selectedTask.strategy === 'sweep' &&
+                    selectedTask.progress?.total != null &&
+                    selectedTask.progress?.reviewed != null && (
+                      <div className="mt-2">
+                        <div className="flex items-center justify-between text-[11px] text-gray-400 dark:text-gray-500 mb-1">
+                          <span>Documents reviewed</span>
+                          <span>
+                            {selectedTask.progress.reviewed} of {selectedTask.progress.total}
+                          </span>
+                        </div>
+                        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                          <div
+                            className="bg-amber-500 h-1.5 rounded-full transition-all duration-300"
+                            style={{
+                              width: `${Math.min(100, (selectedTask.progress.reviewed / selectedTask.progress.total) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                </div>
+
+                <div className="flex items-center justify-center gap-2 py-2">
+                  <div className="flex gap-0.5">
+                    <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse" />
+                    <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse [animation-delay:0.2s]" />
+                    <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse [animation-delay:0.4s]" />
+                  </div>
+                  <span className="text-[13px] text-gray-400 dark:text-gray-500">Research in progress...</span>
+                </div>
+              </div>
             </div>
           )}
 
