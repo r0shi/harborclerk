@@ -21,6 +21,7 @@ class Conversation(Base):
         nullable=False,
         server_default="New conversation",
     )
+    mode: Mapped[str] = mapped_column(String(10), nullable=False, server_default="chat")
     created_at: Mapped[created_at]
     updated_at: Mapped[updated_at]
 
