@@ -60,8 +60,30 @@ export default function ChatPage() {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   const { token } = useAuth()
-  const { messages, isStreaming, currentToolCall, sendMessage, stopStreaming, loadMessages, lastTitle } = useChat()
+  const { messages, isStreaming, currentToolCall, sendMessage, stopStreaming, loadMessages, lastTitle, latestTitle } =
+    useChat()
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
+  const [researchActive, setResearchActive] = useState(false)
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const res = await fetch('/api/research/active', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setResearchActive(data.active)
+        }
+      } catch {
+        // Ignore — research endpoint may not exist yet
+      }
+    }
+    check()
+    // Poll every 10s so the blocker clears when research finishes
+    const interval = setInterval(check, 10000)
+    return () => clearInterval(interval)
+  }, [token])
 
   useEffect(() => {
     get<ConversationSummary[]>('/api/chat/conversations')
@@ -75,6 +97,18 @@ export default function ChatPage() {
       })
       .catch(() => {})
   }, [])
+
+  // Update sidebar title immediately when the backend sends a title event
+  useEffect(() => {
+    async function updateTitle() {
+      if (latestTitle && conversationId) {
+        setConversations((prev) =>
+          prev.map((c) => (c.conversation_id === conversationId ? { ...c, title: latestTitle } : c)),
+        )
+      }
+    }
+    updateTitle()
+  }, [latestTitle, conversationId])
 
   useEffect(() => {
     if (!conversationId) {
@@ -249,7 +283,18 @@ export default function ChatPage() {
       </div>
 
       {/* Main chat area */}
-      <div className="flex flex-1 flex-col min-w-0 bg-white dark:bg-gray-900">
+      <div className="relative flex flex-1 flex-col min-w-0 bg-white dark:bg-gray-900">
+        {researchActive && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm rounded-xl">
+            <img src="/research-octopus.png" alt="" className="h-96 mb-4" />
+            <p className="text-[15px] font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Harbor Clerk is working on a research task
+            </p>
+            <a href="/research" className="text-[13px] text-amber-600 dark:text-amber-400 hover:underline">
+              View in Research tab
+            </a>
+          </div>
+        )}
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-gray-100 dark:border-gray-800 px-4 py-2.5 bg-white dark:bg-gray-900">
           <button
@@ -345,9 +390,10 @@ export default function ChatPage() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask about your documents..."
+                  placeholder={researchActive ? 'Research task in progress...' : 'Ask about your documents...'}
+                  disabled={researchActive}
                   rows={1}
-                  className="w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden"
+                  className={`w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden${researchActive ? ' opacity-50 pointer-events-none' : ''}`}
                   style={{ maxHeight: '160px' }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement
@@ -374,7 +420,7 @@ export default function ChatPage() {
                     ) : (
                       <button
                         type="submit"
-                        disabled={!input.trim()}
+                        disabled={!input.trim() || researchActive}
                         className="flex items-center justify-center rounded-lg bg-gray-800 dark:bg-gray-200 p-1.5 text-white dark:text-gray-800 hover:bg-gray-700 dark:hover:bg-gray-300 disabled:opacity-30 disabled:hover:bg-gray-800 dark:disabled:hover:bg-gray-200 transition-all duration-150"
                       >
                         <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -539,13 +585,7 @@ function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNam
               />
             </svg>
           ) : (
-            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"
-              />
-            </svg>
+            <img src="/favicon.svg" alt="" className="h-4 w-4" />
           )}
         </div>
 
@@ -557,7 +597,7 @@ function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNam
               isUser ? 'text-gray-400 dark:text-gray-500 mr-1' : 'text-gray-400 dark:text-gray-500 ml-1'
             }`}
           >
-            {isUser ? 'You' : 'Assistant'}
+            {isUser ? 'You' : 'Harbor Clerk'}
             {modelLabel && <span className="ml-1 font-normal text-gray-300 dark:text-gray-600">({modelLabel})</span>}
             {!isUser && message.context_pct != null && (
               <span

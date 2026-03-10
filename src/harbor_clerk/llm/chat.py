@@ -172,6 +172,14 @@ async def chat_stream(
         session.add(user_msg)
         await session.flush()
 
+        # Auto-title immediately on first message so the sidebar updates before LLM responds
+        conv = await session.get(Conversation, conversation_id)
+        if conv and conv.title == "New conversation":
+            conv.title = _generate_title(user_message)
+            await session.commit()
+            # Emit title event immediately so the frontend can update the sidebar
+            yield f"data: {json.dumps({'type': 'title', 'title': conv.title})}\n\n"
+
         # Load conversation history
         history_result = await session.execute(
             select(ChatMessage).where(ChatMessage.conversation_id == conversation_id).order_by(ChatMessage.created_at)
@@ -382,7 +390,8 @@ async def chat_stream(
             )
             assistant_content = (
                 "I used all available tool calls but wasn't able to formulate a complete response. "
-                "You can try rephrasing your question or asking something more specific."
+                "You can try rephrasing your question or asking something more specific. "
+                "For broader questions that need to cover many documents, try the Research tab."
             )
             yield f"data: {json.dumps({'type': 'token', 'content': assistant_content})}\n\n"
 

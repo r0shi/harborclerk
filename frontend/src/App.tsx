@@ -20,6 +20,7 @@ import PreferencesPage from './pages/PreferencesPage'
 import RetrievalSettingsPage from './pages/RetrievalSettingsPage'
 import StatsPage from './pages/StatsPage'
 import ExplorePage from './pages/ExplorePage'
+import ResearchPage from './pages/ResearchPage'
 import SystemSettingsPage from './pages/SystemSettingsPage'
 
 function ChatRedirect() {
@@ -41,6 +42,8 @@ export default function App() {
           <Route path="/docs/:id" element={<DocumentDetailPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/explore" element={<ExplorePage />} />
+          <Route path="/research" element={<ResearchPage />} />
+          <Route path="/research/:researchId" element={<ResearchPage />} />
           <Route path="/stats" element={<StatsPage />} />
           <Route path="/chat" element={<Navigate to="/" replace />} />
           <Route path="/chat/:conversationId" element={<ChatRedirect />} />

@@ -84,7 +84,9 @@ async def list_conversations(
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
-        select(Conversation).where(Conversation.user_id == principal.id).order_by(Conversation.updated_at.desc())
+        select(Conversation)
+        .where(Conversation.user_id == principal.id, Conversation.mode == "chat")
+        .order_by(Conversation.updated_at.desc())
     )
     return [
         ConversationSummary(
@@ -242,6 +244,16 @@ async def send_message(
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    # Block chat while research is running (single local LLM)
+    from harbor_clerk.models.research_state import ResearchState
+
+    research_result = await session.execute(select(ResearchState).where(ResearchState.status == "running"))
+    if research_result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Research task in progress — chat unavailable until complete",
+        )
 
     settings = get_settings()
     if not settings.llm_model_id:

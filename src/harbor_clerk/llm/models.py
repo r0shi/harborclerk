@@ -125,3 +125,19 @@ def get_model(model_id: str) -> ModelInfo | None:
 
 def list_models() -> list[ModelInfo]:
     return list(MODELS.values())
+
+
+# Default research settings per model tier.
+# Per-model overrides stored in model_settings DB table.
+_LARGE_MODEL_THRESHOLD_BYTES = 4_000_000_000  # ~4GB → 8B+ params
+
+
+def default_research_strategy(model_id: str) -> str:
+    """Return 'search' for large models, 'sweep' for small."""
+    model = MODELS.get(model_id)
+    if model is None:
+        return "search"
+    return "search" if model.size_bytes >= _LARGE_MODEL_THRESHOLD_BYTES else "sweep"
+
+
+DEFAULT_RESEARCH_MAX_ROUNDS = 20

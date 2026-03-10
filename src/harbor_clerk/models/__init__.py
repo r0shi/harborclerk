@@ -11,6 +11,8 @@ from harbor_clerk.models.document_heading import DocumentHeading
 from harbor_clerk.models.document_page import DocumentPage
 from harbor_clerk.models.document_version import DocumentVersion
 from harbor_clerk.models.entity import Entity
+from harbor_clerk.models.model_settings import ModelSettings
+from harbor_clerk.models.research_state import ResearchState
 from harbor_clerk.models.enums import (
     JobStage,
     JobStatus,
@@ -44,4 +46,6 @@ __all__ = [
     "Conversation",
     "ChatMessage",
     "Entity",
+    "ModelSettings",
+    "ResearchState",
 ]

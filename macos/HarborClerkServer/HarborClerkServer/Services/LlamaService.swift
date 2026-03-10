@@ -8,6 +8,9 @@ final class LlamaService: ManagedService {
     /// Called after process exits unexpectedly and state is set to .errored.
     var onUnexpectedExit: (@MainActor () -> Void)?
 
+    /// Expose the child PID for orphan tracking.
+    var processIdentifier: Int32? { process?.isRunning == true ? process?.processIdentifier : nil }
+
     private var llamaBin: URL {
         Bundle.main.resourceURL!.appendingPathComponent("llama/llama-server")
     }
