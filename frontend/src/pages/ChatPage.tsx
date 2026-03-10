@@ -275,7 +275,7 @@ export default function ChatPage() {
       <div className="relative flex flex-1 flex-col min-w-0 bg-white dark:bg-gray-900">
         {researchActive && (
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm rounded-xl">
-            <img src="/research-octopus.png" alt="" className="h-32 w-32 mb-4" />
+            <img src="/research-octopus.png" alt="" className="h-32 mb-4" />
             <p className="text-[15px] font-medium text-gray-700 dark:text-gray-300 mb-2">
               Harbor Clerk is working on a research task
             </p>

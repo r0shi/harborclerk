@@ -281,7 +281,7 @@ export default function ResearchPage() {
             <div className="flex h-full items-center justify-center p-8">
               <div className="text-center max-w-lg">
                 <div className="mx-auto mb-6">
-                  <img src="/research-octopus.png" alt="" className="h-28 w-28 mx-auto" />
+                  <img src="/research-octopus.png" alt="" className="h-28 mx-auto" />
                 </div>
                 <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-2">Deep Research</h3>
                 <p className="text-[13px] text-gray-400 dark:text-gray-500 leading-relaxed mb-6 max-w-sm mx-auto">
@@ -349,7 +349,7 @@ export default function ResearchPage() {
           {isRunning && (
             <div className="flex flex-col items-center p-8">
               <div className="mb-4">
-                <img src="/research-octopus.png" alt="" className="h-16 w-16 mx-auto" />
+                <img src="/research-octopus.png" alt="" className="h-16 mx-auto" />
               </div>
 
               {progress && (
