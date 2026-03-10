@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { del, get } from '../api'
-import { useResearch, type ToolCallEntry } from '../hooks/useResearch'
+import { useResearch, type ToolCallEntry } from '../contexts/ResearchContext'
 
 interface ResearchSummary {
   conversation_id: string
@@ -20,7 +20,6 @@ interface ResearchDetail extends ResearchSummary {
   question: string
   report: string | null
   model_id: string | null
-  progress: Record<string, number> | null
 }
 
 function formatRelativeDate(dateStr: string): string {
@@ -191,24 +190,6 @@ export default function ResearchPage() {
     [handleStartResearch],
   )
 
-  // Poll for updates when viewing a running task we're not streaming
-  const isViewingRunning = !isRunning && selectedTask?.status === 'running'
-  useEffect(() => {
-    if (!isViewingRunning || !researchId) return
-    const interval = setInterval(async () => {
-      try {
-        const detail = await get<ResearchDetail>(`/api/research/${researchId}`)
-        setSelectedTask(detail)
-        if (detail.status !== 'running') {
-          fetchHistory()
-        }
-      } catch {
-        // ignore polling errors
-      }
-    }, 3000)
-    return () => clearInterval(interval)
-  }, [isViewingRunning, researchId, fetchHistory])
-
   // Determine UI state
   const isIdle = !isRunning && !selectedTask && !error
   const isViewingCompleted = !isRunning && selectedTask?.status === 'completed'
@@ -305,9 +286,9 @@ export default function ResearchPage() {
             </svg>
           </button>
           <h2 className="text-[13px] font-semibold text-gray-700 dark:text-gray-300 truncate">
-            {isRunning || isViewingRunning ? 'Research in progress...' : selectedTask ? selectedTask.title : 'Research'}
+            {isRunning ? 'Research in progress...' : selectedTask ? selectedTask.title : 'Research'}
           </h2>
-          {(isRunning || isViewingRunning) && (
+          {isRunning && (
             <div className="ml-auto flex items-center gap-1.5">
               <div className="flex gap-0.5">
                 <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse" />
@@ -483,52 +464,6 @@ export default function ResearchPage() {
                   {error}
                 </div>
               )}
-            </div>
-          )}
-
-          {/* State 2b: Viewing a running task (reconnected via polling) */}
-          {isViewingRunning && selectedTask && (
-            <div className="flex flex-col items-center p-8">
-              <div className="mb-4">
-                <img src="/research-octopus.png" alt="" className="h-48 mx-auto" />
-              </div>
-
-              <div className="w-full max-w-lg space-y-4">
-                <div className="text-center">
-                  <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                    Round {selectedTask.current_round} of {selectedTask.max_rounds}
-                  </span>
-                  {selectedTask.strategy === 'sweep' &&
-                    selectedTask.progress?.total != null &&
-                    selectedTask.progress?.reviewed != null && (
-                      <div className="mt-2">
-                        <div className="flex items-center justify-between text-[11px] text-gray-400 dark:text-gray-500 mb-1">
-                          <span>Documents reviewed</span>
-                          <span>
-                            {selectedTask.progress.reviewed} of {selectedTask.progress.total}
-                          </span>
-                        </div>
-                        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-                          <div
-                            className="bg-amber-500 h-1.5 rounded-full transition-all duration-300"
-                            style={{
-                              width: `${Math.min(100, (selectedTask.progress.reviewed / selectedTask.progress.total) * 100)}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )}
-                </div>
-
-                <div className="flex items-center justify-center gap-2 py-2">
-                  <div className="flex gap-0.5">
-                    <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse" />
-                    <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse [animation-delay:0.2s]" />
-                    <span className="h-1 w-1 rounded-full bg-amber-500 animate-pulse [animation-delay:0.4s]" />
-                  </div>
-                  <span className="text-[13px] text-gray-400 dark:text-gray-500">Research in progress...</span>
-                </div>
-              </div>
             </div>
           )}
 

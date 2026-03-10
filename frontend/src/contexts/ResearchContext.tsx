@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
 import { useAuth } from '../auth'
 
 export interface ToolCallEntry {
@@ -16,7 +16,22 @@ export interface ResearchProgress {
   toolCalls: ToolCallEntry[]
 }
 
-export function useResearch() {
+interface ResearchState {
+  isRunning: boolean
+  isSynthesizing: boolean
+  progress: ResearchProgress | null
+  report: string
+  error: string | null
+  conversationId: string | null
+  startResearch: (question: string, strategy?: string) => Promise<void>
+  resumeResearch: (convId: string) => Promise<void>
+  cancelResearch: () => void
+  reset: () => void
+}
+
+const ResearchContext = createContext<ResearchState | null>(null)
+
+export function ResearchProvider({ children }: { children: ReactNode }) {
   const { token } = useAuth()
   const [isRunning, setIsRunning] = useState(false)
   const [isSynthesizing, setIsSynthesizing] = useState(false)
@@ -75,7 +90,6 @@ export function useResearch() {
             case 'tool_result':
               setProgress((prev) => {
                 if (!prev) return prev
-                // Find the last tool call with this name that has no summary
                 const toolCalls = [...prev.toolCalls]
                 for (let i = toolCalls.length - 1; i >= 0; i--) {
                   if (toolCalls[i].name === event.name && !toolCalls[i].summary) {
@@ -142,7 +156,6 @@ export function useResearch() {
           signal: controller.signal,
         })
 
-        // Extract conversation ID from header immediately (before streaming)
         const researchId = res.headers.get('X-Research-Id')
         if (researchId) {
           setConversationId(researchId)
@@ -209,16 +222,28 @@ export function useResearch() {
     setConversationId(null)
   }, [])
 
-  return {
-    isRunning,
-    isSynthesizing,
-    progress,
-    report,
-    error,
-    conversationId,
-    startResearch,
-    resumeResearch,
-    cancelResearch,
-    reset,
-  }
+  return (
+    <ResearchContext.Provider
+      value={{
+        isRunning,
+        isSynthesizing,
+        progress,
+        report,
+        error,
+        conversationId,
+        startResearch,
+        resumeResearch,
+        cancelResearch,
+        reset,
+      }}
+    >
+      {children}
+    </ResearchContext.Provider>
+  )
+}
+
+export function useResearch(): ResearchState {
+  const ctx = useContext(ResearchContext)
+  if (!ctx) throw new Error('useResearch must be used within ResearchProvider')
+  return ctx
 }
