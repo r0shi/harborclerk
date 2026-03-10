@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { RagContextChunk } from '../hooks/useChat'
+import type { RagContextChunk } from '../contexts/ChatContext'
 
 function formatPages(start: number | null, end: number | null): string | null {
   if (start == null) return null

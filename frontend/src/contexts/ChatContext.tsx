@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
 import { useAuth } from '../auth'
 
 export interface RagContextChunk {
@@ -29,8 +29,25 @@ export interface ToolCallInfo {
   result?: string
 }
 
-export function useChat() {
+interface ChatState {
+  /** The conversation ID that the current messages/stream belong to. */
+  activeConversationId: string | null
+  messages: ChatMessage[]
+  isStreaming: boolean
+  currentToolCall: ToolCallInfo | null
+  latestTitle: string | null
+  sendMessage: (conversationId: string, content: string) => Promise<void>
+  stopStreaming: () => void
+  loadMessages: (conversationId: string, msgs: ChatMessage[]) => void
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
+  lastTitle: React.RefObject<string | null>
+}
+
+const ChatContext = createContext<ChatState | null>(null)
+
+export function ChatProvider({ children }: { children: ReactNode }) {
   const { token } = useAuth()
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [currentToolCall, setCurrentToolCall] = useState<ToolCallInfo | null>(null)
@@ -38,16 +55,18 @@ export function useChat() {
   const lastTitleRef = useRef<string | null>(null)
   const [latestTitle, setLatestTitle] = useState<string | null>(null)
 
-  const loadMessages = useCallback((msgs: ChatMessage[]) => {
-    // Filter out tool messages for display — they're shown inline as tool cards
+  const loadMessages = useCallback((conversationId: string, msgs: ChatMessage[]) => {
+    setActiveConversationId(conversationId)
     setMessages(msgs.filter((m) => m.role !== 'tool'))
+    lastTitleRef.current = null
+    setLatestTitle(null)
   }, [])
 
   const sendMessage = useCallback(
     async (conversationId: string, content: string) => {
       if (!token || isStreaming) return
 
-      // Add user message immediately
+      setActiveConversationId(conversationId)
       lastTitleRef.current = null
       setLatestTitle(null)
       const userMsg: ChatMessage = { role: 'user', content }
@@ -58,7 +77,6 @@ export function useChat() {
       const controller = new AbortController()
       abortRef.current = controller
 
-      // Start with an empty assistant message for streaming
       const assistantMsg: ChatMessage = {
         role: 'assistant',
         content: '',
@@ -107,10 +125,7 @@ export function useChat() {
                     const updated = [...prev]
                     const last = updated[updated.length - 1]
                     if (last && last.role === 'assistant') {
-                      updated[updated.length - 1] = {
-                        ...last,
-                        rag_context: event.chunks,
-                      }
+                      updated[updated.length - 1] = { ...last, rag_context: event.chunks }
                     }
                     return updated
                   })
@@ -121,20 +136,14 @@ export function useChat() {
                     const updated = [...prev]
                     const last = updated[updated.length - 1]
                     if (last && last.role === 'assistant') {
-                      updated[updated.length - 1] = {
-                        ...last,
-                        content: last.content + event.content,
-                      }
+                      updated[updated.length - 1] = { ...last, content: last.content + event.content }
                     }
                     return updated
                   })
                   break
 
                 case 'tool_call':
-                  setCurrentToolCall({
-                    name: event.name,
-                    arguments: event.arguments,
-                  })
+                  setCurrentToolCall({ name: event.name, arguments: event.arguments })
                   break
 
                 case 'tool_result':
@@ -146,11 +155,7 @@ export function useChat() {
                         ...last,
                         tool_calls: [
                           ...(last.tool_calls || []),
-                          {
-                            name: event.name,
-                            arguments: {},
-                            result: event.summary,
-                          },
+                          { name: event.name, arguments: {}, result: event.summary },
                         ],
                       }
                     }
@@ -234,15 +239,28 @@ export function useChat() {
     abortRef.current?.abort()
   }, [])
 
-  return {
-    messages,
-    isStreaming,
-    currentToolCall,
-    sendMessage,
-    stopStreaming,
-    loadMessages,
-    setMessages,
-    lastTitle: lastTitleRef,
-    latestTitle,
-  }
+  return (
+    <ChatContext.Provider
+      value={{
+        activeConversationId,
+        messages,
+        isStreaming,
+        currentToolCall,
+        latestTitle,
+        sendMessage,
+        stopStreaming,
+        loadMessages,
+        setMessages,
+        lastTitle: lastTitleRef,
+      }}
+    >
+      {children}
+    </ChatContext.Provider>
+  )
+}
+
+export function useChat(): ChatState {
+  const ctx = useContext(ChatContext)
+  if (!ctx) throw new Error('useChat must be used within ChatProvider')
+  return ctx
 }

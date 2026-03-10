@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { del, get, post } from '../api'
 import { useAuth } from '../auth'
-import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../hooks/useChat'
+import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../contexts/ChatContext'
 import RagContextCard from '../components/RagContextCard'
 
 interface ConversationSummary {
@@ -60,8 +60,17 @@ export default function ChatPage() {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   const { token } = useAuth()
-  const { messages, isStreaming, currentToolCall, sendMessage, stopStreaming, loadMessages, lastTitle, latestTitle } =
-    useChat()
+  const {
+    activeConversationId: chatCtxConvId,
+    messages,
+    isStreaming,
+    currentToolCall,
+    sendMessage,
+    stopStreaming,
+    loadMessages,
+    lastTitle,
+    latestTitle,
+  } = useChat()
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
   const [researchActive, setResearchActive] = useState(false)
 
@@ -112,12 +121,16 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!conversationId) {
-      loadMessages([])
+      loadMessages('', [])
       return
     }
+    // If the context already has messages for this conversation (e.g. navigated away and back
+    // during streaming), skip reloading — the context preserved the live state.
+    if (chatCtxConvId === conversationId && messages.length > 0) return
     get<ConversationDetail>(`/api/chat/conversations/${conversationId}`)
       .then((conv) => {
         loadMessages(
+          conversationId,
           conv.messages
             .filter((m) => m.role !== 'tool')
             .filter((m) => m.role !== 'assistant' || m.content || (m.tool_calls && m.tool_calls.length > 0))
@@ -135,7 +148,7 @@ export default function ChatPage() {
       .catch(() => {
         navigate('/')
       })
-  }, [conversationId, loadMessages, navigate])
+  }, [conversationId, chatCtxConvId, messages.length, loadMessages, navigate])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -181,7 +194,7 @@ export default function ChatPage() {
   )
 
   const handleNewChat = useCallback(() => {
-    loadMessages([])
+    loadMessages('', [])
     navigate('/')
     inputRef.current?.focus()
   }, [loadMessages, navigate])
@@ -191,7 +204,7 @@ export default function ChatPage() {
       await del(`/api/chat/conversations/${convId}`)
       setConversations((prev) => prev.filter((c) => c.conversation_id !== convId))
       if (conversationId === convId) {
-        loadMessages([])
+        loadMessages('', [])
         navigate('/')
       }
     },
