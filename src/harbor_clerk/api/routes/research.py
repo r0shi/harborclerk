@@ -6,6 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_user
@@ -231,7 +232,11 @@ async def start_research(
         max_rounds=max_rounds,
     )
     session.add(state)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A research task is already running")
 
     return StreamingResponse(
         research_stream(conv.conversation_id, user_id=principal.id),
@@ -307,6 +312,10 @@ async def delete_research(
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id or conv.mode != "research":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research task not found")
+
+    state = await session.get(ResearchState, conv_id)
+    if state and state.status == "running":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cannot delete a running research task")
 
     await session.delete(conv)
     await session.commit()

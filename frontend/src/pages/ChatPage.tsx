@@ -64,7 +64,6 @@ export default function ChatPage() {
     useChat()
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
   const [researchActive, setResearchActive] = useState(false)
-  const [_researchId, setResearchId] = useState<string | null>(null)
 
   useEffect(() => {
     const check = async () => {
@@ -75,7 +74,6 @@ export default function ChatPage() {
         if (res.ok) {
           const data = await res.json()
           setResearchActive(data.active)
-          setResearchId(data.research_id || null)
         }
       } catch {
         // Ignore — research endpoint may not exist yet

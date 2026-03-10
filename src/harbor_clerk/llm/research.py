@@ -435,7 +435,7 @@ async def research_stream(
                     if strategy == "sweep" and total_docs > 0:
                         reviewed = min(sweep_batch_idx * _SWEEP_BATCH_SIZE, total_docs)
                         progress_event["reviewed"] = reviewed
-                        progress_event["total_docs"] = total_docs
+                        progress_event["total"] = total_docs
                     else:
                         progress_event["tools_called"] = tools_called_total
                     yield f"data: {json.dumps(progress_event)}\n\n"

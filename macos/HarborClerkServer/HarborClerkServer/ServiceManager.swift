@@ -129,23 +129,25 @@ final class ServiceManager: ObservableObject {
     }
 
     /// Kill any orphaned child processes from a prior run that didn't shut down cleanly.
-    private func killOrphanedProcesses() {
+    private func killOrphanedProcesses() async {
         guard let content = try? String(contentsOf: Self.pidFileURL, encoding: .utf8) else { return }
         let pids = content.components(separatedBy: "\n")
             .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
         guard !pids.isEmpty else { return }
 
+        var signalled: [Int32] = []
         for pid in pids {
             // Check if process is still alive
             guard kill(pid, 0) == 0 else { continue }
             Log.logger("lifecycle").warning("Killing orphaned process \(pid, privacy: .public) from prior run")
             kill(pid, SIGTERM)
+            signalled.append(pid)
         }
 
         // Give SIGTERM a moment, then SIGKILL any survivors
-        if !pids.isEmpty {
-            usleep(2_000_000) // 2s
-            for pid in pids {
+        if !signalled.isEmpty {
+            try? await Task.sleep(for: .seconds(2))
+            for pid in signalled {
                 if kill(pid, 0) == 0 {
                     Log.logger("lifecycle").warning("Orphaned process \(pid, privacy: .public) didn't exit, sending SIGKILL")
                     kill(pid, SIGKILL)
@@ -200,7 +202,7 @@ final class ServiceManager: ObservableObject {
         defer { startAllInProgress = false }
 
         // Kill any orphaned processes from a prior unclean shutdown
-        killOrphanedProcesses()
+        await killOrphanedProcesses()
 
         let settings = AppSettings.shared
 
