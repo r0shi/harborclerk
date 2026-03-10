@@ -62,6 +62,26 @@ export default function ChatPage() {
   const { token } = useAuth()
   const { messages, isStreaming, currentToolCall, sendMessage, stopStreaming, loadMessages, lastTitle } = useChat()
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
+  const [researchActive, setResearchActive] = useState(false)
+  const [_researchId, setResearchId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const res = await fetch('/api/research/active', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setResearchActive(data.active)
+          setResearchId(data.research_id || null)
+        }
+      } catch {
+        // Ignore — research endpoint may not exist yet
+      }
+    }
+    check()
+  }, [token])
 
   useEffect(() => {
     get<ConversationSummary[]>('/api/chat/conversations')
@@ -249,7 +269,18 @@ export default function ChatPage() {
       </div>
 
       {/* Main chat area */}
-      <div className="flex flex-1 flex-col min-w-0 bg-white dark:bg-gray-900">
+      <div className="relative flex flex-1 flex-col min-w-0 bg-white dark:bg-gray-900">
+        {researchActive && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm rounded-xl">
+            <img src="/favicon.svg" alt="" className="h-32 w-32 mb-4 opacity-80" />
+            <p className="text-[15px] font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Harbor Clerk is working on a research task
+            </p>
+            <a href="/research" className="text-[13px] text-amber-600 dark:text-amber-400 hover:underline">
+              View in Research tab
+            </a>
+          </div>
+        )}
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-gray-100 dark:border-gray-800 px-4 py-2.5 bg-white dark:bg-gray-900">
           <button
@@ -345,9 +376,10 @@ export default function ChatPage() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Ask about your documents..."
+                  placeholder={researchActive ? 'Research task in progress...' : 'Ask about your documents...'}
+                  disabled={researchActive}
                   rows={1}
-                  className="w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden"
+                  className={`w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden${researchActive ? ' opacity-50 pointer-events-none' : ''}`}
                   style={{ maxHeight: '160px' }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement
@@ -374,7 +406,7 @@ export default function ChatPage() {
                     ) : (
                       <button
                         type="submit"
-                        disabled={!input.trim()}
+                        disabled={!input.trim() || researchActive}
                         className="flex items-center justify-center rounded-lg bg-gray-800 dark:bg-gray-200 p-1.5 text-white dark:text-gray-800 hover:bg-gray-700 dark:hover:bg-gray-300 disabled:opacity-30 disabled:hover:bg-gray-800 dark:disabled:hover:bg-gray-200 transition-all duration-150"
                       >
                         <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
