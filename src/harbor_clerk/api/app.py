@@ -15,6 +15,7 @@ from harbor_clerk.api.routes.auth import router as auth_router
 from harbor_clerk.api.routes.chat import router as chat_router
 from harbor_clerk.api.routes.documents import router as documents_router
 from harbor_clerk.api.routes.jobs import router as jobs_router
+from harbor_clerk.api.routes.research import router as research_router
 from harbor_clerk.api.routes.search import router as search_router
 from harbor_clerk.api.routes.setup import router as setup_router
 from harbor_clerk.api.routes.stats import router as stats_router
@@ -160,6 +161,7 @@ def create_app() -> FastAPI:
     app.include_router(search_router, prefix="/api")
     app.include_router(stats_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
+    app.include_router(research_router, prefix="/api")
 
     # Mount MCP Streamable HTTP endpoints
     app.mount("/mcp", _mcp_asgi)  # Header-based auth (Authorization: Bearer <key>)
