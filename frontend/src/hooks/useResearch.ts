@@ -202,6 +202,13 @@ export function useResearch() {
     abortRef.current?.abort()
   }, [])
 
+  const reset = useCallback(() => {
+    setError(null)
+    setReport('')
+    setProgress(null)
+    setConversationId(null)
+  }, [])
+
   return {
     isRunning,
     isSynthesizing,
@@ -212,5 +219,6 @@ export function useResearch() {
     startResearch,
     resumeResearch,
     cancelResearch,
+    reset,
   }
 }

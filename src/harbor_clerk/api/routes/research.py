@@ -313,10 +313,6 @@ async def delete_research(
     if conv is None or conv.user_id != principal.id or conv.mode != "research":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research task not found")
 
-    state = await session.get(ResearchState, conv_id)
-    if state and state.status == "running":
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cannot delete a running research task")
-
     await session.delete(conv)
     await session.commit()
     return {"ok": True}
