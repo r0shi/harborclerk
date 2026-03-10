@@ -70,6 +70,7 @@ export default function Layout() {
                 <img src="/favicon.svg" alt="" className="h-6 w-6" />
                 <span>Ask</span>
               </NavLink>
+              <TabLink to="/research">Research</TabLink>
               <TabLink to="/upload">Upload</TabLink>
               <TabLink to="/docs">Documents</TabLink>
               <TabLink to="/explore">Explore</TabLink>
