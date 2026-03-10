@@ -382,7 +382,8 @@ async def chat_stream(
             )
             assistant_content = (
                 "I used all available tool calls but wasn't able to formulate a complete response. "
-                "You can try rephrasing your question or asking something more specific."
+                "You can try rephrasing your question or asking something more specific. "
+                "For broader questions that need to cover many documents, try the Research tab."
             )
             yield f"data: {json.dumps({'type': 'token', 'content': assistant_content})}\n\n"
 
