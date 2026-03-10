@@ -111,6 +111,18 @@ export default function ResearchPage() {
     loadTask()
   }, [researchId, navigate])
 
+  // Update the eager sidebar entry once we get the real conversation ID
+  useEffect(() => {
+    async function updateEagerEntry() {
+      if (conversationId && isRunning) {
+        setHistory((prev) =>
+          prev.map((t) => (t.conversation_id === '' ? { ...t, conversation_id: conversationId } : t)),
+        )
+      }
+    }
+    updateEagerEntry()
+  }, [conversationId, isRunning])
+
   // When research completes, refresh history and navigate to result
   useEffect(() => {
     if (!isRunning && conversationId && report) {
@@ -135,6 +147,20 @@ export default function ResearchPage() {
     const q = question.trim()
     if (!q) return
     setSelectedTask(null)
+    setQuestion('')
+    // Add to sidebar immediately with eager title
+    const eagerTitle = q.length > 80 ? q.slice(0, 77) + '...' : q
+    const eagerEntry: ResearchSummary = {
+      conversation_id: '', // will be set when conversationId updates
+      title: eagerTitle,
+      status: 'running',
+      strategy,
+      current_round: 0,
+      max_rounds: 0,
+      created_at: new Date().toISOString(),
+      completed_at: null,
+    }
+    setHistory((prev) => [eagerEntry, ...prev])
     await startResearch(q, strategy)
   }, [question, strategy, startResearch])
 
@@ -211,14 +237,19 @@ export default function ResearchPage() {
           )}
           {history.map((task) => {
             const isActive = task.conversation_id === researchId
+            const isEager = task.conversation_id === ''
             return (
               <div
-                key={task.conversation_id}
-                onClick={() => navigate(`/research/${task.conversation_id}`)}
-                className={`group relative flex items-start rounded-lg px-3 py-2.5 mb-0.5 cursor-pointer transition-all duration-150 ${
-                  isActive
-                    ? 'bg-white dark:bg-gray-800 shadow-xs ring-1 ring-gray-200/80 dark:ring-gray-700/60'
-                    : 'hover:bg-white/60 dark:hover:bg-gray-800/40'
+                key={task.conversation_id || 'eager'}
+                onClick={() => {
+                  if (!isEager) navigate(`/research/${task.conversation_id}`)
+                }}
+                className={`group relative flex items-start rounded-lg px-3 py-2.5 mb-0.5 transition-all duration-150 ${
+                  isEager
+                    ? 'bg-amber-50/50 dark:bg-amber-900/10 ring-1 ring-amber-200/40 dark:ring-amber-700/30'
+                    : isActive
+                      ? 'bg-white dark:bg-gray-800 shadow-xs ring-1 ring-gray-200/80 dark:ring-gray-700/60 cursor-pointer'
+                      : 'hover:bg-white/60 dark:hover:bg-gray-800/40 cursor-pointer'
                 }`}
               >
                 <div className="flex-1 min-w-0">
@@ -226,7 +257,7 @@ export default function ResearchPage() {
                     <span className={`shrink-0 h-1.5 w-1.5 rounded-full ${statusColor(task.status)}`} />
                     <div
                       className={`text-[13px] font-medium truncate ${
-                        isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'
+                        isActive || isEager ? 'text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'
                       }`}
                     >
                       {task.title}
@@ -236,6 +267,24 @@ export default function ResearchPage() {
                     {formatRelativeDate(task.completed_at || task.created_at)}
                   </div>
                 </div>
+                {!isEager && !isRunning && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleDiscard(task.conversation_id)
+                    }}
+                    className={`shrink-0 ml-1 mt-0.5 rounded p-0.5 transition-colors duration-150 ${
+                      discardConfirm === task.conversation_id
+                        ? 'text-red-500 bg-red-50 dark:bg-red-900/20'
+                        : 'text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 dark:hover:text-red-400'
+                    }`}
+                    title={discardConfirm === task.conversation_id ? 'Click again to confirm' : 'Delete'}
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
               </div>
             )
           })}
@@ -281,7 +330,7 @@ export default function ResearchPage() {
             <div className="flex h-full items-center justify-center p-8">
               <div className="text-center max-w-lg">
                 <div className="mx-auto mb-6">
-                  <img src="/research-octopus.png" alt="" className="h-28 mx-auto" />
+                  <img src="/research-octopus.png" alt="" className="h-80 mx-auto" />
                 </div>
                 <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-2">Deep Research</h3>
                 <p className="text-[13px] text-gray-400 dark:text-gray-500 leading-relaxed mb-6 max-w-sm mx-auto">
@@ -349,7 +398,7 @@ export default function ResearchPage() {
           {isRunning && (
             <div className="flex flex-col items-center p-8">
               <div className="mb-4">
-                <img src="/research-octopus.png" alt="" className="h-16 mx-auto" />
+                <img src="/research-octopus.png" alt="" className="h-48 mx-auto" />
               </div>
 
               {progress && (

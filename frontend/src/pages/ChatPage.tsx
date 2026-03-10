@@ -60,7 +60,8 @@ export default function ChatPage() {
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   const { token } = useAuth()
-  const { messages, isStreaming, currentToolCall, sendMessage, stopStreaming, loadMessages, lastTitle } = useChat()
+  const { messages, isStreaming, currentToolCall, sendMessage, stopStreaming, loadMessages, lastTitle, latestTitle } =
+    useChat()
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
   const [researchActive, setResearchActive] = useState(false)
   const [_researchId, setResearchId] = useState<string | null>(null)
@@ -98,6 +99,18 @@ export default function ChatPage() {
       })
       .catch(() => {})
   }, [])
+
+  // Update sidebar title immediately when the backend sends a title event
+  useEffect(() => {
+    async function updateTitle() {
+      if (latestTitle && conversationId) {
+        setConversations((prev) =>
+          prev.map((c) => (c.conversation_id === conversationId ? { ...c, title: latestTitle } : c)),
+        )
+      }
+    }
+    updateTitle()
+  }, [latestTitle, conversationId])
 
   useEffect(() => {
     if (!conversationId) {
@@ -275,7 +288,7 @@ export default function ChatPage() {
       <div className="relative flex flex-1 flex-col min-w-0 bg-white dark:bg-gray-900">
         {researchActive && (
           <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm rounded-xl">
-            <img src="/research-octopus.png" alt="" className="h-32 mb-4" />
+            <img src="/research-octopus.png" alt="" className="h-96 mb-4" />
             <p className="text-[15px] font-medium text-gray-700 dark:text-gray-300 mb-2">
               Harbor Clerk is working on a research task
             </p>

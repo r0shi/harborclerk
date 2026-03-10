@@ -206,8 +206,11 @@ async def start_research(
     max_rounds_val = await get_model_setting(session, settings.llm_model_id, "research_max_rounds")
     max_rounds = int(max_rounds_val) if max_rounds_val is not None else DEFAULT_RESEARCH_MAX_ROUNDS
 
-    # Create conversation
-    conv = Conversation(user_id=principal.id, title="New conversation", mode="research")
+    # Create conversation — title from question immediately
+    eager_title = body.question.strip()
+    if len(eager_title) > 80:
+        eager_title = eager_title[:77] + "..."
+    conv = Conversation(user_id=principal.id, title=eager_title, mode="research")
     session.add(conv)
     await session.flush()
 

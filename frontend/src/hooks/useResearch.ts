@@ -142,6 +142,12 @@ export function useResearch() {
           signal: controller.signal,
         })
 
+        // Extract conversation ID from header immediately (before streaming)
+        const researchId = res.headers.get('X-Research-Id')
+        if (researchId) {
+          setConversationId(researchId)
+        }
+
         await processStream(res)
       } catch (e) {
         if (e instanceof DOMException && e.name === 'AbortError') return

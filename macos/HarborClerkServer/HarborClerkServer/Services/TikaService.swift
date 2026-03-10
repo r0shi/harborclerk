@@ -8,6 +8,9 @@ final class TikaService: ManagedService {
     /// Called after process exits unexpectedly and state is set to .errored.
     var onUnexpectedExit: (@MainActor () -> Void)?
 
+    /// Expose the child PID for orphan tracking.
+    var processIdentifier: Int32? { process?.isRunning == true ? process?.processIdentifier : nil }
+
     private var javaBin: URL {
         Bundle.main.resourceURL!.appendingPathComponent("java/Contents/Home/bin/java")
     }

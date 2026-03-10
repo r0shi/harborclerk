@@ -172,6 +172,14 @@ async def chat_stream(
         session.add(user_msg)
         await session.flush()
 
+        # Auto-title immediately on first message so the sidebar updates before LLM responds
+        conv = await session.get(Conversation, conversation_id)
+        if conv and conv.title == "New conversation":
+            conv.title = _generate_title(user_message)
+            await session.commit()
+            # Emit title event immediately so the frontend can update the sidebar
+            yield f"data: {json.dumps({'type': 'title', 'title': conv.title})}\n\n"
+
         # Load conversation history
         history_result = await session.execute(
             select(ChatMessage).where(ChatMessage.conversation_id == conversation_id).order_by(ChatMessage.created_at)

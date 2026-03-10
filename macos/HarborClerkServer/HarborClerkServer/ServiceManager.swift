@@ -102,6 +102,60 @@ final class ServiceManager: ObservableObject {
         }
     }
 
+    // MARK: - Orphan PID cleanup
+
+    /// Path to the file tracking child PIDs across launches.
+    private static let pidFileURL: URL = AppSettings.dataDir.appendingPathComponent("child-pids.txt")
+
+    /// Record all current child PIDs to disk so orphans can be cleaned up on next launch.
+    private func savePidFile() {
+        var pids: [String] = []
+        for service in services {
+            if let pySvc = service as? PythonService, let proc = pySvc.process, proc.isRunning {
+                pids.append(String(proc.processIdentifier))
+            } else if let tika = service as? TikaService, let pid = tika.processIdentifier {
+                pids.append(String(pid))
+            } else if let llama = service as? LlamaService, let pid = llama.processIdentifier {
+                pids.append(String(pid))
+            }
+        }
+        let content = pids.joined(separator: "\n")
+        try? content.write(to: Self.pidFileURL, atomically: true, encoding: .utf8)
+    }
+
+    /// Remove the PID file (called after orderly shutdown).
+    private func removePidFile() {
+        try? FileManager.default.removeItem(at: Self.pidFileURL)
+    }
+
+    /// Kill any orphaned child processes from a prior run that didn't shut down cleanly.
+    private func killOrphanedProcesses() {
+        guard let content = try? String(contentsOf: Self.pidFileURL, encoding: .utf8) else { return }
+        let pids = content.components(separatedBy: "\n")
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+        guard !pids.isEmpty else { return }
+
+        for pid in pids {
+            // Check if process is still alive
+            guard kill(pid, 0) == 0 else { continue }
+            Log.logger("lifecycle").warning("Killing orphaned process \(pid, privacy: .public) from prior run")
+            kill(pid, SIGTERM)
+        }
+
+        // Give SIGTERM a moment, then SIGKILL any survivors
+        if !pids.isEmpty {
+            usleep(2_000_000) // 2s
+            for pid in pids {
+                if kill(pid, 0) == 0 {
+                    Log.logger("lifecycle").warning("Orphaned process \(pid, privacy: .public) didn't exit, sending SIGKILL")
+                    kill(pid, SIGKILL)
+                }
+            }
+        }
+
+        removePidFile()
+    }
+
     // MARK: - Lifecycle
 
     /// Kill any process listening on the given port (leftover from a prior run).
@@ -144,6 +198,9 @@ final class ServiceManager: ObservableObject {
         guard !startAllInProgress else { return }
         startAllInProgress = true
         defer { startAllInProgress = false }
+
+        // Kill any orphaned processes from a prior unclean shutdown
+        killOrphanedProcesses()
 
         let settings = AppSettings.shared
 
@@ -193,6 +250,9 @@ final class ServiceManager: ObservableObject {
         // 8. Watch config.json for model changes from the web UI
         startConfigWatcher()
 
+        // 9. Persist child PIDs for orphan cleanup on next launch
+        savePidFile()
+
         notifyStateChanged()
     }
 
@@ -236,10 +296,14 @@ final class ServiceManager: ObservableObject {
             await service.stop()
             notifyStateChanged()
         }
+
+        // All children stopped — remove PID file
+        removePidFile()
     }
 
     func stopService(_ service: any ManagedService) async {
         await service.stop()
+        savePidFile()
         notifyStateChanged()
     }
 
@@ -340,6 +404,7 @@ final class ServiceManager: ObservableObject {
                     if let pySvc = service as? PythonService {
                         pySvc.resetRestartCount()
                     }
+                    savePidFile()
                     notifyStateChanged()
                     return
                 }

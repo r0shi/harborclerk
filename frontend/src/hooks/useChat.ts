@@ -36,6 +36,7 @@ export function useChat() {
   const [currentToolCall, setCurrentToolCall] = useState<ToolCallInfo | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const lastTitleRef = useRef<string | null>(null)
+  const [latestTitle, setLatestTitle] = useState<string | null>(null)
 
   const loadMessages = useCallback((msgs: ChatMessage[]) => {
     // Filter out tool messages for display — they're shown inline as tool cards
@@ -48,6 +49,7 @@ export function useChat() {
 
       // Add user message immediately
       lastTitleRef.current = null
+      setLatestTitle(null)
       const userMsg: ChatMessage = { role: 'user', content }
       setMessages((prev) => [...prev, userMsg])
       setIsStreaming(true)
@@ -157,9 +159,17 @@ export function useChat() {
                   setCurrentToolCall(null)
                   break
 
+                case 'title':
+                  if (event.title) {
+                    lastTitleRef.current = event.title
+                    setLatestTitle(event.title)
+                  }
+                  break
+
                 case 'done':
                   if (event.title) {
                     lastTitleRef.current = event.title
+                    setLatestTitle(event.title)
                   }
                   setMessages((prev) => {
                     const updated = [...prev]
@@ -233,5 +243,6 @@ export function useChat() {
     loadMessages,
     setMessages,
     lastTitle: lastTitleRef,
+    latestTitle,
   }
 }

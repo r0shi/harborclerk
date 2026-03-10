@@ -678,13 +678,6 @@ async def research_stream(
                 else:
                     state.progress = {"tools_called": tools_called_total}
 
-                # Auto-title if still default
-                if conv and conv.title == "New conversation":
-                    title = user_question.strip()
-                    if len(title) > 80:
-                        title = title[:77] + "..."
-                    conv.title = title
-
                 await session.commit()
 
                 done_payload: dict = {
