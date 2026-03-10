@@ -56,12 +56,20 @@ export default function Layout() {
         <div className="mx-auto max-w-7xl px-4">
           <div className="flex h-12 items-center justify-between">
             <div className="flex items-center space-x-1">
-              <Link to="/" className="mr-3 flex items-center text-[15px] font-semibold text-(--color-text-primary)">
-                <img src="/favicon.svg" alt="" className="h-5 w-5" />
-              </Link>
-              <TabLink to="/" end>
-                Harbor Clerk
-              </TabLink>
+              <NavLink
+                to="/"
+                end
+                className={({ isActive }) =>
+                  `relative mr-2 flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[13px] font-semibold transition-colors ${
+                    isActive
+                      ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 ring-1 ring-amber-200/60 dark:ring-amber-700/40'
+                      : 'text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6'
+                  }`
+                }
+              >
+                <img src="/favicon.svg" alt="" className="h-6 w-6" />
+                <span>Ask</span>
+              </NavLink>
               <TabLink to="/upload">Upload</TabLink>
               <TabLink to="/docs">Documents</TabLink>
               <TabLink to="/explore">Explore</TabLink>
