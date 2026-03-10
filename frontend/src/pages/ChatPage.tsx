@@ -81,6 +81,9 @@ export default function ChatPage() {
       }
     }
     check()
+    // Poll every 10s so the blocker clears when research finishes
+    const interval = setInterval(check, 10000)
+    return () => clearInterval(interval)
   }, [token])
 
   useEffect(() => {

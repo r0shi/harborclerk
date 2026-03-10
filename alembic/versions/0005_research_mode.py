@@ -45,6 +45,9 @@ def upgrade() -> None:
         sa.Column("error", sa.Text, nullable=True),
     )
 
+    # Enforce at most one running research task at a time
+    op.execute("CREATE UNIQUE INDEX ix_research_state_one_running ON research_state (status) WHERE status = 'running'")
+
     op.create_table(
         "model_settings",
         sa.Column("model_id", sa.String(50), primary_key=True),
@@ -59,5 +62,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("model_settings")
+    op.execute("DROP INDEX IF EXISTS ix_research_state_one_running")
     op.drop_table("research_state")
     op.drop_column("conversations", "mode")

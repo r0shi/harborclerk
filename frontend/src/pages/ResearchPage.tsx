@@ -10,16 +10,16 @@ interface ResearchSummary {
   title: string
   status: string
   strategy: string
+  current_round: number
+  max_rounds: number
   created_at: string
-  updated_at: string
+  completed_at: string | null
 }
 
 interface ResearchDetail extends ResearchSummary {
   question: string
   report: string | null
   model_id: string | null
-  rounds_used: number | null
-  elapsed_seconds: number | null
 }
 
 function formatRelativeDate(dateStr: string): string {
@@ -233,7 +233,7 @@ export default function ResearchPage() {
                     </div>
                   </div>
                   <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5 ml-3">
-                    {formatRelativeDate(task.updated_at)}
+                    {formatRelativeDate(task.completed_at || task.created_at)}
                   </div>
                 </div>
               </div>
@@ -464,9 +464,19 @@ export default function ResearchPage() {
               <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500">
                 {selectedTask.model_id && <span>Model: {selectedTask.model_id}</span>}
                 <span className="capitalize">Strategy: {selectedTask.strategy}</span>
-                {selectedTask.rounds_used != null && <span>Rounds: {selectedTask.rounds_used}</span>}
-                {selectedTask.elapsed_seconds != null && (
-                  <span>Time: {formatElapsed(selectedTask.elapsed_seconds)}</span>
+                <span>
+                  Rounds: {selectedTask.current_round} / {selectedTask.max_rounds}
+                </span>
+                {selectedTask.completed_at && selectedTask.created_at && (
+                  <span>
+                    Time:{' '}
+                    {formatElapsed(
+                      Math.round(
+                        (new Date(selectedTask.completed_at).getTime() - new Date(selectedTask.created_at).getTime()) /
+                          1000,
+                      ),
+                    )}
+                  </span>
                 )}
               </div>
             </div>

@@ -397,7 +397,12 @@ async def research_stream(
             for i in range(0, len(all_docs), _SWEEP_BATCH_SIZE):
                 doc_batches.append(all_docs[i : i + _SWEEP_BATCH_SIZE])
 
-        sweep_batch_idx = current_round if resume else 0
+        # Restore sweep batch index from progress on resume, or start at 0
+        sweep_batch_idx = 0
+        if resume and state.progress and "sweep_batch_idx" in state.progress:
+            sweep_batch_idx = state.progress["sweep_batch_idx"]
+        elif resume and strategy == "sweep":
+            sweep_batch_idx = current_round  # fallback: assume 1:1 round/batch
         tools_called_total = 0
 
         # ---------------------------------------------------------------
@@ -609,6 +614,7 @@ async def research_stream(
                         state.progress = {
                             "reviewed": min(sweep_batch_idx * _SWEEP_BATCH_SIZE, total_docs),
                             "total": total_docs,
+                            "sweep_batch_idx": sweep_batch_idx,
                         }
                     else:
                         state.progress = {"tools_called": tools_called_total}
@@ -699,3 +705,16 @@ async def research_stream(
             except Exception:
                 logger.exception("Failed to save error state")
             yield f"data: {json.dumps({'type': 'error', 'message': 'An unexpected error occurred during research.'})}\n\n"
+
+        finally:
+            # If still running when generator exits (client disconnect, cancel),
+            # mark as interrupted so it doesn't block future research/chat.
+            try:
+                await session.refresh(state)
+                if state.status == "running":
+                    logger.info("Research stream disconnected, marking interrupted (conversation=%s)", conversation_id)
+                    state.status = "interrupted"
+                    state.current_round = current_round
+                    await session.commit()
+            except Exception:
+                logger.exception("Failed to mark research as interrupted on disconnect")
