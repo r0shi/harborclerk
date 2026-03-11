@@ -121,12 +121,14 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!conversationId) {
-      loadMessages('', [])
+      // Only clear if context isn't actively streaming (avoid wiping mid-stream state
+      // during the brief moment before navigate replaces the URL)
+      if (!isStreaming) loadMessages('', [])
       return
     }
     // If the context already has messages for this conversation (e.g. navigated away and back
-    // during streaming), skip reloading — the context preserved the live state.
-    if (chatCtxConvId === conversationId && messages.length > 0) return
+    // during streaming, or just created this conversation), skip reloading.
+    if (chatCtxConvId === conversationId) return
     get<ConversationDetail>(`/api/chat/conversations/${conversationId}`)
       .then((conv) => {
         loadMessages(
@@ -148,7 +150,8 @@ export default function ChatPage() {
       .catch(() => {
         navigate('/')
       })
-  }, [conversationId, chatCtxConvId, messages.length, loadMessages, navigate])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -175,8 +178,8 @@ export default function ChatPage() {
         })
         activeConvId = conv.conversation_id
         setConversations((prev) => [conv, ...prev])
-        // Update URL immediately without React Router remount (preserves streaming state)
-        window.history.replaceState(null, '', `/c/${activeConvId}`)
+        // Navigate to the new conversation — context preserves streaming state across remount
+        navigate(`/c/${activeConvId}`, { replace: true })
       }
 
       await sendMessage(activeConvId, text).finally(() => {
