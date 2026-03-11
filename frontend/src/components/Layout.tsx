@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth'
 import BackButton from './BackButton'
 import { QueueTray } from './queue-tray'
@@ -10,17 +10,14 @@ function TabLink({ to, end, children }: { to: string; end?: boolean; children: R
       to={to}
       end={end}
       className={({ isActive }) =>
-        `relative px-3 py-1.5 text-[13px] font-medium transition-colors ${
-          isActive ? 'text-(--color-text-primary)' : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'
+        `relative rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors ${
+          isActive
+            ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 ring-1 ring-blue-200/60 dark:ring-blue-700/40'
+            : 'text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6 hover:text-(--color-text-primary)'
         }`
       }
     >
-      {({ isActive }) => (
-        <>
-          {children}
-          {isActive && <span className="absolute inset-x-0 -bottom-[7px] h-[2px] bg-(--color-accent) rounded-full" />}
-        </>
-      )}
+      {children}
     </NavLink>
   )
 }
