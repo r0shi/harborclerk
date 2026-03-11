@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { get, put } from '../api'
 
 interface RetrievalSettings {
-  max_tool_rounds: number
   max_history_messages: number
   mcp_max_k: number
   mcp_brief_chars: number
@@ -18,14 +17,6 @@ interface FieldDef {
 }
 
 const CHAT_FIELDS: FieldDef[] = [
-  {
-    key: 'max_tool_rounds',
-    label: 'Max tool rounds',
-    description: 'Maximum tool-calling iterations per chat turn',
-    min: 1,
-    max: 10,
-    step: 1,
-  },
   {
     key: 'max_history_messages',
     label: 'Conversation history depth',

@@ -416,7 +416,6 @@ async def get_retrieval_settings(
     """Return current retrieval-related settings."""
     s = get_settings()
     return RetrievalSettingsResponse(
-        max_tool_rounds=s.max_tool_rounds,
         max_history_messages=s.max_history_messages,
         mcp_max_k=s.mcp_max_k,
         mcp_brief_chars=s.mcp_brief_chars,
@@ -436,7 +435,6 @@ async def update_retrieval_settings(
         sync_native_config(key, str(value))
 
     return RetrievalSettingsResponse(
-        max_tool_rounds=s.max_tool_rounds,
         max_history_messages=s.max_history_messages,
         mcp_max_k=s.mcp_max_k,
         mcp_brief_chars=s.mcp_brief_chars,

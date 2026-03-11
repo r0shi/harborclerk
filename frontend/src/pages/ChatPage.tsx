@@ -74,6 +74,12 @@ export default function ChatPage() {
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
   const [researchActive, setResearchActive] = useState(false)
 
+  // Derive latest context_pct from most recent assistant message
+  const latestContextPct = [...messages]
+    .reverse()
+    .find((m) => m.role === 'assistant' && m.context_pct != null)?.context_pct
+  const contextFull = (latestContextPct ?? 0) >= 95
+
   useEffect(() => {
     const check = async () => {
       try {
@@ -161,7 +167,7 @@ export default function ChatPage() {
     async (e: FormEvent) => {
       e.preventDefault()
       const text = inputRef.current?.value.trim() ?? ''
-      if (!text || isStreaming) return
+      if (!text || isStreaming || contextFull) return
       setInput('')
 
       // Reset textarea height
@@ -193,7 +199,7 @@ export default function ChatPage() {
           .catch(() => {})
       })
     },
-    [isStreaming, conversationId, sendMessage, lastTitle],
+    [isStreaming, conversationId, sendMessage, lastTitle, contextFull],
   )
 
   const handleNewChat = useCallback(() => {
@@ -406,10 +412,16 @@ export default function ChatPage() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={researchActive ? 'Research task in progress...' : 'Ask about your documents...'}
-                  disabled={researchActive}
+                  placeholder={
+                    contextFull
+                      ? 'Context is nearly full — start a new conversation'
+                      : researchActive
+                        ? 'Research task in progress...'
+                        : 'Ask about your documents...'
+                  }
+                  disabled={researchActive || contextFull}
                   rows={1}
-                  className={`w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden${researchActive ? ' opacity-50 pointer-events-none' : ''}`}
+                  className={`w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden${researchActive || contextFull ? ' opacity-50 pointer-events-none' : ''}`}
                   style={{ maxHeight: '160px' }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement
@@ -436,7 +448,7 @@ export default function ChatPage() {
                     ) : (
                       <button
                         type="submit"
-                        disabled={!input.trim() || researchActive}
+                        disabled={!input.trim() || researchActive || contextFull}
                         className="flex items-center justify-center rounded-lg bg-gray-800 dark:bg-gray-200 p-1.5 text-white dark:text-gray-800 hover:bg-gray-700 dark:hover:bg-gray-300 disabled:opacity-30 disabled:hover:bg-gray-800 dark:disabled:hover:bg-gray-200 transition-all duration-150"
                       >
                         <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -617,12 +629,12 @@ function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNam
             {modelLabel && <span className="ml-1 font-normal text-gray-300 dark:text-gray-600">({modelLabel})</span>}
             {!isUser && message.context_pct != null && (
               <span
-                className={`ml-1.5 font-normal ${
-                  message.context_pct >= 90
-                    ? 'text-red-400 dark:text-red-500'
-                    : message.context_pct >= 70
-                      ? 'text-amber-400 dark:text-amber-500'
-                      : 'text-gray-300 dark:text-gray-600'
+                className={`ml-1.5 text-[12px] font-medium ${
+                  message.context_pct >= 85
+                    ? 'text-red-500 dark:text-red-400'
+                    : message.context_pct >= 65
+                      ? 'text-amber-500 dark:text-amber-400'
+                      : 'text-gray-400 dark:text-gray-500'
                 }`}
                 title={`${message.context_pct}% of model context window used`}
               >

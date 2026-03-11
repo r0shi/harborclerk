@@ -13,7 +13,7 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.models import get_model
-from harbor_clerk.llm.tools import CHAT_TOOLS, execute_tool
+from harbor_clerk.llm.tools import RESEARCH_TOOLS, execute_tool
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 from harbor_clerk.models.document import Document
@@ -455,7 +455,7 @@ async def research_stream(
                             client,
                             llm_url,
                             messages,
-                            tools=CHAT_TOOLS,
+                            tools=RESEARCH_TOOLS,
                             timeout=_ITERATION_TIMEOUT,
                         )
                     except httpx.HTTPStatusError as exc:
@@ -508,7 +508,7 @@ async def research_stream(
 
                             yield f"data: {json.dumps({'type': 'tool_call', 'name': fn_name, 'arguments': fn_args})}\n\n"
 
-                            result_str = await execute_tool(fn_name, fn_args, user_id)
+                            result_str = await execute_tool(fn_name, fn_args, user_id, mode="research")
                             tools_called_total += 1
 
                             summary = _summarize_tool_result(fn_name, result_str)
