@@ -404,9 +404,11 @@ _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
 _RESEARCH_DESCRIPTION_OVERRIDES: dict[str, str] = {
     "search_documents": (
         "Search the knowledge base for passages matching a query. Uses hybrid "
-        "keyword + semantic search. Returns ranked results with document titles, "
-        "page numbers, scores, and section headings. Use many varied queries to "
-        "cover different angles of the topic thoroughly."
+        "keyword + semantic search. Returns brief previews of matching passages "
+        "with document titles, page numbers, scores, and section headings. "
+        "Use many varied queries to cover different angles of the topic. "
+        "After finding promising results, use read_passages with the chunk_ids "
+        "to get full text for your notes."
     ),
     "list_documents": (
         "Browse documents ordered by most recently updated. Returns title, summary, "
@@ -441,12 +443,15 @@ RESEARCH_TOOLS = _build_research_tools()
 
 
 def _map_args_search_research(args: dict) -> dict:
-    """Search arg mapper for research — allows k up to 50."""
+    """Search arg mapper for research — allows k up to 50, uses brief detail.
+
+    Research scans broad (brief text) and drills deep via read_passages.
+    """
     return {
         "query": args["query"],
         "k": min(args.get("k", 10), 50),
         "doc_id": args.get("doc_id"),
-        "detail": "full",
+        "detail": "brief",
     }
 
 

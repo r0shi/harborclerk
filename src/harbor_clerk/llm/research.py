@@ -346,7 +346,7 @@ async def research_stream(
         context_tokens = model.yarn.extended_context
     else:
         context_tokens = model.context_window if model else 32768
-    tool_result_max_chars = min(int(context_tokens * 0.25 * _CHARS_PER_TOKEN), 80_000)
+    tool_result_max_chars = min(int(context_tokens * 0.15 * _CHARS_PER_TOKEN), 24_000)
 
     async with async_session_factory() as session:
         # Load research state
