@@ -5,6 +5,7 @@ export interface ToolCallEntry {
   name: string
   arguments: Record<string, unknown>
   summary?: string
+  round?: number
 }
 
 export interface ResearchProgress {
@@ -23,6 +24,7 @@ interface ResearchState {
   report: string
   error: string | null
   conversationId: string | null
+  completedToolCalls: ToolCallEntry[]
   startResearch: (question: string, strategy?: string) => Promise<void>
   resumeResearch: (convId: string) => Promise<void>
   cancelResearch: () => void
@@ -39,6 +41,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   const [report, setReport] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [completedToolCalls, setCompletedToolCalls] = useState<ToolCallEntry[]>([])
   const abortRef = useRef<AbortController | null>(null)
 
   const processStream = useCallback(async (res: Response) => {
@@ -82,7 +85,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
                 if (!prev) return prev
                 return {
                   ...prev,
-                  toolCalls: [...prev.toolCalls, { name: event.name, arguments: event.arguments }],
+                  toolCalls: [...prev.toolCalls, { name: event.name, arguments: event.arguments, round: prev.round }],
                 }
               })
               break
@@ -111,6 +114,11 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
 
             case 'done':
               setConversationId(event.conversation_id || null)
+              // Snapshot tool calls before clearing running state
+              setProgress((prev) => {
+                if (prev?.toolCalls.length) setCompletedToolCalls(prev.toolCalls)
+                return prev
+              })
               setIsRunning(false)
               setIsSynthesizing(false)
               break
@@ -130,17 +138,13 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
 
   const startResearch = useCallback(
     async (question: string, strategy?: string) => {
-      if (!token || isRunning) return
+      if (!token) return
 
-      setIsRunning(true)
-      setIsSynthesizing(false)
-      setProgress(null)
-      setReport('')
+      // Clear error from previous attempts (e.g. 409) but don't touch
+      // running state — the old SSE stream may still be alive.
       setError(null)
-      setConversationId(null)
 
       const controller = new AbortController()
-      abortRef.current = controller
 
       try {
         const body: Record<string, unknown> = { question }
@@ -155,6 +159,21 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify(body),
           signal: controller.signal,
         })
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }))
+          throw new Error(err.detail || `Research request failed (${res.status})`)
+        }
+
+        // Server accepted — now safe to reset state for the new task
+        abortRef.current?.abort() // cancel previous stream if any
+        abortRef.current = controller
+        setIsRunning(true)
+        setIsSynthesizing(false)
+        setProgress(null)
+        setReport('')
+        setCompletedToolCalls([])
+        setConversationId(null)
 
         const researchId = res.headers.get('X-Research-Id')
         if (researchId) {
@@ -171,7 +190,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         abortRef.current = null
       }
     },
-    [token, isRunning, processStream],
+    [token, processStream],
   )
 
   const resumeResearch = useCallback(
@@ -220,6 +239,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     setReport('')
     setProgress(null)
     setConversationId(null)
+    setCompletedToolCalls([])
   }, [])
 
   return (
@@ -231,6 +251,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         report,
         error,
         conversationId,
+        completedToolCalls,
         startResearch,
         resumeResearch,
         cancelResearch,

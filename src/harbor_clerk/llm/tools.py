@@ -16,6 +16,7 @@ small local LLMs (4-8B params). Not all MCP tools are exposed here:
   co-occurrence, and richer search parameters.
 """
 
+import copy
 import json
 import logging
 import uuid
@@ -395,12 +396,76 @@ _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
 }
 
 
-async def execute_tool(name: str, arguments: dict, user_id: uuid.UUID | None = None) -> str:
-    """Execute a chat tool by delegating to the corresponding MCP function."""
+# ---------------------------------------------------------------------------
+# Research tools — same schema, different descriptions and higher limits
+# ---------------------------------------------------------------------------
+
+# Description overrides: tool_name → new description
+_RESEARCH_DESCRIPTION_OVERRIDES: dict[str, str] = {
+    "search_documents": (
+        "Search the knowledge base for passages matching a query. Uses hybrid "
+        "keyword + semantic search. Returns ranked results with document titles, "
+        "page numbers, scores, and section headings. Use many varied queries to "
+        "cover different angles of the topic thoroughly."
+    ),
+    "list_documents": (
+        "Browse documents ordered by most recently updated. Returns title, summary, "
+        "status, version count, and update timestamp. Useful for surveying the "
+        "corpus or finding documents by browsing."
+    ),
+    "read_document": (
+        "Read a document's text by page range. Use after checking document_outline "
+        "to target specific sections. Returns page-level text with OCR metadata."
+    ),
+}
+
+# k limit override for research search
+_RESEARCH_SEARCH_K_DESCRIPTION = "Number of results (default 10, max 50)"
+
+
+def _build_research_tools() -> list[dict]:
+    """Build RESEARCH_TOOLS from CHAT_TOOLS with description/limit overrides."""
+    tools = copy.deepcopy(CHAT_TOOLS)
+    for tool in tools:
+        fn = tool["function"]
+        name = fn["name"]
+        if name in _RESEARCH_DESCRIPTION_OVERRIDES:
+            fn["description"] = _RESEARCH_DESCRIPTION_OVERRIDES[name]
+        # Raise k limit description for search
+        if name == "search_documents":
+            fn["parameters"]["properties"]["k"]["description"] = _RESEARCH_SEARCH_K_DESCRIPTION
+    return tools
+
+
+RESEARCH_TOOLS = _build_research_tools()
+
+
+def _map_args_search_research(args: dict) -> dict:
+    """Search arg mapper for research — allows k up to 50."""
+    return {
+        "query": args["query"],
+        "k": min(args.get("k", 10), 50),
+        "doc_id": args.get("doc_id"),
+        "detail": "full",
+    }
+
+
+_RESEARCH_TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
+    **_TOOL_DISPATCH,
+    "search_documents": ("kb_search", _map_args_search_research),
+}
+
+
+async def execute_tool(name: str, arguments: dict, user_id: uuid.UUID | None = None, *, mode: str = "chat") -> str:
+    """Execute a tool by delegating to the corresponding MCP function.
+
+    mode: "chat" (conservative limits) or "research" (permissive limits).
+    """
     from harbor_clerk.api.deps import Principal
     from harbor_clerk.mcp_server import _mcp_principal
 
-    entry = _TOOL_DISPATCH.get(name)
+    dispatch = _RESEARCH_TOOL_DISPATCH if mode == "research" else _TOOL_DISPATCH
+    entry = dispatch.get(name)
     if entry is None:
         return json.dumps({"error": f"Unknown tool: {name}"})
 

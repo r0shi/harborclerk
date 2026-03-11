@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -16,10 +16,44 @@ interface ResearchSummary {
   completed_at: string | null
 }
 
+interface ResearchMessage {
+  role: string
+  content?: string
+  tool_calls?: Array<{
+    name: string
+    arguments: Record<string, unknown>
+    result?: string
+  }>
+}
+
 interface ResearchDetail extends ResearchSummary {
   question: string
   report: string | null
   model_id: string | null
+  messages?: ResearchMessage[]
+}
+
+/**
+ * Extract tool call entries from persisted research messages.
+ * Each assistant message with tool_calls starts a new round.
+ */
+function extractToolCalls(messages: ResearchMessage[]): ToolCallEntry[] {
+  const entries: ToolCallEntry[] = []
+  let round = 0
+  for (const msg of messages) {
+    if (msg.role === 'assistant' && msg.tool_calls?.length) {
+      round++
+      for (const tc of msg.tool_calls) {
+        entries.push({
+          name: tc.name,
+          arguments: tc.arguments,
+          summary: tc.result || undefined,
+          round,
+        })
+      }
+    }
+  }
+  return entries
 }
 
 function formatRelativeDate(dateStr: string): string {
@@ -78,11 +112,17 @@ export default function ResearchPage() {
     report,
     error,
     conversationId,
+    completedToolCalls,
     startResearch,
     resumeResearch,
     cancelResearch,
     reset,
   } = useResearch()
+
+  // When user clicks "New Research" while a task is running, we show the idle
+  // form instead of the running view.  This gets cleared when they actually
+  // start a new task or navigate to a specific task.
+  const [showNewForm, setShowNewForm] = useState(false)
 
   // Fetch history on mount
   const fetchHistory = useCallback(() => {
@@ -102,6 +142,7 @@ export default function ResearchPage() {
         setSelectedTask(null)
         return
       }
+      setShowNewForm(false)
       try {
         const detail = await get<ResearchDetail>(`/api/research/${researchId}`)
         setSelectedTask(detail)
@@ -144,6 +185,7 @@ export default function ResearchPage() {
     if (!q) return
     setSelectedTask(null)
     setQuestion('')
+    setShowNewForm(false)
     await startResearch(q, strategy)
   }, [question, strategy, startResearch])
 
@@ -176,9 +218,10 @@ export default function ResearchPage() {
   const handleNewResearch = useCallback(() => {
     setSelectedTask(null)
     setQuestion('')
-    reset()
+    if (!isRunning) reset()
+    setShowNewForm(true)
     navigate('/research')
-  }, [navigate, reset])
+  }, [navigate, reset, isRunning])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -190,10 +233,11 @@ export default function ResearchPage() {
     [handleStartResearch],
   )
 
-  // Determine UI state
-  const isIdle = !isRunning && !selectedTask && !error
-  const isViewingCompleted = !isRunning && selectedTask?.status === 'completed'
-  const isViewingInterrupted = !isRunning && selectedTask?.status === 'interrupted'
+  // Determine UI state — showNewForm overrides running view to show input form
+  const isIdle = (!isRunning && !selectedTask && !error) || (showNewForm && !error)
+  const showRunning = isRunning && !showNewForm
+  const isViewingCompleted = !isRunning && !showNewForm && selectedTask?.status === 'completed'
+  const isViewingInterrupted = !isRunning && !showNewForm && selectedTask?.status === 'interrupted'
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] -mx-4 -my-6 overflow-hidden">
@@ -286,7 +330,7 @@ export default function ResearchPage() {
             </svg>
           </button>
           <h2 className="text-[13px] font-semibold text-gray-700 dark:text-gray-300 truncate">
-            {isRunning ? 'Research in progress...' : selectedTask ? selectedTask.title : 'Research'}
+            {showRunning ? 'Research in progress...' : selectedTask ? selectedTask.title : 'Research'}
           </h2>
           {isRunning && (
             <div className="ml-auto flex items-center gap-1.5">
@@ -372,7 +416,7 @@ export default function ResearchPage() {
           )}
 
           {/* State 2: Running */}
-          {isRunning && (
+          {showRunning && (
             <div className="flex flex-col items-center p-8">
               <div className="mb-4">
                 <img src="/research-octopus.png" alt="" className="h-48 mx-auto" />
@@ -430,9 +474,16 @@ export default function ResearchPage() {
                         ref={toolLogRef}
                         className="max-h-64 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700/30"
                       >
-                        {progress.toolCalls.map((tc, i) => (
-                          <ToolLogEntry key={i} tool={tc} isLast={i === progress.toolCalls.length - 1} />
-                        ))}
+                        {progress.toolCalls.map((tc, i) => {
+                          const showRound =
+                            tc.round != null && (i === 0 || progress.toolCalls[i - 1].round !== tc.round)
+                          return (
+                            <Fragment key={i}>
+                              {showRound && <RoundLabel round={tc.round!} />}
+                              <ToolLogEntry tool={tc} isLast={i === progress.toolCalls.length - 1} />
+                            </Fragment>
+                          )
+                        })}
                       </div>
                     </div>
                   )}
@@ -505,6 +556,17 @@ export default function ResearchPage() {
                   </span>
                 )}
               </div>
+
+              {/* Tool activity log — prefer live session data, fall back to persisted messages */}
+              {(() => {
+                const toolCalls =
+                  completedToolCalls.length > 0
+                    ? completedToolCalls
+                    : selectedTask.messages
+                      ? extractToolCalls(selectedTask.messages)
+                      : []
+                return toolCalls.length > 0 ? <CompletedToolLog toolCalls={toolCalls} /> : null
+              })()}
             </div>
           )}
 
@@ -632,5 +694,40 @@ function ToolLogEntry({ tool, isLast }: { tool: ToolCallEntry; isLast: boolean }
         )}
       </div>
     </div>
+  )
+}
+
+/* ---- Round separator label ---- */
+
+function RoundLabel({ round }: { round: number }) {
+  return (
+    <div className="px-3 py-1.5 bg-gray-100/80 dark:bg-gray-700/30">
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+        Round {round}
+      </span>
+    </div>
+  )
+}
+
+/* ---- Completed tool log (disclosure triangle) ---- */
+
+function CompletedToolLog({ toolCalls }: { toolCalls: ToolCallEntry[] }) {
+  return (
+    <details className="mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/30 overflow-hidden">
+      <summary className="px-4 py-2.5 text-[12px] font-medium text-gray-400 dark:text-gray-500 cursor-pointer hover:text-gray-600 dark:hover:text-gray-400 transition-colors select-none">
+        Activity log ({toolCalls.length} tool calls)
+      </summary>
+      <div className="max-h-80 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700/30 border-t border-gray-100 dark:border-gray-700/50">
+        {toolCalls.map((tc, i) => {
+          const showRound = tc.round != null && (i === 0 || toolCalls[i - 1].round !== tc.round)
+          return (
+            <Fragment key={i}>
+              {showRound && <RoundLabel round={tc.round!} />}
+              <ToolLogEntry tool={tc} isLast={false} />
+            </Fragment>
+          )
+        })}
+      </div>
+    </details>
   )
 }

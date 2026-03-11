@@ -77,8 +77,7 @@ class Settings(BaseSettings):
     mcp_brief_chars: int = Field(default=200)
     mcp_max_k: int = Field(default=350)
 
-    # Chat tool-calling
-    max_tool_rounds: int = Field(default=5)
+    # Chat history
     max_history_messages: int = Field(default=40)
 
     # Summaries

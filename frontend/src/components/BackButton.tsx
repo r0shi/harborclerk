@@ -16,6 +16,7 @@ const TOP_LEVEL = new Set([
 function isTopLevel(pathname: string): boolean {
   if (TOP_LEVEL.has(pathname)) return true
   if (pathname.startsWith('/c/')) return true
+  if (pathname.startsWith('/research')) return true
   return false
 }
 

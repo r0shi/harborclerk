@@ -24,6 +24,13 @@ _CHARS_PER_TOKEN = 3.5
 # Reserve this fraction of context window for the model's response.
 _RESPONSE_RESERVE = 0.20
 
+# Stop the tool loop when context usage exceeds this fraction, leaving room
+# for the model to generate a text response.
+_TOOL_LOOP_BUDGET = 0.75
+
+# Hard safety cap on tool rounds (prevents infinite loops even if budget check fails).
+_MAX_TOOL_ROUNDS = 25
+
 # Approximate token overhead for the tool schema (CHAT_TOOLS JSON).
 # Computed once at module load to avoid re-serializing every call.
 _TOOL_SCHEMA_TOKENS: int | None = None
@@ -52,6 +59,14 @@ def _get_tool_schema_tokens() -> int:
     if _TOOL_SCHEMA_TOKENS is None:
         _TOOL_SCHEMA_TOKENS = _estimate_tokens(json.dumps(CHAT_TOOLS))
     return _TOOL_SCHEMA_TOKENS
+
+
+def _context_usage(messages: list[dict], context_window: int) -> float:
+    """Return fraction of context window used by current messages + tool schema."""
+    if context_window <= 0:
+        return 0.0
+    tokens = _estimate_messages_tokens(messages) + _get_tool_schema_tokens()
+    return tokens / context_window
 
 
 def _trim_to_budget(messages: list[dict], context_window: int) -> list[dict]:
@@ -207,32 +222,63 @@ async def chat_stream(
         # Trim history to fit within context budget
         messages = _trim_to_budget(messages, context_tokens)
 
-        # Tool-calling loop
+        # Tool-calling loop — runs until the model produces a text response,
+        # context budget is exhausted, or we hit the hard safety cap.
         assistant_content = ""
         total_tokens = 0
+        budget_exhausted = False
 
-        for _round in range(settings.max_tool_rounds):
+        for _round in range(_MAX_TOOL_ROUNDS):
+            # Check context budget before each LLM call
+            usage_frac = _context_usage(messages, context_tokens)
+            if usage_frac >= _TOOL_LOOP_BUDGET and _round > 0:
+                budget_exhausted = True
+                logger.info(
+                    "Context budget %.0f%% >= %.0f%% after %d tool rounds, forcing text response (conversation=%s)",
+                    usage_frac * 100,
+                    _TOOL_LOOP_BUDGET * 100,
+                    _round,
+                    conversation_id,
+                )
+                break
+
             tool_calls_accumulated: list[dict] = []
             text_buffer = ""
 
+            # If budget is getting tight, omit tool definitions so the model
+            # generates a text response instead of requesting more tool calls.
+            send_tools = CHAT_TOOLS if usage_frac < _TOOL_LOOP_BUDGET else None
+
             try:
+                payload: dict = {
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": 0.3,
+                }
+                if send_tools:
+                    payload["tools"] = send_tools
+
                 async with (
                     httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client,
                     client.stream(
                         "POST",
                         f"{settings.llama_server_url}/v1/chat/completions",
-                        json={
-                            "messages": messages,
-                            "tools": CHAT_TOOLS,
-                            "stream": True,
-                            "temperature": 0.3,
-                        },
+                        json=payload,
                     ) as response,
                 ):
                     if response.status_code >= 400:
                         await response.aread()
                         detail = response.text[:2000]
-                        error_summary = f"LLM error ({response.status_code})"
+
+                        # Detect context overflow from llama-server
+                        is_context_overflow = response.status_code == 400 and any(
+                            hint in detail.lower()
+                            for hint in ("context length", "too long", "context window", "max_tokens", "n_ctx")
+                        )
+                        if is_context_overflow:
+                            error_summary = "Context window full — please start a new conversation"
+                        else:
+                            error_summary = f"LLM error ({response.status_code})"
                         error_content = f"Error: {error_summary}"
                         if detail:
                             error_content += f"\n\n{detail}"
@@ -242,6 +288,7 @@ async def chat_stream(
                                 role="assistant",
                                 content=error_content,
                                 model_id=active_model_id,
+                                context_pct=100 if is_context_overflow else None,
                             )
                         )
                         conv = await session.get(Conversation, conversation_id)
@@ -252,7 +299,10 @@ async def chat_stream(
                         if detail:
                             error_event["detail"] = detail
                         yield f"data: {json.dumps(error_event)}\n\n"
-                        done_payload: dict = {"type": "done"}
+                        done_payload: dict = {
+                            "type": "done",
+                            "context_pct": 100 if is_context_overflow else None,
+                        }
                         if conv and conv.title != "New conversation":
                             done_payload["title"] = conv.title
                         if active_model_id:
@@ -384,16 +434,43 @@ async def chat_stream(
             assistant_content = text_buffer
             break
 
-        # If the loop exhausted max_tool_rounds without a text response,
-        # synthesize a fallback so the user sees what happened.
-        if not assistant_content and _round == settings.max_tool_rounds - 1:
-            logger.warning(
-                "Chat loop exhausted %d tool rounds without text response (conversation=%s)",
-                settings.max_tool_rounds,
-                conversation_id,
-            )
+        # If the loop ended without a text response (budget exhausted or
+        # hard cap hit), make one final LLM call without tools to force
+        # a text response from whatever context we have.
+        if not assistant_content and (budget_exhausted or _round == _MAX_TOOL_ROUNDS - 1):
+            reason = "context budget" if budget_exhausted else f"{_MAX_TOOL_ROUNDS} tool rounds"
+            logger.info("Forcing final text response after %s (conversation=%s)", reason, conversation_id)
+            try:
+                async with (
+                    httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client,
+                    client.stream(
+                        "POST",
+                        f"{settings.llama_server_url}/v1/chat/completions",
+                        json={"messages": messages, "stream": True, "temperature": 0.3},
+                    ) as response,
+                ):
+                    if response.status_code < 400:
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data = line[6:]
+                            if data.strip() == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            if delta.get("content"):
+                                assistant_content += delta["content"]
+                                yield f"data: {json.dumps({'type': 'token', 'content': delta['content']})}\n\n"
+            except (httpx.ConnectError, httpx.ReadTimeout):
+                pass  # Fall through to the fallback message below
+
+        # If we still have no text, emit a fallback message
+        if not assistant_content:
             assistant_content = (
-                "I used all available tool calls but wasn't able to formulate a complete response. "
+                "I used the available context to search but wasn't able to formulate a complete response. "
                 "You can try rephrasing your question or asking something more specific. "
                 "For broader questions that need to cover many documents, try the Research tab."
             )
