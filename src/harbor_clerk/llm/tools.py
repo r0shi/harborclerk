@@ -112,7 +112,7 @@ CHAT_TOOLS = [
         "type": "function",
         "function": {
             "name": "list_documents",
-            "description": "List documents ordered by most recently updated. Returns title, summary, status, version count, and update timestamp. Use to browse the corpus or see what changed recently.",
+            "description": "Browse documents ordered by most recently updated. Returns title, summary, status, version count, and update timestamp. Shows a paginated subset — check total_count and truncated in the response to know if more documents exist. NOT for finding documents by topic — use search_documents instead.",
             "parameters": {
                 "type": "object",
                 "properties": {

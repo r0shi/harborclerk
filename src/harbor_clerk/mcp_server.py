@@ -790,6 +790,11 @@ async def kb_list_recent(limit: int = 20) -> str:
     _get_principal()
 
     async with async_session_factory() as session:
+        total_result = await session.execute(
+            select(func.count()).select_from(Document).where(Document.status == "active")
+        )
+        total_count = total_result.scalar() or 0
+
         result = await session.execute(
             select(Document)
             .options(selectinload(Document.versions))
@@ -821,7 +826,10 @@ async def kb_list_recent(limit: int = 20) -> str:
             }
         )
 
-    return json.dumps({"documents": items}, indent=2)
+    return json.dumps(
+        {"total_count": total_count, "truncated": total_count > len(items), "documents": items},
+        indent=2,
+    )
 
 
 @mcp.tool()
