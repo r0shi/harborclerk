@@ -306,17 +306,6 @@ export default function ChatPage() {
 
       {/* Main chat area */}
       <div className="relative flex flex-1 flex-col min-w-0 bg-white dark:bg-gray-900">
-        {researchActive && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-white/80 dark:bg-gray-900/80 backdrop-blur-sm rounded-xl">
-            <img src="/research-octopus.png" alt="" className="h-96 mb-4" />
-            <p className="text-[15px] font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Harbor Clerk is working on a research task
-            </p>
-            <a href="/research" className="text-[13px] text-amber-600 dark:text-amber-400 hover:underline">
-              View in Research tab
-            </a>
-          </div>
-        )}
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-gray-100 dark:border-gray-800 px-4 py-2.5 bg-white dark:bg-gray-900">
           <button
@@ -403,6 +392,16 @@ export default function ChatPage() {
         </div>
 
         {/* Input area */}
+        {researchActive && (
+          <div className="flex items-center gap-2 border-t border-amber-200 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-900/20 px-4 py-2">
+            <span className="text-[13px] text-amber-700 dark:text-amber-300">
+              Research task in progress —{' '}
+              <a href="/research" className="underline hover:no-underline">
+                view in Research tab
+              </a>
+            </span>
+          </div>
+        )}
         <div className="border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
           <div className="mx-auto px-6 py-3" style={{ maxWidth: 'min(100%, 72rem)' }}>
             <form onSubmit={handleSubmit} className="relative">
