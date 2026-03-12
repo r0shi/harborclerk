@@ -36,8 +36,7 @@ _ITERATION_SYSTEM_SEARCH = (
     "## Notes rules\n"
     "- Maintain your accumulated findings in a <notes> section at the end of "
     "every response\n"
-    "- Every finding MUST include its source: document title, page number, and "
-    "chunk ID in parentheses\n"
+    "- Every finding MUST include its source in brackets: [Document Title, page X]\n"
     "- Keep notes concise — summarize findings, don't copy full passages\n"
     "- When condensing notes, you may rephrase findings but NEVER remove citations\n"
     "- Citations are the most important part of your notes — the final report "
@@ -62,8 +61,7 @@ _ITERATION_SYSTEM_SWEEP = (
     "## Notes rules\n"
     "- Maintain your accumulated findings in a <notes> section at the end of "
     "every response\n"
-    "- Every finding MUST include its source: document title, page number, and "
-    "chunk ID in parentheses\n"
+    "- Every finding MUST include its source in brackets: [Document Title, page X]\n"
     "- Keep notes concise — summarize findings, don't copy full passages\n"
     "- When condensing notes, you may rephrase findings but NEVER remove citations\n"
     "- Citations are the most important part of your notes — the final report "
@@ -88,7 +86,7 @@ _SYNTHESIS_SYSTEM = (
     "You are writing a research report for Harbor Clerk. Based on the research "
     "notes below, write a clear, well-organized report answering the user's question.\n\n"
     "## Guidelines\n"
-    "- Every claim must cite a source from the notes (document title, page number)\n"
+    "- Every claim must cite a source using this format: [Document Title, page X]\n"
     "- If a finding has no citation, omit it\n"
     "- Group findings by theme, not by document\n"
     "- Be thorough but concise — include all relevant findings, skip filler\n"
@@ -559,7 +557,7 @@ async def research_stream(
                                     "Here are the results from your tool calls:\n\n"
                                     f"{tool_results_text}"
                                     "Review these results and update your <notes> with any new findings. "
-                                    "Include citations (document title, page number, chunk ID) for every finding."
+                                    "Include citations as [Document Title, page X] for every finding."
                                 ),
                             }
                         )
