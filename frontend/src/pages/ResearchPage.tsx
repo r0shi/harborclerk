@@ -240,9 +240,12 @@ export default function ResearchPage() {
   )
 
   // Determine UI state — showNewForm overrides running view to show input form
-  const isIdle = (!isRunning && !selectedTask && !error) || (showNewForm && !error)
-  const showRunning = isRunning && !showNewForm
-  const isViewingCompleted = !isRunning && !showNewForm && selectedTask?.status === 'completed'
+  // "Just completed" = research finished, report in context, selectedTask not yet loaded from API
+  const justCompleted = !isRunning && !showNewForm && !selectedTask && !!report && !!conversationId
+  const isIdle = (!isRunning && !selectedTask && !error && !justCompleted) || (showNewForm && !error)
+  // Show running view only when no specific completed task is selected
+  const showRunning = isRunning && !showNewForm && !selectedTask
+  const isViewingCompleted = (!showNewForm && selectedTask?.status === 'completed') || justCompleted
   const isViewingInterrupted = !isRunning && !showNewForm && selectedTask?.status === 'interrupted'
 
   return (
@@ -283,7 +286,18 @@ export default function ResearchPage() {
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <span className={`shrink-0 h-1.5 w-1.5 rounded-full ${statusColor(task.status)}`} />
+                    {task.status === 'running' || (isRunning && task.conversation_id === conversationId) ? (
+                      <svg className="shrink-0 h-3 w-3 text-blue-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                        />
+                      </svg>
+                    ) : (
+                      <span className={`shrink-0 h-1.5 w-1.5 rounded-full ${statusColor(task.status)}`} />
+                    )}
                     <div
                       className={`text-[13px] font-medium truncate ${
                         isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'
@@ -533,50 +547,55 @@ export default function ResearchPage() {
           )}
 
           {/* State 3: Completed */}
-          {isViewingCompleted && selectedTask && (
+          {isViewingCompleted && (selectedTask || justCompleted) && (
             <div className="mx-auto px-6 py-6" style={{ maxWidth: 'min(100%, 72rem)' }}>
               {/* User question */}
-              <div className="flex justify-end mb-6">
-                <div className="max-w-[80%] rounded-xl rounded-tr-sm bg-gray-800 dark:bg-gray-700 text-gray-100 dark:text-gray-200 px-4 py-2.5 text-[13.5px] leading-relaxed">
-                  {selectedTask.question}
+              {selectedTask?.question && (
+                <div className="flex justify-end mb-6">
+                  <div className="max-w-[80%] rounded-xl rounded-tr-sm bg-gray-800 dark:bg-gray-700 text-gray-100 dark:text-gray-200 px-4 py-2.5 text-[13.5px] leading-relaxed">
+                    {selectedTask.question}
+                  </div>
                 </div>
-              </div>
+              )}
 
-              {/* Report */}
-              {selectedTask.report && (
+              {/* Report — prefer context report (live/just-completed), fall back to persisted */}
+              {(report || selectedTask?.report) && (
                 <div className="rounded-xl bg-gray-50 dark:bg-gray-800/60 ring-1 ring-gray-100 dark:ring-gray-700/50 px-6 py-5">
                   <div className="prose-chat">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedTask.report}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{report || selectedTask!.report!}</ReactMarkdown>
                   </div>
                 </div>
               )}
 
               {/* Metadata */}
-              <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500">
-                {selectedTask.model_id && <span>Model: {selectedTask.model_id}</span>}
-                <span className="capitalize">Strategy: {selectedTask.strategy}</span>
-                <span>
-                  Rounds: {selectedTask.current_round} / {selectedTask.max_rounds}
-                </span>
-                {selectedTask.completed_at && selectedTask.created_at && (
+              {selectedTask && (
+                <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500">
+                  {selectedTask.model_id && <span>Model: {selectedTask.model_id}</span>}
+                  <span className="capitalize">Strategy: {selectedTask.strategy}</span>
                   <span>
-                    Time:{' '}
-                    {formatElapsed(
-                      Math.round(
-                        (new Date(selectedTask.completed_at).getTime() - new Date(selectedTask.created_at).getTime()) /
-                          1000,
-                      ),
-                    )}
+                    Rounds: {selectedTask.current_round} / {selectedTask.max_rounds}
                   </span>
-                )}
-              </div>
+                  {selectedTask.completed_at && selectedTask.created_at && (
+                    <span>
+                      Time:{' '}
+                      {formatElapsed(
+                        Math.round(
+                          (new Date(selectedTask.completed_at).getTime() -
+                            new Date(selectedTask.created_at).getTime()) /
+                            1000,
+                        ),
+                      )}
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* Tool activity log — prefer live session data, fall back to persisted messages */}
               {(() => {
                 const toolCalls =
                   completedToolCalls.length > 0
                     ? completedToolCalls
-                    : selectedTask.messages
+                    : selectedTask?.messages
                       ? extractToolCalls(selectedTask.messages)
                       : []
                 return toolCalls.length > 0 ? <CompletedToolLog toolCalls={toolCalls} /> : null

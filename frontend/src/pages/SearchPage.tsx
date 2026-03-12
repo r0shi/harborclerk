@@ -32,8 +32,35 @@ interface SearchResponse {
 }
 
 const HISTORY_KEY = 'search_history'
+const STATE_KEY = 'search_state'
 const MAX_HISTORY = 10
 const PAGE_SIZES = [10, 25, 50]
+
+interface SearchState {
+  query: string
+  results: SearchResponse | null
+  currentPage: number
+  pageSize: number
+  lastQuery: string
+}
+
+function saveSearchState(state: SearchState) {
+  try {
+    sessionStorage.setItem(STATE_KEY, JSON.stringify(state))
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function loadSearchState(): SearchState | null {
+  try {
+    const raw = sessionStorage.getItem(STATE_KEY)
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
 
 function getHistory(): string[] {
   try {
@@ -116,16 +143,22 @@ function Pagination({
 }
 
 export default function SearchPage() {
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchResponse | null>(null)
+  const saved = useRef(loadSearchState())
+  const [query, setQuery] = useState(saved.current?.query || '')
+  const [results, setResults] = useState<SearchResponse | null>(saved.current?.results || null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [history, setHistory] = useState<string[]>(getHistory)
   const [showHistory, setShowHistory] = useState(false)
-  const [pageSize, setPageSize] = useState(25)
-  const [currentPage, setCurrentPage] = useState(1)
-  const lastQuery = useRef('')
+  const [pageSize, setPageSize] = useState(saved.current?.pageSize || 25)
+  const [currentPage, setCurrentPage] = useState(saved.current?.currentPage || 1)
+  const lastQuery = useRef(saved.current?.lastQuery || '')
   const wrapperRef = useRef<HTMLDivElement>(null)
+
+  // Persist search state to sessionStorage
+  useEffect(() => {
+    saveSearchState({ query, results, currentPage, pageSize, lastQuery: lastQuery.current })
+  }, [query, results, currentPage, pageSize])
 
   // Close dropdown on outside click
   useEffect(() => {
