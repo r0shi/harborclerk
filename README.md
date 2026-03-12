@@ -71,9 +71,9 @@ Chat locally with built-in models, or connect external AI tools through MCP. The
 ## Quick Start (Mac)
 
 1. Download Harbor Clerk from the [releases page](https://github.com/r0shi/harborclerk/releases)
-2. Launch **Harbor Clerk Server**
-3. Open **Harbor Clerk**
-4. Drop in a few PDFs and start asking questions
+2. Launch **Harbor Clerk Server** (menubar app — starts all backend services)
+3. Open **Harbor Clerk** (opens the web UI)
+4. Drop in a few PDFs and start asking questions — or run a deep research task
 
 That's it — everything runs locally.
 
@@ -191,6 +191,16 @@ A built-in chat assistant runs a local LLM (via llama-server) with access to the
 
 Chat automatically retrieves relevant passages from your documents (RAG) and displays them as a collapsible context card above each response — click any source to jump to the original document. The assistant can also use tools to search, read passages, and explore document structure during the conversation.
 
+### Deep Research
+
+For complex questions that require systematically examining your corpus, Research mode runs an autonomous multi-round investigation. The local LLM iterates through search, read, and entity tools — building structured notes across multiple rounds — then synthesizes its findings into a cited report.
+
+Two strategies are available:
+- **Search-driven** — the model picks its own queries and follows leads across documents
+- **Systematic sweep** — methodically reviews every document in the corpus
+
+Research runs in the background; you can continue using Ask, Upload, and other tabs while it works. Progress is streamed live with a tool-by-tool activity log.
+
 ### Document Intelligence
 
 Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
@@ -242,6 +252,10 @@ Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
 | `/api/chat/conversations/{id}/messages` | POST | Send a message (streamed response with RAG) |
 | `/api/chat/models` | GET | List available LLM models |
 | `/api/chat/models/{id}/download` | POST | Download a model |
+| `/api/research` | GET/POST | List research tasks / start new research (streamed) |
+| `/api/research/active` | GET | Check if a research task is running |
+| `/api/research/{id}` | GET/DELETE | Get research detail / delete task |
+| `/api/research/{id}/resume` | POST | Resume interrupted research (streamed) |
 | `/api/system/health` | GET | Health check |
 | `/api/system/stats` | GET | System performance stats (admin) |
 | `/api/system/retrieval-settings` | GET/PUT | RAG and MCP retrieval config (admin) |

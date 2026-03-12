@@ -377,7 +377,26 @@ export default function ChatPage() {
         {/* Messages */}
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto chat-messages-scroll">
           {messages.length === 0 ? (
-            <EmptyState />
+            researchActive ? (
+              <div className="flex h-full items-center justify-center p-8">
+                <div className="text-center max-w-md empty-state-appear">
+                  <div className="mb-4">
+                    <img src="/research-octopus.png" alt="" className="h-48 mx-auto opacity-60" />
+                  </div>
+                  <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-1.5">
+                    Research in progress
+                  </h3>
+                  <p className="text-[13px] text-gray-400 dark:text-gray-500 leading-relaxed">
+                    A research task is running.{' '}
+                    <a href="/research" className="text-amber-600 dark:text-amber-400 underline hover:no-underline">
+                      View progress
+                    </a>
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <EmptyState />
+            )
           ) : (
             <div className="mx-auto px-6 py-6 space-y-1" style={{ maxWidth: 'min(100%, 72rem)' }}>
               {messages.map((msg, i) => (

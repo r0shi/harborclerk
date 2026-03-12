@@ -104,6 +104,7 @@ export default function ResearchPage() {
   const [discardConfirm, setDiscardConfirm] = useState<string | null>(null)
   const discardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toolLogRef = useRef<HTMLDivElement>(null)
+  const synthRef = useRef<HTMLDivElement>(null)
 
   const {
     isRunning,
@@ -172,6 +173,11 @@ export default function ResearchPage() {
   useEffect(() => {
     toolLogRef.current?.scrollTo({ top: toolLogRef.current.scrollHeight, behavior: 'smooth' })
   }, [progress?.toolCalls.length])
+
+  // Scroll synthesizing indicator into view when it appears
+  useEffect(() => {
+    if (isSynthesizing) synthRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [isSynthesizing])
 
   // Cleanup discard timer
   useEffect(() => {
@@ -290,22 +296,30 @@ export default function ResearchPage() {
                     {formatRelativeDate(task.completed_at || task.created_at)}
                   </div>
                 </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleDiscard(task.conversation_id)
-                  }}
-                  className={`shrink-0 ml-1 mt-0.5 rounded p-0.5 transition-colors duration-150 ${
-                    discardConfirm === task.conversation_id
-                      ? 'text-red-500 bg-red-50 dark:bg-red-900/20'
-                      : 'text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 dark:hover:text-red-400'
-                  }`}
-                  title={discardConfirm === task.conversation_id ? 'Click again to confirm' : 'Delete'}
-                >
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
+                {discardConfirm === task.conversation_id ? (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleDiscard(task.conversation_id)
+                    }}
+                    className="shrink-0 ml-1 mt-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 ring-1 ring-red-200 dark:ring-red-800/40 transition-colors duration-150 hover:bg-red-100 dark:hover:bg-red-900/30"
+                  >
+                    Delete?
+                  </button>
+                ) : (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleDiscard(task.conversation_id)
+                    }}
+                    className="shrink-0 ml-1 mt-0.5 rounded p-0.5 text-gray-300 dark:text-gray-600 opacity-0 group-hover:opacity-100 hover:text-red-400 dark:hover:text-red-400 transition-colors duration-150"
+                    title="Delete"
+                  >
+                    <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
               </div>
             )
           })}
@@ -447,23 +461,6 @@ export default function ResearchPage() {
                     )}
                   </div>
 
-                  {/* Synthesizing indicator */}
-                  {isSynthesizing && (
-                    <div className="flex items-center justify-center gap-2 py-2">
-                      <svg className="h-4 w-4 text-amber-500 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                        />
-                      </svg>
-                      <span className="text-[13px] font-medium text-amber-600 dark:text-amber-400">
-                        Writing report...
-                      </span>
-                    </div>
-                  )}
-
                   {/* Tool call log */}
                   {progress.toolCalls.length > 0 && (
                     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/30 overflow-hidden">
@@ -485,6 +482,23 @@ export default function ResearchPage() {
                           )
                         })}
                       </div>
+                    </div>
+                  )}
+
+                  {/* Synthesizing indicator — below tool log so it's visible */}
+                  {isSynthesizing && (
+                    <div ref={synthRef} className="flex items-center justify-center gap-2 py-2">
+                      <svg className="h-4 w-4 text-amber-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                        />
+                      </svg>
+                      <span className="text-[13px] font-medium text-amber-600 dark:text-amber-400">
+                        Writing report...
+                      </span>
                     </div>
                   )}
 

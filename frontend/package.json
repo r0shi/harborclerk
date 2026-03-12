@@ -1,7 +1,7 @@
 {
   "name": "harbor-clerk-frontend",
   "private": true,
-  "version": "0.4.3",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
