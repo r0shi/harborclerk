@@ -489,16 +489,8 @@ async def research_stream(
                         )
                         session.add(tc_msg)
 
-                        # Build follow-up messages with tool results
-                        followup_messages = list(messages)
-                        followup_messages.append(
-                            {
-                                "role": "assistant",
-                                "content": assistant_content or "",
-                                "tool_calls": tool_calls,
-                            }
-                        )
-
+                        # Execute tools and collect results as plain text
+                        tool_results_text = ""
                         for tc in tool_calls:
                             fn_name = tc["function"]["name"]
                             try:
@@ -514,7 +506,7 @@ async def research_stream(
                             summary = _summarize_tool_result(fn_name, result_str)
                             yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': summary})}\n\n"
 
-                            # Save tool result as message
+                            # Save full tool result as message
                             tool_msg = ChatMessage(
                                 conversation_id=conversation_id,
                                 role="tool",
@@ -523,23 +515,27 @@ async def research_stream(
                             )
                             session.add(tool_msg)
 
-                            # Add truncated result to follow-up context
+                            # Accumulate truncated results as plain text for follow-up
                             truncated = _truncate_for_context(result_str, tool_result_max_chars)
-                            followup_messages.append(
-                                {
-                                    "role": "tool",
-                                    "content": truncated,
-                                    "tool_call_id": tc.get("id", f"call_{fn_name}"),
-                                }
+                            tool_results_text += (
+                                f"## {fn_name}({', '.join(f'{k}={v!r}' for k, v in fn_args.items())})\n{truncated}\n\n"
                             )
 
                         await session.flush()
 
-                        # Follow-up LLM call so model can update notes
+                        # Follow-up LLM call with tool results as plain text
+                        # (avoids tool_calls/tool message format which requires
+                        # tools in payload for llama-server to template correctly)
+                        followup_messages = list(messages)
                         followup_messages.append(
                             {
                                 "role": "user",
-                                "content": "Update your <notes> with any new findings from the tool results above.",
+                                "content": (
+                                    "Here are the results from your tool calls:\n\n"
+                                    f"{tool_results_text}"
+                                    "Review these results and update your <notes> with any new findings. "
+                                    "Include citations (document title, page number, chunk ID) for every finding."
+                                ),
                             }
                         )
 
