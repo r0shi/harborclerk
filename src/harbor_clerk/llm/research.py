@@ -38,9 +38,13 @@ _ITERATION_SYSTEM_SEARCH = (
     "every response\n"
     "- Every finding MUST include its source: document title, page number, and "
     "chunk ID in parentheses\n"
+    "- Keep notes concise — summarize findings, don't copy full passages\n"
     "- When condensing notes, you may rephrase findings but NEVER remove citations\n"
     "- Citations are the most important part of your notes — the final report "
     "depends on them\n\n"
+    "## Important\n"
+    "- Do NOT call the same tool with the same arguments twice — vary your queries\n"
+    "- If your notes are not growing, try different search terms or tools\n\n"
     "## Finishing\n"
     "When you are confident you have thoroughly covered the topic, stop calling "
     "tools and write ONLY a <report> tag. A separate synthesis step will produce "
@@ -60,9 +64,13 @@ _ITERATION_SYSTEM_SWEEP = (
     "every response\n"
     "- Every finding MUST include its source: document title, page number, and "
     "chunk ID in parentheses\n"
+    "- Keep notes concise — summarize findings, don't copy full passages\n"
     "- When condensing notes, you may rephrase findings but NEVER remove citations\n"
     "- Citations are the most important part of your notes — the final report "
     "depends on them\n\n"
+    "## Important\n"
+    "- Do NOT call the same tool with the same arguments twice — vary your queries\n"
+    "- If your notes are not growing, try different search terms or tools\n\n"
     "## Finishing\n"
     "When you are confident you have thoroughly covered the topic, stop calling "
     "tools and write ONLY a <report> tag. A separate synthesis step will produce "
@@ -404,6 +412,9 @@ async def research_stream(
         elif resume and strategy == "sweep":
             sweep_batch_idx = current_round  # fallback: assume 1:1 round/batch
         tools_called_total = 0
+        prev_notes_len = 0
+        stall_count = 0
+        _STALL_ROUNDS = 3  # break to synthesis after this many rounds with unchanged notes
 
         # ---------------------------------------------------------------
         # Iteration loop
@@ -623,6 +634,25 @@ async def research_stream(
                         state.progress = {"tools_called": tools_called_total}
                         await session.commit()
                         break
+
+                    # Detect stall: if notes haven't grown, the model is stuck
+                    cur_notes_len = len(notes)
+                    if cur_notes_len > 0 and cur_notes_len == prev_notes_len:
+                        stall_count += 1
+                        if stall_count >= _STALL_ROUNDS:
+                            logger.info(
+                                "Research stalled (%d rounds, notes=%d chars) — moving to synthesis",
+                                stall_count,
+                                cur_notes_len,
+                            )
+                            state.notes = notes
+                            state.current_round = current_round
+                            state.progress = {"tools_called": tools_called_total}
+                            await session.commit()
+                            break
+                    else:
+                        stall_count = 0
+                    prev_notes_len = cur_notes_len
 
                     # Checkpoint notes after each iteration
                     state.notes = notes
