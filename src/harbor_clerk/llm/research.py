@@ -476,6 +476,13 @@ async def research_stream(
                         return
 
                     # If model called tools, execute them
+                    logger.debug(
+                        "round=%d assistant_len=%d tool_calls=%d first_tc=%s",
+                        current_round,
+                        len(assistant_content),
+                        len(tool_calls),
+                        tool_calls[0]["function"]["name"] if tool_calls else "none",
+                    )
                     has_tool_calls = bool(tool_calls and tool_calls[0]["function"]["name"])
 
                     if has_tool_calls:
@@ -502,6 +509,13 @@ async def research_stream(
 
                             result_str = await execute_tool(fn_name, fn_args, user_id, mode="research")
                             tools_called_total += 1
+                            logger.debug(
+                                "tool=%s args=%s result_len=%d result_start=%.200s",
+                                fn_name,
+                                fn_args,
+                                len(result_str),
+                                result_str,
+                            )
 
                             summary = _summarize_tool_result(fn_name, result_str)
                             yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': summary})}\n\n"
@@ -540,6 +554,11 @@ async def research_stream(
                         )
 
                         try:
+                            logger.debug(
+                                "follow-up call: %d messages, total_chars=%d",
+                                len(followup_messages),
+                                sum(len(str(m.get("content", ""))) for m in followup_messages),
+                            )
                             followup_content, _ = await _stream_llm_call(
                                 client,
                                 llm_url,
@@ -547,6 +566,7 @@ async def research_stream(
                                 tools=None,
                                 timeout=_ITERATION_TIMEOUT,
                             )
+                            logger.debug("follow-up OK: len=%d preview=%.300s", len(followup_content), followup_content)
                         except (httpx.HTTPStatusError, httpx.ConnectError, httpx.ReadTimeout) as exc:
                             logger.error("LLM error during follow-up: %s", exc)
                             # Use whatever notes we have so far
@@ -566,6 +586,7 @@ async def research_stream(
                         new_notes = _parse_notes(followup_content) if followup_content else None
                         if new_notes is None:
                             new_notes = _parse_notes(assistant_content) if assistant_content else None
+                        logger.debug("notes_parsed=%s notes_len=%d", new_notes is not None, len(new_notes or ""))
                         if new_notes is not None:
                             notes = new_notes
 
