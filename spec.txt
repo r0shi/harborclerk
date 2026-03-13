@@ -44,7 +44,7 @@ gateway (Caddy) — HTTPS termination (self-signed CA), reverse proxy
 app (FastAPI) — REST API + MCP endpoint + serves static UI
 worker-io — PostgreSQL-polling worker for io queue (extract/chunk/finalize)
 worker-cpu — PostgreSQL-polling worker for cpu queue (ocr/embed)
-embedder — all-MiniLM-L6-v2 model server (384-dim, Apache 2.0)
+embedder — multilingual-e5-small model server (384-dim, MIT)
 postgres — Postgres + pgvector (also used for job queuing via LISTEN/NOTIFY)
 minio — object store for originals
 tika — Apache Tika server (PDF/DOCX/RTF text extraction)
@@ -147,7 +147,7 @@ Target chunk length: ~1000 chars, overlap 150 chars (character-based in prototyp
 Preserve mapping to page ranges + char offsets for citations
 Detect language per chunk (for FTS column assignment)
 Embeddings
-Served by embedder container (all-MiniLM-L6-v2, 384-dim, Apache 2.0)
+Served by embedder container (multilingual-e5-small, 384-dim, MIT)
 worker-cpu calls embedder over HTTP to get vectors
 Store per chunk embedding in pgvector column
 Similarity: cosine

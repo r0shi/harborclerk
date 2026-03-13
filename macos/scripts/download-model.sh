@@ -3,7 +3,7 @@
 # MODEL_REPO must be a full HuggingFace repo ID (e.g. nomic-ai/nomic-embed-text-v1.5).
 set -euo pipefail
 
-MODEL_REPO="${MODEL_REPO:-sentence-transformers/all-MiniLM-L6-v2}"
+MODEL_REPO="${MODEL_REPO:-intfloat/multilingual-e5-small}"
 MODEL_SHORT="${MODEL_REPO##*/}"
 DEST_DIR="${DEST_DIR:-$(pwd)/build/model/${MODEL_SHORT}}"
 

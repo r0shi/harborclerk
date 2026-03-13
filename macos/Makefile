@@ -51,7 +51,7 @@ spacy-models: venv
 
 model:
 	@echo "==> Downloading embedder model"
-	DEST_DIR=$(BUILD)/model/all-MiniLM-L6-v2 VENV_DIR=$(BUILD)/venv bash $(SCRIPTS)/download-model.sh
+	DEST_DIR=$(BUILD)/model/multilingual-e5-small VENV_DIR=$(BUILD)/venv bash $(SCRIPTS)/download-model.sh
 
 # ── LLM server ──
 
