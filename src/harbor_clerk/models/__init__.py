@@ -20,6 +20,9 @@ from harbor_clerk.models.enums import (
 )
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.model_settings import ModelSettings
+from harbor_clerk.models.oauth_client import OAuthClient
+from harbor_clerk.models.oauth_code import OAuthCode
+from harbor_clerk.models.oauth_token import OAuthToken
 from harbor_clerk.models.research_state import ResearchState
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.upload_session import UploadSession
@@ -47,5 +50,8 @@ __all__ = [
     "ChatMessage",
     "Entity",
     "ModelSettings",
+    "OAuthClient",
+    "OAuthCode",
+    "OAuthToken",
     "ResearchState",
 ]

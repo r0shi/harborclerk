@@ -3,7 +3,7 @@ import logging
 import os
 import tempfile
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,16 @@ class Settings(BaseSettings):
     # Summaries
     summary_max_chars: int = Field(default=500)
 
+    # OAuth 2.1
+    public_url: str = Field(default="")
+    oauth_refresh_token_days: int = Field(default=90)
+    oauth_access_token_minutes: int = Field(default=60)
+
+    @field_validator("public_url")
+    @classmethod
+    def _strip_trailing_slash(cls, v: str) -> str:
+        return v.rstrip("/")
+
 
 _settings: Settings | None = None
 
@@ -147,6 +157,6 @@ def sync_native_config(key: str, value: str | bool | int) -> None:
                 os.unlink(tmp_path)
             raise
 
-        logger.info("Synced %s=%r to %s", key, value, path)
+        logger.info("Synced config key to %s", path)
     except Exception:
         logger.exception("Failed to sync native config")

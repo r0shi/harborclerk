@@ -26,6 +26,7 @@ from harbor_clerk.models import (
     IngestionJob,
 )
 from harbor_clerk.models.enums import JobStage, VersionStatus
+from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
 from harbor_clerk.search import SearchHit, SearchResult, hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,19 @@ async def _resolve_principal(token: str) -> Principal | None:
                 role=payload["role"],
             )
         except Exception:
-            return None
+            pass
+
+        # JWT failed — try OAuth access token
+        try:
+            async with async_session_factory() as db:
+                result = await validate_oauth_access_token(db, token)
+                if result is not None:
+                    await db.commit()  # persist last_used_at update
+                    user_id, role = result
+                    return Principal(type="oauth", id=user_id, role=role)
+        except Exception:
+            logger.debug("OAuth token validation failed", exc_info=True)
+        return None
 
     # API key lookup
     key_hash = hash_api_key(token)

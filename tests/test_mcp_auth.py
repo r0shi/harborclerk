@@ -2,11 +2,12 @@
 
 import json
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 
 from harbor_clerk.api.deps import Principal
-from harbor_clerk.mcp_server import MCPAuthMiddleware, MCPTokenPathAuth, _mcp_principal
+from harbor_clerk.mcp_server import MCPAuthMiddleware, MCPTokenPathAuth, _mcp_principal, _resolve_principal
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -221,3 +222,42 @@ class TestMCPTokenPathAuth:
         scope = _http_scope(path=f"/{_VALID_KEY}")
         await _capture_response(app, scope)
         assert _mcp_principal.get() is None
+
+
+# ---------------------------------------------------------------------------
+# OAuth token resolution tests
+# ---------------------------------------------------------------------------
+
+
+class TestMCPOAuthAuth:
+    @pytest.mark.asyncio
+    async def test_oauth_token_resolves_principal(self, monkeypatch):
+        """OAuth access tokens should resolve to a user principal."""
+        user_id = uuid.uuid4()
+
+        async def mock_validate(db, token):
+            if token == "oauth_test_token":
+                return (user_id, "admin")
+            return None
+
+        monkeypatch.setattr("harbor_clerk.mcp_server.validate_oauth_access_token", mock_validate)
+        monkeypatch.setattr("harbor_clerk.mcp_server.async_session_factory", AsyncMock)
+
+        principal = await _resolve_principal("oauth_test_token")
+        assert principal is not None
+        assert principal.type == "oauth"
+        assert principal.id == user_id
+        assert principal.role == "admin"
+
+    @pytest.mark.asyncio
+    async def test_oauth_token_invalid_falls_through(self, monkeypatch):
+        """Invalid OAuth tokens should return None."""
+
+        async def mock_validate(db, token):
+            return None
+
+        monkeypatch.setattr("harbor_clerk.mcp_server.validate_oauth_access_token", mock_validate)
+        monkeypatch.setattr("harbor_clerk.mcp_server.async_session_factory", AsyncMock)
+
+        principal = await _resolve_principal("not_a_valid_token")
+        assert principal is None

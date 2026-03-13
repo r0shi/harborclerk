@@ -15,6 +15,7 @@ dependencies = [
     "bcrypt>=4.2.0",
     "httpx>=0.28.0",
     "PyJWT>=2.9.0",
+    "authlib>=1.6.0",
     "python-multipart>=0.0.18",
     "pytesseract>=0.3.13",
     "pypdfium2>=4.0.0",
