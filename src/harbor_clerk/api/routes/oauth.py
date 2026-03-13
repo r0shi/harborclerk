@@ -496,7 +496,7 @@ async def delete_connection(
     await session.delete(client)
     await session.commit()
 
-    logger.info("Deleted OAuth client %s and all associated tokens/codes", client_id)
+    logger.info("Deleted OAuth client and all associated tokens/codes")
     return {"ok": True}
 
 

@@ -157,6 +157,6 @@ def sync_native_config(key: str, value: str | bool | int) -> None:
                 os.unlink(tmp_path)
             raise
 
-        logger.info("Synced %s=%r to %s", key, value, path)
+        logger.info("Synced config key to %s", path)
     except Exception:
         logger.exception("Failed to sync native config")
