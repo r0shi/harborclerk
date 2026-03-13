@@ -18,7 +18,7 @@ The full specification lives in `spec.txt`.
 | **app** (FastAPI) | REST API + MCP endpoint + serves React SPA |
 | **worker-io** | PostgreSQL-polling worker for `io` queue (extract/chunk/finalize) |
 | **worker-cpu** | PostgreSQL-polling worker for `cpu` queue (ocr/embed) |
-| **embedder** | all-MiniLM-L6-v2 model server (384-dim, Apache 2.0) |
+| **embedder** | multilingual-e5-small model server (384-dim, MIT) |
 | **postgres** | PostgreSQL + pgvector + pg_trgm |
 | **minio** | Object storage for originals |
 | **tika** | Apache Tika server (text extraction for PDF, Office, eBook, HTML, email formats) |
