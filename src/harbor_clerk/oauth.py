@@ -1,11 +1,11 @@
 """OAuth 2.1 authorization server core — tokens, codes, PKCE, client registration."""
 
-import base64
 import hashlib
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,12 +40,13 @@ def hash_token(token: str) -> str:
 
 
 def _verify_code_challenge(verifier: str, challenge: str, method: str) -> bool:
-    """Verify a PKCE code challenge. Only S256 is supported (OAuth 2.1)."""
+    """Verify a PKCE code challenge. Only S256 is supported (OAuth 2.1).
+
+    Uses authlib's RFC 7636 implementation for the S256 computation.
+    """
     if method != "S256":
         return False
-    digest = hashlib.sha256(verifier.encode("ascii")).digest()
-    computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
-    return secrets.compare_digest(computed, challenge)
+    return secrets.compare_digest(create_s256_code_challenge(verifier), challenge)
 
 
 # ---------------------------------------------------------------------------
