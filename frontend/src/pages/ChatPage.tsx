@@ -33,6 +33,8 @@ interface ModelInfo {
   id: string
   name: string
   active: boolean
+  downloaded: boolean
+  size_bytes: number
 }
 
 function formatRelativeDate(dateStr: string): string {
@@ -72,6 +74,7 @@ export default function ChatPage() {
     latestTitle,
   } = useChat()
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
+  const [hasActiveModel, setHasActiveModel] = useState(true) // optimistic default
   const [researchActive, setResearchActive] = useState(false)
 
   // Derive latest context_pct from most recent assistant message
@@ -109,6 +112,7 @@ export default function ChatPage() {
         const map: Record<string, string> = {}
         for (const m of models) map[m.id] = m.name
         setModelNames(map)
+        setHasActiveModel(models.some((m) => m.active))
       })
       .catch(() => {})
   }, [])
@@ -167,7 +171,7 @@ export default function ChatPage() {
     async (e: FormEvent) => {
       e.preventDefault()
       const text = inputRef.current?.value.trim() ?? ''
-      if (!text || isStreaming || contextFull) return
+      if (!text || isStreaming || !hasActiveModel || contextFull) return
       setInput('')
 
       // Reset textarea height
@@ -199,7 +203,7 @@ export default function ChatPage() {
           .catch(() => {})
       })
     },
-    [isStreaming, conversationId, sendMessage, lastTitle, contextFull],
+    [isStreaming, conversationId, sendMessage, lastTitle, hasActiveModel, contextFull],
   )
 
   const handleNewChat = useCallback(() => {
@@ -377,7 +381,9 @@ export default function ChatPage() {
         {/* Messages */}
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto chat-messages-scroll">
           {messages.length === 0 ? (
-            researchActive ? (
+            !hasActiveModel ? (
+              <ModelNudge />
+            ) : researchActive ? (
               <div className="flex h-full items-center justify-center p-8">
                 <div className="text-center max-w-md empty-state-appear">
                   <div className="mb-4">
@@ -431,15 +437,17 @@ export default function ChatPage() {
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder={
-                    contextFull
-                      ? 'Context is nearly full — start a new conversation'
-                      : researchActive
-                        ? 'Research task in progress...'
-                        : 'Ask about your documents...'
+                    !hasActiveModel
+                      ? 'Download and activate a model to start chatting'
+                      : contextFull
+                        ? 'Context is nearly full — start a new conversation'
+                        : researchActive
+                          ? 'Research task in progress...'
+                          : 'Ask about your documents...'
                   }
-                  disabled={researchActive || contextFull}
+                  disabled={!hasActiveModel || researchActive || contextFull}
                   rows={1}
-                  className={`w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden${researchActive || contextFull ? ' opacity-50 pointer-events-none' : ''}`}
+                  className={`w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden${!hasActiveModel || researchActive || contextFull ? ' opacity-50 pointer-events-none' : ''}`}
                   style={{ maxHeight: '160px' }}
                   onInput={(e) => {
                     const target = e.target as HTMLTextAreaElement
@@ -466,7 +474,7 @@ export default function ChatPage() {
                     ) : (
                       <button
                         type="submit"
-                        disabled={!input.trim() || researchActive || contextFull}
+                        disabled={!input.trim() || !hasActiveModel || researchActive || contextFull}
                         className="flex items-center justify-center rounded-lg bg-gray-800 dark:bg-gray-200 p-1.5 text-white dark:text-gray-800 hover:bg-gray-700 dark:hover:bg-gray-300 disabled:opacity-30 disabled:hover:bg-gray-800 dark:disabled:hover:bg-gray-200 transition-all duration-150"
                       >
                         <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -480,6 +488,54 @@ export default function ChatPage() {
             </form>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/* ---- Model onboarding nudge ---- */
+
+function ModelNudge() {
+  return (
+    <div className="flex h-full items-center justify-center p-8">
+      <div className="text-center max-w-lg empty-state-appear">
+        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-50 dark:bg-amber-900/30 ring-1 ring-amber-200/60 dark:ring-amber-700/40">
+          <svg
+            className="h-8 w-8 text-amber-500 dark:text-amber-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={1.5}
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"
+            />
+          </svg>
+        </div>
+        <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-2">Set up your local AI model</h3>
+        <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mb-2">
+          Harbor Clerk runs a local LLM to chat with your documents. Download a model to get started — everything stays
+          on this machine.
+        </p>
+        <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mb-6">
+          We recommend <strong className="text-gray-700 dark:text-gray-300">Qwen3 8B</strong> as a great starting point
+          — strong reasoning, tool use, and bilingual support.
+        </p>
+        <Link
+          to="/admin/models"
+          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 transition-colors"
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+            />
+          </svg>
+          Choose a model
+        </Link>
       </div>
     </div>
   )
