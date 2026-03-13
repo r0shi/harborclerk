@@ -109,11 +109,11 @@ export default function DocumentRow({ item }: DocumentRowProps) {
 function StageIcon({ status, stage }: { status: string; stage?: string }) {
   switch (status) {
     case 'done':
-      return <span className="text-green-500 font-medium leading-none">&check;</span>
+      return <span className="text-green-500 font-medium leading-none">{'\u2713'}</span>
     case 'running':
-      return <span className="text-(--color-accent) leading-none">&bull;</span>
+      return <span className="text-(--color-accent) leading-none">{'\u2022'}</span>
     case 'error':
-      return <span className="text-red-500 font-medium leading-none">&times;</span>
+      return <span className="text-red-500 font-medium leading-none">{'\u00d7'}</span>
     case 'skipped':
       if (stage === 'entities')
         return (
@@ -121,7 +121,7 @@ function StageIcon({ status, stage }: { status: string; stage?: string }) {
             &#9888;
           </span>
         )
-      return <span className="text-(--color-text-secondary) leading-none">&ndash;</span>
+      return <span className="text-(--color-text-secondary) leading-none">{'\u2013'}</span>
     default:
       return <span className="text-(--color-text-secondary) leading-none">&#9675;</span>
   }
