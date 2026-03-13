@@ -1,6 +1,6 @@
 """Embedding model server.
 
-Loads all-MiniLM-L6-v2 (384-dim) and exposes POST /embed.
+Loads multilingual-e5-small (384-dim) and exposes POST /embed.
 """
 
 import logging
@@ -14,13 +14,16 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = os.environ.get("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+MODEL_NAME = os.environ.get("EMBED_MODEL", "intfloat/multilingual-e5-small")
+
+TASK_PREFIXES = {"query": "query: ", "passage": "passage: "}
 
 _model: SentenceTransformer | None = None
 
 
 class EmbedRequest(BaseModel):
     texts: list[str] = Field(..., min_length=1, max_length=256)
+    task: str | None = Field(default=None, pattern="^(query|passage)$")
 
 
 class EmbedResponse(BaseModel):
@@ -56,7 +59,11 @@ async def embed(request: EmbedRequest):
     if _model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
-    embeddings = _model.encode(request.texts, normalize_embeddings=True)
+    texts = request.texts
+    if request.task:
+        prefix = TASK_PREFIXES[request.task]
+        texts = [prefix + t for t in texts]
+    embeddings = _model.encode(texts, normalize_embeddings=True)
     return EmbedResponse(
         embeddings=embeddings.tolist(),
         model=MODEL_NAME,
