@@ -52,7 +52,7 @@ async def _embed_query(query: str) -> list[float]:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{settings.embedder_url}/embed",
-            json={"texts": [query]},
+            json={"texts": [query], "task": "query"},
         )
         resp.raise_for_status()
         return resp.json()["embeddings"][0]
