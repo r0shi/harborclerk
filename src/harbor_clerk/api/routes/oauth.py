@@ -1,17 +1,22 @@
-"""OAuth 2.1 endpoints — registration, authorize, token, revoke, well-known metadata."""
+"""OAuth 2.1 endpoints — registration, authorize, token, revoke, well-known metadata, management."""
 
 import logging
 import uuid
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from sqlalchemy import select
+from pydantic import BaseModel, field_validator
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harbor_clerk.api.deps import Principal, require_admin
 from harbor_clerk.auth import verify_password
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import get_settings, sync_native_config
 from harbor_clerk.db import get_session
+from harbor_clerk.models import OAuthClient, OAuthCode, OAuthToken
 from harbor_clerk.models.user import User
 from harbor_clerk.oauth import (
     create_authorization_code,
@@ -399,3 +404,112 @@ async def oauth_revoke(
     await session.commit()
     # Always 200 per RFC 7009
     return JSONResponse(status_code=200, content={})
+
+
+# ---------------------------------------------------------------------------
+# Management API — admin-only, used by the Integrations frontend page
+# ---------------------------------------------------------------------------
+
+
+class OAuthSettingsUpdate(BaseModel):
+    public_url: str | None = None
+    oauth_refresh_token_days: int | None = None
+
+    @field_validator("oauth_refresh_token_days")
+    @classmethod
+    def _valid_refresh_days(cls, v: int | None) -> int | None:
+        if v is not None and v not in (30, 60, 90, 120, 365):
+            raise ValueError("oauth_refresh_token_days must be one of 30, 60, 90, 120, 365")
+        return v
+
+
+@router.get("/api/integrations/connections")
+async def list_connections(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """List active OAuth client connections with aggregated token info."""
+    result = await session.execute(
+        select(
+            OAuthClient.client_id,
+            OAuthClient.client_name,
+            OAuthClient.client_uri,
+            OAuthClient.created_at,
+            func.max(OAuthToken.last_used_at).label("last_used_at"),
+            func.bool_or(
+                (OAuthToken.revoked.is_(False)) & (OAuthToken.refresh_token_expires_at > datetime.now(UTC))
+            ).label("is_active"),
+        )
+        .outerjoin(OAuthToken, OAuthClient.client_id == OAuthToken.client_id)
+        .group_by(OAuthClient.client_id)
+        .order_by(OAuthClient.created_at.desc())
+    )
+    rows = result.all()
+
+    connections = []
+    for row in rows:
+        connections.append(
+            {
+                "client_id": str(row.client_id),
+                "client_name": row.client_name,
+                "client_uri": row.client_uri,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
+                "is_active": bool(row.is_active) if row.is_active is not None else False,
+            }
+        )
+
+    return connections
+
+
+@router.delete("/api/integrations/connections/{client_id}")
+async def delete_connection(
+    client_id: uuid.UUID,
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
+    """Revoke all tokens for a client, delete codes, delete the client itself."""
+    # Verify client exists
+    client = await session.get(OAuthClient, client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Delete tokens, codes, then client
+    await session.execute(delete(OAuthToken).where(OAuthToken.client_id == client_id))
+    await session.execute(delete(OAuthCode).where(OAuthCode.client_id == client_id))
+    await session.delete(client)
+    await session.commit()
+
+    logger.info("Deleted OAuth client %s and all associated tokens/codes", client_id)
+    return {"ok": True}
+
+
+@router.get("/api/integrations/settings")
+async def get_integration_settings(
+    admin: Principal = Depends(require_admin),
+) -> dict[str, Any]:
+    """Return current OAuth settings."""
+    s = get_settings()
+    return {
+        "public_url": s.public_url,
+        "oauth_refresh_token_days": s.oauth_refresh_token_days,
+    }
+
+
+@router.put("/api/integrations/settings")
+async def update_integration_settings(
+    body: OAuthSettingsUpdate,
+    admin: Principal = Depends(require_admin),
+) -> dict[str, bool]:
+    """Update OAuth settings (mutates singleton, syncs native config)."""
+    s = get_settings()
+
+    if body.public_url is not None:
+        s.public_url = body.public_url
+        sync_native_config("public_url", body.public_url)
+
+    if body.oauth_refresh_token_days is not None:
+        s.oauth_refresh_token_days = body.oauth_refresh_token_days
+        sync_native_config("oauth_refresh_token_days", body.oauth_refresh_token_days)
+
+    return {"ok": True}
