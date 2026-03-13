@@ -74,6 +74,10 @@ class TestOAuthHelpers:
         tokens = {generate_token() for _ in range(100)}
         assert len(tokens) == 100
 
+    def test_client_secrets_are_unique(self):
+        secrets = {generate_client_secret() for _ in range(100)}
+        assert len(secrets) == 100
+
 
 class TestPKCE:
     def test_s256_valid(self):
