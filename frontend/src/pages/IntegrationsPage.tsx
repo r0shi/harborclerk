@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 
 interface IntegrationSettings {
   public_url: string
-  token_lifetime_days: number
+  oauth_refresh_token_days: number
 }
 
 interface OAuthConnection {
@@ -12,7 +12,7 @@ interface OAuthConnection {
   client_name: string
   is_active: boolean
   last_used_at: string | null
-  connected_at: string
+  created_at: string
 }
 
 const TOKEN_LIFETIME_OPTIONS = [30, 60, 90, 120, 365]
@@ -50,7 +50,7 @@ function CodeBlock({ children }: { children: string }) {
 const cardClass = 'rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-6'
 
 export default function IntegrationsPage() {
-  const [settings, setSettings] = useState<IntegrationSettings>({ public_url: '', token_lifetime_days: 90 })
+  const [settings, setSettings] = useState<IntegrationSettings>({ public_url: '', oauth_refresh_token_days: 90 })
   const [connections, setConnections] = useState<OAuthConnection[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -81,10 +81,8 @@ export default function IntegrationsPage() {
     setSaving(true)
     setError('')
     try {
-      const updated = await put<IntegrationSettings>('/api/integrations/settings', {
-        public_url: urlDraft,
-      })
-      setSettings(updated)
+      await put('/api/integrations/settings', { public_url: urlDraft })
+      setSettings((prev) => ({ ...prev, public_url: urlDraft }))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed')
     } finally {
@@ -95,10 +93,8 @@ export default function IntegrationsPage() {
   async function saveLifetime(days: number) {
     setError('')
     try {
-      const updated = await put<IntegrationSettings>('/api/integrations/settings', {
-        token_lifetime_days: days,
-      })
-      setSettings(updated)
+      await put('/api/integrations/settings', { oauth_refresh_token_days: days })
+      setSettings((prev) => ({ ...prev, oauth_refresh_token_days: days }))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed')
     }
@@ -165,7 +161,7 @@ export default function IntegrationsPage() {
               How long OAuth tokens remain valid before the external tool must reconnect.
             </p>
             <select
-              value={settings.token_lifetime_days}
+              value={settings.oauth_refresh_token_days}
               onChange={(e) => saveLifetime(Number(e.target.value))}
               className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
             >
@@ -217,7 +213,7 @@ export default function IntegrationsPage() {
                     </td>
                     <td className="px-4 py-3 text-sm font-medium">{c.client_name}</td>
                     <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                      {new Date(c.connected_at).toLocaleDateString()}
+                      {new Date(c.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                       {c.last_used_at ? new Date(c.last_used_at).toLocaleString() : 'Never'}

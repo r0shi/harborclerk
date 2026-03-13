@@ -72,6 +72,7 @@ async def _resolve_principal(token: str) -> Principal | None:
             async with async_session_factory() as db:
                 result = await validate_oauth_access_token(db, token)
                 if result is not None:
+                    await db.commit()  # persist last_used_at update
                     user_id, role = result
                     return Principal(type="oauth", id=user_id, role=role)
         except Exception:

@@ -1,5 +1,6 @@
 """OAuth 2.1 endpoints — registration, authorize, token, revoke, well-known metadata, management."""
 
+import html
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -59,9 +60,18 @@ def _consent_html(
     error: str | None = None,
 ) -> str:
     """Render the server-side consent / login page."""
+    # Escape all user-controlled values to prevent XSS
+    e_client_name = html.escape(client_name or "Unknown application")
+    e_scope = html.escape(scope)
+    e_client_id = html.escape(client_id)
+    e_redirect_uri = html.escape(redirect_uri)
+    e_state = html.escape(state)
+    e_code_challenge = html.escape(code_challenge)
+    e_code_challenge_method = html.escape(code_challenge_method)
+
     error_block = ""
     if error:
-        error_block = f'<div class="error">{error}</div>'
+        error_block = f'<div class="error">{html.escape(error)}</div>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -99,17 +109,17 @@ def _consent_html(
   <h1>Harbor Clerk</h1>
   <p class="subtitle">An application is requesting access to your account.</p>
   <div class="client">
-    <strong>{client_name or "Unknown application"}</strong><br>
-    <span class="scope">Permissions: {scope}</span>
+    <strong>{e_client_name}</strong><br>
+    <span class="scope">Permissions: {e_scope}</span>
   </div>
   {error_block}
   <form method="post" action="/oauth/authorize">
-    <input type="hidden" name="client_id" value="{client_id}">
-    <input type="hidden" name="redirect_uri" value="{redirect_uri}">
-    <input type="hidden" name="state" value="{state}">
-    <input type="hidden" name="scope" value="{scope}">
-    <input type="hidden" name="code_challenge" value="{code_challenge}">
-    <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
+    <input type="hidden" name="client_id" value="{e_client_id}">
+    <input type="hidden" name="redirect_uri" value="{e_redirect_uri}">
+    <input type="hidden" name="state" value="{e_state}">
+    <input type="hidden" name="scope" value="{e_scope}">
+    <input type="hidden" name="code_challenge" value="{e_code_challenge}">
+    <input type="hidden" name="code_challenge_method" value="{e_code_challenge_method}">
     <label for="email">Email</label>
     <input type="email" id="email" name="email" required autocomplete="email">
     <label for="password">Password</label>
@@ -158,6 +168,7 @@ async def oauth_authorization_server():
 # ---------------------------------------------------------------------------
 
 
+# TODO: rate-limit registration (10/hr per IP)
 @router.post("/oauth/register", status_code=status.HTTP_201_CREATED)
 async def oauth_register(
     request: Request,
@@ -202,6 +213,7 @@ async def oauth_register(
 # ---------------------------------------------------------------------------
 
 
+# TODO: add CSRF token to consent form
 @router.get("/oauth/authorize", response_class=HTMLResponse)
 async def oauth_authorize_get(
     response_type: str = Query(...),
@@ -226,6 +238,10 @@ async def oauth_authorize_get(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="redirect_uri not registered")
     if response_type != "code":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported response_type")
+    if code_challenge_method != "S256":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Only S256 code_challenge_method is supported"
+        )
 
     return HTMLResponse(
         _consent_html(
