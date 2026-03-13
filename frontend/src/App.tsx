@@ -22,6 +22,7 @@ import StatsPage from './pages/StatsPage'
 import ExplorePage from './pages/ExplorePage'
 import ResearchPage from './pages/ResearchPage'
 import SystemSettingsPage from './pages/SystemSettingsPage'
+import IntegrationsPage from './pages/IntegrationsPage'
 
 function ChatRedirect() {
   const { conversationId } = useParams<{ conversationId: string }>()
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="/chat/:conversationId" element={<ChatRedirect />} />
           <Route path="/preferences" element={<PreferencesPage />} />
           <Route element={<AdminRoute />}>
+            <Route path="/integrations" element={<IntegrationsPage />} />
             <Route path="/admin" element={<SystemSettingsPage />} />
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/keys" element={<ApiKeysPage />} />

@@ -75,6 +75,7 @@ export default function Layout() {
             </div>
             <div className="flex items-center space-x-1">
               <TabLink to="/stats">Observatory</TabLink>
+              {isAdmin && <TabLink to="/integrations">Integrations</TabLink>}
               {isAdmin && <TabLink to="/admin">System Settings</TabLink>}
               <div className="relative ml-2" ref={menuRef}>
                 <button
