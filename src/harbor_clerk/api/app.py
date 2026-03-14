@@ -35,9 +35,9 @@ _mcp_asgi, _mcp_token_asgi, _mcp_session_manager = create_mcp_app()
 
 
 async def _session_reaper_loop() -> None:
-    """Background task: clean up stale upload sessions every 15 minutes."""
+    """Background task: clean up stale sessions and research tasks every 5 minutes."""
     while True:
-        await asyncio.sleep(15 * 60)
+        await asyncio.sleep(5 * 60)
         try:
             from harbor_clerk.db import async_session_factory
             from harbor_clerk.models import Upload, UploadSession
@@ -86,11 +86,34 @@ async def _session_reaper_loop() -> None:
                         except Exception:
                             logger.warning("Reaper: failed to delete %s", upload.minio_object_key)
 
+                # Mark stale research tasks as interrupted (heartbeat >5 min old)
+                from harbor_clerk.models.research_state import ResearchState
+
+                research_cutoff = now - timedelta(minutes=5)
+                result = await db.execute(
+                    select(ResearchState).where(
+                        ResearchState.status == "running",
+                        (ResearchState.heartbeat_at < research_cutoff) | (ResearchState.heartbeat_at.is_(None)),
+                    )
+                )
+                stale_research = result.scalars().all()
+                for rs in stale_research:
+                    logger.info(
+                        "Reaper: marking stale research task %s as interrupted (heartbeat=%s)",
+                        rs.conversation_id,
+                        rs.heartbeat_at,
+                    )
+                    rs.status = "interrupted"
+                    rs.error = "Research task stalled — no progress for 5+ minutes"
+
                 await db.commit()
                 total = len(stale_sessions) + len(done_sessions)
-                if total > 0:
+                if total > 0 or stale_research:
                     logger.info(
-                        "Session reaper: cancelled %d stale, cleaned %d done", len(stale_sessions), len(done_sessions)
+                        "Session reaper: cancelled %d stale, cleaned %d done, interrupted %d research",
+                        len(stale_sessions),
+                        len(done_sessions),
+                        len(stale_research),
                     )
         except Exception:
             logger.exception("Session reaper error")
