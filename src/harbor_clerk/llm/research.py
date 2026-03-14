@@ -389,6 +389,7 @@ async def research_stream(
 
         # Mark as running
         state.status = "running"
+        state.heartbeat_at = datetime.now(UTC)
         await session.commit()
 
         # Choose system prompt based on strategy
@@ -606,6 +607,7 @@ async def research_stream(
                             # Checkpoint and break to synthesis
                             state.notes = notes
                             state.current_round = current_round
+                            state.heartbeat_at = datetime.now(UTC)
                             state.progress = {"tools_called": tools_called_total}
                             await session.commit()
                             break
@@ -629,6 +631,7 @@ async def research_stream(
                         # No tools called → done iterating
                         state.notes = notes
                         state.current_round = current_round
+                        state.heartbeat_at = datetime.now(UTC)
                         state.progress = {"tools_called": tools_called_total}
                         await session.commit()
                         break
@@ -645,6 +648,7 @@ async def research_stream(
                             )
                             state.notes = notes
                             state.current_round = current_round
+                            state.heartbeat_at = datetime.now(UTC)
                             state.progress = {"tools_called": tools_called_total}
                             await session.commit()
                             break
@@ -655,6 +659,7 @@ async def research_stream(
                     # Checkpoint notes after each iteration
                     state.notes = notes
                     state.current_round = current_round
+                    state.heartbeat_at = datetime.now(UTC)
                     if strategy == "sweep":
                         state.progress = {
                             "reviewed": min(sweep_batch_idx * _SWEEP_BATCH_SIZE, total_docs),

@@ -23,5 +23,6 @@ class ResearchState(Base):
     current_round: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     max_rounds: Mapped[int] = mapped_column(Integer, nullable=False)
     progress: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
