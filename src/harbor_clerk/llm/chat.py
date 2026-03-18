@@ -127,10 +127,17 @@ _CORE_INSTRUCTIONS = (
     "**Always search first.** For any question about document content — "
     "whether specific or broad — start with search_documents. "
     "It finds relevant passages across the entire corpus, even with hundreds of documents.\n\n"
+    "**Follow-up questions need new searches.** When the user asks about a "
+    "specific topic, entity, or region not covered in your previous response, "
+    "always search for it — do not assume it is absent from the corpus just "
+    "because it was not in earlier results. Previous searches may not have "
+    "covered all relevant content.\n\n"
     "For factual questions:\n"
     "  search_documents → read_passages → expand_context if needed\n\n"
     'For broad or comparative questions ("compare all X", "what does the corpus say about Y"):\n'
-    "  search_documents with several different queries to cover the topic thoroughly\n\n"
+    "  search_documents with several different queries to cover the topic thoroughly.\n"
+    "  Check has_more and total_candidates in results — if many candidates exist,\n"
+    "  use offset to page through or try more specific queries to find what you missed.\n\n"
     'For structural questions ("how many documents?", "what file types?"):\n'
     "  corpus_overview\n\n"
     "For browsing recent changes:\n"
