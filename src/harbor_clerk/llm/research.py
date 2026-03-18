@@ -15,7 +15,7 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.models import get_model
-from harbor_clerk.llm.tools import RESEARCH_TOOLS, execute_tool
+from harbor_clerk.llm.tools import execute_tool, get_research_tools
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 from harbor_clerk.models.document import Document
@@ -477,7 +477,7 @@ async def research_stream(
                             client,
                             llm_url,
                             messages,
-                            tools=RESEARCH_TOOLS,
+                            tools=get_research_tools(),
                             timeout=_ITERATION_TIMEOUT,
                         )
                     )
