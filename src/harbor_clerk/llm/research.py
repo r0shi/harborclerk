@@ -1,5 +1,7 @@
 """Research engine — multi-round iteration loop with scratchpad and synthesis pass."""
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -47,7 +49,7 @@ _ITERATION_SYSTEM_SEARCH = (
     "## Finishing\n"
     "When you are confident you have thoroughly covered the topic, stop calling "
     "tools and write ONLY a <report> tag. A separate synthesis step will produce "
-    "the final report from your notes."
+    "the final report from your notes. /no_think"
 )
 
 _ITERATION_SYSTEM_SWEEP = (
@@ -72,7 +74,7 @@ _ITERATION_SYSTEM_SWEEP = (
     "## Finishing\n"
     "When you are confident you have thoroughly covered the topic, stop calling "
     "tools and write ONLY a <report> tag. A separate synthesis step will produce "
-    "the final report from your notes."
+    "the final report from your notes. /no_think"
 )
 
 _SWEEP_BATCH_PREFIX = (
@@ -91,7 +93,7 @@ _SYNTHESIS_SYSTEM = (
     "- Group findings by theme, not by document\n"
     "- Be thorough but concise — include all relevant findings, skip filler\n"
     "- If the evidence is contradictory or incomplete, say so\n"
-    "- Do not invent information not present in the notes"
+    "- Do not invent information not present in the notes /no_think"
 )
 
 # Sweep batch size: how many docs to inject per round
@@ -100,6 +102,7 @@ _SWEEP_BATCH_SIZE = 5
 # Timeouts
 _ITERATION_TIMEOUT = 300.0
 _SYNTHESIS_TIMEOUT = 600.0
+_KEEPALIVE_INTERVAL = 30.0  # SSE keepalive + heartbeat during LLM calls
 
 # Rough chars-per-token estimate (same as chat.py)
 _CHARS_PER_TOKEN = 3.5
@@ -459,14 +462,43 @@ async def research_stream(
                         sweep_batch_text,
                     )
 
-                    # Call LLM with tools
-                    try:
-                        assistant_content, tool_calls = await _stream_llm_call(
+                    # Call LLM with tools — run as task with keepalive loop
+                    msg_chars = sum(len(str(m.get("content", ""))) for m in messages)
+                    logger.info(
+                        "iteration call: round=%d msgs=%d chars=%d notes_len=%d",
+                        current_round,
+                        len(messages),
+                        msg_chars,
+                        len(notes),
+                    )
+                    t0_iter = datetime.now(UTC)
+                    llm_task = asyncio.create_task(
+                        _stream_llm_call(
                             client,
                             llm_url,
                             messages,
                             tools=RESEARCH_TOOLS,
                             timeout=_ITERATION_TIMEOUT,
+                        )
+                    )
+                    try:
+                        while not llm_task.done():
+                            done, _ = await asyncio.wait({llm_task}, timeout=_KEEPALIVE_INTERVAL)
+                            if done:
+                                break
+                            elapsed = (datetime.now(UTC) - t0_iter).total_seconds()
+                            state.heartbeat_at = datetime.now(UTC)
+                            await session.commit()
+                            logger.debug("iteration keepalive: round=%d elapsed=%.0fs", current_round, elapsed)
+                            yield ": keepalive\n\n"
+                        assistant_content, tool_calls = llm_task.result()
+                        elapsed = (datetime.now(UTC) - t0_iter).total_seconds()
+                        logger.info(
+                            "iteration OK: round=%d elapsed=%.1fs content_len=%d tool_calls=%d",
+                            current_round,
+                            elapsed,
+                            len(assistant_content),
+                            len(tool_calls),
                         )
                     except httpx.HTTPStatusError as exc:
                         logger.error("LLM HTTP error during research iteration: %s", exc)
@@ -476,14 +508,19 @@ async def research_stream(
                         await session.commit()
                         yield f"data: {json.dumps({'type': 'error', 'message': f'LLM error ({exc.response.status_code})'})}\n\n"
                         return
-                    except (httpx.ConnectError, httpx.ReadTimeout) as exc:
-                        logger.error("LLM connection error during research iteration: %s", exc)
+                    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                        logger.error("LLM connection/timeout error during research iteration: %s", exc)
                         state.status = "interrupted"
                         state.current_round = current_round
                         state.error = "LLM server not reachable"
                         await session.commit()
                         yield f"data: {json.dumps({'type': 'error', 'message': 'LLM server is not running. Select and activate a model in Settings.'})}\n\n"
                         return
+                    except BaseException:
+                        llm_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await llm_task
+                        raise
 
                     # If model called tools, execute them
                     logger.debug(
@@ -563,22 +600,55 @@ async def research_stream(
                             }
                         )
 
+                        t0 = datetime.now(UTC)
                         try:
-                            logger.debug(
-                                "follow-up call: %d messages, total_chars=%d",
+                            followup_chars = sum(len(str(m.get("content", ""))) for m in followup_messages)
+                            logger.info(
+                                "follow-up call: round=%d msgs=%d chars=%d tool_result_chars=%d",
+                                current_round,
                                 len(followup_messages),
-                                sum(len(str(m.get("content", ""))) for m in followup_messages),
+                                followup_chars,
+                                len(tool_results_text),
                             )
-                            followup_content, _ = await _stream_llm_call(
-                                client,
-                                llm_url,
-                                followup_messages,
-                                tools=None,
-                                timeout=_ITERATION_TIMEOUT,
+                            followup_task = asyncio.create_task(
+                                _stream_llm_call(
+                                    client,
+                                    llm_url,
+                                    followup_messages,
+                                    tools=None,
+                                    timeout=_ITERATION_TIMEOUT,
+                                )
                             )
-                            logger.debug("follow-up OK: len=%d preview=%.300s", len(followup_content), followup_content)
-                        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.ReadTimeout) as exc:
-                            logger.error("LLM error during follow-up: %s", exc)
+                            while not followup_task.done():
+                                done, _ = await asyncio.wait({followup_task}, timeout=_KEEPALIVE_INTERVAL)
+                                if done:
+                                    break
+                                elapsed = (datetime.now(UTC) - t0).total_seconds()
+                                state.heartbeat_at = datetime.now(UTC)
+                                await session.commit()
+                                logger.debug(
+                                    "follow-up keepalive: round=%d elapsed=%.0fs",
+                                    current_round,
+                                    elapsed,
+                                )
+                                yield ": keepalive\n\n"
+                            followup_content, _ = followup_task.result()
+                            elapsed = (datetime.now(UTC) - t0).total_seconds()
+                            logger.info(
+                                "follow-up OK: round=%d elapsed=%.1fs len=%d",
+                                current_round,
+                                elapsed,
+                                len(followup_content),
+                            )
+                        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
+                            elapsed = (datetime.now(UTC) - t0).total_seconds()
+                            logger.error(
+                                "LLM error during follow-up: round=%d elapsed=%.1fs type=%s error=%s",
+                                current_round,
+                                elapsed,
+                                type(exc).__name__,
+                                exc,
+                            )
                             # Use whatever notes we have so far
                             followup_content = assistant_content
 
@@ -698,8 +768,8 @@ async def research_stream(
                     await session.commit()
                     yield f"data: {json.dumps({'type': 'error', 'message': f'Synthesis failed: LLM error ({exc.response.status_code})'})}\n\n"
                     return
-                except (httpx.ConnectError, httpx.ReadTimeout) as exc:
-                    logger.error("LLM connection error during synthesis: %s", exc)
+                except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                    logger.error("LLM connection/timeout error during synthesis: %s", exc)
                     state.status = "interrupted"
                     state.error = "Synthesis failed: LLM server not reachable"
                     await session.commit()

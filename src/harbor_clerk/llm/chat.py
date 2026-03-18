@@ -1,5 +1,6 @@
 """Chat orchestration — streaming tool-calling loop against llama-server."""
 
+import asyncio
 import json
 import logging
 import uuid
@@ -16,6 +17,9 @@ from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 
 logger = logging.getLogger(__name__)
+
+# SSE keepalive interval — prevents idle connection drops during LLM thinking.
+_KEEPALIVE_INTERVAL = 30.0
 
 # Rough chars-per-token estimate for budget calculations.
 # Conservative (undercounts tokens → keeps us safely under the limit).
@@ -155,6 +159,29 @@ _CORE_INSTRUCTIONS = (
 )
 
 SYSTEM_PROMPT = _CORE_INSTRUCTIONS
+
+# Sentinel yielded by _iter_with_keepalive when the LLM is idle.
+_KEEPALIVE_SENTINEL = object()
+
+
+async def _iter_with_keepalive(aiter):
+    """Wrap an async iterator, yielding ``_KEEPALIVE_SENTINEL`` every
+    ``_KEEPALIVE_INTERVAL`` seconds of inactivity.
+
+    This lets the outer generator yield SSE keepalive comments so
+    Starlette can detect client disconnects during long LLM thinks.
+    """
+    ait = aiter.__aiter__()
+    while True:
+        try:
+            nxt = asyncio.ensure_future(ait.__anext__())
+            done, _ = await asyncio.wait({nxt}, timeout=_KEEPALIVE_INTERVAL)
+            if done:
+                yield nxt.result()
+            else:
+                yield _KEEPALIVE_SENTINEL
+        except StopAsyncIteration:
+            return
 
 
 async def chat_stream(
@@ -310,7 +337,10 @@ async def chat_stream(
                         yield f"data: {json.dumps(done_payload)}\n\n"
                         return
 
-                    async for line in response.aiter_lines():
+                    async for line in _iter_with_keepalive(response.aiter_lines()):
+                        if line is _KEEPALIVE_SENTINEL:
+                            yield ": keepalive\n\n"
+                            continue
                         if not line.startswith("data: "):
                             continue
                         data = line[6:]
@@ -356,7 +386,7 @@ async def chat_stream(
                             text_buffer += token_text
                             yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
 
-            except (httpx.ConnectError, httpx.ReadTimeout):
+            except (httpx.ConnectError, httpx.TimeoutException):
                 error_summary = "LLM server is not running. Select and activate a model in Settings."
                 session.add(
                     ChatMessage(
@@ -450,7 +480,10 @@ async def chat_stream(
                     ) as response,
                 ):
                     if response.status_code < 400:
-                        async for line in response.aiter_lines():
+                        async for line in _iter_with_keepalive(response.aiter_lines()):
+                            if line is _KEEPALIVE_SENTINEL:
+                                yield ": keepalive\n\n"
+                                continue
                             if not line.startswith("data: "):
                                 continue
                             data = line[6:]
@@ -464,7 +497,7 @@ async def chat_stream(
                             if delta.get("content"):
                                 assistant_content += delta["content"]
                                 yield f"data: {json.dumps({'type': 'token', 'content': delta['content']})}\n\n"
-            except (httpx.ConnectError, httpx.ReadTimeout):
+            except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # Fall through to the fallback message below
 
         # If we still have no text, emit a fallback message

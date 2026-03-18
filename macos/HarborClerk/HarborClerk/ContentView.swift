@@ -196,14 +196,19 @@ struct WebView: NSViewRepresentable {
         }
 
         // Respond to new-window requests (e.g. target="_blank" links)
+        // External URLs open in the default browser; local URLs load in-app.
         func webView(
             _ webView: WKWebView,
             createWebViewWith configuration: WKWebViewConfiguration,
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            if navigationAction.targetFrame == nil || navigationAction.targetFrame?.isMainFrame == false {
-                webView.load(navigationAction.request)
+            if let url = navigationAction.request.url {
+                if url.host == "localhost" || url.host == "127.0.0.1" {
+                    webView.load(navigationAction.request)
+                } else {
+                    NSWorkspace.shared.open(url)
+                }
             }
             return nil
         }

@@ -125,6 +125,9 @@ export default function ResearchPage() {
   // start a new task or navigate to a specific task.
   const [showNewForm, setShowNewForm] = useState(false)
 
+  // Track auto-navigate so it only fires once per completion
+  const hasAutoNavigatedRef = useRef<string | null>(null)
+
   // Fetch history on mount
   const fetchHistory = useCallback(() => {
     get<ResearchSummary[]>('/api/research')
@@ -154,11 +157,13 @@ export default function ResearchPage() {
     loadTask()
   }, [researchId, navigate])
 
-  // Refresh sidebar when a research task starts, completes, or errors
+  // Refresh sidebar when a research task starts, completes, or errors.
+  // Auto-navigate to the completed task exactly once.
   useEffect(() => {
     if (conversationId) {
       fetchHistory()
-      if (!isRunning && report) {
+      if (!isRunning && report && hasAutoNavigatedRef.current !== conversationId) {
+        hasAutoNavigatedRef.current = conversationId
         navigate(`/research/${conversationId}`)
       }
     }
@@ -168,6 +173,27 @@ export default function ResearchPage() {
   useEffect(() => {
     if (error) fetchHistory()
   }, [error, fetchHistory])
+
+  // Poll task status while running to detect reaper interruptions.
+  // The SSE stream may hang if the LLM is thinking, so we periodically
+  // check the DB status and update the sidebar.
+  useEffect(() => {
+    if (!isRunning || !conversationId) return
+    const interval = setInterval(async () => {
+      try {
+        const task = await get<ResearchDetail>(`/api/research/${conversationId}`)
+        if (task.status !== 'running') {
+          // Reaper or other process changed the status — abort the stale
+          // SSE stream and reset context so UI reflects the real state.
+          cancelResearch()
+          fetchHistory()
+        }
+      } catch {
+        // Task may have been deleted
+      }
+    }, 30_000)
+    return () => clearInterval(interval)
+  }, [isRunning, conversationId, fetchHistory, cancelResearch])
 
   // Auto-scroll tool log
   useEffect(() => {
@@ -192,12 +218,14 @@ export default function ResearchPage() {
     setSelectedTask(null)
     setQuestion('')
     setShowNewForm(false)
+    hasAutoNavigatedRef.current = null
     await startResearch(q, strategy)
   }, [question, strategy, startResearch])
 
   const handleResume = useCallback(
     async (convId: string) => {
       setSelectedTask(null)
+      hasAutoNavigatedRef.current = null
       navigate('/research')
       await resumeResearch(convId)
     },
@@ -239,14 +267,18 @@ export default function ResearchPage() {
     [handleStartResearch],
   )
 
+  // Is the selected task the one currently live in context?
+  const isViewingLiveTask = !!conversationId && selectedTask?.conversation_id === conversationId
+
   // Determine UI state — showNewForm overrides running view to show input form
-  // "Just completed" = research finished, report in context, selectedTask not yet loaded from API
-  const justCompleted = !isRunning && !showNewForm && !selectedTask && !!report && !!conversationId
-  const isIdle = (!isRunning && !selectedTask && !error && !justCompleted) || (showNewForm && !error)
-  // Show running view only when no specific completed task is selected
-  const showRunning = isRunning && !showNewForm && !selectedTask
-  const isViewingCompleted = (!showNewForm && selectedTask?.status === 'completed') || justCompleted
+  // Show running view when: task is running AND (no task selected OR the selected task IS the running one)
+  const showRunning = isRunning && !showNewForm && (!selectedTask || isViewingLiveTask)
+  const isViewingCompleted =
+    !showNewForm &&
+    !showRunning &&
+    (selectedTask?.status === 'completed' || (!selectedTask && !!report && !!conversationId))
   const isViewingInterrupted = !isRunning && !showNewForm && selectedTask?.status === 'interrupted'
+  const isIdle = (!isRunning && !selectedTask && !error && !isViewingCompleted) || (showNewForm && !error)
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] -mx-4 -my-6 overflow-hidden">
@@ -273,7 +305,9 @@ export default function ResearchPage() {
             <div className="px-3 py-8 text-center text-xs text-gray-400 dark:text-gray-500">No research tasks yet</div>
           )}
           {history.map((task) => {
-            const isActive = task.conversation_id === researchId
+            const isActive =
+              task.conversation_id === researchId ||
+              (!researchId && showRunning && task.conversation_id === conversationId)
             return (
               <div
                 key={task.conversation_id}
@@ -358,7 +392,11 @@ export default function ResearchPage() {
             </svg>
           </button>
           <h2 className="text-[13px] font-semibold text-gray-700 dark:text-gray-300 truncate">
-            {showRunning ? 'Research in progress...' : selectedTask ? selectedTask.title : 'Research'}
+            {showRunning
+              ? selectedTask?.title || 'Research in progress...'
+              : selectedTask
+                ? selectedTask.title
+                : 'Research'}
           </h2>
           {isRunning && (
             <div className="ml-auto flex items-center gap-1.5">
@@ -387,58 +425,67 @@ export default function ResearchPage() {
                   comprehensive report. This may take several minutes.
                 </p>
 
-                <div className="max-w-md mx-auto space-y-4">
-                  <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-xs focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
-                    <textarea
-                      value={question}
-                      onChange={(e) => setQuestion(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      placeholder="What would you like to research?"
-                      rows={3}
-                      className="w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden"
-                      style={{ maxHeight: '160px' }}
-                      onInput={(e) => {
-                        const target = e.target as HTMLTextAreaElement
-                        target.style.height = 'auto'
-                        target.style.height = Math.min(target.scrollHeight, 160) + 'px'
-                      }}
-                    />
+                {isRunning ? (
+                  <div className="max-w-md mx-auto rounded-xl border border-amber-200 dark:border-amber-800/40 bg-amber-50/50 dark:bg-amber-900/10 px-4 py-3 text-center">
+                    <p className="text-[13px] text-amber-700 dark:text-amber-400">
+                      A research task is currently running. Wait for it to finish or cancel it before starting a new
+                      one.
+                    </p>
                   </div>
-
-                  {/* Strategy toggle */}
-                  <div className="flex items-center justify-center">
-                    <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 p-0.5">
-                      <button
-                        onClick={() => setStrategy('search')}
-                        className={`px-3 py-1.5 text-[12px] font-medium rounded-md transition-all duration-150 ${
-                          strategy === 'search'
-                            ? 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 shadow-xs'
-                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-                        }`}
-                      >
-                        Search-driven
-                      </button>
-                      <button
-                        onClick={() => setStrategy('sweep')}
-                        className={`px-3 py-1.5 text-[12px] font-medium rounded-md transition-all duration-150 ${
-                          strategy === 'sweep'
-                            ? 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 shadow-xs'
-                            : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-                        }`}
-                      >
-                        Systematic sweep
-                      </button>
+                ) : (
+                  <div className="max-w-md mx-auto space-y-4">
+                    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-xs focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
+                      <textarea
+                        value={question}
+                        onChange={(e) => setQuestion(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="What would you like to research?"
+                        rows={3}
+                        className="w-full resize-none border-0 bg-transparent px-4 pt-3 pb-2 text-sm text-gray-800 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-hidden"
+                        style={{ maxHeight: '160px' }}
+                        onInput={(e) => {
+                          const target = e.target as HTMLTextAreaElement
+                          target.style.height = 'auto'
+                          target.style.height = Math.min(target.scrollHeight, 160) + 'px'
+                        }}
+                      />
                     </div>
-                  </div>
 
-                  <button
-                    onClick={handleStartResearch}
-                    disabled={!question.trim()}
-                    className="w-full rounded-lg bg-amber-600 dark:bg-amber-600 px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-amber-700 dark:hover:bg-amber-500 disabled:opacity-40 disabled:hover:bg-amber-600 transition-colors duration-150"
-                  >
-                    Start Research
-                  </button>
-                </div>
+                    {/* Strategy toggle */}
+                    <div className="flex items-center justify-center">
+                      <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 p-0.5">
+                        <button
+                          onClick={() => setStrategy('search')}
+                          className={`px-3 py-1.5 text-[12px] font-medium rounded-md transition-all duration-150 ${
+                            strategy === 'search'
+                              ? 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 shadow-xs'
+                              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                          }`}
+                        >
+                          Search-driven
+                        </button>
+                        <button
+                          onClick={() => setStrategy('sweep')}
+                          className={`px-3 py-1.5 text-[12px] font-medium rounded-md transition-all duration-150 ${
+                            strategy === 'sweep'
+                              ? 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 shadow-xs'
+                              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                          }`}
+                        >
+                          Systematic sweep
+                        </button>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={handleStartResearch}
+                      disabled={!question.trim()}
+                      className="w-full rounded-lg bg-amber-600 dark:bg-amber-600 px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-amber-700 dark:hover:bg-amber-500 disabled:opacity-40 disabled:hover:bg-amber-600 transition-colors duration-150"
+                    >
+                      Start Research
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -547,7 +594,7 @@ export default function ResearchPage() {
           )}
 
           {/* State 3: Completed */}
-          {isViewingCompleted && (selectedTask || justCompleted) && (
+          {isViewingCompleted && (
             <div className="mx-auto px-6 py-6" style={{ maxWidth: 'min(100%, 72rem)' }}>
               {/* User question */}
               {selectedTask?.question && (
@@ -558,14 +605,17 @@ export default function ResearchPage() {
                 </div>
               )}
 
-              {/* Report — prefer context report (live/just-completed), fall back to persisted */}
-              {(report || selectedTask?.report) && (
-                <div className="rounded-xl bg-gray-50 dark:bg-gray-800/60 ring-1 ring-gray-100 dark:ring-gray-700/50 px-6 py-5">
-                  <div className="prose-chat">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{report || selectedTask!.report!}</ReactMarkdown>
+              {/* Report — use context data only for the live/just-completed task */}
+              {(() => {
+                const displayReport = isViewingLiveTask ? report || selectedTask?.report : selectedTask?.report
+                return displayReport ? (
+                  <div className="rounded-xl bg-gray-50 dark:bg-gray-800/60 ring-1 ring-gray-100 dark:ring-gray-700/50 px-6 py-5">
+                    <div className="prose-chat">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayReport}</ReactMarkdown>
+                    </div>
                   </div>
-                </div>
-              )}
+                ) : null
+              })()}
 
               {/* Metadata */}
               {selectedTask && (
@@ -590,10 +640,10 @@ export default function ResearchPage() {
                 </div>
               )}
 
-              {/* Tool activity log — prefer live session data, fall back to persisted messages */}
+              {/* Tool activity log — use context data only for the live task */}
               {(() => {
                 const toolCalls =
-                  completedToolCalls.length > 0
+                  isViewingLiveTask && completedToolCalls.length > 0
                     ? completedToolCalls
                     : selectedTask?.messages
                       ? extractToolCalls(selectedTask.messages)

@@ -139,6 +139,9 @@ export default function ChatPage() {
     // If the context already has messages for this conversation (e.g. navigated away and back
     // during streaming, or just created this conversation), skip reloading.
     if (chatCtxConvId === conversationId) return
+    // If a stream is in-flight for a different conversation, don't clobber it —
+    // just load this conversation's messages from the API into context.
+    // The stream's scoped updates will be no-ops since activeConversationId changed.
     get<ConversationDetail>(`/api/chat/conversations/${conversationId}`)
       .then((conv) => {
         loadMessages(
@@ -207,10 +210,11 @@ export default function ChatPage() {
   )
 
   const handleNewChat = useCallback(() => {
+    if (isStreaming) stopStreaming()
     loadMessages('', [])
     navigate('/')
     inputRef.current?.focus()
-  }, [loadMessages, navigate])
+  }, [isStreaming, stopStreaming, loadMessages, navigate])
 
   const handleDeleteConversation = useCallback(
     async (convId: string) => {
