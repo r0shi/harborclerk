@@ -43,8 +43,7 @@ export default function App() {
           <Route path="/docs/:id" element={<DocumentDetailPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/explore" element={<ExplorePage />} />
-          <Route path="/research" element={<ResearchPage />} />
-          <Route path="/research/:researchId" element={<ResearchPage />} />
+          <Route path="/research/:researchId?" element={<ResearchPage />} />
           <Route path="/stats" element={<StatsPage />} />
           <Route path="/chat" element={<Navigate to="/" replace />} />
           <Route path="/chat/:conversationId" element={<ChatRedirect />} />

@@ -243,20 +243,31 @@ export default function IntegrationsPage() {
 
       {/* Connection Guides */}
       <div className={cardClass}>
-        <div className="flex gap-1 mb-6">
+        <div className="grid grid-cols-3 gap-3 mb-6">
           {(['chatgpt', 'claude', 'gemini'] as const).map((tab) => {
-            const label = { chatgpt: 'ChatGPT', claude: 'Claude Desktop / Code', gemini: 'Gemini CLI' }[tab]
+            const info = {
+              chatgpt: { label: 'ChatGPT', desc: 'OAuth \u00b7 browser-based', icon: '\ud83c\udf10' },
+              claude: { label: 'Claude', desc: 'API key \u00b7 desktop & CLI', icon: '\ud83d\udcbb' },
+              gemini: { label: 'Gemini CLI', desc: 'API key \u00b7 terminal', icon: '\u2328\ufe0f' },
+            }[tab]
+            const active = guideTab === tab
             return (
               <button
                 key={tab}
                 onClick={() => setGuideTab(tab)}
-                className={`relative rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors ${
-                  guideTab === tab
-                    ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 ring-1 ring-blue-200/60 dark:ring-blue-700/40'
-                    : 'text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6 hover:text-(--color-text-primary)'
+                className={`rounded-xl px-4 py-3 text-left transition-all ${
+                  active
+                    ? 'bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-500/50 dark:ring-blue-400/40 shadow-sm'
+                    : 'bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) ring-1 ring-(--color-border) hover:ring-blue-300/50 dark:hover:ring-blue-600/30'
                 }`}
               >
-                {label}
+                <div className="text-lg mb-0.5">{info.icon}</div>
+                <div
+                  className={`text-sm font-semibold ${active ? 'text-blue-700 dark:text-blue-300' : 'text-(--color-text-primary)'}`}
+                >
+                  {info.label}
+                </div>
+                <div className="text-xs text-(--color-text-secondary)">{info.desc}</div>
               </button>
             )
           })}

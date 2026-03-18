@@ -55,7 +55,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const lastTitleRef = useRef<string | null>(null)
   const [latestTitle, setLatestTitle] = useState<string | null>(null)
 
+  // Ref mirror of activeConversationId — readable inside setMessages functional updates.
+  const activeConvRef = useRef<string | null>(null)
+
   const loadMessages = useCallback((conversationId: string, msgs: ChatMessage[]) => {
+    activeConvRef.current = conversationId
     setActiveConversationId(conversationId)
     setMessages(msgs.filter((m) => m.role !== 'tool'))
     lastTitleRef.current = null
@@ -66,6 +70,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     async (conversationId: string, content: string) => {
       if (!token || isStreaming) return
 
+      activeConvRef.current = conversationId
       setActiveConversationId(conversationId)
       lastTitleRef.current = null
       setLatestTitle(null)
@@ -84,6 +89,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         isStreaming: true,
       }
       setMessages((prev) => [...prev, assistantMsg])
+
+      // Helper: only update messages if this stream's conversation is still active.
+      // If the user navigated to a different conversation, skip the update silently —
+      // the stream result will be loaded from the API when they navigate back.
+      const scopedSetMessages = (updater: (prev: ChatMessage[]) => ChatMessage[]) => {
+        setMessages((prev) => {
+          // Check at update time whether context still belongs to this stream
+          if (activeConvRef.current !== conversationId) return prev
+          return updater(prev)
+        })
+      }
 
       try {
         const res = await fetch(`/api/chat/conversations/${conversationId}/messages`, {
@@ -121,7 +137,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               const event = JSON.parse(line.slice(6))
               switch (event.type) {
                 case 'rag_context':
-                  setMessages((prev) => {
+                  scopedSetMessages((prev) => {
                     const updated = [...prev]
                     const last = updated[updated.length - 1]
                     if (last && last.role === 'assistant') {
@@ -132,7 +148,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   break
 
                 case 'token':
-                  setMessages((prev) => {
+                  scopedSetMessages((prev) => {
                     const updated = [...prev]
                     const last = updated[updated.length - 1]
                     if (last && last.role === 'assistant') {
@@ -143,11 +159,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   break
 
                 case 'tool_call':
-                  setCurrentToolCall({ name: event.name, arguments: event.arguments })
+                  if (activeConvRef.current === conversationId) {
+                    setCurrentToolCall({ name: event.name, arguments: event.arguments })
+                  }
                   break
 
                 case 'tool_result':
-                  setMessages((prev) => {
+                  scopedSetMessages((prev) => {
                     const updated = [...prev]
                     const last = updated[updated.length - 1]
                     if (last && last.role === 'assistant') {
@@ -161,7 +179,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     }
                     return updated
                   })
-                  setCurrentToolCall(null)
+                  if (activeConvRef.current === conversationId) {
+                    setCurrentToolCall(null)
+                  }
                   break
 
                 case 'title':
@@ -176,7 +196,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     lastTitleRef.current = event.title
                     setLatestTitle(event.title)
                   }
-                  setMessages((prev) => {
+                  scopedSetMessages((prev) => {
                     const updated = [...prev]
                     const last = updated[updated.length - 1]
                     if (last && last.role === 'assistant') {
@@ -192,7 +212,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   break
 
                 case 'error':
-                  setMessages((prev) => {
+                  scopedSetMessages((prev) => {
                     const updated = [...prev]
                     const last = updated[updated.length - 1]
                     if (last && last.role === 'assistant') {
@@ -214,7 +234,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }
       } catch (e) {
         if (e instanceof DOMException && e.name === 'AbortError') return
-        setMessages((prev) => {
+        scopedSetMessages((prev) => {
           const updated = [...prev]
           const last = updated[updated.length - 1]
           if (last && last.role === 'assistant') {
