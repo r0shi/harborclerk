@@ -415,11 +415,7 @@ async def get_retrieval_settings(
 ) -> RetrievalSettingsResponse:
     """Return current retrieval-related settings."""
     s = get_settings()
-    return RetrievalSettingsResponse(
-        max_history_messages=s.max_history_messages,
-        mcp_max_k=s.mcp_max_k,
-        mcp_brief_chars=s.mcp_brief_chars,
-    )
+    return _retrieval_response(s)
 
 
 @router.put("/system/retrieval-settings")
@@ -431,13 +427,22 @@ async def update_retrieval_settings(
     s = get_settings()
     for key in body.model_fields_set:
         value = getattr(body, key)
-        setattr(s, key, value)
-        sync_native_config(key, str(value))
+        if value is not None:
+            setattr(s, key, value)
+            sync_native_config(key, value)
 
+    return _retrieval_response(s)
+
+
+def _retrieval_response(s) -> RetrievalSettingsResponse:
     return RetrievalSettingsResponse(
         max_history_messages=s.max_history_messages,
         mcp_max_k=s.mcp_max_k,
         mcp_brief_chars=s.mcp_brief_chars,
+        chat_search_paginated=s.chat_search_paginated,
+        chat_search_k=s.chat_search_k,
+        research_search_paginated=s.research_search_paginated,
+        research_search_k=s.research_search_k,
     )
 
 

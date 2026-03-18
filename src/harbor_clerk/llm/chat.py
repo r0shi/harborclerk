@@ -12,7 +12,7 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.models import get_model
-from harbor_clerk.llm.tools import CHAT_TOOLS, execute_tool
+from harbor_clerk.llm.tools import execute_tool, get_chat_tools
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 
@@ -35,10 +35,6 @@ _TOOL_LOOP_BUDGET = 0.75
 # Hard safety cap on tool rounds (prevents infinite loops even if budget check fails).
 _MAX_TOOL_ROUNDS = 25
 
-# Approximate token overhead for the tool schema (CHAT_TOOLS JSON).
-# Computed once at module load to avoid re-serializing every call.
-_TOOL_SCHEMA_TOKENS: int | None = None
-
 
 def _estimate_tokens(text: str) -> int:
     """Estimate token count from character length."""
@@ -58,11 +54,8 @@ def _estimate_messages_tokens(messages: list[dict]) -> int:
 
 
 def _get_tool_schema_tokens() -> int:
-    """Lazily compute and cache the tool schema token estimate."""
-    global _TOOL_SCHEMA_TOKENS
-    if _TOOL_SCHEMA_TOKENS is None:
-        _TOOL_SCHEMA_TOKENS = _estimate_tokens(json.dumps(CHAT_TOOLS))
-    return _TOOL_SCHEMA_TOKENS
+    """Compute the tool schema token estimate from current settings."""
+    return _estimate_tokens(json.dumps(get_chat_tools()))
 
 
 def _context_usage(messages: list[dict], context_window: int) -> float:
@@ -277,7 +270,7 @@ async def chat_stream(
 
             # If budget is getting tight, omit tool definitions so the model
             # generates a text response instead of requesting more tool calls.
-            send_tools = CHAT_TOOLS if usage_frac < _TOOL_LOOP_BUDGET else None
+            send_tools = get_chat_tools() if usage_frac < _TOOL_LOOP_BUDGET else None
 
             try:
                 payload: dict = {

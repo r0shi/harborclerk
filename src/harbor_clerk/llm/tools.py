@@ -9,11 +9,7 @@ small local LLMs (4-8B params). Not all MCP tools are exposed here:
 
   Simplified:
     - entity_cooccurrence: hardcodes scope="chunk" (no document scope)
-    - search_documents: caps k=10, no pagination/faceted/detail modes
-
-  TODO: revisit these simplifications when upgrading LLM models.
-  Larger models may benefit from kb_batch_search, document-scope
-  co-occurrence, and richer search parameters.
+    - search_documents: k and pagination controlled by retrieval settings
 """
 
 import copy
@@ -23,7 +19,7 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
-CHAT_TOOLS = [
+_BASE_CHAT_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -294,14 +290,53 @@ CHAT_TOOLS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Dynamic tool builders — read settings at call time
+# ---------------------------------------------------------------------------
+
+
+def _apply_search_settings(tools: list[dict], *, paginated: bool, max_k: int, default_k: int) -> list[dict]:
+    """Adjust search_documents schema for pagination and k limits."""
+    tools = copy.deepcopy(tools)
+    for tool in tools:
+        fn = tool["function"]
+        if fn["name"] != "search_documents":
+            continue
+        props = fn["parameters"]["properties"]
+        props["k"]["description"] = f"Number of results (default {default_k}, max {max_k})"
+        if paginated:
+            props["offset"] = {
+                "type": "integer",
+                "description": "Skip first N results for pagination (default 0)",
+            }
+    return tools
+
+
+def get_chat_tools() -> list[dict]:
+    """Build chat tool schema, respecting current retrieval settings."""
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    if s.chat_search_paginated:
+        return _apply_search_settings(_BASE_CHAT_TOOLS, paginated=True, max_k=50, default_k=5)
+    return _apply_search_settings(_BASE_CHAT_TOOLS, paginated=False, max_k=s.chat_search_k, default_k=5)
+
+
 # Map chat tool names → (MCP function import path, arg mapper)
 def _map_args_search(args: dict) -> dict:
-    return {
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    max_k = 50 if s.chat_search_paginated else s.chat_search_k
+    mapped: dict = {
         "query": args["query"],
-        "k": min(args.get("k", 5), 10),
+        "k": min(args.get("k", 5), max_k),
         "doc_id": args.get("doc_id"),
         "detail": "full",
     }
+    if s.chat_search_paginated and args.get("offset"):
+        mapped["offset"] = args["offset"]
+    return mapped
 
 
 def _map_args_read_passages(args: dict) -> dict:
@@ -425,34 +460,40 @@ _RESEARCH_DESCRIPTION_OVERRIDES: dict[str, str] = {
 _RESEARCH_SEARCH_K_DESCRIPTION = "Number of results (default 10, max 50)"
 
 
-def _build_research_tools() -> list[dict]:
-    """Build RESEARCH_TOOLS from CHAT_TOOLS with description/limit overrides."""
-    tools = copy.deepcopy(CHAT_TOOLS)
-    for tool in tools:
+def get_research_tools() -> list[dict]:
+    """Build research tool schema, respecting current retrieval settings."""
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    if s.research_search_paginated:
+        base = _apply_search_settings(_BASE_CHAT_TOOLS, paginated=True, max_k=100, default_k=10)
+    else:
+        base = _apply_search_settings(_BASE_CHAT_TOOLS, paginated=False, max_k=s.research_search_k, default_k=10)
+
+    # Apply research-specific description overrides
+    for tool in base:
         fn = tool["function"]
         name = fn["name"]
         if name in _RESEARCH_DESCRIPTION_OVERRIDES:
             fn["description"] = _RESEARCH_DESCRIPTION_OVERRIDES[name]
-        # Raise k limit description for search
-        if name == "search_documents":
-            fn["parameters"]["properties"]["k"]["description"] = _RESEARCH_SEARCH_K_DESCRIPTION
-    return tools
-
-
-RESEARCH_TOOLS = _build_research_tools()
+    return base
 
 
 def _map_args_search_research(args: dict) -> dict:
-    """Search arg mapper for research — allows k up to 50, uses brief detail.
+    """Search arg mapper for research — uses settings for k/offset, brief detail."""
+    from harbor_clerk.config import get_settings
 
-    Research scans broad (brief text) and drills deep via read_passages.
-    """
-    return {
+    s = get_settings()
+    max_k = 100 if s.research_search_paginated else s.research_search_k
+    mapped: dict = {
         "query": args["query"],
-        "k": min(args.get("k", 10), 50),
+        "k": min(args.get("k", 10), max_k),
         "doc_id": args.get("doc_id"),
         "detail": "brief",
     }
+    if s.research_search_paginated and args.get("offset"):
+        mapped["offset"] = args["offset"]
+    return mapped
 
 
 _RESEARCH_TOOL_DISPATCH: dict[str, tuple[str, callable]] = {

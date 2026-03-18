@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     mcp_brief_chars: int = Field(default=200)
     mcp_max_k: int = Field(default=350)
 
+    # Chat/Research search tunables
+    chat_search_paginated: bool = Field(default=False)
+    chat_search_k: int = Field(default=10)
+    research_search_paginated: bool = Field(default=True)
+    research_search_k: int = Field(default=20)
+
     # Chat history
     max_history_messages: int = Field(default=40)
 
