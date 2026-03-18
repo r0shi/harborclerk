@@ -175,10 +175,13 @@ async def _iter_with_keepalive(aiter):
     while True:
         try:
             nxt = asyncio.ensure_future(ait.__anext__())
-            done, _ = await asyncio.wait({nxt}, timeout=_KEEPALIVE_INTERVAL)
-            if done:
-                yield nxt.result()
-            else:
+            # Wait for the next item, yielding keepalives while it's pending.
+            # Re-use the SAME future across timeouts — never call __anext__ twice.
+            while True:
+                done, _ = await asyncio.wait({nxt}, timeout=_KEEPALIVE_INTERVAL)
+                if done:
+                    yield nxt.result()
+                    break
                 yield _KEEPALIVE_SENTINEL
         except StopAsyncIteration:
             return
