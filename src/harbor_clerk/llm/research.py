@@ -49,7 +49,7 @@ _ITERATION_SYSTEM_SEARCH = (
     "## Finishing\n"
     "When you are confident you have thoroughly covered the topic, stop calling "
     "tools and write ONLY a <report> tag. A separate synthesis step will produce "
-    "the final report from your notes. /no_think"
+    "the final report from your notes."
 )
 
 _ITERATION_SYSTEM_SWEEP = (
@@ -74,7 +74,7 @@ _ITERATION_SYSTEM_SWEEP = (
     "## Finishing\n"
     "When you are confident you have thoroughly covered the topic, stop calling "
     "tools and write ONLY a <report> tag. A separate synthesis step will produce "
-    "the final report from your notes. /no_think"
+    "the final report from your notes."
 )
 
 _SWEEP_BATCH_PREFIX = (
@@ -93,7 +93,7 @@ _SYNTHESIS_SYSTEM = (
     "- Group findings by theme, not by document\n"
     "- Be thorough but concise — include all relevant findings, skip filler\n"
     "- If the evidence is contradictory or incomplete, say so\n"
-    "- Do not invent information not present in the notes /no_think"
+    "- Do not invent information not present in the notes"
 )
 
 # Sweep batch size: how many docs to inject per round
