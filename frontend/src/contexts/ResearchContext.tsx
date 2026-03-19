@@ -15,6 +15,8 @@ export interface ResearchProgress {
   reviewed?: number
   total?: number
   toolCalls: ToolCallEntry[]
+  elapsedSeconds?: number
+  timeLimitMinutes?: number
 }
 
 interface ResearchState {
@@ -25,7 +27,7 @@ interface ResearchState {
   error: string | null
   conversationId: string | null
   completedToolCalls: ToolCallEntry[]
-  startResearch: (question: string, strategy?: string) => Promise<void>
+  startResearch: (question: string, strategy?: string, timeLimitMinutes?: number) => Promise<void>
   resumeResearch: (convId: string) => Promise<void>
   cancelResearch: () => void
   reset: () => void
@@ -77,6 +79,8 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
                 reviewed: event.reviewed,
                 total: event.total,
                 toolCalls: prev?.toolCalls || [],
+                elapsedSeconds: event.elapsed_seconds,
+                timeLimitMinutes: event.time_limit_minutes,
               }))
               break
 
@@ -137,7 +141,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const startResearch = useCallback(
-    async (question: string, strategy?: string) => {
+    async (question: string, strategy?: string, timeLimitMinutes?: number) => {
       if (!token) return
 
       // Clear error from previous attempts (e.g. 409) but don't touch
@@ -149,6 +153,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
       try {
         const body: Record<string, unknown> = { question }
         if (strategy) body.strategy = strategy
+        if (timeLimitMinutes) body.time_limit_minutes = timeLimitMinutes
 
         const res = await fetch('/api/research', {
           method: 'POST',

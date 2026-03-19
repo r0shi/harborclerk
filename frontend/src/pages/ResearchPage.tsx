@@ -70,6 +70,15 @@ function formatRelativeDate(dateStr: string): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
+const TIME_LIMITS = [15, 30, 45, 60, 90, 120, 150, 180]
+
+function formatTimeLimit(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return m > 0 ? `${h}h ${m}m` : `${h}h`
+}
+
 function formatElapsed(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`
   const mins = Math.floor(seconds / 60)
@@ -100,6 +109,7 @@ export default function ResearchPage() {
   const [selectedTask, setSelectedTask] = useState<ResearchDetail | null>(null)
   const [question, setQuestion] = useState('')
   const [strategy, setStrategy] = useState<'search' | 'sweep'>('search')
+  const [timeLimit, setTimeLimit] = useState(30)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [discardConfirm, setDiscardConfirm] = useState<string | null>(null)
   const discardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -219,8 +229,8 @@ export default function ResearchPage() {
     setQuestion('')
     setShowNewForm(false)
     hasAutoNavigatedRef.current = null
-    await startResearch(q, strategy)
-  }, [question, strategy, startResearch])
+    await startResearch(q, strategy, timeLimit)
+  }, [question, strategy, timeLimit, startResearch])
 
   const handleResume = useCallback(
     async (convId: string) => {
@@ -477,6 +487,21 @@ export default function ResearchPage() {
                       </div>
                     </div>
 
+                    <div className="flex items-center justify-center gap-2">
+                      <span className="text-[12px] text-gray-500 dark:text-gray-400">Time limit</span>
+                      <select
+                        value={timeLimit}
+                        onChange={(e) => setTimeLimit(Number(e.target.value))}
+                        className="rounded-lg border-0 bg-gray-100 dark:bg-gray-800 text-[12px] px-2 py-1.5 text-gray-700 dark:text-gray-300 focus:ring-2 focus:ring-(--color-accent)/30"
+                      >
+                        {TIME_LIMITS.map((m) => (
+                          <option key={m} value={m}>
+                            {formatTimeLimit(m)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     <button
                       onClick={handleStartResearch}
                       disabled={!question.trim()}
@@ -502,7 +527,9 @@ export default function ResearchPage() {
                   {/* Round indicator */}
                   <div className="text-center">
                     <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                      Round {progress.round} of {progress.maxRounds}
+                      {progress.elapsedSeconds != null
+                        ? `${formatElapsed(progress.elapsedSeconds)} / ${formatTimeLimit(progress.timeLimitMinutes || 30)}`
+                        : `Round ${progress.round}`}
                     </span>
                     {progress.strategy === 'sweep' && progress.total != null && progress.reviewed != null && (
                       <div className="mt-2">
@@ -622,9 +649,7 @@ export default function ResearchPage() {
                 <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500">
                   {selectedTask.model_id && <span>Model: {selectedTask.model_id}</span>}
                   <span className="capitalize">Strategy: {selectedTask.strategy}</span>
-                  <span>
-                    Rounds: {selectedTask.current_round} / {selectedTask.max_rounds}
-                  </span>
+                  <span>Rounds: {selectedTask.current_round}</span>
                   {selectedTask.completed_at && selectedTask.created_at && (
                     <span>
                       Time:{' '}
