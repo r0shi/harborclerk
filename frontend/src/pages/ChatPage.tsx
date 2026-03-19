@@ -75,6 +75,7 @@ export default function ChatPage() {
   } = useChat()
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
   const [hasActiveModel, setHasActiveModel] = useState(true) // optimistic default
+  const [activeModelId, setActiveModelId] = useState<string | null>(null)
   const [researchActive, setResearchActive] = useState(false)
 
   // Derive latest context_pct from most recent assistant message
@@ -110,9 +111,14 @@ export default function ChatPage() {
     get<ModelInfo[]>('/api/chat/models')
       .then((models) => {
         const map: Record<string, string> = {}
-        for (const m of models) map[m.id] = m.name
+        let activeId: string | null = null
+        for (const m of models) {
+          map[m.id] = m.name
+          if (m.active) activeId = m.id
+        }
         setModelNames(map)
-        setHasActiveModel(models.some((m) => m.active))
+        setActiveModelId(activeId)
+        setHasActiveModel(activeId !== null)
       })
       .catch(() => {})
   }, [])
@@ -195,7 +201,7 @@ export default function ChatPage() {
         navigate(`/c/${activeConvId}`, { replace: true })
       }
 
-      await sendMessage(activeConvId, text).finally(() => {
+      await sendMessage(activeConvId, text, activeModelId || undefined).finally(() => {
         if (lastTitle.current && activeConvId) {
           setConversations((prev) =>
             prev.map((c) => (c.conversation_id === activeConvId ? { ...c, title: lastTitle.current! } : c)),
@@ -206,7 +212,7 @@ export default function ChatPage() {
           .catch(() => {})
       })
     },
-    [isStreaming, conversationId, sendMessage, lastTitle, hasActiveModel, contextFull],
+    [isStreaming, conversationId, sendMessage, lastTitle, hasActiveModel, activeModelId, contextFull],
   )
 
   const handleNewChat = useCallback(() => {
@@ -434,7 +440,12 @@ export default function ChatPage() {
         <div className="border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
           <div className="mx-auto px-6 py-3" style={{ maxWidth: 'min(100%, 72rem)' }}>
             <form onSubmit={handleSubmit} className="relative">
-              <div className="chat-input-container rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-xs focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
+              <div className="chat-input-container relative rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-xs focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
+                {activeModelId && modelNames[activeModelId] && (
+                  <div className="absolute top-1.5 right-3 text-[10px] text-gray-300 dark:text-gray-600 select-none pointer-events-none">
+                    {modelNames[activeModelId]}
+                  </div>
+                )}
                 <textarea
                   ref={inputRef}
                   value={input}

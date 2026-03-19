@@ -36,7 +36,7 @@ interface ChatState {
   isStreaming: boolean
   currentToolCall: ToolCallInfo | null
   latestTitle: string | null
-  sendMessage: (conversationId: string, content: string) => Promise<void>
+  sendMessage: (conversationId: string, content: string, modelId?: string) => Promise<void>
   stopStreaming: () => void
   loadMessages: (conversationId: string, msgs: ChatMessage[]) => void
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
@@ -67,7 +67,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const sendMessage = useCallback(
-    async (conversationId: string, content: string) => {
+    async (conversationId: string, content: string, modelId?: string) => {
       if (!token || isStreaming) return
 
       activeConvRef.current = conversationId
@@ -87,6 +87,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         content: '',
         tool_calls: [],
         isStreaming: true,
+        model_id: modelId,
       }
       setMessages((prev) => [...prev, assistantMsg])
 
