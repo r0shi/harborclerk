@@ -15,7 +15,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("research_state", sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True))
+    conn = op.get_bind()
+    result = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.columns WHERE table_name='research_state' AND column_name='heartbeat_at'"
+        )
+    )
+    if not result.fetchone():
+        op.add_column("research_state", sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True))
 
 
 def downgrade() -> None:
