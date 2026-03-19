@@ -18,8 +18,7 @@ from harbor_clerk.api.schemas.research import (
 )
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
-from harbor_clerk.llm.model_settings import get_model_setting
-from harbor_clerk.llm.models import DEFAULT_RESEARCH_MAX_ROUNDS, default_research_strategy
+from harbor_clerk.llm.models import default_research_strategy
 from harbor_clerk.llm.research import research_stream
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
@@ -81,6 +80,7 @@ async def list_research(
             status=rs.status,
             current_round=rs.current_round,
             max_rounds=rs.max_rounds,
+            time_limit_minutes=rs.time_limit_minutes,
             created_at=conv.created_at,
             completed_at=rs.completed_at,
         )
@@ -166,6 +166,7 @@ async def get_research(
         status=state.status,
         current_round=state.current_round,
         max_rounds=state.max_rounds,
+        time_limit_minutes=state.time_limit_minutes,
         progress=state.progress,
         report=report,
         model_id=settings.llm_model_id if (settings := get_settings()).llm_model_id else None,
@@ -203,9 +204,8 @@ async def start_research(
     # Determine strategy
     strategy = body.strategy or default_research_strategy(settings.llm_model_id)
 
-    # Get max_rounds from per-model settings or global default
-    max_rounds_val = await get_model_setting(session, settings.llm_model_id, "research_max_rounds")
-    max_rounds = int(max_rounds_val) if max_rounds_val is not None else DEFAULT_RESEARCH_MAX_ROUNDS
+    # Safety cap for max_rounds; actual stopping is wall-time based
+    max_rounds = 500
 
     # Create conversation — title from question immediately
     eager_title = body.question.strip()
@@ -230,6 +230,7 @@ async def start_research(
         status="running",
         current_round=0,
         max_rounds=max_rounds,
+        time_limit_minutes=body.time_limit_minutes,
     )
     session.add(state)
     try:
