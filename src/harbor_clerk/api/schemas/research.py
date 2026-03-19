@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class StartResearchRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=10000)
     strategy: str | None = Field(default=None, pattern="^(search|sweep)$", description="Override default strategy")
+    time_limit_minutes: int = Field(default=30, ge=15, le=180)
 
 
 class ResearchProgress(BaseModel):
@@ -19,6 +20,7 @@ class ResearchProgress(BaseModel):
     status: str
     current_round: int
     max_rounds: int
+    time_limit_minutes: int | None = None
     progress: dict | None = None
     created_at: datetime
     completed_at: datetime | None = None
@@ -34,6 +36,7 @@ class ResearchSummary(BaseModel):
     status: str
     current_round: int
     max_rounds: int
+    time_limit_minutes: int | None = None
     created_at: datetime
     completed_at: datetime | None = None
 
@@ -48,6 +51,7 @@ class ResearchDetail(BaseModel):
     status: str
     current_round: int
     max_rounds: int
+    time_limit_minutes: int | None = None
     progress: dict | None = None
     report: str | None = None
     model_id: str | None = None

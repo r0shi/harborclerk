@@ -31,6 +31,9 @@ _ITERATION_SYSTEM_SEARCH = (
     "You are a research assistant for Harbor Clerk. Your task is to systematically "
     "search the knowledge base to thoroughly answer the user's question.\n\n"
     "## How to work\n"
+    "- Call multiple tools per round to explore different angles simultaneously\n"
+    "- For example: search with 3 different queries in one turn, or combine\n"
+    "  search_documents + read_passages + entity_search\n"
     "- Search broadly first, then drill into promising results\n"
     "- Use different search queries to cover different angles of the topic\n"
     "- Read passages to verify and gather detail from search hits\n"
@@ -56,6 +59,7 @@ _ITERATION_SYSTEM_SWEEP = (
     "You are a research assistant for Harbor Clerk. Your task is to systematically "
     "review documents from the knowledge base to thoroughly answer the user's question.\n\n"
     "## How to work\n"
+    "- Call multiple tools per round to explore different angles simultaneously\n"
     "- Focus on the document batch provided each round\n"
     "- Search within those documents, read relevant passages, and extract findings\n"
     "- Not every document will be relevant — skip irrelevant ones quickly\n"
@@ -106,6 +110,16 @@ _KEEPALIVE_INTERVAL = 30.0  # SSE keepalive + heartbeat during LLM calls
 
 # Rough chars-per-token estimate (same as chat.py)
 _CHARS_PER_TOKEN = 3.5
+
+_CONDENSATION_ROUND_INTERVAL = 15
+
+_CONDENSATION_SYSTEM = (
+    "You are consolidating research notes. Tighten the text: remove "
+    "redundancy, merge related findings, and improve organization. "
+    "NEVER remove or modify citations — every [Document Title, page X] "
+    "reference must be preserved exactly. Output only the consolidated "
+    "notes inside <notes>...</notes> tags."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +304,24 @@ async def _stream_llm_call(
     return assistant_content, tool_calls_accumulated
 
 
+async def _condense_notes(client, llm_url, notes, timeout=_ITERATION_TIMEOUT):
+    """Condense notes via a dedicated LLM call. Returns condensed notes or original on failure."""
+    messages = [
+        {"role": "system", "content": _CONDENSATION_SYSTEM},
+        {"role": "user", "content": f"<notes>\n{notes}\n</notes>"},
+    ]
+    try:
+        content, _ = await _stream_llm_call(client, llm_url, messages, timeout=timeout)
+        parsed = _parse_notes(content)
+        if parsed and len(parsed) < len(notes):
+            logger.info("Notes condensed: %d → %d chars", len(notes), len(parsed))
+            return parsed
+        logger.info("Condensation did not reduce notes (%d chars), keeping original", len(notes))
+    except Exception:
+        logger.warning("Notes condensation failed, keeping original")
+    return notes
+
+
 async def _stream_llm_tokens(
     client: httpx.AsyncClient,
     url: str,
@@ -395,6 +427,10 @@ async def research_stream(
         state.heartbeat_at = datetime.now(UTC)
         await session.commit()
 
+        # Wall-time stopping
+        start_time = datetime.now(UTC)
+        time_limit_s = (state.time_limit_minutes or 30) * 60
+
         # Choose system prompt based on strategy
         system_prompt = _ITERATION_SYSTEM_SEARCH if strategy == "search" else _ITERATION_SYSTEM_SWEEP
 
@@ -426,6 +462,20 @@ async def research_stream(
                 while current_round < max_rounds:
                     current_round += 1
 
+                    # Wall-time check
+                    elapsed = (datetime.now(UTC) - start_time).total_seconds()
+                    if elapsed >= time_limit_s:
+                        logger.info(
+                            "Research time limit reached (%.0fs / %ds) — moving to synthesis",
+                            elapsed,
+                            time_limit_s,
+                        )
+                        state.notes = notes
+                        state.current_round = current_round
+                        state.heartbeat_at = datetime.now(UTC)
+                        await session.commit()
+                        break
+
                     # Build sweep batch text if applicable
                     sweep_batch_text = None
                     if strategy == "sweep" and doc_batches:
@@ -444,6 +494,8 @@ async def research_stream(
                         "round": current_round,
                         "max_rounds": max_rounds,
                         "strategy": strategy,
+                        "elapsed_seconds": int((datetime.now(UTC) - start_time).total_seconds()),
+                        "time_limit_minutes": state.time_limit_minutes or 30,
                     }
                     if strategy == "sweep" and total_docs > 0:
                         reviewed = min(sweep_batch_idx * _SWEEP_BATCH_SIZE, total_docs)
@@ -739,6 +791,27 @@ async def research_stream(
                     else:
                         state.progress = {"tools_called": tools_called_total}
                     await session.commit()
+
+                    # Condense notes periodically or when they get large
+                    notes_token_budget = int(context_tokens * 0.5 * _CHARS_PER_TOKEN)
+                    if notes and (current_round % _CONDENSATION_ROUND_INTERVAL == 0 or len(notes) > notes_token_budget):
+                        logger.info(
+                            "Condensing notes: round=%d notes_len=%d budget=%d",
+                            current_round,
+                            len(notes),
+                            notes_token_budget,
+                        )
+                        condense_task = asyncio.create_task(_condense_notes(client, llm_url, notes))
+                        while not condense_task.done():
+                            done, _ = await asyncio.wait({condense_task}, timeout=_KEEPALIVE_INTERVAL)
+                            if done:
+                                break
+                            state.heartbeat_at = datetime.now(UTC)
+                            await session.commit()
+                            yield ": keepalive\n\n"
+                        notes = condense_task.result()
+                        state.notes = notes
+                        await session.commit()
 
                 # ---------------------------------------------------------------
                 # Synthesis pass
