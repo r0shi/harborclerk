@@ -161,7 +161,7 @@ docker compose down -v            # stop and delete all data
 docker compose logs -f app        # tail app logs
 ```
 
-**Services:** gateway (Caddy), app (FastAPI + React SPA), worker-io, worker-cpu, embedder (all-MiniLM-L6-v2), postgres (pgvector + pg_trgm), minio, tika.
+**Services:** gateway (Caddy), app (FastAPI + React SPA), worker-io, worker-cpu, embedder (multilingual-e5-small), postgres (pgvector + pg_trgm), minio, tika.
 
 ---
 
@@ -199,7 +199,7 @@ Two strategies are available:
 - **Search-driven** — the model picks its own queries and follows leads across documents
 - **Systematic sweep** — methodically reviews every document in the corpus
 
-Research runs in the background; you can continue using Ask, Upload, and other tabs while it works. Progress is streamed live with a tool-by-tool activity log.
+Each task has a configurable time limit (15 minutes to 3 hours), and notes are periodically condensed to prevent context overflow during long runs. Research runs in the background; you can continue using Ask, Upload, and other tabs while it works. Progress is streamed live with elapsed time and a tool-by-tool activity log.
 
 ### Document Intelligence
 
@@ -211,10 +211,15 @@ Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
 - **Corpus overview** — aggregate stats (language distribution, MIME types, page counts, date ranges)
 - **Stats dashboard** — visual corpus analytics: language/file type/OCR charts, pipeline timing, entity co-occurrence network (d3-force), and UMAP document cluster map
 
+### External LLM Connections
+
+Connect ChatGPT, Claude Desktop, Claude Code, Gemini CLI, or any MCP-compatible tool. ChatGPT connects via OAuth (requires a public URL); Claude and Gemini use API key authentication. Connection guides are available in the Integrations settings page.
+
 ### Auth
 
 - **Human users**: email + password, JWT access tokens + refresh cookies. Roles: `admin` / `user`.
 - **API keys**: admin-created, read-only, for MCP clients. Stored as SHA-256 hashes.
+- **OAuth 2.1**: Dynamic client registration for ChatGPT and other OAuth-based MCP clients.
 
 ---
 
