@@ -131,7 +131,8 @@ async def get_research(
                 break
 
     # Build tool result lookup for enrichment
-    from harbor_clerk.api.routes.chat import _enrich_tool_calls, _summarize_tool_result
+    from harbor_clerk.api.routes.chat import _enrich_tool_calls
+    from harbor_clerk.llm.tools import summarize_tool_result as _summarize_tool_result
 
     tool_results_by_id: dict[str, str] = {}
     for m in all_msgs:
