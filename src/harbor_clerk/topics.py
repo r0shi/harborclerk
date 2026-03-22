@@ -157,15 +157,15 @@ async def recompute_topics() -> None:
         # Upsert corpus_topics_meta
         meta = (await session.execute(select(CorpusTopicsMeta).where(CorpusTopicsMeta.id == 1))).scalar_one_or_none()
         doc_count = len(doc_ids)
-        # Compute hash from doc count and max version_id
-        max_version_row = (
+        # Compute hash from doc count and latest version timestamp
+        max_ts_row = (
             await session.execute(
-                select(func.max(DocumentVersion.version_id).cast(Text)).where(
+                select(func.max(DocumentVersion.created_at).cast(Text)).where(
                     DocumentVersion.doc_id.in_(doc_ids),
                 )
             )
         ).scalar_one_or_none()
-        corpus_hash = f"{doc_count}:{max_version_row or ''}"
+        corpus_hash = f"{doc_count}:{max_ts_row or ''}"
 
         if meta:
             meta.last_computed_at = now
@@ -234,12 +234,14 @@ async def check_and_recompute_topics(session) -> None:
         if doc_count < MIN_DOCS_FOR_TOPICS:
             return
 
-        # Get latest version ID
-        latest_version = await session.execute(
-            select(func.max(Document.latest_version_id).cast(Text)).where(Document.status == "active")
+        # Get latest version timestamp as staleness indicator
+        latest_ts = await session.execute(
+            select(func.max(DocumentVersion.created_at).cast(Text))
+            .join(Document, Document.latest_version_id == DocumentVersion.version_id)
+            .where(Document.status == "active")
         )
-        latest_vid = latest_version.scalar_one_or_none() or ""
-        current_hash = f"{doc_count}:{latest_vid}"
+        latest_str = latest_ts.scalar_one_or_none() or ""
+        current_hash = f"{doc_count}:{latest_str}"
 
         # Check stored meta
         meta = (await session.execute(select(CorpusTopicsMeta).where(CorpusTopicsMeta.id == 1))).scalar_one_or_none()
