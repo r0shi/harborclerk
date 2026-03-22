@@ -44,6 +44,7 @@ class DocumentSummary(BaseModel):
     summary_model: str | None = None
     doc_type: str | None = None
     source_path: str | None = None
+    topic_id: int | None = None
 
 
 class DocumentDetail(BaseModel):
