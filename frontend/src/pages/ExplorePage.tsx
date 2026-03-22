@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { get } from '../api'
@@ -11,9 +11,9 @@ interface EntityItem {
 interface TopicCluster {
   cluster_id: number
   name: string
+  keywords: string[]
   doc_count: number
-  doc_ids: string[]
-  sample_titles: string[]
+  representative_doc_ids: string[]
 }
 
 interface TimelinePoint {
@@ -26,6 +26,7 @@ interface SubPaneState {
   label: string
   entityText?: string
   entityType?: string
+  clusterId?: number
   docIds?: string[]
 }
 
@@ -40,6 +41,7 @@ interface DocSummary {
   summary?: string
   summary_model?: string
   doc_type?: string
+  topic_id?: number | null
 }
 
 interface PaginatedDocs {
@@ -80,6 +82,20 @@ function StatusBadge({ status }: { status: string }) {
   else if (display === 'error') cls = 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
   else if (display === 'processing') cls = 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
   return <span className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>{display}</span>
+}
+
+/** Compute topics sharing the most keywords with a given topic */
+function getRelatedTopics(topic: TopicCluster, allTopics: TopicCluster[], max: number = 3): TopicCluster[] {
+  const myKeywords = new Set(topic.keywords)
+  const scored = allTopics
+    .filter((t) => t.cluster_id !== topic.cluster_id)
+    .map((t) => {
+      const overlap = t.keywords.filter((kw) => myKeywords.has(kw)).length
+      return { topic: t, overlap }
+    })
+    .filter((s) => s.overlap > 0)
+    .sort((a, b) => b.overlap - a.overlap)
+  return scored.slice(0, max).map((s) => s.topic)
 }
 
 export default function ExplorePage() {
@@ -183,7 +199,14 @@ export default function ExplorePage() {
   }
 
   if (subPane) {
-    return <ExploreDocList subPane={subPane} onBack={() => window.history.back()} />
+    return (
+      <ExploreDocList
+        subPane={subPane}
+        clusters={clusters}
+        onBack={() => window.history.back()}
+        onOpenSubPane={openSubPane}
+      />
+    )
   }
 
   return <ExploreMain entities={entities} clusters={clusters} timeline={timeline} onOpenSubPane={openSubPane} />
@@ -202,14 +225,70 @@ function ExploreMain({
   timeline: TimelinePoint[]
   onOpenSubPane: (state: SubPaneState) => void
 }) {
+  const [topicSearch, setTopicSearch] = useState('')
+
   const timelineData = timeline.map((t) => ({
     month: new Date(t.month).toLocaleDateString(undefined, { year: '2-digit', month: 'short' }),
     count: t.count,
   }))
 
+  const lowerSearch = topicSearch.toLowerCase().trim()
+
+  // Filter clusters by search
+  const filteredClusters = useMemo(() => {
+    if (!lowerSearch) return clusters
+    return clusters.filter(
+      (c) =>
+        c.name.toLowerCase().includes(lowerSearch) || c.keywords.some((kw) => kw.toLowerCase().includes(lowerSearch)),
+    )
+  }, [clusters, lowerSearch])
+
+  // Filter entities by search (highlight matching ones)
+  const filteredEntities = useMemo(() => {
+    if (!lowerSearch) return entities
+    const result: Record<string, EntityItem[]> = {}
+    for (const [type, items] of Object.entries(entities)) {
+      const matched = items.filter((item) => item.entity_text.toLowerCase().includes(lowerSearch))
+      result[type] = matched.length > 0 ? matched : items
+    }
+    return result
+  }, [entities, lowerSearch])
+
   return (
     <div className="space-y-5">
-      <h1 className="text-lg font-semibold text-(--color-text-primary)">Explore</h1>
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-lg font-semibold text-(--color-text-primary)">Explore</h1>
+
+        {/* Improvement #5: Topic search */}
+        <div className="relative">
+          <svg
+            className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-(--color-text-secondary)"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            type="text"
+            placeholder="Search topics & entities..."
+            value={topicSearch}
+            onChange={(e) => setTopicSearch(e.target.value)}
+            className="w-64 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac pl-8 pr-3 py-1.5 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
+          />
+          {topicSearch && (
+            <button
+              onClick={() => setTopicSearch('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-(--color-text-secondary) hover:text-(--color-text-primary)"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Entity sections — People / Places / Organizations */}
       <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden divide-y divide-(--color-border)">
@@ -217,7 +296,7 @@ function ExploreMain({
           <EntitySection
             key={section.type}
             label={section.label}
-            items={entities[section.type] || []}
+            items={filteredEntities[section.type] || []}
             defaultOpen
             onSelect={(entityText) =>
               onOpenSubPane({
@@ -236,18 +315,27 @@ function ExploreMain({
         <section>
           <h2 className="text-[13px] font-semibold text-(--color-text-secondary) uppercase tracking-wider mb-3">
             Topic Clusters
+            {lowerSearch && filteredClusters.length !== clusters.length && (
+              <span className="ml-2 font-normal normal-case tracking-normal">
+                ({filteredClusters.length} of {clusters.length})
+              </span>
+            )}
           </h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {clusters.map((cluster) => {
-              const remaining = cluster.doc_count - Math.min(3, cluster.sample_titles.length)
-              return (
+          {filteredClusters.length === 0 ? (
+            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-8 text-center">
+              <p className="text-sm text-(--color-text-secondary)">No topics match your search.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredClusters.map((cluster) => (
                 <button
                   key={cluster.cluster_id}
                   onClick={() =>
                     onOpenSubPane({
                       type: 'cluster',
                       label: cluster.name,
-                      docIds: cluster.doc_ids,
+                      clusterId: cluster.cluster_id,
+                      docIds: cluster.representative_doc_ids,
                     })
                   }
                   className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-4 hover:shadow-mac-lg hover:ring-(--color-border)/80 transition-all text-left group"
@@ -264,45 +352,26 @@ function ExploreMain({
                       <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                     </svg>
                   </div>
-                  <p className="text-[11px] text-(--color-text-secondary) mb-2">
+                  {/* Improvement #1: Keyword pills */}
+                  {cluster.keywords.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1.5">
+                      {cluster.keywords.slice(0, 5).map((kw) => (
+                        <span
+                          key={kw}
+                          className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
+                        >
+                          {kw}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-[11px] text-(--color-text-secondary) mt-2">
                     {cluster.doc_count} {cluster.doc_count === 1 ? 'document' : 'documents'}
                   </p>
-                  <ul className="ml-3 space-y-0.5">
-                    {cluster.sample_titles.slice(0, 3).map((title, i) => {
-                      const ext = title.includes('.') ? title.slice(title.lastIndexOf('.')) : ''
-                      const name = ext ? title.slice(0, title.lastIndexOf('.')) : title
-                      return (
-                        <li key={i} className="text-[12px] text-(--color-text-secondary) truncate flex items-center">
-                          <svg
-                            className="h-3 w-3 mr-1.5 shrink-0 text-(--color-text-secondary) opacity-50"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            strokeWidth={1.5}
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"
-                            />
-                          </svg>
-                          <span className="truncate">{name}</span>
-                          {ext && (
-                            <span className="ml-0.5 shrink-0 text-[10px] text-(--color-text-secondary) opacity-60">
-                              {ext}
-                            </span>
-                          )}
-                        </li>
-                      )
-                    })}
-                  </ul>
-                  {remaining > 0 && (
-                    <p className="ml-3 mt-1 text-[11px] text-(--color-text-secondary) italic">and {remaining} more</p>
-                  )}
                 </button>
-              )
-            })}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
@@ -415,7 +484,17 @@ function EntitySection({
 
 /* ──────────────────────────────── Sub-pane: filtered document list ──────────────────────────────── */
 
-function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: () => void }) {
+function ExploreDocList({
+  subPane,
+  clusters,
+  onBack,
+  onOpenSubPane,
+}: {
+  subPane: SubPaneState
+  clusters: TopicCluster[]
+  onBack: () => void
+  onOpenSubPane: (state: SubPaneState) => void
+}) {
   const [docs, setDocs] = useState<DocSummary[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -430,6 +509,7 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
   const [filterInput, setFilterInput] = useState('')
   const [filter, setFilter] = useState('')
   const [mimeFilter, setMimeFilter] = useState('')
+  const [topicFilter, setTopicFilter] = useState('')
   const [sortField, setSortField] = useState<'updated' | 'created' | 'title'>('updated')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -451,6 +531,15 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
       .catch(() => {})
   }, [])
 
+  // Determine effective doc_ids for the query, considering topic filter override
+  const effectiveDocIds = useMemo(() => {
+    if (topicFilter) {
+      const tc = clusters.find((c) => String(c.cluster_id) === topicFilter)
+      if (tc) return tc.representative_doc_ids
+    }
+    return subPane.docIds
+  }, [topicFilter, clusters, subPane.docIds])
+
   const loadDocs = useCallback(
     (page: number) => {
       const params: Record<string, string | number> = {
@@ -463,7 +552,12 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
       if (filter) params.q = filter
       if (mimeFilter) params.mime_type = mimeFilter
 
-      if (subPane.type === 'entity' && subPane.entityText) {
+      if (topicFilter) {
+        // Topic dropdown overrides: filter by that topic's doc_ids
+        if (effectiveDocIds) {
+          params.doc_ids = effectiveDocIds.join(',')
+        }
+      } else if (subPane.type === 'entity' && subPane.entityText) {
         params.entity = subPane.entityText
         if (subPane.entityType) params.entity_type = subPane.entityType
       } else if (subPane.type === 'cluster' && subPane.docIds) {
@@ -478,7 +572,7 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
         .catch(() => {})
         .finally(() => setLoading(false))
     },
-    [subPane, pageSize, sortField, sortDir, filter, mimeFilter],
+    [subPane, pageSize, sortField, sortDir, filter, mimeFilter, topicFilter, effectiveDocIds],
   )
 
   useEffect(() => {
@@ -486,6 +580,46 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
   }, [loadDocs, currentPage])
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  // Improvement #2: Related topics (only for cluster sub-pane)
+  const activeTopic = useMemo(() => {
+    if (subPane.type === 'cluster' && subPane.clusterId != null) {
+      return clusters.find((c) => c.cluster_id === subPane.clusterId) || null
+    }
+    return null
+  }, [subPane, clusters])
+
+  const relatedTopics = useMemo(() => {
+    if (!activeTopic) return []
+    return getRelatedTopics(activeTopic, clusters, 3)
+  }, [activeTopic, clusters])
+
+  // Improvement #4: Entity-topic cross-reference
+  const entityTopics = useMemo(() => {
+    if (subPane.type !== 'entity' || docs.length === 0 || clusters.length === 0) return []
+    // Match loaded documents' topic_ids against clusters
+    const topicCounts = new Map<number, number>()
+    for (const doc of docs) {
+      if (doc.topic_id != null) {
+        topicCounts.set(doc.topic_id, (topicCounts.get(doc.topic_id) || 0) + 1)
+      }
+    }
+    // Also best-effort match via representative_doc_ids
+    const docIdSet = new Set(docs.map((d) => d.doc_id))
+    for (const cluster of clusters) {
+      const matchCount = cluster.representative_doc_ids.filter((id) => docIdSet.has(id)).length
+      if (matchCount > 0 && !topicCounts.has(cluster.cluster_id)) {
+        topicCounts.set(cluster.cluster_id, matchCount)
+      }
+    }
+    return [...topicCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([topicId]) => clusters.find((c) => c.cluster_id === topicId))
+      .filter((c): c is TopicCluster => c != null)
+  }, [subPane.type, docs, clusters])
+
+  const hasActiveFilters = filter || mimeFilter || topicFilter
 
   return (
     <div className="animate-slide-in">
@@ -503,6 +637,62 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
         <span className="text-(--color-text-secondary) text-[11px]">/</span>
         <h1 className="text-lg font-semibold text-(--color-text-primary)">{subPane.label}</h1>
       </div>
+
+      {/* Improvement #2: Related topics (for cluster sub-pane) */}
+      {relatedTopics.length > 0 && (
+        <div className="mb-3 rounded-lg bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) px-4 py-2.5">
+          <span className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wider mr-2">
+            Related topics
+          </span>
+          <div className="inline-flex flex-wrap gap-1.5 mt-1">
+            {relatedTopics.map((rt) => (
+              <button
+                key={rt.cluster_id}
+                onClick={() =>
+                  onOpenSubPane({
+                    type: 'cluster',
+                    label: rt.name,
+                    clusterId: rt.cluster_id,
+                    docIds: rt.representative_doc_ids,
+                  })
+                }
+                className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] bg-white dark:bg-[#3a3a3c] text-(--color-text-primary) shadow-sm ring-1 ring-(--color-border) hover:shadow-md transition-shadow"
+              >
+                {rt.name}
+                <span className="text-[10px] text-(--color-text-secondary)">({rt.doc_count})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Improvement #4: Entity-topic cross-reference */}
+      {entityTopics.length > 0 && (
+        <div className="mb-3 rounded-lg bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) px-4 py-2.5">
+          <span className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wider mr-2">
+            Topics containing this entity
+          </span>
+          <div className="inline-flex flex-wrap gap-1.5 mt-1">
+            {entityTopics.map((et) => (
+              <button
+                key={et.cluster_id}
+                onClick={() =>
+                  onOpenSubPane({
+                    type: 'cluster',
+                    label: et.name,
+                    clusterId: et.cluster_id,
+                    docIds: et.representative_doc_ids,
+                  })
+                }
+                className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] bg-white dark:bg-[#3a3a3c] text-(--color-text-primary) shadow-sm ring-1 ring-(--color-border) hover:shadow-md transition-shadow"
+              >
+                {et.name}
+                <span className="text-[10px] text-(--color-text-secondary)">({et.doc_count})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Filter bar */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -538,6 +728,25 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
           </select>
         )}
 
+        {/* Improvement #3: Topic dropdown filter */}
+        {clusters.length > 0 && (
+          <select
+            value={topicFilter}
+            onChange={(e) => {
+              setTopicFilter(e.target.value)
+              setCurrentPage(1)
+            }}
+            className="max-w-48 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+          >
+            <option value="">All topics</option>
+            {clusters.map((c) => (
+              <option key={c.cluster_id} value={String(c.cluster_id)}>
+                {c.name} ({c.doc_count})
+              </option>
+            ))}
+          </select>
+        )}
+
         {/* Sort controls */}
         <div className="flex items-center gap-1 text-xs text-gray-400">
           <span>Sort:</span>
@@ -565,12 +774,13 @@ function ExploreDocList({ subPane, onBack }: { subPane: SubPaneState; onBack: ()
           ))}
         </div>
 
-        {(filter || mimeFilter) && (
+        {hasActiveFilters && (
           <button
             onClick={() => {
               setFilterInput('')
               setFilter('')
               setMimeFilter('')
+              setTopicFilter('')
               setCurrentPage(1)
             }}
             className="text-xs text-blue-600 dark:text-blue-400 hover:underline"

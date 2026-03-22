@@ -161,6 +161,7 @@ async def list_documents(
                 summary_model=latest_summary_model,
                 doc_type=latest_doc_type,
                 source_path=latest_source_path,
+                topic_id=doc.topic_id,
             )
         )
     return PaginatedDocuments(items=summaries, total=total, limit=limit, offset=offset)
