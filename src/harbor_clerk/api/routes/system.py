@@ -279,6 +279,17 @@ async def reaper_run(
     return {"reaped": len(orphans)}
 
 
+@router.post("/system/recompute-topics")
+async def recompute_topics_endpoint(
+    admin: Principal = Depends(require_admin),
+):
+    """Trigger immediate topic recomputation."""
+    from harbor_clerk.topics import recompute_topics
+
+    await recompute_topics()
+    return {"status": "ok"}
+
+
 @router.post("/system/reprocess-all")
 async def reprocess_all(
     admin: Principal = Depends(require_admin),

@@ -237,7 +237,13 @@ async def chat_stream(
         history_rows = history_result.scalars().all()
 
         # Build messages for the LLM
-        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        from harbor_clerk.topics import get_topic_summary
+
+        topic_hint = await get_topic_summary()
+        system_content = SYSTEM_PROMPT
+        if topic_hint:
+            system_content += f"\n\n## Corpus topics\n{topic_hint}"
+        messages: list[dict] = [{"role": "system", "content": system_content}]
         for msg in history_rows[-settings.max_history_messages :]:
             content = _truncate_for_llm(msg.content, tool_result_max_chars) if msg.role == "tool" else msg.content
             entry: dict = {"role": msg.role, "content": content}

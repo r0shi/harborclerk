@@ -6,6 +6,7 @@ from harbor_clerk.models.base import Base
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.conversation import Conversation
+from harbor_clerk.models.corpus_topic import CorpusTopic, CorpusTopicsMeta
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_heading import DocumentHeading
 from harbor_clerk.models.document_page import DocumentPage
@@ -48,6 +49,8 @@ __all__ = [
     "AuditLog",
     "Conversation",
     "ChatMessage",
+    "CorpusTopic",
+    "CorpusTopicsMeta",
     "Entity",
     "ModelSettings",
     "OAuthClient",

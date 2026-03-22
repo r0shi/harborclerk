@@ -287,6 +287,17 @@ _BASE_CHAT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "corpus_topics",
+            "description": "List the main topics in the knowledge base with keywords and document counts. Use this to understand what the corpus covers before doing broad searches.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]
 
 
@@ -414,6 +425,10 @@ def _map_args_ingest_status(args: dict) -> dict:
     return {"doc_id": args["doc_id"]}
 
 
+def _map_args_corpus_topics(args: dict) -> dict:
+    return {}
+
+
 _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
     "search_documents": ("kb_search", _map_args_search),
     "read_passages": ("kb_read_passages", _map_args_read_passages),
@@ -428,6 +443,7 @@ _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
     "entity_cooccurrence": ("kb_entity_cooccurrence", _map_args_entity_cooccurrence),
     "read_document": ("kb_read_document", _map_args_read_document),
     "ingest_status": ("kb_ingest_status", _map_args_ingest_status),
+    "corpus_topics": ("kb_corpus_topics", _map_args_corpus_topics),
 }
 
 
@@ -509,6 +525,11 @@ async def execute_tool(name: str, arguments: dict, user_id: uuid.UUID | None = N
     """
     from harbor_clerk.api.deps import Principal
     from harbor_clerk.mcp_server import _mcp_principal
+
+    if name == "corpus_topics":
+        from harbor_clerk.topics import get_topics_for_tool
+
+        return await get_topics_for_tool()
 
     dispatch = _RESEARCH_TOOL_DISPATCH if mode == "research" else _TOOL_DISPATCH
     entry = dispatch.get(name)

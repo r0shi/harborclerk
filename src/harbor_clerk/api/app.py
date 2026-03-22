@@ -115,6 +115,11 @@ async def _session_reaper_loop() -> None:
                         len(done_sessions),
                         len(stale_research),
                     )
+
+                # Refresh topics if corpus changed
+                from harbor_clerk.topics import check_and_recompute_topics
+
+                await check_and_recompute_topics(db)
         except Exception:
             logger.exception("Session reaper error")
 
