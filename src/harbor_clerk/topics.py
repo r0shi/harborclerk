@@ -177,6 +177,29 @@ async def recompute_topics() -> None:
         logger.info("Topic computation complete: %d topics from %d documents", len(topic_results), doc_count)
 
 
+async def get_topics_for_tool() -> str:
+    """Return topic data formatted for tool call response."""
+    import json
+
+    async with async_session_factory() as session:
+        rows = (await session.execute(select(CorpusTopic).order_by(CorpusTopic.doc_count.desc()))).scalars().all()
+
+    if not rows:
+        return json.dumps(
+            {"message": "No topics computed yet. The corpus may be too small or topics haven't been generated."}
+        )
+
+    topics = [
+        {
+            "topic": r.label,
+            "keywords": r.keywords,
+            "doc_count": r.doc_count,
+        }
+        for r in rows
+    ]
+    return json.dumps({"topics": topics, "total_topics": len(topics)}, indent=2)
+
+
 async def get_topic_summary() -> str | None:
     """Return a compact one-liner summarising corpus topics, or None if not computed."""
     async with async_session_factory() as session:
