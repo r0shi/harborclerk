@@ -31,18 +31,12 @@ from harbor_clerk.llm.download import (
     list_downloaded,
 )
 from harbor_clerk.llm.models import get_model, list_models
+from harbor_clerk.llm.tools import summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
-
-
-def _summarize_tool_result(content: str) -> str:
-    """Create a short human-readable summary of a tool result."""
-    from harbor_clerk.llm.chat import _summarize_result
-
-    return _summarize_result(content)
 
 
 def _enrich_tool_calls(tool_calls: list[dict], results: dict[str, str]) -> list[dict]:
@@ -138,7 +132,7 @@ async def get_conversation(
     tool_results_by_id: dict[str, str] = {}
     for m in all_msgs:
         if m.role == "tool" and m.tool_call_id and m.content:
-            tool_results_by_id[m.tool_call_id] = _summarize_tool_result(m.content)
+            tool_results_by_id[m.tool_call_id] = summarize_tool_result(m.content)
 
     messages = []
     for m in all_msgs:
@@ -415,7 +409,6 @@ async def download_progress_stream(
                 for model_id in prev_active - current_active - errored:
                     yield f"data: {json.dumps({'model_id': model_id, 'status': 'complete', 'progress': 100})}\n\n"
                 prev_active = current_active
-                errored.clear()
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
             pass

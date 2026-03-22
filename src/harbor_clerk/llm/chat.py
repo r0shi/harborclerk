@@ -12,7 +12,7 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.models import get_model
-from harbor_clerk.llm.tools import execute_tool, get_chat_tools
+from harbor_clerk.llm.tools import execute_tool, get_chat_tools, summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 
@@ -242,7 +242,6 @@ async def chat_stream(
             entry: dict = {"role": msg.role, "content": content}
             if msg.tool_calls:
                 entry["tool_calls"] = msg.tool_calls
-                entry.pop("content", None)
                 if not msg.content:
                     entry["content"] = ""
             if msg.tool_call_id:
@@ -441,7 +440,7 @@ async def chat_stream(
 
                     result_str = await execute_tool(fn_name, fn_args, user_id)
 
-                    yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': _summarize_result(result_str)})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': summarize_tool_result(result_str)})}\n\n"
 
                     # Save full result to DB, but truncate for LLM context
                     tool_msg = ChatMessage(
@@ -610,36 +609,3 @@ def _truncate_for_llm(result_str: str, max_chars: int = 28_000) -> str:
     if len(result) > max_chars:
         return result_str[:max_chars] + f"\n... [truncated — {len(result_str)} chars total]"
     return result
-
-
-def _summarize_result(result_str: str) -> str:
-    """Create a short summary of a tool result for the UI."""
-    try:
-        data = json.loads(result_str)
-        if "error" in data:
-            return f"Error: {data['error']}"
-        if "hits" in data:
-            return f"Found {len(data['hits'])} results"
-        if "results" in data:
-            return f"Found {data.get('count', len(data['results']))} results"
-        if "passages" in data:
-            return f"Read {len(data['passages'])} passages"
-        if "chunks" in data:
-            return f"Read {len(data['chunks'])} chunks"
-        if "documents" in data:
-            return f"{len(data['documents'])} documents"
-        if "document" in data:
-            return f"Document: {data['document'].get('title', 'Untitled')}"
-        if "headings" in data:
-            return f"{len(data.get('headings', []))} headings"
-        if "related" in data:
-            return f"{len(data['related'])} related documents"
-        if "entities" in data:
-            return f"{len(data['entities'])} entities"
-        if "stages" in data:
-            return f"Status: {data.get('overall_status', 'unknown')}"
-        if "total_documents" in data:
-            return f"{data['total_documents']} documents in corpus"
-    except (json.JSONDecodeError, TypeError, KeyError):
-        pass
-    return "Done"

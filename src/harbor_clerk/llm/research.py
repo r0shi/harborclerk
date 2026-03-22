@@ -15,7 +15,7 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.models import get_model
-from harbor_clerk.llm.tools import execute_tool, get_research_tools
+from harbor_clerk.llm.tools import execute_tool, get_research_tools, summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 from harbor_clerk.models.document import Document
@@ -194,39 +194,6 @@ async def _fetch_document_list(user_id: uuid.UUID | None) -> list[dict]:
         return [{"doc_id": str(row.doc_id), "title": row.title} for row in result.all()]
 
 
-def _summarize_tool_result(name: str, result_str: str) -> str:
-    """Create a brief summary of a tool result for progress events."""
-    try:
-        data = json.loads(result_str)
-        if "error" in data:
-            return f"Error: {data['error']}"
-        if "hits" in data:
-            return f"Found {len(data['hits'])} results"
-        if "results" in data:
-            return f"Found {data.get('count', len(data['results']))} results"
-        if "passages" in data:
-            return f"Read {len(data['passages'])} passages"
-        if "chunks" in data:
-            return f"Read {len(data['chunks'])} chunks"
-        if "documents" in data:
-            return f"{len(data['documents'])} documents"
-        if "document" in data:
-            return f"Document: {data['document'].get('title', 'Untitled')}"
-        if "headings" in data:
-            return f"{len(data.get('headings', []))} headings"
-        if "related" in data:
-            return f"{len(data['related'])} related documents"
-        if "entities" in data:
-            return f"{len(data['entities'])} entities"
-        if "stages" in data:
-            return f"Status: {data.get('overall_status', 'unknown')}"
-        if "total_documents" in data:
-            return f"{data['total_documents']} documents in corpus"
-    except (json.JSONDecodeError, TypeError, KeyError):
-        pass
-    return "Done"
-
-
 def _truncate_for_context(text: str, max_chars: int) -> str:
     """Truncate text for LLM context if it exceeds max_chars."""
     if len(text) <= max_chars:
@@ -313,7 +280,7 @@ async def _condense_notes(client, llm_url, notes, timeout=_ITERATION_TIMEOUT):
     try:
         content, _ = await _stream_llm_call(client, llm_url, messages, timeout=timeout)
         parsed = _parse_notes(content)
-        if parsed and len(parsed) < len(notes):
+        if parsed and len(parsed) <= len(notes):
             logger.info("Notes condensed: %d → %d chars", len(notes), len(parsed))
             return parsed
         logger.info("Condensation did not reduce notes (%d chars), keeping original", len(notes))
@@ -616,7 +583,7 @@ async def research_stream(
                                 result_str,
                             )
 
-                            summary = _summarize_tool_result(fn_name, result_str)
+                            summary = summarize_tool_result(result_str)
                             yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': summary})}\n\n"
 
                             # Save full tool result as message

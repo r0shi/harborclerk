@@ -539,3 +539,36 @@ async def execute_tool(name: str, arguments: dict, user_id: uuid.UUID | None = N
     finally:
         if token is not None:
             _mcp_principal.reset(token)
+
+
+def summarize_tool_result(result_str: str) -> str:
+    """Create a short human-readable summary of a tool result."""
+    try:
+        data = json.loads(result_str)
+        if "error" in data:
+            return f"Error: {data['error']}"
+        if "hits" in data:
+            return f"Found {len(data['hits'])} results"
+        if "results" in data:
+            return f"Found {data.get('count', len(data['results']))} results"
+        if "passages" in data:
+            return f"Read {len(data['passages'])} passages"
+        if "chunks" in data:
+            return f"Read {len(data['chunks'])} chunks"
+        if "documents" in data:
+            return f"{len(data['documents'])} documents"
+        if "document" in data:
+            return f"Document: {data['document'].get('title', 'Untitled')}"
+        if "headings" in data:
+            return f"{len(data.get('headings', []))} headings"
+        if "related" in data:
+            return f"{len(data['related'])} related documents"
+        if "entities" in data:
+            return f"{len(data['entities'])} entities"
+        if "stages" in data:
+            return f"Status: {data.get('overall_status', 'unknown')}"
+        if "total_documents" in data:
+            return f"{data['total_documents']} documents in corpus"
+    except (json.JSONDecodeError, TypeError, KeyError):
+        pass
+    return "Done"
