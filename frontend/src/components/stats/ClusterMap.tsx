@@ -8,11 +8,15 @@ interface ClusterDoc {
   title: string
   mime_type: string
   centroid: number[]
+  topic_id?: number
+  topic_name?: string
 }
 
 interface ClusterData {
   documents: ClusterDoc[]
 }
+
+const TOPIC_COLORS = ['#007aff', '#34c759', '#ff9500', '#ff3b30', '#af52de', '#5ac8fa', '#ff2d55', '#ffcc00']
 
 const MIME_COLORS: Record<string, string> = {
   'application/pdf': '#ff3b30',
@@ -52,6 +56,8 @@ function shortMime(mime: string): string {
   return map[mime] || mime.split('/').pop()?.toUpperCase() || mime
 }
 
+type ColorMode = 'mime' | 'topic'
+
 export default function ClusterMap() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -61,7 +67,10 @@ export default function ClusterMap() {
   const [positions, setPositions] = useState<[number, number][]>([])
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
+  const [colorMode, setColorMode] = useState<ColorMode>('mime')
   const navigate = useNavigate()
+
+  const hasTopics = docs.some((d) => d.topic_id != null)
 
   // Responsive sizing
   useEffect(() => {
@@ -149,7 +158,11 @@ export default function ClusterMap() {
 
       ctx.beginPath()
       ctx.arc(x, y, r, 0, Math.PI * 2)
-      ctx.fillStyle = mimeColor(doc.mime_type)
+      if (colorMode === 'topic' && doc.topic_id != null) {
+        ctx.fillStyle = TOPIC_COLORS[doc.topic_id % TOPIC_COLORS.length]
+      } else {
+        ctx.fillStyle = mimeColor(doc.mime_type)
+      }
       ctx.fill()
 
       if (hoveredIdx === i) {
@@ -158,7 +171,7 @@ export default function ClusterMap() {
         ctx.stroke()
       }
     })
-  }, [docs, positions, dimensions, hoveredIdx])
+  }, [docs, positions, dimensions, hoveredIdx, colorMode])
 
   useEffect(() => {
     draw()
@@ -204,20 +217,59 @@ export default function ClusterMap() {
 
   const mimeTypes = [...new Set(docs.map((d) => d.mime_type))]
 
+  // Build topic legend entries (unique topic_id -> topic_name)
+  const topicEntries = docs.reduce<{ id: number; name: string }[]>((acc, d) => {
+    if (d.topic_id != null && !acc.some((e) => e.id === d.topic_id)) {
+      acc.push({ id: d.topic_id, name: d.topic_name || `Topic ${d.topic_id}` })
+    }
+    return acc
+  }, [])
+
   return (
     <div
       ref={containerRef}
       className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
     >
-      <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Document Clusters</h3>
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-[13px] font-semibold text-(--color-text-primary)">Document Clusters</h3>
+        {hasTopics && (
+          <div className="flex rounded-lg bg-(--color-bg-secondary) p-0.5 text-[11px] font-medium">
+            <button
+              className={`rounded-md px-2.5 py-1 transition-colors ${colorMode === 'mime' ? 'bg-white dark:bg-[#3a3a3c] shadow-sm text-(--color-text-primary)' : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'}`}
+              onClick={() => setColorMode('mime')}
+            >
+              File Type
+            </button>
+            <button
+              className={`rounded-md px-2.5 py-1 transition-colors ${colorMode === 'topic' ? 'bg-white dark:bg-[#3a3a3c] shadow-sm text-(--color-text-primary)' : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'}`}
+              onClick={() => setColorMode('topic')}
+            >
+              Topic
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Legend */}
-      {mimeTypes.length > 0 && (
+      {colorMode === 'mime' && mimeTypes.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-(--color-text-secondary)">
           {mimeTypes.map((mime) => (
             <span key={mime} className="flex items-center gap-1">
               <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: mimeColor(mime) }} />
               {shortMime(mime)}
+            </span>
+          ))}
+        </div>
+      )}
+      {colorMode === 'topic' && topicEntries.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-(--color-text-secondary)">
+          {topicEntries.map((t) => (
+            <span key={t.id} className="flex items-center gap-1">
+              <span
+                className="inline-block h-2 w-2 rounded-full"
+                style={{ backgroundColor: TOPIC_COLORS[t.id % TOPIC_COLORS.length] }}
+              />
+              {t.name}
             </span>
           ))}
         </div>
@@ -253,6 +305,9 @@ export default function ClusterMap() {
           <div className="pointer-events-none absolute left-3 top-3 max-w-xs rounded-lg bg-white dark:bg-[#3a3a3c] shadow-mac-lg px-3 py-1.5 text-[12px] text-(--color-text-primary) ring-1 ring-(--color-border)">
             <p className="font-medium">{docs[hoveredIdx].title}</p>
             <p className="text-(--color-text-secondary)">{shortMime(docs[hoveredIdx].mime_type)}</p>
+            {colorMode === 'topic' && docs[hoveredIdx].topic_name && (
+              <p className="text-(--color-text-secondary)">{docs[hoveredIdx].topic_name}</p>
+            )}
           </div>
         )}
       </div>

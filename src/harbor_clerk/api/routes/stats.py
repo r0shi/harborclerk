@@ -247,14 +247,17 @@ async def document_clusters(
                     c.doc_id,
                     d.title,
                     dv.mime_type,
-                    avg(c.embedding)::text AS centroid
+                    avg(c.embedding)::text AS centroid,
+                    d.topic_id,
+                    ct.label AS topic_name
                 FROM chunks c
                 JOIN documents d ON c.doc_id = d.doc_id
                 JOIN document_versions dv ON c.version_id = dv.version_id
+                LEFT JOIN corpus_topics ct ON d.topic_id = ct.topic_id
                 WHERE d.status = 'active'
                   AND d.latest_version_id = dv.version_id
                   AND c.embedding IS NOT NULL
-                GROUP BY c.doc_id, d.title, dv.mime_type
+                GROUP BY c.doc_id, d.title, dv.mime_type, d.topic_id, ct.label
             """)
         )
     ).all()
@@ -267,14 +270,16 @@ async def document_clusters(
             centroid = [float(x) for x in centroid_str.strip("[]").split(",")]
         else:
             continue
-        documents.append(
-            {
-                "doc_id": str(row[0]),
-                "title": row[1],
-                "mime_type": row[2] or "unknown",
-                "centroid": centroid,
-            }
-        )
+        doc_entry: dict = {
+            "doc_id": str(row[0]),
+            "title": row[1],
+            "mime_type": row[2] or "unknown",
+            "centroid": centroid,
+        }
+        if row[4] is not None:
+            doc_entry["topic_id"] = row[4]
+            doc_entry["topic_name"] = row[5] or f"Topic {row[4]}"
+        documents.append(doc_entry)
 
     return {"documents": documents}
 

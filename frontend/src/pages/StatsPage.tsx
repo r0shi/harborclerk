@@ -3,7 +3,23 @@ import { get } from '../api'
 import CorpusCharts from '../components/stats/CorpusCharts'
 import EntityNetwork from '../components/stats/EntityNetwork'
 import ClusterMap from '../components/stats/ClusterMap'
+import TopicTreemap from '../components/stats/TopicTreemap'
+import TopicBarChart from '../components/stats/TopicBarChart'
+import TopicKeywords from '../components/stats/TopicKeywords'
 import { InfoTip } from '../components/InfoTip'
+
+interface TopicCluster {
+  cluster_id: number
+  name: string
+  keywords: string[]
+  doc_count: number
+  representative_doc_ids: string[]
+}
+
+interface TopicsData {
+  clusters: TopicCluster[]
+  doc_count: number
+}
 
 interface CorpusStats {
   document_count: number
@@ -35,15 +51,23 @@ function StatBadge({ label, value, tip }: { label: string; value: string | numbe
 
 export default function StatsPage() {
   const [stats, setStats] = useState<CorpusStats | null>(null)
+  const [topics, setTopics] = useState<TopicsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    get<CorpusStats>('/api/stats')
+    const fetchStats = get<CorpusStats>('/api/stats').then((d) => {
+      if (!cancelled) setStats(d)
+    })
+    const fetchTopics = get<TopicsData>('/api/stats/topics')
       .then((d) => {
-        if (!cancelled) setStats(d)
+        if (!cancelled) setTopics(d)
       })
+      .catch(() => {
+        /* topics are optional */
+      })
+    Promise.all([fetchStats, fetchTopics])
       .catch((e) => {
         if (!cancelled) setError(e.message || 'Failed to load stats')
       })
@@ -102,6 +126,27 @@ export default function StatsPage() {
 
       {/* Charts */}
       <CorpusCharts stats={stats} />
+
+      {/* Topics */}
+      {topics && topics.clusters.length > 0 && (
+        <div className="space-y-4">
+          <h2 className="text-[15px] font-semibold text-(--color-text-primary)">Topics</h2>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+              <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Topic Distribution</h3>
+              <TopicTreemap topics={topics.clusters} />
+            </div>
+            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+              <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Documents by Topic</h3>
+              <TopicBarChart topics={topics.clusters} />
+            </div>
+          </div>
+          <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+            <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Topic Keywords</h3>
+            <TopicKeywords topics={topics.clusters} />
+          </div>
+        </div>
+      )}
 
       {/* Entity Network */}
       <EntityNetwork />
