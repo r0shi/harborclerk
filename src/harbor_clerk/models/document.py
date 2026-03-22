@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Text
+from sqlalchemy import ForeignKey, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,6 +21,9 @@ class Document(Base):
         Text,
         nullable=False,
         server_default="active",
+    )
+    topic_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("corpus_topics.topic_id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[created_at]
     updated_at: Mapped[updated_at]
