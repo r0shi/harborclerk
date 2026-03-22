@@ -135,7 +135,8 @@ _CORE_INSTRUCTIONS = (
     "For factual questions:\n"
     "  search_documents → read_passages → expand_context if needed\n\n"
     'For broad or comparative questions ("compare all X", "what does the corpus say about Y"):\n'
-    "  search_documents with several different queries to cover the topic thoroughly.\n"
+    "  Start with corpus_overview to see what documents and topics exist, then use\n"
+    "  search_documents with targeted queries based on what you find.\n"
     "  Check has_more and total_candidates in results — if many candidates exist,\n"
     "  use offset to page through or try more specific queries to find what you missed.\n\n"
     'For structural questions ("how many documents?", "what file types?"):\n'
