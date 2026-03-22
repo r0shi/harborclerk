@@ -202,15 +202,9 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
     async (convId: string) => {
       if (!token || isRunning) return
 
-      setIsRunning(true)
-      setIsSynthesizing(false)
-      setProgress(null)
-      setReport('')
       setError(null)
-      setConversationId(convId)
 
       const controller = new AbortController()
-      abortRef.current = controller
 
       try {
         const res = await fetch(`/api/research/${convId}/resume`, {
@@ -221,6 +215,20 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
           },
           signal: controller.signal,
         })
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }))
+          throw new Error(err.detail || 'Resume failed')
+        }
+
+        // Server accepted — now safe to reset state
+        abortRef.current?.abort()
+        abortRef.current = controller
+        setIsRunning(true)
+        setIsSynthesizing(false)
+        setProgress(null)
+        setReport('')
+        setConversationId(convId)
 
         await processStream(res)
       } catch (e) {
