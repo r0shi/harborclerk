@@ -189,7 +189,7 @@ Results combine PostgreSQL full-text search (bilingual English/French) and pgvec
 
 A built-in chat assistant runs a local LLM (via llama-server) with access to the knowledge base through tool calls. Models can be downloaded and managed from the admin UI. No data leaves the machine.
 
-Chat automatically retrieves relevant passages from your documents (RAG) and displays them as a collapsible context card above each response — click any source to jump to the original document. The assistant can also use tools to search, read passages, and explore document structure during the conversation.
+The chat assistant uses tool calls to search, read passages, explore document structure, and query entities during the conversation. Results include source citations with page numbers so you can verify findings against the original documents.
 
 ### Deep Research
 

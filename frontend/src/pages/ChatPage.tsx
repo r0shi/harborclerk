@@ -6,6 +6,7 @@ import { del, get, post } from '../api'
 import { useAuth } from '../auth'
 import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../contexts/ChatContext'
 import RagContextCard from '../components/RagContextCard'
+import { formatRelativeDate } from '../utils/dates'
 
 interface ConversationSummary {
   conversation_id: string
@@ -35,20 +36,6 @@ interface ModelInfo {
   active: boolean
   downloaded: boolean
   size_bytes: number
-}
-
-function formatRelativeDate(dateStr: string): string {
-  const d = new Date(dateStr)
-  const now = new Date()
-  const diffMs = now.getTime() - d.getTime()
-  const diffMins = Math.floor(diffMs / 60000)
-  if (diffMins < 1) return 'just now'
-  if (diffMins < 60) return `${diffMins}m ago`
-  const diffHours = Math.floor(diffMins / 60)
-  if (diffHours < 24) return `${diffHours}h ago`
-  const diffDays = Math.floor(diffHours / 24)
-  if (diffDays < 7) return `${diffDays}d ago`
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
 export default function ChatPage() {
