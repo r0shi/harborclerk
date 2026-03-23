@@ -70,12 +70,33 @@ export default function SystemMaintenancePage() {
     setActionResult('')
     setTopicsRunning(true)
     try {
-      const data = await post<{ status: string; message: string }>('/api/system/recompute-topics')
-      setActionResult(data.message)
+      await post<{ status: string; message: string }>('/api/system/recompute-topics')
+      // Poll /stats/topics until results change (computation runs in background)
+      const { get } = await import('../api')
+      const before = await get<{ doc_count: number }>('/api/stats/topics').catch(() => ({ doc_count: -1 }))
+      let attempts = 0
+      const poll = setInterval(async () => {
+        attempts++
+        try {
+          const after = await get<{ doc_count: number; clusters: unknown[] }>('/api/stats/topics')
+          if ((after.clusters.length > 0 && after.doc_count !== before.doc_count) || attempts > 60) {
+            clearInterval(poll)
+            setTopicsRunning(false)
+            setActionResult(
+              `Topic computation complete: ${after.clusters.length} topics from ${after.doc_count} documents`,
+            )
+          }
+        } catch {
+          if (attempts > 60) {
+            clearInterval(poll)
+            setTopicsRunning(false)
+            setActionResult('Topic computation may still be running — check Observatory for results')
+          }
+        }
+      }, 5000)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Topic computation failed')
-    } finally {
       setTopicsRunning(false)
+      setError(e instanceof Error ? e.message : 'Topic computation failed')
     }
   }
 
@@ -179,7 +200,7 @@ export default function SystemMaintenancePage() {
             disabled={topicsRunning}
             className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50"
           >
-            {topicsRunning ? 'Starting...' : 'Recompute Topics'}
+            {topicsRunning ? 'Computing topics\u2026' : 'Recompute Topics'}
           </button>
         </div>
       </div>
