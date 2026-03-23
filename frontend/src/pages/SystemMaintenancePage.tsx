@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { post } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { get, post } from '../api'
 
 export default function SystemMaintenancePage() {
   const [error, setError] = useState('')
@@ -65,40 +65,51 @@ export default function SystemMaintenancePage() {
     }
   }
 
+  const topicsBaselineRef = useRef<number>(-1)
+
   async function handleRecomputeTopics() {
     setError('')
     setActionResult('')
-    setTopicsRunning(true)
     try {
-      await post<{ status: string; message: string }>('/api/system/recompute-topics')
-      // Poll /stats/topics until results change (computation runs in background)
-      const { get } = await import('../api')
       const before = await get<{ doc_count: number }>('/api/stats/topics').catch(() => ({ doc_count: -1 }))
-      let attempts = 0
-      const poll = setInterval(async () => {
-        attempts++
-        try {
-          const after = await get<{ doc_count: number; clusters: unknown[] }>('/api/stats/topics')
-          if ((after.clusters.length > 0 && after.doc_count !== before.doc_count) || attempts > 60) {
-            clearInterval(poll)
+      topicsBaselineRef.current = before.doc_count
+      await post<{ status: string; message: string }>('/api/system/recompute-topics')
+      setTopicsRunning(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Topic computation failed')
+    }
+  }
+
+  // Poll for topic computation completion
+  useEffect(() => {
+    if (!topicsRunning) return
+    let cancelled = false
+    let attempts = 0
+    const poll = setInterval(async () => {
+      attempts++
+      if (cancelled) return
+      try {
+        const after = await get<{ doc_count: number; clusters: unknown[] }>('/api/stats/topics')
+        if ((after.clusters.length > 0 && after.doc_count !== topicsBaselineRef.current) || attempts > 60) {
+          if (!cancelled) {
             setTopicsRunning(false)
             setActionResult(
               `Topic computation complete: ${after.clusters.length} topics from ${after.doc_count} documents`,
             )
           }
-        } catch {
-          if (attempts > 60) {
-            clearInterval(poll)
-            setTopicsRunning(false)
-            setActionResult('Topic computation may still be running — check Observatory for results')
-          }
         }
-      }, 5000)
-    } catch (e) {
-      setTopicsRunning(false)
-      setError(e instanceof Error ? e.message : 'Topic computation failed')
+      } catch {
+        if (attempts > 60 && !cancelled) {
+          setTopicsRunning(false)
+          setActionResult('Topic computation may still be running — check Observatory for results')
+        }
+      }
+    }, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(poll)
     }
-  }
+  }, [topicsRunning])
 
   return (
     <div className="animate-slide-in">
