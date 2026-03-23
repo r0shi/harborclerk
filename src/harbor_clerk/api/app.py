@@ -116,10 +116,10 @@ async def _session_reaper_loop() -> None:
                         len(stale_research),
                     )
 
-                # Refresh topics if corpus changed
-                from harbor_clerk.topics import check_and_recompute_topics
-
-                await check_and_recompute_topics(db)
+                # Topic refresh is CPU-intensive (BERTopic/numba JIT) and can
+                # block the event loop for minutes on first run. Disabled in the
+                # reaper loop — use POST /system/recompute-topics instead.
+                # TODO: move topic computation to a subprocess or worker queue.
         except Exception:
             logger.exception("Session reaper error")
 

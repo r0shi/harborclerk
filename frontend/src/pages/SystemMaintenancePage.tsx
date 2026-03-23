@@ -6,6 +6,7 @@ export default function SystemMaintenancePage() {
   const [actionResult, setActionResult] = useState('')
   const [confirmingReprocess, setConfirmingReprocess] = useState(false)
   const [confirmingResummarize, setConfirmingResummarize] = useState(false)
+  const [topicsRunning, setTopicsRunning] = useState(false)
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
   const [deleteInput, setDeleteInput] = useState('')
   const [deleting, setDeleting] = useState(false)
@@ -61,6 +62,20 @@ export default function SystemMaintenancePage() {
       setActionResult(`Resummarize complete: ${data.resummarized} documents queued for summarization`)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Resummarize failed')
+    }
+  }
+
+  async function handleRecomputeTopics() {
+    setError('')
+    setActionResult('')
+    setTopicsRunning(true)
+    try {
+      const data = await post<{ status: string; message: string }>('/api/system/recompute-topics')
+      setActionResult(data.message)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Topic computation failed')
+    } finally {
+      setTopicsRunning(false)
     }
   }
 
@@ -154,6 +169,18 @@ export default function SystemMaintenancePage() {
               </button>
             )}
           </div>
+        </div>
+        <div className="px-5 py-4">
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
+            Recompute topic clusters using BERTopic. Runs in the background — may take a few minutes on first run.
+          </p>
+          <button
+            onClick={handleRecomputeTopics}
+            disabled={topicsRunning}
+            className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50"
+          >
+            {topicsRunning ? 'Starting...' : 'Recompute Topics'}
+          </button>
         </div>
       </div>
 

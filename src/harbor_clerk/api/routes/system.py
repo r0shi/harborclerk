@@ -283,11 +283,17 @@ async def reaper_run(
 async def recompute_topics_endpoint(
     admin: Principal = Depends(require_admin),
 ):
-    """Trigger immediate topic recomputation."""
+    """Trigger topic recomputation as a fire-and-forget background task.
+
+    BERTopic + numba JIT is CPU-intensive (minutes on first run).
+    Returns immediately; check /stats/topics for results.
+    """
+    import asyncio
+
     from harbor_clerk.topics import recompute_topics
 
-    await recompute_topics()
-    return {"status": "ok"}
+    asyncio.create_task(recompute_topics())
+    return {"status": "started", "message": "Topic computation running in background. Check /stats/topics for results."}
 
 
 @router.post("/system/reprocess-all")
