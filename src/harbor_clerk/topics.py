@@ -115,10 +115,14 @@ async def recompute_topics() -> None:
         summaries = [r.summary or "" for r in rows]
         centroids = np.array([[float(x) for x in r.centroid.strip("[]").split(",")] for r in rows])
 
-        # Run BERTopic in thread executor (CPU-bound)
+        # Run BERTopic in a process executor — numba JIT holds the GIL for
+        # minutes on first run, which blocks the event loop if we use threads.
+        from concurrent.futures import ProcessPoolExecutor
+
         loop = asyncio.get_running_loop()
         try:
-            topic_results = await loop.run_in_executor(None, _compute_topics, titles, summaries, centroids)
+            with ProcessPoolExecutor(max_workers=1) as pool:
+                topic_results = await loop.run_in_executor(pool, _compute_topics, titles, summaries, centroids)
         except Exception:
             logger.exception("BERTopic computation failed")
             return
