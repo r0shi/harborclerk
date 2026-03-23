@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
@@ -15,6 +16,42 @@ logger = logging.getLogger(__name__)
 
 MIN_DOCS_FOR_TOPICS = 10
 STALENESS_MINUTES = 15
+
+# Persistent process pool — keeps a warm worker so numba JIT only runs once.
+_topic_pool: ProcessPoolExecutor | None = None
+
+
+def _warmup_worker() -> str:
+    """Import BERTopic + UMAP + HDBSCAN in a worker process to trigger numba JIT.
+
+    Called once at startup. Subsequent _compute_topics calls in the same
+    worker are fast because numba caches the compiled code.
+    """
+    from bertopic import BERTopic  # noqa: F401
+    from hdbscan import HDBSCAN
+    from umap import UMAP
+
+    # Tiny dummy fit to trigger numba JIT compilation
+    dummy = np.random.rand(20, 10).astype(np.float32)
+    UMAP(n_components=2, n_neighbors=5, random_state=42).fit_transform(dummy)
+    HDBSCAN(min_cluster_size=3).fit(dummy)
+    return "ok"
+
+
+async def warmup_topic_pool() -> None:
+    """Initialize the topic process pool and warm up numba JIT.
+
+    Call this once during app startup. The warmup runs in the background
+    so the API starts immediately.
+    """
+    global _topic_pool
+    _topic_pool = ProcessPoolExecutor(max_workers=1)
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(_topic_pool, _warmup_worker)
+        logger.info("Topic process pool warmed up (numba JIT complete)")
+    except Exception:
+        logger.exception("Topic pool warmup failed — topic computation will be slower on first use")
 
 
 def _compute_topics(
@@ -115,14 +152,16 @@ async def recompute_topics() -> None:
         summaries = [r.summary or "" for r in rows]
         centroids = np.array([[float(x) for x in r.centroid.strip("[]").split(",")] for r in rows])
 
-        # Run BERTopic in a process executor — numba JIT holds the GIL for
-        # minutes on first run, which blocks the event loop if we use threads.
-        from concurrent.futures import ProcessPoolExecutor
-
+        # Run BERTopic in the persistent process pool (warmed up at startup).
+        # Falls back to a one-shot pool if warmup hasn't run.
+        global _topic_pool
         loop = asyncio.get_running_loop()
         try:
-            with ProcessPoolExecutor(max_workers=1) as pool:
-                topic_results = await loop.run_in_executor(pool, _compute_topics, titles, summaries, centroids)
+            pool = _topic_pool
+            if pool is None:
+                pool = ProcessPoolExecutor(max_workers=1)
+                _topic_pool = pool
+            topic_results = await loop.run_in_executor(pool, _compute_topics, titles, summaries, centroids)
         except Exception:
             logger.exception("BERTopic computation failed")
             return

@@ -140,6 +140,11 @@ async def lifespan(app: FastAPI):
     # Ensure storage bucket exists
     get_storage().ensure_bucket(settings.minio_bucket)
 
+    # Warm up BERTopic process pool in background (numba JIT takes ~1 min first time)
+    from harbor_clerk.topics import warmup_topic_pool
+
+    warmup_task = asyncio.create_task(warmup_topic_pool())
+
     # Start session reaper background task
     reaper_task = asyncio.create_task(_session_reaper_loop())
 
@@ -152,10 +157,17 @@ async def lifespan(app: FastAPI):
             yield
     finally:
         reaper_task.cancel()
+        warmup_task.cancel()
         try:
             await reaper_task
         except asyncio.CancelledError:
             pass
+
+        # Shut down topic process pool
+        from harbor_clerk.topics import _topic_pool
+
+        if _topic_pool is not None:
+            _topic_pool.shutdown(wait=False)
 
     logger.info("Shutting down Harbor Clerk API")
 
