@@ -29,7 +29,7 @@ dependencies = [
     "bertopic>=0.16",
     "hdbscan>=0.8.33",
     "umap-learn>=0.5",
-    "smolagents>=1.22.0",
+    "smolagents[openai]>=1.22.0",
 ]
 
 [project.optional-dependencies]
