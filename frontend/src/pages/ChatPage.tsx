@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import { del, get, post } from '../api'
 import { useAuth } from '../auth'
 import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../contexts/ChatContext'
+import { useResearch } from '../contexts/ResearchContext'
 import RagContextCard from '../components/RagContextCard'
 import { formatRelativeDate } from '../utils/dates'
 
@@ -60,6 +61,7 @@ export default function ChatPage() {
     lastTitle,
     latestTitle,
   } = useChat()
+  const { conversationId: researchConversationId } = useResearch()
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
   const [hasActiveModel, setHasActiveModel] = useState(true) // optimistic default
   const [activeModelId, setActiveModelId] = useState<string | null>(null)
@@ -391,7 +393,10 @@ export default function ChatPage() {
                   </h3>
                   <p className="text-[13px] text-gray-400 dark:text-gray-500 leading-relaxed">
                     A research task is running.{' '}
-                    <a href="/research" className="text-amber-600 dark:text-amber-400 underline hover:no-underline">
+                    <a
+                      href={researchConversationId ? `/research/${researchConversationId}` : '/research'}
+                      className="text-amber-600 dark:text-amber-400 underline hover:no-underline"
+                    >
                       View progress
                     </a>
                   </p>
@@ -418,7 +423,10 @@ export default function ChatPage() {
           <div className="flex items-center gap-2 border-t border-amber-200 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-900/20 px-4 py-2">
             <span className="text-[13px] text-amber-700 dark:text-amber-300">
               Research task in progress —{' '}
-              <a href="/research" className="underline hover:no-underline">
+              <a
+                href={researchConversationId ? `/research/${researchConversationId}` : '/research'}
+                className="underline hover:no-underline"
+              >
                 view in Research tab
               </a>
             </span>

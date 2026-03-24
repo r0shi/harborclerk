@@ -223,6 +223,7 @@ export default function ResearchPage() {
   const handleResume = useCallback(
     async (convId: string) => {
       setSelectedTask(null)
+      setShowNewForm(false)
       hasAutoNavigatedRef.current = null
       navigate('/research')
       await resumeResearch(convId)
