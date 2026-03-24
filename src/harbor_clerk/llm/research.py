@@ -297,14 +297,17 @@ async def research_stream(
 
             def _run_agent():
                 try:
+                    logger.info("Agent thread starting: task=%s max_steps=%d", task[:100], max_steps)
                     for step in agent.run(task=task, stream=True, max_steps=max_steps):
                         step_queue.put(("step", step))
+                        logger.debug("Agent step: %s", type(step).__name__)
                         # Wall-time check
                         elapsed = (datetime.now(UTC) - start_time).total_seconds()
                         if elapsed >= time_limit_s:
                             logger.info("Research time limit reached in agent thread")
                             break
                 except Exception as exc:
+                    logger.error("Agent thread error: %s: %s", type(exc).__name__, exc, exc_info=True)
                     step_queue.put(("error", exc))
                 finally:
                     step_queue.put(("done", None))
@@ -326,6 +329,9 @@ async def research_stream(
                     continue
 
                 msg_type, msg_data = msg
+                logger.debug(
+                    "Queue message: type=%s data_type=%s", msg_type, type(msg_data).__name__ if msg_data else None
+                )
 
                 if msg_type == "done":
                     break
