@@ -96,6 +96,7 @@ export default function ResearchPage() {
   const [selectedTask, setSelectedTask] = useState<ResearchDetail | null>(null)
   const [question, setQuestion] = useState('')
   const [strategy, setStrategy] = useState<'search' | 'sweep'>('search')
+  const [depth, setDepth] = useState<'light' | 'standard' | 'thorough'>('standard')
   const [timeLimit, setTimeLimit] = useState(30)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [discardConfirm, setDiscardConfirm] = useState<string | null>(null)
@@ -216,8 +217,8 @@ export default function ResearchPage() {
     setQuestion('')
     setShowNewForm(false)
     hasAutoNavigatedRef.current = null
-    await startResearch(q, strategy, timeLimit)
-  }, [question, strategy, timeLimit, startResearch])
+    await startResearch(q, strategy, timeLimit, depth)
+  }, [question, strategy, timeLimit, depth, startResearch])
 
   const handleResume = useCallback(
     async (convId: string) => {
@@ -474,6 +475,26 @@ export default function ResearchPage() {
                       </div>
                     </div>
 
+                    {/* Depth selector */}
+                    <div className="flex items-center justify-center gap-2">
+                      <span className="text-[12px] text-gray-500 dark:text-gray-400">Depth</span>
+                      <div className="inline-flex rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 p-0.5">
+                        {(['light', 'standard', 'thorough'] as const).map((d) => (
+                          <button
+                            key={d}
+                            onClick={() => setDepth(d)}
+                            className={`px-3 py-1.5 text-[12px] font-medium rounded-md transition-all duration-150 ${
+                              depth === d
+                                ? 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200 shadow-xs'
+                                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                            }`}
+                          >
+                            {d.charAt(0).toUpperCase() + d.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     <div className="flex items-center justify-center gap-2">
                       <span className="text-[12px] text-gray-500 dark:text-gray-400">Time limit</span>
                       <select
@@ -586,6 +607,18 @@ export default function ResearchPage() {
                       Cancel
                     </button>
                   </div>
+
+                  {/* Research notes panel */}
+                  {progress?.notes && (
+                    <details className="mt-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/30 overflow-hidden">
+                      <summary className="px-3 py-2 text-[11px] font-medium text-gray-400 dark:text-gray-500 cursor-pointer hover:text-gray-600 dark:hover:text-gray-400 transition-colors select-none">
+                        Research Notes
+                      </summary>
+                      <div className="px-3 py-2 max-h-48 overflow-y-auto text-[11px] text-gray-500 dark:text-gray-400 whitespace-pre-wrap border-t border-gray-100 dark:border-gray-700/50">
+                        {progress.notes}
+                      </div>
+                    </details>
+                  )}
                 </div>
               )}
 

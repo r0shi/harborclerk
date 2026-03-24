@@ -740,6 +740,7 @@ dependencies = [
     { name = "pypdfium2" },
     { name = "pytesseract" },
     { name = "python-multipart" },
+    { name = "smolagents" },
     { name = "spacy" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "umap-learn" },
@@ -781,6 +782,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24" },
     { name = "python-multipart", specifier = ">=0.0.18" },
     { name = "ruff", marker = "extra == 'test'", specifier = ">=0.11" },
+    { name = "smolagents", specifier = ">=1.22.0" },
     { name = "spacy", specifier = ">=3.7.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
     { name = "umap-learn", specifier = ">=0.5" },
@@ -2607,6 +2609,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e8/be/a66598b305763861a9ab15ff0f2fbc44e47b1ce7a776797337a4eef37c66/smart_open-7.5.1.tar.gz", hash = "sha256:3f08e16827c4733699e6b2cc40328a3568f900cb12ad9a3ad233ba6c872d9fe7", size = 54034, upload-time = "2026-02-23T11:01:28.979Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/ea/dcdecd68acebb49d3fd560473a43499b1635076f7f1ae8641c060fe7ce74/smart_open-7.5.1-py3-none-any.whl", hash = "sha256:3e07cbbd9c8a908bcb8e25d48becf1a5cbb4886fa975e9f34c672ed171df2318", size = 64108, upload-time = "2026-02-23T11:01:27.429Z" },
+]
+
+[[package]]
+name = "smolagents"
+version = "1.22.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "jinja2" },
+    { name = "pillow" },
+    { name = "python-dotenv" },
+    { name = "requests" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b9/bc/ad2f168b82d26597257adb071c51348dd94da0bc29a6cc10ba4c1bee27c8/smolagents-1.22.0.tar.gz", hash = "sha256:5fb66f48e3b3ab5e8defcef577a89d5b6dfa8fcb55fc98a58e156cb3c59eb68f", size = 213047, upload-time = "2025-09-25T08:42:56.086Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/17/54d7de27b7ac2722ac2c0f452da612bf4af80ae09f90231b44bb7b12b33d/smolagents-1.22.0-py3-none-any.whl", hash = "sha256:5334adb4e7e5814cd814f1d9ad7efa806ef57f53db40635a29d2bd727774c5f5", size = 149836, upload-time = "2025-09-25T08:42:54.205Z" },
 ]
 
 [[package]]

@@ -27,3 +27,4 @@ class ResearchState(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    depth: Mapped[str | None] = mapped_column(String(10), nullable=True)
