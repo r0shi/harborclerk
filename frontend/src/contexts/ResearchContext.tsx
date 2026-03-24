@@ -178,6 +178,8 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         }
 
         // Server accepted — now safe to reset state for the new task
+        const researchId = res.headers.get('X-Research-Id')
+
         abortRef.current?.abort() // cancel previous stream if any
         abortRef.current = controller
         setIsRunning(true)
@@ -185,12 +187,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         setProgress(null)
         setReport('')
         setCompletedToolCalls([])
-        setConversationId(null)
-
-        const researchId = res.headers.get('X-Research-Id')
-        if (researchId) {
-          setConversationId(researchId)
-        }
+        setConversationId(researchId || null)
 
         await processStream(res)
       } catch (e) {

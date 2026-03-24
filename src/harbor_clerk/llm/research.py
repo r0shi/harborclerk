@@ -247,8 +247,17 @@ async def research_stream(
         await session.commit()
 
         # Configure smolagents agent
-        from smolagents import OpenAIServerModel, ToolCallingAgent
-        from smolagents.memory import ActionStep, FinalAnswerStep
+        from smolagents import (
+            ActionOutput,
+            ActionStep,
+            ChatMessageStreamDelta,
+            FinalAnswerStep,
+            OpenAIServerModel,
+            PlanningStep,
+            ToolCall,
+            ToolCallingAgent,
+            ToolOutput,
+        )
 
         from harbor_clerk.llm.research_tools import build_research_tools
 
@@ -328,8 +337,33 @@ async def research_stream(
 
                 step = msg_data
 
-                # Emit progress for ActionStep
-                if isinstance(step, ActionStep):
+                if isinstance(step, ToolCall):
+                    tc_args = step.arguments if isinstance(step.arguments, dict) else {}
+                    yield f"data: {json.dumps({'type': 'tool_call', 'name': step.name, 'arguments': tc_args})}\n\n"
+                    # Update heartbeat
+                    state.heartbeat_at = datetime.now(UTC)
+                    await session.commit()
+
+                elif isinstance(step, ToolOutput):
+                    summary = summarize_tool_result(str(step.observation or step.output)[:500])
+                    tc_name = step.tool_call.name if step.tool_call else "unknown"
+                    yield f"data: {json.dumps({'type': 'tool_result', 'name': tc_name, 'summary': summary})}\n\n"
+                    if step.is_final_answer:
+                        final_answer_text = str(step.output)
+
+                elif isinstance(step, ActionOutput):
+                    if step.is_final_answer and step.output:
+                        final_answer_text = str(step.output)
+
+                elif isinstance(step, ChatMessageStreamDelta):
+                    if step.content:
+                        yield f"data: {json.dumps({'type': 'notes', 'content': step.content})}\n\n"
+
+                elif isinstance(step, PlanningStep):
+                    if step.plan:
+                        yield f"data: {json.dumps({'type': 'notes', 'content': f'Planning: {step.plan[:500]}'})}\n\n"
+
+                elif isinstance(step, ActionStep):
                     step_count = step.step_number
                     elapsed = int((datetime.now(UTC) - start_time).total_seconds())
 
@@ -342,26 +376,12 @@ async def research_stream(
                     }
                     yield f"data: {json.dumps(progress_event)}\n\n"
 
-                    # Emit tool calls
-                    if step.tool_calls:
-                        for tc in step.tool_calls:
-                            tc_args = tc.arguments if isinstance(tc.arguments, dict) else {}
-                            yield f"data: {json.dumps({'type': 'tool_call', 'name': tc.name, 'arguments': tc_args})}\n\n"
-
-                        # Emit tool result summary
-                        if step.observations:
-                            summary = summarize_tool_result(str(step.observations)[:500])
-                            tc_name = step.tool_calls[-1].name if step.tool_calls else "unknown"
-                            yield f"data: {json.dumps({'type': 'tool_result', 'name': tc_name, 'summary': summary})}\n\n"
-
-                    # Emit notes (agent's thinking/output)
-                    model_text = ""
+                    # Emit agent's thinking from this step
                     if step.model_output:
                         model_text = step.model_output if isinstance(step.model_output, str) else str(step.model_output)
-                    if model_text.strip():
-                        yield f"data: {json.dumps({'type': 'notes', 'content': model_text[:2000]})}\n\n"
+                        if model_text.strip():
+                            yield f"data: {json.dumps({'type': 'notes', 'content': model_text[:2000]})}\n\n"
 
-                    # Check final answer
                     if step.is_final_answer and step.action_output:
                         final_answer_text = str(step.action_output)
 
@@ -372,7 +392,8 @@ async def research_stream(
                     await session.commit()
 
                 elif isinstance(step, FinalAnswerStep):
-                    final_answer_text = str(step.output) if hasattr(step, "output") else ""
+                    if hasattr(step, "output") and step.output:
+                        final_answer_text = str(step.output)
 
             # Wait for executor to finish
             try:
