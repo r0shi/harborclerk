@@ -81,6 +81,7 @@ async def list_research(
             current_round=rs.current_round,
             max_rounds=rs.max_rounds,
             time_limit_minutes=rs.time_limit_minutes,
+            depth=rs.depth,
             created_at=conv.created_at,
             completed_at=rs.completed_at,
         )
@@ -168,6 +169,7 @@ async def get_research(
         current_round=state.current_round,
         max_rounds=state.max_rounds,
         time_limit_minutes=state.time_limit_minutes,
+        depth=state.depth,
         progress=state.progress,
         report=report,
         model_id=settings.llm_model_id if (settings := get_settings()).llm_model_id else None,
@@ -232,6 +234,7 @@ async def start_research(
         current_round=0,
         max_rounds=max_rounds,
         time_limit_minutes=body.time_limit_minutes,
+        depth=body.depth,
     )
     session.add(state)
     try:
@@ -241,7 +244,7 @@ async def start_research(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A research task is already running")
 
     return StreamingResponse(
-        research_stream(conv.conversation_id, user_id=principal.id),
+        research_stream(conv.conversation_id, user_id=principal.id, depth=body.depth),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -289,7 +292,7 @@ async def resume_research(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Another research task is already running")
 
     return StreamingResponse(
-        research_stream(conv.conversation_id, user_id=principal.id, resume=True),
+        research_stream(conv.conversation_id, user_id=principal.id, resume=True, depth=state.depth or "standard"),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
