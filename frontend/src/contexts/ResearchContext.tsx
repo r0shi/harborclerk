@@ -17,6 +17,7 @@ export interface ResearchProgress {
   toolCalls: ToolCallEntry[]
   elapsedSeconds?: number
   timeLimitMinutes?: number
+  notes?: string
 }
 
 interface ResearchState {
@@ -27,7 +28,7 @@ interface ResearchState {
   error: string | null
   conversationId: string | null
   completedToolCalls: ToolCallEntry[]
-  startResearch: (question: string, strategy?: string, timeLimitMinutes?: number) => Promise<void>
+  startResearch: (question: string, strategy?: string, timeLimitMinutes?: number, depth?: string) => Promise<void>
   resumeResearch: (convId: string) => Promise<void>
   cancelResearch: () => void
   reset: () => void
@@ -73,15 +74,20 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
           switch (event.type) {
             case 'progress':
               setProgress((prev) => ({
-                round: event.round,
-                maxRounds: event.max_rounds,
+                round: event.round ?? event.step ?? 0,
+                maxRounds: event.max_rounds ?? 0,
                 strategy: event.strategy,
                 reviewed: event.reviewed,
                 total: event.total,
                 toolCalls: prev?.toolCalls || [],
                 elapsedSeconds: event.elapsed_seconds,
                 timeLimitMinutes: event.time_limit_minutes,
+                notes: prev?.notes,
               }))
+              break
+
+            case 'notes':
+              setProgress((prev) => (prev ? { ...prev, notes: event.content } : prev))
               break
 
             case 'tool_call':
@@ -141,7 +147,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const startResearch = useCallback(
-    async (question: string, strategy?: string, timeLimitMinutes?: number) => {
+    async (question: string, strategy?: string, timeLimitMinutes?: number, depth?: string) => {
       if (!token) return
 
       // Clear error from previous attempts (e.g. 409) but don't touch
@@ -154,6 +160,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         const body: Record<string, unknown> = { question }
         if (strategy) body.strategy = strategy
         if (timeLimitMinutes) body.time_limit_minutes = timeLimitMinutes
+        if (depth) body.depth = depth
 
         const res = await fetch('/api/research', {
           method: 'POST',
