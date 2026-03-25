@@ -283,13 +283,21 @@ async def research_stream(
             planning_interval=planning_interval,
         )
 
-        # Build task description
-        task = user_question
+        # Build task description with citation instructions
+        task = (
+            f"{user_question}\n\n"
+            "IMPORTANT INSTRUCTIONS:\n"
+            "- Search the knowledge base thoroughly using varied queries\n"
+            "- Every finding MUST include its source citation as [Document Title, page X]\n"
+            "- Never paraphrase citations — preserve them exactly as they appear in search results\n"
+            "- When you call final_answer, include ALL findings with their citations\n"
+            "- Do not use generic references like 'Research Note 1' — always cite the actual document\n"
+        )
         if strategy == "sweep":
             doc_list = await _fetch_document_list(user_id)
             if doc_list:
                 doc_text = "\n".join(f"- {d['title']} (doc_id: {d['doc_id']})" for d in doc_list)
-                task += f"\n\nHere are all documents in the corpus:\n{doc_text}\n\nReview these systematically."
+                task += f"\nHere are all documents in the corpus:\n{doc_text}\n\nReview these systematically."
 
         start_time = datetime.now(UTC)
         final_answer_text = ""
@@ -350,14 +358,40 @@ async def research_stream(
                 if isinstance(step, ToolCall):
                     tc_args = step.arguments if isinstance(step.arguments, dict) else {}
                     yield f"data: {json.dumps({'type': 'tool_call', 'name': step.name, 'arguments': tc_args})}\n\n"
-                    # Update heartbeat
+                    # Save tool call as assistant message for persistence
+                    session.add(
+                        ChatMessage(
+                            conversation_id=conversation_id,
+                            role="assistant",
+                            content="",
+                            tool_calls=[
+                                {
+                                    "id": step.id,
+                                    "type": "function",
+                                    "function": {"name": step.name, "arguments": json.dumps(tc_args)},
+                                }
+                            ],
+                            model_id=active_model_id,
+                        )
+                    )
                     state.heartbeat_at = datetime.now(UTC)
                     await session.commit()
 
                 elif isinstance(step, ToolOutput):
-                    summary = summarize_tool_result(str(step.observation or step.output)[:500])
+                    observation = str(step.observation or step.output)
+                    summary = summarize_tool_result(observation[:500])
                     tc_name = step.tool_call.name if step.tool_call else "unknown"
                     yield f"data: {json.dumps({'type': 'tool_result', 'name': tc_name, 'summary': summary})}\n\n"
+                    # Save tool result as tool message for persistence
+                    session.add(
+                        ChatMessage(
+                            conversation_id=conversation_id,
+                            role="tool",
+                            content=observation[:10000],
+                            tool_call_id=step.id if hasattr(step, "id") else f"call_{tc_name}",
+                        )
+                    )
+                    await session.flush()
                     if step.is_final_answer:
                         final_answer_text = str(step.output)
 
