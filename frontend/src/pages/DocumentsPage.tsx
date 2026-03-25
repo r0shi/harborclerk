@@ -34,6 +34,7 @@ interface DocSummary {
   summary_model?: string
   source_path?: string
   doc_type?: string
+  topic_id?: number
 }
 
 interface PaginatedDocs {
@@ -149,6 +150,7 @@ export default function DocumentsPage() {
 
   // Inline expand state
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [docEntities, setDocEntities] = useState<Record<string, { text: string; type: string }[]>>({})
 
   // Restore saved state from sessionStorage (URL params override)
   const hasUrlParams =
@@ -221,9 +223,18 @@ export default function DocumentsPage() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load filter options on mount
+  const [topicNames, setTopicNames] = useState<Record<number, string>>({})
+
   useEffect(() => {
     get<typeof filterOptions>('/api/docs/filters')
       .then(setFilterOptions)
+      .catch(() => {})
+    get<{ clusters: { cluster_id: number; name: string }[] }>('/api/stats/topics')
+      .then((data) => {
+        const map: Record<number, string> = {}
+        for (const c of data.clusters) map[c.cluster_id] = c.name
+        setTopicNames(map)
+      })
       .catch(() => {})
   }, [])
 
@@ -727,14 +738,26 @@ export default function DocumentsPage() {
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
                             <button
-                              onClick={() =>
+                              onClick={() => {
                                 setExpanded((prev) => {
                                   const next = new Set(prev)
                                   if (next.has(doc.doc_id)) next.delete(doc.doc_id)
-                                  else next.add(doc.doc_id)
+                                  else {
+                                    next.add(doc.doc_id)
+                                    // Lazy-fetch entities for this doc
+                                    if (!docEntities[doc.doc_id]) {
+                                      get<{ entities: { text: string; type: string }[] }>(
+                                        `/api/docs/${doc.doc_id}/entities`,
+                                      )
+                                        .then((data) =>
+                                          setDocEntities((prev) => ({ ...prev, [doc.doc_id]: data.entities || [] })),
+                                        )
+                                        .catch(() => {})
+                                    }
+                                  }
                                   return next
                                 })
-                              }
+                              }}
                               className="rounded-sm p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
                               title="Toggle details"
                             >
@@ -839,6 +862,37 @@ export default function DocumentsPage() {
                                   <p className="text-sm italic text-(--color-text-secondary)">No summary available</p>
                                 )}
                               </div>
+                              {docEntities[doc.doc_id] && docEntities[doc.doc_id].length > 0 && (
+                                <div>
+                                  <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-1">
+                                    Entities
+                                  </p>
+                                  <div className="flex flex-wrap gap-1">
+                                    {docEntities[doc.doc_id].slice(0, 15).map((e, i) => (
+                                      <span
+                                        key={i}
+                                        className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400"
+                                      >
+                                        {e.text}
+                                        <span className="ml-0.5 text-gray-400 dark:text-gray-500">{e.type}</span>
+                                      </span>
+                                    ))}
+                                    {docEntities[doc.doc_id].length > 15 && (
+                                      <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                                        +{docEntities[doc.doc_id].length - 15} more
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                              {doc.topic_id != null && topicNames[doc.topic_id] && (
+                                <div>
+                                  <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">
+                                    Topic
+                                  </p>
+                                  <p className="text-sm text-(--color-text-primary)">{topicNames[doc.topic_id]}</p>
+                                </div>
+                              )}
                               {doc.source_path && (
                                 <div>
                                   <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">

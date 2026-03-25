@@ -104,6 +104,8 @@ export default function ResearchPage() {
   const discardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const toolLogRef = useRef<HTMLDivElement>(null)
   const synthRef = useRef<HTMLDivElement>(null)
+  const [localElapsed, setLocalElapsed] = useState(0)
+  const elapsedBaseRef = useRef<{ serverElapsed: number; localTime: number } | null>(null)
 
   const {
     isRunning,
@@ -193,6 +195,30 @@ export default function ResearchPage() {
     }, 30_000)
     return () => clearInterval(interval)
   }, [isRunning, conversationId, fetchHistory, cancelResearch])
+
+  // Sync elapsed base when SSE progress arrives
+  useEffect(() => {
+    async function syncElapsed() {
+      if (progress?.elapsedSeconds != null) {
+        elapsedBaseRef.current = { serverElapsed: progress.elapsedSeconds, localTime: Date.now() / 1000 }
+        setLocalElapsed(progress.elapsedSeconds)
+      }
+    }
+    syncElapsed()
+  }, [progress?.elapsedSeconds])
+
+  // 1-second local timer for smooth elapsed display
+  useEffect(() => {
+    if (!isRunning) return
+    const interval = setInterval(() => {
+      const base = elapsedBaseRef.current
+      if (base) {
+        const drift = Date.now() / 1000 - base.localTime
+        setLocalElapsed(Math.round(base.serverElapsed + drift))
+      }
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [isRunning])
 
   // Auto-scroll tool log
   useEffect(() => {
@@ -537,8 +563,8 @@ export default function ResearchPage() {
                   {/* Round indicator */}
                   <div className="text-center">
                     <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                      {progress.elapsedSeconds != null
-                        ? `${formatElapsed(progress.elapsedSeconds)} / ${formatTimeLimit(progress.timeLimitMinutes || 30)}`
+                      {localElapsed > 0 || progress.elapsedSeconds != null
+                        ? `${formatElapsed(localElapsed)} / ${formatTimeLimit(progress.timeLimitMinutes || 30)}`
                         : `Round ${progress.round}`}
                     </span>
                     {progress.strategy === 'sweep' && progress.total != null && progress.reviewed != null && (
