@@ -193,13 +193,14 @@ The chat assistant uses tool calls to search, read passages, explore document st
 
 ### Deep Research
 
-For complex questions that require systematically examining your corpus, Research mode runs an autonomous multi-round investigation. The local LLM iterates through search, read, and entity tools — building structured notes across multiple rounds — then synthesizes its findings into a cited report.
+For complex questions that require systematically examining your corpus, Research mode runs an autonomous agent (powered by smolagents) that iterates through search, read, and entity tools — then synthesizes its findings into a cited report.
 
-Two strategies are available:
-- **Search-driven** — the model picks its own queries and follows leads across documents
-- **Systematic sweep** — methodically reviews every document in the corpus
+Configuration per task:
+- **Strategy**: Search-driven (follows leads) or Systematic sweep (reviews every document)
+- **Depth**: Light / Standard / Thorough (controls planning frequency)
+- **Time limit**: 15 minutes to 3 hours
 
-Each task has a configurable time limit (15 minutes to 3 hours), and notes are periodically condensed to prevent context overflow during long runs. Research runs in the background; you can continue using Ask, Upload, and other tabs while it works. Progress is streamed live with elapsed time and a tool-by-tool activity log.
+Research runs in the background with live progress streaming: elapsed time, tool-by-tool activity log, and research notes visibility. Results include the agent's raw findings and a polished synthesis report with citations.
 
 ### Document Intelligence
 
@@ -209,7 +210,8 @@ Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
 - **Entity index** — people, places, and organizations extracted by spaCy, searchable and browsable
 - **Cross-document similarity** — find related documents using embedding-based nearest neighbors
 - **Corpus overview** — aggregate stats (language distribution, MIME types, page counts, date ranges)
-- **Stats dashboard** — visual corpus analytics: language/file type/OCR charts, pipeline timing, entity co-occurrence network (d3-force), and UMAP document cluster map
+- **Topic modeling** — BERTopic-based clustering discovers themes across the corpus, surfaced in Observatory visualizations (treemap, bar chart, keywords, cluster map) and injected as context for chat
+- **Stats dashboard** — visual corpus analytics: language/file type/OCR charts, pipeline timing, entity co-occurrence network (d3-force), UMAP document cluster map (colorable by topic), and topic distribution charts
 
 ### External LLM Connections
 
