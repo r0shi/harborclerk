@@ -2,8 +2,9 @@
 
 Each tool delegates to the same MCP tool functions used by the hand-rolled
 research loop and chat, preserving all existing logic unchanged. smolagents
-calls forward() synchronously from its own thread, so we create a fresh
-event loop per call.
+calls forward() synchronously from its own thread, so we schedule coroutines
+back to the main event loop (where the DB connection pool lives) via
+run_coroutine_threadsafe.
 """
 
 import asyncio
@@ -23,11 +24,20 @@ class _ResearchTool(Tool):
     output_type = "string"
     _tool_name: str = ""  # override in subclasses
 
-    def __init__(self, user_id=None):
+    def __init__(self, user_id=None, main_loop=None):
         super().__init__()
         self.user_id = user_id
+        self._main_loop = main_loop
 
     def _call_tool(self, args: dict) -> str:
+        if self._main_loop is not None and self._main_loop.is_running():
+            # Schedule on the main event loop where DB connections live
+            future = asyncio.run_coroutine_threadsafe(
+                execute_tool(self._tool_name, args, self.user_id, mode="research"),
+                self._main_loop,
+            )
+            return future.result(timeout=300)
+        # Fallback: create a new loop (may fail for DB calls)
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(execute_tool(self._tool_name, args, self.user_id, mode="research"))
@@ -332,9 +342,16 @@ class CorpusTopicsTool(Tool):
     inputs = {}
     output_type = "string"
 
+    def __init__(self, main_loop=None):
+        super().__init__()
+        self._main_loop = main_loop
+
     def forward(self) -> str:
         from harbor_clerk.topics import get_topics_for_tool
 
+        if self._main_loop is not None and self._main_loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(get_topics_for_tool(), self._main_loop)
+            return future.result(timeout=60)
         loop = asyncio.new_event_loop()
         try:
             return loop.run_until_complete(get_topics_for_tool())
@@ -347,20 +364,26 @@ class CorpusTopicsTool(Tool):
 # ---------------------------------------------------------------------------
 
 
-def build_research_tools(user_id=None) -> list[Tool]:
-    """Build and return all research tool instances."""
+def build_research_tools(user_id=None, main_loop=None) -> list[Tool]:
+    """Build and return all research tool instances.
+
+    Args:
+        user_id: User ID for tool authorization.
+        main_loop: The main asyncio event loop (for scheduling DB calls
+            from the agent's worker thread).
+    """
     return [
-        SearchDocumentsTool(user_id),
-        ReadPassagesTool(user_id),
-        ExpandContextTool(user_id),
-        GetDocumentTool(user_id),
-        ListDocumentsTool(user_id),
-        CorpusOverviewTool(user_id),
-        DocumentOutlineTool(user_id),
-        FindRelatedTool(user_id),
-        EntitySearchTool(user_id),
-        EntityOverviewTool(user_id),
-        EntityCooccurrenceTool(user_id),
-        ReadDocumentTool(user_id),
-        CorpusTopicsTool(),
+        SearchDocumentsTool(user_id, main_loop=main_loop),
+        ReadPassagesTool(user_id, main_loop=main_loop),
+        ExpandContextTool(user_id, main_loop=main_loop),
+        GetDocumentTool(user_id, main_loop=main_loop),
+        ListDocumentsTool(user_id, main_loop=main_loop),
+        CorpusOverviewTool(user_id, main_loop=main_loop),
+        DocumentOutlineTool(user_id, main_loop=main_loop),
+        FindRelatedTool(user_id, main_loop=main_loop),
+        EntitySearchTool(user_id, main_loop=main_loop),
+        EntityOverviewTool(user_id, main_loop=main_loop),
+        EntityCooccurrenceTool(user_id, main_loop=main_loop),
+        ReadDocumentTool(user_id, main_loop=main_loop),
+        CorpusTopicsTool(main_loop=main_loop),
     ]

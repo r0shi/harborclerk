@@ -246,6 +246,10 @@ async def research_stream(
         state.heartbeat_at = datetime.now(UTC)
         await session.commit()
 
+        # Suppress extremely verbose openai/httpx debug logging from smolagents
+        logging.getLogger("openai").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+
         # Configure smolagents agent
         from smolagents import (
             ActionOutput,
@@ -266,7 +270,7 @@ async def research_stream(
             api_base=llm_url,
             api_key="not-needed",
         )
-        tools = build_research_tools(user_id)
+        tools = build_research_tools(user_id, main_loop=asyncio.get_running_loop())
 
         planning_map = {"light": 3, "standard": 5, "thorough": 10}
         planning_interval = planning_map.get(depth, 5)
