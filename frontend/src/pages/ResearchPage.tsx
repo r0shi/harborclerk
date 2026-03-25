@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { del, get } from '../api'
+import { useChat } from '../contexts/ChatContext'
 import { useResearch, type ToolCallEntry } from '../contexts/ResearchContext'
 import { formatRelativeDate } from '../utils/dates'
 
@@ -93,6 +94,7 @@ export default function ResearchPage() {
   const { researchId } = useParams<{ researchId?: string }>()
   const navigate = useNavigate()
 
+  const { isStreaming: chatStreaming } = useChat()
   const [history, setHistory] = useState<ResearchSummary[]>([])
   const [selectedTask, setSelectedTask] = useState<ResearchDetail | null>(null)
   const [question, setQuestion] = useState('')
@@ -451,11 +453,12 @@ export default function ResearchPage() {
                   comprehensive report. This may take several minutes.
                 </p>
 
-                {isRunning ? (
+                {isRunning || chatStreaming ? (
                   <div className="max-w-md mx-auto rounded-xl border border-amber-200 dark:border-amber-800/40 bg-amber-50/50 dark:bg-amber-900/10 px-4 py-3 text-center">
                     <p className="text-[13px] text-amber-700 dark:text-amber-400">
-                      A research task is currently running. Wait for it to finish or cancel it before starting a new
-                      one.
+                      {chatStreaming
+                        ? 'An Ask query is in progress. Wait for it to finish before starting research.'
+                        : 'A research task is currently running. Wait for it to finish or cancel it before starting a new one.'}
                     </p>
                   </div>
                 ) : (
