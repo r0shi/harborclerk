@@ -150,7 +150,7 @@ export default function DocumentsPage() {
 
   // Inline expand state
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [docEntities, setDocEntities] = useState<Record<string, { text: string; type: string }[]>>({})
+  const [docEntities, setDocEntities] = useState<Record<string, { entity_text: string; entity_type: string }[]>>({})
 
   // Restore saved state from sessionStorage (URL params override)
   const hasUrlParams =
@@ -746,7 +746,7 @@ export default function DocumentsPage() {
                                     next.add(doc.doc_id)
                                     // Lazy-fetch entities for this doc
                                     if (!docEntities[doc.doc_id]) {
-                                      get<{ entities: { text: string; type: string }[] }>(
+                                      get<{ entities: { entity_text: string; entity_type: string }[] }>(
                                         `/api/docs/${doc.doc_id}/entities`,
                                       )
                                         .then((data) =>
@@ -873,8 +873,8 @@ export default function DocumentsPage() {
                                         key={i}
                                         className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400"
                                       >
-                                        {e.text}
-                                        <span className="ml-0.5 text-gray-400 dark:text-gray-500">{e.type}</span>
+                                        {e.entity_text}
+                                        <span className="ml-0.5 text-gray-400 dark:text-gray-500">{e.entity_type}</span>
                                       </span>
                                     ))}
                                     {docEntities[doc.doc_id].length > 15 && (
