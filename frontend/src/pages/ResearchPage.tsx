@@ -29,6 +29,7 @@ interface ResearchMessage {
 
 interface ResearchDetail extends ResearchSummary {
   question: string
+  notes: string | null
   report: string | null
   model_id: string | null
   messages?: ResearchMessage[]
@@ -684,6 +685,18 @@ export default function ResearchPage() {
                     </span>
                   )}
                 </div>
+              )}
+
+              {/* Research notes (agent's findings before synthesis) */}
+              {selectedTask?.notes && (
+                <details className="mt-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/30 overflow-hidden">
+                  <summary className="px-4 py-2.5 text-[12px] font-medium text-gray-400 dark:text-gray-500 cursor-pointer hover:text-gray-600 dark:hover:text-gray-400 transition-colors select-none">
+                    Research Notes
+                  </summary>
+                  <div className="px-4 py-3 max-h-64 overflow-y-auto text-[12px] text-gray-500 dark:text-gray-400 whitespace-pre-wrap border-t border-gray-100 dark:border-gray-700/50">
+                    {selectedTask.notes}
+                  </div>
+                </details>
               )}
 
               {/* Tool activity log — use context data only for the live task */}

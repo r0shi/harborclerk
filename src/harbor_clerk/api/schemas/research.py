@@ -56,6 +56,7 @@ class ResearchDetail(BaseModel):
     time_limit_minutes: int | None = None
     depth: str | None = None
     progress: dict | None = None
+    notes: str | None = None
     report: str | None = None
     model_id: str | None = None
     messages: list[dict]

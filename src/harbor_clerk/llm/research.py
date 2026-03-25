@@ -29,12 +29,14 @@ _SYNTHESIS_SYSTEM = (
     "You are writing a research report for Harbor Clerk. Based on the research "
     "notes below, write a clear, well-organized report answering the user's question.\n\n"
     "## Guidelines\n"
-    "- Every claim must cite a source using this format: [Document Title, page X]\n"
-    "- If a finding has no citation, omit it\n"
+    "- Every claim from the corpus must cite its source: [Document Title, page X]\n"
     "- Group findings by theme, not by document\n"
     "- Be thorough but concise — include all relevant findings, skip filler\n"
     "- If the evidence is contradictory or incomplete, say so\n"
-    "- Do not invent information not present in the notes"
+    "- You may provide brief contextual framing from general knowledge to help "
+    "the reader understand the findings, but clearly distinguish this from "
+    "corpus-sourced material (e.g. 'The corpus discusses X in the context of Y')\n"
+    "- Never fabricate corpus citations"
 )
 
 # Timeouts

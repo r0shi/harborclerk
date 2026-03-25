@@ -171,6 +171,7 @@ async def get_research(
         time_limit_minutes=state.time_limit_minutes,
         depth=state.depth,
         progress=state.progress,
+        notes=state.notes,
         report=report,
         model_id=settings.llm_model_id if (settings := get_settings()).llm_model_id else None,
         messages=messages,
