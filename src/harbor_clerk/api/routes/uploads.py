@@ -398,6 +398,11 @@ async def confirm_upload_batch(
 
     await loop.run_in_executor(None, _enqueue_all)
 
+    # Trigger topic recompute after batch upload (staleness check prevents redundant runs)
+    from harbor_clerk.topics import check_and_recompute_topics
+
+    asyncio.create_task(check_and_recompute_topics(session))
+
     return BatchConfirmResponse(results=results)
 
 
@@ -765,6 +770,11 @@ async def confirm_session(
             enqueue_stage(vid, JobStage.extract)
 
     await loop.run_in_executor(None, _enqueue_all)
+
+    # Trigger topic recompute after session confirm
+    from harbor_clerk.topics import check_and_recompute_topics
+
+    asyncio.create_task(check_and_recompute_topics(db))
 
     return BatchConfirmResponse(results=results)
 
