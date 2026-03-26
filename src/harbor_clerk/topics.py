@@ -233,11 +233,25 @@ async def get_topics_for_tool() -> str:
             {"message": "No topics computed yet. The corpus may be too small or topics haven't been generated."}
         )
 
+    # Resolve representative doc titles for richer model context
+    all_rep_ids = [rid for r in rows for rid in (r.representative_doc_ids or [])]
+    title_map: dict[str, str] = {}
+    if all_rep_ids:
+        from harbor_clerk.models.document import Document
+
+        title_rows = (
+            await session.execute(select(Document.doc_id, Document.title).where(Document.doc_id.in_(all_rep_ids)))
+        ).all()
+        title_map = {str(r.doc_id): r.title for r in title_rows}
+
     topics = [
         {
             "topic": r.label,
             "keywords": r.keywords,
             "doc_count": r.doc_count,
+            "sample_documents": [
+                title_map.get(str(rid), "") for rid in (r.representative_doc_ids or []) if str(rid) in title_map
+            ],
         }
         for r in rows
     ]
