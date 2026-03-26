@@ -97,7 +97,8 @@ def _compute_topics(
         # Get top keywords via c-TF-IDF
         topic_words = topic_model.get_topic(tid)
         keywords = [w for w, _ in topic_words[:10]]
-        label = " & ".join(keywords[:3])
+        # Use the single most distinctive keyword as the label, title-cased
+        label = keywords[0].title() if keywords else f"Topic {tid}"
 
         # Find document indices assigned to this topic
         doc_indices = [i for i, t in enumerate(topics) if t == tid]
