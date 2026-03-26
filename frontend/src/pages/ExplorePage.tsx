@@ -326,7 +326,7 @@ function ExploreMain({
               <p className="text-sm text-(--color-text-secondary)">No topics match your search.</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="max-h-96 overflow-y-auto rounded-xl ring-1 ring-(--color-border) p-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {filteredClusters.map((cluster) => (
                 <button
                   key={cluster.cluster_id}
@@ -335,7 +335,6 @@ function ExploreMain({
                       type: 'cluster',
                       label: cluster.name,
                       clusterId: cluster.cluster_id,
-                      docIds: cluster.representative_doc_ids,
                     })
                   }
                   className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-4 hover:shadow-mac-lg hover:ring-(--color-border)/80 transition-all text-left group"
@@ -553,15 +552,12 @@ function ExploreDocList({
       if (mimeFilter) params.mime_type = mimeFilter
 
       if (topicFilter) {
-        // Topic dropdown overrides: filter by that topic's doc_ids
-        if (effectiveDocIds) {
-          params.doc_ids = effectiveDocIds.join(',')
-        }
+        params.topic_id = topicFilter
       } else if (subPane.type === 'entity' && subPane.entityText) {
         params.entity = subPane.entityText
         if (subPane.entityType) params.entity_type = subPane.entityType
-      } else if (subPane.type === 'cluster' && subPane.docIds) {
-        params.doc_ids = subPane.docIds.join(',')
+      } else if (subPane.type === 'cluster' && subPane.clusterId != null) {
+        params.topic_id = subPane.clusterId
       }
 
       return get<PaginatedDocs>('/api/docs', params)

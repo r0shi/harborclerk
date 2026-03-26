@@ -56,6 +56,7 @@ async def list_documents(
     language: str | None = Query(default=None, description="Filter by chunk language"),
     doc_type: str | None = Query(default=None, description="Filter by doc type"),
     doc_ids: str | None = Query(default=None, description="Comma-separated document IDs"),
+    topic_id: int | None = Query(default=None, description="Filter by topic cluster ID"),
     sort: str = Query(default="updated", pattern="^(updated|created|title)$"),
     sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     principal: Principal = Depends(require_read_access),
@@ -75,6 +76,9 @@ async def list_documents(
                     pass
         if id_list:
             base = base.where(Document.doc_id.in_(id_list))
+
+    if topic_id is not None:
+        base = base.where(Document.topic_id == topic_id)
 
     if q:
         escaped = re.sub(r"([%_\\])", r"\\\1", q)

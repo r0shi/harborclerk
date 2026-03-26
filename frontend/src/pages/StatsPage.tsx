@@ -143,7 +143,9 @@ export default function StatsPage() {
           </div>
           <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
             <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Topic Keywords</h3>
-            <TopicKeywords topics={topics.clusters} />
+            <div className="max-h-80 overflow-y-auto">
+              <TopicKeywords topics={topics.clusters} />
+            </div>
           </div>
         </div>
       )}
