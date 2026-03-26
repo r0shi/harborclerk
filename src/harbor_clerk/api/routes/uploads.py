@@ -398,10 +398,15 @@ async def confirm_upload_batch(
 
     await loop.run_in_executor(None, _enqueue_all)
 
-    # Trigger topic recompute after batch upload (staleness check prevents redundant runs)
-    from harbor_clerk.topics import check_and_recompute_topics
+    # Trigger topic recompute in background with its own session
+    async def _recompute_topics_bg():
+        from harbor_clerk.db import async_session_factory
+        from harbor_clerk.topics import check_and_recompute_topics
 
-    asyncio.create_task(check_and_recompute_topics(session))
+        async with async_session_factory() as bg_session:
+            await check_and_recompute_topics(bg_session)
+
+    asyncio.create_task(_recompute_topics_bg())
 
     return BatchConfirmResponse(results=results)
 
@@ -771,10 +776,15 @@ async def confirm_session(
 
     await loop.run_in_executor(None, _enqueue_all)
 
-    # Trigger topic recompute after session confirm
-    from harbor_clerk.topics import check_and_recompute_topics
+    # Trigger topic recompute in background with its own session
+    async def _recompute_topics_bg2():
+        from harbor_clerk.db import async_session_factory
+        from harbor_clerk.topics import check_and_recompute_topics
 
-    asyncio.create_task(check_and_recompute_topics(db))
+        async with async_session_factory() as bg_session:
+            await check_and_recompute_topics(bg_session)
+
+    asyncio.create_task(_recompute_topics_bg2())
 
     return BatchConfirmResponse(results=results)
 

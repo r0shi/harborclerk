@@ -13,7 +13,7 @@
 SCRIPTS := scripts
 BUILD   := build
 
-.PHONY: all deps postgres tika tools venv spacy-models model llama frontend dev test apps sign clean
+.PHONY: all deps postgres tika tools venv spacy-models model llama frontend apple-summarize dev test apps sign clean
 
 all: deps venv spacy-models model llama apps
 
@@ -80,7 +80,14 @@ test:
 
 # ── Apps ──
 
-apps: deps venv spacy-models model llama frontend
+apple-summarize:
+	@echo "==> Building apple-summarize CLI"
+	cd apple-summarize && swift build -c release 2>/dev/null && \
+		mkdir -p ../$(BUILD)/apple-summarize && \
+		cp .build/release/apple-summarize ../$(BUILD)/apple-summarize/ || \
+		echo "==> apple-summarize build skipped (requires macOS 26+)"
+
+apps: deps venv spacy-models model llama frontend apple-summarize
 	@echo "==> Building and packaging apps"
 	BUILD_DIR=$(BUILD) bash $(SCRIPTS)/package.sh
 
