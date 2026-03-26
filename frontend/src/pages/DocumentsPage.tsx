@@ -871,10 +871,10 @@ export default function DocumentsPage() {
                                     {docEntities[doc.doc_id].slice(0, 15).map((e, i) => (
                                       <span
                                         key={i}
-                                        className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400"
+                                        className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200"
                                       >
                                         {e.entity_text}
-                                        <span className="ml-0.5 text-gray-400 dark:text-gray-500">{e.entity_type}</span>
+                                        <span className="ml-1 text-gray-400 dark:text-gray-500">{e.entity_type}</span>
                                       </span>
                                     ))}
                                     {docEntities[doc.doc_id].length > 15 && (
