@@ -1,7 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import CitedMarkdown from '../components/CitedMarkdown'
 import { del, get } from '../api'
 import { useChat } from '../contexts/ChatContext'
 import { useResearch, type ToolCallEntry } from '../contexts/ResearchContext'
@@ -689,7 +688,7 @@ export default function ResearchPage() {
                 return displayReport ? (
                   <div className="rounded-xl bg-gray-50 dark:bg-gray-800/60 ring-1 ring-gray-100 dark:ring-gray-700/50 px-6 py-5">
                     <div className="prose-chat">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayReport}</ReactMarkdown>
+                      <CitedMarkdown>{displayReport}</CitedMarkdown>
                     </div>
                   </div>
                 ) : null

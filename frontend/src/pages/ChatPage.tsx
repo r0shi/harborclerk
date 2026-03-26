@@ -1,7 +1,6 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import CitedMarkdown from '../components/CitedMarkdown'
 import { del, get, post } from '../api'
 import { useAuth } from '../auth'
 import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../contexts/ChatContext'
@@ -765,7 +764,7 @@ function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNam
                 <div className="whitespace-pre-wrap wrap-break-word">{response}</div>
               ) : (
                 <div className="prose-chat">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{response}</ReactMarkdown>
+                  <CitedMarkdown>{response}</CitedMarkdown>
                 </div>
               ))}
 
