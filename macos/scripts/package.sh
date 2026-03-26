@@ -88,6 +88,11 @@ if [ -d "$BUILD_DIR/llama" ]; then
     cp -R "$BUILD_DIR/llama" "$RESOURCES/llama"
 fi
 
+# apple-summarize (Apple Intelligence CLI tool — optional, macOS 26+ only)
+if [ -f "$BUILD_DIR/apple-summarize/apple-summarize" ]; then
+    cp "$BUILD_DIR/apple-summarize/apple-summarize" "$RESOURCES/apple-summarize"
+fi
+
 # Alembic
 cp -R "$PROJECT_ROOT/alembic" "$RESOURCES/alembic"
 cp "$PROJECT_ROOT/alembic.ini" "$RESOURCES/alembic.ini"

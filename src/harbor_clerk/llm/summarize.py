@@ -216,6 +216,71 @@ def _truncate_at_sentence(text: str, max_chars: int) -> str:
     return truncated
 
 
+def _apple_intelligence_summary(chunks: list[str], max_chars: int) -> str | None:
+    """Call the apple-summarize CLI tool. Returns None if unavailable or failed.
+
+    macOS native only — the binary is bundled inside HarborClerkServer.app.
+    On Docker/Linux, the binary doesn't exist and this returns None instantly.
+    """
+    import os
+    import subprocess
+
+    # Locate the binary
+    binary = os.environ.get("APPLE_SUMMARIZE_PATH", "")
+    if not binary:
+        # Try well-known path relative to the native app bundle
+        config_file = os.environ.get("NATIVE_CONFIG_FILE", "")
+        if config_file:
+            from pathlib import Path
+
+            app_resources = Path(config_file).parent.parent / "Resources"
+            candidate = app_resources / "apple-summarize"
+            if candidate.exists():
+                binary = str(candidate)
+
+    if not binary:
+        logger.debug("apple-summarize binary not found — skipping Apple Intelligence fallback")
+        return None
+
+    # Build input text: same sampling as LLM path
+    if len(chunks) < 20:
+        text = "\n\n".join(chunks)
+    else:
+        # Strategic sampling: first 3 + last 2 + evenly-spaced middle
+        sampled = chunks[:3]
+        middle_count = min(5, len(chunks) - 5)
+        if middle_count > 0:
+            step = max(1, (len(chunks) - 5) // middle_count)
+            sampled += chunks[3::step][:middle_count]
+        sampled += chunks[-2:]
+        text = "\n\n".join(sampled)
+
+    # Cap at 12,000 chars for ~4K token context
+    text = text[:12_000]
+
+    try:
+        result = subprocess.run(
+            [binary, "--max-chars", str(max_chars)],
+            input=text,
+            capture_output=True,
+            timeout=120,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            summary = result.stdout.strip()
+            logger.info("Apple Intelligence summary: %d chars", len(summary))
+            return summary
+        logger.debug("apple-summarize exited %d: %s", result.returncode, result.stderr.strip()[:200])
+    except FileNotFoundError:
+        logger.debug("apple-summarize binary not found at %s", binary)
+    except subprocess.TimeoutExpired:
+        logger.warning("apple-summarize timed out after 120s")
+    except Exception:
+        logger.debug("apple-summarize failed", exc_info=True)
+
+    return None
+
+
 def _extractive_fallback(chunks: list[str], max_chars: int) -> str:
     """Take first substantial paragraph from initial chunks as summary."""
     text = "\n\n".join(chunks[:5])
@@ -371,11 +436,19 @@ def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[s
 
         if result:
             return _truncate_at_sentence(result, max_chars), settings.llm_model_id
-        logger.warning("LLM summarization returned no result — falling back to extractive")
+        logger.warning("LLM summarization returned no result — trying Apple Intelligence")
     else:
+        logger.info("No language model active — trying Apple Intelligence fallback")
+
+    # Try Apple Intelligence (macOS native only)
+    ai_summary = _apple_intelligence_summary(chunks, max_chars)
+    if ai_summary:
+        return ai_summary, "apple-intelligence"
+
+    if not settings.llm_model_id:
         logger.warning(
-            "No language model active — document summary will be lower quality. "
-            "Activate a model in System Settings > Models."
+            "No language model active and Apple Intelligence unavailable — "
+            "document summary will be lower quality. Activate a model in System Settings > Models."
         )
 
     return _extractive_fallback(chunks, max_chars), "extractive"

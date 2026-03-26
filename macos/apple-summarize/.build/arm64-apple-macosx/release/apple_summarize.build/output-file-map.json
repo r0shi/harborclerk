@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/alex/mcp-gateway/macos/apple-summarize/.build/arm64-apple-macosx/release/apple_summarize.build/apple_summarize.d",
+    "object": "/Users/alex/mcp-gateway/macos/apple-summarize/.build/arm64-apple-macosx/release/apple_summarize.build/apple_summarize.o",
+    "swift-dependencies": "/Users/alex/mcp-gateway/macos/apple-summarize/.build/arm64-apple-macosx/release/apple_summarize.build/primary.swiftdeps"
+  },
+  "/Users/alex/mcp-gateway/macos/apple-summarize/Sources/main.swift": {
+    "object": "/Users/alex/mcp-gateway/macos/apple-summarize/.build/arm64-apple-macosx/release/apple_summarize.build/main.swift.o",
+    "swiftmodule": "/Users/alex/mcp-gateway/macos/apple-summarize/.build/arm64-apple-macosx/release/apple_summarize.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/alex/mcp-gateway/macos/apple-summarize/.build/arm64-apple-macosx/release/apple_summarize.build/main.swiftdeps",
+    "diagnostics": "/Users/alex/mcp-gateway/macos/apple-summarize/.build/arm64-apple-macosx/release/apple_summarize.build/main.dia"
+  }
+}
