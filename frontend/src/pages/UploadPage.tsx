@@ -300,6 +300,14 @@ export default function UploadPage() {
         </div>
       )}
 
+      {/* macOS native app hint — only shown inside WKWebView */}
+      {showDropZone && !!(window as { webkit?: { messageHandlers?: unknown } }).webkit?.messageHandlers && (
+        <div className="mt-4 rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+          <span className="font-medium text-blue-400">Tip:</span> Set up watched folders in Harbor Clerk Server
+          preferences to automatically ingest files from your Mac.
+        </div>
+      )}
+
       {/* Active upload session */}
       {hook.session && hook.session.status !== 'completed' && hook.session.status !== 'cancelled' && (
         <SessionProgress

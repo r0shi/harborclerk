@@ -2,7 +2,9 @@
 
 import io as _io
 import logging
+import os
 import uuid
+from pathlib import Path
 
 import pypdfium2 as pdfium
 import pytesseract
@@ -65,10 +67,15 @@ def run_ocr(version_id: uuid.UUID) -> None:
             mark_stage_done(version_id, JobStage.ocr)
             return
 
-        # Download file
-        storage = get_storage()
-        response = storage.get_object(version.original_bucket, version.original_object_key)
-        data = response.read()
+        # Read from source_path (watched folder) or storage
+        if version.source_path and os.path.exists(version.source_path):
+            data = Path(version.source_path).read_bytes()
+        elif version.original_object_key:
+            storage = get_storage()
+            response = storage.get_object(version.original_bucket, version.original_object_key)
+            data = response.read()
+        else:
+            raise RuntimeError(f"No source for version {version_id}")
 
         mime = (version.mime_type or "").lower()
 
@@ -102,7 +109,7 @@ def run_ocr(version_id: uuid.UUID) -> None:
             session.commit()
             publish_job_event(version_id, "ocr", "running", progress=1, total=1)
 
-        elif mime == "application/pdf" or version.original_object_key.endswith(".pdf"):
+        elif mime == "application/pdf" or (version.original_object_key or version.source_path or "").endswith(".pdf"):
             # PDF → page images → OCR (using pypdfium2)
             images = _pdf_to_images(data)
             job.progress_total = len(images)

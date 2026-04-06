@@ -130,7 +130,9 @@ Harbor Clerk can run in two ways:
 
 All data lives in `~/Library/Application Support/Harbor Clerk/` — PostgreSQL database, uploaded files, downloaded LLM models, logs, and settings.
 
-Open Preferences (Cmd+,) from the menubar to configure network access, worker preset, ports, and log level.
+Open Preferences (Cmd+,) from the menubar to configure network access, worker preset, ports, log level, and watched folders.
+
+**Watched folders** (macOS only): Point Harbor Clerk at directories on your Mac and files are automatically ingested as they appear. Renames, modifications, and deletions are tracked in real time via FSEvents and macOS bookmark data. Originals stay in place — no copying. Configure in Preferences.
 
 ### Docker Compose
 

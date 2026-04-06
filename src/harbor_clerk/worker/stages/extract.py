@@ -1,7 +1,9 @@
 """Extract stage — pull text from documents, spreadsheets, and images via Tika."""
 
 import logging
+import os
 import uuid
+from pathlib import Path
 
 import httpx
 from sqlalchemy import select
@@ -167,21 +169,26 @@ def run_extract(version_id: uuid.UUID) -> None:
     try:
         version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
 
-        # Download from storage
-        storage = get_storage()
-        response = storage.get_object(version.original_bucket, version.original_object_key)
-        data = response.read()
+        # Read from source_path (watched folder) or storage
+        if version.source_path and os.path.exists(version.source_path):
+            data = Path(version.source_path).read_bytes()
+        elif version.original_object_key:
+            storage = get_storage()
+            response = storage.get_object(version.original_bucket, version.original_object_key)
+            data = response.read()
+        else:
+            raise RuntimeError(f"No source for version {version_id}: source_path and original_object_key both empty")
 
         mime = (version.mime_type or "").lower()
+        obj_key = (version.original_object_key or version.source_path or "").lower()
 
         # Sniff RTF content regardless of extension/MIME
         is_rtf = data[:5] == b"{\\rtf"
-        is_pdf = mime == "application/pdf" or version.original_object_key.endswith(".pdf")
+        is_pdf = mime == "application/pdf" or obj_key.endswith(".pdf")
         is_image = mime in IMAGE_MIMES
 
         # Dispatch by type
         # Extension-based image detection (covers .png, .tif, .tiff not in MIME)
-        obj_key = version.original_object_key.lower()
         if not is_image and obj_key.endswith((".png", ".tif", ".tiff")):
             is_image = True
 
@@ -191,14 +198,14 @@ def run_extract(version_id: uuid.UUID) -> None:
         elif mime == "text/plain" or obj_key.endswith((".txt", ".md", ".csv")):
             # Plain text / Markdown / CSV — no Tika needed
             pages = _extract_txt(data)
-        elif is_rtf or mime == "text/rtf" or version.original_object_key.endswith(".rtf"):
+        elif is_rtf or mime == "text/rtf" or obj_key.endswith(".rtf"):
             pages = _extract_via_tika(data, "text/rtf")
         elif is_pdf:
             pages = _extract_via_tika(data, "application/pdf", is_pdf=True)
         elif mime in (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/msword",
-        ) or version.original_object_key.endswith(".docx"):
+        ) or obj_key.endswith(".docx"):
             pages = _extract_via_tika(
                 data,
                 mime or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

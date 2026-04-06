@@ -32,6 +32,8 @@ Two native macOS apps under `macos/`:
 
 Build scripts in `macos/scripts/`, orchestrated by `macos/Makefile`.
 
+**Watched Folders** (macOS only): FSEvents-based directory monitoring with macOS bookmark data for file identity tracking. Files referenced in place (not copied). UTType-based file type detection with extension fallback. 30-day soft-delete reaper for removed files. Priority-aware job queue (GUI uploads preempt watched folder ingestion). Managed by `WatchedFolderManager.swift`, configured via native preferences, state stored in PostgreSQL (`watched_folders`, `watched_files` tables).
+
 ### Storage Backend
 
 Configurable via `STORAGE_BACKEND` env var:
@@ -91,12 +93,13 @@ Hybrid search: Postgres FTS (bilingual, queries both `fts_en` and `fts_fr` colum
 - REST: `/api/auth/login`, `/api/uploads`, `/api/docs`, `/api/search`, `/api/passages/read`, `/api/system/health`
 - MCP: `POST /mcp` — 16 tools: `kb_search`, `kb_batch_search`, `kb_read_passages`, `kb_expand_context`, `kb_get_document`, `kb_list_recent`, `kb_corpus_overview`, `kb_document_outline`, `kb_find_related`, `kb_entity_search`, `kb_entity_overview`, `kb_entity_cooccurrence`, `kb_read_document`, `kb_ingest_status`, `kb_reprocess`, `kb_system_health`
 - SSE: `GET /api/jobs/stream` — streams job progress events (server→client only)
+- Watch: `/api/watch/folders` (CRUD), `/api/watch/ingest`, `/api/watch/remove`, `/api/watch/rename`, `/api/watch/allowed-extensions`
 
 ## Database
 
 PostgreSQL 18 with extensions: `vector`, `pg_trgm`, `citext`. No tenant table or tenant_id columns.
 
-Key tables: `users`, `api_keys`, `documents`, `document_versions`, `document_pages`, `document_headings`, `chunks`, `entities`, `ingestion_jobs`, `uploads`, `upload_sessions`, `audit_log`, `conversations`, `chat_messages`.
+Key tables: `users`, `api_keys`, `documents`, `document_versions`, `document_pages`, `document_headings`, `chunks`, `entities`, `ingestion_jobs`, `uploads`, `upload_sessions`, `audit_log`, `conversations`, `chat_messages`, `watched_folders`, `watched_files`.
 
 `chunks` has dual FTS columns (`fts_en` TSVECTOR, `fts_fr` TSVECTOR) both as generated stored columns with GIN indexes, plus `embedding vector(384)` with HNSW index. Full DDL in `spec.txt` section I.
 

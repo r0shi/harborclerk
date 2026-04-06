@@ -106,7 +106,7 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
                 IngestionJob.status == JobStatus.queued,
                 IngestionJob.stage.in_(stages),
             )
-            .order_by(stage_priority, IngestionJob.created_at)
+            .order_by(IngestionJob.priority, stage_priority, IngestionJob.created_at)
             .limit(1)
             .with_for_update(skip_locked=True)
         ).scalar_one_or_none()
@@ -139,7 +139,11 @@ def _lookup_filename(version_id: uuid.UUID) -> str | None:
             select(DocumentVersion).where(DocumentVersion.version_id == version_id)
         ).scalar_one_or_none()
         if version:
-            return posixpath.basename(version.original_object_key)
+            if version.original_object_key:
+                return posixpath.basename(version.original_object_key)
+            if version.source_path:
+                return posixpath.basename(version.source_path)
+            return "unknown"
         return None
     finally:
         session.close()

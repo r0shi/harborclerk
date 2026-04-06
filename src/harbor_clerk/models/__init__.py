@@ -28,6 +28,7 @@ from harbor_clerk.models.research_state import ResearchState
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.upload_session import UploadSession
 from harbor_clerk.models.user import User
+from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 
 __all__ = [
     "Base",
@@ -57,4 +58,7 @@ __all__ = [
     "OAuthCode",
     "OAuthToken",
     "ResearchState",
+    "WatchedFolder",
+    "WatchedFile",
+    "WatchedFileStatus",
 ]

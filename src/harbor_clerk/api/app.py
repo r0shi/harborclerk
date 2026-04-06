@@ -23,6 +23,7 @@ from harbor_clerk.api.routes.stats import router as stats_router
 from harbor_clerk.api.routes.system import router as system_router
 from harbor_clerk.api.routes.uploads import router as uploads_router
 from harbor_clerk.api.routes.users import router as users_router
+from harbor_clerk.api.routes.watch import router as watch_router
 from harbor_clerk.config import get_settings
 from harbor_clerk.storage import get_storage
 
@@ -40,7 +41,7 @@ async def _session_reaper_loop() -> None:
         await asyncio.sleep(5 * 60)
         try:
             from harbor_clerk.db import async_session_factory
-            from harbor_clerk.models import Upload, UploadSession
+            from harbor_clerk.models import Document, Upload, UploadSession
 
             async with async_session_factory() as db:
                 from sqlalchemy import select
@@ -115,6 +116,28 @@ async def _session_reaper_loop() -> None:
                         len(done_sessions),
                         len(stale_research),
                     )
+
+                # Clean up watched files removed >30 days ago
+                from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
+
+                watch_cutoff = now - timedelta(days=30)
+                expired_result = await db.execute(
+                    select(WatchedFile).where(
+                        WatchedFile.status == WatchedFileStatus.removed,
+                        WatchedFile.removed_at < watch_cutoff,
+                    )
+                )
+                expired = expired_result.scalars().all()
+                for wf in expired:
+                    if wf.doc_id:
+                        doc = await db.get(Document, wf.doc_id)
+                        if doc:
+                            await db.delete(doc)  # cascades to versions, chunks, embeddings
+                    await db.delete(wf)
+                if expired:
+                    logger.info("Reaper: hard-deleted %d expired watched files", len(expired))
+
+                await db.commit()
 
                 # Refresh topics if corpus changed (runs in warm ProcessPoolExecutor)
                 from harbor_clerk.topics import check_and_recompute_topics
@@ -203,6 +226,7 @@ def create_app() -> FastAPI:
     app.include_router(stats_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
     app.include_router(research_router, prefix="/api")
+    app.include_router(watch_router, prefix="/api")
 
     # OAuth 2.1 endpoints (no /api prefix — /.well-known must be at root)
     app.include_router(oauth_router)
