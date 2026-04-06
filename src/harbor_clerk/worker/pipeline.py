@@ -28,8 +28,12 @@ def _is_ner_available() -> bool:
 
 
 def _version_filename(version: DocumentVersion) -> str:
-    """Extract original filename from the object key (e.g. 'originals/versions/<id>/report.pdf' → 'report.pdf')."""
-    return posixpath.basename(version.original_object_key)
+    """Extract original filename from the object key or source_path."""
+    if version.original_object_key:
+        return posixpath.basename(version.original_object_key)
+    if version.source_path:
+        return posixpath.basename(version.source_path)
+    return "unknown"
 
 
 # stage → (queue_name, timeout_seconds, version_status_while_running)
@@ -72,7 +76,7 @@ STAGE_DONE_STATUS: dict[JobStage, VersionStatus] = {
 }
 
 
-def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
+def enqueue_stage(version_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> None:
     """Upsert IngestionJob row as queued and notify workers."""
     queue_name, timeout, running_status = STAGE_CONFIG[stage]
 
@@ -97,11 +101,13 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage) -> None:
             existing.progress_total = 0
             existing.started_at = None
             existing.finished_at = None
+            existing.priority = priority
         else:
             job = IngestionJob(
                 version_id=version_id,
                 stage=stage,
                 status=JobStatus.queued,
+                priority=priority,
             )
             session.add(job)
 
@@ -148,6 +154,7 @@ def _mark_skipped(
     filename: str,
     *,
     reason: str | None = None,
+    priority: int = 0,
 ) -> None:
     """Mark a stage as skipped (done without running) and publish the event."""
     now = datetime.now(UTC)
@@ -170,12 +177,14 @@ def _mark_skipped(
                 started_at=now,
                 finished_at=now,
                 metrics=metrics,
+                priority=priority,
             )
         )
     else:
         existing.status = JobStatus.done
         existing.finished_at = now
         existing.metrics = metrics
+        existing.priority = priority
 
     version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
     version.status = version_status
@@ -198,6 +207,8 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
 
         # Gather completed and in-flight stages
         all_jobs = session.execute(select(IngestionJob).where(IngestionJob.version_id == version_id)).scalars().all()
+        # Propagate priority from completed jobs
+        priority = max((j.priority for j in all_jobs if j.priority), default=0)
         completed = {j.stage for j in all_jobs if j.status == JobStatus.done}
         in_flight = {j.stage for j in all_jobs if j.status in (JobStatus.queued, JobStatus.running)}
 
@@ -210,7 +221,7 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
 
             # Skip OCR if not needed
             if stage == JobStage.ocr and not version.needs_ocr:
-                _mark_skipped(session, version_id, JobStage.ocr, VersionStatus.ocr_done, filename)
+                _mark_skipped(session, version_id, JobStage.ocr, VersionStatus.ocr_done, filename, priority=priority)
                 completed.add(JobStage.ocr)
                 continue
 
@@ -218,7 +229,7 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
             # enqueue_stage() creates its own session.
             session.commit()
             session.close()
-            enqueue_stage(version_id, stage)
+            enqueue_stage(version_id, stage, priority=priority)
             return
 
         # --- Phase 2: Fan-out (entities + embed + summarize) ---
@@ -235,6 +246,7 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
                     VersionStatus.entities_done,
                     filename,
                     reason="spacy_unavailable",
+                    priority=priority,
                 )
                 completed.add(JobStage.entities)
                 continue
@@ -244,14 +256,14 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
             session.commit()
             session.close()
             for stage in to_enqueue:
-                enqueue_stage(version_id, stage)
+                enqueue_stage(version_id, stage, priority=priority)
             return
 
         # --- Phase 3: Fan-in (finalize) ---
         if completed >= _PARALLEL_STAGES and JobStage.finalize not in completed and JobStage.finalize not in in_flight:
             session.commit()
             session.close()
-            enqueue_stage(version_id, JobStage.finalize)
+            enqueue_stage(version_id, JobStage.finalize, priority=priority)
             return
 
         session.commit()

@@ -106,7 +106,7 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
                 IngestionJob.status == JobStatus.queued,
                 IngestionJob.stage.in_(stages),
             )
-            .order_by(stage_priority, IngestionJob.created_at)
+            .order_by(IngestionJob.priority, stage_priority, IngestionJob.created_at)
             .limit(1)
             .with_for_update(skip_locked=True)
         ).scalar_one_or_none()
