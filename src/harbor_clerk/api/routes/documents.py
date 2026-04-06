@@ -39,6 +39,7 @@ from harbor_clerk.models import (
     IngestionJob,
 )
 from harbor_clerk.models.enums import JobStage, VersionStatus
+from harbor_clerk.models.watched import WatchedFile, WatchedFolder
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -168,6 +169,26 @@ async def list_documents(
                 topic_id=doc.topic_id,
             )
         )
+
+    # Enrich with watched file info (batch lookup)
+    if summaries:
+        doc_ids = [uuid.UUID(s.doc_id) for s in summaries]
+        wf_result = await session.execute(select(WatchedFile).where(WatchedFile.doc_id.in_(doc_ids)))
+        wf_by_doc: dict[str, WatchedFile] = {}
+        for wf in wf_result.scalars().all():
+            if wf.doc_id:
+                wf_by_doc[str(wf.doc_id)] = wf
+        for s in summaries:
+            wf = wf_by_doc.get(s.doc_id)
+            if wf:
+                folder_result = await session.execute(
+                    select(WatchedFolder).where(WatchedFolder.folder_id == wf.folder_id)
+                )
+                folder = folder_result.scalar_one_or_none()
+                folder_path = folder.path if folder else ""
+                s.watch_source_path = f"{folder_path}/{wf.relative_path}" if folder_path else wf.relative_path
+                s.watch_status = wf.status.value
+
     return PaginatedDocuments(items=summaries, total=total, limit=limit, offset=offset)
 
 
@@ -768,9 +789,21 @@ async def download_document(
     ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id))
     version = ver_result.scalar_one()
 
-    storage = get_storage()
-    obj = storage.get_object(version.original_bucket, version.original_object_key)
-    filename = posixpath.basename(version.original_object_key)
+    import os
+    from pathlib import Path
+
+    # Read from source_path (watched folder) or storage backend
+    if version.source_path and os.path.exists(version.source_path):
+        file_bytes = Path(version.source_path).read_bytes()
+        filename = posixpath.basename(version.source_path)
+    elif version.original_object_key:
+        storage = get_storage()
+        obj = storage.get_object(version.original_bucket, version.original_object_key)
+        file_bytes = obj.read()
+        filename = posixpath.basename(version.original_object_key)
+    else:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file unavailable")
+
     content_type = version.mime_type or "application/octet-stream"
 
     from urllib.parse import quote
@@ -779,7 +812,7 @@ async def download_document(
     disposition = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
 
     return Response(
-        content=obj.read(),
+        content=file_bytes,
         media_type=content_type,
         headers={
             "Content-Disposition": disposition,

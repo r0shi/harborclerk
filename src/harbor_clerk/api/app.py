@@ -41,7 +41,7 @@ async def _session_reaper_loop() -> None:
         await asyncio.sleep(5 * 60)
         try:
             from harbor_clerk.db import async_session_factory
-            from harbor_clerk.models import Upload, UploadSession
+            from harbor_clerk.models import Document, Upload, UploadSession
 
             async with async_session_factory() as db:
                 from sqlalchemy import select
@@ -116,6 +116,28 @@ async def _session_reaper_loop() -> None:
                         len(done_sessions),
                         len(stale_research),
                     )
+
+                # Clean up watched files removed >30 days ago
+                from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
+
+                watch_cutoff = now - timedelta(days=30)
+                expired_result = await db.execute(
+                    select(WatchedFile).where(
+                        WatchedFile.status == WatchedFileStatus.removed,
+                        WatchedFile.removed_at < watch_cutoff,
+                    )
+                )
+                expired = expired_result.scalars().all()
+                for wf in expired:
+                    if wf.doc_id:
+                        doc = await db.get(Document, wf.doc_id)
+                        if doc:
+                            await db.delete(doc)  # cascades to versions, chunks, embeddings
+                    await db.delete(wf)
+                if expired:
+                    logger.info("Reaper: hard-deleted %d expired watched files", len(expired))
+
+                await db.commit()
 
                 # Refresh topics if corpus changed (runs in warm ProcessPoolExecutor)
                 from harbor_clerk.topics import check_and_recompute_topics
