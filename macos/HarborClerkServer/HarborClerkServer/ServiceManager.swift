@@ -249,16 +249,26 @@ final class ServiceManager: ObservableObject {
             await startService(worker)
         }
 
-        // 8. Watch config.json for model changes from the web UI
+        // 8. Start watched folder manager now that API is healthy
+        if apiService.state == .running {
+            let port = AppSettings.shared.apiPort
+            if let baseURL = URL(string: "http://localhost:\(port)") {
+                let token = WatchedFolderManager.mintServiceToken() ?? ""
+                WatchedFolderManager.shared.start(apiBaseURL: baseURL, authToken: token)
+            }
+        }
+
+        // 9. Watch config.json for model changes from the web UI
         startConfigWatcher()
 
-        // 9. Persist child PIDs for orphan cleanup on next launch
+        // 10. Persist child PIDs for orphan cleanup on next launch
         savePidFile()
 
         notifyStateChanged()
     }
 
     func stopAll() async {
+        WatchedFolderManager.shared.stop()
         stopConfigWatcher()
 
         // Mark all running/starting services as shutdown pending
