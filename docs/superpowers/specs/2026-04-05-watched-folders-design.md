@@ -59,7 +59,9 @@ This is a macOS-only feature. It relies on FSEvents for filesystem monitoring an
 | `created_at` | Timestamp NOT NULL | |
 | `updated_at` | Timestamp NOT NULL | |
 
-**Unique constraint:** `(folder_id, relative_path)` — one entry per path per folder.
+**Unique constraint:** `(folder_id, relative_path)` with a partial index on `status = 'active'` only. This allows a soft-deleted row and a new active row to coexist for the same path. Alternatively, the ingest endpoint hard-deletes the old soft-deleted `watched_files` row before inserting a new one (simpler, no data value in keeping soft-deleted rows after replacement).
+
+**Chosen approach:** On file creation where a soft-deleted row exists for the same `(folder_id, relative_path)`, hard-delete the old row and insert a fresh one. This avoids partial index complexity and is correct because the old bookmark is stale anyway (the old file is gone, the new file has a new bookmark).
 
 ### Modified Table: `ingestion_jobs`
 
@@ -69,11 +71,41 @@ This is a macOS-only feature. It relies on FSEvents for filesystem monitoring an
 
 Worker claim query changes from `ORDER BY created_at ASC` to `ORDER BY priority ASC, created_at ASC`.
 
+### Schema Changes to Existing Tables
+
+#### `document_versions`
+
+The following columns are currently `NOT NULL` but must become nullable for watched-folder versions (which have no stored object):
+
+- `original_sha256`: **Remove the UNIQUE constraint.** Watched folder files are identified by `watched_files.sha256` and bookmark data, not by version-level SHA256 uniqueness. Duplicate content across documents is legitimate (same PDF in two folders, or a watched file with same content as a GUI upload). The existing upload dedup logic (`_confirm_single`) continues to check SHA256 against existing versions *for GUI uploads only* — watched folder ingest skips that check since each watched file is tracked independently.
+- `original_bucket`: Make nullable. Watched-folder versions set this to NULL.
+- `original_object_key`: Make nullable. Watched-folder versions set this to NULL.
+
+These columns remain NOT NULL for GUI-uploaded versions (enforced at the application layer, not the DB).
+
+#### `_version_filename()` in `pipeline.py`
+
+This helper calls `posixpath.basename(version.original_object_key)` and is used in SSE events and logging. Update to:
+
+```python
+def _version_filename(version: DocumentVersion) -> str:
+    if version.original_object_key:
+        return posixpath.basename(version.original_object_key)
+    if version.source_path:
+        return posixpath.basename(version.source_path)
+    return "unknown"
+```
+
+#### `uploads`
+
+`minio_bucket` and `minio_object_key` are `NOT NULL`. For watched-folder uploads, set these to empty string `""` (consistent with the existing pattern used for duplicate uploads in `_confirm_single`). No schema migration needed.
+
 ### Existing Fields Used
 
-- `DocumentVersion.source_path` — stores the absolute path to the watched file (already exists)
+- `DocumentVersion.source_path` (Text, nullable) — stores the absolute path to the watched file (already exists)
 - `Upload.source` — uses existing `watch_folder` enum value (already exists)
-- `Document` — no changes; watched folder documents are regular documents
+- `Upload.source_path` (Text, nullable) — stores the original path (already exists)
+- `Document` — no schema changes; watched folder documents are regular documents
 
 ---
 
@@ -103,6 +135,9 @@ New singleton class, owned by ServiceManager. Starts after the API is healthy.
 | File deleted / moved out | Resolve bookmark. If fails or new path outside folder, call `POST /api/watch/remove` |
 | Folder renamed | Folder bookmark resolves transparently. Update stored path via API |
 
+**`ALLOWED_EXTENSIONS` in Swift:**
+The Swift watcher needs the same extension whitelist as the Python backend. Rather than duplicating the list, the Swift side fetches it once from a new `GET /api/watch/allowed-extensions` endpoint on startup and caches it in memory.
+
 **Event ID persistence:**
 - After processing a batch of events, update `last_event_id` via `PATCH /api/watch/folders/{id}`
 - All state lives in the DB, not config.json
@@ -130,36 +165,57 @@ New "Watched Folders" section in PreferencesWindow (below existing settings):
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/api/watch/folders` | GET | List watched folders with file counts and status |
-| `/api/watch/folders` | POST | Add a watched folder (path, bookmark_data) |
+| `/api/watch/folders` | POST | Add a watched folder (path, bookmark_data). Rejects overlapping folders. |
 | `/api/watch/folders/{id}` | PATCH | Update folder (enable/disable, update last_event_id) |
 | `/api/watch/folders/{id}` | DELETE | Remove folder and soft-delete all its tracked files |
 | `/api/watch/folders/{id}/rescan` | POST | Trigger full rescan (resets last_event_id to null) |
 | `/api/watch/ingest` | POST | File detected or changed — create/update document |
 | `/api/watch/remove` | POST | File removed — soft-delete tracked file |
 | `/api/watch/rename` | POST | File renamed — update relative_path and bookmark |
+| `/api/watch/allowed-extensions` | GET | Return the `ALLOWED_EXTENSIONS` set for Swift-side filtering |
+
+### Authentication & Security
+
+All watch endpoints require authentication via `require_user` (same as upload endpoints). The Swift `WatchedFolderManager` authenticates using the local admin user's credentials (stored in the native app's keychain, same mechanism used for other local API calls).
+
+**Path traversal protection:** The `POST /api/watch/ingest` endpoint validates that `source_path` is a descendant of the watched folder's `path` before any file operations. Specifically:
+- Resolve `source_path` to an absolute, canonical path (resolving symlinks)
+- Verify it starts with the watched folder's resolved path
+- Reject with 400 if validation fails
+
+The download endpoint (`GET /api/docs/{id}/download`) applies the same validation when serving from `source_path`.
 
 ### Ingest Flow (`POST /api/watch/ingest`)
 
 Input: `folder_id`, `relative_path`, `sha256`, `bookmark_data`, `source_path`
 
-1. Look up existing `watched_files` entry by `(folder_id, relative_path)`
-2. If exists and SHA256 matches → skip (no change)
-3. If exists and SHA256 differs (content changed):
-   - Delete all derived data for old version (chunks, embeddings, entities, summary)
-   - Create new DocumentVersion with `source_path`, no `original_object_key`
-   - Update `documents.latest_version_id`
-   - Update `watched_files.sha256`
+1. Validate `source_path` is within the watched folder's path (see Security above)
+2. Look up existing `watched_files` entry by `(folder_id, relative_path)`
+3. If exists with `status = 'active'` and SHA256 matches → skip (no change)
+4. If exists with `status = 'active'` and SHA256 differs (content changed):
+   - Create new DocumentVersion with `source_path` set, `original_bucket`/`original_object_key` NULL
+   - Update `documents.latest_version_id` to the new version
+   - **Keep old version's derived data until new version reaches `finalize`** — the old version remains searchable during re-processing. On `finalize` of new version: delete old version and its derived data. This prevents a gap where the document has no searchable content.
+   - Update `watched_files.sha256` and `watched_files.version_id`
    - Enqueue `extract` stage with priority 10
-4. If new file:
-   - Create Document (title from filename; if nested, prefix with relative directory)
-   - Create DocumentVersion with `source_path`
-   - Create Upload record (source=`watch_folder`)
+5. If new file (no existing `watched_files` row, or only a `status = 'removed'` row):
+   - If a soft-deleted row exists for this `(folder_id, relative_path)`: hard-delete it (old bookmark is stale)
+   - Create Document (title from filename; if nested, prefix with relative directory path)
+   - Create DocumentVersion with `source_path` set, `original_bucket`/`original_object_key` NULL, `original_sha256` from the computed hash
+   - Create Upload record (source=`watch_folder`, `minio_bucket`/`minio_object_key` = `""`, `user_id` from authenticated principal)
    - Create `watched_files` row
    - Enqueue `extract` stage with priority 10
-5. If previously removed (`status = 'removed'`) and file reappears:
+6. If previously removed (`status = 'removed'`) and file reappears with same bookmark:
    - Flip status back to `active`, clear `removed_at`
-   - Re-activate document (set status back to `active`)
-   - Re-ingest if SHA256 differs
+   - Re-activate document (set `documents.status` back to `active`)
+   - Update `source_path` on the existing DocumentVersion (Trash restore may change the absolute path)
+   - Update `watched_files.bookmark_data` with the fresh bookmark
+   - If SHA256 differs: re-ingest (step 4 flow)
+   - If SHA256 matches: no re-ingest needed, derived data is still intact
+
+### Priority Propagation
+
+`enqueue_stage()` gains an optional `priority: int = 0` parameter. When a watched-folder file triggers ingestion, the initial `extract` call passes `priority=10`. The `advance_pipeline()` function propagates the priority from the completed job to all downstream stages it enqueues. This ensures the entire pipeline for a watched-folder file runs at lower priority than GUI uploads.
 
 ### Remove Flow (`POST /api/watch/remove`)
 
@@ -181,14 +237,14 @@ In the existing reaper loop (`src/harbor_clerk/api/app.py`):
 
 ### Source Path File Reading
 
-At the point where pipeline stages read the source file (extraction, OCR), add a single conditional:
+At the point where pipeline stages read the source file (extraction, OCR), add a conditional before the existing storage read:
 
 ```python
 if version.source_path and os.path.exists(version.source_path):
-    # Read directly from filesystem
+    # Read directly from filesystem (watched folder files)
     file_bytes = Path(version.source_path).read_bytes()
 elif version.original_object_key:
-    # Read from storage backend (existing path)
+    # Read from storage backend (GUI-uploaded files)
     resp = storage.get_object(bucket, version.original_object_key)
     file_bytes = resp.data
 else:
@@ -196,7 +252,7 @@ else:
     raise SourceFileUnavailable(version.version_id)
 ```
 
-Tika extraction already accepts file content as bytes. OCR stages work with in-memory data. This is a narrow change at the file-read boundary, not a storage backend abstraction change.
+This check must be inserted before the existing `storage.get_object()` call in `extract.py` (and `ocr.py` if it reads the original). Tika extraction already accepts file content as bytes. OCR stages work with in-memory data.
 
 ### Priority-Aware Job Claiming
 
@@ -211,6 +267,16 @@ ORDER BY priority ASC, created_at ASC
 ```
 
 GUI uploads (priority 0) naturally claim ahead of watched folder jobs (priority 10). In-progress jobs complete without preemption.
+
+### Re-Ingestion Version Swap
+
+When a watched file's content changes, a new DocumentVersion is created while the old one remains active. The `finalize` stage for the new version performs cleanup:
+
+1. Set `documents.latest_version_id` to the new version (already done at ingest time for search freshness)
+2. Delete the old version's derived data (chunks, embeddings, entities, summary)
+3. Delete the old DocumentVersion row
+
+This ensures the document is always searchable — old data serves until new data is ready.
 
 ---
 
@@ -251,7 +317,7 @@ Does not appear in browser or Docker deployments.
 | File moved within watched folder | Bookmark resolves to new path; update `relative_path`. Document title unchanged (user can rename manually). |
 | File moved outside watched folder | Bookmark resolves to path outside folder boundary → treat as deletion (soft-delete) |
 | File moved to different volume | Bookmark fails to resolve → treat as deletion (soft-delete) |
-| File deleted then recreated (same name, different content) | Old bookmark fails → soft-delete old entry. New file detected as creation → new document. |
+| File deleted then recreated (same name, different content) | Old bookmark fails → soft-delete old entry. New file detected as creation → hard-delete old `watched_files` row, create new document. |
 | File replaced (same name, same content) | SHA256 matches → no action |
 | Watched folder itself renamed | Folder bookmark resolves to new path. Update stored path. Watchers continue. |
 | Watched folder deleted | Folder bookmark fails → disable watcher, surface error in preferences UI |
@@ -262,6 +328,8 @@ Does not appear in browser or Docker deployments.
 | Very large file (>200MB) | Apply same `max_file_size_mb` limit as uploads. Skip with warning logged. |
 | Permission denied on file | Log warning, skip file, continue scan |
 | Source file unavailable at pipeline time | Mark ingestion job as error, set watched_file status to removed |
+| Duplicate SHA256 (same content in watched folder and GUI upload) | Both documents exist independently. No dedup — they are separate documents from different sources. |
+| File restored from Trash (same bookmark resolves) | Resurrection flow: re-activate, refresh `source_path` (may differ post-restore), refresh bookmark data |
 
 ---
 
@@ -272,6 +340,9 @@ Single Alembic migration adding:
 - `watched_files` table
 - `priority` column on `ingestion_jobs` (SmallInteger, DEFAULT 0, NOT NULL)
 - Index on `ingestion_jobs(priority, created_at)` for efficient claim ordering
+- Drop UNIQUE constraint on `document_versions.original_sha256`
+- Make `document_versions.original_bucket` nullable
+- Make `document_versions.original_object_key` nullable
 
 ---
 
@@ -279,9 +350,14 @@ Single Alembic migration adding:
 
 **Python (pytest):**
 - Ingest endpoint: new file, changed file, unchanged file (skip), removed file, resurrection
+- Ingest with soft-deleted row for same path: old row hard-deleted, new row created
 - Priority ordering: verify watched folder jobs sort after GUI upload jobs
+- Priority propagation: verify downstream stages inherit priority from initial enqueue
 - Reaper: verify 30-day cleanup of removed watched files
 - Pipeline source_path fallback: verify file read from disk when source_path is set
+- Path traversal protection: verify source_path outside watched folder is rejected
+- Re-ingest version swap: verify old version's derived data persists until new version finalizes
+- Auth: verify watch endpoints require authenticated user
 
 **Swift (XCTest):**
 - WatchedFolderManager: bookmark creation/resolution, event ID persistence
@@ -294,3 +370,4 @@ Single Alembic migration adding:
 - Wait 30+ days (or adjust reaper interval) → document hard-deleted
 - Quit app, add files, relaunch → files picked up from FSEvents replay
 - Upload via GUI while watched folder scan is running → GUI upload processes first
+- Same file in watched folder and uploaded via GUI → both exist as separate documents
