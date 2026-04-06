@@ -20,10 +20,9 @@ class DocumentVersion(Base):
     original_sha256: Mapped[bytes] = mapped_column(
         LargeBinary,
         nullable=False,
-        unique=True,
     )
-    original_bucket: Mapped[str] = mapped_column(Text, nullable=False)
-    original_object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    original_bucket: Mapped[str | None] = mapped_column(Text, nullable=True)
+    original_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     mime_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[VersionStatus] = mapped_column(

@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Text, UniqueConstraint, text
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, SmallInteger, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -41,6 +41,7 @@ class IngestionJob(Base):
         nullable=False,
         server_default=text("'{}'::jsonb"),
     )
+    priority: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="0")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[created_at]
     started_at: Mapped[datetime | None] = mapped_column(
