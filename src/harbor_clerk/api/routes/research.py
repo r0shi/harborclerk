@@ -191,8 +191,6 @@ async def start_research(
     principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    _require_human(principal)
-
     # Check no active research
     running_result = await session.execute(select(ResearchState).where(ResearchState.status == "running"))
     if running_result.scalar_one_or_none():
@@ -266,8 +264,6 @@ async def resume_research(
     principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    _require_human(principal)
-
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id or conv.mode != "research":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research task not found")
@@ -313,8 +309,6 @@ async def delete_research(
     principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    _require_human(principal)
-
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id or conv.mode != "research":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research task not found")

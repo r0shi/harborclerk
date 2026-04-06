@@ -798,7 +798,7 @@ async def download_document(
         obj = storage.get_object(version.original_bucket, version.original_object_key)
         file_bytes = obj.read()
         filename = posixpath.basename(version.original_object_key)
-    elif version.source_path and not version.original_object_key and os.path.exists(version.source_path):
+    elif version.source_path and os.path.exists(version.source_path):
         # Watched folder version — no stored object, read from original location
         file_bytes = Path(version.source_path).read_bytes()
         filename = posixpath.basename(version.source_path)
