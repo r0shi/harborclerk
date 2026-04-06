@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_user
+from harbor_clerk.api.deps import Principal, require_human_user
 from harbor_clerk.api.schemas.uploads import (
     BatchConfirmRequest,
     BatchConfirmResponse,
@@ -78,7 +78,7 @@ ALLOWED_EXTENSIONS = {
 @router.post("/uploads", response_model=UploadResponse)
 async def upload_files(
     files: list[UploadFile] = File(..., max_part_size=200 * 1024 * 1024),
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     settings = get_settings()
@@ -325,7 +325,7 @@ async def _confirm_single(
 @router.post("/uploads/confirm", response_model=ConfirmUploadResponse)
 async def confirm_upload(
     body: ConfirmUploadRequest,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     settings = get_settings()
@@ -350,7 +350,7 @@ async def confirm_upload(
 @router.post("/uploads/confirm-batch", response_model=BatchConfirmResponse)
 async def confirm_upload_batch(
     body: BatchConfirmRequest,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     settings = get_settings()
@@ -414,7 +414,7 @@ async def confirm_upload_batch(
 @router.get("/uploads", response_model=list[UploadStatusResponse])
 async def list_uploads(
     since: datetime | None = Query(default=None),
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     query = select(Upload).order_by(Upload.created_at.desc()).limit(100)
@@ -479,7 +479,7 @@ async def _get_session_or_404(session_id_str: str, db: AsyncSession, principal: 
 @router.post("/uploads/sessions", response_model=SessionResponse)
 async def create_session(
     body: CreateSessionRequest,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     db: AsyncSession = Depends(get_session),
 ):
     us = UploadSession(
@@ -498,7 +498,7 @@ async def create_session(
 @router.get("/uploads/sessions/{session_id}", response_model=SessionResponse)
 async def get_upload_session(
     session_id: str,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     db: AsyncSession = Depends(get_session),
 ):
     us = await _get_session_or_404(session_id, db, principal)
@@ -510,7 +510,7 @@ async def upload_file_to_session(
     session_id: str,
     file: UploadFile = File(..., max_part_size=200 * 1024 * 1024),
     source_path: str | None = Form(default=None),
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     db: AsyncSession = Depends(get_session),
 ):
     us = await _get_session_or_404(session_id, db, principal)
@@ -701,7 +701,7 @@ async def upload_file_to_session(
 @router.post("/uploads/sessions/{session_id}/confirm", response_model=BatchConfirmResponse)
 async def confirm_session(
     session_id: str,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     db: AsyncSession = Depends(get_session),
 ):
     us = await _get_session_or_404(session_id, db, principal)
@@ -792,7 +792,7 @@ async def confirm_session(
 @router.delete("/uploads/sessions/{session_id}")
 async def cancel_session(
     session_id: str,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     db: AsyncSession = Depends(get_session),
 ):
     us = await _get_session_or_404(session_id, db, principal)
@@ -824,7 +824,7 @@ async def cancel_session(
 @router.get("/uploads/sessions/{session_id}/resume", response_model=ResumeResponse)
 async def get_resume_info(
     session_id: str,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     db: AsyncSession = Depends(get_session),
 ):
     us = await _get_session_or_404(session_id, db, principal)

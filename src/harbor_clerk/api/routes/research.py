@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_user
+from harbor_clerk.api.deps import Principal, require_human_user, require_user
 from harbor_clerk.api.schemas.research import (
     ResearchActiveCheck,
     ResearchDetail,
@@ -188,11 +188,9 @@ async def get_research(
 @router.post("/research")
 async def start_research(
     body: StartResearchRequest,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    _require_human(principal)
-
     # Check no active research
     running_result = await session.execute(select(ResearchState).where(ResearchState.status == "running"))
     if running_result.scalar_one_or_none():
@@ -263,11 +261,9 @@ async def start_research(
 @router.post("/research/{conv_id}/resume")
 async def resume_research(
     conv_id: uuid.UUID,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    _require_human(principal)
-
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id or conv.mode != "research":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research task not found")
@@ -310,11 +306,9 @@ async def resume_research(
 @router.delete("/research/{conv_id}", status_code=200)
 async def delete_research(
     conv_id: uuid.UUID,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    _require_human(principal)
-
     conv = await session.get(Conversation, conv_id)
     if conv is None or conv.user_id != principal.id or conv.mode != "research":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Research task not found")

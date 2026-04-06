@@ -10,7 +10,7 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_admin, require_user
+from harbor_clerk.api.deps import Principal, require_admin, require_human_user, require_user
 from harbor_clerk.api.schemas.chat import (
     ChatMessageOut,
     ConversationDetail,
@@ -96,7 +96,7 @@ async def list_conversations(
 @router.post("/chat/conversations", response_model=ConversationSummary)
 async def create_conversation(
     body: CreateConversationRequest,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     conv = Conversation(user_id=principal.id, title=body.title)
@@ -168,7 +168,7 @@ async def get_conversation(
 @router.delete("/chat/conversations/{conv_id}", status_code=204)
 async def delete_conversation(
     conv_id: uuid.UUID,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     conv = await session.get(Conversation, conv_id)
@@ -232,7 +232,7 @@ async def export_conversation(
 async def send_message(
     conv_id: uuid.UUID,
     body: SendMessageRequest,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     conv = await session.get(Conversation, conv_id)

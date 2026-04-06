@@ -67,13 +67,13 @@ def run_ocr(version_id: uuid.UUID) -> None:
             mark_stage_done(version_id, JobStage.ocr)
             return
 
-        # Read from source_path (watched folder) or storage
-        if version.source_path and os.path.exists(version.source_path):
-            data = Path(version.source_path).read_bytes()
-        elif version.original_object_key:
+        # Read from storage if available; fall back to source_path for watched folder versions
+        if version.original_object_key:
             storage = get_storage()
             response = storage.get_object(version.original_bucket, version.original_object_key)
             data = response.read()
+        elif version.source_path and os.path.exists(version.source_path):
+            data = Path(version.source_path).read_bytes()
         else:
             raise RuntimeError(f"No source for version {version_id}")
 
