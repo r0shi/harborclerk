@@ -792,15 +792,16 @@ async def download_document(
     import os
     from pathlib import Path
 
-    # Read from source_path (watched folder) or storage backend
-    if version.source_path and os.path.exists(version.source_path):
-        file_bytes = Path(version.source_path).read_bytes()
-        filename = posixpath.basename(version.source_path)
-    elif version.original_object_key:
+    # Read from storage if available; fall back to source_path for watched folder versions
+    if version.original_object_key:
         storage = get_storage()
         obj = storage.get_object(version.original_bucket, version.original_object_key)
         file_bytes = obj.read()
         filename = posixpath.basename(version.original_object_key)
+    elif version.source_path and not version.original_object_key and os.path.exists(version.source_path):
+        # Watched folder version — no stored object, read from original location
+        file_bytes = Path(version.source_path).read_bytes()
+        filename = posixpath.basename(version.source_path)
     else:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file unavailable")
 

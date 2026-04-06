@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_user
+from harbor_clerk.api.deps import Principal, require_human_user, require_user
 from harbor_clerk.api.schemas.research import (
     ResearchActiveCheck,
     ResearchDetail,
@@ -188,7 +188,7 @@ async def get_research(
 @router.post("/research")
 async def start_research(
     body: StartResearchRequest,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     _require_human(principal)
@@ -263,7 +263,7 @@ async def start_research(
 @router.post("/research/{conv_id}/resume")
 async def resume_research(
     conv_id: uuid.UUID,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     _require_human(principal)
@@ -310,7 +310,7 @@ async def resume_research(
 @router.delete("/research/{conv_id}", status_code=200)
 async def delete_research(
     conv_id: uuid.UUID,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     _require_human(principal)

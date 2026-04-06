@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import get_session, require_user
+from harbor_clerk.api.deps import get_session, require_human_user, require_user
 from harbor_clerk.api.routes.uploads import ALLOWED_EXTENSIONS
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_version import DocumentVersion
@@ -82,6 +82,30 @@ def _folder_to_dict(f: WatchedFolder, file_count: int) -> dict:
     }
 
 
+def _parse_uuid(value: str, field: str = "id") -> uuid.UUID:
+    """Parse a UUID string, raising 400 on invalid input."""
+    try:
+        return uuid.UUID(value)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail=f"Invalid UUID for {field}: {value!r}")
+
+
+def _parse_hex(value: str, field: str = "sha256") -> bytes:
+    """Parse a hex string to bytes, raising 400 on invalid input."""
+    try:
+        return bytes.fromhex(value)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail=f"Invalid hex for {field}: {value!r}")
+
+
+def _parse_base64(value: str, field: str = "bookmark_data") -> bytes:
+    """Parse a base64 string to bytes, raising 400 on invalid input."""
+    try:
+        return base64.b64decode(value)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 for {field}")
+
+
 def _validate_source_path(source_path: str, folder_path: str) -> str:
     """Validate that source_path is within the folder. Returns realpath."""
     real_source = os.path.realpath(source_path)
@@ -124,7 +148,7 @@ async def list_folders(
 async def create_folder(
     body: FolderCreate,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_user),
+    _: None = Depends(require_human_user),
 ):
     normalized = os.path.realpath(body.path)
 
@@ -141,7 +165,7 @@ async def create_folder(
 
     folder = WatchedFolder(
         path=normalized,
-        bookmark_data=base64.b64decode(body.bookmark_data),
+        bookmark_data=_parse_base64(body.bookmark_data, "bookmark_data"),
         recursive=body.recursive,
     )
     session.add(folder)
@@ -155,9 +179,11 @@ async def patch_folder(
     folder_id: str,
     body: FolderPatch,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_user),
+    _: None = Depends(require_human_user),
 ):
-    result = await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == uuid.UUID(folder_id)))
+    result = await session.execute(
+        select(WatchedFolder).where(WatchedFolder.folder_id == _parse_uuid(folder_id, "folder_id"))
+    )
     folder = result.scalar_one_or_none()
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
@@ -175,9 +201,9 @@ async def patch_folder(
 async def delete_folder(
     folder_id: str,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_user),
+    _: None = Depends(require_human_user),
 ):
-    fid = uuid.UUID(folder_id)
+    fid = _parse_uuid(folder_id, "folder_id")
     result = await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == fid))
     folder = result.scalar_one_or_none()
     if not folder:
@@ -201,9 +227,11 @@ async def delete_folder(
 async def rescan_folder(
     folder_id: str,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_user),
+    _: None = Depends(require_human_user),
 ):
-    result = await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == uuid.UUID(folder_id)))
+    result = await session.execute(
+        select(WatchedFolder).where(WatchedFolder.folder_id == _parse_uuid(folder_id, "folder_id"))
+    )
     folder = result.scalar_one_or_none()
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
@@ -217,9 +245,9 @@ async def rescan_folder(
 async def ingest_file(
     body: IngestRequest,
     session: AsyncSession = Depends(get_session),
-    principal=Depends(require_user),
+    principal=Depends(require_human_user),
 ):
-    fid = uuid.UUID(body.folder_id)
+    fid = _parse_uuid(body.folder_id, "folder_id")
     result = await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == fid))
     folder = result.scalar_one_or_none()
     if not folder:
@@ -233,8 +261,8 @@ async def ingest_file(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file extension: {ext}")
 
-    sha256_bytes = bytes.fromhex(body.sha256)
-    bookmark_bytes = base64.b64decode(body.bookmark_data)
+    sha256_bytes = _parse_hex(body.sha256, "sha256")
+    bookmark_bytes = _parse_base64(body.bookmark_data, "bookmark_data")
     filename = PurePosixPath(body.relative_path).name
 
     # Look up existing watched file
@@ -363,9 +391,9 @@ async def ingest_file(
 async def remove_file(
     body: RemoveRequest,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_user),
+    _: None = Depends(require_human_user),
 ):
-    fid = uuid.UUID(body.folder_id)
+    fid = _parse_uuid(body.folder_id, "folder_id")
     result = await session.execute(
         select(WatchedFile).where(
             WatchedFile.folder_id == fid,
@@ -394,9 +422,9 @@ async def remove_file(
 async def rename_file(
     body: RenameRequest,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_user),
+    _: None = Depends(require_human_user),
 ):
-    fid = uuid.UUID(body.folder_id)
+    fid = _parse_uuid(body.folder_id, "folder_id")
 
     # Look up folder for path validation
     folder_result = await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id == fid))
@@ -418,7 +446,7 @@ async def rename_file(
         raise HTTPException(status_code=404, detail="Watched file not found")
 
     wf.relative_path = body.new_relative_path
-    wf.bookmark_data = base64.b64decode(body.bookmark_data)
+    wf.bookmark_data = _parse_base64(body.bookmark_data, "bookmark_data")
 
     # Update source_path on the version
     if wf.version_id:

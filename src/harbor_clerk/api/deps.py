@@ -89,6 +89,22 @@ async def require_user(
     return principal
 
 
+async def require_human_user(
+    principal: Principal = Depends(get_current_principal),
+) -> Principal:
+    """Human user only — rejects read-only API keys.
+
+    Use this for mutating endpoints (uploads, chat, watched folders, etc.)
+    to enforce the project's read-only API key contract.
+    """
+    if principal.type == "api_key":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API keys are read-only and cannot access this endpoint",
+        )
+    return principal
+
+
 async def require_admin(
     principal: Principal = Depends(get_current_principal),
 ) -> Principal:
