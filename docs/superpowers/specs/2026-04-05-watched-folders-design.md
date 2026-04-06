@@ -129,14 +129,29 @@ New singleton class, owned by ServiceManager. Starts after the API is healthy.
 
 | Event | Action |
 |---|---|
-| File created | Check extension against `ALLOWED_EXTENSIONS`. Hash file. Call `POST /api/watch/ingest` |
+| File created | Check file type (see File Type Detection below). Hash file. Call `POST /api/watch/ingest` with resolved MIME type. |
 | File modified | Hash file. Compare against known SHA256. If different, call `POST /api/watch/ingest` |
 | File renamed (within folder) | Resolve bookmark to new path. Call `POST /api/watch/rename` |
 | File deleted / moved out | Resolve bookmark. If fails or new path outside folder, call `POST /api/watch/remove` |
 | Folder renamed | Folder bookmark resolves transparently. Update stored path via API |
 
-**`ALLOWED_EXTENSIONS` in Swift:**
-The Swift watcher needs the same extension whitelist as the Python backend. Rather than duplicating the list, the Swift side fetches it once from a new `GET /api/watch/allowed-extensions` endpoint on startup and caches it in memory.
+### File Type Detection
+
+The Swift watcher uses macOS **Uniform Type Identifiers (UTType)** for file type detection, which is more robust than extension matching alone. UTType uses file extension, Finder metadata, extended attributes, and in some cases content sniffing (magic bytes).
+
+**Detection flow:**
+1. Read `URL.resourceValues(forKeys: [.contentTypeKey])` to get the file's `UTType`
+2. Check if the UTType conforms to any of the allowed supertypes:
+   - `UTType.pdf`, `.image`, `.plainText`, `.spreadsheet`, `.presentation`
+   - `.html`, `.emailMessage`, `.epub`
+   - Specific types: `.rtf`, `.commaSeparatedText`
+   - Office types via MIME-to-UTType mapping for `.docx`, `.doc`, `.odt`, `.xlsx`, `.pptx`, etc.
+3. If UTType detection returns no type or a generic type (`public.data`), **fall back to file extension** against the Python backend's `ALLOWED_EXTENSIONS` set
+4. Send the resolved MIME type (from `UTType.preferredMIMEType` or extension-based guess) to the API alongside the file path, so the pipeline doesn't need to re-detect
+
+**Benefit:** A PDF renamed to `.txt` is still correctly identified as a PDF. A `.pages` or `.numbers` file that macOS understands via UTType gets handled even if extension-to-MIME mapping is imperfect.
+
+The Swift side fetches the `ALLOWED_EXTENSIONS` set once from `GET /api/watch/allowed-extensions` on startup for the extension fallback path.
 
 **Event ID persistence:**
 - After processing a batch of events, update `last_event_id` via `PATCH /api/watch/folders/{id}`
@@ -187,7 +202,7 @@ The download endpoint (`GET /api/docs/{id}/download`) applies the same validatio
 
 ### Ingest Flow (`POST /api/watch/ingest`)
 
-Input: `folder_id`, `relative_path`, `sha256`, `bookmark_data`, `source_path`
+Input: `folder_id`, `relative_path`, `sha256`, `bookmark_data`, `source_path`, `mime_type`
 
 1. Validate `source_path` is within the watched folder's path (see Security above)
 2. Look up existing `watched_files` entry by `(folder_id, relative_path)`
@@ -201,8 +216,8 @@ Input: `folder_id`, `relative_path`, `sha256`, `bookmark_data`, `source_path`
 5. If new file (no existing `watched_files` row, or only a `status = 'removed'` row):
    - If a soft-deleted row exists for this `(folder_id, relative_path)`: hard-delete it (old bookmark is stale)
    - Create Document (title from filename; if nested, prefix with relative directory path)
-   - Create DocumentVersion with `source_path` set, `original_bucket`/`original_object_key` NULL, `original_sha256` from the computed hash
-   - Create Upload record (source=`watch_folder`, `minio_bucket`/`minio_object_key` = `""`, `user_id` from authenticated principal)
+   - Create DocumentVersion with `source_path` set, `original_bucket`/`original_object_key` NULL, `original_sha256` from the computed hash, `mime_type` from the Swift-provided value
+   - Create Upload record (source=`watch_folder`, `minio_bucket`/`minio_object_key` = `""`, `user_id` from authenticated principal, `mime_type` from Swift)
    - Create `watched_files` row
    - Enqueue `extract` stage with priority 10
 6. If previously removed (`status = 'removed'`) and file reappears with same bookmark:
