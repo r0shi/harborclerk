@@ -375,7 +375,7 @@ struct PreferencesWindow: View {
             isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
             watchedFolders = folders.compactMap { dict in
-                guard let idStr = dict["id"] as? String,
+                guard let idStr = dict["folder_id"] as? String,
                       let id = UUID(uuidString: idStr),
                       let path = dict["path"] as? String else { return nil }
 
@@ -439,7 +439,7 @@ struct PreferencesWindow: View {
                   let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 || httpResponse.statusCode == 201,
                   let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let idStr = dict["id"] as? String,
+                  let idStr = dict["folder_id"] as? String,
                   let id = UUID(uuidString: idStr) else { return }
 
             let newFolder = WatchedFolderInfo(
@@ -451,7 +451,8 @@ struct PreferencesWindow: View {
             )
             watchedFolders.append(newFolder)
 
-            // Start watching immediately
+            // Initial scan of existing files, then start watching for changes
+            await WatchedFolderManager.shared.performInitialScan(folderId: id, path: path, recursive: true)
             let lastEventId = FSEventsGetCurrentEventId()
             await MainActor.run {
                 WatchedFolderManager.shared.startWatcher(

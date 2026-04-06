@@ -139,7 +139,11 @@ def _lookup_filename(version_id: uuid.UUID) -> str | None:
             select(DocumentVersion).where(DocumentVersion.version_id == version_id)
         ).scalar_one_or_none()
         if version:
-            return posixpath.basename(version.original_object_key)
+            if version.original_object_key:
+                return posixpath.basename(version.original_object_key)
+            if version.source_path:
+                return posixpath.basename(version.source_path)
+            return "unknown"
         return None
     finally:
         session.close()

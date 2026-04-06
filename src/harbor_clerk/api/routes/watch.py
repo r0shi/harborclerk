@@ -183,21 +183,16 @@ async def delete_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
-    # Soft-delete linked documents
-    files_result = await session.execute(
-        select(WatchedFile).where(
-            WatchedFile.folder_id == fid,
-            WatchedFile.status == WatchedFileStatus.active,
-        )
-    )
+    # Hard-delete all linked documents (explicit folder removal = immediate cleanup)
+    files_result = await session.execute(select(WatchedFile).where(WatchedFile.folder_id == fid))
     for wf in files_result.scalars().all():
         if wf.doc_id:
             doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
             doc = doc_result.scalar_one_or_none()
             if doc:
-                doc.status = "removed"
+                await session.delete(doc)  # cascades to versions, chunks, embeddings
 
-    # Cascade delete folder + files
+    # Cascade delete folder + watched_files rows
     await session.execute(delete(WatchedFolder).where(WatchedFolder.folder_id == fid))
     await session.commit()
 
@@ -255,53 +250,46 @@ async def ingest_file(
     if wf and wf.status == WatchedFileStatus.active and wf.sha256 == sha256_bytes:
         return {"action": "skipped", "doc_id": str(wf.doc_id), "version_id": str(wf.version_id)}
 
-    # Case 2: removed file
+    # Case 2: removed file at same path — resurrect (bookmark may differ after Trash restore)
     if wf and wf.status == WatchedFileStatus.removed:
-        if wf.bookmark_data == bookmark_bytes:
-            # Resurrection — reactivate file and doc
-            wf.status = WatchedFileStatus.active
-            wf.removed_at = None
-            wf.bookmark_data = bookmark_bytes
+        wf.status = WatchedFileStatus.active
+        wf.removed_at = None
+        wf.bookmark_data = bookmark_bytes  # refresh bookmark
 
-            if wf.doc_id:
-                doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
-                doc = doc_result.scalar_one_or_none()
-                if doc:
-                    doc.status = "active"
+        if wf.doc_id:
+            doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
+            doc = doc_result.scalar_one_or_none()
+            if doc:
+                doc.status = "active"
 
-                if wf.version_id:
-                    ver_result = await session.execute(
-                        select(DocumentVersion).where(DocumentVersion.version_id == wf.version_id)
-                    )
-                    ver = ver_result.scalar_one_or_none()
-                    if ver:
-                        ver.source_path = body.source_path
-
-            if wf.sha256 != sha256_bytes:
-                # SHA changed — re-ingest with new version
-                wf.sha256 = sha256_bytes
-                version_id = await _create_new_version(
-                    session, wf.doc_id, sha256_bytes, body.source_path, body.mime_type, filename
+            if wf.version_id:
+                ver_result = await session.execute(
+                    select(DocumentVersion).where(DocumentVersion.version_id == wf.version_id)
                 )
-                wf.version_id = version_id
+                ver = ver_result.scalar_one_or_none()
+                if ver:
+                    ver.source_path = body.source_path
 
-                # Update doc latest_version_id
-                doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
-                doc = doc_result.scalar_one_or_none()
-                if doc:
-                    doc.latest_version_id = version_id
+        if wf.sha256 != sha256_bytes:
+            # SHA changed — re-ingest with new version
+            wf.sha256 = sha256_bytes
+            version_id = await _create_new_version(
+                session, wf.doc_id, sha256_bytes, body.source_path, body.mime_type, filename
+            )
+            wf.version_id = version_id
 
-                await session.commit()
-                await asyncio.to_thread(enqueue_stage, version_id, JobStage.extract, priority=10)
-                return {"action": "updated", "doc_id": str(wf.doc_id), "version_id": str(version_id)}
+            # Update doc latest_version_id
+            doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
+            doc = doc_result.scalar_one_or_none()
+            if doc:
+                doc.latest_version_id = version_id
 
             await session.commit()
-            return {"action": "resurrected", "doc_id": str(wf.doc_id), "version_id": str(wf.version_id)}
-        else:
-            # Different bookmark — hard-delete old row, fall through to new-file
-            await session.execute(delete(WatchedFile).where(WatchedFile.file_id == wf.file_id))
-            await session.flush()
-            wf = None
+            await asyncio.to_thread(enqueue_stage, version_id, JobStage.extract, priority=10)
+            return {"action": "updated", "doc_id": str(wf.doc_id), "version_id": str(version_id)}
+
+        await session.commit()
+        return {"action": "resurrected", "doc_id": str(wf.doc_id), "version_id": str(wf.version_id)}
 
     # Case 3: active + different SHA256 → new version
     if wf and wf.status == WatchedFileStatus.active and wf.sha256 != sha256_bytes:

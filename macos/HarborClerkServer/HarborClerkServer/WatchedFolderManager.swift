@@ -98,18 +98,19 @@ final class WatchedFolderManager {
 
     /// Fetch allowed file extensions from the API.
     private func fetchAllowedExtensions() async {
-        guard let url = apiBaseURL?.appendingPathComponent("/api/watch/allowed-extensions") else { return }
+        guard let url = apiBaseURL?.appendingPathComponent("api/watch/allowed-extensions") else { return }
 
         do {
             let (data, _) = try await apiRequest(url: url, method: "GET")
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let extensions = json["extensions"] as? [String] {
-                allowedExtensions = Set(extensions)
+            // API returns a JSON array of extensions with dots: [".pdf", ".docx", ...]
+            if let extensions = try? JSONSerialization.jsonObject(with: data) as? [String] {
+                // Strip leading dots for comparison with URL.pathExtension
+                allowedExtensions = Set(extensions.map { $0.hasPrefix(".") ? String($0.dropFirst()) : $0 })
                 Log.logger("watcher").info("Loaded \(extensions.count, privacy: .public) allowed extensions")
             }
         } catch {
             Log.logger("watcher").error("Failed to fetch allowed extensions: \(error.localizedDescription, privacy: .public)")
-            // Fallback: common document extensions
+            // Fallback: common document extensions (without dots)
             allowedExtensions = Set(["pdf", "doc", "docx", "txt", "md", "csv", "xlsx", "pptx",
                                      "odt", "rtf", "epub", "html", "eml", "jpg", "jpeg", "png", "tiff"])
         }
@@ -117,14 +118,14 @@ final class WatchedFolderManager {
 
     /// Fetch folders from the API and start watchers for enabled ones.
     private func fetchAndStartWatchers() async {
-        guard let url = apiBaseURL?.appendingPathComponent("/api/watch/folders") else { return }
+        guard let url = apiBaseURL?.appendingPathComponent("api/watch/folders") else { return }
 
         do {
             let (data, _) = try await apiRequest(url: url, method: "GET")
             guard let folders = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
 
             for folder in folders {
-                guard let idStr = folder["id"] as? String,
+                guard let idStr = folder["folder_id"] as? String,
                       let id = UUID(uuidString: idStr),
                       let path = folder["path"] as? String,
                       let enabled = folder["enabled"] as? Bool,
@@ -285,7 +286,7 @@ final class WatchedFolderManager {
             "mime_type": mimeType,
         ]
 
-        let url = apiBase.appendingPathComponent("/api/watch/ingest")
+        let url = apiBase.appendingPathComponent("api/watch/ingest")
         do {
             let _ = try await apiRequest(url: url, method: "POST", body: body)
             Log.logger("watcher").debug("Ingested: \(relativePath, privacy: .public)")
@@ -303,7 +304,7 @@ final class WatchedFolderManager {
             "relative_path": relativePath,
         ]
 
-        let url = apiBase.appendingPathComponent("/api/watch/remove")
+        let url = apiBase.appendingPathComponent("api/watch/remove")
         do {
             let _ = try await apiRequest(url: url, method: "POST", body: body)
             Log.logger("watcher").debug("Removed: \(relativePath, privacy: .public)")
@@ -327,7 +328,7 @@ final class WatchedFolderManager {
             "source_path": fileURL.path,
         ]
 
-        let url = apiBase.appendingPathComponent("/api/watch/rename")
+        let url = apiBase.appendingPathComponent("api/watch/rename")
         do {
             let _ = try await apiRequest(url: url, method: "POST", body: body)
             Log.logger("watcher").debug("Renamed: \(oldRelativePath, privacy: .public) -> \(newRelativePath, privacy: .public)")
@@ -341,7 +342,7 @@ final class WatchedFolderManager {
         guard let apiBase = apiBaseURL else { return }
 
         let body: [String: Any] = ["last_event_id": Int(eventId)]
-        let url = apiBase.appendingPathComponent("/api/watch/folders/\(folderId.uuidString)")
+        let url = apiBase.appendingPathComponent("api/watch/folders/\(folderId.uuidString)")
 
         do {
             let _ = try await apiRequest(url: url, method: "PATCH", body: body)
