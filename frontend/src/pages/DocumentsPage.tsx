@@ -35,6 +35,8 @@ interface DocSummary {
   source_path?: string
   doc_type?: string
   topic_id?: number
+  watch_source_path?: string
+  watch_status?: string
 }
 
 interface PaginatedDocs {
@@ -772,12 +774,39 @@ export default function DocumentsPage() {
                               </svg>
                             </button>
                             <div>
-                              <Link
-                                to={`/docs/${doc.doc_id}`}
-                                className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                              >
-                                {doc.title}
-                              </Link>
+                              <span className="flex items-center gap-1.5">
+                                <Link
+                                  to={`/docs/${doc.doc_id}`}
+                                  className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                                >
+                                  {doc.title}
+                                </Link>
+                                {doc.watch_source_path && (
+                                  <span className="text-gray-400" title={`Watched: ${doc.watch_source_path}`}>
+                                    <svg
+                                      className="inline h-3.5 w-3.5"
+                                      fill="none"
+                                      viewBox="0 0 24 24"
+                                      stroke="currentColor"
+                                      strokeWidth={2}
+                                    >
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101"
+                                      />
+                                      <path
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        d="M10.172 13.828a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.102 1.101"
+                                      />
+                                    </svg>
+                                  </span>
+                                )}
+                                {doc.watch_status === 'removed' && (
+                                  <span className="text-xs text-red-400/60">Source file removed</span>
+                                )}
+                              </span>
                               {doc.canonical_filename && (
                                 <div className="text-xs text-gray-400">{doc.canonical_filename}</div>
                               )}
