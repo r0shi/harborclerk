@@ -209,17 +209,20 @@ async def delete_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
-    # Hard-delete all linked documents (explicit folder removal = immediate cleanup)
-    files_result = await session.execute(select(WatchedFile).where(WatchedFile.folder_id == fid))
-    for wf in files_result.scalars().all():
-        if wf.doc_id:
-            doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
-            doc = doc_result.scalar_one_or_none()
-            if doc:
-                await session.delete(doc)  # cascades to versions, chunks, embeddings
+    # Collect doc_ids linked to this folder's files
+    files_result = await session.execute(
+        select(WatchedFile.doc_id).where(WatchedFile.folder_id == fid, WatchedFile.doc_id.isnot(None))
+    )
+    doc_ids = [row[0] for row in files_result.all()]
 
-    # Cascade delete folder + watched_files rows
+    # Delete folder first (cascades to watched_files via FK)
     await session.execute(delete(WatchedFolder).where(WatchedFolder.folder_id == fid))
+
+    # Delete linked documents via SQL DELETE (DB cascades handle versions, chunks, etc.)
+    # Using raw DELETE avoids SQLAlchemy ORM autoflush FK conflicts
+    if doc_ids:
+        await session.execute(delete(Document).where(Document.doc_id.in_(doc_ids)))
+
     await session.commit()
 
 
