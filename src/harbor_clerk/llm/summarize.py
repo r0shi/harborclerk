@@ -237,15 +237,19 @@ def _apple_intelligence_summary(chunks: list[str], max_chars: int) -> str | None
     # Locate the binary
     binary = os.environ.get("APPLE_SUMMARIZE_PATH", "")
     if not binary:
-        # Try well-known path relative to the native app bundle
-        config_file = os.environ.get("NATIVE_CONFIG_FILE", "")
-        if config_file:
-            from pathlib import Path
+        # Find app bundle Resources dir from the Python executable path
+        # e.g. .../HarborClerkServer.app/Contents/Resources/venv/bin/python3
+        import sys
+        from pathlib import Path
 
-            app_resources = Path(config_file).parent.parent / "Resources"
-            candidate = app_resources / "apple-summarize"
-            if candidate.exists():
-                binary = str(candidate)
+        exe = Path(sys.executable).resolve()
+        # Walk up looking for a Resources dir that contains apple-summarize
+        for parent in exe.parents:
+            if parent.name == "Resources":
+                candidate = parent / "apple-summarize"
+                if candidate.exists():
+                    binary = str(candidate)
+                break
 
     if not binary:
         logger.debug("apple-summarize binary not found — skipping Apple Intelligence fallback")
