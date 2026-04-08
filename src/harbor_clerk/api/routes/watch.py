@@ -357,7 +357,7 @@ async def ingest_file(
     doc.latest_version_id = version.version_id
 
     upload = Upload(
-        user_id=principal.id if principal.type == "user" else None,
+        user_id=None,  # watched folder uploads are system-initiated, no real user
         source=UploadSource.watch_folder,
         original_filename=filename,
         mime_type=body.mime_type,
