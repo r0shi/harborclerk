@@ -44,6 +44,7 @@ struct PreferencesWindow: View {
     @State private var needsRestart = false
     @State private var watchedFolders: [WatchedFolderInfo] = []
     @State private var isLoadingFolders = false
+    @State private var folderPendingDelete: UUID?
 
     // Snapshot of initial values for cancel/dirty detection
     @State private var initial: Snapshot = Snapshot()
@@ -327,7 +328,7 @@ struct PreferencesWindow: View {
                 .help("Rescan folder")
 
                 Button {
-                    deleteFolder(id: folder.wrappedValue.id)
+                    folderPendingDelete = folder.wrappedValue.id
                 } label: {
                     Image(systemName: "trash")
                         .font(.caption)
@@ -336,6 +337,20 @@ struct PreferencesWindow: View {
                 .buttonStyle(.borderless)
                 .help("Remove folder")
             }
+        }
+        .alert("Remove Watched Folder?", isPresented: Binding(
+            get: { folderPendingDelete == folder.wrappedValue.id },
+            set: { if !$0 { folderPendingDelete = nil } }
+        )) {
+            Button("Remove", role: .destructive) {
+                deleteFolder(id: folder.wrappedValue.id)
+                folderPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) {
+                folderPendingDelete = nil
+            }
+        } message: {
+            Text("This will remove the folder from watching and delete all its indexed documents. This cannot be undone.")
         }
     }
 
