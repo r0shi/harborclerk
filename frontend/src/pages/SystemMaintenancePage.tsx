@@ -216,6 +216,29 @@ export default function SystemMaintenancePage() {
         </div>
       </div>
 
+      {/* Database Migrations */}
+      <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-5">
+        <h2 className="text-lg font-semibold mb-2">Database</h2>
+        <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
+          Run pending database migrations. Use this if services failed to start after an update.
+        </p>
+        <button
+          onClick={async () => {
+            setError('')
+            setActionResult('')
+            try {
+              const data = await post<{ schema_version: string }>('/api/system/run-migrations')
+              setActionResult(`Migrations complete. Schema version: ${data.schema_version}`)
+            } catch (e: unknown) {
+              setError(e instanceof Error ? e.message : 'Migration failed')
+            }
+          }}
+          className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+        >
+          Run Migrations
+        </button>
+      </div>
+
       {/* Delete All Documents */}
       <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-red-200 dark:ring-red-800/50 p-5">
         <h2 className="text-lg font-semibold text-red-700 dark:text-red-400 mb-2">Danger Zone</h2>
