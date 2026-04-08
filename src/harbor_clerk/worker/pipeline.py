@@ -268,11 +268,17 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
 
         # All stages done — ensure version is marked ready
         # (handles re-run of individual stages like resummarize)
-        if version.status != VersionStatus.ready:
+        needs_ready_event = version.status != VersionStatus.ready
+        if needs_ready_event:
             version.status = VersionStatus.ready
             logger.info("Restored version %s to ready status", version_id)
 
         session.commit()
+
+        if needs_ready_event:
+            # Publish finalize-done event so the frontend processing panel clears this doc
+            publish_job_event(version_id, "finalize", "done", filename=filename)
+
         logger.info("Pipeline complete for version %s", version_id)
     finally:
         session.close()
