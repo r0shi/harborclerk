@@ -33,26 +33,54 @@ class _Tier(Enum):
     LONG = "long"
 
 
-# --- System prompts (all end with /no_think) ---
+# --- System prompts ---
+# All prompts use ANSWER: marker so we can extract the final answer
+# from thinking models that put everything in reasoning_content.
+# /no_think is kept for Qwen3 (harmless for models that ignore it).
 _PROMPT_SHORT = (
     "Summarize this document in 2-3 concise sentences. "
-    "Cover the main topic, key conclusions, and document type. /no_think"
+    "Cover the main topic, key conclusions, and document type. "
+    "Mark your final answer with 'ANSWER:' on its own line, followed by your summary. /no_think"
 )
 _PROMPT_MEDIUM = (
     "You are reading representative excerpts from a longer document. "
-    "Summarize the full document in 2-3 concise sentences based on these excerpts. /no_think"
+    "Summarize the full document in 2-3 concise sentences based on these excerpts. "
+    "Mark your final answer with 'ANSWER:' on its own line, followed by your summary. /no_think"
 )
 _PROMPT_MAP = (
     "Summarize this section of a longer document in 2-3 sentences. "
-    "Focus on the key points and any conclusions. /no_think"
+    "Focus on the key points and any conclusions. "
+    "Mark your final answer with 'ANSWER:' on its own line, followed by your summary. /no_think"
 )
 _PROMPT_REDUCE = (
     "Below are summaries of different sections of a single document. "
-    "Write a unified 2-3 sentence summary of the entire document. /no_think"
+    "Write a unified 2-3 sentence summary of the entire document. "
+    "Mark your final answer with 'ANSWER:' on its own line, followed by your summary. /no_think"
 )
 
 
 # --- Helpers ---
+
+
+def _extract_marked_answer(text: str) -> str:
+    """Extract the final answer from LLM output using ANSWER: or TYPE: markers.
+
+    Thinking models often mix reasoning with the answer. The marker lets us
+    reliably extract just the final result from either content or reasoning_content.
+    Falls back to the full text if no marker is found (works for non-thinking models).
+    """
+    if not text:
+        return text
+    # Check for markers (case-insensitive, may appear after reasoning)
+    for marker in ("ANSWER:", "TYPE:"):
+        # Find the last occurrence (model may produce multiple during reasoning)
+        idx = text.upper().rfind(marker)
+        if idx >= 0:
+            extracted = text[idx + len(marker) :].strip()
+            # Take just the first paragraph after the marker
+            first_para = extracted.split("\n\n")[0].strip()
+            return first_para if first_para else extracted
+    return text
 
 
 def _compute_max_input_chars(context_window: int | None) -> int:
@@ -116,11 +144,9 @@ def _call_llm(
             # Thinking models (DeepSeek R1, gpt-oss) may return empty content
             # with the answer embedded in reasoning_content
             if not content and msg.get("reasoning_content"):
-                reasoning = msg["reasoning_content"].strip()
-                # Use the last non-empty paragraph as the likely final answer
-                paragraphs = [p.strip() for p in reasoning.split("\n\n") if p.strip()]
-                if paragraphs:
-                    content = paragraphs[-1]
+                content = msg["reasoning_content"].strip()
+            # Extract marked answer (ANSWER: or TYPE:) from anywhere in the response
+            content = _extract_marked_answer(content)
             return content if content else None
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             last_err = e
@@ -387,13 +413,13 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
 
     sample = "\n\n".join(chunks)[:2000]
     prompt = (
-        "What type of document is this? Respond with ONLY a short phrase (2-4 words) "
+        "What type of document is this? Respond with a short phrase (2-4 words) "
         "like: Legal Contract, Tax Return, Meeting Notes, Research Paper, Invoice, "
         "Recipe, Resume, Technical Manual, News Article, Personal Letter, etc. "
-        "Do not explain, just the type. /no_think"
+        "Mark your final answer with 'TYPE:' followed by the document type. /no_think"
     )
 
-    result = _call_llm(prompt, sample, max_tokens=20, max_attempts=1)
+    result = _call_llm(prompt, sample, max_tokens=150, max_attempts=1)
     if result:
         doc_type = result.strip().strip("\"'.")
         if len(doc_type) > 50:
