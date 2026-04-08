@@ -118,26 +118,29 @@ async def _session_reaper_loop() -> None:
                     )
 
                 # Clean up watched files removed >30 days ago
-                from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
+                try:
+                    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
 
-                watch_cutoff = now - timedelta(days=30)
-                expired_result = await db.execute(
-                    select(WatchedFile).where(
-                        WatchedFile.status == WatchedFileStatus.removed,
-                        WatchedFile.removed_at < watch_cutoff,
+                    watch_cutoff = now - timedelta(days=30)
+                    expired_result = await db.execute(
+                        select(WatchedFile).where(
+                            WatchedFile.status == WatchedFileStatus.removed,
+                            WatchedFile.removed_at < watch_cutoff,
+                        )
                     )
-                )
-                expired = expired_result.scalars().all()
-                for wf in expired:
-                    if wf.doc_id:
-                        doc = await db.get(Document, wf.doc_id)
-                        if doc:
-                            await db.delete(doc)  # cascades to versions, chunks, embeddings
-                    await db.delete(wf)
-                if expired:
-                    logger.info("Reaper: hard-deleted %d expired watched files", len(expired))
-
-                await db.commit()
+                    expired = expired_result.scalars().all()
+                    for wf in expired:
+                        if wf.doc_id:
+                            doc = await db.get(Document, wf.doc_id)
+                            if doc:
+                                await db.delete(doc)
+                        await db.delete(wf)
+                    if expired:
+                        logger.info("Reaper: hard-deleted %d expired watched files", len(expired))
+                    await db.commit()
+                except Exception:
+                    # watched_files table may not exist if migration 0011 hasn't run
+                    await db.rollback()
 
                 # Refresh topics if corpus changed (runs in warm ProcessPoolExecutor)
                 from harbor_clerk.topics import check_and_recompute_topics

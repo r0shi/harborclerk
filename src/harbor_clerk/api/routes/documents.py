@@ -170,24 +170,28 @@ async def list_documents(
             )
         )
 
-    # Enrich with watched file info (batch lookup)
+    # Enrich with watched file info (batch lookup — graceful if table doesn't exist yet)
     if summaries:
-        doc_ids = [uuid.UUID(s.doc_id) for s in summaries]
-        wf_result = await session.execute(select(WatchedFile).where(WatchedFile.doc_id.in_(doc_ids)))
-        wf_by_doc: dict[str, WatchedFile] = {}
-        for wf in wf_result.scalars().all():
-            if wf.doc_id:
-                wf_by_doc[str(wf.doc_id)] = wf
-        for s in summaries:
-            wf = wf_by_doc.get(s.doc_id)
-            if wf:
-                folder_result = await session.execute(
-                    select(WatchedFolder).where(WatchedFolder.folder_id == wf.folder_id)
-                )
-                folder = folder_result.scalar_one_or_none()
-                folder_path = folder.path if folder else ""
-                s.watch_source_path = f"{folder_path}/{wf.relative_path}" if folder_path else wf.relative_path
-                s.watch_status = wf.status.value
+        try:
+            doc_ids = [uuid.UUID(s.doc_id) for s in summaries]
+            wf_result = await session.execute(select(WatchedFile).where(WatchedFile.doc_id.in_(doc_ids)))
+            wf_by_doc: dict[str, WatchedFile] = {}
+            for wf in wf_result.scalars().all():
+                if wf.doc_id:
+                    wf_by_doc[str(wf.doc_id)] = wf
+            for s in summaries:
+                wf = wf_by_doc.get(s.doc_id)
+                if wf:
+                    folder_result = await session.execute(
+                        select(WatchedFolder).where(WatchedFolder.folder_id == wf.folder_id)
+                    )
+                    folder = folder_result.scalar_one_or_none()
+                    folder_path = folder.path if folder else ""
+                    s.watch_source_path = f"{folder_path}/{wf.relative_path}" if folder_path else wf.relative_path
+                    s.watch_status = wf.status.value
+        except Exception:
+            # watched_files table may not exist if migration 0011 hasn't run
+            await session.rollback()
 
     return PaginatedDocuments(items=summaries, total=total, limit=limit, offset=offset)
 
