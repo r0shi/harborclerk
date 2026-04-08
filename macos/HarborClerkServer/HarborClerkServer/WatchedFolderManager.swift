@@ -170,6 +170,11 @@ final class WatchedFolderManager {
 
     /// Recursively scan a directory and ingest files in batches.
     func performInitialScan(folderId: UUID, path: String, recursive: Bool) async {
+        // Ensure allowed extensions are loaded before filtering files
+        if allowedExtensions.isEmpty {
+            await fetchAllowedExtensions()
+        }
+
         let baseURL = URL(fileURLWithPath: path)
         let fm = FileManager.default
 
