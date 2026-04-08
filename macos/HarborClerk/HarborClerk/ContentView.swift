@@ -165,6 +165,13 @@ struct WebView: NSViewRepresentable {
                     self?.webView?.magnification = 1.0
                 }
             )
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: .webViewReload, object: nil, queue: .main
+                ) { [weak self] _ in
+                    self?.webView?.reload()
+                }
+            )
         }
 
         /// Observe the webView's URL via KVO to detect client-side (pushState)

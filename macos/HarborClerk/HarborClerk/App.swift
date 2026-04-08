@@ -20,6 +20,13 @@ struct HarborClerkApp: App {
                 .keyboardShortcut("]", modifiers: .command)
             }
             CommandMenu("View") {
+                Button("Reload Page") {
+                    NotificationCenter.default.post(name: .webViewReload, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+
+                Divider()
+
                 Button("Zoom In") {
                     NotificationCenter.default.post(name: .webViewZoomIn, object: nil)
                 }
@@ -45,4 +52,5 @@ extension Notification.Name {
     static let webViewZoomIn = Notification.Name("webViewZoomIn")
     static let webViewZoomOut = Notification.Name("webViewZoomOut")
     static let webViewZoomReset = Notification.Name("webViewZoomReset")
+    static let webViewReload = Notification.Name("webViewReload")
 }
