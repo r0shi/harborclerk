@@ -77,6 +77,37 @@ struct PreferencesWindow: View {
 
             Form {
                 Section {
+                    if watchedFolders.isEmpty && !isLoadingFolders {
+                        Text("No folders being watched.")
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    } else if isLoadingFolders {
+                        HStack {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Loading...")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    ForEach($watchedFolders) { $folder in
+                        watchedFolderRow(folder: $folder)
+                    }
+
+                    Button {
+                        addWatchedFolder()
+                    } label: {
+                        Label("Add Folder...", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                } header: {
+                    Text("Watched Folders")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .textCase(nil)
+                }
+
+                Section {
                     Toggle("Allow remote browser connections", isOn: $allowRemoteWeb)
                         .onChange(of: allowRemoteWeb) { _, _ in markDirty() }
                     Text("Let users on your network access Harbor Clerk via a web browser.")
@@ -127,37 +158,6 @@ struct PreferencesWindow: View {
                         .foregroundStyle(.secondary)
                 } header: {
                     Text("Local LLM")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .textCase(nil)
-                }
-
-                Section {
-                    if watchedFolders.isEmpty && !isLoadingFolders {
-                        Text("No folders being watched.")
-                            .foregroundStyle(.secondary)
-                            .font(.callout)
-                    } else if isLoadingFolders {
-                        HStack {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Loading...")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    ForEach($watchedFolders) { $folder in
-                        watchedFolderRow(folder: $folder)
-                    }
-
-                    Button {
-                        addWatchedFolder()
-                    } label: {
-                        Label("Add Folder...", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                } header: {
-                    Text("Watched Folders")
                         .font(.subheadline)
                         .fontWeight(.medium)
                         .textCase(nil)
