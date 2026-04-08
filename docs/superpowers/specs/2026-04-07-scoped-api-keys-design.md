@@ -49,11 +49,13 @@ Each tier defines a base set of MCP tools. `tool_overrides` can flip individual 
 
 | Tier | Tools Included |
 |---|---|
-| `search` | `kb_search`, `kb_batch_search`, `kb_corpus_overview`, `kb_list_recent`, `kb_system_health` |
+| `search` | `kb_search`, `kb_batch_search`, `kb_corpus_overview`, `kb_list_recent` |
 | `read` | All `search` tools + `kb_read_passages`, `kb_expand_context`, `kb_document_outline`, `kb_get_document` |
-| `full` | All `read` tools + `kb_read_document`, `kb_find_related`, `kb_entity_search`, `kb_entity_overview`, `kb_entity_cooccurrence`, `kb_ingest_status`, `kb_reprocess` |
+| `full` | All `read` tools + `kb_read_document`, `kb_find_related`, `kb_entity_search`, `kb_entity_overview`, `kb_entity_cooccurrence`, `kb_ingest_status` |
 
-**Effective tool set** = tier base tools, then apply overrides (true = add, false = remove).
+**Admin-only tools** (`kb_system_health`, `kb_reprocess`) are excluded from all tiers. They require admin role at the implementation level and are never available to API keys regardless of tier or overrides. `tool_overrides` with `true` for admin-only tools is silently ignored.
+
+**Effective tool set** = tier base tools, then apply overrides (true = add, false = remove). Overrides cannot grant access to admin-only tools.
 
 ### Document Scoping Logic
 
@@ -81,34 +83,66 @@ if api_key.expires_at and api_key.expires_at < datetime.now(UTC):
 
 ### Tool Gating — Silent Omission
 
-At MCP session initialization, filter the tool definitions based on the key's effective tool set. Tools outside the set are not registered in the MCP session — the agent never sees them. No error, no hint they exist.
+Tools outside the key's effective set should not appear in the MCP tool listing. The agent never sees them — no error, no hint they exist.
 
-Implementation: modify the MCP tool registration to accept the authenticated principal, compute the effective tool set from `permission_tier` + `tool_overrides`, and only register tools in that set.
+**Implementation approach:** The MCP server uses FastMCP's static `@mcp.tool()` decorator, which registers all 16 tools globally at module load time. Per-session filtering requires intercepting the `tools/list` response. Two options:
+
+1. **Filter at `list_tools` response** — wrap or hook the FastMCP `list_tools` handler to remove tools not in the key's effective set before returning to the client. Tool call attempts to filtered tools return a standard "unknown tool" MCP error (indistinguishable from the tool not existing).
+
+2. **Per-key FastMCP instance** — create a new FastMCP app per key with only the allowed tools registered. Too expensive (16 decorator registrations per request).
+
+**Chosen: option 1.** Add middleware/hook in the MCP ASGI layer that:
+- On `tools/list` requests: filter the response to only include tools in the key's effective set
+- On `tools/call` requests: if the tool is not in the effective set, return MCP error "unknown tool"
+
+The effective tool set is computed from `principal.key_scope.permission_tier` + `principal.key_scope.tool_overrides` at auth time and cached on the Principal. Admin-only tools (`kb_system_health`, `kb_reprocess`) are always excluded for API key principals regardless of overrides.
 
 ### Document Scoping — `apply_key_scope()`
 
-A single helper function that modifies SQLAlchemy queries to filter documents by the key's scopes:
+#### Carrying scope on Principal (avoid double DB lookup)
+
+The `_resolve_principal()` function already fetches the full `ApiKey` row during auth. Instead of discarding the scope fields and re-fetching later, extend `Principal` to carry them:
 
 ```python
-def apply_key_scope(
-    query: Select,
-    principal: Principal,
-    session: Session,
-) -> Select:
-    """Filter query to only documents visible to this API key's scopes."""
-    if principal.type != "api_key":
-        return query  # human users see everything
+@dataclass
+class KeyScope:
+    scope_topic_ids: list[int] | None
+    scope_folder_ids: list[str] | None
+    permission_tier: str
+    tool_overrides: dict[str, bool]
+    max_snippet_chars: int | None
 
-    api_key = load_api_key(principal.id, session)
-    if api_key.scope_topic_ids is None and api_key.scope_folder_ids is None:
+@dataclass
+class Principal:
+    type: str
+    id: uuid.UUID
+    role: str
+    key_scope: KeyScope | None = None  # populated for api_key principals
+```
+
+Populated at auth time in `get_current_principal()` and `_resolve_principal()`. No second DB round-trip on tool calls.
+
+#### `apply_key_scope()` helper
+
+A query-modifying function (async, matching the codebase's async session pattern):
+
+```python
+def apply_key_scope(query: Select, principal: Principal) -> Select:
+    """Filter query to only documents visible to this API key's scopes.
+    Pure query builder — no DB access needed (scope loaded at auth time).
+    """
+    if principal.type != "api_key" or principal.key_scope is None:
+        return query
+
+    scope = principal.key_scope
+    if scope.scope_topic_ids is None and scope.scope_folder_ids is None:
         return query  # no restrictions
 
     conditions = []
-    if api_key.scope_topic_ids is not None:
-        conditions.append(Document.topic_id.in_(api_key.scope_topic_ids))
-    if api_key.scope_folder_ids is not None:
-        folder_uuids = [uuid.UUID(fid) for fid in api_key.scope_folder_ids]
-        # Subquery: doc_ids that have a watched_file in allowed folders
+    if scope.scope_topic_ids is not None:
+        conditions.append(Document.topic_id.in_(scope.scope_topic_ids))
+    if scope.scope_folder_ids is not None:
+        folder_uuids = [uuid.UUID(fid) for fid in scope.scope_folder_ids]
         watched_doc_ids = select(WatchedFile.doc_id).where(
             WatchedFile.folder_id.in_(folder_uuids),
             WatchedFile.status == WatchedFileStatus.active,
@@ -118,18 +152,32 @@ def apply_key_scope(
     return query.where(or_(*conditions))
 ```
 
-This helper is called in every code path that returns documents to API key consumers:
+This is a pure query builder (no DB access) since scope data is on the Principal. Called in every code path that returns documents to API key consumers:
 - MCP tools: `kb_search`, `kb_batch_search`, `kb_read_passages`, `kb_expand_context`, `kb_get_document`, `kb_list_recent`, `kb_corpus_overview`, `kb_document_outline`, `kb_find_related`, `kb_entity_search`, `kb_entity_overview`, `kb_entity_cooccurrence`, `kb_read_document`
 - REST endpoints: `GET /api/docs`, `GET /api/docs/{id}`, `GET /api/search`
+
+#### Chunk-level scope enforcement
+
+Tools that fetch by chunk ID (`kb_read_passages`, `kb_expand_context`) bypass document-level query filtering. After fetching chunks, add an explicit doc_id membership check:
+
+```python
+if principal.key_scope and (principal.key_scope.scope_topic_ids or principal.key_scope.scope_folder_ids):
+    visible_doc_ids = {row.doc_id for row in session.execute(
+        apply_key_scope(select(Document.doc_id), principal)
+    ).all()}
+    chunks = [c for c in chunks if c.doc_id in visible_doc_ids]
+```
 
 ### Snippet Size Enforcement
 
 In `kb_read_passages` and `kb_expand_context` MCP tool implementations, after retrieving passage text:
 
 ```python
-if api_key.max_snippet_chars:
-    passage.text = passage.text[:api_key.max_snippet_chars]
+if principal.key_scope and principal.key_scope.max_snippet_chars is not None:
+    passage.text = passage.text[:principal.key_scope.max_snippet_chars]
 ```
+
+Note: uses `is not None` (not truthiness) so `max_snippet_chars=0` correctly returns empty text.
 
 Applied per passage, not per response — so an agent requesting 10 passages each gets truncated individually.
 
@@ -173,9 +221,15 @@ class PatchApiKeyRequest(BaseModel):
     max_snippet_chars: int | None = None
 ```
 
-To clear a scope (set back to "no restriction"), the client sends an explicit sentinel. Options:
-- For `scope_topic_ids` / `scope_folder_ids`: send `null` in JSON to clear (Pydantic: use `Optional` with explicit None handling)
-- For `expires_at`: send `null` to remove expiry
+**Clearing scopes (setting back to "no restriction"):** Use Pydantic v2's `model_fields_set` to distinguish "field absent" (no change) from "field explicitly set to null" (clear). Implementation:
+
+```python
+patch = body.model_dump(exclude_unset=True)
+for field, value in patch.items():
+    setattr(api_key, field, value)  # None = clear the scope
+```
+
+Fields not sent in the JSON body are excluded from `patch` and left unchanged. Fields sent as `null` are included with `None` value and clear the scope. This is the standard Pydantic v2 partial update pattern.
 
 **Response:** updated key metadata (same as GET list item).
 
@@ -271,7 +325,7 @@ All existing keys get defaults = full unrestricted access. No data migration nee
 | Key scoped to watched folder that gets removed | Folder deletion hard-deletes documents → they disappear from scope naturally. |
 | Key with empty arrays `[]` for both scopes | No documents visible. Effectively a dead key. |
 | Key with `scope_topic_ids: []` and `scope_folder_ids: null` | No topic matches, no folder restriction → no documents visible (OR of empty + null = empty). |
-| Key with `scope_topic_ids: null` and `scope_folder_ids: [uuid]` | All topic documents + all documents in that folder. Since topic scope is null (no restriction), all documents are visible. |
+| Key with `scope_topic_ids: null` and `scope_folder_ids: [uuid]` | Only documents in that folder. NULL on one axis means "don't restrict on this axis" — the other axis still applies. |
 | `tool_overrides` references unknown tool | Ignored silently. |
 | `max_snippet_chars` set to 0 | Passages returned empty. Unusual but valid — agent can search but not read content. |
 | Admin edits key scopes while agent is mid-session | Next MCP tool call uses new scopes. No session invalidation needed. |
