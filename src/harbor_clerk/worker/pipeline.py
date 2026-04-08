@@ -266,6 +266,12 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
             enqueue_stage(version_id, JobStage.finalize, priority=priority)
             return
 
+        # All stages done — ensure version is marked ready
+        # (handles re-run of individual stages like resummarize)
+        if version.status != VersionStatus.ready:
+            version.status = VersionStatus.ready
+            logger.info("Restored version %s to ready status", version_id)
+
         session.commit()
         logger.info("Pipeline complete for version %s", version_id)
     finally:
