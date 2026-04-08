@@ -80,6 +80,8 @@ final class PostgresService: ManagedService {
 
         // Start PostgreSQL via pg_ctl
         // Logs are handled by logging_collector (configured in conf.d/harbor_clerk.conf)
+        // Do NOT use Log.createPipe() — pg_ctl can fill the pipe buffer and deadlock
+        // with waitUntilExit() if the readability handler stalls.
         let pgCtl = pgBinDir.appendingPathComponent("pg_ctl")
         let proc = Process()
         proc.executableURL = pgCtl
@@ -89,10 +91,8 @@ final class PostgresService: ManagedService {
             "start",
         ]
         proc.environment = pgEnvironment()
-
-        let pipe = Log.createPipe(category: "postgresql")
-        proc.standardOutput = pipe
-        proc.standardError = pipe
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
 
         try proc.run()
         let exitCode: Int32 = await withCheckedContinuation { c in
@@ -222,10 +222,8 @@ final class PostgresService: ManagedService {
         proc.executableURL = initdb
         proc.arguments = ["-D", dataDir.path, "-U", "lka", "--encoding=UTF8", "--locale=C"]
         proc.environment = pgEnvironment()
-
-        let pipe = Log.createPipe(category: "postgresql")
-        proc.standardOutput = pipe
-        proc.standardError = pipe
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
 
         try proc.run()
         let exitCode: Int32 = await withCheckedContinuation { c in
