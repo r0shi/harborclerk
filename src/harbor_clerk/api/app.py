@@ -160,6 +160,29 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting Harbor Clerk API")
 
+    # Verify database schema is up to date
+    _EXPECTED_SCHEMA_VERSION = "0011"
+    try:
+        from harbor_clerk.db import async_session_factory
+
+        async with async_session_factory() as db:
+            from sqlalchemy import text as sa_text
+
+            result = await db.execute(sa_text("SELECT version_num FROM alembic_version"))
+            row = result.first()
+            if row is None:
+                logger.error("No alembic_version found — database may not be initialized")
+            elif row[0] != _EXPECTED_SCHEMA_VERSION:
+                logger.error(
+                    "Database schema version mismatch: have %s, expected %s. Run migrations.",
+                    row[0],
+                    _EXPECTED_SCHEMA_VERSION,
+                )
+            else:
+                logger.info("Database schema version: %s (current)", row[0])
+    except Exception:
+        logger.exception("Failed to check database schema version")
+
     if settings.secret_key == "change-me-in-production":
         logger.warning("SECRET_KEY is set to the default value. Change it to a random string for production use.")
 

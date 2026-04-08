@@ -296,6 +296,47 @@ async def recompute_topics_endpoint(
     return {"status": "started", "message": "Topic computation running in background. Check /stats/topics for results."}
 
 
+@router.post("/system/run-migrations")
+async def run_migrations(
+    admin: Principal = Depends(require_admin),
+) -> dict[str, Any]:
+    """Run alembic upgrade head. Returns current schema version after completion."""
+    import asyncio
+    import subprocess
+
+    settings = get_settings()
+
+    def _run():
+        result = subprocess.run(
+            ["python", "-m", "alembic", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={
+                **os.environ,
+                "DATABASE_URL": settings.database_url,
+            },
+        )
+        return result
+
+    try:
+        result = await asyncio.to_thread(_run)
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Migration failed: {result.stderr[-500:]}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Migration timed out after 120s")
+
+    # Check resulting version
+    from harbor_clerk.db import async_session_factory
+
+    async with async_session_factory() as db:
+        ver_result = await db.execute(text("SELECT version_num FROM alembic_version"))
+        row = ver_result.first()
+        version = row[0] if row else "unknown"
+
+    return {"status": "ok", "schema_version": version}
+
+
 @router.post("/system/reprocess-all")
 async def reprocess_all(
     admin: Principal = Depends(require_admin),

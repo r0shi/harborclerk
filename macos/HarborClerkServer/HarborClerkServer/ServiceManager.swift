@@ -225,8 +225,8 @@ final class ServiceManager: ObservableObject {
         // 1. PostgreSQL (handles stale PIDs internally via postmaster.pid)
         await startService(postgresService)
 
-        // 2. Alembic migrations
-        await runMigrations()
+        // 2. Alembic migrations (blocks all downstream services on failure)
+        guard await runMigrations() else { return }
 
         // 3. Tika (JVM startup can take ~30-60s)
         await killStaleProcess(onPort: settings.tikaPort)
@@ -434,13 +434,24 @@ final class ServiceManager: ObservableObject {
         }
     }
 
-    private func runMigrations() async {
+    /// Run Alembic migrations. Returns true on success, false on failure.
+    /// On failure, sets all pending services to errored so they don't start with a stale schema.
+    @discardableResult
+    private func runMigrations() async -> Bool {
         let runner = MigrationRunner()
         do {
             try await runner.run()
-            Log.logger("alembic").info("Migrations complete")
+            return true
         } catch {
-            Log.logger("alembic").error("Migration failed: \(error.localizedDescription, privacy: .public)")
+            Log.logger("alembic").error(
+                "Database migration failed after 3 attempts: \(error.localizedDescription, privacy: .public). Services will not start. Try restarting, or use System Maintenance > Run Migrations."
+            )
+            // Block downstream services — running with stale schema is worse than not running
+            for service in services where service.state == .startupPending {
+                service.state = .errored
+            }
+            notifyStateChanged()
+            return false
         }
     }
 
