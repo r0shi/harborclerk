@@ -98,7 +98,7 @@ final class WatchedFolderManager {
 
     /// Fetch allowed file extensions from the API.
     private func fetchAllowedExtensions() async {
-        guard let url = apiBaseURL?.appendingPathComponent("api/watch/allowed-extensions") else { return }
+        guard let url = effectiveAPIBase?.appendingPathComponent("api/watch/allowed-extensions") else { return }
 
         do {
             let (data, _) = try await apiRequest(url: url, method: "GET")
@@ -118,7 +118,7 @@ final class WatchedFolderManager {
 
     /// Fetch folders from the API and start watchers for enabled ones.
     private func fetchAndStartWatchers() async {
-        guard let url = apiBaseURL?.appendingPathComponent("api/watch/folders") else { return }
+        guard let url = effectiveAPIBase?.appendingPathComponent("api/watch/folders") else { return }
 
         do {
             let (data, _) = try await apiRequest(url: url, method: "GET")
@@ -259,9 +259,14 @@ final class WatchedFolderManager {
 
     // MARK: - API Calls (fileprivate for FolderWatcher access)
 
+    /// Resolve the API base URL — prefer the configured one, fall back to localhost.
+    private var effectiveAPIBase: URL? {
+        apiBaseURL ?? URL(string: "http://localhost:\(AppSettings.shared.apiPort)")
+    }
+
     /// Notify the API about a new or modified file.
     fileprivate func ingestFile(folderId: UUID, basePath: String, fileURL: URL) async {
-        guard let apiBase = apiBaseURL else { return }
+        guard let apiBase = effectiveAPIBase else { return }
 
         let relativePath = String(fileURL.path.dropFirst(basePath.count))
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -297,7 +302,7 @@ final class WatchedFolderManager {
 
     /// Notify the API about a removed file.
     fileprivate func removeFile(folderId: UUID, basePath: String, relativePath: String) async {
-        guard let apiBase = apiBaseURL else { return }
+        guard let apiBase = effectiveAPIBase else { return }
 
         let body: [String: Any] = [
             "folder_id": folderId.uuidString,
@@ -315,7 +320,7 @@ final class WatchedFolderManager {
 
     /// Notify the API about a renamed file.
     fileprivate func renameFile(folderId: UUID, basePath: String, oldRelativePath: String, newRelativePath: String, fileURL: URL) async {
-        guard let apiBase = apiBaseURL else { return }
+        guard let apiBase = effectiveAPIBase else { return }
 
         let bookmarkData = Self.createBookmark(for: fileURL)
         let bookmarkBase64 = bookmarkData?.base64EncodedString() ?? ""
@@ -339,7 +344,7 @@ final class WatchedFolderManager {
 
     /// Update last_event_id for a folder.
     fileprivate func updateLastEventId(folderId: UUID, eventId: UInt64) async {
-        guard let apiBase = apiBaseURL else { return }
+        guard let apiBase = effectiveAPIBase else { return }
 
         let body: [String: Any] = ["last_event_id": Int(eventId)]
         let url = apiBase.appendingPathComponent("api/watch/folders/\(folderId.uuidString)")
