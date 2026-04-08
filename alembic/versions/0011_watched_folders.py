@@ -15,7 +15,9 @@ def upgrade() -> None:
     # ── watched_folders ──
     op.create_table(
         "watched_folders",
-        sa.Column("folder_id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "folder_id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
         sa.Column("path", sa.Text(), nullable=False),
         sa.Column("bookmark_data", sa.LargeBinary(), nullable=False),
         sa.Column("recursive", sa.Boolean(), server_default="true", nullable=False),
@@ -32,7 +34,9 @@ def upgrade() -> None:
     # ── watched_files ──
     op.create_table(
         "watched_files",
-        sa.Column("file_id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "file_id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
         sa.Column(
             "folder_id",
             postgresql.UUID(as_uuid=True),
