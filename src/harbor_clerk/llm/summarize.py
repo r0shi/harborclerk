@@ -111,7 +111,16 @@ def _call_llm(
                 time.sleep(delay)
                 continue
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
+            msg = resp.json()["choices"][0]["message"]
+            content = (msg.get("content") or "").strip()
+            # Thinking models (DeepSeek R1, gpt-oss) may return empty content
+            # with the answer embedded in reasoning_content
+            if not content and msg.get("reasoning_content"):
+                reasoning = msg["reasoning_content"].strip()
+                # Use the last non-empty paragraph as the likely final answer
+                paragraphs = [p.strip() for p in reasoning.split("\n\n") if p.strip()]
+                if paragraphs:
+                    content = paragraphs[-1]
             return content if content else None
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             last_err = e
