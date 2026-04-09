@@ -296,6 +296,57 @@ async def recompute_topics_endpoint(
     return {"status": "started", "message": "Topic computation running in background. Check /stats/topics for results."}
 
 
+@router.post("/system/clear-queue")
+async def clear_queue(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Cancel all queued and running ingestion jobs, reset versions to their last stable state.
+
+    Use when the queue is in a bad state from bugs/restarts and needs a clean slate.
+    Does NOT delete documents or re-trigger ingestion — just clears stuck jobs.
+    """
+    from harbor_clerk.models import DocumentVersion, IngestionJob
+    from harbor_clerk.models.enums import JobStatus, VersionStatus
+
+    # Cancel all queued/running jobs
+    result = await session.execute(
+        select(IngestionJob).where(IngestionJob.status.in_([JobStatus.queued, JobStatus.running]))
+    )
+    jobs = result.scalars().all()
+    cancelled = 0
+    version_ids = set()
+    for job in jobs:
+        job.status = JobStatus.error
+        job.error = "Cancelled by admin (queue clear)"
+        version_ids.add(job.version_id)
+        cancelled += 1
+
+    # Reset affected versions: if all their non-error stages are done, set to ready
+    for vid in version_ids:
+        version = await session.get(DocumentVersion, vid)
+        if version and version.status not in (VersionStatus.ready, VersionStatus.error):
+            # Check if the version has completed finalize
+            fin_result = await session.execute(
+                select(IngestionJob).where(
+                    IngestionJob.version_id == vid,
+                    IngestionJob.stage == JobStage.finalize,
+                    IngestionJob.status == JobStatus.done,
+                )
+            )
+            if fin_result.scalar_one_or_none():
+                version.status = VersionStatus.ready
+            else:
+                version.status = VersionStatus.error
+                version.error = "Queue cleared before pipeline completed"
+
+    await log_audit(session, user_id=admin.id, action="clear_queue", detail={"cancelled": cancelled})
+    await session.commit()
+
+    logger.info("Queue cleared: %d jobs cancelled, %d versions affected", cancelled, len(version_ids))
+    return {"cancelled": cancelled, "versions_affected": len(version_ids)}
+
+
 @router.post("/system/run-migrations")
 async def run_migrations(
     admin: Principal = Depends(require_admin),

@@ -193,6 +193,17 @@ export function useQueueTray() {
         const stages = new Map(existing?.stages || [])
         const filename = event.filename || existing?.filename || vid
 
+        // If this is a new item and the event is for a stage beyond extract,
+        // pre-fill earlier stages as done (e.g. resummarize only re-runs summarize)
+        if (!existing && stage !== 'extract') {
+          const stageIdx = PIPELINE_STAGES.indexOf(stage)
+          for (let i = 0; i < stageIdx; i++) {
+            if (!stages.has(PIPELINE_STAGES[i])) {
+              stages.set(PIPELINE_STAGES[i], { status: 'done' })
+            }
+          }
+        }
+
         // Handle OCR/entities skip: done without prior running event
         if ((stage === 'ocr' || stage === 'entities') && status === 'done' && !stages.has(stage)) {
           stages.set(stage, { status: 'skipped' })

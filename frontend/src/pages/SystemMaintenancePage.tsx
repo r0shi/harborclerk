@@ -216,6 +216,32 @@ export default function SystemMaintenancePage() {
         </div>
       </div>
 
+      {/* Clear Queue */}
+      <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-5">
+        <h2 className="text-lg font-semibold mb-2">Processing Queue</h2>
+        <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
+          Cancel all queued and running ingestion jobs. Use this if the queue is stuck from bugs or restarts. Documents
+          already processed are unaffected.
+        </p>
+        <button
+          onClick={async () => {
+            setError('')
+            setActionResult('')
+            try {
+              const data = await post<{ cancelled: number; versions_affected: number }>('/api/system/clear-queue')
+              setActionResult(
+                `Queue cleared: ${data.cancelled} jobs cancelled, ${data.versions_affected} versions affected. Refresh the page to update the display.`,
+              )
+            } catch (e: unknown) {
+              setError(e instanceof Error ? e.message : 'Failed to clear queue')
+            }
+          }}
+          className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+        >
+          Clear Queue
+        </button>
+      </div>
+
       {/* Database Migrations */}
       <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-5">
         <h2 className="text-lg font-semibold mb-2">Database</h2>
