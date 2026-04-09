@@ -907,6 +907,41 @@ async def reprocess_document(
     }
 
 
+@router.post("/docs/{doc_id}/resummarize", status_code=status.HTTP_202_ACCEPTED)
+async def resummarize_document(
+    doc_id: uuid.UUID,
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Re-run only the summarize stage on the latest version of a document."""
+    result = await session.execute(
+        select(Document)
+        .where(Document.doc_id == doc_id, Document.status == "active")
+        .options(selectinload(Document.versions))
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    version_id = doc.latest_version_id
+    if version_id is None and doc.versions:
+        version_id = doc.versions[-1].version_id
+    if version_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No version to resummarize")
+
+    await session.commit()
+
+    from harbor_clerk.worker.pipeline import enqueue_stage
+
+    enqueue_stage(version_id, JobStage.summarize)
+
+    return {
+        "doc_id": str(doc_id),
+        "version_id": str(version_id),
+        "status": "resummarizing",
+    }
+
+
 @router.post("/docs/{doc_id}/cancel", status_code=status.HTTP_200_OK)
 async def cancel_processing(
     doc_id: uuid.UUID,

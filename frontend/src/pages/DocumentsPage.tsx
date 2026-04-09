@@ -445,6 +445,22 @@ export default function DocumentsPage() {
     setBulkAction('')
   }
 
+  async function handleBulkResummarize() {
+    setBulkAction('resummarize')
+    const errors: string[] = []
+    for (const docId of selected) {
+      try {
+        await post(`/api/docs/${docId}/resummarize`)
+      } catch (e) {
+        errors.push(e instanceof Error ? e.message : 'Re-summarize failed')
+      }
+    }
+    if (errors.length > 0) setError(errors.join('; '))
+    setSelected(new Set())
+    loadDocs(currentPage, pageSize, filter)
+    setBulkAction('')
+  }
+
   async function handleBulkDelete() {
     if (!confirmingDelete) {
       setConfirmingDelete(true)
@@ -686,6 +702,7 @@ export default function DocumentsPage() {
               bulkAction={bulkAction}
               confirmingDelete={confirmingDelete}
               onReprocess={handleBulkReprocess}
+              onResummarize={handleBulkResummarize}
               onDelete={handleBulkDelete}
               onCancelDelete={() => setConfirmingDelete(false)}
               onDownload={handleBulkDownload}
@@ -948,6 +965,7 @@ export default function DocumentsPage() {
               bulkAction={bulkAction}
               confirmingDelete={confirmingDelete}
               onReprocess={handleBulkReprocess}
+              onResummarize={handleBulkResummarize}
               onDelete={handleBulkDelete}
               onCancelDelete={() => setConfirmingDelete(false)}
               onDownload={handleBulkDownload}
@@ -998,6 +1016,7 @@ function BulkActionsBar({
   bulkAction,
   confirmingDelete,
   onReprocess,
+  onResummarize,
   onDelete,
   onCancelDelete,
   onDownload,
@@ -1008,6 +1027,7 @@ function BulkActionsBar({
   bulkAction: string
   confirmingDelete: boolean
   onReprocess: () => void
+  onResummarize: () => void
   onDelete: () => void
   onCancelDelete: () => void
   onDownload: () => void
@@ -1018,13 +1038,22 @@ function BulkActionsBar({
       <span className="text-xs font-medium text-(--color-text-secondary)">{count} selected</span>
       <div className="flex-1" />
       {isAdmin && (
-        <button
-          onClick={onReprocess}
-          disabled={!!bulkAction}
-          className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-50"
-        >
-          {bulkAction === 'reprocess' ? 'Reprocessing...' : 'Reprocess'}
-        </button>
+        <>
+          <button
+            onClick={onResummarize}
+            disabled={!!bulkAction}
+            className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            {bulkAction === 'resummarize' ? 'Re-summarizing...' : 'Re-summarize'}
+          </button>
+          <button
+            onClick={onReprocess}
+            disabled={!!bulkAction}
+            className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-50"
+          >
+            {bulkAction === 'reprocess' ? 'Reprocessing...' : 'Reprocess'}
+          </button>
+        </>
       )}
       <button
         onClick={onDownload}
