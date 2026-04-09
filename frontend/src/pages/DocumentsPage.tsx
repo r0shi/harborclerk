@@ -19,6 +19,7 @@ interface SavedDocsState {
   sortField: 'updated' | 'created' | 'title'
   sortDir: 'asc' | 'desc'
   scrollY: number
+  expanded: string[]
 }
 
 interface DocSummary {
@@ -150,8 +151,19 @@ export default function DocumentsPage() {
   const [bulkAction, setBulkAction] = useState('')
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
-  // Inline expand state
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  // Inline expand state — restore from sessionStorage
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    try {
+      const raw = sessionStorage.getItem(DOCS_STATE_KEY)
+      if (raw) {
+        const saved = JSON.parse(raw) as SavedDocsState
+        return new Set(saved.expanded || [])
+      }
+    } catch {
+      /* ignore */
+    }
+    return new Set()
+  })
   const [docEntities, setDocEntities] = useState<Record<string, { entity_text: string; entity_type: string }[]>>({})
 
   // Restore saved state from sessionStorage (URL params override)
@@ -255,6 +267,7 @@ export default function DocumentsPage() {
       sortField,
       sortDir,
       scrollY: window.scrollY,
+      expanded: Array.from(expanded),
     }
     sessionStorage.setItem(DOCS_STATE_KEY, JSON.stringify(state))
   }, [
@@ -268,6 +281,7 @@ export default function DocumentsPage() {
     entityInput,
     sortField,
     sortDir,
+    expanded,
   ])
 
   // Save scroll position before unmount
