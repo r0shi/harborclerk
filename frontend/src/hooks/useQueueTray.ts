@@ -186,6 +186,17 @@ export function useQueueTray() {
         return
       }
 
+      // If this version is in the completed list, remove it (re-queued)
+      setCompleted((prev) => {
+        if (!prev.some((c) => c.version_id === vid)) return prev
+        const timer = purgeTimersRef.current.get(vid)
+        if (timer) {
+          clearTimeout(timer)
+          purgeTimersRef.current.delete(vid)
+        }
+        return prev.filter((c) => c.version_id !== vid)
+      })
+
       // Active event: update or create DocumentQueueItem
       setActiveItems((prev) => {
         const next = new Map(prev)

@@ -266,20 +266,23 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
             enqueue_stage(version_id, JobStage.finalize, priority=priority)
             return
 
-        # All stages done — ensure version is marked ready
-        # (handles re-run of individual stages like resummarize)
-        needs_ready_event = version.status != VersionStatus.ready
-        if needs_ready_event:
+        # Only restore to ready if ALL stages are actually done (not just nothing to enqueue).
+        # Phase 2 falls through when something is in_flight but nothing new to enqueue — we
+        # must NOT publish finalize-done in that case, it's still processing.
+        all_stages_done = (
+            JobStage.finalize in completed
+            and not in_flight
+            and completed >= _PARALLEL_STAGES | {JobStage.extract, JobStage.chunk}
+        )
+        if all_stages_done and version.status != VersionStatus.ready:
             version.status = VersionStatus.ready
+            session.commit()
             logger.info("Restored version %s to ready status", version_id)
-
-        session.commit()
-
-        if needs_ready_event:
-            # Publish finalize-done event so the frontend processing panel clears this doc
             publish_job_event(version_id, "finalize", "done", filename=filename)
+        else:
+            session.commit()
 
-        logger.info("Pipeline complete for version %s", version_id)
+        logger.info("Pipeline advance for version %s (complete=%s)", version_id, all_stages_done)
     finally:
         session.close()
 
