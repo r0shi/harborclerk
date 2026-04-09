@@ -297,36 +297,66 @@ def _truncate_at_sentence(text: str, max_chars: int) -> str:
     return truncated
 
 
-def _apple_intelligence_summary(chunks: list[str], max_chars: int) -> str | None:
-    """Call the apple-summarize CLI tool. Returns None if unavailable or failed.
-
-    macOS native only — the binary is bundled inside HarborClerkServer.app.
-    On Docker/Linux, the binary doesn't exist and this returns None instantly.
-    """
+def _find_apple_summarize_binary() -> str | None:
+    """Locate the apple-summarize CLI binary. Returns None if unavailable."""
     import os
+
+    binary = os.environ.get("APPLE_SUMMARIZE_PATH", "")
+    if binary:
+        return binary
+
+    # Find app bundle Resources dir from the Python executable path
+    # e.g. .../HarborClerkServer.app/Contents/Resources/venv/bin/python3
+    import sys
+    from pathlib import Path
+
+    exe = Path(sys.executable).resolve()
+    for parent in exe.parents:
+        if parent.name == "Resources":
+            candidate = parent / "apple-summarize"
+            if candidate.exists():
+                return str(candidate)
+            break
+    return None
+
+
+def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str | None:
+    """Call the apple-summarize CLI with the given mode. Returns None on failure."""
     import subprocess
 
-    # Locate the binary
-    binary = os.environ.get("APPLE_SUMMARIZE_PATH", "")
+    binary = _find_apple_summarize_binary()
     if not binary:
-        # Find app bundle Resources dir from the Python executable path
-        # e.g. .../HarborClerkServer.app/Contents/Resources/venv/bin/python3
-        import sys
-        from pathlib import Path
-
-        exe = Path(sys.executable).resolve()
-        # Walk up looking for a Resources dir that contains apple-summarize
-        for parent in exe.parents:
-            if parent.name == "Resources":
-                candidate = parent / "apple-summarize"
-                if candidate.exists():
-                    binary = str(candidate)
-                break
-
-    if not binary:
-        logger.debug("apple-summarize binary not found — skipping Apple Intelligence fallback")
+        logger.debug("apple-summarize binary not found — skipping Apple Intelligence")
         return None
 
+    # Cap at 12,000 chars for ~4K token context
+    text = text[:12_000]
+
+    try:
+        result = subprocess.run(
+            [binary, "--max-chars", str(max_chars), "--mode", mode],
+            input=text,
+            capture_output=True,
+            timeout=120,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            output = result.stdout.strip()
+            logger.info("Apple Intelligence %s: %d chars", mode, len(output))
+            return output
+        logger.debug("apple-summarize exited %d: %s", result.returncode, result.stderr.strip()[:200])
+    except FileNotFoundError:
+        logger.debug("apple-summarize binary not found at %s", binary)
+    except subprocess.TimeoutExpired:
+        logger.warning("apple-summarize timed out after 120s")
+    except Exception:
+        logger.debug("apple-summarize failed", exc_info=True)
+
+    return None
+
+
+def _apple_intelligence_summary(chunks: list[str], max_chars: int) -> str | None:
+    """Get a document summary via Apple Intelligence. macOS native only."""
     # Build input text: same sampling as LLM path
     if len(chunks) < 20:
         text = "\n\n".join(chunks)
@@ -340,29 +370,19 @@ def _apple_intelligence_summary(chunks: list[str], max_chars: int) -> str | None
         sampled += chunks[-2:]
         text = "\n\n".join(sampled)
 
-    # Cap at 12,000 chars for ~4K token context
-    text = text[:12_000]
+    return _apple_intelligence_call(text, mode="summary", max_chars=max_chars)
 
-    try:
-        result = subprocess.run(
-            [binary, "--max-chars", str(max_chars)],
-            input=text,
-            capture_output=True,
-            timeout=120,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            summary = result.stdout.strip()
-            logger.info("Apple Intelligence summary: %d chars", len(summary))
-            return summary
-        logger.debug("apple-summarize exited %d: %s", result.returncode, result.stderr.strip()[:200])
-    except FileNotFoundError:
-        logger.debug("apple-summarize binary not found at %s", binary)
-    except subprocess.TimeoutExpired:
-        logger.warning("apple-summarize timed out after 120s")
-    except Exception:
-        logger.debug("apple-summarize failed", exc_info=True)
 
+def _apple_intelligence_doc_type(chunks: list[str]) -> str | None:
+    """Classify document type via Apple Intelligence. macOS native only."""
+    sample = "\n\n".join(chunks[:5])[:2000]
+    result = _apple_intelligence_call(sample, mode="doc_type")
+    if result:
+        # Clean up: remove quotes, periods, newlines; cap length
+        doc_type = result.strip().strip("\"'.").split("\n")[0].strip()
+        if len(doc_type) > 50:
+            doc_type = doc_type[:50]
+        return doc_type if doc_type else None
     return None
 
 
@@ -481,33 +501,41 @@ def _mime_to_doc_type(mime_type: str) -> str:
 
 
 def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
-    """Classify document type using LLM, with MIME-based fallback."""
+    """Classify document type. Fallback chain: local LLM → Apple Intelligence → MIME type."""
     settings = get_settings()
-    if not settings.llm_model_id:
-        return _mime_to_doc_type(mime_type)
 
-    sample = "\n\n".join(chunks)[:2000]
-    prompt = (
-        "Classify this document with a short phrase (2-4 words) like: "
-        "Legal Contract, Tax Return, Meeting Notes, Research Paper, Invoice, "
-        "Recipe, Resume, Technical Manual, News Article, Personal Letter, "
-        "Philosophical Essay, Novel, Religious Text, Diary, etc. "
-        'Respond with JSON: {"document_type": "..."}. /no_think'
-    )
+    # Try local LLM first (if a model is active)
+    if settings.llm_model_id:
+        sample = "\n\n".join(chunks)[:2000]
+        prompt = (
+            "Classify this document with a short phrase (2-4 words) like: "
+            "Legal Contract, Tax Return, Meeting Notes, Research Paper, Invoice, "
+            "Recipe, Resume, Technical Manual, News Article, Personal Letter, "
+            "Philosophical Essay, Novel, Religious Text, Diary, etc. "
+            'Respond with JSON: {"document_type": "..."}. /no_think'
+        )
+        result = _call_llm(
+            prompt,
+            sample,
+            max_tokens=600,  # Thinking models need room to reason before emitting JSON
+            max_attempts=1,
+            response_key="document_type",
+            json_schema=_DOC_TYPE_SCHEMA,
+        )
+        if result:
+            doc_type = result.strip().strip("\"'.")
+            if len(doc_type) > 50:
+                doc_type = doc_type[:50]
+            return doc_type
+        logger.warning("LLM doc_type returned no result — trying Apple Intelligence")
+    else:
+        logger.info("No language model active — trying Apple Intelligence for doc_type")
 
-    result = _call_llm(
-        prompt,
-        sample,
-        max_tokens=600,  # Thinking models need room to reason before emitting JSON
-        max_attempts=1,
-        response_key="document_type",
-        json_schema=_DOC_TYPE_SCHEMA,
-    )
-    if result:
-        doc_type = result.strip().strip("\"'.")
-        if len(doc_type) > 50:
-            doc_type = doc_type[:50]
-        return doc_type
+    # Try Apple Intelligence (macOS native only)
+    ai_type = _apple_intelligence_doc_type(chunks)
+    if ai_type:
+        return ai_type
+
     return _mime_to_doc_type(mime_type)
 
 

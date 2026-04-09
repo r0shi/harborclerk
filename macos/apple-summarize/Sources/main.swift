@@ -1,13 +1,17 @@
 import Foundation
 import FoundationModels
 
-// Parse --max-chars argument
+// Parse args: --max-chars N, --mode summary|doc_type (default: summary)
 var maxChars = 500
+var mode = "summary"
 let args = CommandLine.arguments
 if let idx = args.firstIndex(of: "--max-chars"), idx + 1 < args.count,
    let val = Int(args[idx + 1])
 {
     maxChars = val
+}
+if let idx = args.firstIndex(of: "--mode"), idx + 1 < args.count {
+    mode = args[idx + 1]
 }
 
 // Read document text from stdin
@@ -22,14 +26,28 @@ else {
 // Cap input to ~12,000 chars for the ~4K token context window
 let cappedText = String(inputText.prefix(12_000))
 
-// Build prompt
-let prompt = """
-Summarize this document in 2-3 concise sentences. Be specific about the subject matter, \
-key points, and any conclusions. Stay under \(maxChars) characters.
+// Build prompt based on mode
+let prompt: String
+switch mode {
+case "doc_type":
+    prompt = """
+    Classify this document with a short phrase (2-4 words) describing what type of document it is. \
+    Examples: Legal Contract, Tax Return, Meeting Notes, Research Paper, Invoice, Recipe, Resume, \
+    Technical Manual, News Article, Personal Letter, Philosophical Essay, Novel, Religious Text, Diary. \
+    Respond with ONLY the short phrase, no explanation.
 
-Document text:
-\(cappedText)
-"""
+    Document text:
+    \(cappedText)
+    """
+default:
+    prompt = """
+    Summarize this document in 2-3 concise sentences. Be specific about the subject matter, \
+    key points, and any conclusions. Stay under \(maxChars) characters.
+
+    Document text:
+    \(cappedText)
+    """
+}
 
 // Call Foundation Models
 Task {
