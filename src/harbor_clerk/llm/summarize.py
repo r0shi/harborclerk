@@ -34,29 +34,40 @@ class _Tier(Enum):
 
 
 # --- System prompts ---
-# All prompts use ANSWER: marker so we can extract the final answer
-# from thinking models that put everything in reasoning_content.
+# All prompts request JSON output via response_format for reliable extraction.
 # /no_think is kept for Qwen3 (harmless for models that ignore it).
 _PROMPT_SHORT = (
-    "Summarize this document in 2-3 concise sentences. "
-    "Cover the main topic, key conclusions, and document type. "
-    "Mark your final answer with 'ANSWER:' on its own line, followed by your summary. /no_think"
+    "Summarize this document in 2-3 concise sentences covering the main topic, "
+    'key conclusions, and document type. Respond with JSON: {"summary": "..."}. /no_think'
 )
 _PROMPT_MEDIUM = (
     "You are reading representative excerpts from a longer document. "
     "Summarize the full document in 2-3 concise sentences based on these excerpts. "
-    "Mark your final answer with 'ANSWER:' on its own line, followed by your summary. /no_think"
+    'Respond with JSON: {"summary": "..."}. /no_think'
 )
 _PROMPT_MAP = (
     "Summarize this section of a longer document in 2-3 sentences. "
-    "Focus on the key points and any conclusions. "
-    "Mark your final answer with 'ANSWER:' on its own line, followed by your summary. /no_think"
+    'Focus on the key points and any conclusions. Respond with JSON: {"summary": "..."}. /no_think'
 )
 _PROMPT_REDUCE = (
     "Below are summaries of different sections of a single document. "
     "Write a unified 2-3 sentence summary of the entire document. "
-    "Mark your final answer with 'ANSWER:' on its own line, followed by your summary. /no_think"
+    'Respond with JSON: {"summary": "..."}. /no_think'
 )
+
+# JSON schemas for structured output
+_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}},
+    "required": ["summary"],
+    "additionalProperties": False,
+}
+_DOC_TYPE_SCHEMA = {
+    "type": "object",
+    "properties": {"document_type": {"type": "string"}},
+    "required": ["document_type"],
+    "additionalProperties": False,
+}
 
 
 # --- Helpers ---
@@ -105,15 +116,22 @@ def _call_llm(
     max_tokens: int = 250,
     timeout: float = 90.0,
     max_attempts: int = 3,
+    response_key: str | None = None,
+    json_schema: dict | None = None,
 ) -> str | None:
     """Make an LLM call with retries for transient failures.
+
+    When response_key and json_schema are provided, uses JSON mode via
+    response_format and extracts the value at response_key from the JSON
+    response. This is far more reliable than parsing markers out of text,
+    especially for thinking models that echo prompts or reason verbosely.
 
     llama-server runs single-slot, so concurrent summarize requests queue up.
     Retries with jittered delays give the queue time to drain.
     """
     settings = get_settings()
     url = f"{settings.llama_server_url}/v1/chat/completions"
-    payload = {
+    payload: dict = {
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -122,6 +140,10 @@ def _call_llm(
         "temperature": 0.3,
         "max_tokens": max_tokens,
     }
+    if json_schema:
+        # Use json_object mode (simpler, better compatibility with thinking models)
+        # rather than json_schema which can confuse gpt-oss and similar.
+        payload["response_format"] = {"type": "json_object"}
 
     last_err: Exception | None = None
     for attempt in range(1, max_attempts + 1):
@@ -145,7 +167,31 @@ def _call_llm(
             # with the answer embedded in reasoning_content
             if not content and msg.get("reasoning_content"):
                 content = msg["reasoning_content"].strip()
-            # Extract marked answer (ANSWER: or TYPE:) from anywhere in the response
+
+            # JSON mode: parse and extract the requested key
+            if response_key and content:
+                import json as _json
+                import re as _re
+
+                # Strip markdown code fences if present (```json ... ```)
+                json_text = content
+                fence = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", json_text, _re.DOTALL)
+                if fence:
+                    json_text = fence.group(1)
+                # Find the first { ... } block
+                brace_start = json_text.find("{")
+                brace_end = json_text.rfind("}")
+                if brace_start >= 0 and brace_end > brace_start:
+                    json_text = json_text[brace_start : brace_end + 1]
+                try:
+                    parsed = _json.loads(json_text)
+                    extracted = parsed.get(response_key, "")
+                    return str(extracted).strip() if extracted else None
+                except (ValueError, AttributeError):
+                    logger.warning("Failed to parse JSON response: %s", content[:200])
+                    return None
+
+            # Non-JSON mode: extract marked answer
             content = _extract_marked_answer(content)
             return content if content else None
         except (httpx.TimeoutException, httpx.ConnectError) as e:
@@ -337,13 +383,27 @@ def _extractive_fallback(chunks: list[str], max_chars: int) -> str:
 def _summarize_short(chunks: list[str], max_input_chars: int) -> str | None:
     """Short docs: concat all chunks, single LLM call."""
     text = "\n\n".join(chunks)[:max_input_chars]
-    return _call_llm(_PROMPT_SHORT, text, max_tokens=350, timeout=90.0)
+    return _call_llm(
+        _PROMPT_SHORT,
+        text,
+        max_tokens=500,
+        timeout=120.0,
+        response_key="summary",
+        json_schema=_SUMMARY_SCHEMA,
+    )
 
 
 def _summarize_medium(chunks: list[str], max_input_chars: int) -> str | None:
     """Medium docs: strategic sampling, single LLM call."""
     text = _sample_chunks(chunks, max_input_chars)
-    return _call_llm(_PROMPT_MEDIUM, text, max_tokens=350, timeout=90.0)
+    return _call_llm(
+        _PROMPT_MEDIUM,
+        text,
+        max_tokens=500,
+        timeout=120.0,
+        response_key="summary",
+        json_schema=_SUMMARY_SCHEMA,
+    )
 
 
 def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
@@ -354,7 +414,15 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
     # Map step: summarize each group (fewer retries to stay within stage timeout)
     section_summaries: list[str] = []
     for group in groups:
-        result = _call_llm(_PROMPT_MAP, group, max_tokens=150, timeout=60.0, max_attempts=2)
+        result = _call_llm(
+            _PROMPT_MAP,
+            group,
+            max_tokens=300,
+            timeout=90.0,
+            max_attempts=2,
+            response_key="summary",
+            json_schema=_SUMMARY_SCHEMA,
+        )
         if result:
             section_summaries.append(result[:300])
         else:
@@ -369,7 +437,14 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
     # Reduce step: combine section summaries into final
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(section_summaries))
     reduce_input = numbered[:max_input_chars]
-    return _call_llm(_PROMPT_REDUCE, reduce_input, max_tokens=350, timeout=90.0)
+    return _call_llm(
+        _PROMPT_REDUCE,
+        reduce_input,
+        max_tokens=500,
+        timeout=120.0,
+        response_key="summary",
+        json_schema=_SUMMARY_SCHEMA,
+    )
 
 
 # --- Main entry point ---
@@ -413,13 +488,21 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
 
     sample = "\n\n".join(chunks)[:2000]
     prompt = (
-        "What type of document is this? Respond with a short phrase (2-4 words) "
-        "like: Legal Contract, Tax Return, Meeting Notes, Research Paper, Invoice, "
-        "Recipe, Resume, Technical Manual, News Article, Personal Letter, etc. "
-        "Mark your final answer with 'TYPE:' followed by the document type. /no_think"
+        "Classify this document with a short phrase (2-4 words) like: "
+        "Legal Contract, Tax Return, Meeting Notes, Research Paper, Invoice, "
+        "Recipe, Resume, Technical Manual, News Article, Personal Letter, "
+        "Philosophical Essay, Novel, Religious Text, Diary, etc. "
+        'Respond with JSON: {"document_type": "..."}. /no_think'
     )
 
-    result = _call_llm(prompt, sample, max_tokens=150, max_attempts=1)
+    result = _call_llm(
+        prompt,
+        sample,
+        max_tokens=300,
+        max_attempts=1,
+        response_key="document_type",
+        json_schema=_DOC_TYPE_SCHEMA,
+    )
     if result:
         doc_type = result.strip().strip("\"'.")
         if len(doc_type) > 50:
