@@ -18,7 +18,7 @@ jobs:
 
       - uses: pypa/gh-action-pip-audit@v1.1.0
         with:
-          inputs: .
+          virtual-environment: .venv
           severity: HIGH
 
       - name: npm audit (high/critical)
