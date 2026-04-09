@@ -498,7 +498,7 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
     result = _call_llm(
         prompt,
         sample,
-        max_tokens=300,
+        max_tokens=600,  # Thinking models need room to reason before emitting JSON
         max_attempts=1,
         response_key="document_type",
         json_schema=_DOC_TYPE_SCHEMA,
