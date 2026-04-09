@@ -436,20 +436,31 @@ async def get_document(
 
     versions = []
     for v in doc.versions or []:
-        jobs = [
-            JobInfo(
-                job_id=str(j.job_id),
-                stage=j.stage.value,
-                status=j.status.value,
-                progress_current=j.progress_current,
-                progress_total=j.progress_total,
-                error=j.error,
-                created_at=j.created_at,
-                started_at=j.started_at,
-                finished_at=j.finished_at,
+        jobs = []
+        for j in jobs_by_version.get(v.version_id, []):
+            status = j.status.value
+            error = j.error
+            # Surface skipped stages with reason instead of showing "done"
+            if j.metrics and j.metrics.get("skipped"):
+                status = "skipped"
+                reason = j.metrics.get("reason", "")
+                if reason == "spacy_unavailable":
+                    error = "spaCy NER models not available"
+                elif reason:
+                    error = reason
+            jobs.append(
+                JobInfo(
+                    job_id=str(j.job_id),
+                    stage=j.stage.value,
+                    status=status,
+                    progress_current=j.progress_current,
+                    progress_total=j.progress_total,
+                    error=error,
+                    created_at=j.created_at,
+                    started_at=j.started_at,
+                    finished_at=j.finished_at,
+                )
             )
-            for j in jobs_by_version.get(v.version_id, [])
-        ]
         versions.append(
             VersionInfo(
                 version_id=str(v.version_id),
