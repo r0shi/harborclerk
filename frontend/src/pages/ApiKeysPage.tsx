@@ -370,13 +370,27 @@ function ScopeFormFields({
   return (
     <div className="space-y-4">
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Expires (optional)</label>
-        <input
-          type="date"
-          value={state.expiresAt}
-          onChange={(e) => setState((s) => ({ ...s, expiresAt: e.target.value }))}
-          className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
-        />
+        <label className="flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={state.expiresAt !== ''}
+            onChange={(e) =>
+              setState((s) => ({
+                ...s,
+                expiresAt: e.target.checked ? new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10) : '',
+              }))
+            }
+          />
+          Set expiry date
+        </label>
+        {state.expiresAt !== '' && (
+          <input
+            type="date"
+            value={state.expiresAt}
+            onChange={(e) => setState((s) => ({ ...s, expiresAt: e.target.value }))}
+            className="mt-1.5 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+          />
+        )}
       </div>
 
       <div>
