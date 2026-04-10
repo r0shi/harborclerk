@@ -1,6 +1,5 @@
 """Tests for API request log model, helper, and endpoints."""
 
-
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
