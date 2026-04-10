@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -553,6 +554,47 @@ def _retrieval_response(s) -> RetrievalSettingsResponse:
         research_search_paginated=s.research_search_paginated,
         research_search_k=s.research_search_k,
     )
+
+
+class RateLimitSettingsUpdate(BaseModel):
+    default_rate_limit_rpm: int | None = None
+    default_rate_limit_rph: int | None = None
+
+    @field_validator("default_rate_limit_rpm", "default_rate_limit_rph")
+    @classmethod
+    def validate_min(cls, v):
+        if v is not None and v < 1:
+            raise ValueError("must be >= 1")
+        return v
+
+
+@router.get("/system/rate-limit-settings")
+async def get_rate_limit_settings(
+    admin: Principal = Depends(require_admin),
+):
+    s = get_settings()
+    return {
+        "default_rate_limit_rpm": s.default_rate_limit_rpm,
+        "default_rate_limit_rph": s.default_rate_limit_rph,
+    }
+
+
+@router.put("/system/rate-limit-settings")
+async def update_rate_limit_settings(
+    body: RateLimitSettingsUpdate,
+    admin: Principal = Depends(require_admin),
+):
+    s = get_settings()
+    if body.default_rate_limit_rpm is not None:
+        s.default_rate_limit_rpm = body.default_rate_limit_rpm
+        sync_native_config("default_rate_limit_rpm", body.default_rate_limit_rpm)
+    if body.default_rate_limit_rph is not None:
+        s.default_rate_limit_rph = body.default_rate_limit_rph
+        sync_native_config("default_rate_limit_rph", body.default_rate_limit_rph)
+    return {
+        "default_rate_limit_rpm": s.default_rate_limit_rpm,
+        "default_rate_limit_rph": s.default_rate_limit_rph,
+    }
 
 
 @router.get("/system/logs")
