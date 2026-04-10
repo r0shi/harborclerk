@@ -1,25 +1,116 @@
 """
 Test fixtures for Harbor Clerk.
 
-Setup (one-time):
-    docker compose up -d postgres
-    docker compose exec postgres psql -U lka -c "CREATE DATABASE lka_test OWNER lka;"
+Setup:
+    The test database is auto-created on whichever PostgreSQL is running.
+    Detected ports in order: 5433 (macOS app), 5432 (Docker/local).
 
-Run:
-    uv run pytest tests/ -v
+    Run tests with:
+        uv run pytest tests/ -v
+
+    To force a specific DB:
+        DATABASE_URL=postgresql+asyncpg://lka@localhost:5433/harbor_clerk_test uv run pytest
+
+SAFETY: tests refuse to run against any database whose name isn't a recognized
+test DB (must end in '_test' or be one of: harbor_clerk_test, lka_test).
+This prevents accidental schema changes or data wipes on the live application
+database. The db_session fixture truncates all tables between tests — running
+it against a live DB would destroy all data.
 """
 
 import os
+import re
+import sys
+
+# Recognized test database names (exact match or *_test suffix)
+_ALLOWED_TEST_DB_NAMES = {"harbor_clerk_test", "lka_test"}
+_TEST_DB_SUFFIX = "_test"
+
+# Default test DB name
+_DEFAULT_TEST_DB = "harbor_clerk_test"
+
+
+def _detect_postgres_port() -> int:
+    """Find which PostgreSQL instance is running. Prefer 5433 (macOS app), fall back to 5432."""
+    import socket
+
+    for port in (5433, 5432):
+        try:
+            with socket.create_connection(("localhost", port), timeout=0.5):
+                return port
+        except OSError:
+            continue
+    # Nothing running — default to 5432 (CI uses this)
+    return 5432
+
+
+def _ensure_test_db_exists(port: int, dbname: str) -> None:
+    """Create the test database if it doesn't exist. Uses asyncpg directly."""
+    import asyncio
+
+    import asyncpg
+
+    async def _go() -> None:
+        try:
+            conn = await asyncpg.connect(
+                host="localhost",
+                port=port,
+                user="lka",
+                password="lka_dev_password",
+                database="postgres",
+            )
+        except asyncpg.InvalidPasswordError:
+            # macOS app PostgreSQL has no password for the lka user
+            conn = await asyncpg.connect(host="localhost", port=port, user="lka", database="postgres")
+        try:
+            exists = await conn.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", dbname)
+            if not exists:
+                await conn.execute(f'CREATE DATABASE "{dbname}" OWNER lka')
+        finally:
+            await conn.close()
+
+    try:
+        asyncio.run(_go())
+    except Exception as e:
+        # Non-fatal — if creation fails, the test run will surface a clearer error later
+        print(f"Warning: could not ensure test DB '{dbname}' exists: {e}", file=sys.stderr)
+
+
+def _parse_db_name(url: str) -> str:
+    """Extract the database name from a PostgreSQL URL."""
+    # postgresql+asyncpg://user:pass@host:port/dbname?params
+    match = re.search(r"/([^/?]+)(?:\?|$)", url)
+    return match.group(1) if match else ""
+
 
 # Must be set BEFORE any harbor_clerk import — db.py reads settings at module level.
-# Respect DATABASE_URL if already set (e.g. macOS native server on port 5433).
-if "DATABASE_URL" not in os.environ:
-    os.environ["DATABASE_URL"] = "postgresql+asyncpg://lka:lka_dev_password@localhost:5432/lka_test"
+if "DATABASE_URL" in os.environ:
+    # User-provided — verify it's a test DB
+    _user_url = os.environ["DATABASE_URL"]
+    _db_name = _parse_db_name(_user_url)
+    if _db_name not in _ALLOWED_TEST_DB_NAMES and not _db_name.endswith(_TEST_DB_SUFFIX):
+        print(
+            f"\n\033[1;31mREFUSING TO RUN TESTS AGAINST DATABASE '{_db_name}'\033[0m\n"
+            f"\n  DATABASE_URL = {_user_url}\n"
+            "\n  Tests truncate all tables. Running against a live database will DESTROY DATA.\n"
+            f"  Allowed test DB names: {sorted(_ALLOWED_TEST_DB_NAMES)} or any name ending in '{_TEST_DB_SUFFIX}'\n"
+            "\n  To fix: unset DATABASE_URL (tests will auto-detect a running PG and use\n"
+            f"  '{_DEFAULT_TEST_DB}'), or point DATABASE_URL at a test database.\n",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+else:
+    # Auto-detect a running PostgreSQL and use harbor_clerk_test on it
+    _port = _detect_postgres_port()
+    _ensure_test_db_exists(_port, _DEFAULT_TEST_DB)
+    os.environ["DATABASE_URL"] = f"postgresql+asyncpg://lka:lka_dev_password@localhost:{_port}/{_DEFAULT_TEST_DB}"
+
 os.environ["STORAGE_BACKEND"] = "filesystem"
 os.environ["STORAGE_PATH"] = "/tmp/harbor_clerk_test_storage"
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["STATIC_DIR"] = "/tmp/harbor_clerk_test_static"
 
+# ruff: noqa: E402 — imports below MUST come after env setup (db.py reads settings at import time)
 from collections.abc import AsyncGenerator
 
 import pytest
