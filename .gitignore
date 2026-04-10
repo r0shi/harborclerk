@@ -37,3 +37,4 @@ macos/build/
 minio_data/
 pg_data/
 redis_data/
+.agents/
