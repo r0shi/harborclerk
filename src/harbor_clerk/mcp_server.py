@@ -217,6 +217,17 @@ def _get_principal() -> Principal:
     return p
 
 
+def _filter_tools_for_principal(tool_names, principal):
+    """Return only the tool names this principal is allowed to use."""
+    if principal is None:
+        return []
+    if principal.type != "api_key" or principal.key_scope is None:
+        # Human users see everything (admin checks happen inside individual tools)
+        return list(tool_names)
+    allowed = principal.key_scope.effective_tools
+    return [t for t in tool_names if t in allowed]
+
+
 def _require_admin() -> Principal:
     p = _get_principal()
     if p.role != "admin":
@@ -245,7 +256,47 @@ async def _visible_doc_ids(session: AsyncSession, principal: Principal) -> set[u
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
 
-mcp = FastMCP(
+
+class ScopedFastMCP(FastMCP):
+    """FastMCP subclass that filters tool listing and calls by API key scope.
+
+    Security: list_tools is a UX layer; the real enforcement is call_tool +
+    the apply_key_scope filters in each tool body. So even if list_tools is
+    bypassed (e.g. via the lowlevel server's tool cache), tool calls are
+    still rejected.
+    """
+
+    async def list_tools(self):
+        all_tools = await super().list_tools()
+        try:
+            principal = _get_principal()
+        except PermissionError:
+            # No principal context (e.g. internal tool-cache refresh).
+            # Return [] rather than all_tools so we don't pollute caches with
+            # full visibility. Real per-call enforcement happens in call_tool.
+            return []
+        if principal.type != "api_key" or principal.key_scope is None:
+            return all_tools
+        allowed = principal.key_scope.effective_tools
+        return [t for t in all_tools if t.name in allowed]
+
+    async def call_tool(self, name, arguments):
+        try:
+            principal = _get_principal()
+        except PermissionError:
+            return await super().call_tool(name, arguments)
+        if (
+            principal.type == "api_key"
+            and principal.key_scope is not None
+            and name not in principal.key_scope.effective_tools
+        ):
+            from mcp.server.fastmcp.exceptions import ToolError
+
+            raise ToolError(f"Unknown tool: {name}")
+        return await super().call_tool(name, arguments)
+
+
+mcp = ScopedFastMCP(
     "Harbor Clerk",
     # DNS rebinding protection is unnecessary — we run behind Caddy with
     # our own Bearer-token auth middleware wrapping the MCP ASGI app.
