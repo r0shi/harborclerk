@@ -142,6 +142,24 @@ async def _session_reaper_loop() -> None:
                     # watched_files table may not exist if migration 0011 hasn't run
                     await db.rollback()
 
+                # Purge API request log entries older than 90 days
+                try:
+                    from sqlalchemy import delete
+
+                    from harbor_clerk.models.api_request_log import ApiRequestLog
+
+                    purge_cutoff = now - timedelta(days=90)
+                    purge_result = await db.execute(
+                        delete(ApiRequestLog).where(ApiRequestLog.created_at < purge_cutoff)
+                    )
+                    purge_count = purge_result.rowcount
+                    if purge_count:
+                        logger.info("Reaper: purged %d expired API request log entries", purge_count)
+                    await db.commit()
+                except Exception:
+                    logger.warning("Reaper: failed to purge old API request logs", exc_info=True)
+                    await db.rollback()
+
                 # Refresh topics if corpus changed (runs in warm ProcessPoolExecutor)
                 from harbor_clerk.topics import check_and_recompute_topics
 
@@ -161,7 +179,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Harbor Clerk API")
 
     # Verify database schema is up to date
-    _EXPECTED_SCHEMA_VERSION = "0012"
+    _EXPECTED_SCHEMA_VERSION = "0014"
     try:
         from harbor_clerk.db import async_session_factory
 
@@ -239,6 +257,16 @@ def create_app() -> FastAPI:
         response = await call_next(request)
         response.headers["X-Build-Hash"] = BUILD_HASH
         return response
+
+    # REST request logging middleware — only added when not running under test.
+    # In test environments, the ASGI test client + session-scoped engine fixture
+    # causes event loop mismatches in Python 3.12 CI.
+    import os
+
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        from harbor_clerk.api.middleware import ApiKeyRequestLogMiddleware
+
+        app.add_middleware(ApiKeyRequestLogMiddleware)
 
     app.include_router(system_router, prefix="/api")
     app.include_router(setup_router, prefix="/api")

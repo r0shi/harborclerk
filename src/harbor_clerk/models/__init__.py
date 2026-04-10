@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models - import all models here for Alembic discovery."""
 
 from harbor_clerk.models.api_key import ApiKey
+from harbor_clerk.models.api_request_log import ApiRequestLog
 from harbor_clerk.models.audit_log import AuditLog
 from harbor_clerk.models.base import Base
 from harbor_clerk.models.chat_message import ChatMessage
@@ -39,6 +40,7 @@ __all__ = [
     "JobStatus",
     "User",
     "ApiKey",
+    "ApiRequestLog",
     "Document",
     "Upload",
     "UploadSession",
