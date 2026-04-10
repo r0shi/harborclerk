@@ -65,6 +65,95 @@ class ApiKeyRequestLogMiddleware:
             await self.app(scope, receive, send)
             return
 
+        method = scope.get("method", "GET")
+        endpoint = _normalize_path(method, path)
+
+        # Extract query params
+        qs = scope.get("query_string", b"").decode("latin-1")
+        parameters = dict(pair.split("=", 1) for pair in qs.split("&") if "=" in pair) if qs else None
+
+        # --- Resolve API key and check rate limit BEFORE forwarding ---
+        key_id = None
+        try:
+            from harbor_clerk.auth import hash_api_key
+            from harbor_clerk.db import async_session_factory
+            from harbor_clerk.models import ApiKey
+
+            key_hash = hash_api_key(token)
+            async with async_session_factory() as pre_session:
+                from sqlalchemy import select
+
+                row = (
+                    await pre_session.execute(
+                        select(ApiKey.key_id, ApiKey.rate_limit_rpm, ApiKey.rate_limit_rph).where(
+                            ApiKey.key_hash == key_hash
+                        )
+                    )
+                ).one_or_none()
+                if row is None:
+                    # Invalid key — let auth handler reject it
+                    await self.app(scope, receive, send)
+                    return
+
+                key_id = row.key_id
+                rl_rpm = row.rate_limit_rpm
+                rl_rph = row.rate_limit_rph
+
+            # Rate limit check
+            from harbor_clerk.api.rate_limiter import rate_limiter
+            from harbor_clerk.config import get_settings as _get_settings
+
+            _s = _get_settings()
+            rpm = rl_rpm if rl_rpm is not None else _s.default_rate_limit_rpm
+            rph = rl_rph if rl_rph is not None else _s.default_rate_limit_rph
+            allowed, retry_after = await rate_limiter.check(key_id, rpm, rph)
+            if not allowed:
+                logger.warning(
+                    "Rate limit exceeded for key %s on REST %s (retry_after=%ds)",
+                    key_id,
+                    endpoint,
+                    retry_after,
+                )
+                # Log the rate-limited request
+                try:
+                    from harbor_clerk.api.request_log import log_api_request
+
+                    async with async_session_factory() as log_session:
+                        await log_api_request(
+                            log_session,
+                            api_key_id=key_id,
+                            request_type="rest",
+                            endpoint=endpoint,
+                            parameters=parameters,
+                            status="rate_limited",
+                            status_detail=f"retry_after={retry_after}s",
+                            duration_ms=0,
+                        )
+                        await log_session.commit()
+                except Exception:
+                    logger.debug("Failed to log rate-limited REST request", exc_info=True)
+
+                # Send 429 response
+                import json as _json
+
+                body = _json.dumps({"detail": "Rate limit exceeded", "retry_after": retry_after}).encode()
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 429,
+                        "headers": [
+                            [b"content-type", b"application/json"],
+                            [b"content-length", str(len(body)).encode()],
+                            [b"retry-after", str(retry_after).encode()],
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": body})
+                return
+        except Exception:
+            logger.debug("Failed to check rate limit for REST request", exc_info=True)
+
+        # --- Forward request to app ---
         start = time.monotonic()
         response_status = [200]
 
@@ -76,43 +165,27 @@ class ApiKeyRequestLogMiddleware:
         await self.app(scope, receive, send_wrapper)
 
         elapsed = int((time.monotonic() - start) * 1000)
-        method = scope.get("method", "GET")
-        endpoint = _normalize_path(method, path)
         status_code = response_status[0]
         req_status = "ok" if status_code < 400 else "error"
         status_detail = None if req_status == "ok" else f"HTTP {status_code}"
 
-        # Extract query params
-        qs = scope.get("query_string", b"").decode("latin-1")
-        parameters = dict(pair.split("=", 1) for pair in qs.split("&") if "=" in pair) if qs else None
+        # --- Log the request ---
+        if key_id is not None:
+            try:
+                from harbor_clerk.api.request_log import log_api_request
+                from harbor_clerk.db import async_session_factory
 
-        try:
-            from harbor_clerk.api.request_log import log_api_request
-            from harbor_clerk.auth import hash_api_key
-            from harbor_clerk.db import async_session_factory
-            from harbor_clerk.models import ApiKey
-
-            # Resolve the key_id from the token hash
-            key_hash = hash_api_key(token)
-            async with async_session_factory() as log_session:
-                from sqlalchemy import select
-
-                row = (
-                    await log_session.execute(select(ApiKey.key_id).where(ApiKey.key_hash == key_hash))
-                ).scalar_one_or_none()
-                if row is None:
-                    return  # invalid key, auth handler already rejected it
-
-                await log_api_request(
-                    log_session,
-                    api_key_id=row,
-                    request_type="rest",
-                    endpoint=endpoint,
-                    parameters=parameters,
-                    status=req_status,
-                    status_detail=status_detail,
-                    duration_ms=elapsed,
-                )
-                await log_session.commit()
-        except Exception:
-            logger.debug("Failed to log REST request", exc_info=True)
+                async with async_session_factory() as log_session:
+                    await log_api_request(
+                        log_session,
+                        api_key_id=key_id,
+                        request_type="rest",
+                        endpoint=endpoint,
+                        parameters=parameters,
+                        status=req_status,
+                        status_detail=status_detail,
+                        duration_ms=elapsed,
+                    )
+                    await log_session.commit()
+            except Exception:
+                logger.debug("Failed to log REST request", exc_info=True)
