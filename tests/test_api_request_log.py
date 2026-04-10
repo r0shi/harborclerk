@@ -176,11 +176,25 @@ async def test_purge_key_usage(client, admin_token, db_session):
 
 
 @pytest.mark.anyio
-async def test_mcp_call_tool_denied_is_logged(db_session, admin_user):
-    """ScopedFastMCP.call_tool logs denied tool calls to api_request_log."""
+async def test_mcp_call_tool_denied_is_logged(_engine, db_session, admin_user):
+    """ScopedFastMCP.call_tool logs denied tool calls to api_request_log.
+
+    Uses _engine fixture to create a fresh session for verification,
+    since call_tool logs via async_session_factory (separate session).
+    In CI, async_session_factory may use a different event loop, so we
+    also patch it to use the test engine.
+    """
+    from unittest.mock import patch
+
+    from sqlalchemy.ext.asyncio import AsyncSession as AS
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
     from harbor_clerk.auth import generate_api_key, hash_api_key
     from harbor_clerk.mcp_server import _mcp_principal, mcp
     from harbor_clerk.models import ApiKey
+
+    # Patch async_session_factory to use the test engine (avoids event loop mismatch in CI)
+    test_factory = async_sessionmaker(_engine, class_=AS, expire_on_commit=False)
 
     # Create a real API key so the FK constraint is satisfied
     raw_key = generate_api_key()
@@ -197,23 +211,22 @@ async def test_mcp_call_tool_denied_is_logged(db_session, admin_user):
         key_scope=KeyScope(
             scope_topic_ids=None,
             scope_folder_ids=None,
-            permission_tier="search",  # search tier can't call kb_read_document
+            permission_tier="search",
             tool_overrides={},
             max_snippet_chars=None,
         ),
     )
-    token = _mcp_principal.set(principal)
-    try:
-        with pytest.raises(ToolError):
-            await mcp.call_tool("kb_read_document", {})
-    finally:
-        _mcp_principal.reset(token)
 
-    # The denied call is logged in a separate session (async_session_factory),
-    # so we need a fresh session to see the committed row.
-    from harbor_clerk.db import async_session_factory
+    with patch("harbor_clerk.mcp_server.async_session_factory", test_factory):
+        token = _mcp_principal.set(principal)
+        try:
+            with pytest.raises(ToolError):
+                await mcp.call_tool("kb_read_document", {})
+        finally:
+            _mcp_principal.reset(token)
 
-    async with async_session_factory() as fresh:
+    # Verify the log entry via a fresh session on the test engine
+    async with test_factory() as fresh:
         result = await fresh.execute(
             select(ApiRequestLog).where(
                 ApiRequestLog.api_key_id == key_id,

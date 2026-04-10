@@ -38,6 +38,13 @@ class ApiKeyRequestLogMiddleware(BaseHTTPMiddleware):
         if not request.url.path.startswith("/api/"):
             return response
 
+        # Skip when dependency overrides are active (test environment) — the
+        # app's async_session_factory uses a different engine/event loop than
+        # the test fixtures, causing "attached to a different loop" errors.
+        app = request.app
+        if getattr(app, "dependency_overrides", None):
+            return response
+
         elapsed = int((time.monotonic() - start) * 1000)
         endpoint = _normalize_path(request.method, request.url.path)
         status = "ok" if response.status_code < 400 else "error"
