@@ -2,6 +2,9 @@
 
 Uses a pure ASGI middleware (not BaseHTTPMiddleware) to avoid creating
 anyio task groups that leak into test teardown on Python 3.12.
+
+Detects API key requests from the Authorization header (hc_/lka_ prefix)
+rather than relying on request.state, so deps.py doesn't need modification.
 """
 
 import logging
@@ -13,6 +16,9 @@ logger = logging.getLogger(__name__)
 # Replace UUID-shaped path segments with {id}
 _UUID_RE = re.compile(r"/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 
+# API key prefixes (must match harbor_clerk.auth)
+_API_KEY_PREFIXES = ("hc_", "lka_")
+
 
 def _normalize_path(method: str, path: str) -> str:
     """Normalize a request path: 'GET /api/docs/550e8400-...' → 'GET /api/docs/{id}'."""
@@ -20,10 +26,24 @@ def _normalize_path(method: str, path: str) -> str:
     return f"{method} {normalized}"
 
 
+def _extract_api_key_token(headers: list[tuple[bytes, bytes]]) -> str | None:
+    """Extract API key token from Authorization header, or None if not an API key."""
+    for name, value in headers:
+        if name == b"authorization":
+            decoded = value.decode("latin-1")
+            if decoded.startswith("Bearer "):
+                token = decoded[7:]
+                if token.startswith(_API_KEY_PREFIXES):
+                    return token
+            break
+    return None
+
+
 class ApiKeyRequestLogMiddleware:
     """Pure ASGI middleware that logs REST API requests made with API keys.
 
-    Only fires for api_key principals. Skips human JWT users.
+    Detects API key auth from the Authorization header prefix.
+    Only fires for /api/ paths. Skips JWT users entirely.
     """
 
     def __init__(self, app):
@@ -39,6 +59,12 @@ class ApiKeyRequestLogMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Quick check: is this an API key request?
+        token = _extract_api_key_token(scope.get("headers", []))
+        if token is None:
+            await self.app(scope, receive, send)
+            return
+
         start = time.monotonic()
         response_status = [200]
 
@@ -48,12 +74,6 @@ class ApiKeyRequestLogMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
-
-        # Check principal set by deps.py during request handling
-        state = scope.get("state", {})
-        principal = state.get("principal") if isinstance(state, dict) else getattr(state, "principal", None)
-        if principal is None or principal.type != "api_key":
-            return
 
         elapsed = int((time.monotonic() - start) * 1000)
         method = scope.get("method", "GET")
@@ -68,12 +88,24 @@ class ApiKeyRequestLogMiddleware:
 
         try:
             from harbor_clerk.api.request_log import log_api_request
+            from harbor_clerk.auth import hash_api_key
             from harbor_clerk.db import async_session_factory
+            from harbor_clerk.models import ApiKey
 
+            # Resolve the key_id from the token hash
+            key_hash = hash_api_key(token)
             async with async_session_factory() as log_session:
+                from sqlalchemy import select
+
+                row = (
+                    await log_session.execute(select(ApiKey.key_id).where(ApiKey.key_hash == key_hash))
+                ).scalar_one_or_none()
+                if row is None:
+                    return  # invalid key, auth handler already rejected it
+
                 await log_api_request(
                     log_session,
-                    api_key_id=principal.id,
+                    api_key_id=row,
                     request_type="rest",
                     endpoint=endpoint,
                     parameters=parameters,
