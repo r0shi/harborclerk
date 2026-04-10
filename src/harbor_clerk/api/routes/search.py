@@ -160,8 +160,19 @@ async def read_passages(
                 detail=f"Invalid chunk_id: {cid}",
             )
 
+    # Per-API-key scope: compute the set of visible doc_ids for scoped keys.
+    visible_ids: set[uuid.UUID] | None = None
+    if principal.type == "api_key" and principal.key_scope is not None and not principal.key_scope.is_unrestricted:
+        visible_q = apply_key_scope(select(Document.doc_id), principal)
+        visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
+
     result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(chunk_uuids)))
     chunks = {c.chunk_id: c for c in result.scalars().all()}
+
+    # Drop chunks whose parent doc is outside this key's scope — scoped-out
+    # docs must be invisible (same as a 404 on per-doc endpoints).
+    if visible_ids is not None:
+        chunks = {cid: c for cid, c in chunks.items() if c.doc_id in visible_ids}
 
     # Load doc titles
     doc_ids = {c.doc_id for c in chunks.values()}

@@ -207,63 +207,69 @@ async def corpus_overview(
     session: AsyncSession = Depends(get_session),
 ):
     """Corpus-level statistics: counts, language distribution, mime types, date range, and document list."""
-    doc_count = (
-        await session.execute(select(func.count()).select_from(Document).where(Document.status == "active"))
-    ).scalar() or 0
-
-    chunk_count = (
-        await session.execute(
-            select(func.count())
-            .select_from(Chunk)
-            .join(Document, Document.latest_version_id == Chunk.version_id)
-            .where(Document.status == "active")
+    # Per-API-key scope: limit aggregates to visible doc_ids for scoped keys.
+    visible_ids: set[uuid.UUID] | None = None
+    if principal.type == "api_key" and principal.key_scope is not None and not principal.key_scope.is_unrestricted:
+        visible_q = apply_key_scope(
+            select(Document.doc_id).where(Document.status == "active"),
+            principal,
         )
-    ).scalar() or 0
+        visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
 
-    total_pages = (
-        await session.execute(
-            select(func.count())
-            .select_from(DocumentPage)
-            .join(Document, Document.latest_version_id == DocumentPage.version_id)
-            .where(Document.status == "active")
-        )
-    ).scalar() or 0
+    doc_count_q = select(func.count()).select_from(Document).where(Document.status == "active")
+    if visible_ids is not None:
+        doc_count_q = doc_count_q.where(Document.doc_id.in_(visible_ids))
+    doc_count = (await session.execute(doc_count_q)).scalar() or 0
 
-    lang_rows = (
-        await session.execute(
-            select(Chunk.language, func.count())
-            .join(Document, Document.latest_version_id == Chunk.version_id)
-            .where(Document.status == "active")
-            .group_by(Chunk.language)
-            .order_by(func.count().desc())
-        )
-    ).all()
+    chunk_count_q = (
+        select(func.count())
+        .select_from(Chunk)
+        .join(Document, Document.latest_version_id == Chunk.version_id)
+        .where(Document.status == "active")
+    )
+    if visible_ids is not None:
+        chunk_count_q = chunk_count_q.where(Document.doc_id.in_(visible_ids))
+    chunk_count = (await session.execute(chunk_count_q)).scalar() or 0
+
+    total_pages_q = (
+        select(func.count())
+        .select_from(DocumentPage)
+        .join(Document, Document.latest_version_id == DocumentPage.version_id)
+        .where(Document.status == "active")
+    )
+    if visible_ids is not None:
+        total_pages_q = total_pages_q.where(Document.doc_id.in_(visible_ids))
+    total_pages = (await session.execute(total_pages_q)).scalar() or 0
+
+    lang_q = (
+        select(Chunk.language, func.count())
+        .join(Document, Document.latest_version_id == Chunk.version_id)
+        .where(Document.status == "active")
+    )
+    if visible_ids is not None:
+        lang_q = lang_q.where(Document.doc_id.in_(visible_ids))
+    lang_rows = (await session.execute(lang_q.group_by(Chunk.language).order_by(func.count().desc()))).all()
     languages = {row[0]: row[1] for row in lang_rows if row[0]}
 
-    mime_rows = (
-        await session.execute(
-            select(DocumentVersion.mime_type, func.count())
-            .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-            .where(Document.status == "active")
-            .group_by(DocumentVersion.mime_type)
-            .order_by(func.count().desc())
-        )
-    ).all()
+    mime_q = (
+        select(DocumentVersion.mime_type, func.count())
+        .join(Document, Document.latest_version_id == DocumentVersion.version_id)
+        .where(Document.status == "active")
+    )
+    if visible_ids is not None:
+        mime_q = mime_q.where(Document.doc_id.in_(visible_ids))
+    mime_rows = (await session.execute(mime_q.group_by(DocumentVersion.mime_type).order_by(func.count().desc()))).all()
     mime_types = {row[0]: row[1] for row in mime_rows if row[0]}
 
-    date_row = (
-        await session.execute(
-            select(func.min(Document.updated_at), func.max(Document.updated_at)).where(Document.status == "active")
-        )
-    ).one()
+    date_q = select(func.min(Document.updated_at), func.max(Document.updated_at)).where(Document.status == "active")
+    if visible_ids is not None:
+        date_q = date_q.where(Document.doc_id.in_(visible_ids))
+    date_row = (await session.execute(date_q)).one()
 
-    result = await session.execute(
-        select(Document)
-        .options(selectinload(Document.versions))
-        .where(Document.status == "active")
-        .order_by(Document.updated_at.desc())
-        .limit(200)
-    )
+    docs_q = select(Document).options(selectinload(Document.versions)).where(Document.status == "active")
+    if visible_ids is not None:
+        docs_q = docs_q.where(Document.doc_id.in_(visible_ids))
+    result = await session.execute(docs_q.order_by(Document.updated_at.desc()).limit(200))
     docs = result.scalars().all()
 
     items = []
@@ -321,7 +327,7 @@ async def entity_autocomplete(
     if entity_type:
         filters.append(Entity.entity_type == entity_type)
 
-    result = await session.execute(
+    query = (
         select(
             Entity.entity_text,
             Entity.entity_type,
@@ -329,7 +335,11 @@ async def entity_autocomplete(
         )
         .join(Document, Document.doc_id == Entity.doc_id)
         .where(*filters)
-        .group_by(Entity.entity_text, Entity.entity_type)
+    )
+    # Per-API-key scope: filter to visible docs only (no-op for users / unrestricted keys).
+    query = apply_key_scope(query, principal)
+    result = await session.execute(
+        query.group_by(Entity.entity_text, Entity.entity_type)
         .order_by(func.count(func.distinct(Entity.doc_id)).desc())
         .limit(limit)
     )
@@ -345,16 +355,18 @@ async def top_entities(
     session: AsyncSession = Depends(get_session),
 ):
     """Top entities of a given type across active documents."""
-    result = await session.execute(
+    query = (
         select(
             Entity.entity_text,
             func.count(func.distinct(Entity.doc_id)).label("doc_count"),
         )
         .join(Document, Document.doc_id == Entity.doc_id)
         .where(Document.status == "active", Entity.entity_type == entity_type)
-        .group_by(Entity.entity_text)
-        .order_by(func.count(func.distinct(Entity.doc_id)).desc())
-        .limit(limit)
+    )
+    # Per-API-key scope: filter to visible docs only (no-op for users / unrestricted keys).
+    query = apply_key_scope(query, principal)
+    result = await session.execute(
+        query.group_by(Entity.entity_text).order_by(func.count(func.distinct(Entity.doc_id)).desc()).limit(limit)
     )
     return [{"entity_text": r[0], "doc_count": r[1]} for r in result.all()]
 
@@ -365,47 +377,60 @@ async def document_filters(
     session: AsyncSession = Depends(get_session),
 ):
     """Return available filter values for the documents list."""
-    # MIME types
-    mime_rows = (
-        await session.execute(
-            select(DocumentVersion.mime_type, func.count())
-            .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-            .where(Document.status == "active", DocumentVersion.mime_type.isnot(None))
-            .group_by(DocumentVersion.mime_type)
-            .order_by(func.count().desc())
+    # Per-API-key scope: limit facet counts to visible docs for scoped keys.
+    visible_ids: set[uuid.UUID] | None = None
+    if principal.type == "api_key" and principal.key_scope is not None and not principal.key_scope.is_unrestricted:
+        visible_q = apply_key_scope(
+            select(Document.doc_id).where(Document.status == "active"),
+            principal,
         )
-    ).all()
+        visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
+
+    # MIME types
+    mime_q = (
+        select(DocumentVersion.mime_type, func.count())
+        .join(Document, Document.latest_version_id == DocumentVersion.version_id)
+        .where(Document.status == "active", DocumentVersion.mime_type.isnot(None))
+    )
+    if visible_ids is not None:
+        mime_q = mime_q.where(Document.doc_id.in_(visible_ids))
+    mime_rows = (await session.execute(mime_q.group_by(DocumentVersion.mime_type).order_by(func.count().desc()))).all()
 
     # Doc types
+    doc_type_q = (
+        select(DocumentVersion.doc_type, func.count())
+        .join(Document, Document.latest_version_id == DocumentVersion.version_id)
+        .where(Document.status == "active", DocumentVersion.doc_type.isnot(None))
+    )
+    if visible_ids is not None:
+        doc_type_q = doc_type_q.where(Document.doc_id.in_(visible_ids))
     doc_type_rows = (
-        await session.execute(
-            select(DocumentVersion.doc_type, func.count())
-            .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-            .where(Document.status == "active", DocumentVersion.doc_type.isnot(None))
-            .group_by(DocumentVersion.doc_type)
-            .order_by(func.count().desc())
-        )
+        await session.execute(doc_type_q.group_by(DocumentVersion.doc_type).order_by(func.count().desc()))
     ).all()
 
     # Languages
+    lang_q = (
+        select(Chunk.language, func.count(func.distinct(Chunk.doc_id)))
+        .join(Document, Document.doc_id == Chunk.doc_id)
+        .where(Document.status == "active", Chunk.language.isnot(None))
+    )
+    if visible_ids is not None:
+        lang_q = lang_q.where(Document.doc_id.in_(visible_ids))
     lang_rows = (
-        await session.execute(
-            select(Chunk.language, func.count(func.distinct(Chunk.doc_id)))
-            .join(Document, Document.doc_id == Chunk.doc_id)
-            .where(Document.status == "active", Chunk.language.isnot(None))
-            .group_by(Chunk.language)
-            .order_by(func.count(func.distinct(Chunk.doc_id)).desc())
-        )
+        await session.execute(lang_q.group_by(Chunk.language).order_by(func.count(func.distinct(Chunk.doc_id)).desc()))
     ).all()
 
     # Entity types
+    ent_type_q = (
+        select(Entity.entity_type, func.count(func.distinct(Entity.doc_id)))
+        .join(Document, Document.doc_id == Entity.doc_id)
+        .where(Document.status == "active")
+    )
+    if visible_ids is not None:
+        ent_type_q = ent_type_q.where(Document.doc_id.in_(visible_ids))
     ent_type_rows = (
         await session.execute(
-            select(Entity.entity_type, func.count(func.distinct(Entity.doc_id)))
-            .join(Document, Document.doc_id == Entity.doc_id)
-            .where(Document.status == "active")
-            .group_by(Entity.entity_type)
-            .order_by(func.count(func.distinct(Entity.doc_id)).desc())
+            ent_type_q.group_by(Entity.entity_type).order_by(func.count(func.distinct(Entity.doc_id)).desc())
         )
     ).all()
 
@@ -503,11 +528,9 @@ async def get_document_content(
     session: AsyncSession = Depends(get_session),
 ):
     # Get document + latest version
-    result = await session.execute(
-        select(Document)
-        .where(Document.doc_id == doc_id, Document.status == "active")
-        .options(selectinload(Document.versions))
-    )
+    doc_query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+    doc_query = apply_key_scope(doc_query, principal)
+    result = await session.execute(doc_query.options(selectinload(Document.versions)))
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
@@ -585,11 +608,9 @@ async def get_document_outline(
     session: AsyncSession = Depends(get_session),
 ):
     """Get document heading outline/structure with page and chunk counts."""
-    result = await session.execute(
-        select(Document)
-        .where(Document.doc_id == doc_id, Document.status == "active")
-        .options(selectinload(Document.versions))
-    )
+    doc_query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+    doc_query = apply_key_scope(doc_query, principal)
+    result = await session.execute(doc_query.options(selectinload(Document.versions)))
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
@@ -636,11 +657,9 @@ async def get_document_entities(
     session: AsyncSession = Depends(get_session),
 ):
     """Get deduplicated entities with mention counts for a document's latest version."""
-    result = await session.execute(
-        select(Document)
-        .where(Document.doc_id == doc_id, Document.status == "active")
-        .options(selectinload(Document.versions))
-    )
+    doc_query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+    doc_query = apply_key_scope(doc_query, principal)
+    result = await session.execute(doc_query.options(selectinload(Document.versions)))
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
@@ -702,9 +721,9 @@ async def find_related_documents(
     session: AsyncSession = Depends(get_session),
 ):
     """Find documents most similar to the given document by embedding cosine similarity."""
-    doc = (
-        await session.execute(select(Document).where(Document.doc_id == doc_id, Document.status == "active"))
-    ).scalar_one_or_none()
+    doc_query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+    doc_query = apply_key_scope(doc_query, principal)
+    doc = (await session.execute(doc_query)).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
@@ -734,22 +753,20 @@ async def find_related_documents(
     n = len(rows)
     avg = [v / n for v in avg]
 
-    # Find nearest docs
+    # Find nearest docs — scope-filter the candidate set so scoped keys
+    # only see related docs within their allowed topics/folders.
     distance = Chunk.embedding.cosine_distance(avg)
-    nearest = (
-        await session.execute(
-            select(Chunk.doc_id, func.min(distance).label("min_distance"))
-            .join(Document, Document.latest_version_id == Chunk.version_id)
-            .where(
-                Document.status == "active",
-                Chunk.embedding.isnot(None),
-                Chunk.doc_id != doc_id,
-            )
-            .group_by(Chunk.doc_id)
-            .order_by(func.min(distance))
-            .limit(k)
+    nearest_q = (
+        select(Chunk.doc_id, func.min(distance).label("min_distance"))
+        .join(Document, Document.latest_version_id == Chunk.version_id)
+        .where(
+            Document.status == "active",
+            Chunk.embedding.isnot(None),
+            Chunk.doc_id != doc_id,
         )
-    ).all()
+    )
+    nearest_q = apply_key_scope(nearest_q, principal)
+    nearest = (await session.execute(nearest_q.group_by(Chunk.doc_id).order_by(func.min(distance)).limit(k))).all()
 
     if not nearest:
         return RelatedDocumentsResponse(doc_id=str(doc_id), related=[])
@@ -792,11 +809,9 @@ async def download_document(
     session: AsyncSession = Depends(get_session),
 ):
     """Download the original file for the latest version of a document."""
-    result = await session.execute(
-        select(Document)
-        .where(Document.doc_id == doc_id, Document.status == "active")
-        .options(selectinload(Document.versions))
-    )
+    query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
+    query = apply_key_scope(query, principal)
+    result = await session.execute(query.options(selectinload(Document.versions)))
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
