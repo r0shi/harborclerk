@@ -17,6 +17,8 @@ interface ApiKeyInfo {
   scope_folder_ids: string[] | null
   max_snippet_chars: number | null
   scope_summary: string
+  rate_limit_rpm: number | null
+  rate_limit_rph: number | null
 }
 
 interface ApiKeyCreated {
@@ -97,6 +99,10 @@ interface ScopeFormState {
   topicIds: number[] | null
   folderIds: string[] | null
   maxSnippetChars: string // raw input string
+  rateLimitRpmUnlimited: boolean
+  rateLimitRpm: string // '' = system default, number string = custom
+  rateLimitRphUnlimited: boolean
+  rateLimitRph: string
 }
 
 function emptyScopeState(): ScopeFormState {
@@ -107,6 +113,10 @@ function emptyScopeState(): ScopeFormState {
     topicIds: null,
     folderIds: null,
     maxSnippetChars: '',
+    rateLimitRpmUnlimited: false,
+    rateLimitRpm: '',
+    rateLimitRphUnlimited: false,
+    rateLimitRph: '',
   }
 }
 
@@ -118,6 +128,10 @@ function scopeStateFromKey(k: ApiKeyInfo): ScopeFormState {
     topicIds: k.scope_topic_ids,
     folderIds: k.scope_folder_ids,
     maxSnippetChars: k.max_snippet_chars != null ? String(k.max_snippet_chars) : '',
+    rateLimitRpmUnlimited: k.rate_limit_rpm === 0,
+    rateLimitRpm: k.rate_limit_rpm != null && k.rate_limit_rpm > 0 ? String(k.rate_limit_rpm) : '',
+    rateLimitRphUnlimited: k.rate_limit_rph === 0,
+    rateLimitRph: k.rate_limit_rph != null && k.rate_limit_rph > 0 ? String(k.rate_limit_rph) : '',
   }
 }
 
@@ -128,6 +142,8 @@ interface ScopePayload {
   scope_topic_ids: number[] | null
   scope_folder_ids: string[] | null
   max_snippet_chars: number | null
+  rate_limit_rpm: number | null
+  rate_limit_rph: number | null
 }
 
 function scopeStateToPayload(s: ScopeFormState): ScopePayload {
@@ -139,6 +155,8 @@ function scopeStateToPayload(s: ScopeFormState): ScopePayload {
     scope_topic_ids: s.topicIds,
     scope_folder_ids: s.folderIds,
     max_snippet_chars: maxSnippet != null && Number.isFinite(maxSnippet) && maxSnippet > 0 ? maxSnippet : null,
+    rate_limit_rpm: s.rateLimitRpmUnlimited ? 0 : s.rateLimitRpm.trim() ? Number(s.rateLimitRpm) : null,
+    rate_limit_rph: s.rateLimitRphUnlimited ? 0 : s.rateLimitRph.trim() ? Number(s.rateLimitRph) : null,
   }
 }
 
@@ -527,6 +545,60 @@ function ScopeFormFields({
           placeholder="No limit"
           className="w-40 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
         />
+      </div>
+
+      <div>
+        <label className="flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={state.rateLimitRpmUnlimited}
+            onChange={(e) =>
+              setState((s) => ({
+                ...s,
+                rateLimitRpmUnlimited: e.target.checked,
+                rateLimitRpm: e.target.checked ? '' : s.rateLimitRpm,
+              }))
+            }
+          />
+          Unlimited requests/min
+        </label>
+        {!state.rateLimitRpmUnlimited && (
+          <input
+            type="number"
+            min="1"
+            value={state.rateLimitRpm}
+            onChange={(e) => setState((s) => ({ ...s, rateLimitRpm: e.target.value }))}
+            placeholder="System default"
+            className="mt-1.5 w-40 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+          />
+        )}
+      </div>
+
+      <div>
+        <label className="flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+          <input
+            type="checkbox"
+            checked={state.rateLimitRphUnlimited}
+            onChange={(e) =>
+              setState((s) => ({
+                ...s,
+                rateLimitRphUnlimited: e.target.checked,
+                rateLimitRph: e.target.checked ? '' : s.rateLimitRph,
+              }))
+            }
+          />
+          Unlimited requests/hour
+        </label>
+        {!state.rateLimitRphUnlimited && (
+          <input
+            type="number"
+            min="1"
+            value={state.rateLimitRph}
+            onChange={(e) => setState((s) => ({ ...s, rateLimitRph: e.target.value }))}
+            placeholder="System default"
+            className="mt-1.5 w-40 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+          />
+        )}
       </div>
     </div>
   )
