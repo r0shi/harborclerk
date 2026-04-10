@@ -186,6 +186,7 @@ class MCPTokenPathAuth:
         remaining = "/" + parts[1] if len(parts) > 1 else "/"
         scope = dict(scope)
         scope["path"] = remaining
+        scope["raw_path"] = remaining.encode("utf-8")
 
         reset_token = _mcp_principal.set(principal)
         try:

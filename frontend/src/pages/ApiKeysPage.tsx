@@ -132,7 +132,7 @@ interface ScopePayload {
 function scopeStateToPayload(s: ScopeFormState): ScopePayload {
   const maxSnippet = s.maxSnippetChars.trim() ? Number(s.maxSnippetChars) : null
   return {
-    expires_at: s.expiresAt ? new Date(s.expiresAt + 'T23:59:59').toISOString() : null,
+    expires_at: s.expiresAt ? s.expiresAt + 'T23:59:59Z' : null,
     permission_tier: s.tier,
     tool_overrides: s.toolOverrides,
     scope_topic_ids: s.topicIds,
@@ -606,20 +606,19 @@ function EditKeyModal({
   // Track the payload as a JSON string for effect dep stability
   const payloadKey = useMemo(() => JSON.stringify(scopeStateToPayload(scope)), [scope])
 
-  // Debounced scope preview: PATCH the key, then fetch preview.
-  // Rather than mutating on every keystroke, we use a dry-run approach:
-  // the backend scope-preview endpoint reads the current stored scope,
-  // so we need to save-then-preview. For UX, we only preview on debounce and
-  // revert silently by reading back the returned key (caller's loadKeys on save).
-  // To avoid persisting unintended state, preview here is informational only
-  // and computed client-side against the currently-saved key; accurate preview
-  // happens after Save. We fetch on mount so users see the current state.
+  // Debounced live scope preview: POST unsaved scope params to get real-time
+  // document count without needing to save first.
   useEffect(() => {
     let cancelled = false
+    const parsed = JSON.parse(payloadKey) as ScopePayload
     async function fetchPreview() {
       setPreviewLoading(true)
       try {
-        const data = await get<ScopePreview>(`/api/api-keys/${apiKey.key_id}/scope-preview`)
+        const data = await post<ScopePreview>('/api/api-keys/scope-preview', {
+          permission_tier: parsed.permission_tier,
+          scope_topic_ids: parsed.scope_topic_ids,
+          scope_folder_ids: parsed.scope_folder_ids,
+        })
         if (!cancelled) setPreview(data)
       } catch {
         if (!cancelled) setPreview(null)
@@ -673,7 +672,7 @@ function EditKeyModal({
           {!previewLoading && preview && (
             <span className="text-gray-700 dark:text-gray-300">
               <strong>{preview.accessible_documents}</strong> of <strong>{preview.total_documents}</strong> documents
-              accessible (reflects currently-saved scope; save to recompute)
+              accessible
             </span>
           )}
           {!previewLoading && !preview && (
