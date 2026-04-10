@@ -19,6 +19,7 @@ interface UsageSummary {
   requests: RangeMap<number>
   errors: RangeMap<number>
   denials: RangeMap<number>
+  rate_limited: RangeMap<number>
   last_used_at: string | null
   top_tools: RangeMap<Array<{ endpoint: string; count: number }>>
 }
@@ -28,6 +29,7 @@ interface TimelineBucket {
   ok: number
   error: number
   denied: number
+  rate_limited: number
 }
 
 interface RequestEntry {
@@ -72,7 +74,9 @@ function statusBadge(status: string) {
       ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
       : status === 'error'
         ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-        : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+        : status === 'rate_limited'
+          ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400'
+          : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
   return <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>{status}</span>
 }
 
@@ -92,6 +96,7 @@ export default function ApiKeyDashboardPage() {
   const [reqRange, setReqRange] = useState<string>('24h')
   const [errRange, setErrRange] = useState<string>('7d')
   const [denRange, setDenRange] = useState<string>('7d')
+  const [rlRange, setRlRange] = useState<string>('7d')
 
   // request log filters + pagination
   const [logPage, setLogPage] = useState(1)
@@ -267,7 +272,7 @@ export default function ApiKeyDashboardPage() {
       {usage && (
         <>
           {/* Summary cards */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
             {/* Requests card */}
             <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
               <div className="flex items-center justify-between">
@@ -335,6 +340,33 @@ export default function ApiKeyDashboardPage() {
               </p>
             </div>
 
+            {/* Rate Limited card */}
+            <div
+              className={`rounded-xl shadow-mac ring-1 ring-(--color-border) p-4 ${
+                (usage.rate_limited[rlRange] ?? 0) > 0
+                  ? 'bg-orange-50 dark:bg-orange-900/20'
+                  : 'bg-white dark:bg-[#2c2c2e]'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Rate Limited</span>
+                <select
+                  value={rlRange}
+                  onChange={(e) => setRlRange(e.target.value)}
+                  className="rounded border-0 bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs"
+                >
+                  {DENIAL_RANGES.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <p className="mt-2 text-2xl font-bold text-orange-600 dark:text-orange-400">
+                {usage.rate_limited[rlRange] ?? 0}
+              </p>
+            </div>
+
             {/* Last Used card */}
             <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
               <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Last Used</span>
@@ -358,6 +390,7 @@ export default function ApiKeyDashboardPage() {
                     <Bar dataKey="ok" stackId="a" fill="#3b82f6" name="OK" />
                     <Bar dataKey="error" stackId="a" fill="#ef4444" name="Error" />
                     <Bar dataKey="denied" stackId="a" fill="#f59e0b" name="Denied" />
+                    <Bar dataKey="rate_limited" stackId="a" fill="#f97316" name="Rate Limited" />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -428,6 +461,7 @@ export default function ApiKeyDashboardPage() {
                   <option value="ok">ok</option>
                   <option value="error">error</option>
                   <option value="denied">denied</option>
+                  <option value="rate_limited">rate limited</option>
                 </select>
                 <input
                   type="date"
@@ -487,7 +521,9 @@ export default function ApiKeyDashboardPage() {
                             ? 'border-l-2 border-red-400'
                             : r.status === 'denied'
                               ? 'border-l-2 border-amber-400'
-                              : ''
+                              : r.status === 'rate_limited'
+                                ? 'border-l-2 border-orange-400'
+                                : ''
                         const isExpanded = expandedRow === r.request_id
                         return (
                           <Fragment key={r.request_id}>
