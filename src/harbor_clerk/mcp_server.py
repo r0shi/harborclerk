@@ -91,11 +91,23 @@ async def _resolve_principal(token: str) -> Principal | None:
         api_key = result.scalar_one_or_none()
         if api_key is None:
             return None
+        # Expiry check
+        if api_key.expires_at is not None and api_key.expires_at < datetime.now(UTC):
+            return None
         await session.execute(
             update(ApiKey).where(ApiKey.key_id == api_key.key_id).values(last_used_at=datetime.now(UTC))
         )
         await session.commit()
-        return Principal(type="api_key", id=api_key.key_id, role="user")
+        from harbor_clerk.api.scope import KeyScope
+
+        scope = KeyScope(
+            scope_topic_ids=api_key.scope_topic_ids,
+            scope_folder_ids=api_key.scope_folder_ids,
+            permission_tier=api_key.permission_tier,
+            tool_overrides=api_key.tool_overrides or {},
+            max_snippet_chars=api_key.max_snippet_chars,
+        )
+        return Principal(type="api_key", id=api_key.key_id, role="user", key_scope=scope)
 
 
 class MCPAuthMiddleware:

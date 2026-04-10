@@ -101,3 +101,29 @@ def test_tier_constants_are_frozen_sets():
     assert isinstance(SEARCH_TIER_TOOLS, frozenset)
     assert isinstance(READ_TIER_TOOLS, frozenset)
     assert isinstance(FULL_TIER_TOOLS, frozenset)
+
+
+# --- Principal integration ---
+
+import uuid  # noqa: E402
+
+from harbor_clerk.api.deps import Principal  # noqa: E402
+
+
+def test_principal_default_no_key_scope():
+    p = Principal(type="user", id=uuid.uuid4(), role="admin")
+    assert p.key_scope is None
+
+
+def test_principal_with_key_scope():
+    scope = KeyScope(
+        scope_topic_ids=[1],
+        scope_folder_ids=None,
+        permission_tier="search",
+        tool_overrides={},
+        max_snippet_chars=500,
+    )
+    p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
+    assert p.key_scope is not None
+    assert p.key_scope.scope_topic_ids == [1]
+    assert p.key_scope.permission_tier == "search"
