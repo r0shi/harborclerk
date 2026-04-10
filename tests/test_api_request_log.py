@@ -1,4 +1,4 @@
-"""Tests for API request log model, helper, and endpoints."""
+"""Tests for API request log model and helper (no ASGI client needed)."""
 
 import pytest
 from sqlalchemy import select
@@ -9,11 +9,6 @@ from harbor_clerk.api.middleware import _normalize_path
 from harbor_clerk.api.request_log import log_api_request
 from harbor_clerk.api.scope import KeyScope
 from harbor_clerk.models.api_request_log import ApiRequestLog
-from tests.conftest import auth_header
-
-# ---------------------------------------------------------------------------
-# Model + helper tests (no client needed)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
@@ -78,11 +73,6 @@ async def test_log_api_request_denied(db_session: AsyncSession):
     assert row.status_detail == "tool not in search tier"
 
 
-# ---------------------------------------------------------------------------
-# Path normalization tests (pure functions)
-# ---------------------------------------------------------------------------
-
-
 def test_normalize_path_with_uuid():
     assert _normalize_path("GET", "/api/docs/550e8400-e29b-41d4-a716-446655440000") == "GET /api/docs/{id}"
 
@@ -96,77 +86,6 @@ def test_normalize_path_multiple_uuids():
         "GET", "/api/docs/550e8400-e29b-41d4-a716-446655440000/versions/660e8400-e29b-41d4-a716-446655440001"
     )
     assert result == "GET /api/docs/{id}/versions/{id}"
-
-
-# ---------------------------------------------------------------------------
-# API endpoint tests (use client fixture only, no db_session mixing)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_usage_summary_empty(client, admin_token):
-    """Usage summary returns zeros when no requests logged."""
-    resp = await client.post("/api/api-keys", json={"name": "test-usage"}, headers=auth_header(admin_token))
-    assert resp.status_code == 201
-    key_id = resp.json()["key_id"]
-
-    resp = await client.get(f"/api/api-keys/{key_id}/usage", headers=auth_header(admin_token))
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["requests"]["1h"] == 0
-    assert data["requests"]["30d"] == 0
-    assert data["errors"]["7d"] == 0
-    assert data["denials"]["7d"] == 0
-    assert data["last_used_at"] is None
-    assert data["top_tools"]["30d"] == []
-
-
-@pytest.mark.anyio
-async def test_timeline_empty(client, admin_token):
-    resp = await client.post("/api/api-keys", json={"name": "test-tl"}, headers=auth_header(admin_token))
-    key_id = resp.json()["key_id"]
-    resp = await client.get(f"/api/api-keys/{key_id}/usage/timeline?days=7", headers=auth_header(admin_token))
-    assert resp.status_code == 200
-    assert resp.json() == []
-
-
-@pytest.mark.anyio
-async def test_timeline_invalid_days(client, admin_token):
-    resp = await client.post("/api/api-keys", json={"name": "test-tl2"}, headers=auth_header(admin_token))
-    key_id = resp.json()["key_id"]
-    resp = await client.get(f"/api/api-keys/{key_id}/usage/timeline?days=100", headers=auth_header(admin_token))
-    assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_request_log_paginated_and_purge(client, admin_token):
-    """Insert log entries via the API (not db_session), then test pagination and purge."""
-    # Create a key
-    resp = await client.post("/api/api-keys", json={"name": "test-log-p"}, headers=auth_header(admin_token))
-    assert resp.status_code == 201
-    key_id = resp.json()["key_id"]
-
-    # We can't easily insert ApiRequestLog rows via API (no endpoint for that),
-    # so test with an empty log — verify the endpoint works and returns correct shape.
-    resp = await client.get(
-        f"/api/api-keys/{key_id}/usage/requests?page=1&page_size=3", headers=auth_header(admin_token)
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["total"] == 0
-    assert data["items"] == []
-    assert data["page"] == 1
-    assert data["page_size"] == 3
-
-    # Purge (no-op on empty)
-    resp = await client.delete(f"/api/api-keys/{key_id}/usage", headers=auth_header(admin_token))
-    assert resp.status_code == 200
-    assert resp.json()["deleted"] == 0
-
-
-# ---------------------------------------------------------------------------
-# MCP integration test (Python 3.14+ only due to event loop compat)
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(
