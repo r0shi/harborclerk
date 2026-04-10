@@ -2,9 +2,12 @@
 
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import Date as SADate
+from sqlalchemy import cast, func, select
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin
@@ -21,6 +24,7 @@ from harbor_clerk.audit import log_audit
 from harbor_clerk.auth import generate_api_key, hash_api_key
 from harbor_clerk.db import get_session
 from harbor_clerk.models import ApiKey
+from harbor_clerk.models.api_request_log import ApiRequestLog
 from harbor_clerk.models.document import Document
 
 logger = logging.getLogger(__name__)
@@ -221,3 +225,214 @@ async def delete_api_key(
         target_id=key_id,
     )
     await session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Usage / Audit dashboard endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api-keys/{key_id}/usage")
+async def get_key_usage(
+    key_id: uuid.UUID,
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    api_key = await session.get(ApiKey, key_id)
+    if api_key is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    now = datetime.now(UTC)
+    request_buckets = {"1h": 1, "6h": 6, "12h": 12, "24h": 24, "7d": 168, "30d": 720}
+
+    requests: dict[str, int] = {}
+    for label, hours in request_buckets.items():
+        cutoff = now - timedelta(hours=hours)
+        count = (
+            await session.execute(
+                select(func.count(ApiRequestLog.request_id)).where(
+                    ApiRequestLog.api_key_id == key_id,
+                    ApiRequestLog.created_at >= cutoff,
+                )
+            )
+        ).scalar_one()
+        requests[label] = count
+
+    error_buckets = {"1h": 1, "24h": 24, "7d": 168}
+    errors: dict[str, int] = {}
+    denials: dict[str, int] = {}
+    for label, hours in error_buckets.items():
+        cutoff = now - timedelta(hours=hours)
+        err = (
+            await session.execute(
+                select(func.count(ApiRequestLog.request_id)).where(
+                    ApiRequestLog.api_key_id == key_id,
+                    ApiRequestLog.created_at >= cutoff,
+                    ApiRequestLog.status == "error",
+                )
+            )
+        ).scalar_one()
+        errors[label] = err
+        den = (
+            await session.execute(
+                select(func.count(ApiRequestLog.request_id)).where(
+                    ApiRequestLog.api_key_id == key_id,
+                    ApiRequestLog.created_at >= cutoff,
+                    ApiRequestLog.status == "denied",
+                )
+            )
+        ).scalar_one()
+        denials[label] = den
+
+    last_used = (
+        await session.execute(select(func.max(ApiRequestLog.created_at)).where(ApiRequestLog.api_key_id == key_id))
+    ).scalar_one()
+
+    top_tools: dict[str, list[dict[str, object]]] = {}
+    for label, hours in request_buckets.items():
+        cutoff = now - timedelta(hours=hours)
+        rows = (
+            await session.execute(
+                select(ApiRequestLog.endpoint, func.count(ApiRequestLog.request_id).label("cnt"))
+                .where(ApiRequestLog.api_key_id == key_id, ApiRequestLog.created_at >= cutoff)
+                .group_by(ApiRequestLog.endpoint)
+                .order_by(func.count(ApiRequestLog.request_id).desc())
+                .limit(10)
+            )
+        ).all()
+        top_tools[label] = [{"endpoint": r[0], "count": r[1]} for r in rows]
+
+    return {
+        "requests": requests,
+        "errors": errors,
+        "denials": denials,
+        "last_used_at": last_used,
+        "top_tools": top_tools,
+    }
+
+
+@router.get("/api-keys/{key_id}/usage/timeline")
+async def get_key_timeline(
+    key_id: uuid.UUID,
+    days: int = 30,
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    if days < 1 or days > 90:
+        raise HTTPException(status_code=422, detail="days must be between 1 and 90")
+    api_key = await session.get(ApiKey, key_id)
+    if api_key is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(
+                cast(ApiRequestLog.created_at, SADate).label("day"),
+                ApiRequestLog.status,
+                func.count(ApiRequestLog.request_id).label("cnt"),
+            )
+            .where(ApiRequestLog.api_key_id == key_id, ApiRequestLog.created_at >= cutoff)
+            .group_by("day", ApiRequestLog.status)
+            .order_by("day")
+        )
+    ).all()
+
+    by_day: dict[str, dict[str, int]] = {}
+    for day, stat, cnt in rows:
+        d = str(day)
+        if d not in by_day:
+            by_day[d] = {"ok": 0, "error": 0, "denied": 0}
+        if stat in by_day[d]:
+            by_day[d][stat] = cnt
+    return [{"date": d, **counts} for d, counts in sorted(by_day.items())]
+
+
+@router.get("/api-keys/{key_id}/usage/requests")
+async def get_key_requests(
+    key_id: uuid.UUID,
+    page: int = 1,
+    page_size: int = 25,
+    endpoint: str | None = None,
+    status_filter: str | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    if page_size > 200:
+        page_size = 200
+    if page < 1:
+        page = 1
+    api_key = await session.get(ApiKey, key_id)
+    if api_key is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    base = select(ApiRequestLog).where(ApiRequestLog.api_key_id == key_id)
+    count_base = select(func.count(ApiRequestLog.request_id)).where(ApiRequestLog.api_key_id == key_id)
+    if endpoint:
+        base = base.where(ApiRequestLog.endpoint == endpoint)
+        count_base = count_base.where(ApiRequestLog.endpoint == endpoint)
+    if status_filter:
+        base = base.where(ApiRequestLog.status == status_filter)
+        count_base = count_base.where(ApiRequestLog.status == status_filter)
+    if from_date:
+        base = base.where(ApiRequestLog.created_at >= from_date)
+        count_base = count_base.where(ApiRequestLog.created_at >= from_date)
+    if to_date:
+        base = base.where(ApiRequestLog.created_at <= to_date)
+        count_base = count_base.where(ApiRequestLog.created_at <= to_date)
+
+    total = (await session.execute(count_base)).scalar_one()
+    rows = (
+        (
+            await session.execute(
+                base.order_by(ApiRequestLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    return {
+        "items": [
+            {
+                "request_id": str(r.request_id),
+                "request_type": r.request_type,
+                "endpoint": r.endpoint,
+                "parameters": r.parameters,
+                "status": r.status,
+                "status_detail": r.status_detail,
+                "result_summary": r.result_summary,
+                "duration_ms": r.duration_ms,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@router.delete("/api-keys/{key_id}/usage")
+async def purge_key_usage(
+    key_id: uuid.UUID,
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    api_key = await session.get(ApiKey, key_id)
+    if api_key is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    result = await session.execute(sa_delete(ApiRequestLog).where(ApiRequestLog.api_key_id == key_id))
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="purge_key_usage",
+        target_type="api_key",
+        target_id=key_id,
+        detail={"deleted": result.rowcount},
+    )
+    await session.commit()
+    return {"deleted": result.rowcount}

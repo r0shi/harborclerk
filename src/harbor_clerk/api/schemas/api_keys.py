@@ -58,3 +58,49 @@ class ApiKeyCreatedResponse(BaseModel):
     raw_key: str  # shown once on creation
     mcp_path: str  # URL path for authless MCP clients: /t/<key>
     created_at: datetime
+
+
+# --- Usage / Audit dashboard schemas ---
+
+
+class ToolCount(BaseModel):
+    endpoint: str
+    count: int
+
+
+class UsageSummaryResponse(BaseModel):
+    requests: dict[str, int]
+    errors: dict[str, int]
+    denials: dict[str, int]
+    last_used_at: datetime | None
+    top_tools: dict[str, list[ToolCount]]
+
+
+class TimelineDay(BaseModel):
+    date: str
+    ok: int
+    error: int
+    denied: int
+
+
+class RequestLogEntry(BaseModel):
+    request_id: str
+    request_type: str
+    endpoint: str
+    parameters: dict | None
+    status: str
+    status_detail: str | None
+    result_summary: dict | None
+    duration_ms: int
+    created_at: datetime
+
+
+class RequestLogPage(BaseModel):
+    items: list[RequestLogEntry]
+    total: int
+    page: int
+    page_size: int
+
+
+class PurgeResponse(BaseModel):
+    deleted: int
