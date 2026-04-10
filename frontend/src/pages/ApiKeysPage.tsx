@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { del, get, patch, post } from '../api'
 
 type PermissionTier = 'search' | 'read' | 'full'
@@ -282,7 +283,11 @@ export default function ApiKeysPage() {
           <tbody className="divide-y divide-(--color-border) bg-white dark:bg-[#2c2c2e]">
             {keys.map((k) => (
               <tr key={k.key_id} className="hover:bg-black/3 dark:hover:bg-white/3">
-                <td className="px-4 py-3 text-sm font-medium">{k.name}</td>
+                <td className="px-4 py-3 text-sm font-medium">
+                  <Link to={`/admin/keys/${k.key_id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
+                    {k.name}
+                  </Link>
+                </td>
                 <td className="px-4 py-3">
                   <span
                     className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${

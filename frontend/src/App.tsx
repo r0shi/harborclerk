@@ -9,6 +9,7 @@ import UploadPage from './pages/UploadPage'
 import SearchPage from './pages/SearchPage'
 import UsersPage from './pages/UsersPage'
 import ApiKeysPage from './pages/ApiKeysPage'
+import ApiKeyDashboardPage from './pages/ApiKeyDashboardPage'
 import SetupPage from './pages/SetupPage'
 import SystemStatusPage from './pages/SystemStatusPage'
 import SystemMaintenancePage from './pages/SystemMaintenancePage'
@@ -53,6 +54,7 @@ export default function App() {
             <Route path="/admin" element={<SystemSettingsPage />} />
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/keys" element={<ApiKeysPage />} />
+            <Route path="/admin/keys/:keyId" element={<ApiKeyDashboardPage />} />
             <Route path="/admin/system" element={<Navigate to="/admin/system/status" replace />} />
             <Route path="/admin/system/status" element={<SystemStatusPage />} />
             <Route path="/admin/system/logs" element={<ServiceLogsPage />} />
