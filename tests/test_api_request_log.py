@@ -67,3 +67,21 @@ async def test_log_api_request_denied(db_session: AsyncSession):
     result = await db_session.execute(select(ApiRequestLog).where(ApiRequestLog.status == "denied"))
     row = result.scalar_one()
     assert row.status_detail == "tool not in search tier"
+
+
+from harbor_clerk.api.middleware import _normalize_path
+
+
+def test_normalize_path_with_uuid():
+    assert _normalize_path("GET", "/api/docs/550e8400-e29b-41d4-a716-446655440000") == "GET /api/docs/{id}"
+
+
+def test_normalize_path_without_uuid():
+    assert _normalize_path("GET", "/api/api-keys") == "GET /api/api-keys"
+
+
+def test_normalize_path_multiple_uuids():
+    result = _normalize_path(
+        "GET", "/api/docs/550e8400-e29b-41d4-a716-446655440000/versions/660e8400-e29b-41d4-a716-446655440001"
+    )
+    assert result == "GET /api/docs/{id}/versions/{id}"

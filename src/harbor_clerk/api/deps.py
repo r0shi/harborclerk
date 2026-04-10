@@ -53,11 +53,13 @@ async def get_current_principal(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid token type",
                 )
-            return Principal(
+            principal = Principal(
                 type="user",
                 id=uuid.UUID(payload["sub"]),
                 role=payload["role"],
             )
+            request.state.principal = principal
+            return principal
         except jwt.ExpiredSignatureError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -94,7 +96,9 @@ async def get_current_principal(
         tool_overrides=api_key.tool_overrides or {},
         max_snippet_chars=api_key.max_snippet_chars,
     )
-    return Principal(type="api_key", id=api_key.key_id, role="user", key_scope=scope)
+    principal = Principal(type="api_key", id=api_key.key_id, role="user", key_scope=scope)
+    request.state.principal = principal
+    return principal
 
 
 async def require_user(

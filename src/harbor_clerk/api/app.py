@@ -240,6 +240,10 @@ def create_app() -> FastAPI:
         response.headers["X-Build-Hash"] = BUILD_HASH
         return response
 
+    from harbor_clerk.api.middleware import ApiKeyRequestLogMiddleware
+
+    app.add_middleware(ApiKeyRequestLogMiddleware)
+
     app.include_router(system_router, prefix="/api")
     app.include_router(setup_router, prefix="/api")
     app.include_router(auth_router, prefix="/api")
