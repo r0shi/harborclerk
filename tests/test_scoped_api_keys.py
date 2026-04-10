@@ -77,6 +77,8 @@ def test_keyscope_default_no_restrictions():
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     assert scope.is_unrestricted is True
 
@@ -88,6 +90,8 @@ def test_keyscope_with_topic_filter_is_restricted():
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     assert scope.is_unrestricted is False
 
@@ -122,6 +126,8 @@ def test_principal_with_key_scope():
         permission_tier="search",
         tool_overrides={},
         max_snippet_chars=500,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
     assert p.key_scope is not None
@@ -152,6 +158,8 @@ def test_apply_scope_unrestricted_key_unchanged():
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
     query = sa_select(Document)
@@ -166,6 +174,8 @@ def test_apply_scope_topic_filter_adds_where():
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
     query = sa_select(Document)
@@ -182,6 +192,8 @@ def test_apply_scope_folder_filter_subquery():
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
     query = sa_select(Document)
@@ -198,6 +210,8 @@ def test_apply_scope_topic_or_folder_or_logic():
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
     query = sa_select(Document)
@@ -217,6 +231,8 @@ def test_apply_scope_empty_topics_is_unrestricted():
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     assert scope.is_unrestricted is True
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
@@ -285,6 +301,8 @@ async def test_scope_filters_by_topic_in_db(db_session, two_topic_docs):
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
     query = apply_key_scope(sa_select(Document).where(Document.topic_id.in_([9001, 9002])), p)
@@ -303,6 +321,8 @@ async def test_unrestricted_key_sees_all_in_db(db_session, two_topic_docs):
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
     query = apply_key_scope(sa_select(Document).where(Document.topic_id.in_([9001, 9002])), p)
@@ -321,6 +341,8 @@ async def test_empty_topic_list_is_unrestricted_in_db(db_session, two_topic_docs
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
     query = apply_key_scope(sa_select(Document).where(Document.topic_id.in_([9001, 9002])), p)

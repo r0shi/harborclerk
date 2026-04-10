@@ -47,6 +47,10 @@ def _scope_summary(api_key: ApiKey) -> str:
         parts.append(f"{n} folder{'s' if n != 1 else ''}")
     if api_key.max_snippet_chars:
         parts.append(f"max {api_key.max_snippet_chars} chars")
+    if api_key.rate_limit_rpm is not None:
+        parts.append(f"{api_key.rate_limit_rpm} rpm" if api_key.rate_limit_rpm > 0 else "unlimited rpm")
+    if api_key.rate_limit_rph is not None:
+        parts.append(f"{api_key.rate_limit_rph} rph" if api_key.rate_limit_rph > 0 else "unlimited rph")
     if api_key.expires_at:
         parts.append(f"expires {api_key.expires_at.date().isoformat()}")
     return ", ".join(parts) if parts else "Full access"
@@ -65,6 +69,8 @@ def _api_key_to_out(api_key: ApiKey) -> ApiKeyOut:
         scope_topic_ids=api_key.scope_topic_ids,
         scope_folder_ids=api_key.scope_folder_ids,
         max_snippet_chars=api_key.max_snippet_chars,
+        rate_limit_rpm=api_key.rate_limit_rpm,
+        rate_limit_rph=api_key.rate_limit_rph,
         scope_summary=_scope_summary(api_key),
     )
 
@@ -95,6 +101,8 @@ async def create_api_key(
         scope_topic_ids=body.scope_topic_ids,
         scope_folder_ids=body.scope_folder_ids,
         max_snippet_chars=body.max_snippet_chars,
+        rate_limit_rpm=body.rate_limit_rpm,
+        rate_limit_rph=body.rate_limit_rph,
     )
     session.add(api_key)
     await session.commit()
@@ -136,6 +144,9 @@ async def patch_api_key(
                 status_code=422,
                 detail=f"Field '{field}' cannot be null",
             )
+    for field in ("rate_limit_rpm", "rate_limit_rph"):
+        if field in patch and patch[field] is not None and patch[field] < 0:
+            raise HTTPException(status_code=422, detail=f"'{field}' must be 0 (unlimited) or >= 1")
     for field, value in patch.items():
         setattr(api_key, field, value)
     await log_audit(
@@ -169,6 +180,8 @@ async def scope_preview(
         permission_tier=api_key.permission_tier,
         tool_overrides=api_key.tool_overrides or {},
         max_snippet_chars=api_key.max_snippet_chars,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     fake_principal = Principal(type="api_key", id=key_id, role="user", key_scope=scope)
     visible_query = apply_key_scope(
@@ -198,6 +211,8 @@ async def scope_preview_adhoc(
         permission_tier=body.permission_tier,
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     fake_principal = Principal(type="api_key", id=admin.id, role="user", key_scope=scope)
     visible_query = apply_key_scope(
@@ -264,13 +279,17 @@ async def get_key_usage(
         cutoff = now - timedelta(hours=hours)
         columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff, st == "error").label(f"err_{label}"))
         columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff, st == "denied").label(f"den_{label}"))
-        labels.extend([f"err_{label}", f"den_{label}"])
+        columns.append(
+            func.count(ApiRequestLog.request_id).filter(ts >= cutoff, st == "rate_limited").label(f"rl_{label}")
+        )
+        labels.extend([f"err_{label}", f"den_{label}", f"rl_{label}"])
 
     row = (await session.execute(select(*columns).where(ApiRequestLog.api_key_id == key_id))).one()
 
     requests = {label: getattr(row, f"req_{label}") for label in request_buckets}
     errors = {label: getattr(row, f"err_{label}") for label in error_buckets}
     denials = {label: getattr(row, f"den_{label}") for label in error_buckets}
+    rate_limited = {label: getattr(row, f"rl_{label}") for label in error_buckets}
 
     # Top tools: single query with FILTER per bucket, sort/limit in Python
     tool_columns = [ApiRequestLog.endpoint]
@@ -299,6 +318,7 @@ async def get_key_usage(
         "requests": requests,
         "errors": errors,
         "denials": denials,
+        "rate_limited": rate_limited,
         "last_used_at": row.last_used,
         "top_tools": top_tools,
     }
@@ -335,7 +355,7 @@ async def get_key_timeline(
     for day, stat, cnt in rows:
         d = str(day)
         if d not in by_day:
-            by_day[d] = {"ok": 0, "error": 0, "denied": 0}
+            by_day[d] = {"ok": 0, "error": 0, "denied": 0, "rate_limited": 0}
         if stat in by_day[d]:
             by_day[d][stat] = cnt
     return [{"date": d, **counts} for d, counts in sorted(by_day.items())]

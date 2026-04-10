@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     # Summaries
     summary_max_chars: int = Field(default=500)
 
+    # Rate limiting defaults
+    default_rate_limit_rpm: int = Field(default=60)
+    default_rate_limit_rph: int = Field(default=2000)
+
     # OAuth 2.1
     public_url: str = Field(default="")
     oauth_refresh_token_days: int = Field(default=90)

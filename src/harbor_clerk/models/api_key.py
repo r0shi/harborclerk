@@ -32,3 +32,5 @@ class ApiKey(Base):
     scope_topic_ids: Mapped[list[int] | None] = mapped_column(JSONB, nullable=True)
     scope_folder_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     max_snippet_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_rpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rate_limit_rph: Mapped[int | None] = mapped_column(Integer, nullable=True)

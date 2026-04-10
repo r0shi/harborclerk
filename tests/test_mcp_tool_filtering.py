@@ -17,6 +17,8 @@ def make_scoped_key(tier="search", overrides=None):
             permission_tier=tier,
             tool_overrides=overrides or {},
             max_snippet_chars=None,
+            rate_limit_rpm=None,
+            rate_limit_rph=None,
         ),
     )
 

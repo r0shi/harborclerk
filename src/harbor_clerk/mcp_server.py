@@ -106,6 +106,8 @@ async def _resolve_principal(token: str) -> Principal | None:
             permission_tier=api_key.permission_tier,
             tool_overrides=api_key.tool_overrides or {},
             max_snippet_chars=api_key.max_snippet_chars,
+            rate_limit_rpm=api_key.rate_limit_rpm,
+            rate_limit_rph=api_key.rate_limit_rph,
         )
         return Principal(type="api_key", id=api_key.key_id, role="user", key_scope=scope)
 
@@ -297,6 +299,50 @@ class ScopedFastMCP(FastMCP):
         import time
 
         from harbor_clerk.api.request_log import log_api_request
+
+        # --- Rate limit check ---
+        if principal.key_scope is not None:
+            from harbor_clerk.api.rate_limiter import rate_limiter
+            from harbor_clerk.config import get_settings as _get_settings
+
+            _s = _get_settings()
+            _rpm = (
+                principal.key_scope.rate_limit_rpm
+                if principal.key_scope.rate_limit_rpm is not None
+                else _s.default_rate_limit_rpm
+            )
+            _rph = (
+                principal.key_scope.rate_limit_rph
+                if principal.key_scope.rate_limit_rph is not None
+                else _s.default_rate_limit_rph
+            )
+            allowed, retry_after = await rate_limiter.check(principal.id, _rpm, _rph)
+            if not allowed:
+                logger.warning(
+                    "Rate limit exceeded for key %s on MCP tool %s (retry_after=%ds)",
+                    principal.id,
+                    name,
+                    retry_after,
+                )
+                try:
+                    async with async_session_factory() as log_session:
+                        await log_api_request(
+                            log_session,
+                            api_key_id=principal.id,
+                            request_type="mcp_tool",
+                            endpoint=name,
+                            parameters=dict(arguments) if arguments else None,
+                            status="rate_limited",
+                            status_detail=f"retry_after={retry_after}s",
+                            duration_ms=0,
+                        )
+                        await log_session.commit()
+                except Exception:
+                    logger.debug("Failed to log rate-limited MCP call", exc_info=True)
+
+                from mcp.server.fastmcp.exceptions import ToolError
+
+                raise ToolError(f"Rate limit exceeded. Try again in {retry_after} seconds.")
 
         # --- Denial check ---
         if principal.key_scope is not None and name not in principal.key_scope.effective_tools:

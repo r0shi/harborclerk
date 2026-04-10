@@ -18,6 +18,7 @@ import ChatPage from './pages/ChatPage'
 import HomePage from './pages/HomePage'
 import ModelsPage from './pages/ModelsPage'
 import PreferencesPage from './pages/PreferencesPage'
+import RateLimitSettingsPage from './pages/RateLimitSettingsPage'
 import RetrievalSettingsPage from './pages/RetrievalSettingsPage'
 import StatsPage from './pages/StatsPage'
 import ExplorePage from './pages/ExplorePage'
@@ -61,6 +62,7 @@ export default function App() {
             <Route path="/admin/system/maintenance" element={<SystemMaintenancePage />} />
             <Route path="/admin/models" element={<ModelsPage />} />
             <Route path="/admin/retrieval" element={<RetrievalSettingsPage />} />
+            <Route path="/admin/rate-limits" element={<RateLimitSettingsPage />} />
           </Route>
         </Route>
       </Route>

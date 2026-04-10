@@ -67,6 +67,8 @@ class KeyScope:
     permission_tier: str
     tool_overrides: dict[str, bool]
     max_snippet_chars: int | None
+    rate_limit_rpm: int | None
+    rate_limit_rph: int | None
 
     @property
     def is_unrestricted(self) -> bool:

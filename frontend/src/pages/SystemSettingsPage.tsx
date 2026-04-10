@@ -5,6 +5,7 @@ const ITEMS = [
   { to: '/admin/keys', label: 'API Keys', description: 'Create and revoke API keys' },
   { to: '/admin/models', label: 'Models', description: 'Download and manage LLM models' },
   { to: '/admin/retrieval', label: 'Retrieval', description: 'Chat and MCP search behavior' },
+  { to: '/admin/rate-limits', label: 'Rate Limits', description: 'Default API key rate limits' },
   { to: '/admin/system/status', label: 'System Status', description: 'Health checks and statistics' },
   { to: '/admin/system/logs', label: 'Service Logs', description: 'View log files and tail commands' },
   { to: '/admin/system/maintenance', label: 'System Maintenance', description: 'Purge, reaper, and cleanup' },

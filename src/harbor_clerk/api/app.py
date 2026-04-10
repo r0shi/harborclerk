@@ -179,7 +179,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Harbor Clerk API")
 
     # Verify database schema is up to date
-    _EXPECTED_SCHEMA_VERSION = "0014"
+    _EXPECTED_SCHEMA_VERSION = "0015"
     try:
         from harbor_clerk.db import async_session_factory
 
