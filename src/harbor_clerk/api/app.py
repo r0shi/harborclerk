@@ -142,6 +142,24 @@ async def _session_reaper_loop() -> None:
                     # watched_files table may not exist if migration 0011 hasn't run
                     await db.rollback()
 
+                # Purge API request log entries older than 90 days
+                try:
+                    from sqlalchemy import delete
+
+                    from harbor_clerk.models.api_request_log import ApiRequestLog
+
+                    purge_cutoff = now - timedelta(days=90)
+                    purge_result = await db.execute(
+                        delete(ApiRequestLog).where(ApiRequestLog.created_at < purge_cutoff)
+                    )
+                    purge_count = purge_result.rowcount
+                    if purge_count:
+                        logger.info("Reaper: purged %d expired API request log entries", purge_count)
+                    await db.commit()
+                except Exception:
+                    logger.warning("Reaper: failed to purge old API request logs", exc_info=True)
+                    await db.rollback()
+
                 # Refresh topics if corpus changed (runs in warm ProcessPoolExecutor)
                 from harbor_clerk.topics import check_and_recompute_topics
 
