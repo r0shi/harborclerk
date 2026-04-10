@@ -117,6 +117,14 @@ async def patch_api_key(
         raise HTTPException(status_code=404, detail="API key not found")
     # exclude_unset so null vs absent is distinguishable
     patch = body.model_dump(exclude_unset=True)
+    # Non-nullable DB columns can't be set to None via PATCH
+    _non_nullable = {"name", "permission_tier", "tool_overrides"}
+    for field in _non_nullable:
+        if field in patch and patch[field] is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Field '{field}' cannot be null",
+            )
     for field, value in patch.items():
         setattr(api_key, field, value)
     await log_audit(

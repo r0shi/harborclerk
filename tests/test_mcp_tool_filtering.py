@@ -64,3 +64,75 @@ def test_none_principal_returns_empty():
     from harbor_clerk.mcp_server import _filter_tools_for_principal
 
     assert _filter_tools_for_principal(["kb_search"], None) == []
+
+
+# --- ScopedFastMCP dispatch layer ---
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_scoped_fastmcp_list_tools_filters_by_scope():
+    """list_tools override returns only tools in the effective set."""
+    from harbor_clerk.mcp_server import _mcp_principal, mcp
+
+    p = make_scoped_key("search")
+    token = _mcp_principal.set(p)
+    try:
+        tools = await mcp.list_tools()
+        tool_names = {t.name for t in tools}
+        # search-tier tools present
+        assert "kb_search" in tool_names
+        assert "kb_batch_search" in tool_names
+        # read-tier tools absent
+        assert "kb_read_passages" not in tool_names
+        # admin tools absent
+        assert "kb_system_health" not in tool_names
+    finally:
+        _mcp_principal.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_scoped_fastmcp_list_tools_no_principal_returns_empty():
+    """No principal context → empty list (not full access)."""
+    from harbor_clerk.mcp_server import mcp
+
+    # Don't set _mcp_principal
+    tools = await mcp.list_tools()
+    # Should return empty — no principal means no access
+    assert tools == []
+
+
+@pytest.mark.asyncio
+async def test_scoped_fastmcp_call_tool_rejects_disallowed():
+    """call_tool raises ToolError when a scoped key invokes a disallowed tool."""
+    from mcp.server.fastmcp.exceptions import ToolError
+
+    from harbor_clerk.mcp_server import _mcp_principal, mcp
+
+    p = make_scoped_key("search")  # no read tools allowed
+    token = _mcp_principal.set(p)
+    try:
+        with pytest.raises(ToolError, match="Unknown tool"):
+            await mcp.call_tool("kb_read_document", {"doc_id": "some-id"})
+    finally:
+        _mcp_principal.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_scoped_fastmcp_human_user_sees_all():
+    """Human users see all tools in list_tools, including admin tools."""
+    from harbor_clerk.mcp_server import _mcp_principal, mcp
+
+    user = Principal(type="user", id=uuid.uuid4(), role="admin")
+    token = _mcp_principal.set(user)
+    try:
+        tools = await mcp.list_tools()
+        tool_names = {t.name for t in tools}
+        # All 16 tools should be present for humans
+        assert "kb_search" in tool_names
+        assert "kb_read_passages" in tool_names
+        assert "kb_system_health" in tool_names
+        assert "kb_reprocess" in tool_names
+    finally:
+        _mcp_principal.reset(token)

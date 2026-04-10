@@ -240,12 +240,13 @@ async def _visible_doc_ids(session: AsyncSession, principal: Principal) -> set[u
 
     Returns None for human users and unrestricted API keys (no filter needed).
     Returns the explicit set for scoped keys — callers use this to filter results.
+    Only active (non-removed) documents are included.
     """
     if principal.type != "api_key" or principal.key_scope is None or principal.key_scope.is_unrestricted:
         return None
     from harbor_clerk.api.scope import apply_key_scope
 
-    query = apply_key_scope(select(Document.doc_id), principal)
+    query = apply_key_scope(select(Document.doc_id).where(Document.status == "active"), principal)
     result = await session.execute(query)
     return {row[0] for row in result.all()}
 
@@ -301,6 +302,11 @@ mcp = ScopedFastMCP(
     # DNS rebinding protection is unnecessary — we run behind Caddy with
     # our own Bearer-token auth middleware wrapping the MCP ASGI app.
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    # Stateless mode: each request spawns a fresh run_server task, so contextvars
+    # (including _mcp_principal) are captured per-request instead of at session
+    # establishment. Required for scoped API keys — otherwise all tool calls in a
+    # session would use the first request's principal snapshot.
+    stateless_http=True,
 )
 
 
