@@ -14,6 +14,8 @@ class CreateApiKeyRequest(BaseModel):
     scope_topic_ids: list[int] | None = None
     scope_folder_ids: list[str] | None = None
     max_snippet_chars: int | None = None
+    rate_limit_rpm: int | None = None
+    rate_limit_rph: int | None = None
 
 
 class PatchApiKeyRequest(BaseModel):
@@ -24,6 +26,8 @@ class PatchApiKeyRequest(BaseModel):
     scope_topic_ids: list[int] | None = None
     scope_folder_ids: list[str] | None = None
     max_snippet_chars: int | None = None
+    rate_limit_rpm: int | None = None
+    rate_limit_rph: int | None = None
 
 
 class ApiKeyOut(BaseModel):
@@ -38,6 +42,8 @@ class ApiKeyOut(BaseModel):
     scope_topic_ids: list[int] | None
     scope_folder_ids: list[str] | None
     max_snippet_chars: int | None
+    rate_limit_rpm: int | None
+    rate_limit_rph: int | None
     scope_summary: str
 
 
@@ -72,6 +78,7 @@ class UsageSummaryResponse(BaseModel):
     requests: dict[str, int]
     errors: dict[str, int]
     denials: dict[str, int]
+    rate_limited: dict[str, int]
     last_used_at: datetime | None
     top_tools: dict[str, list[ToolCount]]
 
@@ -81,6 +88,7 @@ class TimelineDay(BaseModel):
     ok: int
     error: int
     denied: int
+    rate_limited: int
 
 
 class RequestLogEntry(BaseModel):
