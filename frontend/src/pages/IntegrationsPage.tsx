@@ -56,7 +56,7 @@ export default function IntegrationsPage() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [urlDraft, setUrlDraft] = useState('')
-  const [guideTab, setGuideTab] = useState<'chatgpt' | 'claude' | 'gemini'>('chatgpt')
+  const [guideTab, setGuideTab] = useState<'chatgpt' | 'claude' | 'gemini' | 'openclaw'>('chatgpt')
 
   const loadData = useCallback(async () => {
     try {
@@ -243,12 +243,13 @@ export default function IntegrationsPage() {
 
       {/* Connection Guides */}
       <div className={cardClass}>
-        <div className="grid grid-cols-3 gap-3 mb-6">
-          {(['chatgpt', 'claude', 'gemini'] as const).map((tab) => {
+        <div className="grid grid-cols-4 gap-3 mb-6">
+          {(['chatgpt', 'claude', 'gemini', 'openclaw'] as const).map((tab) => {
             const info = {
               chatgpt: { label: 'ChatGPT', desc: 'OAuth \u00b7 browser-based', icon: '\ud83c\udf10' },
               claude: { label: 'Claude', desc: 'API key \u00b7 desktop & CLI', icon: '\ud83d\udcbb' },
               gemini: { label: 'Gemini CLI', desc: 'API key \u00b7 terminal', icon: '\u2328\ufe0f' },
+              openclaw: { label: 'OpenClaw', desc: 'API key \u00b7 agentic', icon: '\ud83e\udde0' },
             }[tab]
             const active = guideTab === tab
             return (
@@ -378,6 +379,76 @@ export default function IntegrationsPage() {
               Replace <code className="rounded bg-(--color-bg-secondary) px-1 py-0.5">YOUR_API_KEY</code> with the key
               you created.
             </p>
+          </>
+        )}
+
+        {guideTab === 'openclaw' && (
+          <>
+            <p className="mb-3 text-sm text-(--color-text-primary)">
+              OpenClaw is an agentic AI harness that can autonomously browse, research, and act on your behalf. Because
+              it operates with significant autonomy, <strong>always use a scoped API key with rate limits</strong>.
+            </p>
+            <ol className="list-decimal list-inside space-y-3 text-sm text-(--color-text-primary)">
+              <li>
+                <Link to="/admin/keys" className="text-blue-600 dark:text-blue-400 hover:underline">
+                  Create a scoped API key
+                </Link>{' '}
+                with the following recommended settings:
+                <ul className="ml-6 mt-1 list-disc text-xs text-(--color-text-secondary) space-y-1">
+                  <li>
+                    <strong>Permission tier:</strong> Read (not Full — OpenClaw doesn&apos;t need entity tools)
+                  </li>
+                  <li>
+                    <strong>Document scope:</strong> limit to relevant topic(s) or folder(s)
+                  </li>
+                  <li>
+                    <strong>Rate limits:</strong> set per-key limits (e.g. 30 rpm, 500 rph) to prevent runaway loops
+                  </li>
+                  <li>
+                    <strong>Expiry date:</strong> set an expiry so keys don&apos;t live forever
+                  </li>
+                </ul>
+              </li>
+              <li>
+                Add Harbor Clerk as an MCP server in your OpenClaw config (
+                <code className="rounded bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs">
+                  ~/.openclaw/openclaw.json
+                </code>
+                ):
+              </li>
+            </ol>
+            <CodeBlock>
+              {`openclaw mcp set harbor-clerk '${JSON.stringify({ url: `${mcpUrl}?key=YOUR_API_KEY` })}'`}
+            </CodeBlock>
+            <p className="mt-3 text-sm text-(--color-text-primary)">
+              Or add it directly to your{' '}
+              <code className="rounded bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs">openclaw.json</code>:
+            </p>
+            <CodeBlock>
+              {JSON.stringify(
+                {
+                  mcpServers: {
+                    'harbor-clerk': {
+                      url: `${mcpUrl}?key=YOUR_API_KEY`,
+                    },
+                  },
+                },
+                null,
+                2,
+              )}
+            </CodeBlock>
+            <div className="mt-4 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3">
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-300">Security reminder</p>
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                OpenClaw agents run autonomously and may make many tool calls in rapid succession. Always scope the API
+                key to only the documents and tools the agent needs, set rate limits to prevent runaway loops, and use
+                the{' '}
+                <Link to="/admin/keys" className="text-amber-800 dark:text-amber-200 underline hover:no-underline">
+                  audit dashboard
+                </Link>{' '}
+                to monitor usage.
+              </p>
+            </div>
           </>
         )}
       </div>

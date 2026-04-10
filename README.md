@@ -217,12 +217,20 @@ Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
 
 ### External LLM Connections
 
-Connect ChatGPT, Claude Desktop, Claude Code, Gemini CLI, or any MCP-compatible tool. ChatGPT connects via OAuth (requires a public URL); Claude and Gemini use API key authentication. Connection guides are available in the Integrations settings page.
+Connect ChatGPT, Claude Desktop, Claude Code, Gemini CLI, OpenClaw, or any MCP-compatible tool. ChatGPT connects via OAuth (requires a public URL); all others use API key authentication. Connection guides are available in the Integrations settings page.
+
+**Scoped API keys** control what each external tool can access: permission tiers (search / read / full), document scope (by topic or watched folder), snippet size limits, tool overrides, and expiry dates.
+
+**Rate limiting** (per-minute + per-hour) protects against runaway AI agents. System-wide defaults apply to all keys; per-key overrides available.
+
+**Audit dashboard** provides full per-key introspection: request counts, tool breakdowns, error/denial/rate-limit tracking, and a filterable request log.
+
+> **Security note for agentic tools (OpenClaw, etc.):** Autonomous AI agents can make many tool calls in rapid succession. Always create a dedicated, scoped API key with rate limits and an expiry date. Monitor usage via the per-key audit dashboard.
 
 ### Auth
 
 - **Human users**: email + password, JWT access tokens + refresh cookies. Roles: `admin` / `user`.
-- **API keys**: admin-created, read-only, for MCP clients. Stored as SHA-256 hashes.
+- **API keys**: admin-created, read-only, scoped. Per-key permission tiers, document scope, rate limits, snippet caps, expiry. Stored as SHA-256 hashes.
 - **OAuth 2.1**: Dynamic client registration for ChatGPT and other OAuth-based MCP clients.
 
 ---
