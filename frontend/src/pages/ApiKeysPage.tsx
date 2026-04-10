@@ -603,21 +603,21 @@ function EditKeyModal({
   const [previewLoading, setPreviewLoading] = useState(false)
   const debounceRef = useRef<number | null>(null)
 
-  // Track the payload as a JSON string for effect dep stability
-  const payloadKey = useMemo(() => JSON.stringify(scopeStateToPayload(scope)), [scope])
+  // Memo the payload object; use its JSON string as a stable effect dep key
+  const scopePayload = useMemo(() => scopeStateToPayload(scope), [scope])
+  const payloadKey = useMemo(() => JSON.stringify(scopePayload), [scopePayload])
 
   // Debounced live scope preview: POST unsaved scope params to get real-time
   // document count without needing to save first.
   useEffect(() => {
     let cancelled = false
-    const parsed = JSON.parse(payloadKey) as ScopePayload
     async function fetchPreview() {
       setPreviewLoading(true)
       try {
         const data = await post<ScopePreview>('/api/api-keys/scope-preview', {
-          permission_tier: parsed.permission_tier,
-          scope_topic_ids: parsed.scope_topic_ids,
-          scope_folder_ids: parsed.scope_folder_ids,
+          permission_tier: scopePayload.permission_tier,
+          scope_topic_ids: scopePayload.scope_topic_ids,
+          scope_folder_ids: scopePayload.scope_folder_ids,
         })
         if (!cancelled) setPreview(data)
       } catch {
@@ -632,7 +632,7 @@ function EditKeyModal({
       cancelled = true
       if (debounceRef.current) window.clearTimeout(debounceRef.current)
     }
-  }, [apiKey.key_id, payloadKey])
+  }, [apiKey.key_id, payloadKey, scopePayload])
 
   async function handleSave() {
     setSubmitting(true)

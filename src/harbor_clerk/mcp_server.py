@@ -182,11 +182,13 @@ class MCPTokenPathAuth:
             await self._send_401(send)
             return
 
-        # Rewrite path: strip the token, keep the rest (if any)
+        # Rewrite path: strip the token, keep the rest (if any).
+        # Token and MCP paths (/mcp, /sse) are always ASCII, so encoding
+        # the decoded remaining path is equivalent to slicing raw_path.
         remaining = "/" + parts[1] if len(parts) > 1 else "/"
         scope = dict(scope)
         scope["path"] = remaining
-        scope["raw_path"] = remaining.encode("utf-8")
+        scope["raw_path"] = remaining.encode("ascii")
 
         reset_token = _mcp_principal.set(principal)
         try:
