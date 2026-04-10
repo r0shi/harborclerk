@@ -209,21 +209,21 @@ def test_apply_scope_topic_or_folder_or_logic():
     assert " or " in sql
 
 
-def test_apply_scope_empty_topics_blocks_all():
+def test_apply_scope_empty_topics_is_unrestricted():
+    """Empty list [] is treated the same as None — no restriction."""
     scope = KeyScope(
-        scope_topic_ids=[],  # explicit empty list
+        scope_topic_ids=[],  # explicit empty list = no restriction
         scope_folder_ids=None,
         permission_tier="full",
         tool_overrides={},
         max_snippet_chars=None,
     )
+    assert scope.is_unrestricted is True
     p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
     query = sa_select(Document)
     result = apply_key_scope(query, p)
-    sql = str(result.compile(compile_kwargs={"literal_binds": True})).lower()
-    # Empty IN clause: topic_id IN () — postgres treats this as false
-    # Either an empty IN or a no-rows constraint
-    assert "topic_id" in sql or "00000000-0000-0000-0000-000000000000" in sql
+    # Should be unchanged (no WHERE clause added)
+    assert str(result.compile()) == str(query.compile())
 
 
 # --- Integration tests with real DB ---
@@ -313,8 +313,8 @@ async def test_unrestricted_key_sees_all_in_db(db_session, two_topic_docs):
 
 
 @pytest.mark.asyncio
-async def test_empty_topic_list_blocks_all_in_db(db_session, two_topic_docs):
-    """Real DB: scope_topic_ids=[] blocks everything (no topics match)."""
+async def test_empty_topic_list_is_unrestricted_in_db(db_session, two_topic_docs):
+    """Real DB: scope_topic_ids=[] is treated as unrestricted (same as None)."""
     scope = KeyScope(
         scope_topic_ids=[],
         scope_folder_ids=None,
@@ -327,4 +327,4 @@ async def test_empty_topic_list_blocks_all_in_db(db_session, two_topic_docs):
     result = await db_session.execute(query)
     docs = result.scalars().all()
     our_titles = {d.title for d in docs} & {"ScopeTest A1", "ScopeTest A2", "ScopeTest B1"}
-    assert our_titles == set()
+    assert our_titles == {"ScopeTest A1", "ScopeTest A2", "ScopeTest B1"}
