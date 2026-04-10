@@ -272,20 +272,28 @@ async def get_key_usage(
     errors = {label: getattr(row, f"err_{label}") for label in error_buckets}
     denials = {label: getattr(row, f"den_{label}") for label in error_buckets}
 
-    # Top tools: still 6 queries (GROUP BY + ORDER BY + LIMIT can't be FILTERed)
-    top_tools: dict[str, list[dict[str, object]]] = {}
+    # Top tools: single query with FILTER per bucket, sort/limit in Python
+    tool_columns = [ApiRequestLog.endpoint]
     for label, hours in request_buckets.items():
         cutoff = now - timedelta(hours=hours)
-        rows = (
-            await session.execute(
-                select(ApiRequestLog.endpoint, func.count(ApiRequestLog.request_id).label("cnt"))
-                .where(ApiRequestLog.api_key_id == key_id, ts >= cutoff)
-                .group_by(ApiRequestLog.endpoint)
-                .order_by(func.count(ApiRequestLog.request_id).desc())
-                .limit(10)
-            )
-        ).all()
-        top_tools[label] = [{"endpoint": r[0], "count": r[1]} for r in rows]
+        tool_columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff).label(f"cnt_{label}"))
+    tool_rows = (
+        await session.execute(
+            select(*tool_columns)
+            .where(ApiRequestLog.api_key_id == key_id, ts >= now - timedelta(hours=720))
+            .group_by(ApiRequestLog.endpoint)
+        )
+    ).all()
+
+    top_tools: dict[str, list[dict[str, object]]] = {}
+    for label in request_buckets:
+        col = f"cnt_{label}"
+        ranked = sorted(
+            [(r.endpoint, getattr(r, col)) for r in tool_rows if getattr(r, col) > 0],
+            key=lambda x: x[1],
+            reverse=True,
+        )[:10]
+        top_tools[label] = [{"endpoint": ep, "count": cnt} for ep, cnt in ranked]
 
     return {
         "requests": requests,
