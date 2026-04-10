@@ -1,11 +1,14 @@
 import uuid
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harbor_clerk.api.deps import Principal
 from harbor_clerk.api.middleware import _normalize_path
 from harbor_clerk.api.request_log import log_api_request
+from harbor_clerk.api.scope import KeyScope
 from harbor_clerk.models.api_request_log import ApiRequestLog
 from tests.conftest import auth_header
 
@@ -170,3 +173,54 @@ async def test_purge_key_usage(client, admin_token, db_session):
     resp = await client.delete(f"/api/api-keys/{key_id}/usage", headers=auth_header(admin_token))
     assert resp.status_code == 200
     assert resp.json()["deleted"] >= 1
+
+
+@pytest.mark.anyio
+async def test_mcp_call_tool_denied_is_logged(db_session, admin_user):
+    """ScopedFastMCP.call_tool logs denied tool calls to api_request_log."""
+    from harbor_clerk.auth import generate_api_key, hash_api_key
+    from harbor_clerk.mcp_server import _mcp_principal, mcp
+    from harbor_clerk.models import ApiKey
+
+    # Create a real API key so the FK constraint is satisfied
+    raw_key = generate_api_key()
+    api_key = ApiKey(name="test-denied", key_hash=hash_api_key(raw_key))
+    db_session.add(api_key)
+    await db_session.flush()
+    key_id = api_key.key_id
+    await db_session.commit()
+
+    principal = Principal(
+        type="api_key",
+        id=key_id,
+        role="user",
+        key_scope=KeyScope(
+            scope_topic_ids=None,
+            scope_folder_ids=None,
+            permission_tier="search",  # search tier can't call kb_read_document
+            tool_overrides={},
+            max_snippet_chars=None,
+        ),
+    )
+    token = _mcp_principal.set(principal)
+    try:
+        with pytest.raises(ToolError):
+            await mcp.call_tool("kb_read_document", {})
+    finally:
+        _mcp_principal.reset(token)
+
+    # The denied call is logged in a separate session (async_session_factory),
+    # so we need a fresh session to see the committed row.
+    from harbor_clerk.db import async_session_factory
+
+    async with async_session_factory() as fresh:
+        result = await fresh.execute(
+            select(ApiRequestLog).where(
+                ApiRequestLog.api_key_id == key_id,
+                ApiRequestLog.status == "denied",
+            )
+        )
+        row = result.scalar_one_or_none()
+    assert row is not None, "Denied tool call was not logged to api_request_log"
+    assert row.endpoint == "kb_read_document"
+    assert "scope" in row.status_detail or "tier" in row.status_detail
