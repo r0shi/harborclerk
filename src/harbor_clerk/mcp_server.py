@@ -106,6 +106,8 @@ async def _resolve_principal(token: str) -> Principal | None:
             permission_tier=api_key.permission_tier,
             tool_overrides=api_key.tool_overrides or {},
             max_snippet_chars=api_key.max_snippet_chars,
+            rate_limit_rpm=api_key.rate_limit_rpm,
+            rate_limit_rph=api_key.rate_limit_rph,
         )
         return Principal(type="api_key", id=api_key.key_id, role="user", key_scope=scope)
 

@@ -133,6 +133,8 @@ async def test_mcp_call_tool_denied_is_logged(_engine, db_session, admin_user):
             permission_tier="search",
             tool_overrides={},
             max_snippet_chars=None,
+            rate_limit_rpm=None,
+            rate_limit_rph=None,
         ),
     )
 

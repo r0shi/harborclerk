@@ -169,6 +169,8 @@ async def scope_preview(
         permission_tier=api_key.permission_tier,
         tool_overrides=api_key.tool_overrides or {},
         max_snippet_chars=api_key.max_snippet_chars,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     fake_principal = Principal(type="api_key", id=key_id, role="user", key_scope=scope)
     visible_query = apply_key_scope(
@@ -198,6 +200,8 @@ async def scope_preview_adhoc(
         permission_tier=body.permission_tier,
         tool_overrides={},
         max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
     )
     fake_principal = Principal(type="api_key", id=admin.id, role="user", key_scope=scope)
     visible_query = apply_key_scope(
