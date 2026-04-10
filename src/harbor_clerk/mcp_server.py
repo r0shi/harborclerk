@@ -289,15 +289,98 @@ class ScopedFastMCP(FastMCP):
             principal = _get_principal()
         except PermissionError:
             return await super().call_tool(name, arguments)
-        if (
-            principal.type == "api_key"
-            and principal.key_scope is not None
-            and name not in principal.key_scope.effective_tools
-        ):
+
+        # Only instrument API key calls
+        if principal.type != "api_key":
+            return await super().call_tool(name, arguments)
+
+        import time
+
+        from harbor_clerk.api.request_log import log_api_request
+
+        # --- Denial check ---
+        if principal.key_scope is not None and name not in principal.key_scope.effective_tools:
+            try:
+                async with async_session_factory() as log_session:
+                    await log_api_request(
+                        log_session,
+                        api_key_id=principal.key_id,
+                        request_type="mcp_tool",
+                        endpoint=name,
+                        parameters=arguments if arguments else None,
+                        status="denied",
+                        status_detail="tool not in key scope",
+                    )
+                    await log_session.commit()
+            except Exception:
+                logger.debug("Failed to log denied MCP tool call", exc_info=True)
+
             from mcp.server.fastmcp.exceptions import ToolError
 
             raise ToolError(f"Unknown tool: {name}")
-        return await super().call_tool(name, arguments)
+
+        # --- Execute tool ---
+        t0 = time.monotonic()
+        try:
+            result = await super().call_tool(name, arguments)
+        except Exception as exc:
+            duration_ms = int((time.monotonic() - t0) * 1000)
+            try:
+                async with async_session_factory() as log_session:
+                    await log_api_request(
+                        log_session,
+                        api_key_id=principal.key_id,
+                        request_type="mcp_tool",
+                        endpoint=name,
+                        parameters=arguments if arguments else None,
+                        status="error",
+                        status_detail=str(exc)[:500],
+                        duration_ms=duration_ms,
+                    )
+                    await log_session.commit()
+            except Exception:
+                logger.debug("Failed to log errored MCP tool call", exc_info=True)
+            raise
+
+        # --- Success logging ---
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        try:
+            # Extract result summary from CallToolResult
+            result_summary: dict | None = None
+            if result and hasattr(result, "content") and result.content:
+                for item in result.content:
+                    if hasattr(item, "text") and item.text:
+                        try:
+                            parsed = json.loads(item.text)
+                            if isinstance(parsed, dict):
+                                summary: dict = {}
+                                for key in ("total_candidates", "count", "has_more", "would_match_unscoped"):
+                                    if key in parsed:
+                                        summary[key] = parsed[key]
+                                if "hits" in parsed and isinstance(parsed["hits"], list):
+                                    summary["hits"] = len(parsed["hits"])
+                                if summary:
+                                    result_summary = summary
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        break
+
+            async with async_session_factory() as log_session:
+                await log_api_request(
+                    log_session,
+                    api_key_id=principal.key_id,
+                    request_type="mcp_tool",
+                    endpoint=name,
+                    parameters=arguments if arguments else None,
+                    status="ok",
+                    result_summary=result_summary,
+                    duration_ms=duration_ms,
+                )
+                await log_session.commit()
+        except Exception:
+            logger.debug("Failed to log successful MCP tool call", exc_info=True)
+
+        return result
 
 
 mcp = ScopedFastMCP(
@@ -505,12 +588,24 @@ async def kb_search(
     if detail not in ("full", "brief", "compact"):
         detail = "full"
 
+    is_scoped = False
     async with async_session_factory() as session:
         # Per-API-key scope: intersect with visible doc_ids for scoped keys.
         visible_ids = await _visible_doc_ids(session, principal)
         if visible_ids is not None:
+            is_scoped = True
             if not visible_ids:
-                return json.dumps({"hits": [], "total_candidates": 0, "has_more": False}, indent=2)
+                # Check if unscoped search would have results
+                unscoped_count = 0
+                try:
+                    unscoped_result = await hybrid_search(session, query, k=1)
+                    unscoped_count = unscoped_result.total_candidates
+                except Exception:
+                    pass
+                resp_empty: dict = {"hits": [], "total_candidates": 0, "has_more": False}
+                if unscoped_count > 0:
+                    resp_empty["would_match_unscoped"] = unscoped_count
+                return json.dumps(resp_empty, indent=2)
             if did is not None and did not in visible_ids:
                 return json.dumps({"hits": [], "total_candidates": 0, "has_more": False}, indent=2)
             if parsed_doc_ids is not None:
@@ -563,6 +658,16 @@ async def kb_search(
         }
     else:
         resp = base_resp
+
+    # Annotate scope-filtered empty results
+    if is_scoped and not resp.get("hits") and not resp.get("documents") and resp.get("total_candidates", 0) == 0:
+        try:
+            async with async_session_factory() as unscoped_session:
+                unscoped_result = await hybrid_search(unscoped_session, query, k=1)
+                if unscoped_result.total_candidates > 0:
+                    resp["would_match_unscoped"] = unscoped_result.total_candidates
+        except Exception:
+            pass
 
     # Runtime stats
     _search_stats["calls"] += 1
