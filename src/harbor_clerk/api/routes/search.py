@@ -19,6 +19,7 @@ from harbor_clerk.api.schemas.search import (
     SearchRequest,
     SearchResponse,
 )
+from harbor_clerk.api.scope import apply_key_scope
 from harbor_clerk.db import get_session
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.search import hybrid_search
@@ -53,6 +54,40 @@ async def search(
     doc_id = uuid.UUID(body.doc_id) if body.doc_id else None
     version_id = uuid.UUID(body.version_id) if body.version_id else None
     doc_ids = [uuid.UUID(d) for d in body.doc_ids] if body.doc_ids else None
+
+    # Per-API-key scope: intersect with visible doc_ids for scoped keys.
+    if principal.type == "api_key" and principal.key_scope is not None and not principal.key_scope.is_unrestricted:
+        visible_q = apply_key_scope(select(Document.doc_id), principal)
+        visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
+        if not visible_ids:
+            return SearchResponse(
+                hits=[],
+                total_candidates=0,
+                has_more=False,
+                possible_conflict=False,
+                conflict_sources=[],
+            )
+        if doc_ids is not None:
+            doc_ids = [d for d in doc_ids if d in visible_ids]
+            if not doc_ids:
+                return SearchResponse(
+                    hits=[],
+                    total_candidates=0,
+                    has_more=False,
+                    possible_conflict=False,
+                    conflict_sources=[],
+                )
+        else:
+            doc_ids = list(visible_ids)
+        # Also enforce single-doc filter against visible set
+        if doc_id is not None and doc_id not in visible_ids:
+            return SearchResponse(
+                hits=[],
+                total_candidates=0,
+                has_more=False,
+                possible_conflict=False,
+                conflict_sources=[],
+            )
 
     result = await hybrid_search(
         session,
@@ -125,8 +160,19 @@ async def read_passages(
                 detail=f"Invalid chunk_id: {cid}",
             )
 
+    # Per-API-key scope: compute the set of visible doc_ids for scoped keys.
+    visible_ids: set[uuid.UUID] | None = None
+    if principal.type == "api_key" and principal.key_scope is not None and not principal.key_scope.is_unrestricted:
+        visible_q = apply_key_scope(select(Document.doc_id), principal)
+        visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
+
     result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(chunk_uuids)))
     chunks = {c.chunk_id: c for c in result.scalars().all()}
+
+    # Drop chunks whose parent doc is outside this key's scope — scoped-out
+    # docs must be invisible (same as a 404 on per-doc endpoints).
+    if visible_ids is not None:
+        chunks = {cid: c for cid, c in chunks.items() if c.doc_id in visible_ids}
 
     # Load doc titles
     doc_ids = {c.doc_id for c in chunks.values()}

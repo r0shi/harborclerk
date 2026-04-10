@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harbor_clerk.api.scope import KeyScope
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.db import get_session
 from harbor_clerk.models import ApiKey
@@ -21,6 +22,7 @@ class Principal:
     type: str  # "user" or "api_key"
     id: uuid.UUID  # user_id or key_id
     role: str  # "admin" or "user"
+    key_scope: KeyScope | None = None  # populated for api_key principals only
 
 
 def _extract_bearer_token(request: Request) -> str | None:
@@ -76,10 +78,23 @@ async def get_current_principal(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
         )
+    # Expiry check
+    if api_key.expires_at is not None and api_key.expires_at < datetime.now(UTC):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key expired",
+        )
     # Update last_used_at
     await session.execute(update(ApiKey).where(ApiKey.key_id == api_key.key_id).values(last_used_at=datetime.now(UTC)))
     await session.commit()
-    return Principal(type="api_key", id=api_key.key_id, role="user")
+    scope = KeyScope(
+        scope_topic_ids=api_key.scope_topic_ids,
+        scope_folder_ids=api_key.scope_folder_ids,
+        permission_tier=api_key.permission_tier,
+        tool_overrides=api_key.tool_overrides or {},
+        max_snippet_chars=api_key.max_snippet_chars,
+    )
+    return Principal(type="api_key", id=api_key.key_id, role="user", key_scope=scope)
 
 
 async def require_user(

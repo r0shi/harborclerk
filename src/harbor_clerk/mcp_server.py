@@ -91,11 +91,23 @@ async def _resolve_principal(token: str) -> Principal | None:
         api_key = result.scalar_one_or_none()
         if api_key is None:
             return None
+        # Expiry check
+        if api_key.expires_at is not None and api_key.expires_at < datetime.now(UTC):
+            return None
         await session.execute(
             update(ApiKey).where(ApiKey.key_id == api_key.key_id).values(last_used_at=datetime.now(UTC))
         )
         await session.commit()
-        return Principal(type="api_key", id=api_key.key_id, role="user")
+        from harbor_clerk.api.scope import KeyScope
+
+        scope = KeyScope(
+            scope_topic_ids=api_key.scope_topic_ids,
+            scope_folder_ids=api_key.scope_folder_ids,
+            permission_tier=api_key.permission_tier,
+            tool_overrides=api_key.tool_overrides or {},
+            max_snippet_chars=api_key.max_snippet_chars,
+        )
+        return Principal(type="api_key", id=api_key.key_id, role="user", key_scope=scope)
 
 
 class MCPAuthMiddleware:
@@ -205,11 +217,38 @@ def _get_principal() -> Principal:
     return p
 
 
+def _filter_tools_for_principal(tool_names, principal):
+    """Return only the tool names this principal is allowed to use."""
+    if principal is None:
+        return []
+    if principal.type != "api_key" or principal.key_scope is None:
+        # Human users see everything (admin checks happen inside individual tools)
+        return list(tool_names)
+    allowed = principal.key_scope.effective_tools
+    return [t for t in tool_names if t in allowed]
+
+
 def _require_admin() -> Principal:
     p = _get_principal()
     if p.role != "admin":
         raise PermissionError("Admin access required")
     return p
+
+
+async def _visible_doc_ids(session: AsyncSession, principal: Principal) -> set[uuid.UUID] | None:
+    """Get the set of doc_ids visible to this principal, or None if unrestricted.
+
+    Returns None for human users and unrestricted API keys (no filter needed).
+    Returns the explicit set for scoped keys — callers use this to filter results.
+    Only active (non-removed) documents are included.
+    """
+    if principal.type != "api_key" or principal.key_scope is None or principal.key_scope.is_unrestricted:
+        return None
+    from harbor_clerk.api.scope import apply_key_scope
+
+    query = apply_key_scope(select(Document.doc_id).where(Document.status == "active"), principal)
+    result = await session.execute(query)
+    return {row[0] for row in result.all()}
 
 
 # ---------------------------------------------------------------------------
@@ -218,11 +257,56 @@ def _require_admin() -> Principal:
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
 
-mcp = FastMCP(
+
+class ScopedFastMCP(FastMCP):
+    """FastMCP subclass that filters tool listing and calls by API key scope.
+
+    Security: list_tools is a UX layer; the real enforcement is call_tool +
+    the apply_key_scope filters in each tool body. So even if list_tools is
+    bypassed (e.g. via the lowlevel server's tool cache), tool calls are
+    still rejected.
+    """
+
+    async def list_tools(self):
+        all_tools = await super().list_tools()
+        try:
+            principal = _get_principal()
+        except PermissionError:
+            # No principal context (e.g. internal tool-cache refresh).
+            # Return [] rather than all_tools so we don't pollute caches with
+            # full visibility. Real per-call enforcement happens in call_tool.
+            return []
+        if principal.type != "api_key" or principal.key_scope is None:
+            return all_tools
+        allowed = principal.key_scope.effective_tools
+        return [t for t in all_tools if t.name in allowed]
+
+    async def call_tool(self, name, arguments):
+        try:
+            principal = _get_principal()
+        except PermissionError:
+            return await super().call_tool(name, arguments)
+        if (
+            principal.type == "api_key"
+            and principal.key_scope is not None
+            and name not in principal.key_scope.effective_tools
+        ):
+            from mcp.server.fastmcp.exceptions import ToolError
+
+            raise ToolError(f"Unknown tool: {name}")
+        return await super().call_tool(name, arguments)
+
+
+mcp = ScopedFastMCP(
     "Harbor Clerk",
     # DNS rebinding protection is unnecessary — we run behind Caddy with
     # our own Bearer-token auth middleware wrapping the MCP ASGI app.
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    # Stateless mode: each request spawns a fresh run_server task, so contextvars
+    # (including _mcp_principal) are captured per-request instead of at session
+    # establishment. Required for scoped API keys — otherwise all tool calls in a
+    # session would use the first request's principal snapshot.
+    stateless_http=True,
 )
 
 
@@ -379,7 +463,7 @@ async def kb_search(
     Pagination: use offset to page through results. Check has_more
     in the response to know if more results exist beyond your window.
     """
-    _get_principal()
+    principal = _get_principal()
     settings = get_settings()
 
     # Mutual exclusion check
@@ -419,6 +503,20 @@ async def kb_search(
         detail = "full"
 
     async with async_session_factory() as session:
+        # Per-API-key scope: intersect with visible doc_ids for scoped keys.
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None:
+            if not visible_ids:
+                return json.dumps({"hits": [], "total_candidates": 0, "has_more": False}, indent=2)
+            if did is not None and did not in visible_ids:
+                return json.dumps({"hits": [], "total_candidates": 0, "has_more": False}, indent=2)
+            if parsed_doc_ids is not None:
+                parsed_doc_ids = [d for d in parsed_doc_ids if d in visible_ids]
+                if not parsed_doc_ids:
+                    return json.dumps({"hits": [], "total_candidates": 0, "has_more": False}, indent=2)
+            elif did is None:
+                parsed_doc_ids = list(visible_ids)
+
         result = await hybrid_search(
             session,
             query,
@@ -518,7 +616,7 @@ async def kb_batch_search(
 
     See kb_search for filter and detail level documentation.
     """
-    _get_principal()
+    principal = _get_principal()
     settings = get_settings()
 
     # Validate query count
@@ -569,7 +667,24 @@ async def kb_batch_search(
 
     results = []
     async with async_session_factory() as session:
+        # Per-API-key scope: intersect with visible doc_ids for scoped keys.
+        visible_ids = await _visible_doc_ids(session, principal)
+        scope_blocks_all = False
+        if visible_ids is not None:
+            if not visible_ids or (did is not None and did not in visible_ids):
+                scope_blocks_all = True
+            elif parsed_doc_ids is not None:
+                parsed_doc_ids = [d for d in parsed_doc_ids if d in visible_ids]
+                if not parsed_doc_ids:
+                    scope_blocks_all = True
+            elif did is None:
+                parsed_doc_ids = list(visible_ids)
+
         for query in queries:
+            if scope_blocks_all:
+                resp: dict = {"hits": [], "total_candidates": 0, "has_more": False, "query": query}
+                results.append(resp)
+                continue
             result = await hybrid_search(
                 session,
                 query,
@@ -627,17 +742,27 @@ async def kb_read_passages(
     following chunks — useful for understanding a passage in context
     without a separate kb_expand_context call.
     """
-    _get_principal()
+    principal = _get_principal()
     uuids = [uuid.UUID(cid) for cid in chunk_ids]
 
     async with async_session_factory() as session:
         result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(uuids)))
         chunks = {c.chunk_id: c for c in result.scalars().all()}
 
+        # Per-API-key scope: drop chunks from documents the key can't see.
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None:
+            chunks = {cid: c for cid, c in chunks.items() if c.doc_id in visible_ids}
+
         # Doc titles
         doc_ids = {c.doc_id for c in chunks.values()}
         docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
         docs = {d.doc_id: d for d in docs_result.scalars().all()}
+
+        # Snippet truncation limit from key scope, if any
+        snippet_limit: int | None = None
+        if principal.key_scope and principal.key_scope.max_snippet_chars is not None:
+            snippet_limit = principal.key_scope.max_snippet_chars
 
         passages = []
         for cid in uuids:
@@ -645,10 +770,13 @@ async def kb_read_passages(
             if chunk is None:
                 continue
             doc = docs.get(chunk.doc_id)
+            text = chunk.chunk_text
+            if snippet_limit is not None:
+                text = text[:snippet_limit]
             p: dict = {
                 "chunk_id": str(cid),
                 "doc_title": doc.title if doc else None,
-                "text": chunk.chunk_text,
+                "text": text,
                 "language": chunk.language,
             }
             if chunk.page_start is not None:
@@ -667,6 +795,8 @@ async def kb_read_passages(
                 )
                 prev_text = prev.scalar_one_or_none()
                 if prev_text:
+                    if snippet_limit is not None:
+                        prev_text = prev_text[:snippet_limit]
                     p["context_before"] = prev_text
 
                 nxt = await session.execute(
@@ -677,6 +807,8 @@ async def kb_read_passages(
                 )
                 nxt_text = nxt.scalar_one_or_none()
                 if nxt_text:
+                    if snippet_limit is not None:
+                        nxt_text = nxt_text[:snippet_limit]
                     p["context_after"] = nxt_text
 
             passages.append(p)
@@ -692,13 +824,18 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
     Use after kb_search or kb_read_passages when you need more surrounding
     text. The target chunk is marked with "is_target": true.
     """
-    _get_principal()
+    principal = _get_principal()
     n = max(1, min(n, 10))
     target_id = uuid.UUID(chunk_id)
 
     async with async_session_factory() as session:
         target = (await session.execute(select(Chunk).where(Chunk.chunk_id == target_id))).scalar_one_or_none()
         if target is None:
+            return json.dumps({"error": "Chunk not found"})
+
+        # Per-API-key scope: block access if the target doc isn't visible.
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None and target.doc_id not in visible_ids:
             return json.dumps({"error": "Chunk not found"})
 
         result = await session.execute(
@@ -713,12 +850,20 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
 
         doc = (await session.execute(select(Document).where(Document.doc_id == target.doc_id))).scalar_one_or_none()
 
+        # Snippet truncation limit from key scope, if any
+        snippet_limit: int | None = None
+        if principal.key_scope and principal.key_scope.max_snippet_chars is not None:
+            snippet_limit = principal.key_scope.max_snippet_chars
+
         chunks = []
         for c in neighbours:
+            text = c.chunk_text
+            if snippet_limit is not None:
+                text = text[:snippet_limit]
             entry: dict = {
                 "chunk_id": str(c.chunk_id),
                 "chunk_num": c.chunk_num,
-                "text": c.chunk_text,
+                "text": text,
                 "language": c.language,
             }
             if c.page_start is not None:
@@ -748,10 +893,14 @@ async def kb_get_document(doc_id: str) -> str:
     Use this to inspect a specific document after finding it via search
     or kb_list_recent.
     """
-    _get_principal()
+    principal = _get_principal()
     did = uuid.UUID(doc_id)
 
     async with async_session_factory() as session:
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None and did not in visible_ids:
+            return json.dumps({"error": "Document not found"})
+
         result = await session.execute(
             select(Document).options(selectinload(Document.versions)).where(Document.doc_id == did)
         )
@@ -800,21 +949,29 @@ async def kb_list_recent(limit: int = 20) -> str:
     for each document. Use this to see what's new or recently changed,
     or as a paginated document browser (max 100 per call).
     """
-    _get_principal()
+    principal = _get_principal()
 
     async with async_session_factory() as session:
-        total_result = await session.execute(
-            select(func.count()).select_from(Document).where(Document.status == "active")
-        )
-        total_count = total_result.scalar() or 0
+        visible_ids = await _visible_doc_ids(session, principal)
 
-        result = await session.execute(
+        count_q = select(func.count()).select_from(Document).where(Document.status == "active")
+        list_q = (
             select(Document)
             .options(selectinload(Document.versions))
             .where(Document.status == "active")
             .order_by(Document.updated_at.desc())
             .limit(min(limit, 100))
         )
+        if visible_ids is not None:
+            if not visible_ids:
+                return json.dumps({"total_count": 0, "truncated": False, "documents": []}, indent=2)
+            count_q = count_q.where(Document.doc_id.in_(visible_ids))
+            list_q = list_q.where(Document.doc_id.in_(visible_ids))
+
+        total_result = await session.execute(count_q)
+        total_count = total_result.scalar() or 0
+
+        result = await session.execute(list_q)
         docs = result.scalars().all()
 
     items = []
@@ -863,38 +1020,65 @@ async def kb_corpus_overview(limit: int = 50) -> str:
             documents; decrease for faster responses with large corpora.
             The response includes a 'truncated' flag and total
             'document_count' so you know if more exist."""
-    _get_principal()
+    principal = _get_principal()
 
     limit = max(1, min(limit, 500))
 
     async with async_session_factory() as session:
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None and not visible_ids:
+            return json.dumps(
+                {
+                    "document_count": 0,
+                    "total_chunks": 0,
+                    "total_pages": 0,
+                    "languages": {},
+                    "mime_types": {},
+                    "date_range": {"oldest": None, "newest": None},
+                    "documents": [],
+                    "truncated": False,
+                },
+                indent=2,
+            )
+
+        def _scoped(q):
+            if visible_ids is not None:
+                return q.where(Document.doc_id.in_(visible_ids))
+            return q
+
         doc_count_result = await session.execute(
-            select(func.count()).select_from(Document).where(Document.status == "active")
+            _scoped(select(func.count()).select_from(Document).where(Document.status == "active"))
         )
         doc_count = doc_count_result.scalar() or 0
 
         chunk_count_result = await session.execute(
-            select(func.count())
-            .select_from(Chunk)
-            .join(Document, Document.latest_version_id == Chunk.version_id)
-            .where(Document.status == "active")
+            _scoped(
+                select(func.count())
+                .select_from(Chunk)
+                .join(Document, Document.latest_version_id == Chunk.version_id)
+                .where(Document.status == "active")
+            )
         )
         chunk_count = chunk_count_result.scalar() or 0
 
         page_count_result = await session.execute(
-            select(func.count())
-            .select_from(DocumentPage)
-            .join(Document, Document.latest_version_id == DocumentPage.version_id)
-            .where(Document.status == "active")
+            _scoped(
+                select(func.count())
+                .select_from(DocumentPage)
+                .join(Document, Document.latest_version_id == DocumentPage.version_id)
+                .where(Document.status == "active")
+            )
         )
         total_pages = page_count_result.scalar() or 0
 
         # Language distribution from chunks (scoped to active docs' latest versions)
         lang_rows = (
             await session.execute(
-                select(Chunk.language, func.count())
-                .join(Document, Document.latest_version_id == Chunk.version_id)
-                .where(Document.status == "active")
+                _scoped(
+                    select(Chunk.language, func.count())
+                    .join(Document, Document.latest_version_id == Chunk.version_id)
+                    .where(Document.status == "active")
+                )
                 .group_by(Chunk.language)
                 .order_by(func.count().desc())
             )
@@ -904,9 +1088,11 @@ async def kb_corpus_overview(limit: int = 50) -> str:
         # Mime type breakdown from latest versions of active docs
         mime_rows = (
             await session.execute(
-                select(DocumentVersion.mime_type, func.count())
-                .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-                .where(Document.status == "active")
+                _scoped(
+                    select(DocumentVersion.mime_type, func.count())
+                    .join(Document, Document.latest_version_id == DocumentVersion.version_id)
+                    .where(Document.status == "active")
+                )
                 .group_by(DocumentVersion.mime_type)
                 .order_by(func.count().desc())
             )
@@ -915,19 +1101,24 @@ async def kb_corpus_overview(limit: int = 50) -> str:
 
         # Date range
         date_result = await session.execute(
-            select(func.min(Document.updated_at), func.max(Document.updated_at)).where(Document.status == "active")
+            _scoped(
+                select(func.min(Document.updated_at), func.max(Document.updated_at)).where(Document.status == "active")
+            )
         )
         date_row = date_result.one()
         oldest = date_row[0].isoformat() if date_row[0] else None
         newest = date_row[1].isoformat() if date_row[1] else None
 
-        result = await session.execute(
+        list_q = (
             select(Document)
             .options(selectinload(Document.versions))
             .where(Document.status == "active")
             .order_by(Document.updated_at.desc())
             .limit(limit)
         )
+        if visible_ids is not None:
+            list_q = list_q.where(Document.doc_id.in_(visible_ids))
+        result = await session.execute(list_q)
         docs = result.scalars().all()
 
     items = []
@@ -974,10 +1165,14 @@ async def kb_ingest_status(doc_id: str) -> str:
     timestamps, and any error messages. Use this to check if a document
     is still being processed or to diagnose ingestion failures.
     """
-    _get_principal()
+    principal = _get_principal()
     did = uuid.UUID(doc_id)
 
     async with async_session_factory() as session:
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None and did not in visible_ids:
+            return json.dumps({"error": "Document not found"})
+
         result = await session.execute(select(Document).where(Document.doc_id == did))
         doc = result.scalar_one_or_none()
         if doc is None:
@@ -1069,10 +1264,14 @@ async def kb_document_outline(doc_id: str) -> str:
     for the latest version of the document. Useful for understanding document structure
     before reading specific sections.
     """
-    _get_principal()
+    principal = _get_principal()
     did = uuid.UUID(doc_id)
 
     async with async_session_factory() as session:
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None and did not in visible_ids:
+            return json.dumps({"error": "Document not found"})
+
         result = await session.execute(
             select(Document)
             .options(selectinload(Document.versions))
@@ -1133,7 +1332,7 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         doc_id: The document to find related documents for.
         k: Number of related documents to return (1-20, default 5).
     """
-    _get_principal()
+    principal = _get_principal()
     k = max(1, min(k, 20))
 
     try:
@@ -1142,6 +1341,10 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         return json.dumps({"error": f"Invalid doc_id: {doc_id}"})
 
     async with async_session_factory() as session:
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None and target_id not in visible_ids:
+            return json.dumps({"error": "Document not found"})
+
         # Verify document exists and get latest version
         doc = (
             await session.execute(select(Document).where(Document.doc_id == target_id, Document.status == "active"))
@@ -1177,23 +1380,21 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
 
         # Find nearest chunks from OTHER active documents' latest versions
         distance = Chunk.embedding.cosine_distance(avg)
-        nearest = (
-            await session.execute(
-                select(
-                    Chunk.doc_id,
-                    func.min(distance).label("min_distance"),
-                )
-                .join(Document, Document.latest_version_id == Chunk.version_id)
-                .where(
-                    Document.status == "active",
-                    Chunk.embedding.isnot(None),
-                    Chunk.doc_id != target_id,
-                )
-                .group_by(Chunk.doc_id)
-                .order_by(func.min(distance))
-                .limit(k)
+        nearest_q = (
+            select(
+                Chunk.doc_id,
+                func.min(distance).label("min_distance"),
             )
-        ).all()
+            .join(Document, Document.latest_version_id == Chunk.version_id)
+            .where(
+                Document.status == "active",
+                Chunk.embedding.isnot(None),
+                Chunk.doc_id != target_id,
+            )
+        )
+        if visible_ids is not None:
+            nearest_q = nearest_q.where(Chunk.doc_id.in_(visible_ids))
+        nearest = (await session.execute(nearest_q.group_by(Chunk.doc_id).order_by(func.min(distance)).limit(k))).all()
 
         if not nearest:
             return json.dumps({"doc_id": doc_id, "related": []})
@@ -1252,7 +1453,7 @@ async def kb_entity_search(
         limit: Max results (1-100, default 20).
         offset: Pagination offset.
     """
-    _get_principal()
+    principal = _get_principal()
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
@@ -1260,6 +1461,10 @@ async def kb_entity_search(
     escaped_query = re.sub(r"([%_\\])", r"\\\1", query)
 
     async with async_session_factory() as session:
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None and not visible_ids:
+            return json.dumps({"entities": [], "total": 0, "has_more": False})
+
         # Base filter: active docs, latest version
         base_filter = [
             Entity.entity_text.ilike(f"%{escaped_query}%"),
@@ -1270,6 +1475,8 @@ async def kb_entity_search(
 
         if doc_id:
             did = uuid.UUID(doc_id)
+            if visible_ids is not None and did not in visible_ids:
+                return json.dumps({"error": "Document not found"})
             # Scope to latest version of the document
             doc = (
                 await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
@@ -1290,6 +1497,8 @@ async def kb_entity_search(
                     )
                 )
             )
+            if visible_ids is not None:
+                base_filter.append(Entity.doc_id.in_(visible_ids))
 
         if deduplicate:
             count_q = (
@@ -1361,26 +1570,31 @@ async def kb_entity_overview(doc_id: str | None = None) -> str:
     Args:
         doc_id: Optional — scope to a single document's latest version.
     """
-    _get_principal()
+    principal = _get_principal()
 
     async with async_session_factory() as session:
+        visible_ids = await _visible_doc_ids(session, principal)
+        empty_resp = {
+            "total_entities": 0,
+            "unique_entities": 0,
+            "type_distribution": {},
+            "top_entities": [],
+        }
+        if visible_ids is not None and not visible_ids:
+            return json.dumps(empty_resp)
+
         # Build version filter
         if doc_id:
             did = uuid.UUID(doc_id)
+            if visible_ids is not None and did not in visible_ids:
+                return json.dumps({"error": "Document not found"})
             doc = (
                 await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
             ).scalar_one_or_none()
             if doc is None:
                 return json.dumps({"error": "Document not found"})
             if not doc.latest_version_id:
-                return json.dumps(
-                    {
-                        "total_entities": 0,
-                        "unique_entities": 0,
-                        "type_distribution": {},
-                        "top_entities": [],
-                    }
-                )
+                return json.dumps(empty_resp)
             version_filter = [Entity.version_id == doc.latest_version_id]
         else:
             version_filter = [
@@ -1391,6 +1605,8 @@ async def kb_entity_overview(doc_id: str | None = None) -> str:
                     )
                 )
             ]
+            if visible_ids is not None:
+                version_filter.append(Entity.doc_id.in_(visible_ids))
 
         # Total entities
         total = (await session.execute(select(func.count()).select_from(Entity).where(*version_filter))).scalar() or 0
@@ -1468,7 +1684,7 @@ async def kb_entity_cooccurrence(
         limit: Max results (1-100, default 20).
         offset: Pagination offset.
     """
-    _get_principal()
+    principal = _get_principal()
 
     if scope not in ("chunk", "document"):
         return json.dumps({"error": f"Invalid scope '{scope}'. Must be 'chunk' or 'document'."})
@@ -1482,18 +1698,23 @@ async def kb_entity_cooccurrence(
     e2 = aliased(Entity, name="e2")
 
     async with async_session_factory() as session:
+        visible_ids = await _visible_doc_ids(session, principal)
+        empty_resp = {"entity_text": entity_text, "scope": scope, "cooccurrences": [], "total": 0, "has_more": False}
+        if visible_ids is not None and not visible_ids:
+            return json.dumps(empty_resp)
+
         # Version filter: active docs' latest versions
         if doc_id:
             did = uuid.UUID(doc_id)
+            if visible_ids is not None and did not in visible_ids:
+                return json.dumps({"error": "Document not found"})
             doc = (
                 await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
             ).scalar_one_or_none()
             if doc is None:
                 return json.dumps({"error": "Document not found"})
             if not doc.latest_version_id:
-                return json.dumps(
-                    {"entity_text": entity_text, "scope": scope, "cooccurrences": [], "total": 0, "has_more": False}
-                )
+                return json.dumps(empty_resp)
             version_filter_e1 = [e1.version_id == doc.latest_version_id]
             version_filter_e2 = [e2.version_id == doc.latest_version_id]
         else:
@@ -1503,6 +1724,9 @@ async def kb_entity_cooccurrence(
             )
             version_filter_e1 = [e1.version_id.in_(active_versions)]
             version_filter_e2 = [e2.version_id.in_(active_versions)]
+            if visible_ids is not None:
+                version_filter_e1.append(e1.doc_id.in_(visible_ids))
+                version_filter_e2.append(e2.doc_id.in_(visible_ids))
 
         # Source entity filter
         source_filter = [e1.entity_text.ilike(f"%{escaped_text}%"), *version_filter_e1]
@@ -1588,14 +1812,22 @@ async def kb_read_document(
     Use page_start/page_end to limit the range. max_chars caps total output
     (default 50 000, max 100 000).
     """
-    _get_principal()
+    principal = _get_principal()
     try:
         did = uuid.UUID(doc_id)
     except ValueError:
         return json.dumps({"error": f"Invalid doc_id: {doc_id}"})
     max_chars = max(1, min(max_chars, 100_000))
 
+    # Per-key snippet cap (applied on top of max_chars)
+    if principal.key_scope and principal.key_scope.max_snippet_chars is not None:
+        max_chars = min(max_chars, principal.key_scope.max_snippet_chars)
+
     async with async_session_factory() as session:
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None and did not in visible_ids:
+            return json.dumps({"error": "Document not found"})
+
         result = await session.execute(
             select(Document)
             .options(selectinload(Document.versions))
