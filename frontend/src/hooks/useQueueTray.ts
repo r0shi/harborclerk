@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useAuth } from '../auth'
 import { useJobEvents, type JobEvent } from './useJobEvents'
 
 export type TrayState = 'collapsed' | 'toasting' | 'expanded'
@@ -80,6 +81,7 @@ function computeItemStatus(stages: Map<string, StageState>): 'running' | 'queued
 }
 
 export function useQueueTray() {
+  const { token } = useAuth()
   const [trayState, setTrayState] = useState<TrayState>('collapsed')
   const [activeItems, setActiveItems] = useState<Map<string, DocumentQueueItem>>(new Map())
   const [completed, setCompleted] = useState<CompletedItem[]>([])
@@ -249,6 +251,31 @@ export function useQueueTray() {
   )
 
   useJobEvents(onEvent)
+
+  // Backfill: fetch all active jobs on mount so the queue tray shows
+  // current state immediately instead of waiting for new SSE events.
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    async function backfill() {
+      try {
+        const res = await fetch('/api/jobs/active', {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!res.ok || cancelled) return
+        const events: JobEvent[] = await res.json()
+        for (const event of events) {
+          if (!cancelled) onEvent(event)
+        }
+      } catch {
+        // non-fatal — SSE will catch up
+      }
+    }
+    backfill()
+    return () => {
+      cancelled = true
+    }
+  }, [token, onEvent])
 
   // Cleanup timers on unmount
   useEffect(() => {
