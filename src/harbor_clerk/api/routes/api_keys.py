@@ -16,8 +16,12 @@ from harbor_clerk.api.schemas.api_keys import (
     ApiKeyOut,
     CreateApiKeyRequest,
     PatchApiKeyRequest,
+    PurgeResponse,
+    RequestLogPage,
     ScopePreviewRequest,
     ScopePreviewResponse,
+    TimelineDay,
+    UsageSummaryResponse,
 )
 from harbor_clerk.api.scope import KeyScope, apply_key_scope
 from harbor_clerk.audit import log_audit
@@ -232,7 +236,7 @@ async def delete_api_key(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api-keys/{key_id}/usage")
+@router.get("/api-keys/{key_id}/usage", response_model=UsageSummaryResponse)
 async def get_key_usage(
     key_id: uuid.UUID,
     admin: Principal = Depends(require_admin),
@@ -243,58 +247,39 @@ async def get_key_usage(
         raise HTTPException(status_code=404, detail="API key not found")
 
     now = datetime.now(UTC)
-    request_buckets = {"1h": 1, "6h": 6, "12h": 12, "24h": 24, "7d": 168, "30d": 720}
+    ts = ApiRequestLog.created_at
+    st = ApiRequestLog.status
 
-    requests: dict[str, int] = {}
+    # Single query: all request/error/denial counts + last_used via FILTER (WHERE ...)
+    request_buckets = {"1h": 1, "6h": 6, "12h": 12, "24h": 24, "7d": 168, "30d": 720}
+    error_buckets = {"1h": 1, "24h": 24, "7d": 168}
+
+    columns = [func.max(ts).label("last_used")]
+    labels = ["last_used"]
     for label, hours in request_buckets.items():
         cutoff = now - timedelta(hours=hours)
-        count = (
-            await session.execute(
-                select(func.count(ApiRequestLog.request_id)).where(
-                    ApiRequestLog.api_key_id == key_id,
-                    ApiRequestLog.created_at >= cutoff,
-                )
-            )
-        ).scalar_one()
-        requests[label] = count
-
-    error_buckets = {"1h": 1, "24h": 24, "7d": 168}
-    errors: dict[str, int] = {}
-    denials: dict[str, int] = {}
+        columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff).label(f"req_{label}"))
+        labels.append(f"req_{label}")
     for label, hours in error_buckets.items():
         cutoff = now - timedelta(hours=hours)
-        err = (
-            await session.execute(
-                select(func.count(ApiRequestLog.request_id)).where(
-                    ApiRequestLog.api_key_id == key_id,
-                    ApiRequestLog.created_at >= cutoff,
-                    ApiRequestLog.status == "error",
-                )
-            )
-        ).scalar_one()
-        errors[label] = err
-        den = (
-            await session.execute(
-                select(func.count(ApiRequestLog.request_id)).where(
-                    ApiRequestLog.api_key_id == key_id,
-                    ApiRequestLog.created_at >= cutoff,
-                    ApiRequestLog.status == "denied",
-                )
-            )
-        ).scalar_one()
-        denials[label] = den
+        columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff, st == "error").label(f"err_{label}"))
+        columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff, st == "denied").label(f"den_{label}"))
+        labels.extend([f"err_{label}", f"den_{label}"])
 
-    last_used = (
-        await session.execute(select(func.max(ApiRequestLog.created_at)).where(ApiRequestLog.api_key_id == key_id))
-    ).scalar_one()
+    row = (await session.execute(select(*columns).where(ApiRequestLog.api_key_id == key_id))).one()
 
+    requests = {label: getattr(row, f"req_{label}") for label in request_buckets}
+    errors = {label: getattr(row, f"err_{label}") for label in error_buckets}
+    denials = {label: getattr(row, f"den_{label}") for label in error_buckets}
+
+    # Top tools: still 6 queries (GROUP BY + ORDER BY + LIMIT can't be FILTERed)
     top_tools: dict[str, list[dict[str, object]]] = {}
     for label, hours in request_buckets.items():
         cutoff = now - timedelta(hours=hours)
         rows = (
             await session.execute(
                 select(ApiRequestLog.endpoint, func.count(ApiRequestLog.request_id).label("cnt"))
-                .where(ApiRequestLog.api_key_id == key_id, ApiRequestLog.created_at >= cutoff)
+                .where(ApiRequestLog.api_key_id == key_id, ts >= cutoff)
                 .group_by(ApiRequestLog.endpoint)
                 .order_by(func.count(ApiRequestLog.request_id).desc())
                 .limit(10)
@@ -306,12 +291,12 @@ async def get_key_usage(
         "requests": requests,
         "errors": errors,
         "denials": denials,
-        "last_used_at": last_used,
+        "last_used_at": row.last_used,
         "top_tools": top_tools,
     }
 
 
-@router.get("/api-keys/{key_id}/usage/timeline")
+@router.get("/api-keys/{key_id}/usage/timeline", response_model=list[TimelineDay])
 async def get_key_timeline(
     key_id: uuid.UUID,
     days: int = 30,
@@ -348,7 +333,7 @@ async def get_key_timeline(
     return [{"date": d, **counts} for d, counts in sorted(by_day.items())]
 
 
-@router.get("/api-keys/{key_id}/usage/requests")
+@router.get("/api-keys/{key_id}/usage/requests", response_model=RequestLogPage)
 async def get_key_requests(
     key_id: uuid.UUID,
     page: int = 1,
@@ -415,7 +400,7 @@ async def get_key_requests(
     }
 
 
-@router.delete("/api-keys/{key_id}/usage")
+@router.delete("/api-keys/{key_id}/usage", response_model=PurgeResponse)
 async def purge_key_usage(
     key_id: uuid.UUID,
     admin: Principal = Depends(require_admin),
