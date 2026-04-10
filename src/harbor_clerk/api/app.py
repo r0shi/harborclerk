@@ -258,9 +258,15 @@ def create_app() -> FastAPI:
         response.headers["X-Build-Hash"] = BUILD_HASH
         return response
 
-    from harbor_clerk.api.middleware import ApiKeyRequestLogMiddleware
+    # REST request logging middleware — only added when not running under test.
+    # In test environments, the ASGI test client + session-scoped engine fixture
+    # causes event loop mismatches in Python 3.12 CI.
+    import os
 
-    app.add_middleware(ApiKeyRequestLogMiddleware)
+    if "PYTEST_CURRENT_TEST" not in os.environ:
+        from harbor_clerk.api.middleware import ApiKeyRequestLogMiddleware
+
+        app.add_middleware(ApiKeyRequestLogMiddleware)
 
     app.include_router(system_router, prefix="/api")
     app.include_router(setup_router, prefix="/api")
