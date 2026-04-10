@@ -469,11 +469,11 @@ async def get_document(
     for v in doc.versions or []:
         jobs = []
         for j in jobs_by_version.get(v.version_id, []):
-            status = j.status.value
+            job_status = j.status.value
             error = j.error
             # Surface skipped stages with reason instead of showing "done"
             if j.metrics and j.metrics.get("skipped"):
-                status = "skipped"
+                job_status = "skipped"
                 reason = j.metrics.get("reason", "")
                 if reason == "spacy_unavailable":
                     error = "spaCy NER models not available"
@@ -483,7 +483,7 @@ async def get_document(
                 JobInfo(
                     job_id=str(j.job_id),
                     stage=j.stage.value,
-                    status=status,
+                    status=job_status,
                     progress_current=j.progress_current,
                     progress_total=j.progress_total,
                     error=error,
