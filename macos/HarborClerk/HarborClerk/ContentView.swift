@@ -219,6 +219,28 @@ struct WebView: NSViewRepresentable {
             }
             return nil
         }
+
+        // Handle <input type="file"> clicks — WKWebView requires an explicit
+        // delegate method to present the native file picker, otherwise the
+        // click silently does nothing.
+        func webView(
+            _ webView: WKWebView,
+            runOpenPanelWith parameters: WKOpenPanelParameters,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping ([URL]?) -> Void
+        ) {
+            let panel = NSOpenPanel()
+            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+            panel.canChooseDirectories = parameters.allowsDirectories
+            panel.canChooseFiles = true
+            panel.begin { response in
+                if response == .OK {
+                    completionHandler(panel.urls)
+                } else {
+                    completionHandler(nil)
+                }
+            }
+        }
     }
 }
 
