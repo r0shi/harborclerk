@@ -27,6 +27,7 @@ from harbor_clerk.api.schemas.documents import (
     RelatedDocumentsResponse,
     VersionInfo,
 )
+from harbor_clerk.api.scope import apply_key_scope
 from harbor_clerk.audit import log_audit
 from harbor_clerk.db import get_session
 from harbor_clerk.models import (
@@ -109,6 +110,9 @@ async def list_documents(
             entity_filters.append(Entity.entity_type == entity_type)
         entity_subq = select(Entity.doc_id).where(*entity_filters).group_by(Entity.doc_id).subquery()
         base = base.where(Document.doc_id.in_(select(entity_subq.c.doc_id)))
+
+    # Per-API-key scope filter (no-op for users / unrestricted keys)
+    base = apply_key_scope(base, principal)
 
     total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0
 
@@ -419,9 +423,11 @@ async def get_document(
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(Document).where(Document.doc_id == doc_id).options(selectinload(Document.versions))
-    )
+    doc_query = apply_key_scope(
+        select(Document).where(Document.doc_id == doc_id),
+        principal,
+    ).options(selectinload(Document.versions))
+    result = await session.execute(doc_query)
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
