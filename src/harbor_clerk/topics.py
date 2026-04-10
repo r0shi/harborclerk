@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 MIN_DOCS_FOR_TOPICS = 10
 STALENESS_MINUTES = 15
 
+# Guard against concurrent recompute_topics() calls.
+_recompute_lock = asyncio.Lock()
+
 # Persistent process pool — keeps a warm worker so numba JIT only runs once.
 _topic_pool: ProcessPoolExecutor | None = None
 
@@ -121,7 +124,10 @@ def _compute_topics(
 
 async def recompute_topics() -> None:
     """Fetch document centroids, run BERTopic, store results."""
-    async with async_session_factory() as session:
+    if _recompute_lock.locked():
+        logger.info("Topic recompute already in progress, skipping")
+        return
+    async with _recompute_lock, async_session_factory() as session:
         # Fetch document centroids with titles and summaries
         rows = (
             await session.execute(
