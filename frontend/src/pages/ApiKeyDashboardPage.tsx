@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { del, get } from '../api'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
@@ -20,7 +20,7 @@ interface UsageSummary {
   errors: RangeMap<number>
   denials: RangeMap<number>
   last_used_at: string | null
-  top_tools: RangeMap<Array<{ tool: string; count: number }>>
+  top_tools: RangeMap<Array<{ endpoint: string; count: number }>>
 }
 
 interface TimelineBucket {
@@ -31,14 +31,15 @@ interface TimelineBucket {
 }
 
 interface RequestEntry {
-  id: string
-  timestamp: string
+  request_id: string
+  created_at: string
+  request_type: string
   endpoint: string
   parameters: Record<string, unknown> | null
   status: string
-  duration_ms: number | null
-  result_summary: string | null
-  error_detail: string | null
+  duration_ms: number
+  result_summary: Record<string, unknown> | null
+  status_detail: string | null
 }
 
 interface RequestPage {
@@ -194,7 +195,7 @@ export default function ApiKeyDashboardPage() {
         ...new Set(
           Object.values(usage.top_tools)
             .flat()
-            .map((t) => t.tool),
+            .map((t) => t.endpoint),
         ),
       ].sort()
     : []
@@ -384,7 +385,7 @@ export default function ApiKeyDashboardPage() {
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={usage.top_tools[reqRange]} layout="vertical">
                     <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-                    <YAxis dataKey="tool" type="category" width={140} tick={{ fontSize: 11 }} />
+                    <YAxis dataKey="endpoint" type="category" width={140} tick={{ fontSize: 11 }} />
                     <Tooltip />
                     <Bar dataKey="count" fill="#3b82f6" name="Calls" />
                   </BarChart>
@@ -480,23 +481,22 @@ export default function ApiKeyDashboardPage() {
                     <tbody className="divide-y divide-(--color-border)">
                       {requests.items.map((r) => {
                         const paramsStr = r.parameters ? JSON.stringify(r.parameters) : ''
-                        const resultStr = r.result_summary ?? r.error_detail ?? ''
+                        const resultStr = r.result_summary ? JSON.stringify(r.result_summary) : ''
                         const borderCls =
                           r.status === 'error'
                             ? 'border-l-2 border-red-400'
                             : r.status === 'denied'
                               ? 'border-l-2 border-amber-400'
                               : ''
-                        const isExpanded = expandedRow === r.id
+                        const isExpanded = expandedRow === r.request_id
                         return (
-                          <>
+                          <Fragment key={r.request_id}>
                             <tr
-                              key={r.id}
                               className={`cursor-pointer hover:bg-black/3 dark:hover:bg-white/3 ${borderCls}`}
-                              onClick={() => setExpandedRow(isExpanded ? null : r.id)}
+                              onClick={() => setExpandedRow(isExpanded ? null : r.request_id)}
                             >
                               <td className="whitespace-nowrap px-4 py-2 text-xs text-gray-600 dark:text-gray-300">
-                                {formatTimestamp(r.timestamp)}
+                                {formatTimestamp(r.created_at)}
                               </td>
                               <td className="px-4 py-2 text-xs font-mono">{r.endpoint}</td>
                               <td className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400">
@@ -511,7 +511,7 @@ export default function ApiKeyDashboardPage() {
                               </td>
                             </tr>
                             {isExpanded && (
-                              <tr key={`${r.id}-detail`}>
+                              <tr key={`${r.request_id}-detail`}>
                                 <td colSpan={6} className="bg-(--color-bg-secondary) px-4 py-3">
                                   <div className="space-y-2 text-xs font-mono">
                                     {r.parameters && (
@@ -522,11 +522,11 @@ export default function ApiKeyDashboardPage() {
                                         </pre>
                                       </div>
                                     )}
-                                    {(r.result_summary || r.error_detail) && (
+                                    {(r.result_summary || r.status_detail) && (
                                       <div>
-                                        <span className="font-semibold">{r.error_detail ? 'Error:' : 'Result:'}</span>
+                                        <span className="font-semibold">{r.status_detail ? 'Error:' : 'Result:'}</span>
                                         <pre className="mt-1 overflow-x-auto rounded bg-white dark:bg-[#1e1e1f] p-2">
-                                          {r.error_detail ?? r.result_summary}
+                                          {r.status_detail ?? JSON.stringify(r.result_summary, null, 2)}
                                         </pre>
                                       </div>
                                     )}
@@ -534,7 +534,7 @@ export default function ApiKeyDashboardPage() {
                                 </td>
                               </tr>
                             )}
-                          </>
+                          </Fragment>
                         )
                       })}
                     </tbody>

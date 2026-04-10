@@ -304,7 +304,7 @@ class ScopedFastMCP(FastMCP):
                 async with async_session_factory() as log_session:
                     await log_api_request(
                         log_session,
-                        api_key_id=principal.key_id,
+                        api_key_id=principal.id,
                         request_type="mcp_tool",
                         endpoint=name,
                         parameters=arguments if arguments else None,
@@ -329,7 +329,7 @@ class ScopedFastMCP(FastMCP):
                 async with async_session_factory() as log_session:
                     await log_api_request(
                         log_session,
-                        api_key_id=principal.key_id,
+                        api_key_id=principal.id,
                         request_type="mcp_tool",
                         endpoint=name,
                         parameters=arguments if arguments else None,
@@ -368,7 +368,7 @@ class ScopedFastMCP(FastMCP):
             async with async_session_factory() as log_session:
                 await log_api_request(
                     log_session,
-                    api_key_id=principal.key_id,
+                    api_key_id=principal.id,
                     request_type="mcp_tool",
                     endpoint=name,
                     parameters=arguments if arguments else None,
