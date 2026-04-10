@@ -580,7 +580,7 @@ Expected: `ImportError: cannot import name 'apply_key_scope'`
 
 - [ ] **Step 3: Implement apply_key_scope**
 
-Add to `src/harbor_clerk/api/scope.py`:
+Add to `src/harbor_clerk/api/scope.py`. Note: `Principal` is imported lazily under `TYPE_CHECKING` to avoid a circular dep with `deps.py` (which imports `KeyScope` from this module). The model imports are top-level — they don't import deps.py.
 
 ```python
 import uuid
@@ -588,6 +588,9 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import or_, select
 from sqlalchemy.sql import Select
+
+from harbor_clerk.models.document import Document
+from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
 
 if TYPE_CHECKING:
     from harbor_clerk.api.deps import Principal
@@ -607,10 +610,6 @@ def apply_key_scope(query: Select, principal: "Principal") -> Select:
     scope = principal.key_scope
     if scope.is_unrestricted:
         return query
-
-    # Lazy imports to avoid circular dependencies
-    from harbor_clerk.models.document import Document
-    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
 
     conditions = []
     if scope.scope_topic_ids is not None:
@@ -640,7 +639,92 @@ def apply_key_scope(query: Select, principal: "Principal") -> Select:
 uv run pytest tests/test_scoped_api_keys.py -v
 ```
 
-- [ ] **Step 5: Lint and commit**
+- [ ] **Step 5: Add integration tests with real DB data**
+
+The unit tests above check query string generation. Add integration tests that exercise the actual filtering against the test DB. These run in CI via the pgvector service container.
+
+Append to `tests/test_scoped_api_keys.py`:
+
+```python
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from harbor_clerk.models.document import Document
+from harbor_clerk.models.api_key import ApiKey
+from harbor_clerk.auth import generate_api_key, hash_api_key
+
+
+@pytest_asyncio.fixture
+async def two_topic_docs(db_session: AsyncSession):
+    """Create 2 documents in topic 1 and 1 document in topic 2."""
+    docs = [
+        Document(title="Doc A1", canonical_filename="a1.txt", topic_id=1, status="active"),
+        Document(title="Doc A2", canonical_filename="a2.txt", topic_id=1, status="active"),
+        Document(title="Doc B1", canonical_filename="b1.txt", topic_id=2, status="active"),
+    ]
+    for d in docs:
+        db_session.add(d)
+    await db_session.commit()
+    yield docs
+    for d in docs:
+        await db_session.delete(d)
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_scope_filters_by_topic_in_db(db_session, two_topic_docs):
+    """Real DB: key scoped to topic 1 sees only those documents."""
+    scope = KeyScope(
+        scope_topic_ids=[1], scope_folder_ids=None,
+        permission_tier="full", tool_overrides={}, max_snippet_chars=None,
+    )
+    p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
+    query = apply_key_scope(sa_select(Document), p)
+    result = await db_session.execute(query)
+    docs = result.scalars().all()
+    assert len(docs) == 2
+    assert all(d.topic_id == 1 for d in docs)
+
+
+@pytest.mark.asyncio
+async def test_unrestricted_key_sees_all_in_db(db_session, two_topic_docs):
+    """Real DB: unrestricted key sees all documents."""
+    scope = KeyScope(
+        scope_topic_ids=None, scope_folder_ids=None,
+        permission_tier="full", tool_overrides={}, max_snippet_chars=None,
+    )
+    p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
+    query = apply_key_scope(sa_select(Document), p)
+    result = await db_session.execute(query)
+    docs = result.scalars().all()
+    assert len(docs) == 3
+
+
+@pytest.mark.asyncio
+async def test_empty_topic_list_blocks_all_in_db(db_session, two_topic_docs):
+    """Real DB: scope_topic_ids=[] blocks everything (no topics match)."""
+    scope = KeyScope(
+        scope_topic_ids=[], scope_folder_ids=None,
+        permission_tier="full", tool_overrides={}, max_snippet_chars=None,
+    )
+    p = Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
+    query = apply_key_scope(sa_select(Document), p)
+    result = await db_session.execute(query)
+    docs = result.scalars().all()
+    assert len(docs) == 0
+```
+
+Note: this assumes a `db_session` fixture exists in conftest.py. If not, follow the pattern in existing test_*.py files (e.g. test_watch_pipeline.py for a simpler version, or test_watch_api.py if API integration tests already exist).
+
+- [ ] **Step 6: Run integration tests**
+
+```bash
+uv run pytest tests/test_scoped_api_keys.py -v
+```
+
+Expected: all unit AND integration tests pass.
+
+- [ ] **Step 7: Lint and commit**
 
 ```bash
 uv run ruff check src/harbor_clerk/api/scope.py tests/test_scoped_api_keys.py
@@ -719,12 +803,14 @@ git commit -m "feat(scoped-keys): apply_key_scope to docs list, get, and search"
 **Files:**
 - Modify: `src/harbor_clerk/mcp_server.py`
 
-This is the largest single task — there are 13 MCP tools that read documents/chunks. We need to apply scope to each. The pattern depends on what the tool fetches:
+This is the largest single task — there are 14 MCP tools that read documents/chunks/jobs. We need to apply scope to each. The pattern depends on what the tool fetches:
 
-- **Document-based tools** (kb_get_document, kb_list_recent, kb_find_related, kb_corpus_overview, kb_document_outline, kb_entity_overview): pass `principal` to internal helpers and use `apply_key_scope`.
-- **Search tools** (kb_search, kb_batch_search): same as Task 6 search filtering — compute visible doc_ids and filter.
-- **Chunk-based tools** (kb_read_passages, kb_expand_context): fetch chunks first, then filter to chunks whose `doc_id` is in the visible set. **This is the chunk-level enforcement from spec finding #6.**
-- **Entity tools** (kb_entity_search, kb_entity_cooccurrence): join via chunk → document → scope.
+- **Document-based tools** (kb_get_document, kb_list_recent, kb_find_related, kb_document_outline): pass `principal` to internal helpers and use `apply_key_scope`.
+- **Aggregate stats** (kb_corpus_overview): see Step 3 below — counts/languages/types must reflect the scoped subset, not the full corpus.
+- **Search tools** (kb_search, kb_batch_search): compute visible doc_ids and filter results.
+- **Chunk-based tools** (kb_read_passages, kb_expand_context): fetch chunks first, then filter to chunks whose `doc_id` is in the visible set. **This is the chunk-level enforcement.**
+- **Entity tools** (kb_entity_search, kb_entity_overview, kb_entity_cooccurrence): join via chunk → document → scope.
+- **Job status** (kb_ingest_status): join `IngestionJob → DocumentVersion → Document` to filter to versions whose document is in the visible set. Otherwise scoped agents can discover document existence via ingestion status.
 
 - [ ] **Step 1: Add a helper at the top of mcp_server.py (after _get_principal)**
 
@@ -747,14 +833,27 @@ For each `@mcp.tool()` function in `mcp_server.py`:
 2. Compute `visible_ids = await _visible_doc_ids(session, principal)`
 3. If `visible_ids is not None`, add `Document.doc_id.in_(visible_ids)` to the query, OR filter the result rows in Python.
 
-The 13 tools to update (find them with `grep -n '@mcp.tool()' src/harbor_clerk/mcp_server.py`):
+The 14 tools to update (find them with `grep -n '@mcp.tool()' src/harbor_clerk/mcp_server.py`):
 - kb_search, kb_batch_search
 - kb_read_passages, kb_expand_context
 - kb_get_document, kb_list_recent
 - kb_corpus_overview, kb_document_outline
-- kb_find_related, kb_entity_search
-- kb_entity_overview, kb_entity_cooccurrence
-- kb_read_document, kb_ingest_status
+- kb_find_related, kb_read_document
+- kb_entity_search, kb_entity_overview, kb_entity_cooccurrence
+- kb_ingest_status
+
+For `kb_ingest_status`, the join path is `IngestionJob.version_id → DocumentVersion.doc_id → Document.doc_id`. Filter the query so only jobs for documents in `visible_ids` are returned.
+
+- [ ] **Step 2a: Special case — kb_corpus_overview aggregate stats**
+
+`kb_corpus_overview` returns counts (document_count, total_chunks, total_pages), language histogram, mime_type histogram, date_range, and a list of CorpusDocumentSummary. ALL of these must reflect the scoped subset.
+
+Concretely: in the `corpus_overview` MCP tool, compute `visible_ids = await _visible_doc_ids(session, principal)` once. Then:
+- For every aggregate query (document_count, language histogram, mime_type histogram, date_range, total_chunks, total_pages), add `WHERE Document.doc_id.in_(visible_ids)` (or join Chunk → Document and filter there for chunk/page counts).
+- For the document list, add the same filter.
+- If `visible_ids is None`, no filter — full corpus stats.
+
+This is non-trivial because the existing function likely builds 5+ separate queries. Each one needs the filter. Walk through them carefully.
 
 For `kb_read_passages` and `kb_expand_context` specifically (chunk-based), filter chunks AFTER fetching:
 
@@ -899,29 +998,44 @@ Then subclass FastMCP. Replace `mcp = FastMCP(...)` with:
 
 ```python
 class ScopedFastMCP(FastMCP):
-    """FastMCP subclass that filters tool listing and calls by API key scope."""
+    """FastMCP subclass that filters tool listing and calls by API key scope.
+
+    Security: list_tools is a UX layer; the real enforcement is call_tool +
+    the apply_key_scope filters in each tool body. So even if list_tools is
+    bypassed (e.g. via the lowlevel server's tool cache), tool calls are
+    still rejected.
+    """
 
     async def list_tools(self):
         all_tools = await super().list_tools()
         try:
             principal = _get_principal()
         except PermissionError:
-            return all_tools  # not yet authenticated — return everything
-        allowed_names = set(_filter_tools_for_principal([t.name for t in all_tools], principal))
-        return [t for t in all_tools if t.name in allowed_names]
+            # No principal context (e.g. internal tool-cache refresh).
+            # Return [] rather than all_tools so we don't pollute caches with
+            # full visibility. Real per-call enforcement happens in call_tool.
+            return []
+        if principal.type != "api_key" or principal.key_scope is None:
+            return all_tools
+        allowed = principal.key_scope.effective_tools
+        return [t for t in all_tools if t.name in allowed]
 
     async def call_tool(self, name, arguments):
         try:
             principal = _get_principal()
         except PermissionError:
+            # No principal — let the underlying handler decide
+            # (this should not happen on a real call path; auth middleware sets it)
             return await super().call_tool(name, arguments)
         if principal.type == "api_key" and principal.key_scope is not None:
             if name not in principal.key_scope.effective_tools:
-                # Tool not in this key's set — return MCP "unknown tool" error
-                from mcp.shared.exceptions import McpError
-                from mcp.types import ErrorData
+                # Tool not in this key's set. McpError gets converted to an
+                # isError tool result by the lowlevel handler, which is fine —
+                # the agent just sees a clean error and the tool is effectively
+                # invisible.
+                from mcp.server.fastmcp.exceptions import ToolError
 
-                raise McpError(ErrorData(code=-32601, message=f"Unknown tool: {name}"))
+                raise ToolError(f"Unknown tool: {name}")
         return await super().call_tool(name, arguments)
 
 
