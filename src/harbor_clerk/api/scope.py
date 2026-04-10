@@ -70,8 +70,11 @@ class KeyScope:
 
     @property
     def is_unrestricted(self) -> bool:
-        """True if no document-level scope filter applies."""
-        return self.scope_topic_ids is None and self.scope_folder_ids is None
+        """True if no document-level scope filter applies.
+
+        Both None and [] mean "no restriction" for each axis.
+        """
+        return not self.scope_topic_ids and not self.scope_folder_ids
 
     @property
     def effective_tools(self) -> frozenset[str]:
@@ -95,9 +98,9 @@ def apply_key_scope(query: Select, principal: "Principal") -> Select:
         return query
 
     conditions = []
-    if scope.scope_topic_ids is not None:
+    if scope.scope_topic_ids:
         conditions.append(Document.topic_id.in_(scope.scope_topic_ids))
-    if scope.scope_folder_ids is not None:
+    if scope.scope_folder_ids:
         try:
             folder_uuids = [uuid.UUID(fid) for fid in scope.scope_folder_ids]
         except (ValueError, AttributeError):

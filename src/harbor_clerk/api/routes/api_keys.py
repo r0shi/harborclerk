@@ -13,6 +13,7 @@ from harbor_clerk.api.schemas.api_keys import (
     ApiKeyOut,
     CreateApiKeyRequest,
     PatchApiKeyRequest,
+    ScopePreviewRequest,
     ScopePreviewResponse,
 )
 from harbor_clerk.api.scope import KeyScope, apply_key_scope
@@ -30,12 +31,14 @@ def _scope_summary(api_key: ApiKey) -> str:
     parts = []
     if api_key.permission_tier != "full":
         parts.append(api_key.permission_tier.capitalize() + " only")
-    if api_key.scope_topic_ids is not None:
+    if api_key.scope_topic_ids:  # None and [] both mean "no restriction"
         n = len(api_key.scope_topic_ids)
         parts.append(f"{n} topic{'s' if n != 1 else ''}")
-    if api_key.scope_folder_ids is not None:
+    if api_key.scope_folder_ids:
         n = len(api_key.scope_folder_ids)
         parts.append(f"{n} folder{'s' if n != 1 else ''}")
+    if api_key.max_snippet_chars:
+        parts.append(f"max {api_key.max_snippet_chars} chars")
     if api_key.expires_at:
         parts.append(f"expires {api_key.expires_at.date().isoformat()}")
     return ", ".join(parts) if parts else "Full access"
@@ -170,6 +173,32 @@ async def scope_preview(
         accessible_documents=visible,
         total_documents=total,
     )
+
+
+@router.post("/api-keys/scope-preview", response_model=ScopePreviewResponse)
+async def scope_preview_adhoc(
+    body: ScopePreviewRequest,
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Preview document access for arbitrary scope params (unsaved)."""
+    total = (await session.execute(select(func.count(Document.doc_id)).where(Document.status == "active"))).scalar_one()
+
+    scope = KeyScope(
+        scope_topic_ids=body.scope_topic_ids,
+        scope_folder_ids=body.scope_folder_ids,
+        permission_tier=body.permission_tier,
+        tool_overrides={},
+        max_snippet_chars=None,
+    )
+    fake_principal = Principal(type="api_key", id=admin.id, role="user", key_scope=scope)
+    visible_query = apply_key_scope(
+        select(func.count(Document.doc_id)).where(Document.status == "active"),
+        fake_principal,
+    )
+    visible = (await session.execute(visible_query)).scalar_one()
+
+    return ScopePreviewResponse(accessible_documents=visible, total_documents=total)
 
 
 @router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)

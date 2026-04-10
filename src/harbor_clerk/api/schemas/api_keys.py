@@ -41,6 +41,12 @@ class ApiKeyOut(BaseModel):
     scope_summary: str
 
 
+class ScopePreviewRequest(BaseModel):
+    permission_tier: Literal["search", "read", "full"] = "full"
+    scope_topic_ids: list[int] | None = None
+    scope_folder_ids: list[str] | None = None
+
+
 class ScopePreviewResponse(BaseModel):
     accessible_documents: int
     total_documents: int
