@@ -101,11 +101,10 @@ final class AppSettings: @unchecked Sendable {
             "qwen3-4b": "Qwen3-4B-Q4_K_M.gguf",
             "phi4-mini": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
             "deepseek-r1-0528-8b": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
-            "gemma3-4b": "google_gemma-3-4b-it-Q4_K_M.gguf",
             "smollm3-3b": "HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
             "qwen3-30b-a3b": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
-            "llama3.1-8b": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+            "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
         ]
         guard let filename = filenames[modelId] else { return "" }
         return modelsDir.appendingPathComponent(filename).path
@@ -119,11 +118,10 @@ final class AppSettings: @unchecked Sendable {
             "qwen3-4b": 32768,
             "phi4-mini": 128000,
             "deepseek-r1-0528-8b": 32768,
-            "gemma3-4b": 128000,
             "smollm3-3b": 65536,
             "gpt-oss-20b": 128000,
             "qwen3-30b-a3b": 262144,
-            "llama3.1-8b": 128000,
+            "gemma4-26b-a4b": 128000,
         ]
         return contextWindows[modelId] ?? 32768
     }
