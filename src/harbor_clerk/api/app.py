@@ -107,14 +107,39 @@ async def _session_reaper_loop() -> None:
                     rs.status = "interrupted"
                     rs.error = "Research task stalled — no progress for 5+ minutes"
 
+                # Re-queue orphaned ingestion jobs (running with stale heartbeat >90s)
+                from harbor_clerk.models import IngestionJob
+                from harbor_clerk.models.ingestion import JobStatus
+
+                heartbeat_cutoff = now - timedelta(seconds=90)
+                orphan_result = await db.execute(
+                    select(IngestionJob).where(
+                        IngestionJob.status == JobStatus.running,
+                        IngestionJob.heartbeat_at < heartbeat_cutoff,
+                    )
+                )
+                orphan_jobs = orphan_result.scalars().all()
+                for job in orphan_jobs:
+                    logger.warning(
+                        "Reaper: re-queuing orphan job version=%s stage=%s (heartbeat=%s)",
+                        job.version_id,
+                        job.stage.value,
+                        job.heartbeat_at,
+                    )
+                    job.status = JobStatus.queued
+                    job.started_at = None
+                    job.heartbeat_at = None
+                    job.error = None
+
                 await db.commit()
                 total = len(stale_sessions) + len(done_sessions)
-                if total > 0 or stale_research:
+                if total > 0 or stale_research or orphan_jobs:
                     logger.info(
-                        "Session reaper: cancelled %d stale, cleaned %d done, interrupted %d research",
+                        "Session reaper: cancelled %d stale, cleaned %d done, interrupted %d research, re-queued %d orphan jobs",
                         len(stale_sessions),
                         len(done_sessions),
                         len(stale_research),
+                        len(orphan_jobs),
                     )
 
                 # Clean up watched files removed >30 days ago
