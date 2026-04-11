@@ -40,14 +40,25 @@ for dylib in $(otool -L "$TESSERACT_DIR/bin/tesseract" | grep '/opt/homebrew\|/u
 done
 
 # Recursively fix dylib dependencies (iterate until no new libs found)
+BREW_LIB="$(brew --prefix)/lib"
 changed=true
 while $changed; do
     changed=false
     for lib in "$TESSERACT_DIR/lib/"*.dylib; do
+        # Handle absolute Homebrew paths
         for dep in $(otool -L "$lib" | grep '/opt/homebrew\|/usr/local' | awk '{print $1}'); do
             depname=$(basename "$dep")
             if [ ! -f "$TESSERACT_DIR/lib/$depname" ]; then
                 cp "$dep" "$TESSERACT_DIR/lib/" 2>/dev/null || true
+                changed=true
+            fi
+            install_name_tool -change "$dep" "@loader_path/$depname" "$lib" 2>/dev/null || true
+        done
+        # Handle @rpath references — resolve from Homebrew lib dir
+        for dep in $(otool -L "$lib" | grep '@rpath/' | awk '{print $1}'); do
+            depname=$(basename "$dep")
+            if [ ! -f "$TESSERACT_DIR/lib/$depname" ] && [ -f "$BREW_LIB/$depname" ]; then
+                cp "$BREW_LIB/$depname" "$TESSERACT_DIR/lib/"
                 changed=true
             fi
             install_name_tool -change "$dep" "@loader_path/$depname" "$lib" 2>/dev/null || true
