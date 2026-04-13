@@ -886,8 +886,17 @@ function ToolLogEntry({ tool, isLast }: { tool: ToolCallEntry; isLast: boolean }
           <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
         </svg>
       </summary>
-      <div className="px-3 pb-2 pl-8">
-        <ToolResultDisplay rawResult={tool.rawResult!} toolName={tool.name} />
+      <div className="px-3 pb-2 pl-8 space-y-2 text-[11px]">
+        {tool.arguments && Object.keys(tool.arguments).length > 0 && (
+          <div>
+            <div className="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">Arguments</div>
+            <div className="font-mono text-gray-400 dark:text-gray-500">{JSON.stringify(tool.arguments, null, 2)}</div>
+          </div>
+        )}
+        <div>
+          <div className="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">Result</div>
+          <ToolResultDisplay rawResult={tool.rawResult!} toolName={tool.name} />
+        </div>
       </div>
     </details>
   )
