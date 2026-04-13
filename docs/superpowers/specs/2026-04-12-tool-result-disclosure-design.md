@@ -12,17 +12,21 @@
 
 ### SSE Streaming (live)
 
-The `tool_result` SSE event gains a `result` field containing the full tool output JSON string.
+The `tool_result` SSE event gains a `raw_result` field containing the full tool output JSON string. The existing `summary` field is unchanged.
 
-**Chat (`chat.py`):** The `tool_result` event currently sends `{ type, name, summary }`. Add `result: <raw JSON string>` from the tool execution.
+**Chat (`chat.py`):** The `tool_result` event currently sends `{ type, name, summary }`. Add `raw_result: <raw JSON string>` from the tool execution.
 
-**Research (`research.py`):** The `tool_result` event currently sends `{ type, name, summary }`. Add `result: <raw JSON string>` from the tool observation.
+**Research (`research.py`):** The `tool_result` event currently sends `{ type, name, summary }`. Add `raw_result: <raw JSON string>` from the tool observation.
+
+**Important naming note:** The SSE field is `raw_result` (not `result`) to avoid confusion with the existing `summary` field. On the frontend, `ChatContext.tsx` stores the summary as `result` on `ToolCallInfo` — that field is unchanged. The new `raw_result` SSE field maps to `rawResult` on the frontend types.
 
 ### API Reload
 
 `_enrich_tool_calls()` in `api/routes/chat.py` already looks up `role='tool'` messages by `tool_call_id` to derive summaries. Include the full `content` from the tool-role message as `raw_result` in the response.
 
-The `ToolCallOut` schema (or equivalent) gains `raw_result: str | None`.
+The enriched dict returned by `_enrich_tool_calls` gains `raw_result: str | None`.
+
+**Research reload:** The research detail endpoint (`GET /api/research/{id}`) returns persisted messages. `ResearchPage.tsx`'s `extractToolCalls()` reconstructs `ToolCallEntry[]` from these. The research messages API response must also include the full tool result content (from `role='tool'` messages) so that `rawResult` is populated on reload, not just during live SSE streaming.
 
 ### Frontend Types
 
@@ -50,9 +54,9 @@ Both contexts populate `rawResult` from the SSE `result` field (live) and API re
 
 | Tool name pattern | Template |
 |---|---|
-| `search_documents`, `kb_search`, `kb_batch_search` | Hit list: doc title, page, score, snippet (~100 chars) |
-| `read_passages`, `kb_read_passages` | Text blocks with doc title + page header |
-| `entity_search`, `kb_entity_search` | Tagged list: entity name, type, source doc |
+| `search_documents`, `kb_search`, `kb_batch_search` | Hit list: doc title, page, score, snippet (~100 chars). Chat tools use `search_documents`, MCP tools use `kb_search` — match both. |
+| `read_passages`, `kb_read_passages` | Text blocks with doc title + page header. Chat: `read_passages`, MCP: `kb_read_passages`. |
+| `entity_search`, `kb_entity_search` | Tagged list: entity name, type, source doc. Chat: `entity_search`, MCP: `kb_entity_search`. |
 | Everything else | Generic recursive renderer: objects as labeled groups, arrays as bullet lists, scalars as values |
 
 Templates are intentionally lean — no hover states, no interactivity, just clean readable output. The generic fallback handles any tool output readably.
@@ -83,7 +87,7 @@ In the tool call execution loop, the `tool_result` SSE event currently sends:
 
 Change to:
 ```python
-{"type": "tool_result", "name": name, "summary": summary, "result": raw_result_string}
+{"type": "tool_result", "name": name, "summary": summary, "raw_result": raw_result_string}
 ```
 
 Where `raw_result_string` is the string returned by `execute_tool()`.
@@ -92,7 +96,7 @@ Where `raw_result_string` is the string returned by `execute_tool()`.
 
 In the step consumer loop, when emitting `tool_result` events, include the full observation string:
 ```python
-{"type": "tool_result", "name": tc_name, "summary": summary, "result": observation}
+{"type": "tool_result", "name": tc_name, "summary": summary, "raw_result": observation}
 ```
 
 Where `observation` is already available from `step.observation or step.output`.
@@ -106,6 +110,6 @@ Add `raw_result` to the enriched tool call dict, sourced from the matching `role
 ## Scope Notes
 
 - **smolagents regression:** Separately investigate smolagents 1.22→1.24 changelog for research quality changes. Not part of this spec.
-- No lazy loading — full results included inline in SSE and API responses (typically 2-10KB per tool call).
+- No lazy loading — full results included inline in SSE and API responses. Most tool results are 2-10KB; `kb_read_passages` / `kb_read_document` can be larger (up to ~50KB). The raw JSON `<pre>` view should have `max-height` with overflow scroll to handle large results gracefully.
 - No new API endpoints.
 - No database changes.
