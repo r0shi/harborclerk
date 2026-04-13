@@ -43,6 +43,7 @@ final class LlamaService: ManagedService {
             "--host", "127.0.0.1",
             "--port", String(port),
             "-ngl", "99",
+            "-np", "1",
             "-c", String(contextWindow),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
