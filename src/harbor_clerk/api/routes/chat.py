@@ -39,17 +39,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
 
 
-def _enrich_tool_calls(tool_calls: list[dict], results: dict[str, str]) -> list[dict]:
-    """Add result summaries to tool calls in the frontend-friendly format.
+def _enrich_tool_calls(tool_calls: list[dict], results: dict[str, tuple[str, str] | str]) -> list[dict]:
+    """Add result summaries and raw results to tool calls.
 
-    Converts from OpenAI format ({id, type, function: {name, arguments}})
-    to the display format ({name, arguments, result}) that ToolCallCard expects.
+    results values are either (summary, raw_content) tuples or plain summary strings
+    for backwards compatibility.
     """
     enriched = []
     for tc in tool_calls:
         func = tc.get("function", {})
         name = func.get("name", tc.get("name", ""))
-        # Parse arguments from JSON string (OpenAI format) or dict (already parsed)
         raw_args = func.get("arguments", tc.get("arguments", {}))
         if isinstance(raw_args, str):
             try:
@@ -59,11 +58,18 @@ def _enrich_tool_calls(tool_calls: list[dict], results: dict[str, str]) -> list[
         else:
             args = raw_args
         tc_id = tc.get("id", "")
+        result_val = results.get(tc_id)
+        if isinstance(result_val, tuple):
+            summary, raw_result = result_val
+        else:
+            summary = result_val
+            raw_result = None
         enriched.append(
             {
                 "name": name,
                 "arguments": args,
-                "result": results.get(tc_id),
+                "result": summary,
+                "raw_result": raw_result,
             }
         )
     return enriched
@@ -129,10 +135,10 @@ async def get_conversation(
     # Build a lookup of tool_call_id → result summary for enrichment.
     # This uses the already-fetched message set (no extra query), and the
     # idx_messages_conv(conversation_id, created_at) index covers the query.
-    tool_results_by_id: dict[str, str] = {}
+    tool_results_by_id: dict[str, tuple[str, str]] = {}
     for m in all_msgs:
         if m.role == "tool" and m.tool_call_id and m.content:
-            tool_results_by_id[m.tool_call_id] = summarize_tool_result(m.content)
+            tool_results_by_id[m.tool_call_id] = (summarize_tool_result(m.content), m.content)
 
     messages = []
     for m in all_msgs:
