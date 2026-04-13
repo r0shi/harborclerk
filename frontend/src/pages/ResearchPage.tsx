@@ -24,6 +24,7 @@ interface ResearchMessage {
     name: string
     arguments: Record<string, unknown>
     result?: string
+    raw_result?: string
   }>
 }
 
@@ -50,6 +51,7 @@ function extractToolCalls(messages: ResearchMessage[]): ToolCallEntry[] {
           name: tc.name,
           arguments: tc.arguments,
           summary: tc.result || undefined,
+          rawResult: tc.raw_result || undefined,
           round,
         })
       }

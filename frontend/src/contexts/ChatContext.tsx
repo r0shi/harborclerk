@@ -27,6 +27,7 @@ export interface ToolCallInfo {
   name: string
   arguments: Record<string, unknown>
   result?: string
+  rawResult?: string
 }
 
 interface ChatState {
@@ -174,7 +175,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                         ...last,
                         tool_calls: [
                           ...(last.tool_calls || []),
-                          { name: event.name, arguments: {}, result: event.summary },
+                          { name: event.name, arguments: {}, result: event.summary, rawResult: event.raw_result },
                         ],
                       }
                     }

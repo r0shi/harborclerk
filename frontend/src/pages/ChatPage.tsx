@@ -147,7 +147,14 @@ export default function ChatPage() {
               message_id: m.message_id,
               role: m.role as ChatMessage['role'],
               content: m.content,
-              tool_calls: (m.tool_calls as ToolCallInfo[] | undefined) || undefined,
+              tool_calls: m.tool_calls
+                ? (m.tool_calls as Array<Record<string, unknown>>).map((tc) => ({
+                    name: tc.name as string,
+                    arguments: (tc.arguments as Record<string, unknown>) || {},
+                    result: tc.result as string | undefined,
+                    rawResult: tc.raw_result as string | undefined,
+                  }))
+                : undefined,
               rag_context: m.rag_context,
               model_id: m.model_id || undefined,
               context_pct: m.context_pct,
