@@ -121,7 +121,7 @@ final class AppSettings: @unchecked Sendable {
             "smollm3-3b": 65536,
             "gpt-oss-20b": 128000,
             "qwen3-30b-a3b": 262144,
-            "gemma4-26b-a4b": 128000,
+            "gemma4-26b-a4b": 32768,
         ]
         return contextWindows[modelId] ?? 32768
     }
