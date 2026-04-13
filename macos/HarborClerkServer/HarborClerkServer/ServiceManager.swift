@@ -546,9 +546,14 @@ final class ServiceManager: ObservableObject {
         }
         notifyStateChanged()
 
-        // 2. Stop infrastructure services
+        // 2. Stop infrastructure services (reset errored state + flap history for fresh start)
         for svc in infraToRestart {
-            await svc.stop()
+            if svc.state == .errored {
+                svc.state = .stopped
+                restartHistory.removeValue(forKey: svc.name)
+            } else {
+                await svc.stop()
+            }
         }
         notifyStateChanged()
 
@@ -693,11 +698,16 @@ final class ServiceManager: ObservableObject {
 
         configChangeTask?.cancel()
         configChangeTask = Task {
-            // Stop current llama-server if running
+            // Stop current llama-server if running or errored
             if llamaService.state == .running || llamaService.state == .starting {
                 await llamaService.stop()
                 notifyStateChanged()
                 try? await Task.sleep(for: .seconds(1))
+            } else if llamaService.state == .errored {
+                // Reset errored state and clear flap history so the new model gets a fresh start
+                llamaService.state = .stopped
+                restartHistory.removeValue(forKey: llamaService.name)
+                notifyStateChanged()
             }
 
             if newModelId.isEmpty {

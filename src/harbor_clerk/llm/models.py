@@ -75,7 +75,7 @@ MODELS: dict[str, ModelInfo] = {
             huggingface_repo="bartowski/google_gemma-4-26B-A4B-it-GGUF",
             filename="google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
             size_bytes=17_000_000_000,
-            context_window=32768,
+            context_window=128000,
             supports_tools=True,
         ),
         ModelInfo(
