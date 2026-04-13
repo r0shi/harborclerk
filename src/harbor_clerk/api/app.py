@@ -109,7 +109,7 @@ async def _session_reaper_loop() -> None:
 
                 # Re-queue orphaned ingestion jobs (running with stale heartbeat >90s)
                 from harbor_clerk.models import IngestionJob
-                from harbor_clerk.models.ingestion import JobStatus
+                from harbor_clerk.models.enums import JobStatus
 
                 heartbeat_cutoff = now - timedelta(seconds=90)
                 orphan_result = await db.execute(
