@@ -383,7 +383,7 @@ async def research_stream(
                     observation = str(step.observation or step.output)
                     summary = summarize_tool_result(observation[:500])
                     tc_name = step.tool_call.name if step.tool_call else "unknown"
-                    yield f"data: {json.dumps({'type': 'tool_result', 'name': tc_name, 'summary': summary})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_result', 'name': tc_name, 'summary': summary, 'raw_result': observation})}\n\n"
                     # Save tool result as tool message for persistence
                     session.add(
                         ChatMessage(
