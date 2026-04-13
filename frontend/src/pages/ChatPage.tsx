@@ -6,6 +6,7 @@ import { useAuth } from '../auth'
 import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../contexts/ChatContext'
 import { useResearch } from '../contexts/ResearchContext'
 import RagContextCard from '../components/RagContextCard'
+import ToolResultDisplay from '../components/ToolResultDisplay'
 import { formatRelativeDate } from '../utils/dates'
 
 interface ConversationSummary {
@@ -878,11 +879,23 @@ function ToolCallCard({ tool, active }: { tool: ToolCallInfo; active: boolean })
         </svg>
       </button>
       {expanded && (
-        <div className="border-t border-gray-100 dark:border-gray-700/50 px-2.5 py-1.5 text-[11px] bg-gray-50/50 dark:bg-gray-800/30 space-y-1">
+        <div className="border-t border-gray-100 dark:border-gray-700/50 px-2.5 py-1.5 text-[11px] bg-gray-50/50 dark:bg-gray-800/30 space-y-2">
           {tool.arguments && Object.keys(tool.arguments).length > 0 && (
-            <div className="font-mono text-gray-400 dark:text-gray-500">{JSON.stringify(tool.arguments, null, 2)}</div>
+            <div>
+              <div className="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">Arguments</div>
+              <div className="font-mono text-gray-400 dark:text-gray-500">
+                {JSON.stringify(tool.arguments, null, 2)}
+              </div>
+            </div>
           )}
-          {tool.result && <div className="text-gray-500 dark:text-gray-400">{tool.result}</div>}
+          {tool.rawResult ? (
+            <div>
+              <div className="text-[10px] text-gray-400 uppercase tracking-wide mb-0.5">Result</div>
+              <ToolResultDisplay rawResult={tool.rawResult} toolName={tool.name} />
+            </div>
+          ) : tool.result ? (
+            <div className="text-gray-500 dark:text-gray-400">{tool.result}</div>
+          ) : null}
         </div>
       )}
     </div>
