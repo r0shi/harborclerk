@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import CitedMarkdown from '../components/CitedMarkdown'
+import ToolResultDisplay from '../components/ToolResultDisplay'
 import { del, get } from '../api'
 import { useChat } from '../contexts/ChatContext'
 import { useResearch, type ToolCallEntry } from '../contexts/ResearchContext'
@@ -24,6 +25,7 @@ interface ResearchMessage {
     name: string
     arguments: Record<string, unknown>
     result?: string
+    raw_result?: string
   }>
 }
 
@@ -50,6 +52,7 @@ function extractToolCalls(messages: ResearchMessage[]): ToolCallEntry[] {
           name: tc.name,
           arguments: tc.arguments,
           summary: tc.result || undefined,
+          rawResult: tc.raw_result || undefined,
           round,
         })
       }
@@ -833,30 +836,29 @@ export default function ResearchPage() {
 
 function ToolLogEntry({ tool, isLast }: { tool: ToolCallEntry; isLast: boolean }) {
   const isDone = !!tool.summary
+  const hasResult = !!tool.rawResult
 
-  return (
-    <div className="flex items-start gap-2 px-3 py-2">
-      <span
-        className={`shrink-0 mt-0.5 ${
-          !isDone && isLast
-            ? 'text-blue-500 dark:text-blue-400 animate-pulse'
-            : 'text-emerald-500 dark:text-emerald-400'
-        }`}
-      >
-        {!isDone && isLast ? (
-          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
-            />
-          </svg>
-        ) : (
-          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-          </svg>
-        )}
-      </span>
+  const icon =
+    !isDone && isLast ? (
+      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
+        />
+      </svg>
+    ) : (
+      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+      </svg>
+    )
+
+  const iconColor =
+    !isDone && isLast ? 'text-blue-500 dark:text-blue-400 animate-pulse' : 'text-emerald-500 dark:text-emerald-400'
+
+  const summaryContent = (
+    <div className="flex items-start gap-2 w-full">
+      <span className={`shrink-0 mt-0.5 ${iconColor}`}>{icon}</span>
       <div className="min-w-0 flex-1">
         <span className="text-[12px] font-medium text-gray-600 dark:text-gray-300">{tool.name}</span>
         {tool.summary && (
@@ -864,6 +866,30 @@ function ToolLogEntry({ tool, isLast }: { tool: ToolCallEntry; isLast: boolean }
         )}
       </div>
     </div>
+  )
+
+  if (!hasResult) {
+    return <div className="px-3 py-2">{summaryContent}</div>
+  }
+
+  return (
+    <details className="group">
+      <summary className="px-3 py-2 cursor-pointer list-none flex items-center [&::-webkit-details-marker]:hidden">
+        {summaryContent}
+        <svg
+          className="h-3 w-3 shrink-0 text-gray-300 dark:text-gray-600 transition-transform duration-150 group-open:rotate-90 ml-1"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+        </svg>
+      </summary>
+      <div className="px-3 pb-2 pl-8">
+        <ToolResultDisplay rawResult={tool.rawResult!} toolName={tool.name} />
+      </div>
+    </details>
   )
 }
 

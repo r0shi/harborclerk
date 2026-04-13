@@ -135,10 +135,10 @@ async def get_research(
     from harbor_clerk.api.routes.chat import _enrich_tool_calls
     from harbor_clerk.llm.tools import summarize_tool_result as _summarize_tool_result
 
-    tool_results_by_id: dict[str, str] = {}
+    tool_results_by_id: dict[str, tuple[str, str]] = {}
     for m in all_msgs:
         if m.role == "tool" and m.tool_call_id and m.content:
-            tool_results_by_id[m.tool_call_id] = _summarize_tool_result(m.content)
+            tool_results_by_id[m.tool_call_id] = (_summarize_tool_result(m.content), m.content)
 
     # Build message dicts
     messages: list[dict] = []

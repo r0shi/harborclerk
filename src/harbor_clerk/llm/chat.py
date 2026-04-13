@@ -447,7 +447,7 @@ async def chat_stream(
 
                     result_str = await execute_tool(fn_name, fn_args, user_id)
 
-                    yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': summarize_tool_result(result_str)})}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': summarize_tool_result(result_str), 'raw_result': result_str})}\n\n"
 
                     # Save full result to DB, but truncate for LLM context
                     tool_msg = ChatMessage(

@@ -5,6 +5,7 @@ export interface ToolCallEntry {
   name: string
   arguments: Record<string, unknown>
   summary?: string
+  rawResult?: string
   round?: number
 }
 
@@ -106,7 +107,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
                 const toolCalls = [...prev.toolCalls]
                 for (let i = toolCalls.length - 1; i >= 0; i--) {
                   if (toolCalls[i].name === event.name && !toolCalls[i].summary) {
-                    toolCalls[i] = { ...toolCalls[i], summary: event.summary }
+                    toolCalls[i] = { ...toolCalls[i], summary: event.summary, rawResult: event.raw_result }
                     break
                   }
                 }
