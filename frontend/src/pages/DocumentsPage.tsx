@@ -148,6 +148,7 @@ export default function DocumentsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const lastSelectedIndex = useRef<number | null>(null)
   const [bulkAction, setBulkAction] = useState('')
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
@@ -426,13 +427,31 @@ export default function DocumentsPage() {
     }
   }
 
-  function toggleSelect(docId: string) {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(docId)) next.delete(docId)
-      else next.add(docId)
-      return next
-    })
+  function toggleSelect(docId: string, e?: React.MouseEvent) {
+    const currentIndex = visibleDocs.findIndex((d) => d.doc_id === docId)
+
+    if (e?.shiftKey && lastSelectedIndex.current != null && currentIndex >= 0) {
+      // Shift-click: select range between last click and this click
+      const start = Math.min(lastSelectedIndex.current, currentIndex)
+      const end = Math.max(lastSelectedIndex.current, currentIndex)
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (let i = start; i <= end; i++) {
+          next.add(visibleDocs[i].doc_id)
+        }
+        return next
+      })
+    } else {
+      // Normal click: toggle single item
+      setSelected((prev) => {
+        const next = new Set(prev)
+        if (next.has(docId)) next.delete(docId)
+        else next.add(docId)
+        return next
+      })
+    }
+
+    if (currentIndex >= 0) lastSelectedIndex.current = currentIndex
   }
 
   function toggleSelectAll() {
@@ -764,7 +783,8 @@ export default function DocumentsPage() {
                           <input
                             type="checkbox"
                             checked={selected.has(doc.doc_id)}
-                            onChange={() => toggleSelect(doc.doc_id)}
+                            onChange={() => {}}
+                            onClick={(e) => toggleSelect(doc.doc_id, e)}
                             className="h-3.5 w-3.5 rounded-sm border-gray-300 text-(--color-accent) focus:ring-(--color-accent)/30"
                           />
                         </td>
