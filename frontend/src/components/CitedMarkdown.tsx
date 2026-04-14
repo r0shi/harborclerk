@@ -9,13 +9,16 @@ interface DocEntry {
   title: string
 }
 
-// Cache doc title → doc_id map across renders
+// Cache doc title → doc_id map across renders (refreshes every 60s)
 let docMapCache: Record<string, string> | null = null
 let docMapPromise: Promise<Record<string, string>> | null = null
+let docMapFetchedAt = 0
 
 function fetchDocMap(): Promise<Record<string, string>> {
-  if (docMapCache) return Promise.resolve(docMapCache)
-  if (docMapPromise) return docMapPromise
+  const now = Date.now()
+  // Refresh cache every 60s so new documents get picked up
+  if (docMapCache && now - docMapFetchedAt < 60_000) return Promise.resolve(docMapCache)
+  if (docMapPromise && now - docMapFetchedAt < 60_000) return docMapPromise
   docMapPromise = get<{ items: DocEntry[] }>('/api/docs', { limit: 5000 })
     .then((data) => {
       const map: Record<string, string> = {}
@@ -23,9 +26,14 @@ function fetchDocMap(): Promise<Record<string, string>> {
         map[d.title.toLowerCase()] = d.doc_id
       }
       docMapCache = map
+      docMapFetchedAt = Date.now()
       return map
     })
-    .catch(() => ({}))
+    .catch(() => {
+      // Don't cache failures — allow retry on next render
+      docMapPromise = null
+      return docMapCache || {}
+    })
   return docMapPromise
 }
 
