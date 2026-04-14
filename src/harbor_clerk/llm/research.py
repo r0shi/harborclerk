@@ -406,8 +406,10 @@ async def research_stream(
                         yield f"data: {json.dumps({'type': 'notes', 'content': step.content})}\n\n"
 
                 elif isinstance(step, PlanningStep):
-                    if step.plan:
-                        yield f"data: {json.dumps({'type': 'notes', 'content': f'Planning: {step.plan[:500]}'})}\n\n"
+                    plan_text = step.plan if hasattr(step, "plan") else None
+                    logger.info("PlanningStep: plan=%s", repr(plan_text[:200]) if plan_text else "None")
+                    if plan_text:
+                        yield f"data: {json.dumps({'type': 'notes', 'content': f'Planning: {plan_text[:500]}'})}\n\n"
 
                 elif isinstance(step, ActionStep):
                     step_count = step.step_number
@@ -423,8 +425,15 @@ async def research_stream(
                     yield f"data: {json.dumps(progress_event)}\n\n"
 
                     # Emit agent's thinking from this step
-                    if step.model_output:
-                        model_text = step.model_output if isinstance(step.model_output, str) else str(step.model_output)
+                    model_out = step.model_output
+                    logger.info(
+                        "ActionStep %d: model_output type=%s len=%d",
+                        step.step_number,
+                        type(model_out).__name__,
+                        len(str(model_out)) if model_out else 0,
+                    )
+                    if model_out:
+                        model_text = model_out if isinstance(model_out, str) else str(model_out)
                         if model_text.strip():
                             yield f"data: {json.dumps({'type': 'notes', 'content': model_text[:2000]})}\n\n"
 
