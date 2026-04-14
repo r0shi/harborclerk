@@ -15,7 +15,8 @@ final class HealthChecker {
     /// Consecutive health check failure count per service name.
     private var failureCounts: [String: Int] = [:]
     /// Number of consecutive failures before marking a service as errored.
-    private let consecutiveFailuresBeforeError = 3 // 30s at 10s interval
+    /// Set to 6 (60s) to avoid false positives when API is busy with research/synthesis.
+    private let consecutiveFailuresBeforeError = 6 // 60s at 10s interval
 
     init(serviceManager: ServiceManager) {
         self.serviceManager = serviceManager

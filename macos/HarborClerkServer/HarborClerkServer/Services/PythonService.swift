@@ -9,7 +9,8 @@ class PythonService: ManagedService {
     var baseEnvironment: [String: String] = [:]
 
     /// Seconds to wait after SIGTERM before sending SIGKILL.
-    var shutdownGracePeriod: TimeInterval = 5.0
+    /// API server needs more time when mid-research (SSE streams, agent threads, DB sessions).
+    var shutdownGracePeriod: TimeInterval = 30.0
     /// Called after process exits unexpectedly and internal restarts are exhausted.
     var onUnexpectedExit: (@MainActor () -> Void)?
 
