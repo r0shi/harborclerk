@@ -88,7 +88,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
               break
 
             case 'notes':
-              setProgress((prev) => (prev ? { ...prev, notes: event.content } : prev))
+              setProgress((prev) => (prev ? { ...prev, notes: (prev.notes || '') + event.content + '\n' } : prev))
               break
 
             case 'tool_call':
