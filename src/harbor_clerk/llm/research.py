@@ -87,6 +87,40 @@ def _truncate_for_context(text: str, max_chars: int) -> str:
     return text[:max_chars] + f"\n... [truncated — {len(text)} chars total]"
 
 
+def _strip_task_echo(text: str, user_question: str) -> str:
+    """Strip the echoed task prompt from agent output.
+
+    smolagents tends to repeat the full task (user question + IMPORTANT
+    INSTRUCTIONS boilerplate) at the start of each planning/action step.
+    Remove it so the notes show only the agent's actual reasoning.
+    """
+    if not text or not user_question:
+        return text
+    q = user_question.strip()
+    q_lower = q.lower()
+    q_no_please = q_lower[7:] if q_lower.startswith("please ") else q_lower
+    # Strip common prefixes that echo the task
+    for prefix in (
+        f"Using the information available through the tools, {q_lower}",
+        f"Using the information available through the tools, please {q_no_please}",
+        q,
+    ):
+        idx = text.lower().find(prefix.lower())
+        if idx >= 0 and idx < 100:  # only strip if near the start
+            # Skip past the task + any IMPORTANT INSTRUCTIONS block
+            end = text.find("Planning:", idx)
+            if end < 0:
+                end = text.find("- Do not use generic", idx)
+                if end >= 0:
+                    # Skip past the bullet line
+                    newline = text.find("\n", end)
+                    if newline >= 0:
+                        end = newline + 1
+            if end >= 0:
+                return text[end:].lstrip()
+    return text
+
+
 async def _stream_llm_call(
     client: httpx.AsyncClient,
     url: str,
@@ -409,7 +443,10 @@ async def research_stream(
                     plan_text = step.plan if hasattr(step, "plan") else None
                     logger.info("PlanningStep: plan=%s", repr(plan_text[:200]) if plan_text else "None")
                     if plan_text:
-                        yield f"data: {json.dumps({'type': 'notes', 'content': f'Planning: {plan_text[:500]}'})}\n\n"
+                        # Strip echoed task prompt from planning output
+                        clean_plan = _strip_task_echo(plan_text, user_question)
+                        if clean_plan.strip():
+                            yield f"data: {json.dumps({'type': 'notes', 'content': f'Planning: {clean_plan[:500]}'})}\n\n"
 
                 elif isinstance(step, ActionStep):
                     step_count = step.step_number
@@ -434,6 +471,8 @@ async def research_stream(
                     )
                     if model_out:
                         model_text = model_out if isinstance(model_out, str) else str(model_out)
+                        # Strip echoed task prompt from model output
+                        model_text = _strip_task_echo(model_text, user_question)
                         if model_text.strip():
                             yield f"data: {json.dumps({'type': 'notes', 'content': model_text[:2000]})}\n\n"
 
