@@ -496,16 +496,19 @@ def get_research_tools() -> list[dict]:
 
 
 def _map_args_search_research(args: dict) -> dict:
-    """Search arg mapper for research — uses settings for k/offset, brief detail."""
+    """Search arg mapper for research — uses settings for k/offset, full detail."""
     from harbor_clerk.config import get_settings
 
     s = get_settings()
     max_k = 100 if s.research_search_paginated else s.research_search_k
+    # Default k reflects the user's configured research_search_k so preferences
+    # control result volume (matches how users expect the setting to behave).
+    default_k = min(s.research_search_k, max_k) if not s.research_search_paginated else 10
     mapped: dict = {
         "query": args["query"],
-        "k": min(args.get("k", 10), max_k),
+        "k": min(args.get("k", default_k), max_k),
         "doc_id": args.get("doc_id"),
-        "detail": "brief",
+        "detail": "full",
     }
     if s.research_search_paginated and args.get("offset"):
         mapped["offset"] = args["offset"]
