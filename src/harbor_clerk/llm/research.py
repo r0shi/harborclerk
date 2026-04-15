@@ -338,6 +338,12 @@ async def research_stream(
         start_time = datetime.now(UTC)
         final_answer_text = ""
         step_count = 0
+        # Server-side accumulator for round-by-round agent activity. Captures
+        # tool calls, tool results, planning steps, and any text the model emits.
+        # Used as the source for state.notes and synthesis (independent of the
+        # agent's own final answer, which is unreliable).
+        collected_notes: list[str] = []
+        current_round = 0
 
         try:
             # Run agent in thread, stream steps via queue
@@ -393,6 +399,9 @@ async def research_stream(
 
                 if isinstance(step, ToolCall):
                     tc_args = step.arguments if isinstance(step.arguments, dict) else {}
+                    # Track for collected_notes
+                    args_str = ", ".join(f"{k}={json.dumps(v)[:80]}" for k, v in tc_args.items())
+                    collected_notes.append(f"### Round {current_round} — Tool: {step.name}({args_str})")
                     yield f"data: {json.dumps({'type': 'tool_call', 'name': step.name, 'arguments': tc_args})}\n\n"
                     # Save tool call as assistant message for persistence
                     session.add(
@@ -417,6 +426,8 @@ async def research_stream(
                     observation = str(step.observation or step.output)
                     summary = summarize_tool_result(observation[:500])
                     tc_name = step.tool_call.name if step.tool_call else "unknown"
+                    # Track for collected_notes — include first chunk of observation as evidence
+                    collected_notes.append(f"Result: {summary}\n\n{observation[:1500]}")
                     yield f"data: {json.dumps({'type': 'tool_result', 'name': tc_name, 'summary': summary, 'raw_result': observation})}\n\n"
                     # Save tool result as tool message for persistence
                     session.add(
@@ -446,10 +457,12 @@ async def research_stream(
                         # Strip echoed task prompt from planning output
                         clean_plan = _strip_task_echo(plan_text, user_question)
                         if clean_plan.strip():
+                            collected_notes.append(f"## Planning\n{clean_plan[:1500]}")
                             yield f"data: {json.dumps({'type': 'notes', 'content': f'Planning: {clean_plan[:500]}'})}\n\n"
 
                 elif isinstance(step, ActionStep):
                     step_count = step.step_number
+                    current_round = step_count
                     elapsed = int((datetime.now(UTC) - start_time).total_seconds())
 
                     progress_event = {
@@ -474,6 +487,7 @@ async def research_stream(
                         # Strip echoed task prompt from model output
                         model_text = _strip_task_echo(model_text, user_question)
                         if model_text.strip():
+                            collected_notes.append(f"## Reasoning\n{model_text[:2000]}")
                             yield f"data: {json.dumps({'type': 'notes', 'content': model_text[:2000]})}\n\n"
 
                     if step.is_final_answer and step.action_output:
@@ -528,7 +542,20 @@ async def research_stream(
             # ---------------------------------------------------------------
             # Synthesis pass
             # ---------------------------------------------------------------
-            notes = final_answer_text or "No relevant findings were discovered during the research."
+            # Prefer the server-side accumulated notes (everything the agent
+            # gathered across rounds) over the agent's own final answer (which
+            # is unreliable — the agent often gives up at the end even when it
+            # found good results during the run). Cap total length so we don't
+            # blow up the synthesis context.
+            collected_text = "\n\n".join(collected_notes)
+            if len(collected_text) > 60_000:
+                collected_text = collected_text[:60_000] + "\n... [truncated]"
+            if collected_text.strip():
+                notes = collected_text
+                if final_answer_text:
+                    notes += f"\n\n## Agent's final answer\n{final_answer_text}"
+            else:
+                notes = final_answer_text or "No relevant findings were discovered during the research."
 
             yield f"data: {json.dumps({'type': 'synthesis', 'status': 'started'})}\n\n"
 
