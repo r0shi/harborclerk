@@ -76,6 +76,44 @@ class SearchDocumentsTool(_ResearchTool):
         return self._call_tool(args)
 
 
+class BatchSearchTool(_ResearchTool):
+    name = "batch_search"
+    description = (
+        "Run up to 5 search queries in a single call. Returns results grouped "
+        "by query — ideal for exploring a topic from multiple angles without "
+        "sequential round-trips. Prefer this over repeated single-query "
+        "search_documents when you have several related queries in mind. "
+        "Returns brief previews; follow up with read_passages on interesting "
+        "chunk_ids for full text."
+    )
+    inputs = {
+        "queries": {
+            "type": "string",
+            "description": "Comma-separated list of search queries (max 5)",
+        },
+        "k": {
+            "type": "integer",
+            "description": "Results per query (default 10, max 100)",
+            "nullable": True,
+        },
+        "doc_id": {
+            "type": "string",
+            "description": "Restrict all queries to a specific document ID",
+            "nullable": True,
+        },
+    }
+    _tool_name = "batch_search"
+
+    def forward(self, queries: str, k: int | None = None, doc_id: str | None = None) -> str:
+        # smolagents passes the string as-is; mapper splits on comma
+        args: dict = {"queries": queries}
+        if k is not None:
+            args["k"] = k
+        if doc_id is not None:
+            args["doc_id"] = doc_id
+        return self._call_tool(args)
+
+
 class ReadPassagesTool(_ResearchTool):
     name = "read_passages"
     description = (
@@ -374,6 +412,7 @@ def build_research_tools(user_id=None, main_loop=None) -> list[Tool]:
     """
     return [
         SearchDocumentsTool(user_id, main_loop=main_loop),
+        BatchSearchTool(user_id, main_loop=main_loop),
         ReadPassagesTool(user_id, main_loop=main_loop),
         ExpandContextTool(user_id, main_loop=main_loop),
         GetDocumentTool(user_id, main_loop=main_loop),
