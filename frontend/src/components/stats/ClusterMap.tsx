@@ -67,7 +67,7 @@ export default function ClusterMap() {
   const [positions, setPositions] = useState<[number, number][]>([])
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null)
   const [dimensions, setDimensions] = useState({ width: 800, height: 500 })
-  const [colorMode, setColorMode] = useState<ColorMode>('mime')
+  const [colorMode, setColorMode] = useState<ColorMode>('topic')
   const navigate = useNavigate()
 
   const hasTopics = docs.some((d) => d.topic_id != null)
@@ -235,16 +235,16 @@ export default function ClusterMap() {
         {hasTopics && (
           <div className="flex rounded-lg bg-(--color-bg-secondary) p-0.5 text-[11px] font-medium">
             <button
-              className={`rounded-md px-2.5 py-1 transition-colors ${colorMode === 'mime' ? 'bg-white dark:bg-[#3a3a3c] shadow-sm text-(--color-text-primary)' : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'}`}
-              onClick={() => setColorMode('mime')}
-            >
-              File Type
-            </button>
-            <button
               className={`rounded-md px-2.5 py-1 transition-colors ${colorMode === 'topic' ? 'bg-white dark:bg-[#3a3a3c] shadow-sm text-(--color-text-primary)' : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'}`}
               onClick={() => setColorMode('topic')}
             >
               Topic
+            </button>
+            <button
+              className={`rounded-md px-2.5 py-1 transition-colors ${colorMode === 'mime' ? 'bg-white dark:bg-[#3a3a3c] shadow-sm text-(--color-text-primary)' : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'}`}
+              onClick={() => setColorMode('mime')}
+            >
+              File Type
             </button>
           </div>
         )}

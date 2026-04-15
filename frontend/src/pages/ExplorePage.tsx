@@ -340,7 +340,13 @@ function ExploreMain({
                   className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-4 hover:shadow-mac-lg hover:ring-(--color-border)/80 transition-all text-left group"
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <h3 className="text-[13px] font-semibold text-(--color-text-primary)">{cluster.name}</h3>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+                        style={{ backgroundColor: '#5ac8fa' }}
+                      />
+                      <h3 className="text-[13px] font-semibold text-(--color-text-primary) truncate">{cluster.name}</h3>
+                    </div>
                     <svg
                       className="h-3.5 w-3.5 text-(--color-text-secondary) opacity-0 group-hover:opacity-100 transition-opacity"
                       fill="none"
