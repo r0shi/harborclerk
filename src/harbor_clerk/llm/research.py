@@ -277,6 +277,11 @@ async def research_stream(
 
         strategy = state.strategy
 
+        # If resuming an interrupted task that has accumulated notes, skip the
+        # agent loop and go straight to synthesis. The agent loop is expensive
+        # and rerunning it on a bad LLM state usually hits the same failure.
+        resume_from_synthesis = resume and state.notes and len(state.notes) > 200
+
         # Mark as running
         state.status = "running"
         state.heartbeat_at = datetime.now(UTC)
@@ -346,6 +351,19 @@ async def research_stream(
         current_round = 0
 
         try:
+            if resume_from_synthesis:
+                # Skip the agent loop — use accumulated notes directly.
+                # This avoids re-running tool calls when only synthesis failed.
+                logger.info(
+                    "Resuming research %s from synthesis (notes len=%d)",
+                    conversation_id,
+                    len(state.notes or ""),
+                )
+                final_answer_text = ""  # keep empty; synthesis uses notes directly
+                step_count = state.current_round or 0
+                # Fall through to synthesis pass below; agent loop block is guarded
+                # by `not resume_from_synthesis`.
+
             # Run agent in thread, stream steps via queue
             step_queue: queue_mod.Queue = queue_mod.Queue()
 
@@ -367,9 +385,9 @@ async def research_stream(
                     step_queue.put(("done", None))
 
             loop = asyncio.get_running_loop()
-            executor_future = loop.run_in_executor(None, _run_agent)
+            executor_future = loop.run_in_executor(None, _run_agent) if not resume_from_synthesis else None
 
-            while True:
+            while not resume_from_synthesis:
                 try:
                     msg = await asyncio.wait_for(
                         loop.run_in_executor(None, lambda: step_queue.get(timeout=30)),
@@ -504,13 +522,14 @@ async def research_stream(
                         final_answer_text = str(step.output)
 
             # Wait for executor to finish
-            try:
-                await asyncio.wait_for(asyncio.shield(executor_future), timeout=10)
-            except Exception:
-                pass
+            if executor_future is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(executor_future), timeout=10)
+                except Exception:
+                    pass
 
             # If no final answer from agent, try to extract from memory
-            if not final_answer_text and hasattr(agent, "memory") and agent.memory:
+            if not resume_from_synthesis and not final_answer_text and hasattr(agent, "memory") and agent.memory:
                 try:
                     for mem_step in reversed(agent.memory.steps):
                         if hasattr(mem_step, "action_output") and mem_step.action_output:
@@ -547,15 +566,19 @@ async def research_stream(
             # is unreliable — the agent often gives up at the end even when it
             # found good results during the run). Cap total length so we don't
             # blow up the synthesis context.
-            collected_text = "\n\n".join(collected_notes)
-            if len(collected_text) > 60_000:
-                collected_text = collected_text[:60_000] + "\n... [truncated]"
-            if collected_text.strip():
-                notes = collected_text
-                if final_answer_text:
-                    notes += f"\n\n## Agent's final answer\n{final_answer_text}"
+            if resume_from_synthesis:
+                # Use previously-saved notes instead of the (empty) collected_notes
+                notes = state.notes or "No relevant findings were discovered during the research."
             else:
-                notes = final_answer_text or "No relevant findings were discovered during the research."
+                collected_text = "\n\n".join(collected_notes)
+                if len(collected_text) > 60_000:
+                    collected_text = collected_text[:60_000] + "\n... [truncated]"
+                if collected_text.strip():
+                    notes = collected_text
+                    if final_answer_text:
+                        notes += f"\n\n## Agent's final answer\n{final_answer_text}"
+                else:
+                    notes = final_answer_text or "No relevant findings were discovered during the research."
 
             yield f"data: {json.dumps({'type': 'synthesis', 'status': 'started'})}\n\n"
 
