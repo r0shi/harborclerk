@@ -515,9 +515,33 @@ def _map_args_search_research(args: dict) -> dict:
     return mapped
 
 
+def _map_args_batch_search_research(args: dict) -> dict:
+    """Batch search for research — clamps k and forces brief detail.
+
+    Brief detail keeps multi-query output manageable; the agent can follow up
+    with read_passages on interesting chunk_ids.
+    """
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    max_k = 100 if s.research_search_paginated else s.research_search_k
+    queries = args.get("queries") or []
+    if isinstance(queries, str):
+        queries = [q.strip() for q in queries.split(",") if q.strip()]
+    mapped: dict = {
+        "queries": queries[:5],
+        "k": min(args.get("k", 10), max_k),
+        "detail": "brief",
+    }
+    if args.get("doc_id"):
+        mapped["doc_id"] = args["doc_id"]
+    return mapped
+
+
 _RESEARCH_TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
     **_TOOL_DISPATCH,
     "search_documents": ("kb_search", _map_args_search_research),
+    "batch_search": ("kb_batch_search", _map_args_batch_search_research),
 }
 
 

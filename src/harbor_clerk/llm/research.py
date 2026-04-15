@@ -324,16 +324,47 @@ async def research_stream(
             planning_interval=planning_interval,
         )
 
-        # Build task description with citation instructions
+        # Build task description with citation + retrieval-policy instructions.
+        # Kept in parity with chat's SYSTEM_PROMPT (broad-query strategy,
+        # has_more/total_candidates pagination, query branching) so Research
+        # doesn't stop too early. Topic hint is appended below.
+        from harbor_clerk.topics import get_topic_summary
+
+        topic_hint = await get_topic_summary()
+
         task = (
             f"{user_question}\n\n"
-            "IMPORTANT INSTRUCTIONS:\n"
-            "- Search the knowledge base thoroughly using varied queries\n"
-            "- Every finding MUST include its source citation as [Document Title, page X]\n"
-            "- Never paraphrase citations — preserve them exactly as they appear in search results\n"
-            "- When you call final_answer, include ALL findings with their citations\n"
-            "- Do not use generic references like 'Research Note 1' — always cite the actual document\n"
+            "## How to research\n\n"
+            "Ground every claim in retrieved passages. Cite sources exactly as they appear: "
+            "[Document Title, page X]. Never fabricate citations.\n\n"
+            "### Breadth first, then depth\n"
+            "- For broad or comparative questions, run MANY varied queries. Do not stop "
+            "after one search — covering a topic thoroughly requires 5–15+ queries "
+            "with different phrasings, synonyms, entities, and angles.\n"
+            "- Use batch_search to fan out 3–5 related queries in a single call when "
+            "exploring a topic from multiple angles. It is far more efficient than "
+            "one-query-at-a-time search_documents.\n"
+            "- For each search result, check has_more and total_candidates. If the "
+            "corpus has more candidates than you retrieved, either page forward with "
+            "offset or try more specific queries to reach uncovered material.\n"
+            "- When a user asks about a specific topic, entity, or region, search "
+            "for it directly. Do not assume the corpus lacks it just because it was "
+            "not in earlier results.\n\n"
+            "### Workflow\n"
+            "1. search_documents / batch_search to discover relevant passages\n"
+            "2. read_passages on the chunk_ids of the most promising hits to get full text\n"
+            "3. expand_context around a passage only when a hit is ambiguous\n"
+            "4. Repeat with new queries to fill gaps — aim for broad document coverage "
+            "before synthesis\n\n"
+            "### Citation rules\n"
+            "- Every finding in your notes/final answer MUST cite its source as "
+            "[Document Title, page X].\n"
+            "- Preserve citations exactly as returned by the search tools.\n"
+            "- Never use generic references like 'Research Note 1'.\n"
+            "- If evidence is incomplete or contradictory, say so explicitly.\n"
         )
+        if topic_hint:
+            task += f"\n## Corpus topics\n{topic_hint}\n"
         if strategy == "sweep":
             doc_list = await _fetch_document_list(user_id)
             if doc_list:
@@ -444,8 +475,10 @@ async def research_stream(
                     observation = str(step.observation or step.output)
                     summary = summarize_tool_result(observation[:500])
                     tc_name = step.tool_call.name if step.tool_call else "unknown"
-                    # Track for collected_notes — include first chunk of observation as evidence
-                    collected_notes.append(f"Result: {summary}\n\n{observation[:1500]}")
+                    # Track for collected_notes with a generous per-observation cap
+                    # (was 1500, which regularly cut off search hits after the first
+                    # 2–3 results). The 60KB global cap below still bounds total size.
+                    collected_notes.append(f"Result: {summary}\n\n{observation[:12000]}")
                     yield f"data: {json.dumps({'type': 'tool_result', 'name': tc_name, 'summary': summary, 'raw_result': observation})}\n\n"
                     # Save tool result as tool message for persistence
                     session.add(
