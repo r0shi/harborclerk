@@ -171,7 +171,7 @@ async def _stream_llm_tokens(
         logger.warning("LLM returned %d in synthesis, retrying in 2s", response_obj.status_code)
         await asyncio.sleep(2)
 
-    async with response_obj:
+    try:
         response_obj.raise_for_status()
         report_llm_success()
         async for line in response_obj.aiter_lines():
@@ -187,6 +187,8 @@ async def _stream_llm_tokens(
             delta = chunk.get("choices", [{}])[0].get("delta", {})
             if delta.get("content"):
                 yield delta["content"]
+    finally:
+        await response_obj.aclose()
 
 
 def _parse_json_from_llm(text: str) -> dict:

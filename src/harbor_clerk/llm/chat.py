@@ -316,7 +316,7 @@ async def chat_stream(
                     logger.warning("LLM returned %d, retrying in 2s", response_obj.status_code)
                     await asyncio.sleep(2)
 
-                async with client_obj, response_obj:
+                try:
                     response = response_obj
 
                     if response.status_code >= 400:
@@ -414,6 +414,9 @@ async def chat_stream(
                             token_text = delta["content"]
                             text_buffer += token_text
                             yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
+                finally:
+                    await response_obj.aclose()
+                    await client_obj.aclose()
 
             except (httpx.ConnectError, httpx.TimeoutException):
                 error_summary = "LLM server is not running. Select and activate a model in Settings."
