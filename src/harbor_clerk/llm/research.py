@@ -1,9 +1,14 @@
-"""Research engine — smolagents ToolCallingAgent with synthesis pass."""
+"""Research engine — deterministic plan→search→read→extract→synthesize pipeline.
+
+Replaces the previous smolagents-based agent loop with a structured workflow
+where the LLM is used only for bounded tasks (query planning, note extraction,
+synthesis) and all retrieval is driven by Python code with measurable coverage.
+"""
 
 import asyncio
 import json
 import logging
-import queue as queue_mod
+import re
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -14,7 +19,8 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.health import report_llm_error, report_llm_success
-from harbor_clerk.llm.tools import summarize_tool_result
+from harbor_clerk.llm.models import get_model
+from harbor_clerk.llm.tools import execute_tool
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
 from harbor_clerk.models.document import Document
@@ -23,8 +29,12 @@ from harbor_clerk.models.research_state import ResearchState
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# System prompt constants
+# Constants
 # ---------------------------------------------------------------------------
+
+_CHARS_PER_TOKEN = 3.5
+_SYNTHESIS_TIMEOUT = 600.0
+_LLM_TIMEOUT = 120.0
 
 _SYNTHESIS_SYSTEM = (
     "You are writing a research report for Harbor Clerk. Based on the research "
@@ -40,13 +50,49 @@ _SYNTHESIS_SYSTEM = (
     "- Never fabricate corpus citations"
 )
 
-# Timeouts
-_ITERATION_TIMEOUT = 300.0
-_SYNTHESIS_TIMEOUT = 600.0
-_KEEPALIVE_INTERVAL = 30.0  # SSE keepalive + heartbeat during LLM calls
+_QUERY_PLANNING_SYSTEM = (
+    "You are a search query planner for a document knowledge base. "
+    "Given a research question, generate diverse search queries that together "
+    "cover all angles of the topic.\n\n"
+    "Rules:\n"
+    "- Generate 5-15 queries depending on question complexity\n"
+    "- Vary phrasing: use synonyms, related terms, specific entities\n"
+    "- Include both broad and narrow queries\n"
+    "- For comparative questions, generate queries for each side\n"
+    "- For questions about specific entities, include name variants\n"
+    '- Return ONLY a JSON object: {"queries": ["query1", "query2", ...]}\n'
+    "- No explanation, no markdown fences — just the JSON object"
+)
 
-# Rough chars-per-token estimate (same as chat.py)
-_CHARS_PER_TOKEN = 3.5
+_NOTE_EXTRACTION_SYSTEM = (
+    "You are extracting research notes from search results. For each relevant "
+    "finding, write a concise note with an exact citation.\n\n"
+    "Rules:\n"
+    "- Cite every finding as [Document Title, page X] — exactly as shown in the passages\n"
+    "- Write one note per distinct finding\n"
+    "- Skip irrelevant or redundant passages\n"
+    "- Preserve factual details — names, numbers, dates\n"
+    "- If a passage contradicts another, note both with their citations\n"
+    "- Write in plain text with citations, not JSON"
+)
+
+_GAP_ANALYSIS_SYSTEM = (
+    "You are checking research coverage. Given the original question and notes "
+    "gathered so far, identify any obvious gaps.\n\n"
+    "Rules:\n"
+    '- If the notes adequately cover the question, return: {"gaps": []}\n'
+    "- If there are clear gaps, return up to 5 additional queries: "
+    '{"gaps": ["query1", "query2"]}\n'
+    "- Only suggest queries for genuinely missing angles, not minor refinements\n"
+    "- Return ONLY the JSON object, no explanation"
+)
+
+# Depth → query count and search parameters
+_DEPTH_CONFIG = {
+    "light": {"max_queries": 5, "k_per_query": 10, "max_passages": 30, "gap_round": False},
+    "standard": {"max_queries": 10, "k_per_query": 15, "max_passages": 50, "gap_round": True},
+    "thorough": {"max_queries": 15, "k_per_query": 20, "max_passages": 80, "gap_round": True},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -54,153 +100,52 @@ _CHARS_PER_TOKEN = 3.5
 # ---------------------------------------------------------------------------
 
 
-def _build_synthesis_messages(user_question: str, notes: str) -> list[dict]:
-    """Construct messages for the final synthesis/report pass."""
-    return [
-        {"role": "system", "content": _SYNTHESIS_SYSTEM},
-        {
-            "role": "user",
-            "content": (
-                f"## Original question\n{user_question}\n\n"
-                f"## Research notes\n<notes>\n{notes}\n</notes>\n\n"
-                "Write your final report with citations."
-            ),
-        },
-    ]
+def _estimate_tokens(text: str) -> int:
+    return int(len(text) / _CHARS_PER_TOKEN)
 
 
-async def _fetch_document_list(user_id: uuid.UUID | None) -> list[dict]:
-    """Get corpus document list for sweep strategy.
-
-    Returns a list of dicts with doc_id, title for batching.
-    """
-    async with async_session_factory() as session:
-        result = await session.execute(
-            select(Document.doc_id, Document.title).where(Document.status == "ready").order_by(Document.title)
-        )
-        return [{"doc_id": str(row.doc_id), "title": row.title} for row in result.all()]
+def _get_context_budget() -> int:
+    """Get the model's context window in tokens."""
+    settings = get_settings()
+    model = get_model(settings.llm_model_id) if settings.llm_model_id else None
+    if model and settings.llm_yarn_enabled and model.yarn:
+        return model.yarn.extended_context
+    return model.context_window if model else 32768
 
 
-def _truncate_for_context(text: str, max_chars: int) -> str:
-    """Truncate text for LLM context if it exceeds max_chars."""
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n... [truncated — {len(text)} chars total]"
-
-
-def _strip_task_echo(text: str, user_question: str) -> str:
-    """Strip the echoed task prompt from agent output.
-
-    smolagents tends to repeat the full task (user question + IMPORTANT
-    INSTRUCTIONS boilerplate) at the start of each planning/action step.
-    Remove it so the notes show only the agent's actual reasoning.
-    """
-    if not text or not user_question:
-        return text
-    q = user_question.strip()
-    q_lower = q.lower()
-    q_no_please = q_lower[7:] if q_lower.startswith("please ") else q_lower
-    # Strip common prefixes that echo the task
-    for prefix in (
-        f"Using the information available through the tools, {q_lower}",
-        f"Using the information available through the tools, please {q_no_please}",
-        q,
-    ):
-        idx = text.lower().find(prefix.lower())
-        if idx >= 0 and idx < 100:  # only strip if near the start
-            # Skip past the task + any IMPORTANT INSTRUCTIONS block
-            end = text.find("Planning:", idx)
-            if end < 0:
-                end = text.find("- Do not use generic", idx)
-                if end >= 0:
-                    # Skip past the bullet line
-                    newline = text.find("\n", end)
-                    if newline >= 0:
-                        end = newline + 1
-            if end >= 0:
-                return text[end:].lstrip()
-    return text
-
-
-async def _stream_llm_call(
+async def _llm_complete(
     client: httpx.AsyncClient,
     url: str,
     messages: list[dict],
     *,
-    tools: list[dict] | None = None,
-    timeout: float = _ITERATION_TIMEOUT,
-) -> tuple[str, list[dict]]:
-    """Make a streaming LLM call, accumulate text and tool calls.
+    timeout: float = _LLM_TIMEOUT,
+) -> str:
+    """Non-streaming LLM call with retry. Returns content string."""
+    payload = {"messages": messages, "temperature": 0.3}
 
-    Returns (assistant_content, tool_calls_accumulated).
-    Retries once on 5xx with a 2s backoff.
-    """
-    payload: dict = {
-        "messages": messages,
-        "stream": True,
-        "temperature": 0.3,
-    }
-    if tools:
-        payload["tools"] = tools
-
-    assistant_content = ""
-    tool_calls_accumulated: list[dict] = []
-
-    # Retry once on 5xx
-    response_obj = None
-    for _attempt in range(2):
-        response_obj = await client.send(
-            client.build_request("POST", url, json=payload),
-            stream=True,
-        )
-        if response_obj.status_code < 500 or _attempt == 1:
-            break
-        await response_obj.aclose()
-        report_llm_error(response_obj.status_code)
-        logger.warning("LLM returned %d in research call, retrying in 2s", response_obj.status_code)
-        await asyncio.sleep(2)
-
-    async with response_obj:
-        response_obj.raise_for_status()
-        report_llm_success()
-        async for line in response_obj.aiter_lines():
-            if not line.startswith("data: "):
+    for attempt in range(2):
+        try:
+            resp = await client.post(url, json=payload, timeout=timeout)
+            if resp.status_code >= 500 and attempt == 0:
+                report_llm_error(resp.status_code)
+                logger.warning("LLM returned %d, retrying in 2s", resp.status_code)
+                await asyncio.sleep(2)
                 continue
-            data = line[6:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data)
-            except json.JSONDecodeError:
+            resp.raise_for_status()
+            report_llm_success()
+            data = resp.json()
+            content = data["choices"][0]["message"].get("content", "")
+            # Strip thinking tags from reasoning models
+            if content.startswith("<think>") and "</think>" in content:
+                content = content[content.index("</think>") + len("</think>") :].strip()
+            return content
+        except (httpx.ConnectError, httpx.TimeoutException):
+            if attempt == 0:
+                await asyncio.sleep(2)
                 continue
+            raise
 
-            delta = chunk.get("choices", [{}])[0].get("delta", {})
-
-            # Accumulate text content
-            if delta.get("content"):
-                assistant_content += delta["content"]
-
-            # Accumulate tool calls (index-based)
-            if delta.get("tool_calls"):
-                for tc in delta["tool_calls"]:
-                    idx = tc.get("index", 0)
-                    while len(tool_calls_accumulated) <= idx:
-                        tool_calls_accumulated.append(
-                            {
-                                "id": "",
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""},
-                            }
-                        )
-                    if tc.get("id"):
-                        tool_calls_accumulated[idx]["id"] = tc["id"]
-                    fn = tc.get("function", {})
-                    if fn.get("name"):
-                        tool_calls_accumulated[idx]["function"]["name"] = fn["name"]
-                    if fn.get("arguments"):
-                        tool_calls_accumulated[idx]["function"]["arguments"] += fn["arguments"]
-
-    return assistant_content, tool_calls_accumulated
+    return ""
 
 
 async def _stream_llm_tokens(
@@ -210,17 +155,9 @@ async def _stream_llm_tokens(
     *,
     timeout: float = _SYNTHESIS_TIMEOUT,
 ) -> AsyncGenerator[str, None]:
-    """Stream LLM response tokens (no tool calling). Yields text chunks.
+    """Stream LLM response tokens. Retries once on 5xx."""
+    payload = {"messages": messages, "stream": True, "temperature": 0.3}
 
-    Retries once on 5xx with a 2s backoff.
-    """
-    payload: dict = {
-        "messages": messages,
-        "stream": True,
-        "temperature": 0.3,
-    }
-
-    # Retry once on 5xx
     response_obj = None
     for _attempt in range(2):
         response_obj = await client.send(
@@ -247,15 +184,275 @@ async def _stream_llm_tokens(
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
-
             delta = chunk.get("choices", [{}])[0].get("delta", {})
             if delta.get("content"):
                 yield delta["content"]
 
 
+def _parse_json_from_llm(text: str) -> dict:
+    """Extract JSON from LLM response, tolerating markdown fences and preamble."""
+    # Strip markdown code fences
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1)
+    # Find first { ... } block
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start >= 0 and brace_end > brace_start:
+        try:
+            return json.loads(text[brace_start : brace_end + 1])
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+async def _fetch_document_list(user_id: uuid.UUID | None) -> list[dict]:
+    """Get corpus document list for sweep strategy."""
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Document.doc_id, Document.title).where(Document.status == "ready").order_by(Document.title)
+        )
+        return [{"doc_id": str(row.doc_id), "title": row.title} for row in result.all()]
+
+
+def _build_synthesis_messages(user_question: str, notes: str) -> list[dict]:
+    return [
+        {"role": "system", "content": _SYNTHESIS_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"## Original question\n{user_question}\n\n"
+                f"## Research notes\n<notes>\n{notes}\n</notes>\n\n"
+                "Write your final report with citations."
+            ),
+        },
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline phases
+# ---------------------------------------------------------------------------
+
+
+async def _plan_queries(
+    client: httpx.AsyncClient,
+    url: str,
+    user_question: str,
+    topic_hint: str | None,
+    depth_config: dict,
+    doc_list: list[dict] | None,
+) -> list[str]:
+    """Phase 1: LLM generates diverse search queries."""
+    user_content = f"Research question: {user_question}"
+    if topic_hint:
+        user_content += f"\n\nCorpus topics:\n{topic_hint}"
+    if doc_list:
+        doc_text = "\n".join(f"- {d['title']}" for d in doc_list[:50])
+        user_content += f"\n\nDocuments in corpus:\n{doc_text}"
+    user_content += f"\n\nGenerate {depth_config['max_queries']} search queries."
+
+    messages = [
+        {"role": "system", "content": _QUERY_PLANNING_SYSTEM},
+        {"role": "user", "content": user_content},
+    ]
+
+    content = await _llm_complete(client, url, messages)
+    parsed = _parse_json_from_llm(content)
+    queries = parsed.get("queries", [])
+
+    if not queries:
+        # Fallback: use the question itself plus simple variants
+        queries = [user_question]
+        words = user_question.split()
+        if len(words) > 3:
+            queries.append(" ".join(words[: len(words) // 2]))
+            queries.append(" ".join(words[len(words) // 2 :]))
+
+    return queries[: depth_config["max_queries"]]
+
+
+async def _search_fan_out(
+    queries: list[str],
+    user_id: uuid.UUID | None,
+    k_per_query: int,
+) -> dict[str, dict]:
+    """Phase 2: Run all queries, dedupe by chunk_id.
+
+    Returns {chunk_id: {doc_id, doc_title, page, score, snippet, section, queries}}.
+    """
+    coverage: dict[str, dict] = {}
+
+    # Batch queries 5 at a time via kb_batch_search
+    for i in range(0, len(queries), 5):
+        batch = queries[i : i + 5]
+        try:
+            result_json = await execute_tool(
+                "batch_search",
+                {"queries": batch, "k": k_per_query},
+                user_id,
+                mode="research",
+            )
+            result = json.loads(result_json)
+
+            # kb_batch_search returns {results: [{query, hits, ...}, ...]}
+            for query_result in result.get("results", []):
+                query_text = query_result.get("query", "")
+                for hit in query_result.get("hits", []):
+                    cid = hit.get("chunk_id", "")
+                    if not cid:
+                        continue
+                    if cid in coverage:
+                        coverage[cid]["score"] = max(coverage[cid]["score"], hit.get("score", 0))
+                        coverage[cid]["queries"].add(query_text)
+                    else:
+                        coverage[cid] = {
+                            "doc_id": hit.get("doc_id", ""),
+                            "doc_title": hit.get("doc_title", ""),
+                            "page": hit.get("page"),
+                            "score": hit.get("score", 0),
+                            "snippet": hit.get("text", hit.get("snippet", ""))[:500],
+                            "section": hit.get("section", ""),
+                            "queries": {query_text},
+                        }
+        except Exception:
+            logger.exception("batch_search failed for queries: %s", batch)
+
+    # Convert sets to lists for JSON serialization
+    for entry in coverage.values():
+        entry["queries"] = list(entry["queries"])
+
+    return coverage
+
+
+async def _read_evidence(
+    coverage: dict[str, dict],
+    user_id: uuid.UUID | None,
+    max_passages: int,
+    context_budget_chars: int,
+) -> str:
+    """Phase 3: Read full passages for top-scoring chunks.
+
+    Returns formatted passage text for note extraction, bounded by context budget.
+    """
+    # Sort by score descending, pick diverse docs
+    sorted_chunks = sorted(coverage.items(), key=lambda x: x[1]["score"], reverse=True)
+
+    # Prioritize: take top chunk per doc first, then fill
+    seen_docs: set[str] = set()
+    selected: list[str] = []
+    remaining: list[str] = []
+
+    for cid, info in sorted_chunks:
+        if info["doc_id"] not in seen_docs:
+            selected.append(cid)
+            seen_docs.add(info["doc_id"])
+        else:
+            remaining.append(cid)
+
+    selected.extend(remaining)
+    selected = selected[:max_passages]
+
+    if not selected:
+        return ""
+
+    # Read in batches of 20
+    passages_text = ""
+    total_chars = 0
+
+    for i in range(0, len(selected), 20):
+        batch_ids = selected[i : i + 20]
+        try:
+            result_json = await execute_tool(
+                "read_passages",
+                {"chunk_ids": batch_ids, "include_context": False},
+                user_id,
+                mode="research",
+            )
+            result = json.loads(result_json)
+
+            for passage in result.get("passages", []):
+                text = passage.get("text", "")
+                doc_title = passage.get("doc_title", "Unknown")
+                page = passage.get("page", "?")
+                section = passage.get("section", "")
+
+                entry = f"\n---\n**[{doc_title}, page {page}]**"
+                if section:
+                    entry += f" — {section}"
+                entry += f"\n{text}\n"
+
+                if total_chars + len(entry) > context_budget_chars:
+                    break
+                passages_text += entry
+                total_chars += len(entry)
+
+        except Exception:
+            logger.exception("read_passages failed for batch starting at %d", i)
+
+        if total_chars >= context_budget_chars:
+            break
+
+    return passages_text
+
+
+async def _extract_notes(
+    client: httpx.AsyncClient,
+    url: str,
+    user_question: str,
+    passages_text: str,
+) -> str:
+    """Phase 4: LLM extracts cited notes from retrieved passages."""
+    if not passages_text.strip():
+        return "No relevant passages were found in the corpus."
+
+    messages = [
+        {"role": "system", "content": _NOTE_EXTRACTION_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"## Research question\n{user_question}\n\n"
+                f"## Retrieved passages\n{passages_text}\n\n"
+                "Extract research notes with citations for each relevant finding."
+            ),
+        },
+    ]
+
+    return await _llm_complete(client, url, messages, timeout=180.0)
+
+
+async def _check_gaps(
+    client: httpx.AsyncClient,
+    url: str,
+    user_question: str,
+    notes: str,
+    coverage_summary: str,
+) -> list[str]:
+    """Phase 5: LLM checks for gaps and suggests additional queries."""
+    messages = [
+        {"role": "system", "content": _GAP_ANALYSIS_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"## Research question\n{user_question}\n\n"
+                f"## Coverage\n{coverage_summary}\n\n"
+                f"## Notes so far\n{notes[:5000]}\n\n"
+                "Are there obvious gaps? Return JSON."
+            ),
+        },
+    ]
+
+    content = await _llm_complete(client, url, messages)
+    parsed = _parse_json_from_llm(content)
+    return parsed.get("gaps", [])[:5]
+
+
 # ---------------------------------------------------------------------------
 # Main research engine
 # ---------------------------------------------------------------------------
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event)}\n\n"
 
 
 async def research_stream(
@@ -264,31 +461,31 @@ async def research_stream(
     resume: bool = False,
     depth: str = "standard",
 ) -> AsyncGenerator[str, None]:
-    """Stream research progress as SSE events using smolagents ToolCallingAgent.
+    """Stream research progress as SSE events.
 
-    The agent iterates with tool calls, then a fresh-context synthesis pass
-    produces the final cited report.
+    Pipeline: plan queries → fan-out search → read passages → extract notes
+    → (optional gap round) → synthesis.
 
-    Yields SSE-formatted strings (``data: {...}\\n\\n``).
+    Each LLM call is bounded and context-managed. Search/read steps are
+    pure Python with no LLM involvement.
     """
     settings = get_settings()
     active_model_id = settings.llm_model_id or None
-    llm_url = f"{settings.llama_server_url}/v1"
+    llm_url = f"{settings.llama_server_url}/v1/chat/completions"
+    depth_config = _DEPTH_CONFIG.get(depth, _DEPTH_CONFIG["standard"])
 
     async with async_session_factory() as session:
         # Load research state
         state = await session.get(ResearchState, conversation_id)
         if state is None:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Research state not found'})}\n\n"
+            yield _sse({"type": "error", "message": "Research state not found"})
             return
 
-        # Load conversation
         conv = await session.get(Conversation, conversation_id)
         if conv is None:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'Conversation not found'})}\n\n"
+            yield _sse({"type": "error", "message": "Conversation not found"})
             return
 
-        # Get the original user question (first user message)
         q_result = await session.execute(
             select(ChatMessage.content)
             .where(ChatMessage.conversation_id == conversation_id, ChatMessage.role == "user")
@@ -297,405 +494,358 @@ async def research_stream(
         )
         user_question = q_result.scalar_one_or_none()
         if not user_question:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'No user question found'})}\n\n"
+            yield _sse({"type": "error", "message": "No user question found"})
             return
 
         strategy = state.strategy
-
-        # If resuming an interrupted task that has accumulated notes, skip the
-        # agent loop and go straight to synthesis. The agent loop is expensive
-        # and rerunning it on a bad LLM state usually hits the same failure.
         resume_from_synthesis = resume and state.notes and len(state.notes) > 200
 
-        # Mark as running
         state.status = "running"
         state.heartbeat_at = datetime.now(UTC)
         await session.commit()
 
-        # Suppress extremely verbose openai/httpx debug logging from smolagents
-        logging.getLogger("openai").setLevel(logging.WARNING)
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-
-        # Configure smolagents agent
-        from smolagents import (
-            ActionOutput,
-            ActionStep,
-            ChatMessageStreamDelta,
-            FinalAnswerStep,
-            OpenAIServerModel,
-            PlanningStep,
-            ToolCall,
-            ToolCallingAgent,
-            ToolOutput,
-        )
-
-        from harbor_clerk.llm.research_tools import build_research_tools
-
-        model = OpenAIServerModel(
-            model_id="local",
-            api_base=llm_url,
-            api_key="not-needed",
-        )
-        tools = build_research_tools(user_id, main_loop=asyncio.get_running_loop())
-
-        planning_map = {"light": 3, "standard": 5, "thorough": 10}
-        planning_interval = planning_map.get(depth, 5)
-        time_limit_s = (state.time_limit_minutes or 30) * 60
-        max_steps = max(10, time_limit_s // 30)
-
-        agent = ToolCallingAgent(
-            tools=tools,
-            model=model,
-            planning_interval=planning_interval,
-        )
-
-        # Build task description with citation + retrieval-policy instructions.
-        # Kept in parity with chat's SYSTEM_PROMPT (broad-query strategy,
-        # has_more/total_candidates pagination, query branching) so Research
-        # doesn't stop too early. Topic hint is appended below.
-        from harbor_clerk.topics import get_topic_summary
-
-        topic_hint = await get_topic_summary()
-
-        task = (
-            f"{user_question}\n\n"
-            "## How to research\n\n"
-            "Ground every claim in retrieved passages. Cite sources exactly as they appear: "
-            "[Document Title, page X]. Never fabricate citations.\n\n"
-            "### Breadth first, then depth\n"
-            "- For broad or comparative questions, run MANY varied queries. Do not stop "
-            "after one search — covering a topic thoroughly requires 5–15+ queries "
-            "with different phrasings, synonyms, entities, and angles.\n"
-            "- Use batch_search to fan out 3–5 related queries in a single call when "
-            "exploring a topic from multiple angles. It is far more efficient than "
-            "one-query-at-a-time search_documents.\n"
-            "- For each search result, check has_more and total_candidates. If the "
-            "corpus has more candidates than you retrieved, either page forward with "
-            "offset or try more specific queries to reach uncovered material.\n"
-            "- When a user asks about a specific topic, entity, or region, search "
-            "for it directly. Do not assume the corpus lacks it just because it was "
-            "not in earlier results.\n\n"
-            "### Workflow\n"
-            "1. search_documents / batch_search to discover relevant passages\n"
-            "2. read_passages on the chunk_ids of the most promising hits to get full text\n"
-            "3. expand_context around a passage only when a hit is ambiguous\n"
-            "4. Repeat with new queries to fill gaps — aim for broad document coverage "
-            "before synthesis\n\n"
-            "### Citation rules\n"
-            "- Every finding in your notes/final answer MUST cite its source as "
-            "[Document Title, page X].\n"
-            "- Preserve citations exactly as returned by the search tools.\n"
-            "- Never use generic references like 'Research Note 1'.\n"
-            "- If evidence is incomplete or contradictory, say so explicitly.\n"
-        )
-        if topic_hint:
-            task += f"\n## Corpus topics\n{topic_hint}\n"
-        if strategy == "sweep":
-            doc_list = await _fetch_document_list(user_id)
-            if doc_list:
-                doc_text = "\n".join(f"- {d['title']} (doc_id: {d['doc_id']})" for d in doc_list)
-                task += f"\nHere are all documents in the corpus:\n{doc_text}\n\nReview these systematically."
-
         start_time = datetime.now(UTC)
-        final_answer_text = ""
         step_count = 0
-        # Server-side accumulator for round-by-round agent activity. Captures
-        # tool calls, tool results, planning steps, and any text the model emits.
-        # Used as the source for state.notes and synthesis (independent of the
-        # agent's own final answer, which is unreliable).
         collected_notes: list[str] = []
-        current_round = 0
 
         try:
             if resume_from_synthesis:
-                # Skip the agent loop — use accumulated notes directly.
-                # This avoids re-running tool calls when only synthesis failed.
                 logger.info(
                     "Resuming research %s from synthesis (notes len=%d)",
                     conversation_id,
                     len(state.notes or ""),
                 )
-                final_answer_text = ""  # keep empty; synthesis uses notes directly
-                step_count = state.current_round or 0
-                # Fall through to synthesis pass below; agent loop block is guarded
-                # by `not resume_from_synthesis`.
+            else:
+                # Compute context budget for passage reading
+                context_tokens = _get_context_budget()
+                # Reserve 40% of context for passages in note extraction
+                # (rest: system prompt, question, response)
+                passage_budget_chars = int(context_tokens * 0.4 * _CHARS_PER_TOKEN)
+                passage_budget_chars = min(passage_budget_chars, 80_000)
 
-            # Run agent in thread, stream steps via queue
-            step_queue: queue_mod.Queue = queue_mod.Queue()
-
-            def _run_agent():
-                try:
-                    logger.info("Agent thread starting: task=%s max_steps=%d", task[:100], max_steps)
-                    for step in agent.run(task=task, stream=True, max_steps=max_steps):
-                        step_queue.put(("step", step))
-                        logger.info("Agent step: %s", type(step).__name__)
-                        # Wall-time check
-                        elapsed = (datetime.now(UTC) - start_time).total_seconds()
-                        if elapsed >= time_limit_s:
-                            logger.info("Research time limit reached in agent thread")
-                            break
-                except Exception as exc:
-                    logger.error("Agent thread error: %s: %s", type(exc).__name__, exc, exc_info=True)
-                    step_queue.put(("error", exc))
-                finally:
-                    step_queue.put(("done", None))
-
-            loop = asyncio.get_running_loop()
-            executor_future = loop.run_in_executor(None, _run_agent) if not resume_from_synthesis else None
-
-            while not resume_from_synthesis:
-                try:
-                    msg = await asyncio.wait_for(
-                        loop.run_in_executor(None, lambda: step_queue.get(timeout=30)),
-                        timeout=35,
+                async with httpx.AsyncClient() as client:
+                    # -------------------------------------------------------
+                    # Phase 1: Query planning
+                    # -------------------------------------------------------
+                    yield _sse(
+                        {"type": "progress", "step": 1, "phase": "planning", "elapsed_seconds": 0, "strategy": strategy}
                     )
-                except Exception:
-                    # Keepalive
-                    state.heartbeat_at = datetime.now(UTC)
-                    await session.commit()
-                    yield ": keepalive\n\n"
-                    continue
+                    yield _sse({"type": "notes", "content": "Planning search queries..."})
 
-                msg_type, msg_data = msg
-                logger.info(
-                    "Queue message: type=%s data_type=%s", msg_type, type(msg_data).__name__ if msg_data else None
-                )
+                    from harbor_clerk.topics import get_topic_summary
 
-                if msg_type == "done":
-                    break
+                    topic_hint = await get_topic_summary()
+                    doc_list = await _fetch_document_list(user_id) if strategy == "sweep" else None
 
-                if msg_type == "error":
-                    logger.error("Agent error: %s", msg_data)
-                    yield f"data: {json.dumps({'type': 'error', 'message': str(msg_data)})}\n\n"
-                    break
-
-                step = msg_data
-
-                if isinstance(step, ToolCall):
-                    tc_args = step.arguments if isinstance(step.arguments, dict) else {}
-                    # Track for collected_notes
-                    args_str = ", ".join(f"{k}={json.dumps(v)[:80]}" for k, v in tc_args.items())
-                    collected_notes.append(f"### Round {current_round} — Tool: {step.name}({args_str})")
-                    yield f"data: {json.dumps({'type': 'tool_call', 'name': step.name, 'arguments': tc_args})}\n\n"
-                    # Save tool call as assistant message for persistence
-                    session.add(
-                        ChatMessage(
-                            conversation_id=conversation_id,
-                            role="assistant",
-                            content="",
-                            tool_calls=[
-                                {
-                                    "id": step.id,
-                                    "type": "function",
-                                    "function": {"name": step.name, "arguments": json.dumps(tc_args)},
-                                }
-                            ],
-                            model_id=active_model_id,
+                    try:
+                        queries = await _plan_queries(
+                            client,
+                            llm_url,
+                            user_question,
+                            topic_hint,
+                            depth_config,
+                            doc_list,
                         )
-                    )
-                    state.heartbeat_at = datetime.now(UTC)
-                    await session.commit()
+                    except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
+                        logger.error("LLM error during query planning: %s", exc)
+                        # Fallback: use the question itself
+                        queries = [user_question]
 
-                elif isinstance(step, ToolOutput):
-                    observation = str(step.observation or step.output)
-                    summary = summarize_tool_result(observation[:500])
-                    tc_name = step.tool_call.name if step.tool_call else "unknown"
-                    # Track for collected_notes with a generous per-observation cap
-                    # (was 1500, which regularly cut off search hits after the first
-                    # 2–3 results). The 60KB global cap below still bounds total size.
-                    collected_notes.append(f"Result: {summary}\n\n{observation[:12000]}")
-                    yield f"data: {json.dumps({'type': 'tool_result', 'name': tc_name, 'summary': summary, 'raw_result': observation})}\n\n"
-                    # Save tool result as tool message for persistence
-                    session.add(
-                        ChatMessage(
-                            conversation_id=conversation_id,
-                            role="tool",
-                            content=observation[:10000],
-                            tool_call_id=step.id if hasattr(step, "id") else f"call_{tc_name}",
-                        )
-                    )
-                    await session.flush()
-                    if step.is_final_answer:
-                        final_answer_text = str(step.output)
-
-                elif isinstance(step, ActionOutput):
-                    if step.is_final_answer and step.output:
-                        final_answer_text = str(step.output)
-
-                elif isinstance(step, ChatMessageStreamDelta):
-                    if step.content:
-                        yield f"data: {json.dumps({'type': 'notes', 'content': step.content})}\n\n"
-
-                elif isinstance(step, PlanningStep):
-                    plan_text = step.plan if hasattr(step, "plan") else None
-                    logger.info("PlanningStep: plan=%s", repr(plan_text[:200]) if plan_text else "None")
-                    if plan_text:
-                        # Strip echoed task prompt from planning output
-                        clean_plan = _strip_task_echo(plan_text, user_question)
-                        if clean_plan.strip():
-                            collected_notes.append(f"## Planning\n{clean_plan[:1500]}")
-                            yield f"data: {json.dumps({'type': 'notes', 'content': f'Planning: {clean_plan[:500]}'})}\n\n"
-
-                elif isinstance(step, ActionStep):
-                    step_count = step.step_number
-                    current_round = step_count
-                    elapsed = int((datetime.now(UTC) - start_time).total_seconds())
-
-                    progress_event = {
-                        "type": "progress",
-                        "step": step_count,
-                        "elapsed_seconds": elapsed,
-                        "time_limit_minutes": state.time_limit_minutes or 30,
-                        "strategy": strategy,
-                    }
-                    yield f"data: {json.dumps(progress_event)}\n\n"
-
-                    # Emit agent's thinking from this step
-                    model_out = step.model_output
-                    logger.info(
-                        "ActionStep %d: model_output type=%s len=%d",
-                        step.step_number,
-                        type(model_out).__name__,
-                        len(str(model_out)) if model_out else 0,
-                    )
-                    if model_out:
-                        model_text = model_out if isinstance(model_out, str) else str(model_out)
-                        # Strip echoed task prompt from model output
-                        model_text = _strip_task_echo(model_text, user_question)
-                        if model_text.strip():
-                            collected_notes.append(f"## Reasoning\n{model_text[:2000]}")
-                            yield f"data: {json.dumps({'type': 'notes', 'content': model_text[:2000]})}\n\n"
-
-                    if step.is_final_answer and step.action_output:
-                        final_answer_text = str(step.action_output)
-
-                    # Checkpoint
+                    step_count = 1
                     state.current_round = step_count
                     state.heartbeat_at = datetime.now(UTC)
-                    state.progress = {"step": step_count}
                     await session.commit()
 
-                elif isinstance(step, FinalAnswerStep):
-                    if hasattr(step, "output") and step.output:
-                        final_answer_text = str(step.output)
+                    query_list_text = "\n".join(f"  {i + 1}. {q}" for i, q in enumerate(queries))
+                    collected_notes.append(f"## Planned queries\n{query_list_text}")
+                    yield _sse({"type": "notes", "content": f"Planned {len(queries)} queries:\n{query_list_text}"})
 
-            # Wait for executor to finish
-            if executor_future is not None:
-                try:
-                    await asyncio.wait_for(asyncio.shield(executor_future), timeout=10)
-                except Exception:
-                    pass
-
-            # If no final answer from agent, try to extract from memory
-            if not resume_from_synthesis and not final_answer_text and hasattr(agent, "memory") and agent.memory:
-                try:
-                    for mem_step in reversed(agent.memory.steps):
-                        if hasattr(mem_step, "action_output") and mem_step.action_output:
-                            final_answer_text = str(mem_step.action_output)
-                            break
-                        if hasattr(mem_step, "model_output") and mem_step.model_output:
-                            text = (
-                                mem_step.model_output
-                                if isinstance(mem_step.model_output, str)
-                                else str(mem_step.model_output)
-                            )
-                            if len(text) > len(final_answer_text):
-                                final_answer_text = text
-                except Exception:
-                    pass
-
-            # Save agent's final answer as a message
-            if final_answer_text:
-                session.add(
-                    ChatMessage(
-                        conversation_id=conversation_id,
-                        role="assistant",
-                        content=final_answer_text,
-                        model_id=active_model_id,
+                    # -------------------------------------------------------
+                    # Phase 2: Deterministic search fan-out
+                    # -------------------------------------------------------
+                    elapsed = int((datetime.now(UTC) - start_time).total_seconds())
+                    yield _sse(
+                        {
+                            "type": "progress",
+                            "step": 2,
+                            "phase": "searching",
+                            "elapsed_seconds": elapsed,
+                            "strategy": strategy,
+                        }
                     )
-                )
-                await session.flush()
+                    yield _sse({"type": "notes", "content": "Searching corpus..."})
+
+                    # Emit tool_call events for frontend display
+                    for i in range(0, len(queries), 5):
+                        batch = queries[i : i + 5]
+                        yield _sse(
+                            {
+                                "type": "tool_call",
+                                "name": "batch_search",
+                                "arguments": {"queries": batch, "k": depth_config["k_per_query"]},
+                            }
+                        )
+
+                    coverage = await _search_fan_out(queries, user_id, depth_config["k_per_query"])
+
+                    # Build coverage summary
+                    unique_docs = {}
+                    for info in coverage.values():
+                        did = info["doc_id"]
+                        if did not in unique_docs:
+                            unique_docs[did] = {"title": info["doc_title"], "chunks": 0, "best_score": 0}
+                        unique_docs[did]["chunks"] += 1
+                        unique_docs[did]["best_score"] = max(unique_docs[did]["best_score"], info["score"])
+
+                    coverage_summary = f"Found {len(coverage)} unique passages across {len(unique_docs)} documents.\n"
+                    for _did, dinfo in sorted(unique_docs.items(), key=lambda x: x[1]["best_score"], reverse=True):
+                        coverage_summary += (
+                            f"- {dinfo['title']}: {dinfo['chunks']} passages (best score: {dinfo['best_score']:.2f})\n"
+                        )
+
+                    collected_notes.append(f"## Search coverage\n{coverage_summary}")
+                    yield _sse(
+                        {
+                            "type": "tool_result",
+                            "name": "batch_search",
+                            "summary": f"Found {len(coverage)} passages in {len(unique_docs)} documents",
+                            "raw_result": coverage_summary,
+                        }
+                    )
+                    yield _sse({"type": "notes", "content": coverage_summary})
+
+                    step_count = 2
+                    state.current_round = step_count
+                    state.heartbeat_at = datetime.now(UTC)
+                    await session.commit()
+
+                    # -------------------------------------------------------
+                    # Phase 3: Read evidence
+                    # -------------------------------------------------------
+                    elapsed = int((datetime.now(UTC) - start_time).total_seconds())
+                    yield _sse(
+                        {
+                            "type": "progress",
+                            "step": 3,
+                            "phase": "reading",
+                            "elapsed_seconds": elapsed,
+                            "strategy": strategy,
+                        }
+                    )
+                    yield _sse({"type": "notes", "content": "Reading top passages..."})
+
+                    chunk_ids_to_read = sorted(
+                        coverage.keys(),
+                        key=lambda cid: coverage[cid]["score"],
+                        reverse=True,
+                    )[: depth_config["max_passages"]]
+
+                    yield _sse(
+                        {
+                            "type": "tool_call",
+                            "name": "read_passages",
+                            "arguments": {"chunk_ids": chunk_ids_to_read[:10], "count": len(chunk_ids_to_read)},
+                        }
+                    )
+
+                    passages_text = await _read_evidence(
+                        coverage,
+                        user_id,
+                        depth_config["max_passages"],
+                        passage_budget_chars,
+                    )
+
+                    yield _sse(
+                        {
+                            "type": "tool_result",
+                            "name": "read_passages",
+                            "summary": f"Read {len(passages_text)} chars of evidence",
+                            "raw_result": passages_text[:2000],
+                        }
+                    )
+
+                    step_count = 3
+                    state.current_round = step_count
+                    state.heartbeat_at = datetime.now(UTC)
+                    await session.commit()
+
+                    # -------------------------------------------------------
+                    # Phase 4: Extract notes
+                    # -------------------------------------------------------
+                    elapsed = int((datetime.now(UTC) - start_time).total_seconds())
+                    yield _sse(
+                        {
+                            "type": "progress",
+                            "step": 4,
+                            "phase": "analyzing",
+                            "elapsed_seconds": elapsed,
+                            "strategy": strategy,
+                        }
+                    )
+                    yield _sse({"type": "notes", "content": "Extracting findings from passages..."})
+
+                    try:
+                        notes_text = await _extract_notes(client, llm_url, user_question, passages_text)
+                    except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
+                        logger.error("LLM error during note extraction: %s", exc)
+                        # Fallback: use raw passages as notes
+                        notes_text = f"## Raw passages\n{passages_text[:30000]}"
+
+                    collected_notes.append(f"## Research notes (round 1)\n{notes_text}")
+                    yield _sse({"type": "notes", "content": notes_text[:3000]})
+
+                    step_count = 4
+                    state.current_round = step_count
+                    state.heartbeat_at = datetime.now(UTC)
+                    state.notes = "\n\n".join(collected_notes)
+                    await session.commit()
+
+                    # -------------------------------------------------------
+                    # Phase 5: Gap analysis (optional)
+                    # -------------------------------------------------------
+                    if depth_config["gap_round"] and len(coverage) > 0:
+                        elapsed = int((datetime.now(UTC) - start_time).total_seconds())
+                        time_limit_s = (state.time_limit_minutes or 30) * 60
+                        if elapsed < time_limit_s * 0.7:  # only if we have time
+                            yield _sse(
+                                {
+                                    "type": "progress",
+                                    "step": 5,
+                                    "phase": "gap_analysis",
+                                    "elapsed_seconds": elapsed,
+                                    "strategy": strategy,
+                                }
+                            )
+                            yield _sse({"type": "notes", "content": "Checking for gaps in coverage..."})
+
+                            try:
+                                gap_queries = await _check_gaps(
+                                    client,
+                                    llm_url,
+                                    user_question,
+                                    notes_text,
+                                    coverage_summary,
+                                )
+                            except Exception:
+                                logger.exception("Gap analysis failed")
+                                gap_queries = []
+
+                            if gap_queries:
+                                gap_list = ", ".join(gap_queries)
+                                collected_notes.append(f"## Gap queries\n{gap_list}")
+                                yield _sse({"type": "notes", "content": f"Found gaps — searching: {gap_list}"})
+
+                                # Run gap queries
+                                gap_coverage = await _search_fan_out(
+                                    gap_queries,
+                                    user_id,
+                                    depth_config["k_per_query"],
+                                )
+                                # Filter out already-seen chunks
+                                new_chunks = {k: v for k, v in gap_coverage.items() if k not in coverage}
+
+                                if new_chunks:
+                                    yield _sse(
+                                        {"type": "notes", "content": f"Gap search found {len(new_chunks)} new passages"}
+                                    )
+
+                                    gap_passages = await _read_evidence(
+                                        new_chunks,
+                                        user_id,
+                                        20,
+                                        passage_budget_chars // 3,
+                                    )
+                                    if gap_passages.strip():
+                                        try:
+                                            gap_notes = await _extract_notes(
+                                                client,
+                                                llm_url,
+                                                user_question,
+                                                gap_passages,
+                                            )
+                                            collected_notes.append(f"## Research notes (gap round)\n{gap_notes}")
+                                            yield _sse({"type": "notes", "content": gap_notes[:2000]})
+                                        except Exception:
+                                            logger.exception("Gap note extraction failed")
+                                else:
+                                    yield _sse({"type": "notes", "content": "No new material found in gap search"})
+
+                            step_count = 5
+                            state.current_round = step_count
+                            state.heartbeat_at = datetime.now(UTC)
+                            state.notes = "\n\n".join(collected_notes)
+                            await session.commit()
 
             # ---------------------------------------------------------------
             # Synthesis pass
             # ---------------------------------------------------------------
-            # Prefer the server-side accumulated notes (everything the agent
-            # gathered across rounds) over the agent's own final answer (which
-            # is unreliable — the agent often gives up at the end even when it
-            # found good results during the run). Cap total length so we don't
-            # blow up the synthesis context.
             if resume_from_synthesis:
-                # Use previously-saved notes instead of the (empty) collected_notes
                 notes = state.notes or "No relevant findings were discovered during the research."
             else:
-                collected_text = "\n\n".join(collected_notes)
-                if len(collected_text) > 60_000:
-                    collected_text = collected_text[:60_000] + "\n... [truncated]"
-                if collected_text.strip():
-                    notes = collected_text
-                    if final_answer_text:
-                        notes += f"\n\n## Agent's final answer\n{final_answer_text}"
-                else:
-                    notes = final_answer_text or "No relevant findings were discovered during the research."
+                notes = "\n\n".join(collected_notes)
+                if not notes.strip():
+                    notes = "No relevant findings were discovered during the research."
+                # Cap total notes for synthesis context
+                if len(notes) > 60_000:
+                    notes = notes[:60_000] + "\n... [truncated]"
 
-            yield f"data: {json.dumps({'type': 'synthesis', 'status': 'started'})}\n\n"
+            yield _sse({"type": "synthesis", "status": "started"})
 
             synthesis_messages = _build_synthesis_messages(user_question, notes)
             report_content = ""
-            synthesis_url = f"{settings.llama_server_url}/v1/chat/completions"
 
             try:
                 async with httpx.AsyncClient() as client:
                     async for token in _stream_llm_tokens(
                         client,
-                        synthesis_url,
+                        llm_url,
                         synthesis_messages,
                         timeout=_SYNTHESIS_TIMEOUT,
                     ):
                         report_content += token
-                        yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                        yield _sse({"type": "token", "content": token})
             except httpx.HTTPStatusError as exc:
                 logger.error("LLM HTTP error during synthesis: %s", exc)
                 if exc.response.status_code >= 500:
                     report_llm_error(exc.response.status_code)
                 state.status = "interrupted"
                 state.error = f"Synthesis failed: LLM error ({exc.response.status_code})"
+                state.notes = notes
                 await session.commit()
-                yield f"data: {json.dumps({'type': 'error', 'message': f'Synthesis failed: LLM error ({exc.response.status_code})'})}\n\n"
+                yield _sse({"type": "error", "message": f"Synthesis failed: LLM error ({exc.response.status_code})"})
                 return
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
                 logger.error("LLM connection/timeout error during synthesis: %s", exc)
                 state.status = "interrupted"
                 state.error = "Synthesis failed: LLM server not reachable"
+                state.notes = notes
                 await session.commit()
-                yield f"data: {json.dumps({'type': 'error', 'message': 'LLM server is not running. Select and activate a model in Settings.'})}\n\n"
+                yield _sse(
+                    {"type": "error", "message": "LLM server is not running. Select and activate a model in Settings."}
+                )
                 return
 
-            # Save report as assistant message
-            report_msg = ChatMessage(
-                conversation_id=conversation_id,
-                role="assistant",
-                content=report_content,
-                model_id=active_model_id,
+            # Save report
+            session.add(
+                ChatMessage(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=report_content,
+                    model_id=active_model_id,
+                )
             )
-            session.add(report_msg)
 
-            # Finalize research state
             state.status = "completed"
             state.notes = notes
             state.current_round = step_count
             state.completed_at = datetime.now(UTC)
             state.progress = {"step": step_count}
-
             await session.commit()
 
-            done_payload: dict = {
-                "type": "done",
-                "conversation_id": str(conversation_id),
-            }
+            done_payload: dict = {"type": "done", "conversation_id": str(conversation_id)}
             if active_model_id:
                 done_payload["model_id"] = active_model_id
-            yield f"data: {json.dumps(done_payload)}\n\n"
+            yield _sse(done_payload)
 
         except Exception:
             logger.exception("Unexpected error in research_stream (conversation=%s)", conversation_id)
@@ -706,11 +856,9 @@ async def research_stream(
                 await session.commit()
             except Exception:
                 logger.exception("Failed to save error state")
-            yield f"data: {json.dumps({'type': 'error', 'message': 'An unexpected error occurred during research.'})}\n\n"
+            yield _sse({"type": "error", "message": "An unexpected error occurred during research."})
 
         finally:
-            # If still running when generator exits (client disconnect, cancel),
-            # mark as interrupted so it doesn't block future research/chat.
             try:
                 await session.refresh(state)
                 if state.status == "running":
