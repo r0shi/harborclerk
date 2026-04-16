@@ -78,6 +78,17 @@ final class AppSettings: @unchecked Sendable {
         set { lock.withLock { data["llm_yarn_enabled"] = newValue }; save() }
     }
 
+    /// True when Python has signaled that llama-server needs a hard restart.
+    var llmRestartRequested: Bool {
+        lock.withLock { data["llm_restart"] as? Bool ?? false }
+    }
+
+    /// Clear the restart flag from config.json so it doesn't fire again.
+    func clearLlmRestart() {
+        lock.withLock { _ = data.removeValue(forKey: "llm_restart") }
+        save()
+    }
+
     // MARK: - Derived paths
 
     static let dataDir: URL = {

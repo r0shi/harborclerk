@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
+from harbor_clerk.llm.health import report_llm_error, report_llm_success
 from harbor_clerk.llm.tools import summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
@@ -132,6 +133,7 @@ async def _stream_llm_call(
     """Make a streaming LLM call, accumulate text and tool calls.
 
     Returns (assistant_content, tool_calls_accumulated).
+    Retries once on 5xx with a 2s backoff.
     """
     payload: dict = {
         "messages": messages,
@@ -144,14 +146,24 @@ async def _stream_llm_call(
     assistant_content = ""
     tool_calls_accumulated: list[dict] = []
 
-    async with client.stream(
-        "POST",
-        url,
-        json=payload,
-        timeout=httpx.Timeout(timeout),
-    ) as response:
-        response.raise_for_status()
-        async for line in response.aiter_lines():
+    # Retry once on 5xx
+    response_obj = None
+    for _attempt in range(2):
+        response_obj = await client.send(
+            client.build_request("POST", url, json=payload),
+            stream=True,
+        )
+        if response_obj.status_code < 500 or _attempt == 1:
+            break
+        await response_obj.aclose()
+        report_llm_error(response_obj.status_code)
+        logger.warning("LLM returned %d in research call, retrying in 2s", response_obj.status_code)
+        await asyncio.sleep(2)
+
+    async with response_obj:
+        response_obj.raise_for_status()
+        report_llm_success()
+        async for line in response_obj.aiter_lines():
             if not line.startswith("data: "):
                 continue
             data = line[6:].strip()
@@ -198,21 +210,34 @@ async def _stream_llm_tokens(
     *,
     timeout: float = _SYNTHESIS_TIMEOUT,
 ) -> AsyncGenerator[str, None]:
-    """Stream LLM response tokens (no tool calling). Yields text chunks."""
+    """Stream LLM response tokens (no tool calling). Yields text chunks.
+
+    Retries once on 5xx with a 2s backoff.
+    """
     payload: dict = {
         "messages": messages,
         "stream": True,
         "temperature": 0.3,
     }
 
-    async with client.stream(
-        "POST",
-        url,
-        json=payload,
-        timeout=httpx.Timeout(timeout),
-    ) as response:
-        response.raise_for_status()
-        async for line in response.aiter_lines():
+    # Retry once on 5xx
+    response_obj = None
+    for _attempt in range(2):
+        response_obj = await client.send(
+            client.build_request("POST", url, json=payload),
+            stream=True,
+        )
+        if response_obj.status_code < 500 or _attempt == 1:
+            break
+        await response_obj.aclose()
+        report_llm_error(response_obj.status_code)
+        logger.warning("LLM returned %d in synthesis, retrying in 2s", response_obj.status_code)
+        await asyncio.sleep(2)
+
+    async with response_obj:
+        response_obj.raise_for_status()
+        report_llm_success()
+        async for line in response_obj.aiter_lines():
             if not line.startswith("data: "):
                 continue
             data = line[6:].strip()
@@ -631,6 +656,8 @@ async def research_stream(
                         yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
             except httpx.HTTPStatusError as exc:
                 logger.error("LLM HTTP error during synthesis: %s", exc)
+                if exc.response.status_code >= 500:
+                    report_llm_error(exc.response.status_code)
                 state.status = "interrupted"
                 state.error = f"Synthesis failed: LLM error ({exc.response.status_code})"
                 await session.commit()
