@@ -89,9 +89,9 @@ _GAP_ANALYSIS_SYSTEM = (
 
 # Depth → query count and search parameters
 _DEPTH_CONFIG = {
-    "light": {"max_queries": 5, "k_per_query": 10, "max_passages": 30, "gap_round": False},
-    "standard": {"max_queries": 10, "k_per_query": 15, "max_passages": 50, "gap_round": True},
-    "thorough": {"max_queries": 15, "k_per_query": 20, "max_passages": 80, "gap_round": True},
+    "light": {"max_queries": 8, "k_per_query": 15, "max_passages": 40, "gap_round": False, "paginate": False},
+    "standard": {"max_queries": 15, "k_per_query": 20, "max_passages": 60, "gap_round": True, "paginate": True},
+    "thorough": {"max_queries": 25, "k_per_query": 30, "max_passages": 100, "gap_round": True, "paginate": True},
 }
 
 
@@ -236,6 +236,47 @@ def _build_synthesis_messages(user_question: str, notes: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+async def _seed_queries_from_corpus(
+    user_question: str,
+    user_id: uuid.UUID | None,
+    topic_hint: str | None,
+) -> list[str]:
+    """Generate model-independent queries from corpus metadata.
+
+    Pulls top entities and topic keywords, combines them with question
+    keywords to produce queries that don't depend on LLM quality.
+    """
+    seeded: list[str] = []
+
+    # Extract a few keywords from the question for cross-referencing
+    q_words = [w for w in user_question.split() if len(w) > 3]
+    q_short = " ".join(q_words[:4]) if q_words else user_question
+
+    # Seed from entities
+    try:
+        entity_json = await execute_tool("entity_overview", {}, user_id, mode="research")
+        entity_data = json.loads(entity_json)
+        for ent in entity_data.get("top_entities", [])[:10]:
+            name = ent.get("entity_text", "")
+            if name and name.lower() not in user_question.lower():
+                seeded.append(f"{name} {q_short}")
+    except Exception:
+        logger.debug("entity_overview failed for seed queries", exc_info=True)
+
+    # Seed from topic keywords
+    if topic_hint:
+        for line in topic_hint.split("\n"):
+            # Topic lines look like "- Topic Name: keyword1, keyword2, ..."
+            if ":" in line:
+                keywords_part = line.split(":", 1)[1].strip()
+                keywords = [kw.strip() for kw in keywords_part.split(",") if kw.strip()]
+                for kw in keywords[:2]:
+                    if kw.lower() not in user_question.lower():
+                        seeded.append(f"{kw} {q_short}")
+
+    return seeded
+
+
 async def _plan_queries(
     client: httpx.AsyncClient,
     url: str,
@@ -243,15 +284,18 @@ async def _plan_queries(
     topic_hint: str | None,
     depth_config: dict,
     doc_list: list[dict] | None,
+    user_id: uuid.UUID | None,
 ) -> list[str]:
-    """Phase 1: LLM generates diverse search queries."""
+    """Phase 1: LLM generates diverse search queries, supplemented by corpus-seeded queries."""
+    # LLM-planned queries
     user_content = f"Research question: {user_question}"
     if topic_hint:
         user_content += f"\n\nCorpus topics:\n{topic_hint}"
     if doc_list:
         doc_text = "\n".join(f"- {d['title']}" for d in doc_list[:50])
         user_content += f"\n\nDocuments in corpus:\n{doc_text}"
-    user_content += f"\n\nGenerate {depth_config['max_queries']} search queries."
+    llm_target = max(5, depth_config["max_queries"] // 2)
+    user_content += f"\n\nGenerate {llm_target} search queries."
 
     messages = [
         {"role": "system", "content": _QUERY_PLANNING_SYSTEM},
@@ -260,29 +304,65 @@ async def _plan_queries(
 
     content = await _llm_complete(client, url, messages)
     parsed = _parse_json_from_llm(content)
-    queries = parsed.get("queries", [])
+    llm_queries = parsed.get("queries", [])
 
-    if not queries:
-        # Fallback: use the question itself plus simple variants
-        queries = [user_question]
+    if not llm_queries:
+        llm_queries = [user_question]
         words = user_question.split()
         if len(words) > 3:
-            queries.append(" ".join(words[: len(words) // 2]))
-            queries.append(" ".join(words[len(words) // 2 :]))
+            llm_queries.append(" ".join(words[: len(words) // 2]))
+            llm_queries.append(" ".join(words[len(words) // 2 :]))
 
-    return queries[: depth_config["max_queries"]]
+    # Corpus-seeded queries (model-independent)
+    seeded = await _seed_queries_from_corpus(user_question, user_id, topic_hint)
+
+    # Merge: LLM queries first (higher intent), then seeded (breadth), dedupe
+    seen_lower: set[str] = set()
+    merged: list[str] = []
+    for q in llm_queries + seeded:
+        q = q.strip()
+        if q and q.lower() not in seen_lower:
+            seen_lower.add(q.lower())
+            merged.append(q)
+
+    return merged[: depth_config["max_queries"]]
+
+
+def _ingest_hits(coverage: dict[str, dict], hits: list[dict], query_text: str) -> None:
+    """Merge search hits into the coverage dict, deduping by chunk_id."""
+    for hit in hits:
+        cid = hit.get("chunk_id", "")
+        if not cid:
+            continue
+        if cid in coverage:
+            coverage[cid]["score"] = max(coverage[cid]["score"], hit.get("score", 0))
+            coverage[cid]["queries"].add(query_text)
+        else:
+            coverage[cid] = {
+                "doc_id": hit.get("doc_id", ""),
+                "doc_title": hit.get("doc_title", ""),
+                "page": hit.get("page"),
+                "score": hit.get("score", 0),
+                "snippet": hit.get("text", hit.get("snippet", ""))[:500],
+                "section": hit.get("section", ""),
+                "queries": {query_text},
+            }
 
 
 async def _search_fan_out(
     queries: list[str],
     user_id: uuid.UUID | None,
     k_per_query: int,
+    *,
+    paginate: bool = False,
 ) -> dict[str, dict]:
     """Phase 2: Run all queries, dedupe by chunk_id.
 
     Returns {chunk_id: {doc_id, doc_title, page, score, snippet, section, queries}}.
+    When paginate=True, follows has_more on high-scoring queries for up to 2 extra pages.
     """
     coverage: dict[str, dict] = {}
+    queries_with_more: list[tuple[str, int]] = []  # (query, next_offset)
 
     # Batch queries 5 at a time via kb_batch_search
     for i in range(0, len(queries), 5):
@@ -296,28 +376,34 @@ async def _search_fan_out(
             )
             result = json.loads(result_json)
 
-            # kb_batch_search returns {results: [{query, hits, ...}, ...]}
             for query_result in result.get("results", []):
                 query_text = query_result.get("query", "")
-                for hit in query_result.get("hits", []):
-                    cid = hit.get("chunk_id", "")
-                    if not cid:
-                        continue
-                    if cid in coverage:
-                        coverage[cid]["score"] = max(coverage[cid]["score"], hit.get("score", 0))
-                        coverage[cid]["queries"].add(query_text)
-                    else:
-                        coverage[cid] = {
-                            "doc_id": hit.get("doc_id", ""),
-                            "doc_title": hit.get("doc_title", ""),
-                            "page": hit.get("page"),
-                            "score": hit.get("score", 0),
-                            "snippet": hit.get("text", hit.get("snippet", ""))[:500],
-                            "section": hit.get("section", ""),
-                            "queries": {query_text},
-                        }
+                _ingest_hits(coverage, query_result.get("hits", []), query_text)
+                if paginate and query_result.get("has_more") and query_result.get("total_candidates", 0) > k_per_query:
+                    queries_with_more.append((query_text, k_per_query))
         except Exception:
             logger.exception("batch_search failed for queries: %s", batch)
+
+    # Pagination pass: follow has_more for queries that had many candidates
+    if paginate and queries_with_more:
+        for query_text, offset in queries_with_more[:10]:  # cap pagination effort
+            for _page in range(2):  # up to 2 extra pages
+                try:
+                    page_json = await execute_tool(
+                        "search_documents",
+                        {"query": query_text, "k": k_per_query, "offset": offset},
+                        user_id,
+                        mode="research",
+                    )
+                    page_result = json.loads(page_json)
+                    hits = page_result.get("hits", [])
+                    _ingest_hits(coverage, hits, query_text)
+                    offset += len(hits)
+                    if not page_result.get("has_more"):
+                        break
+                except Exception:
+                    logger.debug("Pagination failed for query: %s offset=%d", query_text, offset)
+                    break
 
     # Convert sets to lists for JSON serialization
     for entry in coverage.values():
@@ -547,11 +633,17 @@ async def research_stream(
                             topic_hint,
                             depth_config,
                             doc_list,
+                            user_id,
                         )
                     except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
                         logger.error("LLM error during query planning: %s", exc)
-                        # Fallback: use the question itself
+                        # Fallback: seeded queries only (no LLM)
                         queries = [user_question]
+                        try:
+                            seeded = await _seed_queries_from_corpus(user_question, user_id, topic_hint)
+                            queries.extend(seeded)
+                        except Exception:
+                            pass
 
                     step_count = 1
                     state.current_round = step_count
@@ -588,7 +680,12 @@ async def research_stream(
                             }
                         )
 
-                    coverage = await _search_fan_out(queries, user_id, depth_config["k_per_query"])
+                    coverage = await _search_fan_out(
+                        queries,
+                        user_id,
+                        depth_config["k_per_query"],
+                        paginate=depth_config.get("paginate", False),
+                    )
 
                     # Build coverage summary
                     unique_docs = {}
