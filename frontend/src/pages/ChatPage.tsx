@@ -43,7 +43,12 @@ export default function ChatPage() {
   const { conversationId } = useParams<{ conversationId?: string }>()
   const navigate = useNavigate()
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
-  const [input, setInput] = useState('')
+  const [input, setInputRaw] = useState(() => sessionStorage.getItem('chat_draft') ?? '')
+  const setInput = useCallback((v: string) => {
+    setInputRaw(v)
+    if (v) sessionStorage.setItem('chat_draft', v)
+    else sessionStorage.removeItem('chat_draft')
+  }, [])
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -179,36 +184,37 @@ export default function ChatPage() {
       if (!text || isStreaming || !hasActiveModel || contextFull) return
       setInput('')
 
-      // Reset textarea height
       if (inputRef.current) {
         inputRef.current.style.height = 'auto'
       }
 
-      let activeConvId = conversationId
-      if (!activeConvId) {
-        // Use the user's query as the title immediately (truncated)
-        const eagerTitle = text.length > 80 ? text.slice(0, 77) + '...' : text
-        const conv = await post<ConversationSummary>('/api/chat/conversations', {
-          title: eagerTitle,
-        })
-        activeConvId = conv.conversation_id
-        setConversations((prev) => [conv, ...prev])
-        // Navigate to the new conversation — context preserves streaming state across remount
-        navigate(`/c/${activeConvId}`, { replace: true })
-      }
-
-      await sendMessage(activeConvId, text, activeModelId || undefined).finally(() => {
-        if (lastTitle.current && activeConvId) {
-          setConversations((prev) =>
-            prev.map((c) => (c.conversation_id === activeConvId ? { ...c, title: lastTitle.current! } : c)),
-          )
+      try {
+        let activeConvId = conversationId
+        if (!activeConvId) {
+          const eagerTitle = text.length > 80 ? text.slice(0, 77) + '...' : text
+          const conv = await post<ConversationSummary>('/api/chat/conversations', {
+            title: eagerTitle,
+          })
+          activeConvId = conv.conversation_id
+          setConversations((prev) => [conv, ...prev])
+          navigate(`/c/${activeConvId}`, { replace: true })
         }
-        get<ConversationSummary[]>('/api/chat/conversations')
-          .then(setConversations)
-          .catch(() => {})
-      })
+
+        await sendMessage(activeConvId, text, activeModelId || undefined).finally(() => {
+          if (lastTitle.current && activeConvId) {
+            setConversations((prev) =>
+              prev.map((c) => (c.conversation_id === activeConvId ? { ...c, title: lastTitle.current! } : c)),
+            )
+          }
+          get<ConversationSummary[]>('/api/chat/conversations')
+            .then(setConversations)
+            .catch(() => {})
+        })
+      } catch {
+        setInput(text)
+      }
     },
-    [isStreaming, conversationId, sendMessage, lastTitle, hasActiveModel, activeModelId, contextFull],
+    [isStreaming, conversationId, sendMessage, lastTitle, hasActiveModel, activeModelId, contextFull, setInput],
   )
 
   const handleNewChat = useCallback(() => {

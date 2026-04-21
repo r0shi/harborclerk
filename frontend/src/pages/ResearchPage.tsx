@@ -99,7 +99,12 @@ export default function ResearchPage() {
   const { isStreaming: chatStreaming } = useChat()
   const [history, setHistory] = useState<ResearchSummary[]>([])
   const [selectedTask, setSelectedTask] = useState<ResearchDetail | null>(null)
-  const [question, setQuestion] = useState('')
+  const [question, setQuestionRaw] = useState(() => sessionStorage.getItem('research_draft') ?? '')
+  const setQuestion = useCallback((v: string) => {
+    setQuestionRaw(v)
+    if (v) sessionStorage.setItem('research_draft', v)
+    else sessionStorage.removeItem('research_draft')
+  }, [])
   const [strategy, setStrategy] = useState<'search' | 'sweep'>('search')
   const [depth, setDepth] = useState<'light' | 'standard' | 'thorough'>('standard')
   const [timeLimit, setTimeLimit] = useState(30)
@@ -245,11 +250,11 @@ export default function ResearchPage() {
     const q = question.trim()
     if (!q) return
     setSelectedTask(null)
-    setQuestion('')
     setShowNewForm(false)
     hasAutoNavigatedRef.current = null
-    await startResearch(q, strategy, timeLimit, depth)
-  }, [question, strategy, timeLimit, depth, startResearch])
+    const accepted = await startResearch(q, strategy, timeLimit, depth)
+    if (accepted) setQuestion('')
+  }, [question, strategy, timeLimit, depth, startResearch, setQuestion])
 
   const handleResume = useCallback(
     async (convId: string) => {
@@ -281,7 +286,6 @@ export default function ResearchPage() {
 
   const handleNewResearch = useCallback(() => {
     setSelectedTask(null)
-    setQuestion('')
     if (!isRunning) reset()
     setShowNewForm(true)
     navigate('/research')
