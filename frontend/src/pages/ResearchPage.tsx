@@ -31,6 +31,8 @@ interface ResearchMessage {
 
 interface ResearchDetail extends ResearchSummary {
   question: string
+  depth: string | null
+  time_limit_minutes: number | null
   notes: string | null
   report: string | null
   model_id: string | null
@@ -712,6 +714,7 @@ export default function ResearchPage() {
                 <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500">
                   {selectedTask.model_id && <span>Model: {selectedTask.model_id}</span>}
                   <span className="capitalize">Strategy: {selectedTask.strategy}</span>
+                  {selectedTask.depth && <span className="capitalize">Depth: {selectedTask.depth}</span>}
                   <span>Rounds: {selectedTask.current_round}</span>
                   {selectedTask.completed_at && selectedTask.created_at && (
                     <span>
@@ -723,6 +726,7 @@ export default function ResearchPage() {
                             1000,
                         ),
                       )}
+                      {selectedTask.time_limit_minutes != null && ` / ${selectedTask.time_limit_minutes}m limit`}
                     </span>
                   )}
                 </div>
