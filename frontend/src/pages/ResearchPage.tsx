@@ -685,9 +685,15 @@ export default function ResearchPage() {
                 </div>
               )}
 
-              {/* Report — use context data only for the live/just-completed task */}
+              {/* Report — prefer context stream for the live/just-completed task,
+                 fall back to API data, and bridge the gap where selectedTask
+                 hasn't loaded yet but context report is still in memory */}
               {(() => {
-                const displayReport = isViewingLiveTask ? report || selectedTask?.report : selectedTask?.report
+                const sameTask = conversationId && selectedTask?.conversation_id === conversationId
+                const displayReport =
+                  sameTask || isViewingLiveTask
+                    ? report || selectedTask?.report
+                    : selectedTask?.report || (conversationId && !selectedTask ? report : null)
                 return displayReport ? (
                   <div className="rounded-xl bg-gray-50 dark:bg-gray-800/60 ring-1 ring-gray-100 dark:ring-gray-700/50 px-6 py-5">
                     <div className="prose-chat">

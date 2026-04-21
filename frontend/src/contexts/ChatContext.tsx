@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
+import { currentToken, refreshToken } from '../api'
 import { useAuth } from '../auth'
 
 export interface RagContextChunk {
@@ -104,7 +105,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        const res = await fetch(`/api/chat/conversations/${conversationId}/messages`, {
+        let res = await fetch(`/api/chat/conversations/${conversationId}/messages`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -113,6 +114,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ content }),
           signal: controller.signal,
         })
+
+        if (res.status === 401) {
+          const refreshed = await refreshToken()
+          if (refreshed) {
+            res = await fetch(`/api/chat/conversations/${conversationId}/messages`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${currentToken()}`,
+              },
+              body: JSON.stringify({ content }),
+              signal: controller.signal,
+            })
+          }
+        }
 
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }))

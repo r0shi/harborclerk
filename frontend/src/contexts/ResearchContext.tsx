@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
+import { currentToken, refreshToken } from '../api'
 import { useAuth } from '../auth'
 
 export interface ToolCallEntry {
@@ -47,6 +48,19 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [completedToolCalls, setCompletedToolCalls] = useState<ToolCallEntry[]>([])
   const abortRef = useRef<AbortController | null>(null)
+
+  const fetchWithRefresh = useCallback(async (url: string, init: RequestInit): Promise<Response> => {
+    const res = await fetch(url, init)
+    if (res.status === 401) {
+      const refreshed = await refreshToken()
+      if (refreshed) {
+        const headers = new Headers(init.headers)
+        headers.set('Authorization', `Bearer ${currentToken()}`)
+        return fetch(url, { ...init, headers })
+      }
+    }
+    return res
+  }, [])
 
   const processStream = useCallback(async (res: Response) => {
     if (!res.ok) {
@@ -163,7 +177,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         if (timeLimitMinutes) body.time_limit_minutes = timeLimitMinutes
         if (depth) body.depth = depth
 
-        const res = await fetch('/api/research', {
+        const res = await fetchWithRefresh('/api/research', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -200,7 +214,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         abortRef.current = null
       }
     },
-    [token, processStream],
+    [token, fetchWithRefresh, processStream],
   )
 
   const resumeResearch = useCallback(
@@ -212,7 +226,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
       const controller = new AbortController()
 
       try {
-        const res = await fetch(`/api/research/${convId}/resume`, {
+        const res = await fetchWithRefresh(`/api/research/${convId}/resume`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -245,7 +259,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         abortRef.current = null
       }
     },
-    [token, isRunning, processStream],
+    [token, isRunning, fetchWithRefresh, processStream],
   )
 
   const cancelResearch = useCallback(() => {
