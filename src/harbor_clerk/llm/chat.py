@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
+from harbor_clerk.llm.health import report_llm_error, report_llm_success
 from harbor_clerk.llm.models import get_model
 from harbor_clerk.llm.tools import execute_tool, get_chat_tools, summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
@@ -294,17 +295,35 @@ async def chat_stream(
                 if send_tools:
                     payload["tools"] = send_tools
 
-                async with (
-                    httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client,
-                    client.stream(
-                        "POST",
-                        f"{settings.llama_server_url}/v1/chat/completions",
-                        json=payload,
-                    ) as response,
-                ):
+                llm_url = f"{settings.llama_server_url}/v1/chat/completions"
+
+                # Retry once on 5xx — llama-server can transiently 500 on
+                # MoE compute errors or KV cache issues.
+                response_obj = None
+                client_obj = None
+                for _attempt in range(2):
+                    client_obj = httpx.AsyncClient(timeout=httpx.Timeout(120.0))
+                    response_obj = await client_obj.send(
+                        client_obj.build_request("POST", llm_url, json=payload),
+                        stream=True,
+                    )
+                    if response_obj.status_code < 500 or _attempt == 1:
+                        break
+                    # 5xx on first attempt — close, wait, retry
+                    await response_obj.aclose()
+                    await client_obj.aclose()
+                    report_llm_error(response_obj.status_code)
+                    logger.warning("LLM returned %d, retrying in 2s", response_obj.status_code)
+                    await asyncio.sleep(2)
+
+                try:
+                    response = response_obj
+
                     if response.status_code >= 400:
                         await response.aread()
                         detail = response.text[:2000]
+                        if response.status_code >= 500:
+                            report_llm_error(response.status_code)
 
                         # Detect context overflow from llama-server
                         is_context_overflow = response.status_code == 400 and any(
@@ -346,6 +365,7 @@ async def chat_stream(
                         yield f"data: {json.dumps(done_payload)}\n\n"
                         return
 
+                    report_llm_success()
                     async for line in _iter_with_keepalive(response.aiter_lines()):
                         if line is _KEEPALIVE_SENTINEL:
                             yield ": keepalive\n\n"
@@ -394,6 +414,9 @@ async def chat_stream(
                             token_text = delta["content"]
                             text_buffer += token_text
                             yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
+                finally:
+                    await response_obj.aclose()
+                    await client_obj.aclose()
 
             except (httpx.ConnectError, httpx.TimeoutException):
                 error_summary = "LLM server is not running. Select and activate a model in Settings."

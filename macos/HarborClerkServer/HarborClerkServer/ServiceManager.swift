@@ -687,6 +687,28 @@ final class ServiceManager: ObservableObject {
         let settings = AppSettings.shared
         settings.reload()
 
+        // Check for LLM restart signal from Python (persistent 5xx detection)
+        if settings.llmRestartRequested {
+            Log.logger("lifecycle").warning("LLM restart requested by API (persistent 5xx)")
+            settings.clearLlmRestart()
+            configChangeTask?.cancel()
+            configChangeTask = Task {
+                if llamaService.state == .running || llamaService.state == .starting {
+                    await llamaService.stop()
+                    notifyStateChanged()
+                    try? await Task.sleep(for: .seconds(1))
+                } else if llamaService.state == .errored {
+                    llamaService.state = .stopped
+                    restartHistory.removeValue(forKey: llamaService.name)
+                    notifyStateChanged()
+                }
+                if !settings.llmModelId.isEmpty {
+                    await startService(llamaService)
+                }
+            }
+            return
+        }
+
         let newModelId = settings.llmModelId
         guard newModelId != lastLlmModelId else { return }
 
