@@ -161,7 +161,12 @@ async def _stream_llm_tokens(
     response_obj = None
     for _attempt in range(2):
         response_obj = await client.send(
-            client.build_request("POST", url, json=payload),
+            client.build_request(
+                "POST",
+                url,
+                json=payload,
+                extensions={"timeout": {"connect": 10.0, "read": timeout, "write": 10.0, "pool": 10.0}},
+            ),
             stream=True,
         )
         if response_obj.status_code < 500 or _attempt == 1:
@@ -611,7 +616,7 @@ async def research_stream(
                 passage_budget_chars = int(context_tokens * 0.4 * _CHARS_PER_TOKEN)
                 passage_budget_chars = min(passage_budget_chars, 80_000)
 
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(_LLM_TIMEOUT)) as client:
                     # -------------------------------------------------------
                     # Phase 1: Query planning
                     # -------------------------------------------------------
@@ -907,7 +912,7 @@ async def research_stream(
             report_content = ""
 
             try:
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(_SYNTHESIS_TIMEOUT)) as client:
                     async for token in _stream_llm_tokens(
                         client,
                         llm_url,
@@ -927,7 +932,7 @@ async def research_stream(
                 yield _sse({"type": "error", "message": f"Synthesis failed: LLM error ({exc.response.status_code})"})
                 return
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                logger.error("LLM connection/timeout error during synthesis: %s", exc)
+                logger.error("LLM connection/timeout error during synthesis: %s: %r", type(exc).__name__, exc)
                 state.status = "interrupted"
                 state.error = "Synthesis failed: LLM server not reachable"
                 state.notes = notes
