@@ -884,9 +884,22 @@ async def research_stream(
                 notes = "\n\n".join(collected_notes)
                 if not notes.strip():
                     notes = "No relevant findings were discovered during the research."
-                # Cap total notes for synthesis context
-                if len(notes) > 60_000:
-                    notes = notes[:60_000] + "\n... [truncated]"
+
+            # Cap notes to fit the model's context, reserving space for
+            # system prompt (~300 tokens), question, and output (~35% of context).
+            ctx_tokens = _get_context_budget()
+            output_reserve = int(ctx_tokens * 0.35)
+            overhead_tokens = 400 + _estimate_tokens(user_question)
+            max_notes_tokens = ctx_tokens - output_reserve - overhead_tokens
+            max_notes_chars = int(max(4000, max_notes_tokens * _CHARS_PER_TOKEN))
+            if len(notes) > max_notes_chars:
+                logger.info(
+                    "Truncating synthesis notes from %d to %d chars (model context %d tokens)",
+                    len(notes),
+                    max_notes_chars,
+                    ctx_tokens,
+                )
+                notes = notes[:max_notes_chars] + f"\n... [truncated — {len(notes)} chars total]"
 
             yield _sse({"type": "synthesis", "status": "started"})
 
