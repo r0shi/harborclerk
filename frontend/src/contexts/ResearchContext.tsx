@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
+import { currentToken, refreshToken } from '../api'
 import { useAuth } from '../auth'
 
 export interface ToolCallEntry {
@@ -29,7 +30,7 @@ interface ResearchState {
   error: string | null
   conversationId: string | null
   completedToolCalls: ToolCallEntry[]
-  startResearch: (question: string, strategy?: string, timeLimitMinutes?: number, depth?: string) => Promise<void>
+  startResearch: (question: string, strategy?: string, timeLimitMinutes?: number, depth?: string) => Promise<boolean>
   resumeResearch: (convId: string) => Promise<void>
   cancelResearch: () => void
   reset: () => void
@@ -47,6 +48,19 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [completedToolCalls, setCompletedToolCalls] = useState<ToolCallEntry[]>([])
   const abortRef = useRef<AbortController | null>(null)
+
+  const fetchWithRefresh = useCallback(async (url: string, init: RequestInit): Promise<Response> => {
+    const res = await fetch(url, init)
+    if (res.status === 401) {
+      const refreshed = await refreshToken()
+      if (refreshed) {
+        const headers = new Headers(init.headers)
+        headers.set('Authorization', `Bearer ${currentToken()}`)
+        return fetch(url, { ...init, headers })
+      }
+    }
+    return res
+  }, [])
 
   const processStream = useCallback(async (res: Response) => {
     if (!res.ok) {
@@ -148,14 +162,13 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const startResearch = useCallback(
-    async (question: string, strategy?: string, timeLimitMinutes?: number, depth?: string) => {
-      if (!token) return
+    async (question: string, strategy?: string, timeLimitMinutes?: number, depth?: string): Promise<boolean> => {
+      if (!token) return false
 
-      // Clear error from previous attempts (e.g. 409) but don't touch
-      // running state — the old SSE stream may still be alive.
       setError(null)
 
       const controller = new AbortController()
+      let accepted = false
 
       try {
         const body: Record<string, unknown> = { question }
@@ -163,7 +176,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         if (timeLimitMinutes) body.time_limit_minutes = timeLimitMinutes
         if (depth) body.depth = depth
 
-        const res = await fetch('/api/research', {
+        const res = await fetchWithRefresh('/api/research', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -178,10 +191,10 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
           throw new Error(err.detail || `Research request failed (${res.status})`)
         }
 
-        // Server accepted — now safe to reset state for the new task
+        accepted = true
         const researchId = res.headers.get('X-Research-Id')
 
-        abortRef.current?.abort() // cancel previous stream if any
+        abortRef.current?.abort()
         abortRef.current = controller
         setIsRunning(true)
         setIsSynthesizing(false)
@@ -192,15 +205,16 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
 
         await processStream(res)
       } catch (e) {
-        if (e instanceof DOMException && e.name === 'AbortError') return
+        if (e instanceof DOMException && e.name === 'AbortError') return accepted
         setError(e instanceof Error ? e.message : 'An error occurred')
       } finally {
         setIsRunning(false)
         setIsSynthesizing(false)
         abortRef.current = null
       }
+      return accepted
     },
-    [token, processStream],
+    [token, fetchWithRefresh, processStream],
   )
 
   const resumeResearch = useCallback(
@@ -212,7 +226,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
       const controller = new AbortController()
 
       try {
-        const res = await fetch(`/api/research/${convId}/resume`, {
+        const res = await fetchWithRefresh(`/api/research/${convId}/resume`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -245,7 +259,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         abortRef.current = null
       }
     },
-    [token, isRunning, processStream],
+    [token, isRunning, fetchWithRefresh, processStream],
   )
 
   const cancelResearch = useCallback(() => {

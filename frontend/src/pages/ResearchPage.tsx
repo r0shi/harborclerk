@@ -31,6 +31,8 @@ interface ResearchMessage {
 
 interface ResearchDetail extends ResearchSummary {
   question: string
+  depth: string | null
+  time_limit_minutes: number | null
   notes: string | null
   report: string | null
   model_id: string | null
@@ -99,7 +101,12 @@ export default function ResearchPage() {
   const { isStreaming: chatStreaming } = useChat()
   const [history, setHistory] = useState<ResearchSummary[]>([])
   const [selectedTask, setSelectedTask] = useState<ResearchDetail | null>(null)
-  const [question, setQuestion] = useState('')
+  const [question, setQuestionRaw] = useState(() => sessionStorage.getItem('research_draft') ?? '')
+  const setQuestion = useCallback((v: string) => {
+    setQuestionRaw(v)
+    if (v) sessionStorage.setItem('research_draft', v)
+    else sessionStorage.removeItem('research_draft')
+  }, [])
   const [strategy, setStrategy] = useState<'search' | 'sweep'>('search')
   const [depth, setDepth] = useState<'light' | 'standard' | 'thorough'>('standard')
   const [timeLimit, setTimeLimit] = useState(30)
@@ -245,11 +252,11 @@ export default function ResearchPage() {
     const q = question.trim()
     if (!q) return
     setSelectedTask(null)
-    setQuestion('')
     setShowNewForm(false)
     hasAutoNavigatedRef.current = null
-    await startResearch(q, strategy, timeLimit, depth)
-  }, [question, strategy, timeLimit, depth, startResearch])
+    const accepted = await startResearch(q, strategy, timeLimit, depth)
+    if (accepted) setQuestion('')
+  }, [question, strategy, timeLimit, depth, startResearch, setQuestion])
 
   const handleResume = useCallback(
     async (convId: string) => {
@@ -281,7 +288,6 @@ export default function ResearchPage() {
 
   const handleNewResearch = useCallback(() => {
     setSelectedTask(null)
-    setQuestion('')
     if (!isRunning) reset()
     setShowNewForm(true)
     navigate('/research')
@@ -685,9 +691,15 @@ export default function ResearchPage() {
                 </div>
               )}
 
-              {/* Report — use context data only for the live/just-completed task */}
+              {/* Report — prefer context stream for the live/just-completed task,
+                 fall back to API data, and bridge the gap where selectedTask
+                 hasn't loaded yet but context report is still in memory */}
               {(() => {
-                const displayReport = isViewingLiveTask ? report || selectedTask?.report : selectedTask?.report
+                const sameTask = conversationId && selectedTask?.conversation_id === conversationId
+                const displayReport =
+                  sameTask || isViewingLiveTask
+                    ? report || selectedTask?.report
+                    : selectedTask?.report || (conversationId && !selectedTask ? report : null)
                 return displayReport ? (
                   <div className="rounded-xl bg-gray-50 dark:bg-gray-800/60 ring-1 ring-gray-100 dark:ring-gray-700/50 px-6 py-5">
                     <div className="prose-chat">
@@ -702,6 +714,7 @@ export default function ResearchPage() {
                 <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500">
                   {selectedTask.model_id && <span>Model: {selectedTask.model_id}</span>}
                   <span className="capitalize">Strategy: {selectedTask.strategy}</span>
+                  {selectedTask.depth && <span className="capitalize">Depth: {selectedTask.depth}</span>}
                   <span>Rounds: {selectedTask.current_round}</span>
                   {selectedTask.completed_at && selectedTask.created_at && (
                     <span>
@@ -713,6 +726,7 @@ export default function ResearchPage() {
                             1000,
                         ),
                       )}
+                      {selectedTask.time_limit_minutes != null && ` / ${selectedTask.time_limit_minutes}m limit`}
                     </span>
                   )}
                 </div>

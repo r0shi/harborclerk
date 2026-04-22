@@ -55,7 +55,11 @@ function showReloadToast() {
   document.body.appendChild(bar)
 }
 
-async function refreshToken(): Promise<boolean> {
+export function currentToken(): string | null {
+  return getToken()
+}
+
+export async function refreshToken(): Promise<boolean> {
   try {
     const res = await fetch('/api/auth/refresh', {
       method: 'POST',
