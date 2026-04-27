@@ -70,8 +70,11 @@ export default function SystemStatusPage() {
   }
 
   useEffect(() => {
-    loadHealth()
-    loadStats()
+    async function run() {
+      await loadHealth()
+      await loadStats()
+    }
+    run()
   }, [])
 
   function handleRefresh() {

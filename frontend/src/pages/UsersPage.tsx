@@ -28,7 +28,10 @@ export default function UsersPage() {
   }
 
   useEffect(() => {
-    loadUsers()
+    async function run() {
+      await loadUsers()
+    }
+    run()
   }, [])
 
   async function handleToggleActive(user: UserInfo) {

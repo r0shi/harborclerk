@@ -143,16 +143,16 @@ function Pagination({
 }
 
 export default function SearchPage() {
-  const saved = useRef(loadSearchState())
-  const [query, setQuery] = useState(saved.current?.query || '')
-  const [results, setResults] = useState<SearchResponse | null>(saved.current?.results || null)
+  const [initial] = useState(loadSearchState)
+  const [query, setQuery] = useState(initial?.query || '')
+  const [results, setResults] = useState<SearchResponse | null>(initial?.results || null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [history, setHistory] = useState<string[]>(getHistory)
   const [showHistory, setShowHistory] = useState(false)
-  const [pageSize, setPageSize] = useState(saved.current?.pageSize || 25)
-  const [currentPage, setCurrentPage] = useState(saved.current?.currentPage || 1)
-  const lastQuery = useRef(saved.current?.lastQuery || '')
+  const [pageSize, setPageSize] = useState(initial?.pageSize || 25)
+  const [currentPage, setCurrentPage] = useState(initial?.currentPage || 1)
+  const lastQuery = useRef(initial?.lastQuery || '')
   const wrapperRef = useRef<HTMLDivElement>(null)
 
   // Persist search state to sessionStorage
