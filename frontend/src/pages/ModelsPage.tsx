@@ -15,6 +15,11 @@ interface ModelInfo {
   yarn_extended_context: number | null
 }
 
+interface OrphanInfo {
+  filename: string
+  size_bytes: number
+}
+
 function formatSize(bytes: number): string {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`
   if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`
@@ -24,6 +29,7 @@ function formatSize(bytes: number): string {
 export default function ModelsPage() {
   const { token } = useAuth()
   const [models, setModels] = useState<ModelInfo[]>([])
+  const [orphans, setOrphans] = useState<OrphanInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [downloading, setDownloading] = useState<Set<string>>(new Set())
@@ -39,6 +45,8 @@ export default function ModelsPage() {
       setModels(data)
       const yarnStatus = await get<{ yarn_enabled: boolean }>('/api/chat/models/yarn')
       setYarnEnabled(yarnStatus.yarn_enabled)
+      const orphanList = await get<OrphanInfo[]>('/api/chat/models/orphaned')
+      setOrphans(orphanList)
       // Seed downloading set from server state
       setDownloading((prev) => {
         const next = new Set(prev)
@@ -51,6 +59,16 @@ export default function ModelsPage() {
       setError(e instanceof Error ? e.message : 'Failed to load models')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleDeleteOrphan(filename: string) {
+    setError('')
+    try {
+      await del(`/api/chat/models/orphaned/${encodeURIComponent(filename)}`)
+      loadModels()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Delete failed')
     }
   }
 
@@ -375,6 +393,33 @@ export default function ModelsPage() {
           </tbody>
         </table>
       </div>
+
+      {/* Orphaned model files */}
+      {orphans.length > 0 && (
+        <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+          <div className="font-medium text-gray-900 dark:text-gray-100">Orphaned model files</div>
+          <p className="mt-0.5 mb-3 text-xs text-gray-500 dark:text-gray-400">
+            GGUF files on disk that are no longer in the model registry — typically left over from removed or replaced
+            models. Safe to delete to reclaim space.
+          </p>
+          <ul className="divide-y divide-(--color-border)">
+            {orphans.map((o) => (
+              <li key={o.filename} className="flex items-center justify-between py-2">
+                <div>
+                  <div className="font-mono text-xs text-gray-700 dark:text-gray-300">{o.filename}</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">{formatSize(o.size_bytes)}</div>
+                </div>
+                <button
+                  onClick={() => handleDeleteOrphan(o.filename)}
+                  className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-red-700"
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* YaRN Extended Context */}
       {models.some((m) => m.yarn_available) && (

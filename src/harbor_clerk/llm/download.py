@@ -197,3 +197,40 @@ def delete_model(model_id: str) -> bool:
         path.unlink()
         return True
     return False
+
+
+def list_orphaned() -> list[dict]:
+    """Return GGUF files in the models dir that aren't in the current registry.
+
+    Each entry: {"filename": str, "size_bytes": int}. Excludes .part files
+    (in-progress downloads).
+    """
+    models_dir = _models_dir()
+    registered = {info.filename for info in MODELS.values()}
+    orphans: list[dict] = []
+    for path in models_dir.glob("*.gguf"):
+        if not path.is_file():
+            continue
+        if path.name in registered:
+            continue
+        orphans.append({"filename": path.name, "size_bytes": path.stat().st_size})
+    return sorted(orphans, key=lambda o: o["filename"])
+
+
+def delete_orphaned(filename: str) -> bool:
+    """Delete an orphaned GGUF by basename. Returns True if removed.
+
+    Refuses path traversal, non-.gguf files, and any filename still in the
+    registry (use delete_model for those).
+    """
+    if "/" in filename or "\\" in filename or filename in {".", ".."}:
+        return False
+    if not filename.endswith(".gguf"):
+        return False
+    if any(filename == info.filename for info in MODELS.values()):
+        return False
+    path = _models_dir() / filename
+    if not path.is_file():
+        return False
+    path.unlink()
+    return True

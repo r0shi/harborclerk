@@ -24,11 +24,13 @@ from harbor_clerk.db import get_session
 from harbor_clerk.llm.chat import chat_stream
 from harbor_clerk.llm.download import (
     delete_model,
+    delete_orphaned,
     download_model,
     get_download_status,
     get_model_path,
     is_downloading,
     list_downloaded,
+    list_orphaned,
 )
 from harbor_clerk.llm.models import get_model, list_models
 from harbor_clerk.llm.tools import summarize_tool_result
@@ -389,6 +391,26 @@ async def remove_model(
     if settings.llm_model_id == model_id:
         settings.llm_model_id = ""
         sync_native_config("llm_model_id", "")
+
+
+@router.get("/chat/models/orphaned")
+async def list_orphaned_models(
+    principal: Principal = Depends(require_user),
+):
+    """List GGUF files on disk that aren't in the current model registry."""
+    return list_orphaned()
+
+
+@router.delete("/chat/models/orphaned/{filename}", status_code=204)
+async def remove_orphaned_model(
+    filename: str,
+    principal: Principal = Depends(require_admin),
+):
+    if not delete_orphaned(filename):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Orphaned model not found",
+        )
 
 
 @router.get("/chat/models/download-progress")
