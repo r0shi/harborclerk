@@ -37,7 +37,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const tokenRef = useRef<string | null>(null)
 
   // Keep ref in sync
-  tokenRef.current = token
+  useEffect(() => {
+    tokenRef.current = token
+  }, [token])
 
   const clearAuth = useCallback(() => {
     setToken(null)

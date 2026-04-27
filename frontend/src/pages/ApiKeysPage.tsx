@@ -196,8 +196,11 @@ export default function ApiKeysPage() {
   }
 
   useEffect(() => {
-    loadKeys()
-    loadScopeOptions()
+    async function run() {
+      await loadKeys()
+      await loadScopeOptions()
+    }
+    run()
   }, [])
 
   async function handleRevoke(keyId: string) {

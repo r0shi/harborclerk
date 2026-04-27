@@ -71,7 +71,9 @@ export function useUploadSession(): UseUploadSessionReturn {
 
   const abortRef = useRef<AbortController | null>(null)
   const filesRef = useRef<FileItem[]>([])
-  filesRef.current = files
+  useEffect(() => {
+    filesRef.current = files
+  }, [files])
 
   // Persist session ID to sessionStorage
   useEffect(() => {

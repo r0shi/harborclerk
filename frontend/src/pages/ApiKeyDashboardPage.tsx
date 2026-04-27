@@ -156,7 +156,10 @@ export default function ApiKeyDashboardPage() {
 
   // request log load
   useEffect(() => {
-    loadRequests()
+    async function run() {
+      await loadRequests()
+    }
+    run()
   }, [loadRequests])
 
   async function handlePurge() {

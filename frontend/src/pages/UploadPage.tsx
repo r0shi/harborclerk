@@ -111,24 +111,27 @@ export default function UploadPage() {
   const [resumeChecked, setResumeChecked] = useState(false)
 
   useEffect(() => {
-    const sid = hook.sessionId
-    if (!sid || hook.session) {
-      setResumeChecked(true)
-      return
-    }
-    getUploadSession(sid)
-      .then((info) => {
+    async function run() {
+      const sid = hook.sessionId
+      if (!sid || hook.session) {
+        setResumeChecked(true)
+        return
+      }
+      try {
+        const info = await getUploadSession(sid)
         if (info.status === 'active') {
           setResumeInfo(info)
         } else {
           // Session is done, clear it
           hook.clearSession()
         }
-      })
-      .catch(() => {
+      } catch {
         hook.clearSession()
-      })
-      .finally(() => setResumeChecked(true))
+      } finally {
+        setResumeChecked(true)
+      }
+    }
+    run()
     // Only run on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

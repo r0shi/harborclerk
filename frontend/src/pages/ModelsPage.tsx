@@ -37,7 +37,9 @@ export default function ModelsPage() {
   const [yarnEnabled, setYarnEnabled] = useState(false)
 
   const loadModelsRef = useRef(loadModels)
-  loadModelsRef.current = loadModels
+  useEffect(() => {
+    loadModelsRef.current = loadModels
+  })
 
   async function loadModels() {
     try {
@@ -78,7 +80,9 @@ export default function ModelsPage() {
 
   // Subscribe to download progress via SSE with auto-reconnect
   const tokenRef = useRef(token)
-  tokenRef.current = token
+  useEffect(() => {
+    tokenRef.current = token
+  }, [token])
   useEffect(() => {
     if (!token) return
 

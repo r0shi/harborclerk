@@ -75,7 +75,10 @@ export default function IntegrationsPage() {
   }, [])
 
   useEffect(() => {
-    loadData()
+    async function run() {
+      await loadData()
+    }
+    run()
   }, [loadData])
 
   async function saveUrl() {
