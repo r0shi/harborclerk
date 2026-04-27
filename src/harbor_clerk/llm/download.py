@@ -220,21 +220,18 @@ def list_orphaned() -> list[dict]:
 def delete_orphaned(filename: str) -> bool:
     """Delete an orphaned GGUF by basename. Returns True if removed.
 
-    Refuses path traversal, non-.gguf files, and any filename still in the
-    registry (use delete_model for those).
+    The path acted on is sourced from the directory listing, not from the
+    caller's string — `filename` is only used as an equality match against
+    discovered entries.
     """
-    if "/" in filename or "\\" in filename or filename in {".", ".."}:
-        return False
-    if not filename.endswith(".gguf"):
-        return False
-    if any(filename == info.filename for info in MODELS.values()):
-        return False
-    base = _models_dir().resolve()
-    candidate = (base / filename).resolve()
-    # Resolve guards against symlinks / unicode tricks escaping the dir.
-    if not candidate.is_relative_to(base) or candidate.parent != base:
-        return False
-    if not candidate.is_file():
-        return False
-    candidate.unlink()
-    return True
+    registered = {info.filename for info in MODELS.values()}
+    for entry in _models_dir().iterdir():
+        if entry.name != filename:
+            continue
+        if not entry.is_file() or entry.suffix != ".gguf":
+            return False
+        if entry.name in registered:
+            return False
+        entry.unlink()
+        return True
+    return False
