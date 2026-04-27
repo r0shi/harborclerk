@@ -114,7 +114,7 @@ final class AppSettings: @unchecked Sendable {
             "deepseek-r1-0528-8b": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
             "smollm3-3b": "HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
-            "qwen3-30b-a3b": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+            "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
         ]
         guard let filename = filenames[modelId] else { return "" }
@@ -131,7 +131,7 @@ final class AppSettings: @unchecked Sendable {
             "deepseek-r1-0528-8b": 32768,
             "smollm3-3b": 65536,
             "gpt-oss-20b": 128000,
-            "qwen3-30b-a3b": 262144,
+            "qwen36-35b-a3b": 262144,
             "gemma4-26b-a4b": 128000,
         ]
         return contextWindows[modelId] ?? 32768

@@ -97,7 +97,7 @@ final class AppSettingsTests: XCTestCase {
             "deepseek-r1-0528-8b": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
             "smollm3-3b": "HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
-            "qwen3-30b-a3b": "Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+            "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
         ]
         for (modelId, filename) in expected {
