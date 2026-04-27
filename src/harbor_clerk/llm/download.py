@@ -229,8 +229,12 @@ def delete_orphaned(filename: str) -> bool:
         return False
     if any(filename == info.filename for info in MODELS.values()):
         return False
-    path = _models_dir() / filename
-    if not path.is_file():
+    base = _models_dir().resolve()
+    candidate = (base / filename).resolve()
+    # Resolve guards against symlinks / unicode tricks escaping the dir.
+    if not candidate.is_relative_to(base) or candidate.parent != base:
         return False
-    path.unlink()
+    if not candidate.is_file():
+        return False
+    candidate.unlink()
     return True
