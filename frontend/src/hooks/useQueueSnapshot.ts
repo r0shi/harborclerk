@@ -5,12 +5,16 @@ export interface StageSnapshot {
   queued: number
   running: number
   queue: 'io' | 'cpu'
+  /** Jobs that completed at this stage within `throughput_window_seconds`. */
+  recent_completed: number
 }
 
 export interface QueueSnapshot {
   by_stage: Record<string, StageSnapshot>
   queues: Record<'io' | 'cpu', { queued: number; running: number }>
   stage_order: string[]
+  /** Window over which `recent_completed` is computed. */
+  throughput_window_seconds: number
 }
 
 const POLL_INTERVAL_MS = 3000

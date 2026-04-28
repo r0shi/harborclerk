@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 from fastapi import APIRouter, Depends
@@ -124,13 +125,15 @@ async def jobs_snapshot(
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
-    """Per-stage queued/running counts for the queue tray's Pipeline tab.
+    """Per-stage queued/running counts and recent throughput.
 
     Returns:
         {
             "by_stage": {
-                "extract": {"queued": 0, "running": 1, "queue": "io"},
-                "ocr":     {"queued": 3, "running": 0, "queue": "cpu"},
+                "extract": {"queued": 0, "running": 1, "queue": "io",
+                            "recent_completed": 5},
+                "ocr":     {"queued": 3, "running": 0, "queue": "cpu",
+                            "recent_completed": 0},
                 ...
             },
             "queues": {
@@ -138,17 +141,36 @@ async def jobs_snapshot(
                 "cpu": {"queued": 3, "running": 0},
             },
             "stage_order": ["extract", "ocr", "chunk", ...],  // pipeline order
+            "throughput_window_seconds": 30,
         }
 
-    Polled by the frontend every few seconds while the Pipeline tab is
-    open. Cheap (one indexed COUNT GROUP BY per call) so polling is
-    fine; we don't need a separate SSE channel for this.
+    `recent_completed` is the count of jobs that finished at each stage
+    in the last `throughput_window_seconds`. Drives the Observatory
+    pipeline-flow visualisation (edge thickness, particle spawn rate).
+
+    Polled by the frontend every few seconds. Cheap: two indexed
+    aggregations on `ingestion_jobs`, no joins.
     """
+    # Counts of currently-queued / currently-running jobs by stage.
     rows = (
         await session.execute(
             select(IngestionJob.stage, IngestionJob.status, func.count())
             .where(IngestionJob.status.in_([JobStatus.queued, JobStatus.running]))
             .group_by(IngestionJob.stage, IngestionJob.status)
+        )
+    ).all()
+
+    # Recently-completed jobs by stage for the throughput indicator.
+    # 30 s window matches the rolling visualisation cadence — long
+    # enough to smooth bursts, short enough that the diagram tracks
+    # current activity rather than historical state.
+    window_seconds = 30
+    cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+    completion_rows = (
+        await session.execute(
+            select(IngestionJob.stage, func.count())
+            .where(IngestionJob.status == JobStatus.done, IngestionJob.finished_at >= cutoff)
+            .group_by(IngestionJob.stage)
         )
     ).all()
 
@@ -159,7 +181,7 @@ async def jobs_snapshot(
     # special-case "stage absent from response = no work".
     for stage in STAGE_ORDER:
         queue_name, _, _ = STAGE_CONFIG[stage]
-        by_stage[stage.value] = {"queued": 0, "running": 0, "queue": queue_name}
+        by_stage[stage.value] = {"queued": 0, "running": 0, "queue": queue_name, "recent_completed": 0}
 
     for stage, status, count in rows:
         stage_key = stage.value if hasattr(stage, "value") else str(stage)
@@ -172,8 +194,14 @@ async def jobs_snapshot(
         if queue_name in queues:
             queues[queue_name][status_key] += int(count)
 
+    for stage, count in completion_rows:
+        stage_key = stage.value if hasattr(stage, "value") else str(stage)
+        if stage_key in by_stage:
+            by_stage[stage_key]["recent_completed"] = int(count)
+
     return {
         "by_stage": by_stage,
         "queues": queues,
         "stage_order": [s.value for s in STAGE_ORDER],
+        "throughput_window_seconds": window_seconds,
     }
