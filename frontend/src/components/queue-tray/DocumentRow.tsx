@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { stageLabel } from '../../utils/stageLabel'
 import { PIPELINE_STAGES, type DocumentQueueItem } from '../../hooks/useQueueTray'
-import StageRing from './StageRing'
+import StageBar from './StageBar'
 
 interface DocumentRowProps {
   item: DocumentQueueItem
@@ -29,34 +29,13 @@ export default function DocumentRow({ item }: DocumentRowProps) {
 
   return (
     <div className="py-1.5">
-      {/* Main row: ring + info + chevron */}
-      <div className="flex items-center gap-2.5">
-        <StageRing stages={item.stages} size={36} />
-
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-(--color-text-primary) truncate">{item.filename}</div>
-          <div className="text-xs text-(--color-text-secondary)">
-            {item.status === 'queued' ? (
-              'Queued'
-            ) : (
-              <>
-                {stageLabel(item.current_stage)}
-                {hasSubProgress && (
-                  <span className="ml-1">
-                    — {currentState.progress}/{currentState.total} pages
-                  </span>
-                )}
-                <span className="ml-1 text-(--color-text-secondary)">
-                  (Step {currentStep}/{activeStages.length})
-                </span>
-              </>
-            )}
-          </div>
-        </div>
-
+      {/* Top row: filename + chevron */}
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1 text-sm font-medium text-(--color-text-primary) truncate">{item.filename}</div>
         <button
           onClick={() => setExpanded((p) => !p)}
           className="shrink-0 rounded-md p-0.5 text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-black/4 dark:hover:bg-white/6 transition-colors"
+          aria-label={expanded ? 'Collapse stage detail' : 'Expand stage detail'}
         >
           <svg
             className={`h-3.5 w-3.5 queue-chevron ${expanded ? 'expanded' : ''}`}
@@ -68,6 +47,32 @@ export default function DocumentRow({ item }: DocumentRowProps) {
             <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
           </svg>
         </button>
+      </div>
+
+      {/* Segmented stage bar */}
+      <div className="mt-1.5">
+        <StageBar stages={item.stages} />
+      </div>
+
+      {/* Status text below the bar — current stage + within-stage
+          progress + step counter. Clearer than the ring's center
+          fraction because the stage NAME is right there. */}
+      <div className="mt-1 text-xs text-(--color-text-secondary)">
+        {item.status === 'queued' ? (
+          'Queued'
+        ) : (
+          <>
+            <span className="text-(--color-text-primary)">{stageLabel(item.current_stage)}</span>
+            {hasSubProgress && (
+              <span className="ml-1">
+                · {currentState.progress}/{currentState.total} pages
+              </span>
+            )}
+            <span className="ml-1">
+              · Step {currentStep}/{activeStages.length}
+            </span>
+          </>
+        )}
       </div>
 
       {/* Expandable detail */}
