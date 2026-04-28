@@ -66,17 +66,30 @@ _SEED_QUERY_BLOCKED_ENTITY_TYPES = frozenset({"CARDINAL", "ORDINAL", "DATE", "TI
 _NOTE_PROMPT_CHAR_CAP = 30_000
 
 _SYNTHESIS_SYSTEM = (
-    "You are writing a research report for Harbor Clerk. Based on the research "
-    "notes below, write a clear, well-organized report answering the user's question.\n\n"
-    "## Guidelines\n"
-    "- Every claim from the corpus must cite its source: [Document Title, page X]\n"
-    "- Group findings by theme, not by document\n"
-    "- Be thorough but concise — include all relevant findings, skip filler\n"
-    "- If the evidence is contradictory or incomplete, say so\n"
-    "- You may provide brief contextual framing from general knowledge to help "
-    "the reader understand the findings, but clearly distinguish this from "
-    "corpus-sourced material (e.g. 'The corpus discusses X in the context of Y')\n"
-    "- Never fabricate corpus citations"
+    "You are writing a research report for Harbor Clerk. Base your report ONLY "
+    "on the research notes between <notes>...</notes> markers in the user "
+    "message. Do not introduce facts that are not in those notes.\n\n"
+    "## Citation rule\n"
+    "- Every substantive claim must end with a citation in the form "
+    "[Document Title, page X], copied exactly as the citation appears in the "
+    "notes.\n"
+    "- Never invent a citation. If a fact does not appear in the notes with a "
+    "citation, do not include the fact.\n\n"
+    "## Coverage rule (especially for comparative questions)\n"
+    "- For comparative questions, write a dedicated section per region, "
+    "tradition, producer, or case that the notes discuss. Do not collapse "
+    "multiple distinct subjects into a single sentence.\n"
+    "- If the original question or planned queries mentioned a topic that the "
+    "notes do not cover, briefly state that the corpus did not yield evidence "
+    "for it (one short sentence). Do NOT substitute general knowledge for the "
+    "missing material.\n\n"
+    "## Style\n"
+    "- Group findings by theme, not by document.\n"
+    "- Be thorough but concise — include all relevant findings, skip filler.\n"
+    "- If the evidence is contradictory or incomplete, say so.\n"
+    "- You may include one short paragraph of general-knowledge framing at the "
+    "very start, only if it helps the reader interpret the findings — and mark "
+    "it explicitly as background, not as a finding."
 )
 
 _QUERY_PLANNING_SYSTEM = (
@@ -104,7 +117,11 @@ _NOTE_EXTRACTION_SYSTEM = (
     "- Skip irrelevant or redundant passages\n"
     "- Preserve factual details — names, numbers, dates\n"
     "- If a passage contradicts another, note both with their citations\n"
-    "- Write in plain text with citations, not JSON"
+    "- Write in plain text with citations, not JSON\n"
+    "- If the passages do NOT contain information relevant to the research "
+    "question, return ONLY the line: `No relevant findings in this passage "
+    "set.` Do not invent on-topic content from the passage titles or from "
+    "general knowledge."
 )
 
 _GAP_ANALYSIS_SYSTEM = (
@@ -376,17 +393,38 @@ async def _fetch_document_list(user_id: uuid.UUID | None) -> list[dict]:
         return [{"doc_id": str(row.doc_id), "title": row.title} for row in result.all()]
 
 
+_COMPARATIVE_QUESTION_RE = re.compile(
+    r"\b(compare|comparison|contrast|differences?|vs\.?|versus|across\s+\w+|"
+    r"different\s+\w+\s+and|how\s+do(?:es)?\s+\w+\s+differ)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_comparative_question(question: str) -> bool:
+    return bool(_COMPARATIVE_QUESTION_RE.search(question))
+
+
 def _build_synthesis_messages(user_question: str, notes: str) -> list[dict]:
+    user_content = f"## Original question\n{user_question}\n\n"
+    user_content += f"## Research notes\n<notes>\n{notes}\n</notes>\n\n"
+    if _is_comparative_question(user_question):
+        # Steer toward tabular structure for compare-style questions. GPT-OSS
+        # uses tables natively and they read 2-3× better than paragraphs for
+        # multi-region/producer comparisons; nudging the other models toward
+        # them when the question shape calls for it makes the cross-model
+        # output more uniformly useful. See research-debugging/cross-topic-
+        # analysis.md ("GPT-OSS 20B's table format is the gold standard").
+        user_content += (
+            "Format guidance: this is a comparative question. Where it fits, "
+            "use markdown tables with one row per region/tradition/producer/case "
+            "and a Source column with the citation. Use prose for the "
+            "introduction and synthesis sections, tables for the substantive "
+            "comparisons.\n\n"
+        )
+    user_content += "Write your final report with citations."
     return [
         {"role": "system", "content": _SYNTHESIS_SYSTEM},
-        {
-            "role": "user",
-            "content": (
-                f"## Original question\n{user_question}\n\n"
-                f"## Research notes\n<notes>\n{notes}\n</notes>\n\n"
-                "Write your final report with citations."
-            ),
-        },
+        {"role": "user", "content": user_content},
     ]
 
 
