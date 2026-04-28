@@ -84,10 +84,13 @@ function edgePath(from: string, to: string): string {
 }
 
 function nodeRadius(info: StageSnapshot | undefined): number {
-  if (!info) return 18
+  if (!info) return 14
   const total = info.queued + info.running
-  // sqrt scale so a long queue grows but doesn't overwhelm
-  return Math.min(36, 18 + Math.sqrt(total) * 3)
+  // sqrt scale so a long queue grows but doesn't overwhelm. Cap is
+  // chosen so a busy node + its count badge above and stage label
+  // below still fit cleanly in the 80 px vertical gap between rows
+  // of the fan-out (entities / embed / summarize).
+  return Math.min(26, 14 + Math.sqrt(total) * 2.5)
 }
 
 interface Particle {
@@ -146,9 +149,11 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
       style={{ aspectRatio: `${VIEW_WIDTH} / ${VIEW_HEIGHT}` }}
     >
       <defs>
-        {/* Glow filter for active nodes */}
+        {/* Glow filter for active nodes — dialled back to suit the
+            smaller node size; bigger blur made tightly-stacked nodes
+            (entities / embed / summarize) bleed into each other. */}
         <filter id="pipeline-glow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="3.5" result="blur" />
+          <feGaussianBlur stdDeviation="2.5" result="blur" />
           <feMerge>
             <feMergeNode in="blur" />
             <feMergeNode in="SourceGraphic" />
@@ -223,12 +228,12 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
             {/* Count badge above the node, only when there's activity */}
             {total > 0 && (
               <g>
-                <rect x={pos.x - 18} y={pos.y - r - 18} width={36} height={16} rx={8} fill="rgba(0,0,0,0.55)" />
+                <rect x={pos.x - 16} y={pos.y - r - 14} width={32} height={13} rx={6.5} fill="rgba(0,0,0,0.55)" />
                 <text
                   x={pos.x}
-                  y={pos.y - r - 7}
+                  y={pos.y - r - 5}
                   textAnchor="middle"
-                  fontSize={10}
+                  fontSize={9}
                   fontWeight={600}
                   fill="white"
                   style={{ pointerEvents: 'none' }}
@@ -244,9 +249,9 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
             {/* Stage label below the node */}
             <text
               x={pos.x}
-              y={pos.y + r + 14}
+              y={pos.y + r + 12}
               textAnchor="middle"
-              fontSize={11}
+              fontSize={10}
               fontWeight={500}
               className="fill-(--color-text-primary)"
               style={{ pointerEvents: 'none' }}
