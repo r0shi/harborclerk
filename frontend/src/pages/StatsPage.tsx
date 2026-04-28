@@ -6,6 +6,7 @@ import ClusterMap from '../components/stats/ClusterMap'
 import TopicTreemap from '../components/stats/TopicTreemap'
 import TopicBarChart from '../components/stats/TopicBarChart'
 import TopicKeywords from '../components/stats/TopicKeywords'
+import PipelineDiagram from '../components/stats/PipelineDiagram'
 import { InfoTip } from '../components/InfoTip'
 
 interface TopicCluster {
@@ -123,6 +124,9 @@ export default function StatsPage() {
           tip="Named entities — people, organizations, places, dates, etc. — automatically extracted from your documents using natural language processing."
         />
       </div>
+
+      {/* Live pipeline activity */}
+      <PipelineDiagram />
 
       {/* Charts */}
       <CorpusCharts stats={stats} />

@@ -3,11 +3,12 @@
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_read_access
@@ -16,7 +17,8 @@ from harbor_clerk.db import get_session
 from harbor_clerk.events import CHANNEL
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_version import DocumentVersion
-from harbor_clerk.models.ingestion_job import IngestionJob
+from harbor_clerk.models.ingestion_job import IngestionJob, JobStatus
+from harbor_clerk.worker.pipeline import STAGE_CONFIG, STAGE_ORDER
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["jobs"])
@@ -116,3 +118,90 @@ async def active_jobs(
         events.append(event)
 
     return events
+
+
+@router.get("/jobs/snapshot")
+async def jobs_snapshot(
+    principal: Principal = Depends(require_read_access),
+    session: AsyncSession = Depends(get_session),
+):
+    """Per-stage queued/running counts and recent throughput.
+
+    Returns:
+        {
+            "by_stage": {
+                "extract": {"queued": 0, "running": 1, "queue": "io",
+                            "recent_completed": 5},
+                "ocr":     {"queued": 3, "running": 0, "queue": "cpu",
+                            "recent_completed": 0},
+                ...
+            },
+            "queues": {
+                "io":  {"queued": 0, "running": 1},
+                "cpu": {"queued": 3, "running": 0},
+            },
+            "stage_order": ["extract", "ocr", "chunk", ...],  // pipeline order
+            "throughput_window_seconds": 30,
+        }
+
+    `recent_completed` is the count of jobs that finished at each stage
+    in the last `throughput_window_seconds`. Drives the Observatory
+    pipeline-flow visualisation (edge thickness, particle spawn rate).
+
+    Polled by the frontend every few seconds. Cheap: two indexed
+    aggregations on `ingestion_jobs`, no joins.
+    """
+    # Counts of currently-queued / currently-running jobs by stage.
+    rows = (
+        await session.execute(
+            select(IngestionJob.stage, IngestionJob.status, func.count())
+            .where(IngestionJob.status.in_([JobStatus.queued, JobStatus.running]))
+            .group_by(IngestionJob.stage, IngestionJob.status)
+        )
+    ).all()
+
+    # Recently-completed jobs by stage for the throughput indicator.
+    # 30 s window matches the rolling visualisation cadence — long
+    # enough to smooth bursts, short enough that the diagram tracks
+    # current activity rather than historical state.
+    window_seconds = 30
+    cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+    completion_rows = (
+        await session.execute(
+            select(IngestionJob.stage, func.count())
+            .where(IngestionJob.status == JobStatus.done, IngestionJob.finished_at >= cutoff)
+            .group_by(IngestionJob.stage)
+        )
+    ).all()
+
+    by_stage: dict[str, dict[str, int | str]] = {}
+    queues: dict[str, dict[str, int]] = {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}
+
+    # Seed every stage with zeros so the frontend doesn't need to
+    # special-case "stage absent from response = no work".
+    for stage in STAGE_ORDER:
+        queue_name, _, _ = STAGE_CONFIG[stage]
+        by_stage[stage.value] = {"queued": 0, "running": 0, "queue": queue_name, "recent_completed": 0}
+
+    for stage, status, count in rows:
+        stage_key = stage.value if hasattr(stage, "value") else str(stage)
+        status_key = status.value if hasattr(status, "value") else str(status)
+        if stage_key not in by_stage or status_key not in ("queued", "running"):
+            continue
+        by_stage[stage_key][status_key] = int(count)
+        # Mirror into the IO/CPU rollup.
+        queue_name = by_stage[stage_key]["queue"]
+        if queue_name in queues:
+            queues[queue_name][status_key] += int(count)
+
+    for stage, count in completion_rows:
+        stage_key = stage.value if hasattr(stage, "value") else str(stage)
+        if stage_key in by_stage:
+            by_stage[stage_key]["recent_completed"] = int(count)
+
+    return {
+        "by_stage": by_stage,
+        "queues": queues,
+        "stage_order": [s.value for s in STAGE_ORDER],
+        "throughput_window_seconds": window_seconds,
+    }
