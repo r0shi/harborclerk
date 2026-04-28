@@ -123,12 +123,23 @@ async def get_research(
             question = m.content or ""
             break
 
-    # Find report (last assistant message if completed)
+    # Find report (last assistant message if completed). Also pull the
+    # model_id from THAT message — not from current settings, which would
+    # show whatever model is active right now (e.g. on the next switch).
     report: str | None = None
+    report_model_id: str | None = None
     if state.status == "completed":
         for m in reversed(all_msgs):
             if m.role == "assistant" and m.content:
                 report = m.content
+                report_model_id = m.model_id
+                break
+    # Fall back: if no report yet, surface the model_id of any assistant
+    # message we have (e.g. partial run), or finally the current setting.
+    if report_model_id is None:
+        for m in reversed(all_msgs):
+            if m.role == "assistant" and m.model_id:
+                report_model_id = m.model_id
                 break
 
     # Build tool result lookup for enrichment
@@ -173,7 +184,7 @@ async def get_research(
         progress=state.progress,
         notes=state.notes,
         report=report,
-        model_id=settings.llm_model_id if (settings := get_settings()).llm_model_id else None,
+        model_id=report_model_id or (get_settings().llm_model_id or None),
         messages=messages,
         created_at=conv.created_at,
         completed_at=state.completed_at,

@@ -42,6 +42,13 @@ final class ServiceManager: ObservableObject {
     private var configChangeTask: Task<Void, Never>?
     private var configWatcherActive = false
     private var lastLlmModelId: String = ""
+    /// Belt-and-suspenders mtime poller — the FSEvents-based watcher
+    /// drops events in practice (cause unclear; see project memory note
+    /// "Swift config watcher silently drops config.json events"), and
+    /// the user has to restart the whole app to pick up model switches.
+    /// This poller catches anything the dispatch source missed.
+    private var configPollTimer: DispatchSourceTimer?
+    private var lastConfigMtime: Date = .distantPast
 
     // MARK: - Auto-restart flap detection
 
@@ -320,6 +327,12 @@ final class ServiceManager: ObservableObject {
     }
 
     func restartService(_ service: any ManagedService) async {
+        // Reload settings before restart. The config-watcher path (see
+        // startConfigWatcher) is unreliable, so AppSettings.shared can be
+        // stale relative to config.json — without this reload, a manual
+        // "Restart LLM" right after a model switch would relaunch llama
+        // with the OLD model_id from cached settings.
+        AppSettings.shared.reload()
         await service.stop()
         notifyStateChanged()
         try? await Task.sleep(for: .seconds(1))
@@ -642,6 +655,12 @@ final class ServiceManager: ObservableObject {
         lastLlmModelId = settings.llmModelId
         let path = settings.configURL.path
 
+        // Capture initial mtime so the poller has a starting baseline.
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+           let mtime = attrs[.modificationDate] as? Date {
+            lastConfigMtime = mtime
+        }
+
         let fd = open(path, O_EVTONLY)
         guard fd >= 0 else {
             Log.logger("lifecycle").error("Cannot open config.json for watching")
@@ -659,6 +678,7 @@ final class ServiceManager: ObservableObject {
             // Re-create the watcher to track the new file.
             let flags = source.data
             Task { @MainActor in
+                Log.logger("lifecycle").info("config.json watcher fired (flags: \(flags.rawValue, privacy: .public))")
                 self?.handleConfigChange()
                 if flags.contains(.rename) {
                     self?.stopConfigWatcher()
@@ -671,6 +691,30 @@ final class ServiceManager: ObservableObject {
         }
         source.resume()
         configWatcherSource = source
+
+        // Belt-and-suspenders: poll mtime every 3s. The dispatch-source path
+        // above is preferred (instant), but it has been observed to silently
+        // drop events. The poller guarantees model-switch / llm_restart
+        // signals from Python eventually take effect.
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                  let mtime = attrs[.modificationDate] as? Date else { return }
+            // Round to milliseconds to dodge HFS/APFS 1-sec resolution false-positives
+            if mtime > self.lastConfigMtime.addingTimeInterval(0.001) {
+                let prev = self.lastConfigMtime
+                self.lastConfigMtime = mtime
+                Task { @MainActor in
+                    Log.logger("lifecycle").info(
+                        "config.json mtime changed (\(prev.timeIntervalSince1970, privacy: .public) → \(mtime.timeIntervalSince1970, privacy: .public)) — running handleConfigChange via poller")
+                    self.handleConfigChange()
+                }
+            }
+        }
+        timer.resume()
+        configPollTimer = timer
     }
 
     func stopConfigWatcher() {
@@ -680,6 +724,8 @@ final class ServiceManager: ObservableObject {
         configWatcherSource?.cancel()
         configWatcherSource = nil
         configFileDescriptor = -1
+        configPollTimer?.cancel()
+        configPollTimer = nil
     }
 
     private func handleConfigChange() {
