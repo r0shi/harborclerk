@@ -42,10 +42,15 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
           <span className="text-[13px] font-semibold text-(--color-text-primary)">Processing</span>
           <button
             onClick={handleClose}
+            aria-label="Tuck drawer away"
+            title="Tuck away"
             className="rounded-md p-0.5 text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-black/4 dark:hover:bg-white/6 transition-colors"
           >
+            {/* Chevron-down: dismissal reads as "tuck away into a drawer",
+                not "destroy". The drawer reopens with current state when
+                the queue pill is clicked again. */}
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
             </svg>
           </button>
         </div>
