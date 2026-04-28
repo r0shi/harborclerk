@@ -56,11 +56,17 @@ The helper script `/tmp/hc-research-debug/mcp.py` won't survive a reboot — re-
 
 ## Re-creating credentials (when the JWT expires or the session restarts)
 
+Ask the user for the admin email + password (do NOT hard-code them in any
+file, especially not one that will be checked in). The earlier revision of
+this file accidentally committed a literal password — that has since been
+redacted; the credential it contained should be considered compromised and
+rotated.
+
 ```bash
-# Login (admin)
+# Login (admin) — request the actual credentials from the user out-of-band
 JWT=$(curl -s -X POST http://127.0.0.1:8100/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"alex@bitblot.com","password":"Ceksos-gufsih-qubxu1"}' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
   | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")
 echo "$JWT" > /tmp/hc-research-debug/jwt
 
