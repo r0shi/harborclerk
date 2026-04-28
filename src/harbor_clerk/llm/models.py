@@ -1,4 +1,19 @@
-"""Curated model registry for local LLM inference."""
+"""Curated model registry for local LLM inference.
+
+Notes from the cross-topic research sweep (research-debugging/
+cross-topic-analysis.md, 2026-04-28):
+
+- Best for narrative/historical questions: Qwen3.6 35B-A3B. Strongest
+  document-shaped output (executive summary, themed sections). Prefer
+  for questions like "trace the evolution of X" or "what does the
+  corpus document about Y over time".
+- Best for comparative/tabular questions: GPT-OSS 20B. Natively uses
+  markdown tables; highest citation density across the sweep.
+- Reliable mid-size pick: Gemma 4 26B-A4B. Consistent, somewhat terse.
+- Not recommended for research mode: SmolLM3 3B. Confabulated
+  off-topic content from query keywords without producing citations
+  on 2 of 3 sweep topics. Marked supports_research=False below.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +40,12 @@ class ModelInfo:
     context_window: int
     supports_tools: bool
     yarn: YarnConfig | None = None  # None = YaRN not applicable
+    # Whether this model is recommended for Research mode. Set False for
+    # models that have demonstrated unreliable behaviour in research (e.g.
+    # confabulating from query keywords without citations). Chat mode and
+    # MCP-driven external use is unaffected. The API blocks starting a
+    # Research task when the active model has supports_research=False.
+    supports_research: bool = True
 
 
 MODELS: dict[str, ModelInfo] = {
@@ -87,6 +108,11 @@ MODELS: dict[str, ModelInfo] = {
             context_window=65536,
             supports_tools=True,
             yarn=YarnConfig(extended_context=131072, rope_scale=2.0, original_context=65536),
+            # Disabled for research mode: in the cross-topic sweep, SmolLM3
+            # produced 0 citations on 2 of 3 topics and confabulated content
+            # from seeded query keywords (e.g. presented "Argan and Levain
+            # cultures" as cheese-making traditions). Chat-mode use is fine.
+            supports_research=False,
         ),
         ModelInfo(
             id="gpt-oss-20b",
