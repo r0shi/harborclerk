@@ -6,6 +6,7 @@ synthesis) and all retrieval is driven by Python code with measurable coverage.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -508,6 +509,66 @@ async def _plan_queries(
     return merged[: depth_config["max_queries"]]
 
 
+def _doc_family_key(title: str) -> str:
+    """Group near-duplicate document drafts by leading-letter prefix.
+
+    Strips digits, whitespace, punctuation, and version suffixes, then takes
+    the first 6 letters. Examples (all return the same key):
+    - "painaulevain4", "painaulevain5WY", "painaulevainrecipeAoE1"  → "painau"
+    - "Yarra Valley 8WY", "Yarra-4-30", "YarraValley2KKedits"        → "yarrav"
+    - "Christoffel-1", "christoffel-6-11", "Christoffel 9"           → "christ"
+    """
+    letters_only = "".join(c.lower() for c in title if c.isalpha())
+    return letters_only[:6]
+
+
+def _content_hash(snippet: str) -> str:
+    """Hash the normalized leading content of a snippet, for near-duplicate
+    detection. Lowercases, drops all non-alphanumerics (so whitespace and
+    punctuation differences don't matter), takes the first 300 normalized
+    chars. Sufficiently fuzzy to catch drafts of the same article that have
+    minor copy edits, sharp enough not to false-collide unrelated text."""
+    norm = re.sub(r"[^a-z0-9]+", "", snippet.lower())[:300]
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def _dedup_near_duplicate_chunks(
+    sorted_chunks: list[tuple[str, dict]],
+) -> tuple[list[tuple[str, dict]], dict[str, list[str]]]:
+    """Drop chunks that are near-duplicates of an already-selected chunk.
+
+    Two chunks are near-duplicates when they share BOTH a doc-family-key
+    (drafts of the same article) AND a content hash (same opening text).
+    Input must be score-descending so the highest-scored chunk per group is
+    the one kept.
+
+    Returns (deduped_list, dups_by_kept_cid) where dups_by_kept_cid maps the
+    kept chunk_id to the list of dropped doc titles that were merged into it.
+    """
+    seen: dict[tuple[str, str], str] = {}  # (family, content_hash) → kept cid
+    dups_by_kept: dict[str, list[str]] = {}
+    deduped: list[tuple[str, dict]] = []
+
+    for cid, info in sorted_chunks:
+        family = _doc_family_key(info.get("doc_title", ""))
+        snippet = info.get("snippet", "")
+        # If snippet is empty (unusual, but possible), don't risk false-collisions.
+        if not snippet or not family:
+            deduped.append((cid, info))
+            continue
+        chash = _content_hash(snippet)
+        key = (family, chash)
+        if key in seen:
+            kept_cid = seen[key]
+            dup_title = info.get("doc_title", "?")
+            dups_by_kept.setdefault(kept_cid, []).append(dup_title)
+            continue
+        seen[key] = cid
+        deduped.append((cid, info))
+
+    return deduped, dups_by_kept
+
+
 def _ingest_hits(coverage: dict[str, dict], hits: list[dict], query_text: str) -> None:
     """Merge search hits into the coverage dict, deduping by chunk_id."""
     for hit in hits:
@@ -603,7 +664,21 @@ async def _read_evidence(
     Returns formatted passage text for note extraction, bounded by context budget.
     """
     # Sort by score descending, pick diverse docs
-    sorted_chunks = sorted(coverage.items(), key=lambda x: x[1]["score"], reverse=True)
+    sorted_chunks_all = sorted(coverage.items(), key=lambda x: x[1]["score"], reverse=True)
+
+    # Drop near-duplicate drafts (same doc-family + same opening content) so
+    # we don't burn note-extraction budget summarizing the same fact from
+    # `painaulevain4` and `painaulevain5WY` and `painaulevainrecipeAoE1`. The
+    # kept representative carries an `also_in` list for citation transparency.
+    sorted_chunks, dups_by_kept = _dedup_near_duplicate_chunks(sorted_chunks_all)
+    if dups_by_kept:
+        total_dropped = sum(len(v) for v in dups_by_kept.values())
+        sample = next(iter(dups_by_kept.values()))[:3]
+        logger.info(
+            "Dropped %d near-duplicate draft passages (sample: %s)",
+            total_dropped,
+            sample,
+        )
 
     # Prioritize: take top chunk per doc first, then fill
     seen_docs: set[str] = set()
@@ -643,10 +718,21 @@ async def _read_evidence(
                 doc_title = passage.get("doc_title", "Unknown")
                 page = passage.get("page", "?")
                 section = passage.get("section", "")
+                cid = passage.get("chunk_id")
 
                 entry = f"\n---\n**[{doc_title}, page {page}]**"
                 if section:
                     entry += f" — {section}"
+                # Note other drafts that were merged into this representative
+                # so the model knows the finding is corroborated across drafts
+                # (and so a fact-checker can trace the dropped duplicates).
+                also_in = dups_by_kept.get(cid, []) if cid else []
+                if also_in:
+                    truncated = also_in[:3]
+                    extra = f"; also in: {', '.join(truncated)}" + (
+                        f" (+{len(also_in) - 3} more)" if len(also_in) > 3 else ""
+                    )
+                    entry += extra
                 entry += f"\n{text}\n"
 
                 if total_chars + len(entry) > context_budget_chars:
@@ -1031,80 +1117,122 @@ async def research_stream(
                     await session.commit()
 
                     # -------------------------------------------------------
-                    # Phase 5: Gap analysis (optional)
+                    # Phase 5: Gap analysis (optional, up to 2 rounds)
+                    #
+                    # Round 1 fires if the depth config enables gap rounds and
+                    # we still have ≥30% of the time budget. Round 2 fires
+                    # only if round 1 actually added new content AND we still
+                    # have ≥50% of the time budget remaining — so it can't
+                    # come at the expense of synthesis. Most standard runs
+                    # finish well under budget, leaving room for a second
+                    # round to push coverage further on the niche misses
+                    # documented in the cross-topic analysis.
                     # -------------------------------------------------------
-                    if depth_config["gap_round"] and len(coverage) > 0:
+                    gap_round_max = 2 if depth_config["gap_round"] else 0
+                    last_round_added_content = True  # bootstrap so round 1 can run
+                    for gap_round_n in range(gap_round_max):
+                        if not (len(coverage) > 0 and last_round_added_content):
+                            break
                         elapsed = int((datetime.now(UTC) - start_time).total_seconds())
                         time_limit_s = (state.time_limit_minutes or 30) * 60
-                        if elapsed < time_limit_s * 0.7:  # only if we have time
-                            yield _sse(
-                                {
-                                    "type": "progress",
-                                    "step": 5,
-                                    "phase": "gap_analysis",
-                                    "elapsed_seconds": elapsed,
-                                    "strategy": strategy,
-                                }
-                            )
-                            yield _sse({"type": "notes", "content": "Checking for gaps in coverage..."})
+                        # First round needs ≤70% used (matches prior behavior);
+                        # second round needs ≤50% used so synthesis still has
+                        # plenty of headroom.
+                        threshold = 0.7 if gap_round_n == 0 else 0.5
+                        if elapsed >= time_limit_s * threshold:
+                            break
+                        round_label = "" if gap_round_n == 0 else f" (round {gap_round_n + 1})"
+                        yield _sse(
+                            {
+                                "type": "progress",
+                                "step": 5,
+                                "phase": "gap_analysis",
+                                "round": gap_round_n + 1,
+                                "elapsed_seconds": elapsed,
+                                "strategy": strategy,
+                            }
+                        )
+                        yield _sse({"type": "notes", "content": f"Checking for gaps in coverage{round_label}..."})
 
+                        # Pass the LATEST notes (including the previous gap
+                        # round, if any) so the model doesn't re-suggest
+                        # gaps the previous round already filled.
+                        gap_input_notes = "\n\n".join(collected_notes)
+                        try:
+                            gap_queries = await _check_gaps(
+                                client,
+                                llm_url,
+                                user_question,
+                                gap_input_notes,
+                                coverage_summary,
+                            )
+                        except Exception:
+                            logger.exception("Gap analysis failed (round %d)", gap_round_n + 1)
+                            gap_queries = []
+
+                        if not gap_queries:
+                            last_round_added_content = False
+                            yield _sse({"type": "notes", "content": f"No further gaps identified{round_label}."})
+                            continue
+
+                        gap_list = ", ".join(gap_queries)
+                        collected_notes.append(f"## Gap queries{round_label}\n{gap_list}")
+                        yield _sse({"type": "notes", "content": f"Found gaps — searching: {gap_list}"})
+
+                        # Run gap queries
+                        gap_coverage = await _search_fan_out(
+                            gap_queries,
+                            user_id,
+                            depth_config["k_per_query"],
+                        )
+                        # Filter out already-seen chunks
+                        new_chunks = {k: v for k, v in gap_coverage.items() if k not in coverage}
+
+                        if not new_chunks:
+                            last_round_added_content = False
+                            yield _sse(
+                                {"type": "notes", "content": f"No new material found in gap search{round_label}"}
+                            )
+                            continue
+
+                        yield _sse(
+                            {
+                                "type": "notes",
+                                "content": f"Gap search found {len(new_chunks)} new passages{round_label}",
+                            }
+                        )
+                        # Fold these into coverage so a subsequent round
+                        # doesn't re-discover the same chunks.
+                        coverage.update(new_chunks)
+
+                        gap_passages = await _read_evidence(
+                            new_chunks,
+                            user_id,
+                            20,
+                            passage_budget_chars // 3,
+                        )
+                        if gap_passages.strip():
                             try:
-                                gap_queries = await _check_gaps(
+                                gap_notes = await _extract_notes(
                                     client,
                                     llm_url,
                                     user_question,
-                                    notes_text,
-                                    coverage_summary,
+                                    gap_passages,
                                 )
+                                collected_notes.append(f"## Research notes (gap round {gap_round_n + 1})\n{gap_notes}")
+                                yield _sse({"type": "notes", "content": gap_notes[:2000]})
+                                last_round_added_content = True
                             except Exception:
-                                logger.exception("Gap analysis failed")
-                                gap_queries = []
+                                logger.exception("Gap note extraction failed (round %d)", gap_round_n + 1)
+                                last_round_added_content = False
+                        else:
+                            last_round_added_content = False
 
-                            if gap_queries:
-                                gap_list = ", ".join(gap_queries)
-                                collected_notes.append(f"## Gap queries\n{gap_list}")
-                                yield _sse({"type": "notes", "content": f"Found gaps — searching: {gap_list}"})
-
-                                # Run gap queries
-                                gap_coverage = await _search_fan_out(
-                                    gap_queries,
-                                    user_id,
-                                    depth_config["k_per_query"],
-                                )
-                                # Filter out already-seen chunks
-                                new_chunks = {k: v for k, v in gap_coverage.items() if k not in coverage}
-
-                                if new_chunks:
-                                    yield _sse(
-                                        {"type": "notes", "content": f"Gap search found {len(new_chunks)} new passages"}
-                                    )
-
-                                    gap_passages = await _read_evidence(
-                                        new_chunks,
-                                        user_id,
-                                        20,
-                                        passage_budget_chars // 3,
-                                    )
-                                    if gap_passages.strip():
-                                        try:
-                                            gap_notes = await _extract_notes(
-                                                client,
-                                                llm_url,
-                                                user_question,
-                                                gap_passages,
-                                            )
-                                            collected_notes.append(f"## Research notes (gap round)\n{gap_notes}")
-                                            yield _sse({"type": "notes", "content": gap_notes[:2000]})
-                                        except Exception:
-                                            logger.exception("Gap note extraction failed")
-                                else:
-                                    yield _sse({"type": "notes", "content": "No new material found in gap search"})
-
-                            step_count = 5
-                            state.current_round = step_count
-                            state.heartbeat_at = datetime.now(UTC)
-                            state.notes = "\n\n".join(collected_notes)
-                            await session.commit()
+                        step_count = 5
+                        state.current_round = step_count
+                        state.heartbeat_at = datetime.now(UTC)
+                        state.notes = "\n\n".join(collected_notes)
+                        await session.commit()
 
             # ---------------------------------------------------------------
             # Synthesis pass
