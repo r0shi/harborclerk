@@ -8,17 +8,25 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, get_current_principal
-from harbor_clerk.api.schemas.auth import LoginRequest, LoginResponse, PreferencesUpdate, UserInfo
+from harbor_clerk.api.schemas.auth import (
+    LoginRequest,
+    LoginResponse,
+    PasswordChangeRequest,
+    PreferencesUpdate,
+    UserInfo,
+)
 from harbor_clerk.audit import log_audit
 from harbor_clerk.auth import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    hash_password,
     verify_password,
 )
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.models import User
+from harbor_clerk.password_validation import validate_password
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
@@ -211,3 +219,69 @@ async def update_preferences(
         role=user.role.value,
         preferences=user.preferences or {},
     )
+
+
+@router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    body: PasswordChangeRequest,
+    principal: Principal = Depends(get_current_principal),
+    session: AsyncSession = Depends(get_session),
+):
+    """Change the authenticated user's password.
+
+    Requires the current password to be supplied. The new password is
+    validated by `password_validation.validate_password` and stored as a
+    fresh bcrypt hash. The existing access token remains valid until
+    expiry; the refresh-token cookie is unchanged. Other sessions for
+    this user are NOT invalidated by this endpoint — that's a follow-up
+    when there's a session-revocation surface to plumb into.
+    """
+    if principal.type != "user":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="API keys cannot change a user's password",
+        )
+
+    result = await session.execute(select(User).where(User.user_id == principal.id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Verify the current password before allowing the change. This both
+    # confirms the request is from a still-authorised holder of the
+    # password (not just someone who stole an access token) and gives a
+    # clear error path if the user is mistaken about what their current
+    # password is.
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
+        )
+
+    # Reject reusing the same password
+    if verify_password(body.new_password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="New password must differ from the current password",
+        )
+
+    errors = validate_password(body.new_password, user.email)
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"errors": errors},
+        )
+
+    new_hash = hash_password(body.new_password)
+    await session.execute(
+        update(User).where(User.user_id == principal.id).values(password_hash=new_hash),
+    )
+    await log_audit(
+        session,
+        user_id=user.user_id,
+        action="change_password",
+        target_type="user",
+        target_id=user.user_id,
+    )
+    await session.commit()
+    return None

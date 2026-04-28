@@ -26,3 +26,8 @@ class UserInfo(BaseModel):
 class PreferencesUpdate(BaseModel):
     theme: str | None = None
     page_size: int | None = None
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
