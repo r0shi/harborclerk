@@ -1,27 +1,23 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect } from 'react'
 import { useQueueTray } from '../../hooks/useQueueTray'
 import QueuePill from './QueuePill'
 import QueueToastPopup from './QueueToastPopup'
 import QueuePanel from './QueuePanel'
 
+// Drawer behaviour: persists until the user dismisses it (chevron-down or
+// Esc). Click-outside no longer collapses — the drawer is meant to stay
+// open while the user works elsewhere in the app, so they can monitor
+// the queue while uploading / browsing. Route changes do NOT auto-dismiss
+// either. Structurally generic enough that other utility content could
+// live here later; if a second tab/use lands, rename QueueTray /
+// QueuePanel to Drawer / DrawerPanel and update this note.
 export default function QueueTray() {
   const { trayState, activeItems, completed, toggleExpanded, collapse } = useQueueTray()
-  const containerRef = useRef<HTMLDivElement>(null)
 
   const activeCount = activeItems.size
   const completedCount = completed.length
 
-  // Click outside to collapse
-  const handleClickOutside = useCallback(
-    (e: MouseEvent) => {
-      if (trayState === 'expanded' && containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        collapse()
-      }
-    },
-    [trayState, collapse],
-  )
-
-  // Escape to collapse
+  // Escape collapses the drawer — keep this as a discoverable shortcut.
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
       if (e.key === 'Escape' && trayState === 'expanded') {
@@ -33,14 +29,12 @@ export default function QueueTray() {
 
   useEffect(() => {
     if (trayState === 'expanded') {
-      document.addEventListener('mousedown', handleClickOutside)
       document.addEventListener('keydown', handleKeyDown)
     }
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [trayState, handleClickOutside, handleKeyDown])
+  }, [trayState, handleKeyDown])
 
   // Don't render anything if nothing to show
   if (activeCount === 0 && completedCount === 0 && trayState === 'collapsed') {
@@ -48,7 +42,7 @@ export default function QueueTray() {
   }
 
   return (
-    <div ref={containerRef} className="fixed bottom-4 left-4 z-50 flex flex-col items-start">
+    <div className="fixed bottom-4 left-4 z-50 flex flex-col items-start">
       {/* Panel (expanded state) */}
       {trayState === 'expanded' && <QueuePanel activeItems={activeItems} completed={completed} onClose={collapse} />}
 
