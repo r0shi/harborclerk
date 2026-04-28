@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { DocumentQueueItem, CompletedItem } from '../../hooks/useQueueTray'
 import DocumentRow from './DocumentRow'
 import CompletedRow from './CompletedRow'
+import PipelineTab from './PipelineTab'
 
 interface QueuePanelProps {
   activeItems: Map<string, DocumentQueueItem>
@@ -9,8 +10,11 @@ interface QueuePanelProps {
   onClose: () => void
 }
 
+type TabId = 'active' | 'pipeline'
+
 export default function QueuePanel({ activeItems, completed, onClose }: QueuePanelProps) {
   const [exiting, setExiting] = useState(false)
+  const [tab, setTab] = useState<TabId>('active')
 
   const handleClose = () => {
     setExiting(true)
@@ -33,6 +37,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
   const hasActive = active.length > 0
   const hasCompleted = completedDone.length > 0
   const hasErrors = completedErrors.length > 0
+  const activeCount = active.length
 
   return (
     <div className={`mb-2 ${exiting ? 'panel-exit' : 'panel-enter'}`} onAnimationEnd={handleAnimationEnd}>
@@ -42,70 +47,112 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
           <span className="text-[13px] font-semibold text-(--color-text-primary)">Processing</span>
           <button
             onClick={handleClose}
+            aria-label="Tuck drawer away"
+            title="Tuck away"
             className="rounded-md p-0.5 text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-black/4 dark:hover:bg-white/6 transition-colors"
           >
+            {/* Chevron-down: dismissal reads as "tuck away into a drawer",
+                not "destroy". The drawer reopens with current state when
+                the queue pill is clicked again. */}
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
             </svg>
           </button>
         </div>
 
+        {/* Tab bar */}
+        <div className="flex border-b border-(--color-border) px-2">
+          <TabButton id="active" current={tab} onClick={setTab}>
+            Active{activeCount > 0 && <span className="ml-1 tabular-nums">({activeCount})</span>}
+          </TabButton>
+          <TabButton id="pipeline" current={tab} onClick={setTab}>
+            Pipeline
+          </TabButton>
+        </div>
+
         {/* Body */}
         <div className="overflow-y-auto queue-panel-scroll flex-1">
-          {/* Active section */}
-          {hasActive && (
-            <div className="px-4 py-2">
-              <div className="text-[11px] font-medium uppercase tracking-wider text-(--color-text-secondary) mb-2">
-                Active
-              </div>
-              <div className="space-y-1">
-                {active.map((item) => (
-                  <DocumentRow key={item.version_id} item={item} />
-                ))}
-              </div>
-            </div>
-          )}
+          {tab === 'pipeline' && <PipelineTab />}
+          {tab === 'active' && (
+            <>
+              {/* Active section */}
+              {hasActive && (
+                <div className="px-4 py-2">
+                  <div className="text-[11px] font-medium uppercase tracking-wider text-(--color-text-secondary) mb-2">
+                    Active
+                  </div>
+                  <div className="space-y-1">
+                    {active.map((item) => (
+                      <DocumentRow key={item.version_id} item={item} />
+                    ))}
+                  </div>
+                </div>
+              )}
 
-          {/* Divider */}
-          {hasActive && hasCompleted && <div className="border-b border-(--color-border)" />}
+              {/* Divider */}
+              {hasActive && hasCompleted && <div className="border-b border-(--color-border)" />}
 
-          {/* Completed section (done items only) */}
-          {hasCompleted && (
-            <div className="px-4 py-2">
-              <div className="text-[11px] font-medium uppercase tracking-wider text-(--color-text-secondary) mb-2">
-                Completed ({completedDone.length})
-              </div>
-              <div className="space-y-2">
-                {completedDone.map((item) => (
-                  <CompletedRow key={item.version_id} item={item} />
-                ))}
-              </div>
-            </div>
-          )}
+              {/* Completed section (done items only) */}
+              {hasCompleted && (
+                <div className="px-4 py-2">
+                  <div className="text-[11px] font-medium uppercase tracking-wider text-(--color-text-secondary) mb-2">
+                    Completed ({completedDone.length})
+                  </div>
+                  <div className="space-y-2">
+                    {completedDone.map((item) => (
+                      <CompletedRow key={item.version_id} item={item} />
+                    ))}
+                  </div>
+                </div>
+              )}
 
-          {/* Divider */}
-          {(hasActive || hasCompleted) && hasErrors && <div className="border-b border-(--color-border)" />}
+              {/* Divider */}
+              {(hasActive || hasCompleted) && hasErrors && <div className="border-b border-(--color-border)" />}
 
-          {/* Errors section */}
-          {hasErrors && (
-            <div className="px-4 py-2">
-              <div className="text-[11px] font-medium uppercase tracking-wider text-red-500/80 mb-2">
-                Errors ({completedErrors.length})
-              </div>
-              <div className="space-y-2">
-                {completedErrors.map((item) => (
-                  <CompletedRow key={item.version_id} item={item} />
-                ))}
-              </div>
-            </div>
-          )}
+              {/* Errors section */}
+              {hasErrors && (
+                <div className="px-4 py-2">
+                  <div className="text-[11px] font-medium uppercase tracking-wider text-red-500/80 mb-2">
+                    Errors ({completedErrors.length})
+                  </div>
+                  <div className="space-y-2">
+                    {completedErrors.map((item) => (
+                      <CompletedRow key={item.version_id} item={item} />
+                    ))}
+                  </div>
+                </div>
+              )}
 
-          {/* Empty state */}
-          {!hasActive && !hasCompleted && !hasErrors && (
-            <div className="px-4 py-6 text-center text-[13px] text-(--color-text-secondary)">No items in queue</div>
+              {/* Empty state */}
+              {!hasActive && !hasCompleted && !hasErrors && (
+                <div className="px-4 py-6 text-center text-[13px] text-(--color-text-secondary)">No items in queue</div>
+              )}
+            </>
           )}
         </div>
       </div>
     </div>
+  )
+}
+
+interface TabButtonProps {
+  id: TabId
+  current: TabId
+  onClick: (id: TabId) => void
+  children: React.ReactNode
+}
+
+function TabButton({ id, current, onClick, children }: TabButtonProps) {
+  const active = id === current
+  return (
+    <button
+      onClick={() => onClick(id)}
+      className={`relative px-3 py-2 text-[12px] font-medium transition-colors ${
+        active ? 'text-(--color-text-primary)' : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'
+      }`}
+    >
+      {children}
+      {active && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-(--color-accent)" />}
+    </button>
   )
 }
