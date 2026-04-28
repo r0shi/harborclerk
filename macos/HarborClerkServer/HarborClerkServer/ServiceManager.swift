@@ -335,7 +335,12 @@ final class ServiceManager: ObservableObject {
         AppSettings.shared.reload()
         await service.stop()
         notifyStateChanged()
-        try? await Task.sleep(for: .seconds(1))
+        // 5s (was 1s) — same rationale as the model-switch path: the old
+        // process's TCP socket needs time to release before the new process
+        // can rebind. 1s wasn't enough in practice and caused
+        // "couldn't bind HTTP server socket" failures + flap-protection
+        // trip when used as part of an automated sweep.
+        try? await Task.sleep(for: .seconds(5))
         await startService(service)
     }
 
@@ -359,6 +364,18 @@ final class ServiceManager: ObservableObject {
             Log.logger("lifecycle").error(
                 "[\(service.name, privacy: .public)] Flapping (\(history.count, privacy: .public) restarts in 5m) — not restarting")
             return
+        }
+
+        // Backoff before retrying: if the most-recent restart was < 8s ago,
+        // sleep before trying again. Without this, 5 startup-failures in
+        // <10s blow through the entire flap budget instantly (observed
+        // during automated model-switch sweep — port-bind race caused
+        // each restart to fail in <2s, tripping flap protection in ~6s).
+        if let last = history.last, now.timeIntervalSince(last) < 8.0 {
+            let wait = 8.0 - now.timeIntervalSince(last)
+            Log.logger("lifecycle").info(
+                "[\(service.name, privacy: .public)] Backing off \(String(format: "%.1f", wait), privacy: .public)s before retry")
+            try? await Task.sleep(for: .seconds(Int(ceil(wait))))
         }
 
         history.append(now)
@@ -770,7 +787,12 @@ final class ServiceManager: ObservableObject {
             if llamaService.state == .running || llamaService.state == .starting {
                 await llamaService.stop()
                 notifyStateChanged()
-                try? await Task.sleep(for: .seconds(1))
+                // 1s wasn't enough on macOS — llama-server's old socket
+                // sometimes hadn't released port 8102 by the time the new
+                // process tried to bind, causing "couldn't bind HTTP server
+                // socket" and an immediate exit. 5s gives the kernel ample
+                // time to release the port.
+                try? await Task.sleep(for: .seconds(5))
             } else if llamaService.state == .errored {
                 // Reset errored state and clear flap history so the new model gets a fresh start
                 llamaService.state = .stopped
