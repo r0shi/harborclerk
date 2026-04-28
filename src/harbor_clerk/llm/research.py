@@ -36,6 +36,35 @@ _CHARS_PER_TOKEN = 3.5
 _SYNTHESIS_TIMEOUT = 600.0
 _LLM_TIMEOUT = 120.0
 
+# Per-phase output caps. Without these, models like Gemma 26B routinely
+# produce 5,000+ tokens for what should be a ~200-token JSON object, which
+# wastes the entire research budget on a single call. See research-debugging/
+# findings.md for the runaway-generation diagnosis.
+#
+# Sized for big models that "think" before answering. llama-server's default
+# `reasoning_format: deepseek` puts thinking in `reasoning_content` (separate
+# from `content`), so the cap is consumed by thinking before the actual
+# answer is emitted. Diagnosed by direct probe: Gemma 26B used ~1500–2000
+# tokens of thinking just for planning, and similar for note extraction. Caps
+# below the thinking budget reliably starve out the answer (content==""). All
+# caps are sized to comfortably accommodate thinking + the actual answer.
+# Cost: more tokens generated per call. Mitigated by tighter prompt caps and
+# the deadline guard around note extraction. See research-debugging/findings.md.
+_MAX_TOKENS_PLANNING = 5000
+_MAX_TOKENS_NOTES = 8000
+_MAX_TOKENS_GAP = 5000
+_MAX_TOKENS_SYNTHESIS = 10000
+
+# spaCy entity types that are useless as search seeds. CARDINAL/ORDINAL
+# dominate the corpus's top-entity list ("one", "first", "two", "1", "2") and
+# polluted seeded queries with garbage like "1 Please compare different wine".
+# DATE/TIME/MONEY/PERCENT/QUANTITY similarly don't represent topical content.
+_SEED_QUERY_BLOCKED_ENTITY_TYPES = frozenset({"CARDINAL", "ORDINAL", "DATE", "TIME", "MONEY", "PERCENT", "QUANTITY"})
+
+# Cap the prefill-heavy note-extraction prompt. 30K chars ≈ 8.5K tokens — keeps
+# Gemma-26B-class prefill under ~45 s. Was 80K (≈22K tokens, ~110 s prefill).
+_NOTE_PROMPT_CHAR_CAP = 30_000
+
 _SYNTHESIS_SYSTEM = (
     "You are writing a research report for Harbor Clerk. Based on the research "
     "notes below, write a clear, well-organized report answering the user's question.\n\n"
@@ -61,7 +90,9 @@ _QUERY_PLANNING_SYSTEM = (
     "- For comparative questions, generate queries for each side\n"
     "- For questions about specific entities, include name variants\n"
     '- Return ONLY a JSON object: {"queries": ["query1", "query2", ...]}\n'
-    "- No explanation, no markdown fences — just the JSON object"
+    "- No explanation, no preamble, no thinking aloud, no markdown fences — "
+    "your response must START with `{` and END with `}` and contain nothing else.\n"
+    '- Begin your response with `{"queries": [` immediately.'
 )
 
 _NOTE_EXTRACTION_SYSTEM = (
@@ -119,28 +150,88 @@ async def _llm_complete(
     messages: list[dict],
     *,
     timeout: float = _LLM_TIMEOUT,
+    max_tokens: int | None = None,
+    phase: str = "unknown",
+    json_mode: bool = False,
 ) -> str:
-    """Non-streaming LLM call with retry. Returns content string."""
-    payload = {"messages": messages, "temperature": 0.3}
+    """Non-streaming LLM call with retry. Returns content string.
 
+    json_mode=True asks llama-server to constrain output to valid JSON via
+    grammar-guided sampling. This is essential for verbose models (Gemma,
+    DeepSeek-R1) that otherwise emit a long preamble before the JSON and
+    blow the max_tokens budget without ever closing the object.
+    """
+    payload: dict = {
+        "messages": messages,
+        "temperature": 0.3,
+        # Disable per-call "thinking" on chat templates that support it
+        # (Gemma 4, Qwen3, etc.). Without this, big models burn most of
+        # max_tokens on a `<|channel>thought` block before producing the
+        # actual answer; with it, Gemma 26B produces clean direct output
+        # in ~6× fewer tokens. Templates that don't recognise this kwarg
+        # ignore it harmlessly.
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    started = datetime.now(UTC)
     for attempt in range(2):
         try:
             resp = await client.post(url, json=payload, timeout=timeout)
             if resp.status_code >= 500 and attempt == 0:
                 report_llm_error(resp.status_code)
-                logger.warning("LLM returned %d, retrying in 2s", resp.status_code)
+                logger.warning("LLM returned %d in phase=%s, retrying in 2s", resp.status_code, phase)
                 await asyncio.sleep(2)
                 continue
             resp.raise_for_status()
             report_llm_success()
             data = resp.json()
-            content = data["choices"][0]["message"].get("content", "")
+            message = data["choices"][0]["message"]
+            content = message.get("content", "") or ""
+            # Fallback: if `content` is empty but `reasoning_content` has text,
+            # the model exhausted max_tokens during its thinking channel before
+            # producing the actual answer. Use the reasoning content rather
+            # than returning "" — partial structured thought is more useful
+            # than nothing for downstream synthesis or parsing.
+            reasoning_content = message.get("reasoning_content") or ""
+            if not content.strip() and reasoning_content.strip():
+                logger.warning(
+                    "LLM phase=%s: content empty but reasoning_content has %d chars; "
+                    "falling back to reasoning_content (model likely capped during thinking).",
+                    phase,
+                    len(reasoning_content),
+                )
+                content = reasoning_content
+            usage = data.get("usage") or {}
+            elapsed = (datetime.now(UTC) - started).total_seconds()
+            logger.info(
+                "LLM call phase=%s elapsed=%.1fs prompt_tokens=%s completion_tokens=%s max_tokens=%s",
+                phase,
+                elapsed,
+                usage.get("prompt_tokens"),
+                usage.get("completion_tokens"),
+                max_tokens,
+            )
+            if (
+                max_tokens is not None
+                and isinstance(usage.get("completion_tokens"), int)
+                and usage["completion_tokens"] >= max_tokens
+            ):
+                logger.warning(
+                    "LLM phase=%s hit max_tokens cap (%d). Output may be truncated.",
+                    phase,
+                    max_tokens,
+                )
             # Strip thinking tags from reasoning models
             if content.startswith("<think>") and "</think>" in content:
                 content = content[content.index("</think>") + len("</think>") :].strip()
             return content
         except (httpx.ConnectError, httpx.TimeoutException):
             if attempt == 0:
+                logger.warning("LLM timeout in phase=%s, retrying", phase)
                 await asyncio.sleep(2)
                 continue
             raise
@@ -154,9 +245,20 @@ async def _stream_llm_tokens(
     messages: list[dict],
     *,
     timeout: float = _SYNTHESIS_TIMEOUT,
+    max_tokens: int | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream LLM response tokens. Retries once on 5xx."""
-    payload = {"messages": messages, "stream": True, "temperature": 0.3}
+    payload: dict = {
+        "messages": messages,
+        "stream": True,
+        "temperature": 0.3,
+        # Same rationale as in `_llm_complete`: suppress thinking so the
+        # streamed `delta.content` carries the actual answer rather than
+        # going silent while the model fills `delta.reasoning_content`.
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
 
     response_obj = None
     for _attempt in range(2):
@@ -176,6 +278,8 @@ async def _stream_llm_tokens(
         logger.warning("LLM returned %d in synthesis, retrying in 2s", response_obj.status_code)
         await asyncio.sleep(2)
 
+    content_emitted_chars = 0
+    reasoning_buffer: list[str] = []
     try:
         response_obj.raise_for_status()
         report_llm_success()
@@ -191,7 +295,28 @@ async def _stream_llm_tokens(
                 continue
             delta = chunk.get("choices", [{}])[0].get("delta", {})
             if delta.get("content"):
+                content_emitted_chars += len(delta["content"])
                 yield delta["content"]
+            elif delta.get("reasoning_content"):
+                # Some models (GPT-OSS, DeepSeek-R1) ignore the
+                # enable_thinking template kwarg and route the entire
+                # response through the reasoning channel. Buffer those
+                # tokens so we can fall back to them if the stream ends
+                # without ever producing content. Streaming them live
+                # would mix raw thinking into the user-visible report.
+                reasoning_buffer.append(delta["reasoning_content"])
+        # Fallback: if no content was streamed but we collected reasoning,
+        # emit it as the report. Better partial-thinking-as-report than
+        # empty report.
+        if content_emitted_chars == 0 and reasoning_buffer:
+            joined = "".join(reasoning_buffer)
+            logger.warning(
+                "Synthesis stream produced no content tokens; falling back to "
+                "%d chars of reasoning_content. Model likely ignores "
+                "enable_thinking=False or capped during thinking.",
+                len(joined),
+            )
+            yield joined
     finally:
         await response_obj.aclose()
 
@@ -211,6 +336,35 @@ def _parse_json_from_llm(text: str) -> dict:
         except json.JSONDecodeError:
             pass
     return {}
+
+
+# Reject "queries" that are clearly tokens spilled out of a runaway generation.
+# Models like Gemma 26B without max_tokens routinely produce 5000+ tokens of
+# rambling continuation; the JSON extractor then pulls fragments like
+# "one Please compare different wine" or "1 Please compare different wine"
+# back into the queries list. These match the leading "Please compare" of the
+# user question because the model is essentially echoing it with token-prefix
+# variants. We filter on minimum length and on requiring at least one
+# alphabetic word ≥ 4 chars that isn't part of the user-question prefix.
+_RUNAWAY_PREFIX_RE = re.compile(
+    r"^(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|first|second|third|fourth|fifth|sixth)\s+",
+    re.IGNORECASE,
+)
+
+
+def _is_plausible_query(q: object) -> bool:
+    if not isinstance(q, str):
+        return False
+    q = q.strip()
+    if len(q) < 8:
+        return False
+    # Drop "1 Please compare ...", "one Please compare ..." etc. that are
+    # symptomatic of runaway generation parsed back into the JSON.
+    if _RUNAWAY_PREFIX_RE.match(q):
+        return False
+    # Require at least one substantive word (≥4 alpha chars).
+    words = re.findall(r"[A-Za-zÀ-ÿ]{4,}", q)
+    return len(words) >= 1
 
 
 async def _fetch_document_list(user_id: uuid.UUID | None) -> list[dict]:
@@ -257,14 +411,27 @@ async def _seed_queries_from_corpus(
     q_words = [w for w in user_question.split() if len(w) > 3]
     q_short = " ".join(q_words[:4]) if q_words else user_question
 
-    # Seed from entities
+    # Seed from entities — skip useless types (CARDINAL/ORDINAL/DATE/etc.)
+    # which dominate the top-entity list with values like "one", "first", "1"
+    # that produce nonsense queries when concatenated with the question.
     try:
         entity_json = await execute_tool("entity_overview", {}, user_id, mode="research")
         entity_data = json.loads(entity_json)
-        for ent in entity_data.get("top_entities", [])[:10]:
-            name = ent.get("entity_text", "")
-            if name and name.lower() not in user_question.lower():
-                seeded.append(f"{name} {q_short}")
+        kept = 0
+        for ent in entity_data.get("top_entities", []):
+            if kept >= 10:
+                break
+            etype = (ent.get("entity_type") or "").upper()
+            if etype in _SEED_QUERY_BLOCKED_ENTITY_TYPES:
+                continue
+            name = (ent.get("entity_text") or "").strip()
+            # Defense-in-depth: also drop pure-numeric / single-letter / very short tokens
+            if not name or len(name) < 3 or name.replace(".", "").replace(",", "").isdigit():
+                continue
+            if name.lower() in user_question.lower():
+                continue
+            seeded.append(f"{name} {q_short}")
+            kept += 1
     except Exception:
         logger.debug("entity_overview failed for seed queries", exc_info=True)
 
@@ -307,11 +474,19 @@ async def _plan_queries(
         {"role": "user", "content": user_content},
     ]
 
-    content = await _llm_complete(client, url, messages)
+    content = await _llm_complete(
+        client,
+        url,
+        messages,
+        max_tokens=_MAX_TOKENS_PLANNING,
+        phase="planning",
+        json_mode=True,
+    )
     parsed = _parse_json_from_llm(content)
-    llm_queries = parsed.get("queries", [])
+    llm_queries = [q for q in parsed.get("queries", []) if _is_plausible_query(q)]
 
     if not llm_queries:
+        logger.warning("Planning produced no plausible queries; falling back to question keywords")
         llm_queries = [user_question]
         words = user_question.split()
         if len(words) > 3:
@@ -498,6 +673,22 @@ async def _extract_notes(
     if not passages_text.strip():
         return "No relevant passages were found in the corpus."
 
+    # Hard-cap the prompt to keep prefill bounded. The caller may have already
+    # respected `passage_budget_chars`, but on small-context models that budget
+    # can still be larger than what fits within a reasonable prefill time.
+    if len(passages_text) > _NOTE_PROMPT_CHAR_CAP:
+        truncated = passages_text[:_NOTE_PROMPT_CHAR_CAP]
+        # Cut at the last passage boundary ("\n---\n") so we don't end mid-passage
+        last_boundary = truncated.rfind("\n---\n")
+        if last_boundary > _NOTE_PROMPT_CHAR_CAP // 2:
+            truncated = truncated[:last_boundary]
+        logger.info(
+            "Capping note-extraction prompt: %d → %d chars",
+            len(passages_text),
+            len(truncated),
+        )
+        passages_text = truncated
+
     messages = [
         {"role": "system", "content": _NOTE_EXTRACTION_SYSTEM},
         {
@@ -510,7 +701,14 @@ async def _extract_notes(
         },
     ]
 
-    return await _llm_complete(client, url, messages, timeout=180.0)
+    return await _llm_complete(
+        client,
+        url,
+        messages,
+        timeout=180.0,
+        max_tokens=_MAX_TOKENS_NOTES,
+        phase="notes",
+    )
 
 
 async def _check_gaps(
@@ -534,9 +732,17 @@ async def _check_gaps(
         },
     ]
 
-    content = await _llm_complete(client, url, messages)
+    content = await _llm_complete(
+        client,
+        url,
+        messages,
+        max_tokens=_MAX_TOKENS_GAP,
+        phase="gap_analysis",
+        json_mode=True,
+    )
     parsed = _parse_json_from_llm(content)
-    return parsed.get("gaps", [])[:5]
+    gaps = [g for g in parsed.get("gaps", []) if _is_plausible_query(g)]
+    return gaps[:5]
 
 
 # ---------------------------------------------------------------------------
@@ -788,12 +994,32 @@ async def research_stream(
                     )
                     yield _sse({"type": "notes", "content": "Extracting findings from passages..."})
 
-                    try:
-                        notes_text = await _extract_notes(client, llm_url, user_question, passages_text)
-                    except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
-                        logger.error("LLM error during note extraction: %s", exc)
-                        # Fallback: use raw passages as notes
-                        notes_text = f"## Raw passages\n{passages_text[:30000]}"
+                    # Reserve time for synthesis; if we've already burned most
+                    # of the budget on planning + reading, skip note extraction
+                    # and pass raw passages through to synthesis.
+                    time_limit_s = (state.time_limit_minutes or 30) * 60
+                    synthesis_reserve_s = max(180, int(time_limit_s * 0.25))
+                    if elapsed > time_limit_s - synthesis_reserve_s:
+                        logger.warning(
+                            "Skipping note extraction: elapsed=%ds, budget=%ds, reserving %ds for synthesis",
+                            elapsed,
+                            time_limit_s,
+                            synthesis_reserve_s,
+                        )
+                        notes_text = f"## Raw passages\n{passages_text[:_NOTE_PROMPT_CHAR_CAP]}"
+                        yield _sse(
+                            {
+                                "type": "notes",
+                                "content": "Time-budget tight — skipping note extraction, going straight to synthesis.",
+                            }
+                        )
+                    else:
+                        try:
+                            notes_text = await _extract_notes(client, llm_url, user_question, passages_text)
+                        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
+                            logger.error("LLM error during note extraction: %s", exc)
+                            # Fallback: use raw passages as notes
+                            notes_text = f"## Raw passages\n{passages_text[:_NOTE_PROMPT_CHAR_CAP]}"
 
                     collected_notes.append(f"## Research notes (round 1)\n{notes_text}")
                     yield _sse({"type": "notes", "content": notes_text[:3000]})
@@ -918,6 +1144,7 @@ async def research_stream(
                         llm_url,
                         synthesis_messages,
                         timeout=_SYNTHESIS_TIMEOUT,
+                        max_tokens=_MAX_TOKENS_SYNTHESIS,
                     ):
                         report_content += token
                         yield _sse({"type": "token", "content": token})

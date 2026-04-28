@@ -341,8 +341,18 @@ async def activate_model(
     if get_model_path(model_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded")
     settings = get_settings()
+    previous = settings.llm_model_id or ""
     settings.llm_model_id = model_id
     sync_native_config("llm_model_id", model_id)
+    # The Swift host's config-watcher is unreliable at distinguishing a
+    # llm_model_id change from other settings changes (see prior memory note
+    # project_llm_restart_investigation), so a model switch can otherwise
+    # leave llama-server still serving the previous model. Force the explicit
+    # restart signal whenever the model actually changes.
+    if previous != model_id:
+        from harbor_clerk.llm.health import request_llm_restart
+
+        request_llm_restart(f"model switch {previous!r} → {model_id!r}")
     return {"status": "activated"}
 
 
@@ -351,8 +361,13 @@ async def deactivate_model(
     principal: Principal = Depends(require_admin),
 ):
     settings = get_settings()
+    previous = settings.llm_model_id or ""
     settings.llm_model_id = ""
     sync_native_config("llm_model_id", "")
+    if previous:
+        from harbor_clerk.llm.health import request_llm_restart
+
+        request_llm_restart(f"model deactivated (was {previous!r})")
     return {"status": "deactivated"}
 
 

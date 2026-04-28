@@ -66,3 +66,22 @@ def _signal_restart() -> None:
         logger.info("Wrote llm_restart signal to config.json")
     except Exception:
         logger.exception("Failed to write llm_restart signal")
+
+
+def request_llm_restart(reason: str) -> None:
+    """Public API: explicitly request a llama-server restart.
+
+    Used when the API performs an action that requires llama-server to pick
+    up a new configuration (model switch, YaRN toggle), regardless of the
+    5xx error counter. Without this, the Swift host's config-watcher path
+    is unreliable for distinguishing a model_id change from other settings,
+    so the model switch silently does nothing — see
+    research-debugging/findings.md and the project_llm_restart_investigation
+    memory note.
+    """
+    global _last_restart_signal, _consecutive_5xx
+    with _lock:
+        _last_restart_signal = time.monotonic()
+        _consecutive_5xx = 0
+    logger.info("Explicit llama-server restart requested: %s", reason)
+    _signal_restart()
