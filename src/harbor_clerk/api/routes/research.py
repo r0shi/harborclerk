@@ -214,6 +214,23 @@ async def start_research(
             detail="No LLM model configured. Select and activate a model in Settings.",
         )
 
+    # Block research on models that aren't reliable in research mode (e.g.
+    # SmolLM3 3B, which confabulates without citations on most topics).
+    # Chat mode is unaffected — only POST /research enforces this.
+    from harbor_clerk.llm.models import get_model
+
+    active_model = get_model(settings.llm_model_id)
+    if active_model is not None and not active_model.supports_research:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"The active model ({active_model.name}) is not recommended for "
+                "Research mode and is disabled for it. Activate a different model "
+                "(e.g. Qwen3.6 35B-A3B for narrative summaries, GPT-OSS 20B for "
+                "comparative reports, Gemma 4 26B-A4B for general use) in Settings."
+            ),
+        )
+
     # Determine strategy
     strategy = body.strategy or default_research_strategy(settings.llm_model_id)
 

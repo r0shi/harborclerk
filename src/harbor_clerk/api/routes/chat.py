@@ -294,6 +294,7 @@ async def list_available_models(
             size_bytes=m.size_bytes,
             context_window=m.context_window,
             supports_tools=m.supports_tools,
+            supports_research=m.supports_research,
             downloaded=m.id in downloaded,
             active=m.id == settings.llm_model_id,
             downloading=is_downloading(m.id),

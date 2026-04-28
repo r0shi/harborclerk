@@ -53,6 +53,7 @@ class ModelOut(BaseModel):
     size_bytes: int
     context_window: int
     supports_tools: bool
+    supports_research: bool = True
     downloaded: bool
     active: bool
     downloading: bool = False

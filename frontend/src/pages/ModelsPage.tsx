@@ -8,6 +8,7 @@ interface ModelInfo {
   size_bytes: number
   context_window: number
   supports_tools: boolean
+  supports_research: boolean
   downloaded: boolean
   active: boolean
   downloading: boolean
@@ -267,6 +268,7 @@ export default function ModelsPage() {
               <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Size</th>
               <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Context</th>
               <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Tools</th>
+              <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Research</th>
               <th className="px-4 py-3 text-left font-medium text-gray-700 dark:text-gray-300">Status</th>
               <th className="px-4 py-3 text-right font-medium text-gray-700 dark:text-gray-300">Actions</th>
             </tr>
@@ -290,7 +292,7 @@ export default function ModelsPage() {
                 <Fragment key={tier.label}>
                   <tr>
                     <td
-                      colSpan={6}
+                      colSpan={7}
                       className="bg-(--color-bg-secondary) px-4 py-2 text-left text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
                     >
                       {tier.label}
@@ -323,6 +325,20 @@ export default function ModelsPage() {
                           ) : (
                             <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-[11px] text-gray-500 dark:text-gray-400">
                               No
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {model.supports_research ? (
+                            <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
+                              Yes
+                            </span>
+                          ) : (
+                            <span
+                              className="inline-flex items-center rounded-md bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                              title="Not recommended for Research mode — chat works fine"
+                            >
+                              Chat only
                             </span>
                           )}
                         </td>
