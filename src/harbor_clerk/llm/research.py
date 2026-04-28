@@ -216,9 +216,14 @@ async def _llm_complete(
             # than nothing for downstream synthesis or parsing.
             reasoning_content = message.get("reasoning_content") or ""
             if not content.strip() and reasoning_content.strip():
-                logger.warning(
-                    "LLM phase=%s: content empty but reasoning_content has %d chars; "
-                    "falling back to reasoning_content (model likely capped during thinking).",
+                # Confirmed via the cross-topic sweep that this is a
+                # normal path on reasoning-tuned models (GPT-OSS 20B in
+                # particular routes the entire response through the
+                # reasoning channel even with enable_thinking=False).
+                # Logged at INFO rather than WARNING so it doesn't show
+                # up as an alert-worthy event in normal operation.
+                logger.info(
+                    "LLM phase=%s: content empty, falling back to reasoning_content (%d chars).",
                     phase,
                     len(reasoning_content),
                 )
@@ -280,15 +285,29 @@ async def _stream_llm_tokens(
 
     response_obj = None
     for _attempt in range(2):
-        response_obj = await client.send(
-            client.build_request(
-                "POST",
-                url,
-                json=payload,
-                extensions={"timeout": {"connect": 10.0, "read": timeout, "write": 10.0, "pool": 10.0}},
-            ),
-            stream=True,
-        )
+        try:
+            response_obj = await client.send(
+                client.build_request(
+                    "POST",
+                    url,
+                    json=payload,
+                    extensions={"timeout": {"connect": 10.0, "read": timeout, "write": 10.0, "pool": 10.0}},
+                ),
+                stream=True,
+            )
+        except httpx.ConnectError as exc:
+            # Transient: llama-server briefly unreachable between requests
+            # (observed once on cheese × Qwen3.6 35B-A3B during the
+            # cross-topic sweep — succeeded on retry). Mirror the 5xx
+            # branch's semantics: one extra attempt with 2s backoff. Read
+            # and write timeouts are intentionally NOT retried — those
+            # mean the model itself stalled mid-stream and starting over
+            # would discard partial output for no gain.
+            if _attempt == 1:
+                raise
+            logger.warning("LLM connect error in synthesis: %r, retrying in 2s", exc)
+            await asyncio.sleep(2)
+            continue
         if response_obj.status_code < 500 or _attempt == 1:
             break
         await response_obj.aclose()
@@ -328,10 +347,11 @@ async def _stream_llm_tokens(
         # empty report.
         if content_emitted_chars == 0 and reasoning_buffer:
             joined = "".join(reasoning_buffer)
-            logger.warning(
-                "Synthesis stream produced no content tokens; falling back to "
-                "%d chars of reasoning_content. Model likely ignores "
-                "enable_thinking=False or capped during thinking.",
+            # Same rationale as the fallback in `_llm_complete`: confirmed
+            # to be a normal path on GPT-OSS / DeepSeek-R1 streaming;
+            # logged at INFO so a normal run doesn't look alarming.
+            logger.info(
+                "Synthesis stream emitted no content tokens; falling back to %d chars of reasoning_content.",
                 len(joined),
             )
             yield joined
