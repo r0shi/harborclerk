@@ -37,16 +37,15 @@ final class ServiceManager: ObservableObject {
     weak var healthChecker: HealthChecker?
 
     private var startAllInProgress = false
-    private var configWatcherSource: DispatchSourceFileSystemObject?
-    private var configFileDescriptor: Int32 = -1
     private var configChangeTask: Task<Void, Never>?
     private var configWatcherActive = false
     private var lastLlmModelId: String = ""
-    /// Belt-and-suspenders mtime poller — the FSEvents-based watcher
-    /// drops events in practice (cause unclear; see project memory note
-    /// "Swift config watcher silently drops config.json events"), and
-    /// the user has to restart the whole app to pick up model switches.
-    /// This poller catches anything the dispatch source missed.
+    /// 3-second mtime poller for config.json. We previously had a
+    /// DispatchSource FSEvents watcher in addition, but it dropped events
+    /// in practice (cause never diagnosed), forcing the user to relaunch
+    /// the app to pick up model switches. The poller proved sufficient
+    /// across the cross-topic research sweep, so the FSEvents path was
+    /// removed to leave one source of truth.
     private var configPollTimer: DispatchSourceTimer?
     private var lastConfigMtime: Date = .distantPast
 
@@ -666,53 +665,29 @@ final class ServiceManager: ObservableObject {
     // MARK: - Config file watcher
 
     /// Start watching config.json for changes from the Python side.
+    ///
+    /// Implementation: a 3-second mtime poller. We previously also wired
+    /// a DispatchSource FSEvents watcher for instant response, but it
+    /// silently dropped events in practice (cause never diagnosed) and
+    /// the user had to relaunch the whole app to pick up model switches.
+    /// The poller covered every observed change across the cross-topic
+    /// sweep, so the FSEvents path was removed to leave one code path
+    /// to reason about. 3 s is fast enough for the model-switch UX
+    /// (the full restart costs ~5 s anyway) and cheap (one stat per
+    /// tick).
     func startConfigWatcher() {
         configWatcherActive = true
         let settings = AppSettings.shared
         lastLlmModelId = settings.llmModelId
         let path = settings.configURL.path
 
-        // Capture initial mtime so the poller has a starting baseline.
+        // Seed the mtime baseline so the first tick doesn't fire on
+        // whatever the file already contains.
         if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
            let mtime = attrs[.modificationDate] as? Date {
             lastConfigMtime = mtime
         }
 
-        let fd = open(path, O_EVTONLY)
-        guard fd >= 0 else {
-            Log.logger("lifecycle").error("Cannot open config.json for watching")
-            return
-        }
-        configFileDescriptor = fd
-
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .rename],
-            queue: .global(qos: .utility)
-        )
-        source.setEventHandler { [weak self] in
-            // After an atomic write (rename), the fd points to the old inode.
-            // Re-create the watcher to track the new file.
-            let flags = source.data
-            Task { @MainActor in
-                Log.logger("lifecycle").info("config.json watcher fired (flags: \(flags.rawValue, privacy: .public))")
-                self?.handleConfigChange()
-                if flags.contains(.rename) {
-                    self?.stopConfigWatcher()
-                    self?.startConfigWatcher()
-                }
-            }
-        }
-        source.setCancelHandler {
-            close(fd)
-        }
-        source.resume()
-        configWatcherSource = source
-
-        // Belt-and-suspenders: poll mtime every 3s. The dispatch-source path
-        // above is preferred (instant), but it has been observed to silently
-        // drop events. The poller guarantees model-switch / llm_restart
-        // signals from Python eventually take effect.
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.schedule(deadline: .now() + .seconds(3), repeating: .seconds(3))
         timer.setEventHandler { [weak self] in
@@ -725,7 +700,7 @@ final class ServiceManager: ObservableObject {
                 self.lastConfigMtime = mtime
                 Task { @MainActor in
                     Log.logger("lifecycle").info(
-                        "config.json mtime changed (\(prev.timeIntervalSince1970, privacy: .public) → \(mtime.timeIntervalSince1970, privacy: .public)) — running handleConfigChange via poller")
+                        "config.json mtime changed (\(prev.timeIntervalSince1970, privacy: .public) → \(mtime.timeIntervalSince1970, privacy: .public)) — running handleConfigChange")
                     self.handleConfigChange()
                 }
             }
@@ -738,9 +713,6 @@ final class ServiceManager: ObservableObject {
         configWatcherActive = false
         configChangeTask?.cancel()
         configChangeTask = nil
-        configWatcherSource?.cancel()
-        configWatcherSource = nil
-        configFileDescriptor = -1
         configPollTimer?.cancel()
         configPollTimer = nil
     }
