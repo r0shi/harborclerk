@@ -81,5 +81,22 @@ for script in "$VENV_DIR/bin/"*; do
     fi
 done
 
+# The shebang patch above (#!/usr/bin/env python3) is fine for entry
+# points launched by the bundled app via known absolute paths, but it's
+# a footgun for `pip`: an operator running the venv's pip from a shell
+# where another `python3` (Homebrew, asdf, system) is first on PATH will
+# silently install into THAT Python's site-packages and assume the
+# bundled venv was updated. The wrapper below resolves the venv's python
+# relative to the wrapper's own location, which is stable wherever the
+# bundle ends up installed.
+for pip_script in "$VENV_DIR/bin/"pip*; do
+    [ -f "$pip_script" ] || continue
+    cat > "$pip_script" <<'SH'
+#!/bin/sh
+exec "$(dirname "$0")/python3" -m pip "$@"
+SH
+    chmod +x "$pip_script"
+done
+
 echo "==> Venv installed to ${VENV_DIR}"
 echo "==> Size: $(du -sh "$VENV_DIR" | cut -f1)"
