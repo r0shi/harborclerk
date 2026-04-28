@@ -84,4 +84,21 @@ final class WorkerCountsTests: XCTestCase {
         XCTAssertEqual(result.io, balanced.io)
         XCTAssertEqual(result.cpu, balanced.cpu)
     }
+
+    // MARK: - LLM worker count is constant 1 across all presets and core counts
+
+    func testLLMCountIsAlwaysOneQuiet() {
+        XCTAssertEqual(ServiceManager.workerCounts(preset: "quiet", cores: 1).llm, 1)
+        XCTAssertEqual(ServiceManager.workerCounts(preset: "quiet", cores: 32).llm, 1)
+    }
+
+    func testLLMCountIsAlwaysOneBalanced() {
+        XCTAssertEqual(ServiceManager.workerCounts(preset: "balanced", cores: 1).llm, 1)
+        XCTAssertEqual(ServiceManager.workerCounts(preset: "balanced", cores: 32).llm, 1)
+    }
+
+    func testLLMCountIsAlwaysOneFast() {
+        XCTAssertEqual(ServiceManager.workerCounts(preset: "fast", cores: 1).llm, 1)
+        XCTAssertEqual(ServiceManager.workerCounts(preset: "fast", cores: 32).llm, 1)
+    }
 }

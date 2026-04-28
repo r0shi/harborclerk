@@ -1,12 +1,14 @@
-import type { QueueSnapshot } from '../../hooks/useQueueSnapshot'
+import type { QueueClass, QueueSnapshot } from '../../hooks/useQueueSnapshot'
 import { stageLabel } from '../../utils/stageLabel'
 
 interface WorkerStripProps {
   snapshot: QueueSnapshot
 }
 
+const QUEUE_ORDER: readonly QueueClass[] = ['io', 'cpu', 'llm'] as const
+
 /**
- * Per-stage activity chips, grouped by queue class (IO vs CPU).
+ * Per-stage activity chips, grouped by queue class (IO vs CPU vs LLM).
  *
  * We don't have stable worker IDs — workers are inferred from the
  * count of running jobs at each stage. So chips are per-stage, not
@@ -18,7 +20,7 @@ interface WorkerStripProps {
  */
 export default function WorkerStrip({ snapshot }: WorkerStripProps) {
   // Group stages by their queue class while preserving pipeline order.
-  const groups: Record<'io' | 'cpu', string[]> = { io: [], cpu: [] }
+  const groups: Record<QueueClass, string[]> = { io: [], cpu: [], llm: [] }
   for (const stage of snapshot.stage_order) {
     const info = snapshot.by_stage[stage]
     if (!info) continue
@@ -27,7 +29,7 @@ export default function WorkerStrip({ snapshot }: WorkerStripProps) {
 
   return (
     <div className="space-y-1.5">
-      {(['io', 'cpu'] as const).map((queue) => {
+      {QUEUE_ORDER.map((queue) => {
         const stages = groups[queue]
         if (stages.length === 0) return null
         const totalRunning = snapshot.queues[queue]?.running ?? 0
