@@ -26,20 +26,26 @@ import { classColor } from '../../utils/queueColors'
  */
 
 const VIEW_WIDTH = 600
-const VIEW_HEIGHT = 300
+// Bumped from 300 → 320 to fit the wider fan-out spread without the
+// top badge and bottom label hugging the edges.
+const VIEW_HEIGHT = 320
 
 // Hand-laid-out positions for the 7-stage pipeline.
 // Sequential prefix flows left-to-right at y=150, then chunk fans out
 // to entities/embed/summarize stacked vertically, then re-converges
-// at finalize.
+// at finalize. The fan-out spacing is 100 px (50 ↔ 150 ↔ 250) rather
+// than the original 80 — with the active node radius cap at 26 plus
+// the count badge above (~14 px) and stage label below (~12 px), 80
+// wasn't enough vertical room and labels collided with neighbours'
+// badges.
 const NODE_POSITIONS: Record<string, { x: number; y: number }> = {
-  extract: { x: 60, y: 150 },
-  ocr: { x: 160, y: 150 },
-  chunk: { x: 260, y: 150 },
-  entities: { x: 390, y: 70 },
-  embed: { x: 390, y: 150 },
-  summarize: { x: 390, y: 230 },
-  finalize: { x: 520, y: 150 },
+  extract: { x: 60, y: 160 },
+  ocr: { x: 160, y: 160 },
+  chunk: { x: 260, y: 160 },
+  entities: { x: 390, y: 60 },
+  embed: { x: 390, y: 160 },
+  summarize: { x: 390, y: 260 },
+  finalize: { x: 520, y: 160 },
 }
 
 const EDGES: { from: string; to: string }[] = [
@@ -258,37 +264,39 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
   )
 }
 
+/**
+ * Animated pipeline diagram. Renders just the SVG + legend strip; the
+ * caller is expected to provide its own layout container (e.g. a tab
+ * panel on the Observatory page). `useQueueSnapshot` polls only while
+ * this component is mounted, so unmounting the tab pauses polling
+ * automatically.
+ */
 export default function PipelineDiagram() {
   const { snapshot, error } = useQueueSnapshot()
 
+  if (error) return <div className="text-[12px] text-red-500/80">{error}</div>
+  if (!snapshot) return <div className="text-[12px] text-(--color-text-secondary)">Loading…</div>
+
   return (
-    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
-      <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="text-[13px] font-semibold text-(--color-text-primary)">Pipeline Overview</h3>
-        <span className="text-[11px] text-(--color-text-secondary)">
-          {snapshot ? `Throughput over last ${snapshot.throughput_window_seconds}s` : ''}
+    <div>
+      <PipelineGraph snapshot={snapshot} />
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-(--color-text-secondary)">
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full" style={{ background: classColor('io') }} />
+          IO
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full" style={{ background: classColor('cpu') }} />
+          CPU
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full" style={{ background: classColor('llm') }} />
+          LLM
+        </span>
+        <span className="ml-auto">
+          Throughput · last {snapshot.throughput_window_seconds}s · glowing nodes have running jobs
         </span>
       </div>
-      {error && <div className="text-[12px] text-red-500/80">{error}</div>}
-      {!snapshot && !error && <div className="text-[12px] text-(--color-text-secondary)">Loading…</div>}
-      {snapshot && <PipelineGraph snapshot={snapshot} />}
-      {snapshot && (
-        <div className="mt-2 flex items-center gap-4 text-[10px] text-(--color-text-secondary)">
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full" style={{ background: classColor('io') }} />
-            IO
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full" style={{ background: classColor('cpu') }} />
-            CPU
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full" style={{ background: classColor('llm') }} />
-            LLM
-          </span>
-          <span className="ml-auto">Glowing nodes have running jobs · Particles = recent throughput</span>
-        </div>
-      )}
     </div>
   )
 }
