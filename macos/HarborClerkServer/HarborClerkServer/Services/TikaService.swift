@@ -72,11 +72,6 @@ final class TikaService: ManagedService {
     func healthCheck() async -> Bool {
         // Tika returns 200 on GET /tika when ready
         guard let url = URL(string: "http://127.0.0.1:\(port)/tika") else { return false }
-        do {
-            let (_, response) = try await URLSession.shared.data(from: url)
-            return (response as? HTTPURLResponse)?.statusCode == 200
-        } catch {
-            return false
-        }
+        return await httpProbeOK(url)
     }
 }

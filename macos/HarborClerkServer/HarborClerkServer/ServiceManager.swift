@@ -19,6 +19,52 @@ protocol ManagedService: AnyObject {
     func healthCheck() async -> Bool
 }
 
+// MARK: - Health-probe helper
+
+/// One-shot HTTP probe for service healthChecks.
+///
+/// Each call uses its own ephemeral `URLSession` with a short request
+/// timeout, then invalidates it. This deliberately avoids
+/// `URLSession.shared` because the shared session, with no per-request
+/// timeout, has accumulated many concurrent in-flight tasks against
+/// unresponsive backends (notably llama-server during the 30-60 s
+/// weight-load window for big models). Each in-flight task installs a
+/// dispatch-source timeout timer; under that load, CFNetwork's
+/// timer-cancellation path has crashed the entire app with a
+/// pointer-authentication failure inside
+/// `_dispatch_source_set_runloop_timer_4CF`. See
+/// `project_menubar_crashes_during_model_switch.md`.
+///
+/// Per-service ephemeral sessions sidestep this in three ways:
+///   1. Short timeouts cap each task's lifetime so stale tasks don't
+///      pile up while the user is reactivating after a deactivation.
+///   2. Each session has its own task table, partitioning the herd
+///      of completion handlers that lands when llama-server finally
+///      responds, instead of racing in a single shared scheduler.
+///   3. `invalidateAndCancel()` on exit cleans up promptly rather
+///      than relying on the framework's deferred cleanup.
+///
+/// Returns `true` iff the URL responded with HTTP 200 within `timeout`
+/// seconds. Any error (timeout, connection refused, non-200) returns
+/// `false`. Callers wanting softer semantics (e.g. "process alive
+/// even if HTTP slow") can layer that on top.
+func httpProbeOK(_ url: URL, timeout: TimeInterval = 3) async -> Bool {
+    let config = URLSessionConfiguration.ephemeral
+    config.timeoutIntervalForRequest = timeout
+    config.timeoutIntervalForResource = timeout
+    config.urlCache = nil
+    config.httpCookieStorage = nil
+    config.urlCredentialStorage = nil
+    let session = URLSession(configuration: config)
+    defer { session.invalidateAndCancel() }
+    do {
+        let (_, response) = try await session.data(from: url)
+        return (response as? HTTPURLResponse)?.statusCode == 200
+    } catch {
+        return false
+    }
+}
+
 // MARK: - ServiceManager
 
 @MainActor
