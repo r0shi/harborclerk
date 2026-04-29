@@ -18,6 +18,31 @@ final class PostgresService: ManagedService {
     private var dataDir: URL { AppSettings.shared.postgresDataDir }
     private var port: Int { AppSettings.shared.postgresPort }
 
+    /// Wait for `proc` to exit, returning whether it terminated cleanly
+    /// (status == 0). Returns `false` (rather than raising) if the
+    /// process was never launched.
+    ///
+    /// Apple's documented behaviour for `terminationStatus` on a
+    /// Process that hasn't run is to raise `NSInvalidArgumentException`.
+    /// Swift can't catch that — it propagates as an unhandled
+    /// exception and aborts the entire app, taking every spawned
+    /// subprocess (including PostgreSQL mid-query) down with it.
+    /// We've actually seen this in the wild during model-switch
+    /// teardown when `try? proc.run()` swallowed a launch failure
+    /// upstream. See `project_menubar_crashes_during_model_switch.md`.
+    ///
+    /// `processIdentifier` is 0 for a never-launched Process, so
+    /// gating on `> 0` skips the throwing read.
+    private static func awaitExitedCleanly(_ proc: Process) async -> Bool {
+        await withCheckedContinuation { c in
+            DispatchQueue.global().async {
+                proc.waitUntilExit()
+                let exited = proc.processIdentifier != 0 && proc.terminationStatus == 0
+                c.resume(returning: exited)
+            }
+        }
+    }
+
     func start() async throws {
         let fm = FileManager.default
         let pgVersionFile = dataDir.appendingPathComponent("PG_VERSION")
@@ -119,12 +144,7 @@ final class PostgresService: ManagedService {
         fastProc.standardOutput = FileHandle.nullDevice
         fastProc.standardError = FileHandle.nullDevice
         try? fastProc.run()
-        let fastExited: Bool = await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                fastProc.waitUntilExit()
-                c.resume(returning: fastProc.terminationStatus == 0)
-            }
-        }
+        let fastExited = await Self.awaitExitedCleanly(fastProc)
 
         if !fastExited {
             // Phase 2: pg_ctl stop -m immediate (SIGQUIT — skip recovery)
@@ -136,13 +156,7 @@ final class PostgresService: ManagedService {
             immProc.standardOutput = FileHandle.nullDevice
             immProc.standardError = FileHandle.nullDevice
             try? immProc.run()
-
-            let immExited: Bool = await withCheckedContinuation { c in
-                DispatchQueue.global().async {
-                    immProc.waitUntilExit()
-                    c.resume(returning: immProc.terminationStatus == 0)
-                }
-            }
+            let immExited = await Self.awaitExitedCleanly(immProc)
 
             if !immExited {
                 // Phase 3: read postmaster.pid and SIGKILL
@@ -169,12 +183,7 @@ final class PostgresService: ManagedService {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         try? proc.run()
-        return await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                c.resume(returning: proc.terminationStatus == 0)
-            }
-        }
+        return await Self.awaitExitedCleanly(proc)
     }
 
     // MARK: - Logging Config
