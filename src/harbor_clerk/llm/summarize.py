@@ -139,6 +139,20 @@ def _call_llm(
         "stream": False,
         "temperature": 0.3,
         "max_tokens": max_tokens,
+        # Suppress chain-of-thought on chat templates that support the
+        # kwarg (Qwen3.x, Gemma 4, etc.). Without this, newer Qwen
+        # variants (e.g. Qwen3.6 35B-A3B) ignore the older Qwen3
+        # `/no_think` marker baked into our prompts and burn the entire
+        # max_tokens budget on `<thinking>…</thinking>` before ever
+        # emitting the JSON response — the cap fires INSIDE the
+        # thinking block, content comes back empty, and the
+        # `reasoning_content` fallback below catches truncated thinking
+        # rather than the actual answer. Symptom in the wild was
+        # multi-minute summarize stages on long docs because every
+        # map-reduce call paid that cost. Same fix as the research
+        # pipeline shipped in PR #218. Templates that don't recognise
+        # the kwarg ignore it harmlessly.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     if json_schema:
         # Use json_object mode (simpler, better compatibility with thinking models)
