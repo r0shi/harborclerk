@@ -7,14 +7,20 @@ import { classColor } from '../../utils/queueColors'
  * ingestion pipeline.
  *
  * Visual encoding:
- *   - Node radius scales with sqrt(queued + running) — a bottleneck
- *     swells without crushing other nodes.
- *   - Node hue distinguishes IO / CPU / LLM queue classes.
- *   - Soft glow filter on nodes with at least one running job — the
- *     "I am alive" cue.
- *   - Edges thicken with recent throughput on the downstream stage.
+ *   - Each stage is rendered as a thin outline circle whose radius
+ *     scales with sqrt(queued + running) — a bottleneck swells
+ *     without crushing other nodes.
+ *   - Outline hue = queue class (IO blue / CPU amber / LLM purple).
+ *   - When the stage has running jobs, an inner concentric "particle"
+ *     appears — same hue as the outline, with a soft glow and a slow
+ *     heartbeat pulse (radius + opacity). Idle stages are bare rings
+ *     so the eye is drawn to active work.
+ *   - Edges are a fixed green so the connecting "pipes" read as their
+ *     own visual layer. Edges thicken and brighten with recent
+ *     throughput on the downstream stage.
  *   - Particles flow along edges at a rate proportional to recent
- *     throughput. Each particle inherits the upstream stage's colour.
+ *     throughput. Each particle inherits the upstream stage's colour
+ *     (coloured payload moving through green plumbing).
  *
  * Polls the same /api/jobs/snapshot endpoint as the drawer's Pipeline
  * tab. The snapshot includes `recent_completed` per stage (last 30 s),
@@ -29,6 +35,12 @@ const VIEW_WIDTH = 600
 // Bumped from 300 → 320 to fit the wider fan-out spread without the
 // top badge and bottom label hugging the edges.
 const VIEW_HEIGHT = 320
+
+// Connecting edges all use the same neutral colour so the "pipes" read
+// as their own visual layer, separate from the queue-class hues on the
+// nodes. System green reads as flow / activity without competing with
+// the IO-blue / CPU-amber / LLM-purple node palette.
+const EDGE_COLOR = '#30d158'
 
 // Hand-laid-out positions for the 7-stage pipeline.
 // Sequential prefix flows left-to-right at y=150, then chunk fans out
@@ -160,21 +172,24 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
         </filter>
       </defs>
 
-      {/* Edges */}
+      {/* Edges — fixed system green so the connecting "pipes" read as
+          their own visual layer, separate from the nodes' queue-class
+          hues. Particles flowing through them still inherit the
+          upstream node's colour, which gives the impression of
+          coloured payload moving through a green plumbing graph. */}
       {EDGES.map((edge) => {
         const downstream = snapshot.by_stage[edge.to]
         const throughput = downstream?.recent_completed ?? 0
         const baseWidth = 1.5
         const width = Math.min(8, baseWidth + throughput * 0.4)
-        const color = classColor(downstream?.queue)
-        const opacity = throughput > 0 ? 0.5 : 0.15
+        const opacity = throughput > 0 ? 0.55 : 0.2
         return (
           <path
             key={`${edge.from}-${edge.to}`}
             id={`edge-${edge.from}-${edge.to}`}
             d={edgePath(edge.from, edge.to)}
             fill="none"
-            stroke={color}
+            stroke={EDGE_COLOR}
             strokeWidth={width}
             strokeOpacity={opacity}
             strokeLinecap="round"
@@ -209,21 +224,53 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
         const total = info ? info.queued + info.running : 0
         const isBusy = (info?.running ?? 0) > 0
 
+        // Inner "particle" radius — proportional to the outer ring so
+        // both grow together as the queue depth scales the node size.
+        const innerR = r * 0.55
+        // Heartbeat amplitude: small expansion + slight opacity dip,
+        // ~1.6 s cycle for a calm 'breathing' rather than an urgent
+        // alarm.
+        const innerRMin = innerR * 0.86
+        const innerRMax = innerR * 1.04
         return (
           <g key={stage}>
+            {/* Outer ring — always rendered, same thin outline whether
+                idle or busy. The activity signal is the inner particle,
+                not a fill colour change. */}
             <circle
               cx={pos.x}
               cy={pos.y}
               r={r}
-              fill={color}
-              fillOpacity={isBusy ? 0.85 : 0.2}
+              fill="none"
               stroke={color}
-              strokeWidth={isBusy ? 2 : 1}
-              style={{
-                filter: isBusy ? 'url(#pipeline-glow)' : undefined,
-                transition: 'r 400ms ease-out, fill-opacity 400ms',
-              }}
+              strokeWidth={1.2}
+              strokeOpacity={isBusy ? 0.75 : 0.45}
+              style={{ transition: 'r 400ms ease-out, stroke-opacity 400ms' }}
             />
+            {/* Inner particle — only when busy. Concentric with the
+                ring, glow filter applied, and a slow heartbeat
+                (radius + opacity) so the eye reads "this stage is
+                alive" without the diagram feeling frantic. */}
+            {isBusy && (
+              <circle cx={pos.x} cy={pos.y} fill={color} style={{ filter: 'url(#pipeline-glow)' }}>
+                <animate
+                  attributeName="r"
+                  values={`${innerRMin};${innerRMax};${innerRMin}`}
+                  dur="1.6s"
+                  repeatCount="indefinite"
+                  calcMode="spline"
+                  keySplines="0.4 0 0.6 1; 0.4 0 0.6 1"
+                />
+                <animate
+                  attributeName="opacity"
+                  values="0.78;1;0.78"
+                  dur="1.6s"
+                  repeatCount="indefinite"
+                  calcMode="spline"
+                  keySplines="0.4 0 0.6 1; 0.4 0 0.6 1"
+                />
+              </circle>
+            )}
             {/* Count badge above the node, only when there's activity */}
             {total > 0 && (
               <g>
@@ -294,7 +341,7 @@ export default function PipelineDiagram() {
           LLM
         </span>
         <span className="ml-auto">
-          Throughput · last {snapshot.throughput_window_seconds}s · glowing nodes have running jobs
+          Throughput · last {snapshot.throughput_window_seconds}s · pulsing particles inside a node = running jobs
         </span>
       </div>
     </div>
