@@ -118,6 +118,7 @@ def _call_llm(
     max_attempts: int = 3,
     response_key: str | None = None,
     json_schema: dict | None = None,
+    phase: str = "summarize",
 ) -> str | None:
     """Make an LLM call with retries for transient failures.
 
@@ -128,6 +129,10 @@ def _call_llm(
 
     llama-server runs single-slot, so concurrent summarize requests queue up.
     Retries with jittered delays give the queue time to drain.
+
+    The `phase` argument is purely for log attribution — it shows up in
+    the per-call timing log line so a `tail -f` of worker-llm.log can
+    distinguish short/medium/map/reduce/doc-type calls from each other.
     """
     settings = get_settings()
     url = f"{settings.llama_server_url}/v1/chat/completions"
@@ -147,12 +152,16 @@ def _call_llm(
 
     last_err: Exception | None = None
     for attempt in range(1, max_attempts + 1):
+        call_started = time.perf_counter()
         try:
             resp = httpx.post(url, json=payload, timeout=timeout)
+            elapsed = time.perf_counter() - call_started
             if resp.status_code in {503, 429} and attempt < max_attempts:
                 delay = 5 + random.uniform(0, 10 * attempt)
                 logger.info(
-                    "LLM returned %d on attempt %d/%d, retrying in %.0fs",
+                    "LLM call phase=%s elapsed=%.1fs http_status=%d (attempt %d/%d, retrying in %.0fs)",
+                    phase,
+                    elapsed,
                     resp.status_code,
                     attempt,
                     max_attempts,
@@ -161,8 +170,24 @@ def _call_llm(
                 time.sleep(delay)
                 continue
             resp.raise_for_status()
-            msg = resp.json()["choices"][0]["message"]
+            data = resp.json()
+            msg = data["choices"][0]["message"]
             content = (msg.get("content") or "").strip()
+            usage = data.get("usage") or {}
+            prompt_tokens = usage.get("prompt_tokens")
+            completion_tokens = usage.get("completion_tokens")
+            cap_hit = (
+                isinstance(completion_tokens, int) and isinstance(max_tokens, int) and completion_tokens >= max_tokens
+            )
+            logger.info(
+                "LLM call phase=%s elapsed=%.1fs prompt_tokens=%s completion_tokens=%s max_tokens=%s%s",
+                phase,
+                elapsed,
+                prompt_tokens,
+                completion_tokens,
+                max_tokens,
+                " CAP_HIT" if cap_hit else "",
+            )
             # Thinking models (DeepSeek R1, gpt-oss) may return empty content
             # with the answer embedded in reasoning_content
             if not content and msg.get("reasoning_content"):
@@ -188,30 +213,34 @@ def _call_llm(
                     extracted = parsed.get(response_key, "")
                     return str(extracted).strip() if extracted else None
                 except (ValueError, AttributeError):
-                    logger.warning("Failed to parse JSON response: %s", content[:200])
+                    logger.warning("LLM call phase=%s JSON parse failed: %s", phase, content[:200])
                     return None
 
             # Non-JSON mode: extract marked answer
             content = _extract_marked_answer(content)
             return content if content else None
         except (httpx.TimeoutException, httpx.ConnectError) as e:
+            elapsed = time.perf_counter() - call_started
             last_err = e
             if attempt < max_attempts:
                 delay = 5 + random.uniform(0, 10 * attempt)
                 logger.info(
-                    "LLM call attempt %d/%d failed (%s), retrying in %.0fs",
+                    "LLM call phase=%s elapsed=%.1fs failed (%s), attempt %d/%d, retrying in %.0fs",
+                    phase,
+                    elapsed,
+                    type(e).__name__,
                     attempt,
                     max_attempts,
-                    type(e).__name__,
                     delay,
                 )
                 time.sleep(delay)
                 continue
         except Exception:
-            logger.warning("LLM call failed (non-retryable)", exc_info=True)
+            elapsed = time.perf_counter() - call_started
+            logger.warning("LLM call phase=%s elapsed=%.1fs failed (non-retryable)", phase, elapsed, exc_info=True)
             return None
 
-    logger.warning("LLM call failed after %d attempts: %s", max_attempts, last_err)
+    logger.warning("LLM call phase=%s failed after %d attempts: %s", phase, max_attempts, last_err)
     return None
 
 
@@ -410,6 +439,7 @@ def _summarize_short(chunks: list[str], max_input_chars: int) -> str | None:
         timeout=120.0,
         response_key="summary",
         json_schema=_SUMMARY_SCHEMA,
+        phase="summarize-short",
     )
 
 
@@ -423,6 +453,7 @@ def _summarize_medium(chunks: list[str], max_input_chars: int) -> str | None:
         timeout=120.0,
         response_key="summary",
         json_schema=_SUMMARY_SCHEMA,
+        phase="summarize-medium",
     )
 
 
@@ -433,7 +464,7 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
 
     # Map step: summarize each group (fewer retries to stay within stage timeout)
     section_summaries: list[str] = []
-    for group in groups:
+    for idx, group in enumerate(groups):
         result = _call_llm(
             _PROMPT_MAP,
             group,
@@ -442,6 +473,7 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
             max_attempts=2,
             response_key="summary",
             json_schema=_SUMMARY_SCHEMA,
+            phase=f"summarize-map[{idx + 1}/{len(groups)}]",
         )
         if result:
             section_summaries.append(result[:300])
@@ -464,6 +496,7 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
         timeout=120.0,
         response_key="summary",
         json_schema=_SUMMARY_SCHEMA,
+        phase="summarize-reduce",
     )
 
 
@@ -521,6 +554,7 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
             max_attempts=1,
             response_key="document_type",
             json_schema=_DOC_TYPE_SCHEMA,
+            phase="doc-type",
         )
         if result:
             doc_type = result.strip().strip("\"'.")
@@ -577,12 +611,29 @@ def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[s
             max_input_chars,
         )
 
+        stage_started = time.perf_counter()
         if tier == _Tier.SHORT:
             result = _summarize_short(chunks, max_input_chars)
         elif tier == _Tier.MEDIUM:
             result = _summarize_medium(chunks, max_input_chars)
         else:
             result = _summarize_long(chunks, max_input_chars)
+        stage_elapsed = time.perf_counter() - stage_started
+
+        # One-line per-doc summary so a `tail -f` of worker-llm.log yields
+        # an at-a-glance view of how long each summarize stage really took
+        # (the per-call lines above add up to the totals here, but having
+        # both makes diagnosis quick — grep for "Summarize complete" to
+        # see total wall time per doc, drill into per-call lines for the
+        # breakdown).
+        logger.info(
+            "Summarize complete: tier=%s elapsed=%.1fs result=%s model=%s chunks=%d",
+            tier.value,
+            stage_elapsed,
+            "ok" if result else "no-result",
+            settings.llm_model_id,
+            len(chunks),
+        )
 
         if result:
             return _truncate_at_sentence(result, max_chars), settings.llm_model_id

@@ -33,16 +33,23 @@ function fmtSecs(secs: number): string {
 }
 
 /**
- * Per-stage processing time as a horizontal bar chart with a
- * within-bar p50 marker. The faded portion of each bar runs out to
- * p95; the saturated portion runs out to p50, so the eye reads
- * "median where it's filled, tail where it fades". Colour is the
- * stage's queue class for visual consistency with the diagram.
+ * Per-stage processing time as a horizontal bar chart that breaks the
+ * distribution into median / typical / outlier zones. Reading guide:
  *
- * The avg row's primary value is signalling spread, not centre — when
- * the saturated p50 bar is much shorter than the faded p95 bar, the
- * stage has a long tail (typical for OCR with mixed scan quality);
- * when they're close the stage is tightly clustered (chunk, finalize).
+ *   ▰▰▰  saturated  : median (p50) — half of jobs finished in this much time
+ *   ▰░░  faded ext. : 95th percentile — almost everyone is in by here
+ *   ┊    tick mark  : maximum — the slowest single run we've seen
+ *
+ * When the saturated p50 fills most of the bar, the stage is tightly
+ * clustered. When the saturated portion is short and the faded
+ * extension is long, the stage is bimodal — typical case is fast,
+ * but with a heavy tail (this is what map-reduce summarize does on
+ * long docs: each call is normal, but the *job* multiplies that by
+ * however many groups were needed). The max tick gives you the
+ * actual worst-case wall time so you can spot pathological outliers
+ * even when p95 looks reasonable.
+ *
+ * Colour matches the queue class on the Observatory diagram.
  */
 export default function PipelineTimingChart({ pipelineTiming }: PipelineTimingChartProps) {
   const visibleStages = STAGES.filter((s) => pipelineTiming[s]?.count)
@@ -53,15 +60,25 @@ export default function PipelineTimingChart({ pipelineTiming }: PipelineTimingCh
       </div>
     )
   }
-  const maxP95 = Math.max(0.001, ...visibleStages.map((s) => pipelineTiming[s].p95_run_secs))
+  // Scale the bar width by the largest max across visible stages
+  // (rather than p95) so the max tick has a stable home on the
+  // axis; otherwise a wild outlier in one stage would push the tick
+  // off the right edge or compress everyone else into invisibility.
+  const axisMax = Math.max(0.001, ...visibleStages.map((s) => pipelineTiming[s].max_run_secs))
 
   return (
     <div className="space-y-1.5">
       {visibleStages.map((stage) => {
         const t = pipelineTiming[stage]
         const queue = queueForStage(stage)
-        const p50Width = Math.min(100, (t.p50_run_secs / maxP95) * 100)
-        const p95Width = Math.min(100, (t.p95_run_secs / maxP95) * 100)
+        const p50Width = Math.min(100, (t.p50_run_secs / axisMax) * 100)
+        const p95Width = Math.min(100, (t.p95_run_secs / axisMax) * 100)
+        const maxLeft = Math.min(100, (t.max_run_secs / axisMax) * 100)
+        // Flag a notably long tail — saturated bar way shorter than
+        // the max, suggesting a bimodal distribution (typical run is
+        // fine, worst run is wildly slower). Useful for spotting
+        // map-reduce blow-ups on summarize.
+        const longTail = t.max_run_secs > t.p50_run_secs * 5 && t.max_run_secs > 5
         return (
           <div key={stage} className="flex items-center gap-2 text-[12px]">
             <span className="w-16 shrink-0 text-(--color-text-secondary) text-right">{STAGE_LABELS[stage]}</span>
@@ -80,15 +97,31 @@ export default function PipelineTimingChart({ pipelineTiming }: PipelineTimingCh
                 className="absolute left-0 top-0 h-full rounded-sm"
                 style={{ width: `${p50Width}%`, background: classColor(queue) }}
               />
+              {/* max tick — vertical line at the longest single-run
+                  position. Positioned on the centre of the line so a
+                  max equal to p95 sits cleanly at the p95 edge. */}
+              <div
+                className="absolute top-0 h-full"
+                style={{
+                  left: `calc(${maxLeft}% - 1px)`,
+                  width: '2px',
+                  background: classColor(queue),
+                }}
+              />
             </div>
-            <span className="w-44 shrink-0 text-right tabular-nums text-(--color-text-secondary) text-[11px]">
-              p50 {fmtSecs(t.p50_run_secs)} · p95 {fmtSecs(t.p95_run_secs)} · n={t.count}
+            <span
+              className={`w-56 shrink-0 text-right tabular-nums text-[11px] ${
+                longTail ? 'text-(--color-text-primary)' : 'text-(--color-text-secondary)'
+              }`}
+            >
+              p50 {fmtSecs(t.p50_run_secs)} · p95 {fmtSecs(t.p95_run_secs)} ·{' '}
+              <span className={longTail ? 'font-semibold' : ''}>max {fmtSecs(t.max_run_secs)}</span> · n={t.count}
             </span>
           </div>
         )
       })}
       <div className="pt-1 text-[10px] text-(--color-text-secondary)">
-        Saturated bar = median (p50) · faded extension = p95 · numbers on the right show exact values
+        Saturated bar = p50 (median) · faded extension = p95 · vertical tick = max single run · max bolded when ≥ 5× p50
       </div>
     </div>
   )
