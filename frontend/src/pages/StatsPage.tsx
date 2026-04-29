@@ -7,6 +7,8 @@ import TopicTreemap from '../components/stats/TopicTreemap'
 import TopicBarChart from '../components/stats/TopicBarChart'
 import TopicKeywords from '../components/stats/TopicKeywords'
 import PipelineDiagram from '../components/stats/PipelineDiagram'
+import PipelineTimingChart, { type StageTiming } from '../components/stats/PipelineTimingChart'
+import QueueWaitChart from '../components/stats/QueueWaitChart'
 import { InfoTip } from '../components/InfoTip'
 
 interface TopicCluster {
@@ -31,10 +33,12 @@ interface CorpusStats {
   ocr_breakdown: { born_digital: number; ocr_used: number; unknown: number }
   size_buckets: { label: string; count: number }[]
   growth_timeline: { month: string; count: number }[]
-  pipeline_timing: Record<string, { avg_secs: number; count: number }>
+  pipeline_timing: Record<string, StageTiming & { avg_secs: number }>
   entity_type_counts: Record<string, number>
   top_entities: { text: string; type: string; mentions: number }[]
 }
+
+type TabId = 'corpus' | 'pipeline'
 
 function StatBadge({ label, value, tip }: { label: string; value: string | number; tip?: string }) {
   return (
@@ -50,11 +54,37 @@ function StatBadge({ label, value, tip }: { label: string; value: string | numbe
   )
 }
 
+interface TabButtonProps {
+  id: TabId
+  current: TabId
+  onClick: (id: TabId) => void
+  children: React.ReactNode
+}
+
+function TabButton({ id, current, onClick, children }: TabButtonProps) {
+  const active = id === current
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(id)}
+      aria-selected={active}
+      role="tab"
+      className={`relative px-4 py-2 text-[14px] font-medium transition-colors ${
+        active ? 'text-(--color-text-primary)' : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'
+      }`}
+    >
+      {children}
+      {active && <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-(--color-accent)" />}
+    </button>
+  )
+}
+
 export default function StatsPage() {
   const [stats, setStats] = useState<CorpusStats | null>(null)
   const [topics, setTopics] = useState<TopicsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [tab, setTab] = useState<TabId>('corpus')
 
   useEffect(() => {
     let cancelled = false
@@ -100,10 +130,29 @@ export default function StatsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-lg font-semibold text-(--color-text-primary)">
-        Corpus Statistics
+      {/* Tab bar */}
+      <div role="tablist" className="flex border-b border-(--color-border)">
+        <TabButton id="corpus" current={tab} onClick={setTab}>
+          Corpus Statistics
+        </TabButton>
+        <TabButton id="pipeline" current={tab} onClick={setTab}>
+          Processing Pipeline
+        </TabButton>
+      </div>
+
+      {tab === 'corpus' && <CorpusTab stats={stats} topics={topics} />}
+      {tab === 'pipeline' && <PipelineTab pipelineTiming={stats.pipeline_timing} />}
+    </div>
+  )
+}
+
+function CorpusTab({ stats, topics }: { stats: CorpusStats; topics: TopicsData | null }) {
+  return (
+    <div className="space-y-6">
+      <h2 className="text-base font-semibold text-(--color-text-primary)">
+        About your collection
         <InfoTip text="These are facts and statistics about your entire document collection — how many documents, pages, and text segments (chunks) have been processed." />
-      </h1>
+      </h2>
 
       {/* Summary badges */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -124,9 +173,6 @@ export default function StatsPage() {
           tip="Named entities — people, organizations, places, dates, etc. — automatically extracted from your documents using natural language processing."
         />
       </div>
-
-      {/* Live pipeline activity */}
-      <PipelineDiagram />
 
       {/* Charts */}
       <CorpusCharts stats={stats} />
@@ -159,6 +205,42 @@ export default function StatsPage() {
 
       {/* Document Clusters */}
       <ClusterMap />
+    </div>
+  )
+}
+
+function PipelineTab({ pipelineTiming }: { pipelineTiming: CorpusStats['pipeline_timing'] }) {
+  return (
+    <div className="space-y-6">
+      <h2 className="text-base font-semibold text-(--color-text-primary)">
+        Processing pipeline
+        <InfoTip text="How your documents move through the ingestion pipeline. Live activity above; aggregated processing time and queue-wait breakdowns below, computed across all completed jobs." />
+      </h2>
+
+      {/* Live diagram */}
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+        <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Live activity</h3>
+        <PipelineDiagram />
+      </div>
+
+      {/* Per-stage timing */}
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+        <h3 className="mb-1 text-[13px] font-semibold text-(--color-text-primary)">Processing time per stage</h3>
+        <p className="mb-3 text-[12px] text-(--color-text-secondary)">
+          How long each stage takes once it starts running, across all completed jobs.
+        </p>
+        <PipelineTimingChart pipelineTiming={pipelineTiming} />
+      </div>
+
+      {/* Queue wait vs run time */}
+      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+        <h3 className="mb-1 text-[13px] font-semibold text-(--color-text-primary)">Queue wait vs processing time</h3>
+        <p className="mb-3 text-[12px] text-(--color-text-secondary)">
+          How long jobs wait in the queue before a worker picks them up, vs how long the work itself takes. A long grey
+          tail on a stage means workers are saturated.
+        </p>
+        <QueueWaitChart pipelineTiming={pipelineTiming} />
+      </div>
     </div>
   )
 }
