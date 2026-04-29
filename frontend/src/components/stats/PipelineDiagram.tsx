@@ -26,20 +26,26 @@ import { classColor } from '../../utils/queueColors'
  */
 
 const VIEW_WIDTH = 600
-const VIEW_HEIGHT = 300
+// Bumped from 300 → 320 to fit the wider fan-out spread without the
+// top badge and bottom label hugging the edges.
+const VIEW_HEIGHT = 320
 
 // Hand-laid-out positions for the 7-stage pipeline.
 // Sequential prefix flows left-to-right at y=150, then chunk fans out
 // to entities/embed/summarize stacked vertically, then re-converges
-// at finalize.
+// at finalize. The fan-out spacing is 100 px (50 ↔ 150 ↔ 250) rather
+// than the original 80 — with the active node radius cap at 26 plus
+// the count badge above (~14 px) and stage label below (~12 px), 80
+// wasn't enough vertical room and labels collided with neighbours'
+// badges.
 const NODE_POSITIONS: Record<string, { x: number; y: number }> = {
-  extract: { x: 60, y: 150 },
-  ocr: { x: 160, y: 150 },
-  chunk: { x: 260, y: 150 },
-  entities: { x: 390, y: 70 },
-  embed: { x: 390, y: 150 },
-  summarize: { x: 390, y: 230 },
-  finalize: { x: 520, y: 150 },
+  extract: { x: 60, y: 160 },
+  ocr: { x: 160, y: 160 },
+  chunk: { x: 260, y: 160 },
+  entities: { x: 390, y: 60 },
+  embed: { x: 390, y: 160 },
+  summarize: { x: 390, y: 260 },
+  finalize: { x: 520, y: 160 },
 }
 
 const EDGES: { from: string; to: string }[] = [
@@ -258,37 +264,78 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
   )
 }
 
+/**
+ * Outer wrapper: collapsible disclosure card. Header is always
+ * visible; the body (which polls /api/jobs/snapshot via
+ * `useQueueSnapshot`) is only mounted when the section is expanded,
+ * so polling is dormant when the user has it tucked away.
+ *
+ * Defaults to collapsed — the diagram is one of several sections on
+ * the Observatory page and shouldn't dominate the initial view.
+ */
 export default function PipelineDiagram() {
-  const { snapshot, error } = useQueueSnapshot()
+  const [expanded, setExpanded] = useState(false)
 
   return (
-    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
-      <div className="mb-2 flex items-baseline justify-between">
+    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((p) => !p)}
+        aria-expanded={expanded}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-black/4 dark:hover:bg-white/4 transition-colors"
+      >
         <h3 className="text-[13px] font-semibold text-(--color-text-primary)">Pipeline Overview</h3>
-        <span className="text-[11px] text-(--color-text-secondary)">
-          {snapshot ? `Throughput over last ${snapshot.throughput_window_seconds}s` : ''}
-        </span>
-      </div>
-      {error && <div className="text-[12px] text-red-500/80">{error}</div>}
-      {!snapshot && !error && <div className="text-[12px] text-(--color-text-secondary)">Loading…</div>}
-      {snapshot && <PipelineGraph snapshot={snapshot} />}
-      {snapshot && (
-        <div className="mt-2 flex items-center gap-4 text-[10px] text-(--color-text-secondary)">
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full" style={{ background: classColor('io') }} />
-            IO
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full" style={{ background: classColor('cpu') }} />
-            CPU
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full" style={{ background: classColor('llm') }} />
-            LLM
-          </span>
-          <span className="ml-auto">Glowing nodes have running jobs · Particles = recent throughput</span>
+        {/* Chevron points down when expanded, right when collapsed —
+            standard turndown affordance. */}
+        <svg
+          className="h-4 w-4 text-(--color-text-secondary)"
+          style={{
+            transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+            transition: 'transform 200ms ease-out',
+          }}
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {expanded && (
+        <div className="px-4 pb-4 pt-3 border-t border-(--color-border)">
+          <PipelineDiagramBody />
         </div>
       )}
     </div>
+  )
+}
+
+function PipelineDiagramBody() {
+  const { snapshot, error } = useQueueSnapshot()
+
+  if (error) return <div className="text-[12px] text-red-500/80">{error}</div>
+  if (!snapshot) return <div className="text-[12px] text-(--color-text-secondary)">Loading…</div>
+
+  return (
+    <>
+      <PipelineGraph snapshot={snapshot} />
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-(--color-text-secondary)">
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full" style={{ background: classColor('io') }} />
+          IO
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full" style={{ background: classColor('cpu') }} />
+          CPU
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full" style={{ background: classColor('llm') }} />
+          LLM
+        </span>
+        <span className="ml-auto">
+          Throughput · last {snapshot.throughput_window_seconds}s · glowing nodes have running jobs
+        </span>
+      </div>
+    </>
   )
 }
