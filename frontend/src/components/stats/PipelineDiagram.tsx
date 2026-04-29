@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { useQueueSnapshot, type QueueClass, type QueueSnapshot, type StageSnapshot } from '../../hooks/useQueueSnapshot'
+import { useQueueSnapshot, type QueueSnapshot, type StageSnapshot } from '../../hooks/useQueueSnapshot'
+import { classColor } from '../../utils/queueColors'
 
 /**
  * Pipeline Overview — animated DAG showing live activity in the
@@ -60,18 +61,6 @@ const STAGE_LABELS: Record<string, string> = {
   embed: 'Embed',
   summarize: 'Summarize',
   finalize: 'Finalize',
-}
-
-// Distinct hues by queue class so the eye reads "this is a CPU stage"
-// vs "this is an IO stage" at a glance. CPU stages (OCR, Embed) are
-// the heavy / slow compute ones; warm hue makes them stand out. The
-// LLM queue (Summarize) gets its own purple — visually distinct and
-// reinforces that it's a serialised single-worker bottleneck, not
-// just another flavour of CPU work.
-function classColor(queue: QueueClass | undefined): string {
-  if (queue === 'cpu') return '#f5a623' // amber
-  if (queue === 'llm') return '#bf5af2' // system purple
-  return '#0a84ff' // accent blue (matches --color-accent)
 }
 
 function edgePath(from: string, to: string): string {
