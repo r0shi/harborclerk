@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth'
 import BackButton from './BackButton'
+import { LLMStatusBanner, LLMStatusProvider } from './LLMStatusBanner'
 import { QueueTray } from './queue-tray'
 
 function TabLink({ to, end, children }: { to: string; end?: boolean; children: React.ReactNode }) {
@@ -126,11 +127,14 @@ export default function Layout() {
           </div>
         </div>
       </nav>
-      <main className="mx-auto max-w-7xl px-4 py-6">
-        <BackButton />
-        <Outlet />
-      </main>
-      <QueueTray />
+      <LLMStatusProvider>
+        <main className="mx-auto max-w-7xl px-4 py-6">
+          <BackButton />
+          <Outlet />
+        </main>
+        <QueueTray />
+        <LLMStatusBanner />
+      </LLMStatusProvider>
     </div>
   )
 }
