@@ -163,11 +163,6 @@ final class LlamaService: ManagedService {
     func healthCheck() async -> Bool {
         guard !AppSettings.shared.activeModelPath.isEmpty else { return false }
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
-        do {
-            let (_, response) = try await URLSession.shared.data(from: url)
-            return (response as? HTTPURLResponse)?.statusCode == 200
-        } catch {
-            return false
-        }
+        return await httpProbeOK(url)
     }
 }
