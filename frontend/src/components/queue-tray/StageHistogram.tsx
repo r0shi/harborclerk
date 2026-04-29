@@ -1,5 +1,6 @@
 import type { QueueSnapshot } from '../../hooks/useQueueSnapshot'
 import { stageLabel } from '../../utils/stageLabel'
+import { classColor, classColorAlpha } from '../../utils/queueColors'
 
 interface StageHistogramProps {
   snapshot: QueueSnapshot
@@ -8,12 +9,15 @@ interface StageHistogramProps {
 /**
  * Per-stage queue depth, one bar per pipeline stage in pipeline order.
  *
- * Each bar shows running (saturated accent, bottom) stacked under
- * queued (lighter accent, top). The eye reads "running below the
- * waterline, waiting above" — a tall stack on a single stage screams
- * "this is the choke point". The total height of the tallest bar
- * normalises to a fixed pixel ceiling so long queues don't crush the
- * shorter bars into invisibility.
+ * Each bar shows running (saturated, bottom) stacked under queued
+ * (faded, top). The eye reads "running below the waterline, waiting
+ * above" — a tall stack on a single stage screams "this is the choke
+ * point". The total height of the tallest bar normalises to a fixed
+ * pixel ceiling so long queues don't crush the shorter bars into
+ * invisibility.
+ *
+ * Bar colours match the Observatory pipeline diagram (IO blue, CPU
+ * amber, LLM purple) so the two views stay visually consistent.
  */
 const BAR_PIXEL_HEIGHT = 80
 const SHORT_LABELS: Record<string, string> = {
@@ -69,14 +73,22 @@ export default function StageHistogram({ snapshot }: StageHistogramProps) {
                 <div className="flex h-full flex-col justify-end">
                   {queuedHeight > 0 && (
                     <div
-                      className="w-full bg-(--color-accent)/30"
-                      style={{ height: queuedHeight, transition: 'height 400ms ease-out' }}
+                      className="w-full"
+                      style={{
+                        height: queuedHeight,
+                        background: classColorAlpha(info?.queue, 0.3),
+                        transition: 'height 400ms ease-out',
+                      }}
                     />
                   )}
                   {runningHeight > 0 && (
                     <div
-                      className="w-full bg-(--color-accent)"
-                      style={{ height: runningHeight, transition: 'height 400ms ease-out' }}
+                      className="w-full"
+                      style={{
+                        height: runningHeight,
+                        background: classColor(info?.queue),
+                        transition: 'height 400ms ease-out',
+                      }}
                     />
                   )}
                 </div>
@@ -98,16 +110,17 @@ export default function StageHistogram({ snapshot }: StageHistogramProps) {
           </div>
         ))}
       </div>
-      {/* Legend */}
-      <div className="mt-3 flex items-center gap-3 text-[10px] text-(--color-text-secondary)">
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-sm bg-(--color-accent)" />
-          Running
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-sm bg-(--color-accent)/30" />
-          Queued
-        </span>
+      {/* Legend — queue-class colours match the Observatory diagram.
+          Bar saturation conveys running (bottom) vs queued (top); see
+          tooltip for exact counts. */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-(--color-text-secondary)">
+        {(['io', 'cpu', 'llm'] as const).map((q) => (
+          <span key={q} className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-sm" style={{ background: classColor(q) }} />
+            {q.toUpperCase()}
+          </span>
+        ))}
+        <span className="ml-auto">Saturated = running · faded = queued</span>
       </div>
     </div>
   )

@@ -1,5 +1,6 @@
 import type { QueueClass, QueueSnapshot } from '../../hooks/useQueueSnapshot'
 import { stageLabel } from '../../utils/stageLabel'
+import { classColor, classColorAlpha } from '../../utils/queueColors'
 
 interface WorkerStripProps {
   snapshot: QueueSnapshot
@@ -47,21 +48,34 @@ export default function WorkerStrip({ snapshot }: WorkerStripProps) {
                 const info = snapshot.by_stage[stage]
                 const running = info?.running ?? 0
                 const idle = running === 0
+                // Active chips are coloured by their queue class to
+                // match the Observatory pipeline diagram (IO blue,
+                // CPU amber, LLM purple). Idle chips stay neutral
+                // grey so the eye is drawn to what's running.
+                const activeStyle = idle
+                  ? undefined
+                  : {
+                      background: classColorAlpha(info?.queue, 0.15),
+                      color: classColor(info?.queue),
+                      boxShadow: `inset 0 0 0 1px ${classColorAlpha(info?.queue, 0.3)}`,
+                    }
                 return (
                   <span
                     key={stage}
                     className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] transition-colors ${
-                      idle
-                        ? 'bg-(--color-bg-tertiary) text-(--color-text-secondary)/70'
-                        : 'bg-(--color-accent)/15 text-(--color-accent) ring-1 ring-(--color-accent)/30'
+                      idle ? 'bg-(--color-bg-tertiary) text-(--color-text-secondary)/70' : ''
                     }`}
+                    style={activeStyle}
                     title={
                       idle
                         ? `${stageLabel(stage)} — idle`
                         : `${stageLabel(stage)} — ${running} worker${running === 1 ? '' : 's'} busy`
                     }
                   >
-                    <span className={`h-1.5 w-1.5 rounded-full ${idle ? 'bg-current/40' : 'bg-(--color-accent)'}`} />
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full ${idle ? 'bg-current/40' : ''}`}
+                      style={idle ? undefined : { background: classColor(info?.queue) }}
+                    />
                     {stageLabel(stage)}
                     {running > 0 && <span className="font-semibold">· {running}</span>}
                   </span>
