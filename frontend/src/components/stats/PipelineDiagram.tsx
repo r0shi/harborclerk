@@ -81,17 +81,24 @@ const STAGE_LABELS: Record<string, string> = {
   finalize: 'Finalize',
 }
 
-function edgePath(from: string, to: string): string {
+function edgePath(from: string, to: string, rFrom: number, rTo: number): string {
   const a = NODE_POSITIONS[from]
   const b = NODE_POSITIONS[to]
   const dx = b.x - a.x
   // Cubic Bezier with horizontally-pulled control points → smooth
-  // S-curve when y differs, near-straight when y matches.
+  // S-curve when y differs, near-straight when y matches. Because
+  // the control points are pulled purely horizontally, the curve's
+  // tangent at each endpoint is also purely horizontal — which is
+  // why we can trim the endpoints by ±r along the x axis to land
+  // them exactly on each node's perimeter without bending the curve.
+  const sign = Math.sign(dx) || 1
+  const startX = a.x + sign * rFrom
+  const endX = b.x - sign * rTo
   const c1x = a.x + dx * 0.5
   const c1y = a.y
   const c2x = b.x - dx * 0.5
   const c2y = b.y
-  return `M ${a.x} ${a.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${b.x} ${b.y}`
+  return `M ${startX} ${a.y} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${endX} ${b.y}`
 }
 
 function nodeRadius(info: StageSnapshot | undefined): number {
@@ -176,18 +183,23 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
           their own visual layer, separate from the nodes' queue-class
           hues. Particles flowing through them still inherit the
           upstream node's colour, which gives the impression of
-          coloured payload moving through a green plumbing graph. */}
+          coloured payload moving through a green plumbing graph.
+          Endpoints are trimmed to each node's current perimeter so
+          the line stops at the ring rather than passing through the
+          disc. */}
       {EDGES.map((edge) => {
         const downstream = snapshot.by_stage[edge.to]
         const throughput = downstream?.recent_completed ?? 0
         const baseWidth = 1.5
         const width = Math.min(8, baseWidth + throughput * 0.4)
         const opacity = throughput > 0 ? 0.55 : 0.2
+        const rFrom = nodeRadius(snapshot.by_stage[edge.from])
+        const rTo = nodeRadius(snapshot.by_stage[edge.to])
         return (
           <path
             key={`${edge.from}-${edge.to}`}
             id={`edge-${edge.from}-${edge.to}`}
-            d={edgePath(edge.from, edge.to)}
+            d={edgePath(edge.from, edge.to, rFrom, rTo)}
             fill="none"
             stroke={EDGE_COLOR}
             strokeWidth={width}
