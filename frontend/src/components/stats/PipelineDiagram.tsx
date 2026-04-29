@@ -265,59 +265,20 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
 }
 
 /**
- * Outer wrapper: collapsible disclosure card. Header is always
- * visible; the body (which polls /api/jobs/snapshot via
- * `useQueueSnapshot`) is only mounted when the section is expanded,
- * so polling is dormant when the user has it tucked away.
- *
- * Defaults to collapsed — the diagram is one of several sections on
- * the Observatory page and shouldn't dominate the initial view.
+ * Animated pipeline diagram. Renders just the SVG + legend strip; the
+ * caller is expected to provide its own layout container (e.g. a tab
+ * panel on the Observatory page). `useQueueSnapshot` polls only while
+ * this component is mounted, so unmounting the tab pauses polling
+ * automatically.
  */
 export default function PipelineDiagram() {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setExpanded((p) => !p)}
-        aria-expanded={expanded}
-        className="w-full flex items-center justify-between px-4 py-3 hover:bg-black/4 dark:hover:bg-white/4 transition-colors"
-      >
-        <h3 className="text-[13px] font-semibold text-(--color-text-primary)">Pipeline Overview</h3>
-        {/* Chevron points down when expanded, right when collapsed —
-            standard turndown affordance. */}
-        <svg
-          className="h-4 w-4 text-(--color-text-secondary)"
-          style={{
-            transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
-            transition: 'transform 200ms ease-out',
-          }}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      {expanded && (
-        <div className="px-4 pb-4 pt-3 border-t border-(--color-border)">
-          <PipelineDiagramBody />
-        </div>
-      )}
-    </div>
-  )
-}
-
-function PipelineDiagramBody() {
   const { snapshot, error } = useQueueSnapshot()
 
   if (error) return <div className="text-[12px] text-red-500/80">{error}</div>
   if (!snapshot) return <div className="text-[12px] text-(--color-text-secondary)">Loading…</div>
 
   return (
-    <>
+    <div>
       <PipelineGraph snapshot={snapshot} />
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-(--color-text-secondary)">
         <span className="inline-flex items-center gap-1">
@@ -336,6 +297,6 @@ function PipelineDiagramBody() {
           Throughput · last {snapshot.throughput_window_seconds}s · glowing nodes have running jobs
         </span>
       </div>
-    </>
+    </div>
   )
 }
