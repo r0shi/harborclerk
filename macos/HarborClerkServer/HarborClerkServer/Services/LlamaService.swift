@@ -43,13 +43,9 @@ final class LlamaService: ManagedService {
             "--host", "127.0.0.1",
             "--port", String(port),
             "-ngl", "99",
-            // -np 1: single parallel slot. Heavy models (Qwen 35B etc.)
-            // need ~3-5 GB extra GPU memory per additional slot for KV
-            // cache, which is unaffordable on most Macs. The dedicated
-            // `llm` worker queue serialises summarize jobs so this isn't
-            // a throughput bottleneck. Future work: tune -np per-model
-            // (small models like SmolLM 3B can comfortably run -np 4 on
-            // an M-series Mac and would benefit from real parallelism).
+            // Single parallel slot. Heavy models can't afford more KV
+            // cache; small models could but we don't tune per-model yet.
+            // See memory note: project_per_model_np_tuning.md
             "-np", "1",
             "-c", String(contextWindow),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
