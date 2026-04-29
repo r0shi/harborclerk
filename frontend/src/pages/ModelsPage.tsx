@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth'
 import { del, get, post, put } from '../api'
+import { useLLMStatusContext } from '../components/LLMStatusBanner'
 
 interface ModelInfo {
   id: string
@@ -29,6 +30,7 @@ function formatSize(bytes: number): string {
 
 export default function ModelsPage() {
   const { token } = useAuth()
+  const { markTransitioning } = useLLMStatusContext()
   const [models, setModels] = useState<ModelInfo[]>([])
   const [orphans, setOrphans] = useState<OrphanInfo[]>([])
   const [loading, setLoading] = useState(true)
@@ -207,6 +209,11 @@ export default function ModelsPage() {
     setError('')
     try {
       await put(`/api/chat/models/${modelId}/activate`)
+      // Tell the LLM-status banner to expect a transition. The
+      // backend just wrote config; the Swift host will pick it up
+      // within a few seconds and restart llama-server, which then
+      // takes another 30-60s to load weights for big models.
+      markTransitioning()
       loadModels()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Activation failed')
@@ -237,6 +244,10 @@ export default function ModelsPage() {
     setError('')
     try {
       await put('/api/chat/models/deactivate')
+      // Deactivation also triggers an llm_restart on the host side
+      // (Swift stops llama-server). System feels sluggish for a few
+      // seconds while ~22 GB unmaps; banner conveys that.
+      markTransitioning(15_000)
       loadModels()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Deactivation failed')

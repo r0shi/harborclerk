@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
@@ -370,6 +371,47 @@ async def deactivate_model(
 
         request_llm_restart(f"model deactivated (was {previous!r})")
     return {"status": "deactivated"}
+
+
+@router.get("/chat/models/status")
+async def llm_status(
+    _principal: Principal = Depends(require_user),
+):
+    """Lightweight probe of llama-server's health.
+
+    Returns one of three states the UI uses to drive a "model is
+    loading" banner across the model-switch transition:
+
+      - `deactivated`: no model is configured (`settings.llm_model_id`
+        is empty). Nothing to load.
+      - `loading`: a model IS configured but llama-server isn't
+        responding yet. Either it just started and is loading weights
+        (~30-60s for a 22 GB model on M-series), or it crashed and
+        the auto-restarter is bringing it back.
+      - `ready`: llama-server's /health returned 200.
+
+    Probe is bounded to 2s so this endpoint stays fast even when
+    llama-server is wedged. The frontend polls it every second or
+    two during a model switch.
+    """
+    settings = get_settings()
+    model_id = settings.llm_model_id or None
+
+    if not model_id:
+        return {"state": "deactivated", "model_id": None}
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{settings.llama_server_url}/health")
+            if r.status_code == 200:
+                return {"state": "ready", "model_id": model_id}
+            # Non-200 — model still coming up (llama-server returns
+            # 503 during model load) or in some other transient state.
+            return {"state": "loading", "model_id": model_id}
+    except (httpx.ConnectError, httpx.TimeoutException):
+        # Connection refused (server stopped or restarting) or didn't
+        # answer within 2s (loading weights, mmap'ing the gguf, etc.).
+        return {"state": "loading", "model_id": model_id}
 
 
 @router.put("/chat/models/yarn", status_code=200)
