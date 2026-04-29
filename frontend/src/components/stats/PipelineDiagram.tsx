@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useQueueSnapshot, type QueueSnapshot, type StageSnapshot } from '../../hooks/useQueueSnapshot'
+import { useQueueSnapshot, type QueueClass, type QueueSnapshot, type StageSnapshot } from '../../hooks/useQueueSnapshot'
 
 /**
  * Pipeline Overview — animated DAG showing live activity in the
@@ -8,7 +8,7 @@ import { useQueueSnapshot, type QueueSnapshot, type StageSnapshot } from '../../
  * Visual encoding:
  *   - Node radius scales with sqrt(queued + running) — a bottleneck
  *     swells without crushing other nodes.
- *   - Node hue distinguishes IO vs CPU stages.
+ *   - Node hue distinguishes IO / CPU / LLM queue classes.
  *   - Soft glow filter on nodes with at least one running job — the
  *     "I am alive" cue.
  *   - Edges thicken with recent throughput on the downstream stage.
@@ -64,9 +64,13 @@ const STAGE_LABELS: Record<string, string> = {
 
 // Distinct hues by queue class so the eye reads "this is a CPU stage"
 // vs "this is an IO stage" at a glance. CPU stages (OCR, Embed) are
-// the heavy / slow ones; warm hue makes them stand out.
-function classColor(queue: 'io' | 'cpu' | undefined): string {
+// the heavy / slow compute ones; warm hue makes them stand out. The
+// LLM queue (Summarize) gets its own purple — visually distinct and
+// reinforces that it's a serialised single-worker bottleneck, not
+// just another flavour of CPU work.
+function classColor(queue: QueueClass | undefined): string {
   if (queue === 'cpu') return '#f5a623' // amber
+  if (queue === 'llm') return '#bf5af2' // system purple
   return '#0a84ff' // accent blue (matches --color-accent)
 }
 
@@ -288,6 +292,10 @@ export default function PipelineDiagram() {
           <span className="inline-flex items-center gap-1">
             <span className="h-2 w-2 rounded-full" style={{ background: classColor('cpu') }} />
             CPU
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full" style={{ background: classColor('llm') }} />
+            LLM
           </span>
           <span className="ml-auto">Glowing nodes have running jobs · Particles = recent throughput</span>
         </div>

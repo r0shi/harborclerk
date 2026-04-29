@@ -32,6 +32,16 @@ final class ServiceManager: ObservableObject {
     let apiService: APIService
     private var ioWorkers: [WorkerService] = []
     private var cpuWorkers: [WorkerService] = []
+    /// Single-worker pool dedicated to LLM-bound stages (currently just
+    /// `summarize`). llama-server runs with -np 1 on heavy models, so
+    /// allowing multiple workers to pull summarize jobs would just have
+    /// them busy-wait on the LLM lock and starve other IO/CPU work.
+    /// Always exactly one worker; doesn't scale with preset.
+    private var llmWorkers: [WorkerService] = []
+
+    /// All worker services regardless of queue. Use this anywhere a
+    /// generic "stop / restart / iterate over workers" is needed.
+    private var allWorkers: [WorkerService] { ioWorkers + cpuWorkers + llmWorkers }
 
     /// Set by AppDelegate after creating the HealthChecker.
     weak var healthChecker: HealthChecker?
@@ -84,27 +94,32 @@ final class ServiceManager: ObservableObject {
 
         // Worker counts based on preset
         let cpuCount = ProcessInfo.processInfo.processorCount
-        let (ioCount, cpuWorkerCount) = Self.workerCounts(preset: settings.workerPreset, cores: cpuCount)
+        let counts = Self.workerCounts(preset: settings.workerPreset, cores: cpuCount)
 
-        for i in 0..<ioCount {
+        for i in 0..<counts.io {
             ioWorkers.append(WorkerService(queue: "io", index: i))
         }
-        for i in 0..<cpuWorkerCount {
+        for i in 0..<counts.cpu {
             cpuWorkers.append(WorkerService(queue: "cpu", index: i))
+        }
+        for i in 0..<counts.llm {
+            llmWorkers.append(WorkerService(queue: "llm", index: i))
         }
 
         services = [postgresService, tikaService, embedderService, llamaService, apiService]
-            + ioWorkers + cpuWorkers
+            + ioWorkers + cpuWorkers + llmWorkers
     }
 
-    nonisolated static func workerCounts(preset: String, cores: Int) -> (io: Int, cpu: Int) {
+    nonisolated static func workerCounts(preset: String, cores: Int) -> (io: Int, cpu: Int, llm: Int) {
+        // LLM worker count is intentionally constant (1) regardless of
+        // preset — see `llmWorkers` property doc for why.
         switch preset {
         case "quiet":
-            return (1, 1)
+            return (1, 1, 1)
         case "fast":
-            return (min(8, max(2, cores / 2)), 3)
+            return (min(8, max(2, cores / 2)), 3, 1)
         default: // balanced
-            return (min(8, max(2, cores / 4)), 2)
+            return (min(8, max(2, cores / 4)), 2, 1)
         }
     }
 
@@ -251,7 +266,7 @@ final class ServiceManager: ObservableObject {
         await startService(apiService)
 
         // 7. Workers
-        for worker in ioWorkers + cpuWorkers {
+        for worker in allWorkers {
             await startService(worker)
         }
 
@@ -286,7 +301,6 @@ final class ServiceManager: ObservableObject {
         notifyStateChanged()
 
         // Stop workers in parallel (SIGTERM all, then wait) — same as restartForChangedSettings
-        let allWorkers = ioWorkers + cpuWorkers
         for worker in allWorkers {
             worker.state = .stopping
             worker.process?.terminate()
@@ -504,18 +518,18 @@ final class ServiceManager: ObservableObject {
             case "postgres_port":
                 infraToRestart.append(postgresService)
                 pythonToRestart.insert(ObjectIdentifier(apiService))
-                for w in ioWorkers + cpuWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+                for w in allWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
                 needsMigrations = true
 
             case "tika_port":
                 infraToRestart.append(tikaService)
                 pythonToRestart.insert(ObjectIdentifier(apiService))
-                for w in ioWorkers + cpuWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+                for w in allWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
 
             case "embedder_port":
                 infraToRestart.append(embedderService)
                 pythonToRestart.insert(ObjectIdentifier(apiService))
-                for w in ioWorkers + cpuWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+                for w in allWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
 
             case "llama_port":
                 infraToRestart.append(llamaService)
@@ -533,7 +547,7 @@ final class ServiceManager: ObservableObject {
             case "log_level":
                 pythonToRestart.insert(ObjectIdentifier(apiService))
                 pythonToRestart.insert(ObjectIdentifier(embedderService))
-                for w in ioWorkers + cpuWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+                for w in allWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
 
             default:
                 break
@@ -545,7 +559,7 @@ final class ServiceManager: ObservableObject {
         infraToRestart = infraToRestart.filter { seenInfra.insert(ObjectIdentifier($0)).inserted }
 
         // Collect python services to restart (excluding workers if we're recreating them)
-        let workersToStop: [WorkerService] = needsWorkerRecreate ? ioWorkers + cpuWorkers : (ioWorkers + cpuWorkers).filter { pythonToRestart.contains(ObjectIdentifier($0)) }
+        let workersToStop: [WorkerService] = needsWorkerRecreate ? allWorkers : allWorkers.filter { pythonToRestart.contains(ObjectIdentifier($0)) }
         // Embedder before API to match startAll() ordering
         let nonWorkerPython: [any ManagedService] = [embedderService, apiService].filter { pythonToRestart.contains(ObjectIdentifier($0)) }
 
@@ -610,7 +624,7 @@ final class ServiceManager: ObservableObject {
             }
         }
         // Workers always get fresh env (whether recreated or restarted)
-        for worker in ioWorkers + cpuWorkers {
+        for worker in allWorkers {
             worker.baseEnvironment = env
         }
 
@@ -619,7 +633,7 @@ final class ServiceManager: ObservableObject {
         for svc in nonWorkerPython {
             (svc as? PythonService)?.resetRestartCount()
         }
-        for worker in ioWorkers + cpuWorkers {
+        for worker in allWorkers {
             worker.resetRestartCount()
         }
 
@@ -627,7 +641,6 @@ final class ServiceManager: ObservableObject {
         for svc in nonWorkerPython {
             await startService(svc)
         }
-        let allWorkers = ioWorkers + cpuWorkers
         let workersToStart = needsWorkerRecreate ? allWorkers : allWorkers.filter { pythonToRestart.contains(ObjectIdentifier($0)) }
         for worker in workersToStart {
             await startService(worker)
@@ -639,26 +652,27 @@ final class ServiceManager: ObservableObject {
     /// Tear down old workers and create new ones based on current preset.
     func recreateWorkers() {
         // Clear restart history for old workers so new ones don't inherit stale flap state
-        for worker in ioWorkers + cpuWorkers {
+        for worker in allWorkers {
             restartHistory[worker.name] = nil
         }
 
         // Remove old workers from services array
-        let oldWorkerIds = Set((ioWorkers + cpuWorkers).map { ObjectIdentifier($0) })
+        let oldWorkerIds = Set(allWorkers.map { ObjectIdentifier($0) })
         services.removeAll { oldWorkerIds.contains(ObjectIdentifier($0)) }
 
         // Create new workers
         let cpuCount = ProcessInfo.processInfo.processorCount
         let settings = AppSettings.shared
-        let (ioCount, cpuWorkerCount) = Self.workerCounts(preset: settings.workerPreset, cores: cpuCount)
+        let counts = Self.workerCounts(preset: settings.workerPreset, cores: cpuCount)
 
-        ioWorkers = (0..<ioCount).map { WorkerService(queue: "io", index: $0) }
-        cpuWorkers = (0..<cpuWorkerCount).map { WorkerService(queue: "cpu", index: $0) }
+        ioWorkers = (0..<counts.io).map { WorkerService(queue: "io", index: $0) }
+        cpuWorkers = (0..<counts.cpu).map { WorkerService(queue: "cpu", index: $0) }
+        llmWorkers = (0..<counts.llm).map { WorkerService(queue: "llm", index: $0) }
 
-        services.append(contentsOf: ioWorkers + cpuWorkers)
+        services.append(contentsOf: allWorkers)
 
         Log.logger("lifecycle").info(
-            "Recreated workers: \(ioCount, privacy: .public) io, \(cpuWorkerCount, privacy: .public) cpu (preset: \(settings.workerPreset, privacy: .public))"
+            "Recreated workers: \(counts.io, privacy: .public) io, \(counts.cpu, privacy: .public) cpu, \(counts.llm, privacy: .public) llm (preset: \(settings.workerPreset, privacy: .public))"
         )
     }
 

@@ -33,10 +33,16 @@ QUEUE_STAGES: dict[str, list[JobStage]] = {
         JobStage.extract,
         JobStage.chunk,
         JobStage.entities,
-        JobStage.summarize,
         JobStage.finalize,
     ],
     "cpu": [JobStage.ocr, JobStage.embed],
+    # `summarize` calls llama-server, which has a single parallel slot
+    # (-np 1) on the heavy 22 GB+ models we target. Putting it on its
+    # own queue with a dedicated single-worker process means at most one
+    # summarize job ever runs at a time, so the IO/CPU pools don't get
+    # tied up busy-waiting on the LLM lock and other work (extract,
+    # chunk, finalize, OCR, embed) keeps flowing.
+    "llm": [JobStage.summarize],
 }
 
 HEARTBEAT_INTERVAL = 30  # seconds

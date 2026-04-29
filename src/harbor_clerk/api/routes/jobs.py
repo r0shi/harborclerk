@@ -175,7 +175,11 @@ async def jobs_snapshot(
     ).all()
 
     by_stage: dict[str, dict[str, int | str]] = {}
-    queues: dict[str, dict[str, int]] = {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}
+    queues: dict[str, dict[str, int]] = {
+        "io": {"queued": 0, "running": 0},
+        "cpu": {"queued": 0, "running": 0},
+        "llm": {"queued": 0, "running": 0},
+    }
 
     # Seed every stage with zeros so the frontend doesn't need to
     # special-case "stage absent from response = no work".
