@@ -65,6 +65,23 @@ services:
     networks:
       - harbor-clerk
 
+  watcher:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    command: ["harbor-clerk-watcher"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      WATCH_ROOT: ${WATCH_ROOT:-/data/watch}
+    volumes:
+      - ./data/watch:/data/watch
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - harbor-clerk
+
   embedder:
     build:
       context: .
