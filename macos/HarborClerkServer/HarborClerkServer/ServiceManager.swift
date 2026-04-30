@@ -76,6 +76,7 @@ final class ServiceManager: ObservableObject {
     let embedderService: EmbedderService
     let llamaService: LlamaService
     let apiService: APIService
+    let watcherService: WatcherService
     private var ioWorkers: [WorkerService] = []
     private var cpuWorkers: [WorkerService] = []
     /// Single-worker pool dedicated to LLM-bound stages (currently just
@@ -137,6 +138,7 @@ final class ServiceManager: ObservableObject {
         embedderService = EmbedderService()
         llamaService = LlamaService()
         apiService = APIService()
+        watcherService = WatcherService()
 
         // Worker counts based on preset
         let cpuCount = ProcessInfo.processInfo.processorCount
@@ -152,7 +154,7 @@ final class ServiceManager: ObservableObject {
             llmWorkers.append(WorkerService(queue: "llm", index: i))
         }
 
-        services = [postgresService, tikaService, embedderService, llamaService, apiService]
+        services = [postgresService, tikaService, embedderService, llamaService, apiService, watcherService]
             + ioWorkers + cpuWorkers + llmWorkers
     }
 
@@ -316,14 +318,10 @@ final class ServiceManager: ObservableObject {
             await startService(worker)
         }
 
-        // 8. Start watched folder manager now that API is healthy
-        if apiService.state == .running {
-            let port = AppSettings.shared.apiPort
-            if let baseURL = URL(string: "http://localhost:\(port)") {
-                let token = WatchedFolderManager.mintServiceToken() ?? ""
-                WatchedFolderManager.shared.start(apiBaseURL: baseURL, authToken: token)
-            }
-        }
+        // 8. Start the watcher daemon (talks to postgres directly; doesn't need API).
+        //    Replaced the old Swift FSEvents WatchedFolderManager with a managed
+        //    Python subprocess (`harbor-clerk-watcher`); see WatcherService.swift.
+        await startService(watcherService)
 
         // 9. Watch config.json for model changes from the web UI
         startConfigWatcher()
@@ -335,7 +333,6 @@ final class ServiceManager: ObservableObject {
     }
 
     func stopAll() async {
-        WatchedFolderManager.shared.stop()
         stopConfigWatcher()
 
         // Mark all running/starting services as shutdown pending
