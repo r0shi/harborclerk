@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WebKit
 
@@ -102,6 +103,26 @@ struct WebView: NSViewRepresentable {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.preferences.isTextInteractionEnabled = true
+
+        // Folder-picker JS bridge: window.harborclerk.pickFolder() returns a
+        // Promise resolving to the selected absolute path or null.
+        let folderPicker = FolderPickerHandler()
+        config.userContentController.addScriptMessageHandler(
+            folderPicker,
+            contentWorld: .page,
+            name: "pickFolder"
+        )
+        let bridgeScript = WKUserScript(
+            source: """
+            window.harborclerk = window.harborclerk || {};
+            window.harborclerk.pickFolder = function() {
+                return window.webkit.messageHandlers.pickFolder.postMessage({});
+            };
+            """,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        config.userContentController.addUserScript(bridgeScript)
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsMagnification = true
@@ -246,4 +267,31 @@ struct WebView: NSViewRepresentable {
 
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+// MARK: - Folder picker bridge
+
+/// Bridges window.harborclerk.pickFolder() (called from the React /folders
+/// page) to a native NSOpenPanel. Resolves the JS Promise with the selected
+/// absolute path string, or null if the user cancelled.
+final class FolderPickerHandler: NSObject, WKScriptMessageHandlerWithReply {
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage,
+        replyHandler: @escaping (Any?, String?) -> Void
+    ) {
+        DispatchQueue.main.async {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.canCreateDirectories = false
+            panel.prompt = "Watch Folder"
+            if panel.runModal() == .OK, let url = panel.url {
+                replyHandler(url.path, nil)
+            } else {
+                replyHandler(nil, nil)
+            }
+        }
+    }
 }

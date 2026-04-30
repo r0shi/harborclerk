@@ -69,7 +69,7 @@ export default function Layout() {
                 <span>Ask</span>
               </NavLink>
               <TabLink to="/research">Research</TabLink>
-              <TabLink to="/upload">Upload</TabLink>
+              <TabLink to="/folders">Folders</TabLink>
               <TabLink to="/docs">Documents</TabLink>
               <TabLink to="/explore">Explore</TabLink>
               <TabLink to="/search">Search</TabLink>

@@ -19,11 +19,14 @@ class WatchedFolder(Base):
 
     folder_id: Mapped[uuid_pk]
     path: Mapped[str] = mapped_column(Text, nullable=False)
-    bookmark_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    bookmark_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     recursive: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     last_event_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    unavailable_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auto_discovered: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[created_at]
 
     files: Mapped[list["WatchedFile"]] = relationship(back_populates="folder", cascade="all, delete-orphan")

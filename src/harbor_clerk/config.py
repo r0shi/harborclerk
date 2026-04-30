@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     storage_backend: str = Field(default="minio")
     storage_path: str = Field(default="./data/originals")
 
+    # Watched folder root (Docker mode only; empty in native macOS app)
+    watch_root: str = Field(default="")
+
     # MinIO (only used when storage_backend=minio)
     minio_endpoint: str = Field(default="minio:9000")
     minio_access_key: str = Field(default="minioadmin")

@@ -30,6 +30,7 @@ dependencies = [
     "hdbscan>=0.8.33",
     "umap-learn>=0.5",
     "smolagents[openai]>=1.22.0",
+    "watchdog>=4.0.0",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +52,7 @@ packages = ["src/harbor_clerk"]
 harbor-clerk-api = "harbor_clerk.api.app:main"
 harbor-clerk-worker = "harbor_clerk.worker.entry:main"
 harbor-clerk-seed = "harbor_clerk.seed:main"
+harbor-clerk-watcher = "harbor_clerk.watcher.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

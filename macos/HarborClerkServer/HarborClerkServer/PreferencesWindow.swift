@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 private let defaultPorts: [String: Int] = [
     "api": 8100,
@@ -21,14 +20,6 @@ private let modelOptions: [(id: String, name: String)] = [
     ("gemma4-26b-a4b", "Gemma 4 26B-A4B (17.0 GB)"),
 ]
 
-struct WatchedFolderInfo: Identifiable {
-    let id: UUID
-    let path: String
-    var enabled: Bool
-    var fileCount: Int
-    var lastScanAt: Date?
-}
-
 struct PreferencesWindow: View {
     @State private var allowRemoteWeb = AppSettings.shared.allowRemoteWeb
     @State private var allowRemoteMCP = AppSettings.shared.allowRemoteMCP
@@ -41,9 +32,6 @@ struct PreferencesWindow: View {
     @State private var llmModelId = AppSettings.shared.llmModelId
     @State private var logLevel = AppSettings.shared.logLevel
     @State private var needsRestart = false
-    @State private var watchedFolders: [WatchedFolderInfo] = []
-    @State private var isLoadingFolders = false
-    @State private var folderPendingDelete: UUID?
 
     // Snapshot of initial values for cancel/dirty detection
     @State private var initial: Snapshot = Snapshot()
@@ -75,37 +63,6 @@ struct PreferencesWindow: View {
             .padding(.bottom, 8)
 
             Form {
-                Section {
-                    if watchedFolders.isEmpty && !isLoadingFolders {
-                        Text("No folders being watched.")
-                            .foregroundStyle(.secondary)
-                            .font(.callout)
-                    } else if isLoadingFolders {
-                        HStack {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Loading...")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    ForEach($watchedFolders) { $folder in
-                        watchedFolderRow(folder: $folder)
-                    }
-
-                    Button {
-                        addWatchedFolder()
-                    } label: {
-                        Label("Add Folder...", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderless)
-                } header: {
-                    Text("Watched Folders")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .textCase(nil)
-                }
-
                 Section {
                     Toggle("Allow remote browser connections", isOn: $allowRemoteWeb)
                         .onChange(of: allowRemoteWeb) { _, _ in markDirty() }
@@ -192,11 +149,10 @@ struct PreferencesWindow: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .frame(width: 480, height: needsRestart ? 750 : 700)
+        .frame(width: 480, height: needsRestart ? 600 : 550)
         .animation(.easeInOut(duration: 0.25), value: needsRestart)
         .onAppear {
             captureInitial()
-            loadWatchedFolders()
         }
     }
 
@@ -274,273 +230,6 @@ struct PreferencesWindow: View {
                 .buttonStyle(.borderless)
                 .help("Reset to default (\(def))")
             }
-        }
-    }
-
-    // MARK: - Watched Folder Row
-
-    @ViewBuilder
-    private func watchedFolderRow(folder: Binding<WatchedFolderInfo>) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Image(systemName: "folder.fill")
-                    .foregroundStyle(.secondary)
-                    .font(.callout)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(truncatedPath(folder.wrappedValue.path))
-                        .font(.callout)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(folder.wrappedValue.path)
-
-                    HStack(spacing: 8) {
-                        Text("\(folder.wrappedValue.fileCount) files")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        if let lastScan = folder.wrappedValue.lastScanAt {
-                            Text("Scanned \(lastScan, style: .relative) ago")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Spacer()
-
-                Toggle("", isOn: folder.enabled)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .labelsHidden()
-                    .onChange(of: folder.wrappedValue.enabled) { _, newValue in
-                        toggleFolder(id: folder.wrappedValue.id, enabled: newValue)
-                    }
-
-                Button {
-                    rescanFolder(id: folder.wrappedValue.id)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption)
-                }
-                .buttonStyle(.borderless)
-                .help("Rescan folder")
-
-                Button {
-                    folderPendingDelete = folder.wrappedValue.id
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                .buttonStyle(.borderless)
-                .help("Remove folder")
-            }
-        }
-        .alert("Remove Watched Folder?", isPresented: Binding(
-            get: { folderPendingDelete == folder.wrappedValue.id },
-            set: { if !$0 { folderPendingDelete = nil } }
-        )) {
-            Button("Remove", role: .destructive) {
-                deleteFolder(id: folder.wrappedValue.id)
-                folderPendingDelete = nil
-            }
-            Button("Cancel", role: .cancel) {
-                folderPendingDelete = nil
-            }
-        } message: {
-            Text("This will remove the folder from watching and delete all its indexed documents. This cannot be undone.")
-        }
-    }
-
-    private func truncatedPath(_ path: String) -> String {
-        let components = path.components(separatedBy: "/")
-        if components.count <= 4 { return path }
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if path.hasPrefix(home) {
-            return "~" + String(path.dropFirst(home.count))
-        }
-        return path
-    }
-
-    // MARK: - Watched Folder Actions
-
-    private func loadWatchedFolders() {
-        isLoadingFolders = true
-        let port = AppSettings.shared.apiPort
-        guard let url = URL(string: "http://localhost:\(port)/api/watch/folders") else {
-            isLoadingFolders = false
-            return
-        }
-
-        Task {
-            defer { isLoadingFolders = false }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            if let token = WatchedFolderManager.mintServiceToken() {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-
-            guard let (data, _) = try? await URLSession.shared.data(for: request),
-                  let folders = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
-
-            let isoFormatter = ISO8601DateFormatter()
-            isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-
-            watchedFolders = folders.compactMap { dict in
-                guard let idStr = dict["folder_id"] as? String,
-                      let id = UUID(uuidString: idStr),
-                      let path = dict["path"] as? String else { return nil }
-
-                let enabled = dict["enabled"] as? Bool ?? true
-                let fileCount = dict["file_count"] as? Int ?? 0
-                let lastScanAt: Date? = {
-                    if let str = dict["last_scan_at"] as? String {
-                        return isoFormatter.date(from: str)
-                    }
-                    return nil
-                }()
-
-                return WatchedFolderInfo(
-                    id: id,
-                    path: path,
-                    enabled: enabled,
-                    fileCount: fileCount,
-                    lastScanAt: lastScanAt
-                )
-            }
-        }
-    }
-
-    private func addWatchedFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a folder to watch for documents"
-        panel.prompt = "Watch"
-
-        guard panel.runModal() == .OK, let folderURL = panel.url else { return }
-
-        let path = folderURL.path
-        let bookmarkData = try? folderURL.bookmarkData(
-            options: [.withSecurityScope],
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        )
-        let bookmarkBase64 = bookmarkData?.base64EncodedString() ?? ""
-
-        let port = AppSettings.shared.apiPort
-        guard let url = URL(string: "http://localhost:\(port)/api/watch/folders") else { return }
-
-        Task {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            if let token = WatchedFolderManager.mintServiceToken() {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-
-            let body: [String: Any] = [
-                "path": path,
-                "bookmark_data": bookmarkBase64,
-                "recursive": true,
-            ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
-                  let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200 || httpResponse.statusCode == 201,
-                  let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let idStr = dict["folder_id"] as? String,
-                  let id = UUID(uuidString: idStr) else { return }
-
-            let newFolder = WatchedFolderInfo(
-                id: id,
-                path: path,
-                enabled: true,
-                fileCount: 0,
-                lastScanAt: nil
-            )
-            watchedFolders.append(newFolder)
-
-            // Initial scan of existing files, then start watching for changes
-            await WatchedFolderManager.shared.performInitialScan(folderId: id, path: path, recursive: true)
-            let lastEventId = FSEventsGetCurrentEventId()
-            await MainActor.run {
-                WatchedFolderManager.shared.startWatcher(
-                    id: id,
-                    path: path,
-                    recursive: true,
-                    lastEventId: lastEventId
-                )
-            }
-        }
-    }
-
-    private func toggleFolder(id: UUID, enabled: Bool) {
-        let port = AppSettings.shared.apiPort
-        guard let url = URL(string: "http://localhost:\(port)/api/watch/folders/\(id.uuidString)") else { return }
-
-        Task {
-            var request = URLRequest(url: url)
-            request.httpMethod = "PATCH"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            if let token = WatchedFolderManager.mintServiceToken() {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-            request.httpBody = try? JSONSerialization.data(withJSONObject: ["enabled": enabled])
-
-            let _ = try? await URLSession.shared.data(for: request)
-
-            if enabled {
-                if let folder = watchedFolders.first(where: { $0.id == id }) {
-                    WatchedFolderManager.shared.startWatcher(
-                        id: id,
-                        path: folder.path,
-                        recursive: true,
-                        lastEventId: FSEventsGetCurrentEventId()
-                    )
-                }
-            } else {
-                WatchedFolderManager.shared.stopWatcher(id: id)
-            }
-        }
-    }
-
-    private func rescanFolder(id: UUID) {
-        let port = AppSettings.shared.apiPort
-        guard let url = URL(string: "http://localhost:\(port)/api/watch/folders/\(id.uuidString)/rescan") else { return }
-
-        Task {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            if let token = WatchedFolderManager.mintServiceToken() {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-
-            let _ = try? await URLSession.shared.data(for: request)
-            // Reload to get updated file counts
-            loadWatchedFolders()
-        }
-    }
-
-    private func deleteFolder(id: UUID) {
-        let port = AppSettings.shared.apiPort
-        guard let url = URL(string: "http://localhost:\(port)/api/watch/folders/\(id.uuidString)") else { return }
-
-        Task {
-            var request = URLRequest(url: url)
-            request.httpMethod = "DELETE"
-            if let token = WatchedFolderManager.mintServiceToken() {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-
-            let _ = try? await URLSession.shared.data(for: request)
-
-            WatchedFolderManager.shared.stopWatcher(id: id)
-            watchedFolders.removeAll { $0.id == id }
         }
     }
 

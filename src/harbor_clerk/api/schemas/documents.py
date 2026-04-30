@@ -47,6 +47,7 @@ class DocumentSummary(BaseModel):
     topic_id: int | None = None
     watch_source_path: str | None = None
     watch_status: str | None = None
+    folder_name: str | None = None
 
 
 class DocumentDetail(BaseModel):
