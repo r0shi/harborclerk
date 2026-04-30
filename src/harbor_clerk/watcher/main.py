@@ -9,11 +9,13 @@ Lifecycle:
 """
 
 import logging
+import os
 import signal
 import sys
 import threading
 import time
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import sessionmaker
 
@@ -23,7 +25,7 @@ from harbor_clerk.log_setup import setup_logging
 from harbor_clerk.models.watched import WatchedFolder
 from harbor_clerk.watcher.db_listener import listen_for_folder_changes
 from harbor_clerk.watcher.discovery import scan_watch_root
-from harbor_clerk.watcher.events import FileEvent, handle_event
+from harbor_clerk.watcher.events import EventKind, FileEvent, handle_event
 from harbor_clerk.watcher.observer import FolderObserver
 
 logger = logging.getLogger(__name__)
@@ -74,6 +76,68 @@ class WatcherDaemon:
                     self._observers[fid] = obs
                 except Exception:
                     logger.exception("watcher: failed to start observer for %s (%s)", fid, path)
+                    continue
+                # Run an initial scan in a daemon thread so the sync loop
+                # doesn't block on it. The observer is already registered
+                # so any files added DURING the scan get caught by both
+                # paths — handle_event's sha-based dedup makes the overlap
+                # a no-op.
+                threading.Thread(
+                    target=self._scan_folder,
+                    args=(fid, path),
+                    daemon=True,
+                    name=f"initial-scan-{str(fid)[:8]}",
+                ).start()
+
+    def _scan_folder(self, folder_id: uuid.UUID, root: str) -> None:
+        """Walk an existing folder and emit synthetic `created` events for
+        every file already on disk. Required because watchdog only delivers
+        events for changes that happen AFTER the observer starts — files
+        already in the folder when it was added would never be ingested.
+
+        Updates `watched_folders.last_scan_at` when done so the API's
+        scan_status flips from "scanning" to "idle".
+        """
+        logger.info("watcher: initial scan of %s starting", root)
+        count = 0
+        try:
+            for dirpath, dirnames, filenames in os.walk(root):
+                # Prune dotfile / __MACOSX directories so we don't recurse
+                # into them — both for speed and to avoid the cost of
+                # invoking _on_event for every file in a .git tree.
+                dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__MACOSX"]
+                for fname in filenames:
+                    abs_path = os.path.join(dirpath, fname)
+                    rel_path = os.path.relpath(abs_path, root).replace(os.sep, "/")
+                    self._on_event(
+                        FileEvent(
+                            kind=EventKind.created,
+                            folder_id=folder_id,
+                            relative_path=rel_path,
+                            absolute_path=abs_path,
+                        )
+                    )
+                    count += 1
+                    if self._stop.is_set():
+                        return
+        except Exception:
+            logger.exception("watcher: initial scan of %s failed", root)
+            return
+
+        # Mark scan complete on the folder row.
+        sess = self._session_factory()
+        try:
+            folder = sess.query(WatchedFolder).filter_by(folder_id=folder_id).one_or_none()
+            if folder is not None:
+                folder.last_scan_at = datetime.now(UTC)
+                sess.commit()
+        except Exception:
+            sess.rollback()
+            logger.exception("watcher: failed to update last_scan_at for %s", folder_id)
+        finally:
+            sess.close()
+
+        logger.info("watcher: initial scan of %s complete (%d files visited)", root, count)
 
     def _discovery_loop(self) -> None:
         watch_root = get_settings().watch_root

@@ -49,6 +49,11 @@ export default function FoldersPage() {
   const [progress, setProgress] = useState<Record<string, ProgressInfo>>({})
   const [expanded, setExpanded] = useState<string | null>(null)
   const [error, setError] = useState('')
+  // Two-click delete confirmation. WKWebView (the macOS native app's
+  // chrome) returns false from window.confirm() silently, which made
+  // the Delete button look broken. The state tracks which folder is
+  // armed for delete; first click sets it, second confirms.
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
 
   async function reload() {
     try {
@@ -122,8 +127,17 @@ export default function FoldersPage() {
     }
   }
 
-  async function handleDelete(folderId: string) {
-    if (!confirm('Remove this folder? Documents already ingested will stay queryable.')) return
+  async function handleDeleteClick(folderId: string) {
+    // First click: arm. Second click on the same row: actually delete.
+    if (pendingDeleteId !== folderId) {
+      setPendingDeleteId(folderId)
+      // Auto-cancel after 5 s so the row doesn't sit in a "Confirm?" state forever.
+      setTimeout(() => {
+        setPendingDeleteId((cur) => (cur === folderId ? null : cur))
+      }, 5000)
+      return
+    }
+    setPendingDeleteId(null)
     try {
       await del(`/api/watch/folders/${folderId}`)
       reload()
@@ -204,9 +218,11 @@ export default function FoldersPage() {
                   progress={p}
                   isExpanded={isExpanded}
                   deleteDisabled={deleteDisabled}
+                  pendingDelete={pendingDeleteId === f.folder_id}
                   onToggleExpand={() => setExpanded(isExpanded ? null : f.folder_id)}
                   onToggleEnabled={() => handleToggle(f)}
-                  onDelete={() => handleDelete(f.folder_id)}
+                  onDelete={() => handleDeleteClick(f.folder_id)}
+                  onCancelDelete={() => setPendingDeleteId(null)}
                 />
               )
             })}
@@ -222,9 +238,11 @@ interface FolderRowProps {
   progress?: ProgressInfo
   isExpanded: boolean
   deleteDisabled: boolean
+  pendingDelete: boolean
   onToggleExpand: () => void
   onToggleEnabled: () => void
   onDelete: () => void
+  onCancelDelete: () => void
 }
 
 function FolderRow({
@@ -232,9 +250,11 @@ function FolderRow({
   progress: p,
   isExpanded,
   deleteDisabled,
+  pendingDelete,
   onToggleExpand,
   onToggleEnabled,
   onDelete,
+  onCancelDelete,
 }: FolderRowProps) {
   return (
     <>
@@ -251,26 +271,51 @@ function FolderRow({
         <td className="px-4 py-3">{renderStatusPill(f, p)}</td>
         <td className="px-4 py-3 text-xs">{p ? `${p.completed_files} / ${p.total_files}` : '—'}</td>
         <td className="px-4 py-3 text-right">
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onToggleEnabled()
-            }}
-            className="mr-2 rounded-lg border border-gray-400 px-2 py-1 text-xs"
-          >
-            {f.enabled ? 'Disable' : 'Enable'}
-          </button>
-          <button
-            disabled={deleteDisabled}
-            title={deleteDisabled ? 'Active Docker mount — unmount first' : ''}
-            onClick={(e) => {
-              e.stopPropagation()
-              onDelete()
-            }}
-            className="rounded-lg bg-red-600 px-2 py-1 text-xs text-white disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Delete
-          </button>
+          {!pendingDelete && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onToggleEnabled()
+              }}
+              className="mr-2 rounded-lg border border-gray-400 px-2 py-1 text-xs"
+            >
+              {f.enabled ? 'Disable' : 'Enable'}
+            </button>
+          )}
+          {pendingDelete ? (
+            <>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCancelDelete()
+                }}
+                className="mr-2 rounded-lg border border-gray-400 px-2 py-1 text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDelete()
+                }}
+                className="rounded-lg bg-red-600 px-2 py-1 text-xs font-medium text-white"
+              >
+                Confirm Delete
+              </button>
+            </>
+          ) : (
+            <button
+              disabled={deleteDisabled}
+              title={deleteDisabled ? 'Active Docker mount — unmount first' : ''}
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete()
+              }}
+              className="rounded-lg bg-red-600 px-2 py-1 text-xs text-white disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Delete
+            </button>
+          )}
         </td>
       </tr>
       {isExpanded && p && (
