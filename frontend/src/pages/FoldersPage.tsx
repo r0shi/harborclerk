@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { del, get, patch, post, ApiError } from '../api'
+import { useFolderProgress } from '../hooks/useFolderProgress'
 
 interface FolderInfo {
   folder_id: string
@@ -87,6 +88,24 @@ export default function FoldersPage() {
       cancelled = true
     }
   }, [])
+
+  // Live updates via SSE: merge incoming snapshots into the per-folder progress map.
+  // Only updates folders we already have full progress for; new folders show up via reload().
+  useFolderProgress((event) => {
+    setProgress((prev) => {
+      const existing = prev[event.folder_id]
+      if (!existing) return prev
+      return {
+        ...prev,
+        [event.folder_id]: {
+          ...existing,
+          total_files: event.total_files,
+          completed_files: event.completed_files,
+          scan_status: event.scan_status,
+        },
+      }
+    })
+  })
 
   async function handleAdd() {
     if (system?.picker !== 'native' || !window.harborclerk) {
