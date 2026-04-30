@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import get_session, require_human_user, require_user
 from harbor_clerk.api.routes.uploads import ALLOWED_EXTENSIONS
+from harbor_clerk.config import get_settings
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_version import DocumentVersion
 from harbor_clerk.models.enums import JobStage, UploadSource, VersionStatus
@@ -123,6 +124,22 @@ def _validate_source_path(source_path: str, folder_path: str) -> str:
 @router.get("/allowed-extensions")
 async def allowed_extensions(_: None = Depends(require_user)):
     return sorted(ALLOWED_EXTENSIONS)
+
+
+@router.get("/system")
+async def get_system(_: None = Depends(require_user)):
+    """Platform-shape introspection for the frontend.
+
+    Empty WATCH_ROOT → macOS native deployment (native folder picker).
+    Non-empty WATCH_ROOT → Docker deployment (folders are mounted, no picker).
+    """
+    settings = get_settings()
+    is_docker = bool(settings.watch_root)
+    return {
+        "platform": "docker" if is_docker else "macos",
+        "picker": "none" if is_docker else "native",
+        "watch_root": settings.watch_root or None,
+    }
 
 
 @router.get("/folders")
