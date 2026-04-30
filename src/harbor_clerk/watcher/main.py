@@ -93,8 +93,10 @@ class WatcherDaemon:
             self._stop.wait(timeout=DISCOVERY_INTERVAL_SECS)
 
     def _listener_loop(self) -> None:
+        # We don't need the payload itself — any NOTIFY arrival means a folder
+        # row changed; _sync_observers() reads the current world from DB.
         try:
-            for _payload in listen_for_folder_changes(self._stop, poll_interval=NOTIFY_POLL_INTERVAL_SECS):
+            for _ in listen_for_folder_changes(self._stop, poll_interval=NOTIFY_POLL_INTERVAL_SECS):
                 self._sync_observers()
         except Exception:
             logger.exception("watcher: listener loop crashed")

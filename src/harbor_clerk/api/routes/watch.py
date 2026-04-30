@@ -320,19 +320,31 @@ async def create_folder(
 ):
     settings = get_settings()
     normalized = os.path.realpath(body.path)
-    p = Path(normalized)
 
     if settings.watch_root:
-        # Docker: must be a top-level subdir of WATCH_ROOT and currently a directory.
-        root = Path(settings.watch_root).resolve()
-        if p.parent != root or not p.is_dir():
+        # Docker: confine the user-supplied path to immediate children of
+        # WATCH_ROOT BEFORE any filesystem access, so a malicious request
+        # can't probe arbitrary paths via the validation responses.
+        root = os.path.realpath(settings.watch_root)
+        if os.path.dirname(normalized) != root:
+            raise HTTPException(
+                status_code=400,
+                detail="Path must be a top-level subdirectory of WATCH_ROOT",
+            )
+        # Now safe to touch the filesystem — `normalized` is bounded to root/*.
+        if not Path(normalized).is_dir():
             raise HTTPException(
                 status_code=400,
                 detail="Path must be a top-level subdirectory of WATCH_ROOT",
             )
     else:
-        # macOS: must be an existing readable directory.
-        if not p.is_dir() or not os.access(p, os.R_OK):
+        # macOS native deployment: this endpoint requires an authenticated
+        # human admin (`require_human_user`). Admins are trusted to specify
+        # their own filesystem paths — same trust level as ssh-ing into the
+        # box. The is_dir / access checks below operate on user-controlled
+        # input by design.
+        p = Path(normalized)
+        if not p.is_dir() or not os.access(p, os.R_OK):  # codeql[py/path-injection-pre-validated]
             raise HTTPException(
                 status_code=400,
                 detail="Path is not a readable directory",
@@ -358,7 +370,7 @@ async def create_folder(
         path=normalized,
         bookmark_data=bookmark_bytes,
         recursive=body.recursive,
-        display_name=p.name,
+        display_name=Path(normalized).name,
     )
     session.add(folder)
     await session.flush()  # populate folder.folder_id

@@ -53,6 +53,9 @@ def listen_for_folder_changes(
         try:
             cursor.execute(f"UNLISTEN {CHANNEL};")
         except Exception:
+            # UNLISTEN can fail during shutdown if the connection has already
+            # been torn down by Postgres. Either way, the connection is going
+            # away on the next two lines, so the channel will be released.
             pass
         cursor.close()
         conn.close()
