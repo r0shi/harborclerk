@@ -33,16 +33,16 @@ function fmtSecs(secs: number): string {
 }
 
 /**
- * Per-stage processing time as a horizontal bar chart with a
- * within-bar p50 marker. The faded portion of each bar runs out to
- * p95; the saturated portion runs out to p50, so the eye reads
- * "median where it's filled, tail where it fades". Colour is the
- * stage's queue class for visual consistency with the diagram.
+ * Per-stage processing time as a horizontal bar chart with a within-bar
+ * p50 marker. The faded portion of each bar runs out to p95; the
+ * saturated portion runs out to p50, so the eye reads "median where
+ * it's filled, tail where it fades". Colour is the stage's queue class
+ * for visual consistency with the diagram.
  *
- * The avg row's primary value is signalling spread, not centre — when
- * the saturated p50 bar is much shorter than the faded p95 bar, the
- * stage has a long tail (typical for OCR with mixed scan quality);
- * when they're close the stage is tightly clustered (chunk, finalize).
+ * The bar's primary value is signalling spread, not centre — when the
+ * saturated p50 portion is much shorter than the faded p95 extension,
+ * the stage has a long tail (typical for OCR on mixed scan quality);
+ * when they're close, the stage is tightly clustered (chunk, finalize).
  */
 export default function PipelineTimingChart({ pipelineTiming }: PipelineTimingChartProps) {
   const visibleStages = STAGES.filter((s) => pipelineTiming[s]?.count)
