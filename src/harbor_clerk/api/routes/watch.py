@@ -169,7 +169,7 @@ async def list_folders(
     return [_folder_to_dict(row[0], row[1] or 0) for row in rows]
 
 
-async def _folder_progress_event_generator():
+async def _folder_progress_event_generator(session_factory=None):
     """Async generator yielding SSE `data:` lines for per-folder progress deltas.
 
     1Hz polling loop. Emits an initial snapshot for every folder on the first
@@ -178,11 +178,15 @@ async def _folder_progress_event_generator():
 
     Extracted as a module-level coroutine so tests can drive it directly
     without round-tripping through the (response-buffering) ASGI test transport.
+    Tests inject their own session factory to avoid binding the module-level
+    engine to a transient test event loop.
     """
+    if session_factory is None:
+        session_factory = async_session_factory
     prev: dict[str, tuple[int, int, str]] = {}
     try:
         while True:
-            async with async_session_factory() as sess:
+            async with session_factory() as sess:
                 # Per-folder counts: total active files + finalize-done jobs
                 stmt = (
                     select(
