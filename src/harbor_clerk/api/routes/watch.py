@@ -18,7 +18,8 @@ from harbor_clerk.api.routes.uploads import ALLOWED_EXTENSIONS
 from harbor_clerk.config import get_settings
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_version import DocumentVersion
-from harbor_clerk.models.enums import JobStage, UploadSource, VersionStatus
+from harbor_clerk.models.enums import JobStage, JobStatus, UploadSource, VersionStatus
+from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.worker.pipeline import enqueue_stage
@@ -159,6 +160,68 @@ async def list_folders(
     result = await session.execute(select(WatchedFolder, count_sub))
     rows = result.all()
     return [_folder_to_dict(row[0], row[1] or 0) for row in rows]
+
+
+@router.get("/folders/{folder_id}/progress")
+async def get_folder_progress(
+    folder_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_user),
+):
+    """Aggregate per-folder ingestion status across all 7 pipeline stages."""
+    folder = await session.get(WatchedFolder, folder_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    total = await session.scalar(
+        select(func.count())
+        .select_from(WatchedFile)
+        .where(
+            WatchedFile.folder_id == folder_id,
+            WatchedFile.status == WatchedFileStatus.active,
+        )
+    )
+
+    stages = (
+        JobStage.extract,
+        JobStage.ocr,
+        JobStage.chunk,
+        JobStage.entities,
+        JobStage.embed,
+        JobStage.summarize,
+        JobStage.finalize,
+    )
+    by_stage: dict[str, dict[str, int]] = {s.value: {"pending": 0, "running": 0, "done": 0, "error": 0} for s in stages}
+
+    result = await session.execute(
+        select(IngestionJob.stage, IngestionJob.status, func.count())
+        .join(WatchedFile, WatchedFile.version_id == IngestionJob.version_id)
+        .where(
+            WatchedFile.folder_id == folder_id,
+            WatchedFile.status == WatchedFileStatus.active,
+        )
+        .group_by(IngestionJob.stage, IngestionJob.status)
+    )
+    # JobStatus.queued -> "pending" in the response (frontend semantics)
+    status_map = {
+        JobStatus.queued: "pending",
+        JobStatus.running: "running",
+        JobStatus.done: "done",
+        JobStatus.error: "error",
+    }
+    for stage, status, count in result.all():
+        if stage.value in by_stage and status in status_map:
+            by_stage[stage.value][status_map[status]] = count
+
+    completed = by_stage[JobStage.finalize.value]["done"]
+
+    return {
+        "total_files": total or 0,
+        "completed_files": completed,
+        "by_stage": by_stage,
+        "scan_status": "scanning" if folder.last_scan_at is None else "idle",
+        "last_scan_at": folder.last_scan_at.isoformat() if folder.last_scan_at else None,
+    }
 
 
 @router.post("/folders", status_code=201)
