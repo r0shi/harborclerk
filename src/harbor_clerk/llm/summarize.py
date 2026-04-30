@@ -142,7 +142,7 @@ def _call_llm(
         # Suppress chain-of-thought on chat templates that support the
         # kwarg (Qwen3.x, Gemma 4, etc.). Without this, newer Qwen
         # variants (e.g. Qwen3.6 35B-A3B) ignore the older Qwen3
-        # `/no_think` marker baked into our prompts and burn the entire
+        # /no_think marker baked into our prompts and burn the entire
         # max_tokens budget on `<thinking>…</thinking>` before ever
         # emitting the JSON response — the cap fires INSIDE the
         # thinking block, content comes back empty, and the
