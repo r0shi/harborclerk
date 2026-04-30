@@ -73,6 +73,30 @@ _DOC_TYPE_SCHEMA = {
 # --- Helpers ---
 
 
+# Format-category Unicode characters that survive str.strip() (which only
+# strips Zs whitespace per str.isspace()) but render as nothing — zero-width
+# space, joiner / non-joiner, word joiner, BOM. A wedged or degraded LLM can
+# emit these as the entire response body, and without filtering they'd sneak
+# past the truthiness checks below and into the DB as a "blank summary
+# attributed to the current model" (the symptom that motivated this filter).
+_INVISIBLE_CHARS = "​‌‍⁠﻿"
+_INVISIBLE_TRANSLATION = str.maketrans("", "", _INVISIBLE_CHARS)
+
+
+def _has_visible_content(text: str | None) -> bool:
+    """Return True iff `text` has at least one character that visibly renders.
+
+    Strips Python-recognised whitespace AND the format-category Unicode chars
+    above. Used by `_call_llm` and `generate_summary` so a misbehaving model
+    that emits e.g. `"\\u200b"` or `"   "` as its `summary` JSON value is
+    treated as a no-result (and the AFM / extractive fallbacks fire) rather
+    than persisted as an empty summary attributed to the model.
+    """
+    if not text:
+        return False
+    return bool(text.strip().translate(_INVISIBLE_TRANSLATION).strip())
+
+
 def _extract_marked_answer(text: str) -> str:
     """Extract the final answer from LLM output using ANSWER: or TYPE: markers.
 
@@ -211,14 +235,21 @@ def _call_llm(
                 try:
                     parsed = _json.loads(json_text)
                     extracted = parsed.get(response_key, "")
-                    return str(extracted).strip() if extracted else None
+                    # Strip first, THEN check truthiness — a value of
+                    # "   " or " " is truthy as an unstripped string
+                    # but blank after strip; without this, _call_llm would
+                    # return "" which the summarize callers treat as falsy
+                    # but `_has_visible_content` covers exotic format-only
+                    # characters too.
+                    candidate = str(extracted).strip() if extracted else ""
+                    return candidate if _has_visible_content(candidate) else None
                 except (ValueError, AttributeError):
                     logger.warning("LLM call phase=%s JSON parse failed: %s", phase, content[:200])
                     return None
 
             # Non-JSON mode: extract marked answer
             content = _extract_marked_answer(content)
-            return content if content else None
+            return content if _has_visible_content(content) else None
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             elapsed = time.perf_counter() - call_started
             last_err = e
@@ -635,9 +666,9 @@ def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[s
             len(chunks),
         )
 
-        if result:
+        if _has_visible_content(result):
             return _truncate_at_sentence(result, max_chars), settings.llm_model_id
-        logger.warning("LLM summarization returned no result — trying Apple Intelligence")
+        logger.warning("LLM summarization returned no visible content — trying Apple Intelligence")
     else:
         logger.info("No language model active — trying Apple Intelligence fallback")
 

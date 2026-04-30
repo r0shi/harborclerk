@@ -331,6 +331,34 @@ class TestGenerateSummary:
             summary, model = generate_summary(chunks, max_chars=100)
             assert len(summary) <= 100
 
+    def test_zero_width_space_summary_falls_back(self):
+        """Regression: a wedged LLM emitting only a zero-width space (or other
+        invisible Unicode) must NOT persist as a "blank summary attributed to
+        the current model" — should fall through to extractive instead."""
+        with (
+            patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=MagicMock(context_window=32768)),
+            # Simulate LLM returning a single zero-width space as the summary value.
+            patch("harbor_clerk.llm.summarize._call_llm", return_value="​"),
+        ):
+            chunks = ["A" * 100]
+            summary, model = generate_summary(chunks)
+            # Must NOT attribute to the model — should fall back.
+            assert model == "extractive"
+            assert summary  # extractive always returns content for non-empty chunks
+
+    def test_whitespace_only_summary_falls_back(self):
+        """Regression: a model returning whitespace-only summary must fall back."""
+        with (
+            patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=MagicMock(context_window=32768)),
+            patch("harbor_clerk.llm.summarize._call_llm", return_value="   \n\t"),
+        ):
+            chunks = ["A" * 100]
+            summary, model = generate_summary(chunks)
+            assert model == "extractive"
+            assert summary
+
 
 class TestTruncateAtSentence:
     def test_short_text_unchanged(self):

@@ -41,7 +41,13 @@ def run_summarize(version_id: uuid.UUID) -> None:
                 logger.warning("Summary generation failed for %s", version_id, exc_info=True)
                 summary, model_used = None, None
 
-            if summary:
+            # Require visible content — not just truthiness — so a degraded
+            # LLM that returns whitespace or zero-width characters can't
+            # persist a "blank summary attributed to the current model".
+            # generate_summary should already filter these via
+            # _has_visible_content, but a check here is a cheap belt-and-
+            # suspenders against any future regression.
+            if summary and summary.strip():
                 version.summary = summary
                 version.summary_model = model_used
 
