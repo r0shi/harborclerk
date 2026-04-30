@@ -52,6 +52,7 @@ packages = ["src/harbor_clerk"]
 harbor-clerk-api = "harbor_clerk.api.app:main"
 harbor-clerk-worker = "harbor_clerk.worker.entry:main"
 harbor-clerk-seed = "harbor_clerk.seed:main"
+harbor-clerk-watcher = "harbor_clerk.watcher.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
