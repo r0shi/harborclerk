@@ -16,6 +16,7 @@ interface SavedDocsState {
   entityFilter: string
   entityTypeFilter: string
   entityInput: string
+  folderFilter: string
   sortField: 'updated' | 'created' | 'title'
   sortDir: 'asc' | 'desc'
   scrollY: number
@@ -38,6 +39,7 @@ interface DocSummary {
   topic_id?: number
   watch_source_path?: string
   watch_status?: string
+  folder_name?: string
 }
 
 interface PaginatedDocs {
@@ -212,6 +214,10 @@ export default function DocumentsPage() {
   const [docTypeFilter, setDocTypeFilter] = useState(() => initField('docTypeFilter', '', 'doc_type'))
   const [entityFilter, setEntityFilter] = useState(() => initField('entityFilter', '', 'entity'))
   const [entityTypeFilter, setEntityTypeFilter] = useState(() => initField('entityTypeFilter', '', 'entity_type'))
+  const [folderFilter, setFolderFilter] = useState<string>(() => initField('folderFilter', '', 'folder'))
+  const [folderOptions, setFolderOptions] = useState<
+    { folder_id: string; display_name: string | null; path: string }[]
+  >([])
   const [sortField, setSortField] = useState<'updated' | 'created' | 'title'>(() => initField('sortField', 'updated'))
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => initField('sortDir', 'desc'))
 
@@ -251,6 +257,9 @@ export default function DocumentsPage() {
         setTopicNames(map)
       })
       .catch(() => {})
+    get<{ folder_id: string; display_name: string | null; path: string }[]>('/api/watch/folders')
+      .then(setFolderOptions)
+      .catch(() => {})
   }, [])
 
   // Save state to sessionStorage on changes
@@ -265,6 +274,7 @@ export default function DocumentsPage() {
       entityFilter,
       entityTypeFilter,
       entityInput,
+      folderFilter,
       sortField,
       sortDir,
       scrollY: window.scrollY,
@@ -280,6 +290,7 @@ export default function DocumentsPage() {
     entityFilter,
     entityTypeFilter,
     entityInput,
+    folderFilter,
     sortField,
     sortDir,
     expanded,
@@ -524,7 +535,7 @@ export default function DocumentsPage() {
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const visibleDocs = docs
+  const visibleDocs = folderFilter ? docs.filter((d) => d.folder_name === folderFilter) : docs
   const visibleDocIds = new Set(visibleDocs.map((d) => d.doc_id))
   const startIdx = (currentPage - 1) * pageSize
   const hasFilters = !!(filter || mimeFilter || langFilter || docTypeFilter || entityFilter)
@@ -672,6 +683,28 @@ export default function DocumentsPage() {
             </select>
           )}
 
+          {/* Folder dropdown */}
+          {folderOptions.length > 0 && (
+            <select
+              value={folderFilter}
+              onChange={(e) => {
+                setFolderFilter(e.target.value)
+                setCurrentPage(1)
+              }}
+              className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+            >
+              <option value="">All folders</option>
+              {folderOptions.map((f) => {
+                const name = f.display_name || f.path
+                return (
+                  <option key={f.folder_id} value={name}>
+                    {name}
+                  </option>
+                )
+              })}
+            </select>
+          )}
+
           {/* Sort controls */}
           <div className="ml-auto flex items-center gap-1 text-xs text-gray-400">
             <span>Sort:</span>
@@ -700,12 +733,13 @@ export default function DocumentsPage() {
           </div>
 
           {/* Clear all filters */}
-          {(mimeFilter || langFilter || docTypeFilter || entityFilter || entityTypeFilter) && (
+          {(mimeFilter || langFilter || docTypeFilter || entityFilter || entityTypeFilter || folderFilter) && (
             <button
               onClick={() => {
                 setMimeFilter('')
                 setLangFilter('')
                 setDocTypeFilter('')
+                setFolderFilter('')
                 clearEntityFilter()
                 setCurrentPage(1)
               }}
@@ -860,6 +894,13 @@ export default function DocumentsPage() {
                               </span>
                               {doc.canonical_filename && (
                                 <div className="text-xs text-gray-400">{doc.canonical_filename}</div>
+                              )}
+                              {doc.folder_name && (
+                                <div className="mt-0.5 text-xs">
+                                  <span className="rounded-md bg-gray-100 dark:bg-gray-700/50 px-1.5 py-0.5 text-[10px] text-gray-600 dark:text-gray-400">
+                                    {doc.folder_name}
+                                  </span>
+                                </div>
                               )}
                             </div>
                           </div>
