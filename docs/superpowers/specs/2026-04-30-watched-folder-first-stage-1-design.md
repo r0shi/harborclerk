@@ -83,7 +83,7 @@ The Folders page reads this once and switches between "Add Folder" button vs. in
 
 ## Data model
 
-Single migration `0014_watcher_unification`:
+Single migration `0016_watcher_unification`:
 
 `watched_folders`:
 - `bookmark_data BYTEA NOT NULL` → `BYTEA NULL`. Existing rows keep their bookmark blob; nothing reads it after this migration. Column is dropped in a later cleanup.
