@@ -207,3 +207,124 @@ async def test_folder_progress_only_counts_active_files(client, admin_token, db_
     )
     assert resp.status_code == 200
     assert resp.json()["total_files"] == 1
+
+
+# ---------------------------------------------------------------------------
+# POST /api/watch/folders — platform-aware validation
+# ---------------------------------------------------------------------------
+
+
+async def test_post_folder_macos_rejects_nonexistent(client, admin_token, monkeypatch):
+    """macOS: path must exist as a readable directory."""
+    monkeypatch.setenv("WATCH_ROOT", "")
+    _reset_settings_cache(monkeypatch)
+    resp = await client.post(
+        "/api/watch/folders",
+        json={"path": "/no/such/dir", "bookmark_data": "", "recursive": True},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 400
+
+
+async def test_post_folder_macos_accepts_existing_dir(client, admin_token, monkeypatch, tmp_path):
+    """macOS: bookmark_data is optional — new web-flow clients can omit it."""
+    monkeypatch.setenv("WATCH_ROOT", "")
+    _reset_settings_cache(monkeypatch)
+    resp = await client.post(
+        "/api/watch/folders",
+        json={"path": str(tmp_path), "recursive": True},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 201
+
+
+async def test_post_folder_docker_rejects_outside_root(client, admin_token, monkeypatch, tmp_path):
+    """Docker: path must be a top-level subdir of WATCH_ROOT."""
+    monkeypatch.setenv("WATCH_ROOT", str(tmp_path))
+    _reset_settings_cache(monkeypatch)
+    resp = await client.post(
+        "/api/watch/folders",
+        json={"path": "/etc"},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 400
+
+
+async def test_post_folder_docker_accepts_subdir_of_root(client, admin_token, monkeypatch, tmp_path):
+    """Docker: an existing top-level subdir of WATCH_ROOT is accepted."""
+    sub = tmp_path / "inbox"
+    sub.mkdir()
+    monkeypatch.setenv("WATCH_ROOT", str(tmp_path))
+    _reset_settings_cache(monkeypatch)
+    resp = await client.post(
+        "/api/watch/folders",
+        json={"path": str(sub)},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 201
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/watch/folders/{folder_id} — 409 for active Docker mounts
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_active_auto_discovered_returns_409(client, admin_token, db_session, monkeypatch, tmp_path):
+    """auto_discovered=True AND unavailable_reason IS NULL → cannot be deleted."""
+    monkeypatch.setenv("WATCH_ROOT", str(tmp_path))
+    _reset_settings_cache(monkeypatch)
+    sub = tmp_path / "inbox"
+    sub.mkdir()
+    folder = WatchedFolder(
+        path=str(sub),
+        auto_discovered=True,
+        display_name="inbox",
+        bookmark_data=None,
+    )
+    db_session.add(folder)
+    await db_session.flush()
+    resp = await client.delete(
+        f"/api/watch/folders/{folder.folder_id}",
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 409
+
+
+async def test_delete_unmounted_auto_discovered_succeeds(client, admin_token, db_session, monkeypatch, tmp_path):
+    """auto_discovered=True but unavailable_reason='unmounted' → DELETE allowed."""
+    monkeypatch.setenv("WATCH_ROOT", str(tmp_path))
+    _reset_settings_cache(monkeypatch)
+    folder = WatchedFolder(
+        path="/tmp/gone",
+        auto_discovered=True,
+        display_name="gone",
+        bookmark_data=None,
+        unavailable_reason="unmounted",
+        enabled=False,
+    )
+    db_session.add(folder)
+    await db_session.flush()
+    resp = await client.delete(
+        f"/api/watch/folders/{folder.folder_id}",
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 204
+
+
+async def test_delete_manual_folder_succeeds(client, admin_token, db_session, monkeypatch, tmp_path):
+    """auto_discovered=False folders are always deletable."""
+    monkeypatch.setenv("WATCH_ROOT", "")
+    _reset_settings_cache(monkeypatch)
+    folder = WatchedFolder(
+        path=str(tmp_path),
+        auto_discovered=False,
+        display_name="manual",
+        bookmark_data=None,
+    )
+    db_session.add(folder)
+    await db_session.flush()
+    resp = await client.delete(
+        f"/api/watch/folders/{folder.folder_id}",
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 204

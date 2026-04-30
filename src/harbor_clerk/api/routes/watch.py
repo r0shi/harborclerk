@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -22,6 +22,7 @@ from harbor_clerk.models.enums import JobStage, JobStatus, UploadSource, Version
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+from harbor_clerk.watcher.notify import notify_folder_change_async
 from harbor_clerk.worker.pipeline import enqueue_stage
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ router = APIRouter(prefix="/watch", tags=["watch"])
 
 class FolderCreate(BaseModel):
     path: str
-    bookmark_data: str  # base64-encoded
+    bookmark_data: str | None = None  # base64-encoded; legacy macOS clients only
     recursive: bool = True
 
 
@@ -81,6 +82,9 @@ def _folder_to_dict(f: WatchedFolder, file_count: int) -> dict:
         "last_scan_at": f.last_scan_at.isoformat() if f.last_scan_at else None,
         "file_count": file_count,
         "created_at": f.created_at.isoformat() if f.created_at else None,
+        "display_name": f.display_name,
+        "auto_discovered": f.auto_discovered,
+        "unavailable_reason": f.unavailable_reason,
     }
 
 
@@ -230,7 +234,25 @@ async def create_folder(
     session: AsyncSession = Depends(get_session),
     _: None = Depends(require_human_user),
 ):
+    settings = get_settings()
     normalized = os.path.realpath(body.path)
+    p = Path(normalized)
+
+    if settings.watch_root:
+        # Docker: must be a top-level subdir of WATCH_ROOT and currently a directory.
+        root = Path(settings.watch_root).resolve()
+        if p.parent != root or not p.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail="Path must be a top-level subdirectory of WATCH_ROOT",
+            )
+    else:
+        # macOS: must be an existing readable directory.
+        if not p.is_dir() or not os.access(p, os.R_OK):
+            raise HTTPException(
+                status_code=400,
+                detail="Path is not a readable directory",
+            )
 
     # Check for overlapping folders
     existing = await session.execute(select(WatchedFolder))
@@ -243,12 +265,22 @@ async def create_folder(
         if existing_real.startswith(normalized + os.sep):
             raise HTTPException(status_code=409, detail="An already-watched folder is inside this folder")
 
+    # bookmark_data is optional; ignored on Docker; legacy macOS clients can still send it.
+    bookmark_bytes: bytes | None = None
+    if body.bookmark_data and not settings.watch_root:
+        bookmark_bytes = _parse_base64(body.bookmark_data, "bookmark_data")
+
     folder = WatchedFolder(
         path=normalized,
-        bookmark_data=_parse_base64(body.bookmark_data, "bookmark_data"),
+        bookmark_data=bookmark_bytes,
         recursive=body.recursive,
+        display_name=p.name,
     )
     session.add(folder)
+    await session.flush()  # populate folder.folder_id
+
+    # NOTIFY rides on the same transaction; fire BEFORE commit.
+    await notify_folder_change_async(session, folder.folder_id, action="added")
     await session.commit()
     await session.refresh(folder)
     return _folder_to_dict(folder, 0)
@@ -268,10 +300,16 @@ async def patch_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
-    if body.enabled is not None:
+    enabled_changed_to: bool | None = None
+    if body.enabled is not None and body.enabled != folder.enabled:
         folder.enabled = body.enabled
+        enabled_changed_to = body.enabled
     if body.last_event_id is not None:
         folder.last_event_id = body.last_event_id
+
+    if enabled_changed_to is not None:
+        action = "enabled" if enabled_changed_to else "disabled"
+        await notify_folder_change_async(session, folder.folder_id, action=action)
 
     await session.commit()
     return {"status": "updated"}
@@ -289,6 +327,13 @@ async def delete_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Watched folder not found")
 
+    # Active Docker mounts cannot be deleted via the API — operator must unmount first.
+    if folder.auto_discovered and folder.unavailable_reason is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Folder is an active Docker mount; unmount it first",
+        )
+
     # Collect doc_ids linked to this folder's files
     files_result = await session.execute(
         select(WatchedFile.doc_id).where(WatchedFile.folder_id == fid, WatchedFile.doc_id.isnot(None))
@@ -303,6 +348,8 @@ async def delete_folder(
     if doc_ids:
         await session.execute(delete(Document).where(Document.doc_id.in_(doc_ids)))
 
+    # NOTIFY rides on the same transaction; fire BEFORE commit.
+    await notify_folder_change_async(session, fid, action="removed")
     await session.commit()
 
 
