@@ -7,7 +7,7 @@ from harbor_clerk.models.document_version import DocumentVersion
 from harbor_clerk.models.enums import JobStage, JobStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
-from harbor_clerk.watcher.events import EventKind, FileEvent, handle_event
+from harbor_clerk.watcher.events import EventKind, FileEvent, _should_ignore, handle_event
 
 
 @pytest.fixture
@@ -174,3 +174,77 @@ def test_resurrect_with_new_sha_creates_new_version_on_same_doc(sync_session, fo
     assert wf.removed_at is None
     assert wf.doc_id == original_doc_id  # same Document
     assert wf.version_id != original_version_id  # new Version
+
+
+# --- _should_ignore filter tests ---
+
+
+class TestShouldIgnore:
+    def test_apple_double_top_level_ignored(self):
+        assert _should_ignore("._Document.pdf") is True
+
+    def test_apple_double_nested_ignored(self):
+        assert _should_ignore("subfolder/._Document.pdf") is True
+
+    def test_ds_store_ignored(self):
+        assert _should_ignore(".DS_Store") is True
+        assert _should_ignore("subdir/.DS_Store") is True
+
+    def test_macosx_metadata_dir_ignored(self):
+        assert _should_ignore("__MACOSX/foo.pdf") is True
+
+    def test_dotfile_ignored(self):
+        assert _should_ignore(".gitignore") is True
+        assert _should_ignore(".git/HEAD") is True
+
+    def test_unsupported_extension_ignored(self):
+        assert _should_ignore("malware.exe") is True
+        assert _should_ignore("library.dll") is True
+        assert _should_ignore("vimswap.swp") is True
+
+    def test_no_extension_ignored(self):
+        # Files without an extension can't be classified — skip.
+        assert _should_ignore("README") is True
+
+    def test_allowed_files_pass(self):
+        assert _should_ignore("contract.pdf") is False
+        assert _should_ignore("notes.md") is False
+        assert _should_ignore("subdir/photo.jpg") is False
+        assert _should_ignore("Spreadsheet.XLSX") is False  # case insensitive
+
+
+def test_handle_event_ignores_apple_double(sync_session, folder, tmp_path):
+    """._foo.pdf events MUST NOT create a WatchedFile or IngestionJob."""
+    f = tmp_path / "._stuff.pdf"
+    f.write_bytes(b"binary metadata garbage")
+    handle_event(
+        sync_session,
+        FileEvent(EventKind.created, folder.folder_id, "._stuff.pdf", str(f)),
+    )
+    sync_session.commit()
+    assert sync_session.query(WatchedFile).count() == 0
+    assert sync_session.query(IngestionJob).count() == 0
+
+
+def test_handle_event_ignores_unsupported_extension(sync_session, folder, tmp_path):
+    f = tmp_path / "malware.exe"
+    f.write_bytes(b"MZ...")
+    handle_event(
+        sync_session,
+        FileEvent(EventKind.created, folder.folder_id, "malware.exe", str(f)),
+    )
+    sync_session.commit()
+    assert sync_session.query(WatchedFile).count() == 0
+
+
+def test_handle_event_ignores_macosx_archive_metadata(sync_session, folder, tmp_path):
+    sub = tmp_path / "__MACOSX"
+    sub.mkdir()
+    f = sub / "foo.pdf"
+    f.write_bytes(b"metadata")
+    handle_event(
+        sync_session,
+        FileEvent(EventKind.created, folder.folder_id, "__MACOSX/foo.pdf", str(f)),
+    )
+    sync_session.commit()
+    assert sync_session.query(WatchedFile).count() == 0

@@ -6,6 +6,7 @@ provided session. Caller is responsible for commit.
 """
 
 import hashlib
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,11 +15,14 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from harbor_clerk.api.routes.uploads import ALLOWED_EXTENSIONS
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_version import DocumentVersion
 from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
+
+logger = logging.getLogger(__name__)
 
 
 class EventKind(str, Enum):
@@ -33,6 +37,39 @@ class FileEvent:
     folder_id: uuid.UUID
     relative_path: str
     absolute_path: str
+
+
+def _should_ignore(relative_path: str) -> bool:
+    """Filter filesystem noise that should never be ingested.
+
+    Catches:
+      - AppleDouble shadow files (`._<name>`) created when macOS writes
+        to non-Mac filesystems (network shares, FAT, exFAT, NFS, SMB).
+        These have a real extension like `.pdf` so an extension-only
+        filter would let them through.
+      - macOS metadata files / directories: `.DS_Store`,
+        `.Spotlight-V100`, `.Trashes`, `.fseventsd`, `.TemporaryItems`.
+      - `__MACOSX/` archive metadata directories (left over from
+        unzipping a Mac-created archive on a non-Mac).
+      - Other dotfiles (`.git/*`, `.svn/*`, vim swap files, etc.) — not
+        documents, never useful to ingest.
+      - Files whose extension isn't in the document allowlist
+        (the watcher path historically had no such check; the legacy
+        Swift implementation did).
+    """
+    parts = relative_path.split("/")
+    if any(p == "__MACOSX" for p in parts):
+        return True
+    # AppleDouble shadow files at any depth.
+    if any(p.startswith("._") for p in parts):
+        return True
+    # Any dotfile component (catches .DS_Store, .git/, .svn/, .Trashes/, etc.)
+    # at any depth.
+    if any(p.startswith(".") and p not in ("", ".", "..") for p in parts):
+        return True
+    # Extension allowlist (lowercase comparison).
+    suffix = Path(relative_path).suffix.lower()
+    return suffix not in ALLOWED_EXTENSIONS
 
 
 def _sha256_of(path: str) -> bytes:
@@ -60,6 +97,10 @@ def _new_version_on_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_
 
 def handle_event(session: Session, event: FileEvent) -> None:
     """Apply a FileEvent to the database. Caller is responsible for commit."""
+    if _should_ignore(event.relative_path):
+        logger.debug("watcher: ignored event for %s", event.relative_path)
+        return
+
     existing = (
         session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=event.relative_path).one_or_none()
     )

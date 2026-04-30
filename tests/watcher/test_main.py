@@ -122,3 +122,48 @@ def test_daemon_reacts_to_folder_added_via_notify(factory, tmp_path, monkeypatch
     finally:
         daemon.stop()
         _truncate_watched(factory)
+
+
+def test_daemon_scans_existing_files_when_observer_registers(factory, tmp_path, monkeypatch):
+    """Files already present in the folder when the daemon registers the
+    observer must be ingested via the initial scan path (regression: prior to
+    this fix, only files added AFTER observer-start were caught)."""
+    monkeypatch.setenv("WATCH_ROOT", "")
+    _truncate_watched(factory)
+
+    # Create files BEFORE the daemon starts watching the folder.
+    (tmp_path / "pre-existing.pdf").write_bytes(b"existing content")
+    (tmp_path / "ignored.exe").write_bytes(b"binary noise")  # filtered by extension allowlist
+    (tmp_path / "._stuff.pdf").write_bytes(b"AppleDouble junk")  # filtered by AppleDouble check
+
+    folder_id = _commit_folder(factory, str(tmp_path))
+
+    daemon = WatcherDaemon(factory)
+    daemon.start()
+    try:
+        # Wait for the initial scan thread to finish — bounded.
+        deadline = time.time() + 10.0
+        rows: list[WatchedFile] = []
+        while time.time() < deadline:
+            sess = factory()
+            try:
+                rows = list(sess.query(WatchedFile).filter_by(folder_id=folder_id).all())
+            finally:
+                sess.close()
+            if rows:
+                break
+            time.sleep(0.1)
+
+        assert len(rows) == 1, f"expected exactly one ingested file, got {[r.relative_path for r in rows]}"
+        assert rows[0].relative_path == "pre-existing.pdf"
+
+        # Also verify last_scan_at flipped (scan_status idle in the API).
+        sess = factory()
+        try:
+            folder = sess.query(WatchedFolder).filter_by(folder_id=folder_id).one()
+            assert folder.last_scan_at is not None, "last_scan_at must be set after initial scan completes"
+        finally:
+            sess.close()
+    finally:
+        daemon.stop()
+        _truncate_watched(factory)
