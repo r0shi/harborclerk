@@ -23,3 +23,15 @@ export function classColor(queue: QueueClass | undefined): string {
 export function classColorAlpha(queue: QueueClass | undefined, alpha: number): string {
   return `color-mix(in srgb, ${classColor(queue)} ${Math.round(alpha * 100)}%, transparent)`
 }
+
+/**
+ * Stage → queue-class mapping. Mirrors `STAGE_CONFIG` in
+ * `src/harbor_clerk/worker/pipeline.py`. Mapping is stable so duplicating
+ * it is safe and saves a backend round-trip in places that already have
+ * a stage name (e.g. timing charts on the Observatory page).
+ */
+export function queueForStage(stage: string): QueueClass {
+  if (stage === 'ocr' || stage === 'embed') return 'cpu'
+  if (stage === 'summarize') return 'llm'
+  return 'io'
+}

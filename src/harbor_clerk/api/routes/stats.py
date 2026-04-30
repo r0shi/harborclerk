@@ -170,26 +170,44 @@ async def corpus_stats(
     ).all()
     growth_timeline = [{"month": row[0], "count": row[1]} for row in growth_rows]
 
-    # Pipeline timing from completed jobs
+    # Pipeline timing from completed jobs — avg + percentiles + max for
+    # the per-stage timing distribution chart, plus average queue wait
+    # (created → started) for the wait-vs-run breakdown chart.
+    run_secs = extract("epoch", IngestionJob.finished_at) - extract("epoch", IngestionJob.started_at)
+    wait_secs = extract("epoch", IngestionJob.started_at) - extract("epoch", IngestionJob.created_at)
     timing_rows = (
         await session.execute(
             select(
                 IngestionJob.stage,
-                func.avg(extract("epoch", IngestionJob.finished_at) - extract("epoch", IngestionJob.started_at)).label(
-                    "avg_secs"
-                ),
+                func.avg(run_secs).label("avg_run_secs"),
+                func.percentile_cont(0.5).within_group(run_secs.asc()).label("p50_run_secs"),
+                func.percentile_cont(0.95).within_group(run_secs.asc()).label("p95_run_secs"),
+                func.max(run_secs).label("max_run_secs"),
+                func.avg(wait_secs).label("avg_wait_secs"),
                 func.count(),
             )
             .where(
-                IngestionJob.status == "done", IngestionJob.started_at.isnot(None), IngestionJob.finished_at.isnot(None)
+                IngestionJob.status == "done",
+                IngestionJob.started_at.isnot(None),
+                IngestionJob.finished_at.isnot(None),
             )
             .group_by(IngestionJob.stage)
         )
     ).all()
     pipeline_timing = {}
-    for stage, avg_secs, count in timing_rows:
+    for stage, avg_run, p50_run, p95_run, max_run, avg_wait, count in timing_rows:
         stage_name = stage.value if hasattr(stage, "value") else str(stage)
-        pipeline_timing[stage_name] = {"avg_secs": round(float(avg_secs), 2), "count": count}
+        # `avg_secs` kept as a back-compat alias for clients that haven't
+        # been updated; new clients should read `avg_run_secs` directly.
+        pipeline_timing[stage_name] = {
+            "avg_secs": round(float(avg_run), 2),
+            "avg_run_secs": round(float(avg_run), 2),
+            "p50_run_secs": round(float(p50_run), 2) if p50_run is not None else 0.0,
+            "p95_run_secs": round(float(p95_run), 2) if p95_run is not None else 0.0,
+            "max_run_secs": round(float(max_run), 2) if max_run is not None else 0.0,
+            "avg_wait_secs": round(float(avg_wait), 2) if avg_wait is not None else 0.0,
+            "count": count,
+        }
 
     # Entity type counts
     entity_type_q = (
