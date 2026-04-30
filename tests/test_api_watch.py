@@ -328,3 +328,54 @@ async def test_delete_manual_folder_succeeds(client, admin_token, db_session, mo
         headers=auth_header(admin_token),
     )
     assert resp.status_code == 204
+
+
+# ---------------------------------------------------------------------------
+# GET /api/watch/folders/stream — SSE per-folder progress deltas
+# ---------------------------------------------------------------------------
+
+
+async def test_folder_progress_stream_emits_initial_snapshot(db_session):
+    """The SSE generator emits a data line for each existing folder on first iteration.
+
+    Note: we drive the generator directly rather than via HTTP because httpx's
+    ASGITransport buffers the entire response body before returning — incompatible
+    with infinite SSE streams. The endpoint wrapper itself is trivial (a
+    StreamingResponse around this generator), so this exercises the meaningful
+    logic.
+    """
+    import asyncio
+    import json
+
+    from harbor_clerk.api.routes.watch import _folder_progress_event_generator
+
+    folder = WatchedFolder(path="/tmp/sse", display_name="sse", bookmark_data=None)
+    db_session.add(folder)
+    await db_session.commit()  # commit so the generator (its own session) sees it
+
+    try:
+        gen = _folder_progress_event_generator()
+        try:
+            # First emission must arrive in well under a second; 5s is a safety net.
+            chunk = await asyncio.wait_for(gen.__anext__(), timeout=5.0)
+        finally:
+            await gen.aclose()  # exercises the CancelledError path
+
+        assert chunk.startswith("data: ")
+        assert chunk.endswith("\n\n")
+        payload = json.loads(chunk[len("data: ") :].rstrip("\n"))
+        assert payload["folder_id"] == str(folder.folder_id)
+        assert "total_files" in payload
+        assert "completed_files" in payload
+        assert payload["scan_status"] in ("scanning", "idle")
+    finally:
+        # Cleanup the seeded folder so it doesn't leak across tests
+        from sqlalchemy import delete as sa_delete
+
+        await db_session.execute(sa_delete(WatchedFolder).where(WatchedFolder.folder_id == folder.folder_id))
+        await db_session.commit()
+
+
+async def test_folder_progress_stream_requires_auth(client):
+    resp = await client.get("/api/watch/folders/stream")
+    assert resp.status_code == 401

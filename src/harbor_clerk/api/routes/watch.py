@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import uuid
@@ -9,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.api.deps import get_session, require_human_user, require_user
 from harbor_clerk.api.routes.uploads import ALLOWED_EXTENSIONS
 from harbor_clerk.config import get_settings
+from harbor_clerk.db import async_session_factory
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_version import DocumentVersion
 from harbor_clerk.models.enums import JobStage, JobStatus, UploadSource, VersionStatus
@@ -164,6 +167,83 @@ async def list_folders(
     result = await session.execute(select(WatchedFolder, count_sub))
     rows = result.all()
     return [_folder_to_dict(row[0], row[1] or 0) for row in rows]
+
+
+async def _folder_progress_event_generator():
+    """Async generator yielding SSE `data:` lines for per-folder progress deltas.
+
+    1Hz polling loop. Emits an initial snapshot for every folder on the first
+    iteration (because `prev` starts empty), then only emits when a folder's
+    snapshot has changed. Cleanly handles cancellation via CancelledError.
+
+    Extracted as a module-level coroutine so tests can drive it directly
+    without round-tripping through the (response-buffering) ASGI test transport.
+    """
+    prev: dict[str, tuple[int, int, str]] = {}
+    try:
+        while True:
+            async with async_session_factory() as sess:
+                # Per-folder counts: total active files + finalize-done jobs
+                stmt = (
+                    select(
+                        WatchedFolder.folder_id,
+                        WatchedFolder.last_scan_at,
+                        func.count(WatchedFile.file_id)
+                        .filter(WatchedFile.status == WatchedFileStatus.active)
+                        .label("total"),
+                        func.count(IngestionJob.job_id)
+                        .filter(
+                            IngestionJob.stage == JobStage.finalize,
+                            IngestionJob.status == JobStatus.done,
+                        )
+                        .label("done"),
+                    )
+                    .outerjoin(WatchedFile, WatchedFile.folder_id == WatchedFolder.folder_id)
+                    .outerjoin(IngestionJob, IngestionJob.version_id == WatchedFile.version_id)
+                    .group_by(WatchedFolder.folder_id, WatchedFolder.last_scan_at)
+                )
+                rows = (await sess.execute(stmt)).all()
+
+            for fid, last_scan, total, done in rows:
+                scan_status = "scanning" if last_scan is None else "idle"
+                snap = (total or 0, done or 0, scan_status)
+                fid_str = str(fid)
+                if prev.get(fid_str) != snap:
+                    prev[fid_str] = snap
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "folder_id": fid_str,
+                                "total_files": snap[0],
+                                "completed_files": snap[1],
+                                "scan_status": snap[2],
+                            }
+                        )
+                        + "\n\n"
+                    )
+
+            await asyncio.sleep(1.0)
+    except asyncio.CancelledError:
+        return
+
+
+@router.get("/folders/stream")
+async def folder_progress_stream(_: None = Depends(require_user)):
+    """SSE stream of per-folder progress deltas.
+
+    1Hz polling loop. Emits initial snapshot for all folders on connect,
+    then only deltas. Cleanly handles client disconnect via CancelledError.
+    """
+    return StreamingResponse(
+        _folder_progress_event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/folders/{folder_id}/progress")
