@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage'
 import DocumentsPage from './pages/DocumentsPage'
 import DocumentDetailPage from './pages/DocumentDetailPage'
 import UploadPage from './pages/UploadPage'
+import FoldersPage from './pages/FoldersPage'
 import SearchPage from './pages/SearchPage'
 import UsersPage from './pages/UsersPage'
 import ApiKeysPage from './pages/ApiKeysPage'
@@ -41,6 +42,7 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/c/:conversationId" element={<ChatPage />} />
           <Route path="/upload" element={<UploadPage />} />
+          <Route path="/folders" element={<FoldersPage />} />
           <Route path="/docs" element={<DocumentsPage />} />
           <Route path="/docs/:id" element={<DocumentDetailPage />} />
           <Route path="/search" element={<SearchPage />} />
