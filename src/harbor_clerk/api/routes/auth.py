@@ -208,6 +208,8 @@ async def update_preferences(
         prefs["theme"] = body.theme
     if body.page_size is not None:
         prefs["page_size"] = body.page_size
+    if body.onboardingComplete is not None:
+        prefs["onboardingComplete"] = body.onboardingComplete
 
     await session.execute(update(User).where(User.user_id == principal.id).values(preferences=prefs))
     await session.commit()
