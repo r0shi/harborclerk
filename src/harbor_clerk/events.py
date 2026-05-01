@@ -14,21 +14,20 @@ CHANNEL = "job_progress"
 
 
 def publish_job_event(
-    version_id: uuid.UUID,
+    doc_id: uuid.UUID,
     stage: str,
     status: str,
     progress: int | None = None,
     total: int | None = None,
     error: str | None = None,
     filename: str | None = None,
-    doc_id: uuid.UUID | None = None,
     page_count: int | None = None,
     chunk_count: int | None = None,
     entity_count: int | None = None,
 ) -> None:
     """Publish a job progress event via PostgreSQL NOTIFY (sync, for workers)."""
     payload = {
-        "version_id": str(version_id),
+        "doc_id": str(doc_id),
         "stage": stage,
         "status": status,
     }
@@ -40,8 +39,6 @@ def publish_job_event(
         payload["error"] = error
     if filename is not None:
         payload["filename"] = filename
-    if doc_id is not None:
-        payload["doc_id"] = str(doc_id)
     if page_count is not None:
         payload["page_count"] = page_count
     if chunk_count is not None:

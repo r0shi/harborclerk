@@ -1,7 +1,7 @@
 """Pipeline orchestrator — enqueue stages, advance pipeline, handle failures."""
 
 import logging
-import posixpath
+import os
 import uuid
 from datetime import UTC, datetime
 
@@ -9,8 +9,8 @@ from sqlalchemy import select, text
 
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.events import publish_job_event
-from harbor_clerk.models import DocumentVersion, IngestionJob
-from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
+from harbor_clerk.models import Document, IngestionJob
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 
 logger = logging.getLogger(__name__)
 
@@ -27,24 +27,47 @@ def _is_ner_available() -> bool:
     return _ner_available
 
 
-def _version_filename(version: DocumentVersion) -> str:
-    """Extract original filename from the object key or source_path."""
-    if version.original_object_key:
-        return posixpath.basename(version.original_object_key)
-    if version.source_path:
-        return posixpath.basename(version.source_path)
-    return "unknown"
+def _doc_filename(doc: Document) -> str:
+    """Return the filename portion of doc.source_path or original_object_key, or empty string."""
+    if doc.original_object_key:
+        return os.path.basename(doc.original_object_key)
+    if doc.source_path:
+        return os.path.basename(doc.source_path)
+    return ""
 
 
-# stage → (queue_name, timeout_seconds, version_status_while_running)
-STAGE_CONFIG: dict[JobStage, tuple[str, int, VersionStatus]] = {
-    JobStage.extract: ("io", 600, VersionStatus.extracting),
-    JobStage.ocr: ("cpu", 7200, VersionStatus.ocr_running),
-    JobStage.chunk: ("io", 1200, VersionStatus.chunking),
-    JobStage.entities: ("io", 900, VersionStatus.extracting_entities),
-    JobStage.embed: ("cpu", 1800, VersionStatus.embedding),
-    JobStage.summarize: ("llm", 900, VersionStatus.summarizing),
-    JobStage.finalize: ("io", 600, VersionStatus.finalizing),
+def check_pipeline_seq(session, doc_id: uuid.UUID, expected_seq: int) -> bool:
+    """Return True if the doc's pipeline_seq still matches.
+
+    Workers call this at result-write time to detect a content-change race.
+    If the seq has been bumped (e.g., a watcher modify event arrived during
+    in-flight extract), the worker should abort writing its results — the
+    new ingestion is already queued and will run.
+
+    Usage pattern in stage modules:
+
+        worker_seq = session.query(Document.pipeline_seq).filter_by(doc_id=doc_id).scalar()
+        # ... do the work ...
+        if not check_pipeline_seq(session, doc_id, worker_seq):
+            logger.info("stage X: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+            return  # or rollback / raise as appropriate
+        # ... write results ...
+    """
+    current = session.execute(
+        select(Document.pipeline_seq).where(Document.doc_id == doc_id)
+    ).scalar()
+    return current == expected_seq
+
+
+# stage → (queue_name, timeout_seconds, pipeline_status_while_running)
+STAGE_CONFIG: dict[JobStage, tuple[str, int, PipelineStatus]] = {
+    JobStage.extract: ("io", 600, PipelineStatus.extracting),
+    JobStage.ocr: ("cpu", 7200, PipelineStatus.ocr_running),
+    JobStage.chunk: ("io", 1200, PipelineStatus.chunking),
+    JobStage.entities: ("io", 900, PipelineStatus.extracting_entities),
+    JobStage.embed: ("cpu", 1800, PipelineStatus.embedding),
+    JobStage.summarize: ("llm", 900, PipelineStatus.summarizing),
+    JobStage.finalize: ("io", 600, PipelineStatus.finalizing),
 }
 
 # Ordered pipeline stages (documentation; actual execution uses fan-out after chunk)
@@ -65,18 +88,18 @@ _SEQUENTIAL_STAGES = [JobStage.extract, JobStage.ocr, JobStage.chunk]
 _PARALLEL_STAGES = frozenset({JobStage.entities, JobStage.embed, JobStage.summarize})
 
 # Status after stage completes
-STAGE_DONE_STATUS: dict[JobStage, VersionStatus] = {
-    JobStage.extract: VersionStatus.extracted,
-    JobStage.ocr: VersionStatus.ocr_done,
-    JobStage.chunk: VersionStatus.chunked,
-    JobStage.entities: VersionStatus.entities_done,
-    JobStage.embed: VersionStatus.embedded,
-    JobStage.summarize: VersionStatus.summarized,
-    JobStage.finalize: VersionStatus.ready,
+STAGE_DONE_STATUS: dict[JobStage, PipelineStatus] = {
+    JobStage.extract: PipelineStatus.extracted,
+    JobStage.ocr: PipelineStatus.ocr_done,
+    JobStage.chunk: PipelineStatus.chunked,
+    JobStage.entities: PipelineStatus.entities_done,
+    JobStage.embed: PipelineStatus.embedded,
+    JobStage.summarize: PipelineStatus.summarized,
+    JobStage.finalize: PipelineStatus.ready,
 }
 
 
-def enqueue_stage(version_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> None:
+def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> None:
     """Upsert IngestionJob row as queued and notify workers."""
     queue_name, timeout, running_status = STAGE_CONFIG[stage]
 
@@ -85,7 +108,7 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage, *, priority: int = 0) 
         # Upsert ingestion job
         existing = session.execute(
             select(IngestionJob).where(
-                IngestionJob.version_id == version_id,
+                IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == stage,
             )
         ).scalar_one_or_none()
@@ -104,53 +127,53 @@ def enqueue_stage(version_id: uuid.UUID, stage: JobStage, *, priority: int = 0) 
             existing.priority = priority
         else:
             job = IngestionJob(
-                version_id=version_id,
+                doc_id=doc_id,
                 stage=stage,
                 status=JobStatus.queued,
                 priority=priority,
             )
             session.add(job)
 
-        # Update version status
-        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
-        version.status = running_status
-        version.error = None
+        # Update doc pipeline_status
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        doc.pipeline_status = running_status
+        doc.error = None
 
         session.commit()
 
-        filename = _version_filename(version)
+        filename = _doc_filename(doc)
 
         # Notify workers on per-queue channel for instant wakeup
         session.execute(
             text("SELECT pg_notify(:channel, :payload)"),
-            {"channel": f"job_enqueued_{queue_name}", "payload": str(version_id)},
+            {"channel": f"job_enqueued_{queue_name}", "payload": str(doc_id)},
         )
         session.commit()
     finally:
         session.close()
 
-    publish_job_event(version_id, stage.value, "queued", filename=filename)
-    logger.info("Enqueued %s for version %s on queue %s", stage.value, version_id, queue_name)
+    publish_job_event(doc_id, stage.value, "queued", filename=filename)
+    logger.info("Enqueued %s for doc %s on queue %s", stage.value, doc_id, queue_name)
 
 
-def reset_jobs(version_id: uuid.UUID) -> None:
-    """Delete all ingestion jobs for a version so the pipeline starts fresh."""
+def reset_jobs(doc_id: uuid.UUID) -> None:
+    """Delete all ingestion jobs for a doc so the pipeline starts fresh."""
     session = get_sync_session()
     try:
-        jobs = session.execute(select(IngestionJob).where(IngestionJob.version_id == version_id)).scalars().all()
+        jobs = session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc_id)).scalars().all()
         for j in jobs:
             session.delete(j)
         session.commit()
-        logger.info("Reset %d jobs for version %s", len(jobs), version_id)
+        logger.info("Reset %d jobs for doc %s", len(jobs), doc_id)
     finally:
         session.close()
 
 
 def _mark_skipped(
     session,
-    version_id: uuid.UUID,
+    doc_id: uuid.UUID,
     stage: JobStage,
-    version_status: VersionStatus,
+    pipeline_status: PipelineStatus,
     filename: str,
     *,
     reason: str | None = None,
@@ -164,14 +187,14 @@ def _mark_skipped(
 
     existing = session.execute(
         select(IngestionJob).where(
-            IngestionJob.version_id == version_id,
+            IngestionJob.doc_id == doc_id,
             IngestionJob.stage == stage,
         )
     ).scalar_one_or_none()
     if existing is None:
         session.add(
             IngestionJob(
-                version_id=version_id,
+                doc_id=doc_id,
                 stage=stage,
                 status=JobStatus.done,
                 started_at=now,
@@ -186,13 +209,13 @@ def _mark_skipped(
         existing.metrics = metrics
         existing.priority = priority
 
-    version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
-    version.status = version_status
+    doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+    doc.pipeline_status = pipeline_status
     session.commit()
-    publish_job_event(version_id, stage.value, "done", filename=filename)
+    publish_job_event(doc_id, stage.value, "done", filename=filename)
 
 
-def advance_pipeline(version_id: uuid.UUID) -> None:
+def advance_pipeline(doc_id: uuid.UUID) -> None:
     """Determine the next stage(s) and enqueue them.
 
     Three phases:
@@ -202,11 +225,11 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
     """
     session = get_sync_session()
     try:
-        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
-        filename = _version_filename(version)
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        filename = _doc_filename(doc)
 
         # Gather completed and in-flight stages
-        all_jobs = session.execute(select(IngestionJob).where(IngestionJob.version_id == version_id)).scalars().all()
+        all_jobs = session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc_id)).scalars().all()
         # Propagate priority from completed jobs
         priority = max((j.priority for j in all_jobs if j.priority), default=0)
         completed = {j.stage for j in all_jobs if j.status == JobStatus.done}
@@ -220,8 +243,8 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
                 return  # already queued/running, wait
 
             # Skip OCR if not needed
-            if stage == JobStage.ocr and not version.needs_ocr:
-                _mark_skipped(session, version_id, JobStage.ocr, VersionStatus.ocr_done, filename, priority=priority)
+            if stage == JobStage.ocr and not doc.needs_ocr:
+                _mark_skipped(session, doc_id, JobStage.ocr, PipelineStatus.ocr_done, filename, priority=priority)
                 completed.add(JobStage.ocr)
                 continue
 
@@ -229,7 +252,7 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
             # enqueue_stage() creates its own session.
             session.commit()
             session.close()
-            enqueue_stage(version_id, stage, priority=priority)
+            enqueue_stage(doc_id, stage, priority=priority)
             return
 
         # --- Phase 2: Fan-out (entities + embed + summarize) ---
@@ -241,9 +264,9 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
             if stage == JobStage.entities and not _is_ner_available():
                 _mark_skipped(
                     session,
-                    version_id,
+                    doc_id,
                     JobStage.entities,
-                    VersionStatus.entities_done,
+                    PipelineStatus.entities_done,
                     filename,
                     reason="spacy_unavailable",
                     priority=priority,
@@ -256,14 +279,14 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
             session.commit()
             session.close()
             for stage in to_enqueue:
-                enqueue_stage(version_id, stage, priority=priority)
+                enqueue_stage(doc_id, stage, priority=priority)
             return
 
         # --- Phase 3: Fan-in (finalize) ---
         if completed >= _PARALLEL_STAGES and JobStage.finalize not in completed and JobStage.finalize not in in_flight:
             session.commit()
             session.close()
-            enqueue_stage(version_id, JobStage.finalize, priority=priority)
+            enqueue_stage(doc_id, JobStage.finalize, priority=priority)
             return
 
         # Only restore to ready if ALL stages are actually done (not just nothing to enqueue).
@@ -274,20 +297,20 @@ def advance_pipeline(version_id: uuid.UUID) -> None:
             and not in_flight
             and completed >= _PARALLEL_STAGES | {JobStage.extract, JobStage.chunk}
         )
-        if all_stages_done and version.status != VersionStatus.ready:
-            version.status = VersionStatus.ready
+        if all_stages_done and doc.pipeline_status != PipelineStatus.ready:
+            doc.pipeline_status = PipelineStatus.ready
             session.commit()
-            logger.info("Restored version %s to ready status", version_id)
-            publish_job_event(version_id, "finalize", "done", filename=filename)
+            logger.info("Restored doc %s to ready status", doc_id)
+            publish_job_event(doc_id, "finalize", "done", filename=filename)
         else:
             session.commit()
 
-        logger.info("Pipeline advance for version %s (complete=%s)", version_id, all_stages_done)
+        logger.info("Pipeline advance for doc %s (complete=%s)", doc_id, all_stages_done)
     finally:
         session.close()
 
 
-def mark_stage_done(version_id: uuid.UUID, stage: JobStage, **extra_event_fields) -> None:
+def mark_stage_done(doc_id: uuid.UUID, stage: JobStage, **extra_event_fields) -> None:
     """Mark a stage as done and advance the pipeline."""
     done_status = STAGE_DONE_STATUS[stage]
 
@@ -295,59 +318,59 @@ def mark_stage_done(version_id: uuid.UUID, stage: JobStage, **extra_event_fields
     try:
         job = session.execute(
             select(IngestionJob).where(
-                IngestionJob.version_id == version_id,
+                IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == stage,
             )
         ).scalar_one()
         job.status = JobStatus.done
         job.finished_at = datetime.now(UTC)
 
-        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
-        version.status = done_status
-        filename = _version_filename(version)
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        doc.pipeline_status = done_status
+        filename = _doc_filename(doc)
 
         session.commit()
     finally:
         session.close()
 
-    publish_job_event(version_id, stage.value, "done", filename=filename, **extra_event_fields)
-    logger.info("Stage %s done for version %s", stage.value, version_id)
+    publish_job_event(doc_id, stage.value, "done", filename=filename, **extra_event_fields)
+    logger.info("Stage %s done for doc %s", stage.value, doc_id)
 
     # Advance to next stage (unless this was finalize)
     if stage != JobStage.finalize:
-        advance_pipeline(version_id)
+        advance_pipeline(doc_id)
 
 
-def mark_stage_running(version_id: uuid.UUID, stage: JobStage) -> bool:
+def mark_stage_running(doc_id: uuid.UUID, stage: JobStage) -> bool:
     """Check that job hasn't been cancelled. Returns False if errored/cancelled."""
     session = get_sync_session()
     filename = None
     try:
         job = session.execute(
             select(IngestionJob).where(
-                IngestionJob.version_id == version_id,
+                IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == stage,
             )
         ).scalar_one()
         if job.status == JobStatus.error:
             logger.info(
-                "Skipping %s for version %s — already cancelled/errored",
+                "Skipping %s for doc %s — already cancelled/errored",
                 stage.value,
-                version_id,
+                doc_id,
             )
             return False
-        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
-        filename = _version_filename(version)
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        filename = _doc_filename(doc)
         session.commit()
     finally:
         session.close()
 
-    publish_job_event(version_id, stage.value, "running", filename=filename)
+    publish_job_event(doc_id, stage.value, "running", filename=filename)
     return True
 
 
-def cancel_version_jobs(version_id: uuid.UUID) -> int:
-    """Cancel all queued/running jobs for a version, setting them to error."""
+def cancel_doc_jobs(doc_id: uuid.UUID) -> int:
+    """Cancel all queued/running jobs for a doc, setting them to error."""
     session = get_sync_session()
     cancelled = 0
     cancelled_jobs: list[IngestionJob] = []
@@ -356,7 +379,7 @@ def cancel_version_jobs(version_id: uuid.UUID) -> int:
         jobs = (
             session.execute(
                 select(IngestionJob).where(
-                    IngestionJob.version_id == version_id,
+                    IngestionJob.doc_id == doc_id,
                     IngestionJob.status.in_([JobStatus.queued, JobStatus.running]),
                 )
             )
@@ -372,14 +395,14 @@ def cancel_version_jobs(version_id: uuid.UUID) -> int:
             cancelled_jobs.append(j)
             cancelled += 1
 
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
+        doc = session.execute(
+            select(Document).where(Document.doc_id == doc_id)
         ).scalar_one_or_none()
-        if version:
-            filename = _version_filename(version)
-            if version.status not in (VersionStatus.ready, VersionStatus.error):
-                version.status = VersionStatus.error
-                version.error = "Cancelled by user"
+        if doc:
+            filename = _doc_filename(doc)
+            if doc.pipeline_status not in (PipelineStatus.ready, PipelineStatus.error):
+                doc.pipeline_status = PipelineStatus.error
+                doc.error = "Cancelled by user"
 
         session.commit()
     finally:
@@ -388,7 +411,7 @@ def cancel_version_jobs(version_id: uuid.UUID) -> int:
     # Publish SSE events so frontend updates immediately
     for j in cancelled_jobs:
         publish_job_event(
-            version_id,
+            doc_id,
             j.stage.value,
             "error",
             error="Cancelled by user",
@@ -396,3 +419,7 @@ def cancel_version_jobs(version_id: uuid.UUID) -> int:
         )
 
     return cancelled
+
+
+# Back-compat alias — remove once API layer (Task 6) is updated to cancel_doc_jobs
+cancel_version_jobs = cancel_doc_jobs
