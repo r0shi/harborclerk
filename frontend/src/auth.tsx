@@ -5,7 +5,7 @@ interface User {
   user_id: string
   email: string
   role: string
-  preferences: { theme?: string; page_size?: number }
+  preferences: { theme?: string; page_size?: number; onboardingComplete?: boolean }
 }
 
 interface AuthState {

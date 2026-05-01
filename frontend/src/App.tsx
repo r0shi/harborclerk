@@ -5,7 +5,6 @@ import AdminRoute from './components/AdminRoute'
 import LoginPage from './pages/LoginPage'
 import DocumentsPage from './pages/DocumentsPage'
 import DocumentDetailPage from './pages/DocumentDetailPage'
-import UploadPage from './pages/UploadPage'
 import FoldersPage from './pages/FoldersPage'
 import SearchPage from './pages/SearchPage'
 import UsersPage from './pages/UsersPage'
@@ -41,7 +40,6 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/c/:conversationId" element={<ChatPage />} />
-          <Route path="/upload" element={<UploadPage />} />
           <Route path="/folders" element={<FoldersPage />} />
           <Route path="/docs" element={<DocumentsPage />} />
           <Route path="/docs/:id" element={<DocumentDetailPage />} />

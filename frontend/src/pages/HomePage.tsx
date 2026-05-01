@@ -1,31 +1,14 @@
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { get } from '../api'
 import ChatPage from './ChatPage'
 
+/**
+ * Home route ('/'). Renders the chat experience unconditionally; the
+ * empty-corpus signaling is handled globally by Layout.tsx's
+ * <CorpusEmptyBanner /> and the first-run <OnboardingWizard />.
+ *
+ * Stage 2 dropped the previous "redirect to /upload when doc count is
+ * zero" behaviour — that route is gone, and yanking users off chat on
+ * arrival was confusing once direct upload became internal-only.
+ */
 export default function HomePage() {
-  const navigate = useNavigate()
-  const [ready, setReady] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    get<{ total: number }>('/api/docs', { limit: 1 })
-      .then((data) => {
-        if (cancelled) return
-        if (data.total === 0) {
-          navigate('/upload', { replace: true })
-        } else {
-          setReady(true)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setReady(true) // on error, show chat anyway
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [navigate])
-
-  if (!ready) return null
   return <ChatPage />
 }
