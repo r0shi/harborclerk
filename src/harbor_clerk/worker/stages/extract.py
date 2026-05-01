@@ -224,9 +224,7 @@ def run_extract(doc_id: uuid.UUID) -> None:
             return
 
         # Delete existing pages for this doc (idempotency)
-        existing_pages = (
-            session.execute(select(DocumentPage).where(DocumentPage.doc_id == doc_id)).scalars().all()
-        )
+        existing_pages = session.execute(select(DocumentPage).where(DocumentPage.doc_id == doc_id)).scalars().all()
         for p in existing_pages:
             session.delete(p)
         session.flush()

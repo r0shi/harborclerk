@@ -255,9 +255,7 @@ def downgrade() -> None:
     # Cast the text status column to the existing enum type.
     # Must drop default first; text default can't auto-cast to the enum type.
     op.execute("ALTER TABLE document_versions ALTER COLUMN status DROP DEFAULT")
-    op.execute(
-        "ALTER TABLE document_versions ALTER COLUMN status TYPE version_status USING status::version_status"
-    )
+    op.execute("ALTER TABLE document_versions ALTER COLUMN status TYPE version_status USING status::version_status")
     op.execute("ALTER TABLE document_versions ALTER COLUMN status SET DEFAULT 'queued'::version_status")
 
     # Restore indexes that existed on document_versions at revision 0016

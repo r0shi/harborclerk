@@ -98,7 +98,9 @@ def test_modify_replaces_in_place(sync_session, folder, tmp_path):
     heading = DocumentHeading(doc_id=doc.doc_id, level=1, title="Old heading", position=0)
     sync_session.add_all([chunk, page, heading])
     sync_session.flush()
-    entity = Entity(chunk_id=chunk.chunk_id, doc_id=doc.doc_id, entity_text="Alice", entity_type="PERSON", start_char=0, end_char=5)
+    entity = Entity(
+        chunk_id=chunk.chunk_id, doc_id=doc.doc_id, entity_text="Alice", entity_type="PERSON", start_char=0, end_char=5
+    )
     sync_session.add(entity)
     sync_session.commit()
 

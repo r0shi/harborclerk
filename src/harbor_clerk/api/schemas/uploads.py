@@ -12,7 +12,6 @@ class UploadFileResult(BaseModel):
     mime_type: str | None = None
     status: str  # "pending_confirmation", "duplicate", or "skipped"
     duplicate_doc_id: str | None = None
-    duplicate_version_id: str | None = None
 
 
 class UploadResponse(BaseModel):
@@ -28,7 +27,6 @@ class ConfirmUploadRequest(BaseModel):
 
 class ConfirmUploadResponse(BaseModel):
     doc_id: str
-    version_id: str
     status: str
 
 
@@ -46,7 +44,6 @@ class BatchConfirmRequest(BaseModel):
 class BatchConfirmResultItem(BaseModel):
     upload_id: str
     doc_id: str | None = None
-    version_id: str | None = None
     status: str
     error: str | None = None
 
@@ -60,7 +57,6 @@ class UploadStatusResponse(BaseModel):
     original_filename: str
     status: str
     doc_id: str | None = None
-    version_id: str | None = None
     created_at: datetime
 
 
@@ -95,9 +91,7 @@ class SessionFileUploadResponse(BaseModel):
     filename: str
     size_bytes: int
     duplicate_doc_id: str | None = None
-    duplicate_version_id: str | None = None
     doc_id: str | None = None
-    version_id: str | None = None
 
 
 class ResumeResponse(BaseModel):

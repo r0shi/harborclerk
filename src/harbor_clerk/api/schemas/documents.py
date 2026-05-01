@@ -17,27 +17,12 @@ class JobInfo(BaseModel):
     finished_at: datetime | None = None
 
 
-class VersionInfo(BaseModel):
-    version_id: str
-    status: str
-    mime_type: str | None = None
-    size_bytes: int | None = None
-    has_text_layer: bool | None = None
-    needs_ocr: bool | None = None
-    extracted_chars: int | None = None
-    source_path: str | None = None
-    error: str | None = None
-    created_at: datetime
-    jobs: list[JobInfo] = []
-
-
 class DocumentSummary(BaseModel):
     doc_id: str
     title: str
     canonical_filename: str | None = None
     status: str
-    latest_version_status: str | None = None
-    version_count: int
+    pipeline_status: str | None = None
     created_at: datetime
     updated_at: datetime
     summary: str | None = None
@@ -55,9 +40,20 @@ class DocumentDetail(BaseModel):
     title: str
     canonical_filename: str | None = None
     status: str
+    pipeline_status: str | None = None
+    pipeline_seq: int | None = None
+    summary: str | None = None
+    doc_type: str | None = None
+    mime_type: str | None = None
+    source_path: str | None = None
+    has_text_layer: bool | None = None
+    needs_ocr: bool | None = None
+    extracted_chars: int | None = None
+    size_bytes: int | None = None
+    error: str | None = None
     created_at: datetime
     updated_at: datetime
-    versions: list[VersionInfo] = []
+    jobs: list[JobInfo] = []
 
 
 class PageContent(BaseModel):
@@ -69,7 +65,6 @@ class PageContent(BaseModel):
 
 class DocumentContentResponse(BaseModel):
     doc_id: str
-    version_id: str
     pages: list[PageContent]
     total_chars: int
 
@@ -82,7 +77,6 @@ class HeadingOut(BaseModel):
 
 class DocumentOutlineResponse(BaseModel):
     doc_id: str
-    version_id: str
     title: str
     page_count: int
     chunk_count: int

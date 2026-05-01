@@ -16,7 +16,6 @@ from harbor_clerk.models import (
     Chunk,
     Document,
     DocumentPage,
-    DocumentVersion,
     Entity,
     IngestionJob,
 )
@@ -36,11 +35,6 @@ def _parse_exclude_types(exclude_types: str | None) -> set[str]:
     return {t.strip() for t in exclude_types.split(",")}
 
 
-def _latest_version_filter():
-    """Return a join condition ensuring we only look at chunks/entities for the latest version."""
-    return Document.latest_version_id == DocumentVersion.version_id
-
-
 @router.get("/stats")
 async def corpus_stats(
     exclude_types: str | None = Query(
@@ -57,14 +51,10 @@ async def corpus_stats(
     # Document count
     doc_count = (await session.execute(select(func.count()).select_from(Document).where(active))).scalar() or 0
 
-    # Total chunks (scoped to latest versions of active docs)
+    # Total chunks (all chunks for active docs)
     total_chunks = (
         await session.execute(
-            select(func.count())
-            .select_from(Chunk)
-            .join(Document, Chunk.doc_id == Document.doc_id)
-            .join(DocumentVersion, Chunk.version_id == DocumentVersion.version_id)
-            .where(active, _latest_version_filter())
+            select(func.count()).select_from(Chunk).join(Document, Chunk.doc_id == Document.doc_id).where(active)
         )
     ).scalar() or 0
 
@@ -73,9 +63,8 @@ async def corpus_stats(
         await session.execute(
             select(func.count())
             .select_from(DocumentPage)
-            .join(DocumentVersion, DocumentPage.version_id == DocumentVersion.version_id)
-            .join(Document, DocumentVersion.doc_id == Document.doc_id)
-            .where(active, _latest_version_filter())
+            .join(Document, DocumentPage.doc_id == Document.doc_id)
+            .where(active)
         )
     ).scalar() or 0
 
@@ -84,32 +73,25 @@ async def corpus_stats(
         await session.execute(
             select(Chunk.language, func.count())
             .join(Document, Chunk.doc_id == Document.doc_id)
-            .join(DocumentVersion, Chunk.version_id == DocumentVersion.version_id)
-            .where(active, _latest_version_filter())
+            .where(active)
             .group_by(Chunk.language)
         )
     ).all()
     languages = {row[0]: row[1] for row in lang_rows}
 
-    # MIME type distribution
+    # MIME type distribution (from flat Document fields)
     mime_rows = (
         await session.execute(
-            select(DocumentVersion.mime_type, func.count())
-            .join(Document, DocumentVersion.doc_id == Document.doc_id)
-            .where(active, _latest_version_filter())
-            .group_by(DocumentVersion.mime_type)
+            select(Document.mime_type, func.count())
+            .where(active, Document.mime_type.isnot(None))
+            .group_by(Document.mime_type)
         )
     ).all()
     mime_types = {(row[0] or "unknown"): row[1] for row in mime_rows}
 
     # OCR breakdown
     ocr_rows = (
-        await session.execute(
-            select(DocumentVersion.needs_ocr, func.count())
-            .join(Document, DocumentVersion.doc_id == Document.doc_id)
-            .where(active, _latest_version_filter())
-            .group_by(DocumentVersion.needs_ocr)
-        )
+        await session.execute(select(Document.needs_ocr, func.count()).where(active).group_by(Document.needs_ocr))
     ).all()
     ocr_breakdown = {"born_digital": 0, "ocr_used": 0, "unknown": 0}
     for needs_ocr, count in ocr_rows:
@@ -134,12 +116,12 @@ async def corpus_stats(
         if hi is not None:
             size_cases.append(
                 (
-                    (DocumentVersion.size_bytes >= lo) & (DocumentVersion.size_bytes < hi),
+                    (Document.size_bytes >= lo) & (Document.size_bytes < hi),
                     label,
                 )
             )
         else:
-            size_cases.append(((DocumentVersion.size_bytes >= lo), label))
+            size_cases.append(((Document.size_bytes >= lo), label))
 
     size_rows = (
         await session.execute(
@@ -147,9 +129,8 @@ async def corpus_stats(
                 case(*size_cases, else_="unknown").label("bucket"),
                 func.count(),
             )
-            .select_from(DocumentVersion)
-            .join(Document, DocumentVersion.doc_id == Document.doc_id)
-            .where(active, _latest_version_filter(), DocumentVersion.size_bytes.isnot(None))
+            .select_from(Document)
+            .where(active, Document.size_bytes.isnot(None))
             .group_by("bucket")
         )
     ).all()
@@ -211,10 +192,7 @@ async def corpus_stats(
 
     # Entity type counts
     entity_type_q = (
-        select(Entity.entity_type, func.count())
-        .join(Document, Entity.doc_id == Document.doc_id)
-        .join(DocumentVersion, Entity.version_id == DocumentVersion.version_id)
-        .where(active, _latest_version_filter())
+        select(Entity.entity_type, func.count()).join(Document, Entity.doc_id == Document.doc_id).where(active)
     )
     if excluded:
         entity_type_q = entity_type_q.where(Entity.entity_type.notin_(excluded))
@@ -225,8 +203,7 @@ async def corpus_stats(
     top_entity_q = (
         select(Entity.entity_text, Entity.entity_type, func.count().label("mentions"))
         .join(Document, Entity.doc_id == Document.doc_id)
-        .join(DocumentVersion, Entity.version_id == DocumentVersion.version_id)
-        .where(active, _latest_version_filter())
+        .where(active)
     )
     if excluded:
         top_entity_q = top_entity_q.where(Entity.entity_type.notin_(excluded))
@@ -264,18 +241,16 @@ async def document_clusters(
                 SELECT
                     c.doc_id,
                     d.title,
-                    dv.mime_type,
+                    d.mime_type,
                     avg(c.embedding)::text AS centroid,
                     d.topic_id,
                     ct.label AS topic_name
                 FROM chunks c
                 JOIN documents d ON c.doc_id = d.doc_id
-                JOIN document_versions dv ON c.version_id = dv.version_id
                 LEFT JOIN corpus_topics ct ON d.topic_id = ct.topic_id
                 WHERE d.status = 'active'
-                  AND d.latest_version_id = dv.version_id
                   AND c.embedding IS NOT NULL
-                GROUP BY c.doc_id, d.title, dv.mime_type, d.topic_id, ct.label
+                GROUP BY c.doc_id, d.title, d.mime_type, d.topic_id, ct.label
             """)
         )
     ).all()
@@ -323,8 +298,7 @@ async def entity_network(
             func.count().label("mentions"),
         )
         .join(Document, Entity.doc_id == Document.doc_id)
-        .join(DocumentVersion, Entity.version_id == DocumentVersion.version_id)
-        .where(Document.status == "active", _latest_version_filter())
+        .where(Document.status == "active")
     )
     if excluded:
         top_q = top_q.where(Entity.entity_type.notin_(excluded))
@@ -362,10 +336,8 @@ async def entity_network(
             .select_from(e1)
             .join(e2, e1.c.chunk_id == e2.c.chunk_id)
             .join(Document, e1.c.doc_id == Document.doc_id)
-            .join(DocumentVersion, e1.c.version_id == DocumentVersion.version_id)
             .where(
                 Document.status == "active",
-                Document.latest_version_id == DocumentVersion.version_id,
                 e1.c.entity_text.in_(top_texts),
                 e2.c.entity_text.in_(top_texts),
                 e1.c.entity_id < e2.c.entity_id,  # avoid duplicates
@@ -446,39 +418,26 @@ async def document_stats(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    version_id = doc.latest_version_id
-    if version_id is None:
-        return {
-            "chunk_count": 0,
-            "page_count": 0,
-            "languages": {},
-            "entity_types": {},
-            "top_entities": [],
-            "ocr_confidence": None,
-        }
-
     # Chunk count
     chunk_count = (
-        await session.execute(select(func.count()).select_from(Chunk).where(Chunk.version_id == version_id))
+        await session.execute(select(func.count()).select_from(Chunk).where(Chunk.doc_id == doc_id))
     ).scalar() or 0
 
     # Page count
     page_count = (
-        await session.execute(
-            select(func.count()).select_from(DocumentPage).where(DocumentPage.version_id == version_id)
-        )
+        await session.execute(select(func.count()).select_from(DocumentPage).where(DocumentPage.doc_id == doc_id))
     ).scalar() or 0
 
     # Language distribution
     lang_rows = (
         await session.execute(
-            select(Chunk.language, func.count()).where(Chunk.version_id == version_id).group_by(Chunk.language)
+            select(Chunk.language, func.count()).where(Chunk.doc_id == doc_id).group_by(Chunk.language)
         )
     ).all()
     languages = {row[0]: row[1] for row in lang_rows}
 
     # Entity type counts
-    etype_q = select(Entity.entity_type, func.count()).where(Entity.version_id == version_id)
+    etype_q = select(Entity.entity_type, func.count()).where(Entity.doc_id == doc_id)
     if excluded:
         etype_q = etype_q.where(Entity.entity_type.notin_(excluded))
     etype_rows = (await session.execute(etype_q.group_by(Entity.entity_type))).all()
@@ -486,7 +445,7 @@ async def document_stats(
 
     # Top 10 entities
     top_q = select(Entity.entity_text, Entity.entity_type, func.count().label("mentions")).where(
-        Entity.version_id == version_id
+        Entity.doc_id == doc_id
     )
     if excluded:
         top_q = top_q.where(Entity.entity_type.notin_(excluded))
@@ -504,7 +463,7 @@ async def document_stats(
                 func.avg(cast(DocumentPage.ocr_confidence, DOUBLE_PRECISION)),
                 func.min(cast(DocumentPage.ocr_confidence, DOUBLE_PRECISION)),
                 func.max(cast(DocumentPage.ocr_confidence, DOUBLE_PRECISION)),
-            ).where(DocumentPage.version_id == version_id, DocumentPage.ocr_used.is_(True))
+            ).where(DocumentPage.doc_id == doc_id, DocumentPage.ocr_used.is_(True))
         )
     ).one()
     ocr_confidence = None

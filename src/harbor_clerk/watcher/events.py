@@ -135,9 +135,7 @@ def handle_event(session: Session, event: FileEvent) -> None:
         return
 
     existing = (
-        session.query(WatchedFile)
-        .filter_by(folder_id=event.folder_id, relative_path=event.relative_path)
-        .one_or_none()
+        session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=event.relative_path).one_or_none()
     )
 
     # Delete events

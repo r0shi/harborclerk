@@ -110,9 +110,7 @@ def run_chunk(doc_id: uuid.UUID) -> None:
         worker_seq = doc.pipeline_seq
 
         pages = (
-            session.execute(
-                select(DocumentPage).where(DocumentPage.doc_id == doc_id).order_by(DocumentPage.page_num)
-            )
+            session.execute(select(DocumentPage).where(DocumentPage.doc_id == doc_id).order_by(DocumentPage.page_num))
             .scalars()
             .all()
         )

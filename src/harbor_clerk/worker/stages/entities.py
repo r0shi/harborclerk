@@ -25,11 +25,7 @@ def run_entities(doc_id: uuid.UUID) -> None:
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
         worker_seq = doc.pipeline_seq
 
-        chunks = (
-            session.execute(select(Chunk).where(Chunk.doc_id == doc_id).order_by(Chunk.chunk_num))
-            .scalars()
-            .all()
-        )
+        chunks = session.execute(select(Chunk).where(Chunk.doc_id == doc_id).order_by(Chunk.chunk_num)).scalars().all()
 
         if not chunks:
             logger.warning("No chunks to extract entities from for doc %s", doc_id)

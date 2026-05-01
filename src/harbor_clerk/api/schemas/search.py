@@ -10,7 +10,6 @@ class SearchRequest(BaseModel):
     k: int = Field(default=10, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
     doc_id: str | None = None
-    version_id: str | None = None
     doc_ids: list[str] | None = Field(default=None, max_length=50)
     after: datetime | None = None
     before: datetime | None = None
@@ -27,14 +26,12 @@ class SearchRequest(BaseModel):
 
 class ConflictSourceOut(BaseModel):
     doc_id: str
-    version_id: str
     title: str
 
 
 class SearchHitOut(BaseModel):
     chunk_id: str
     doc_id: str
-    version_id: str
     chunk_num: int
     chunk_text: str
     page_start: int | None = None
@@ -76,7 +73,6 @@ class ReadPassagesRequest(BaseModel):
 class PassageDetail(BaseModel):
     chunk_id: str
     doc_id: str
-    version_id: str
     chunk_num: int
     chunk_text: str
     page_start: int | None = None

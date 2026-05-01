@@ -53,9 +53,7 @@ def check_pipeline_seq(session, doc_id: uuid.UUID, expected_seq: int) -> bool:
             return  # or rollback / raise as appropriate
         # ... write results ...
     """
-    current = session.execute(
-        select(Document.pipeline_seq).where(Document.doc_id == doc_id)
-    ).scalar()
+    current = session.execute(select(Document.pipeline_seq).where(Document.doc_id == doc_id)).scalar()
     return current == expected_seq
 
 
@@ -395,9 +393,7 @@ def cancel_doc_jobs(doc_id: uuid.UUID) -> int:
             cancelled_jobs.append(j)
             cancelled += 1
 
-        doc = session.execute(
-            select(Document).where(Document.doc_id == doc_id)
-        ).scalar_one_or_none()
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
         if doc:
             filename = _doc_filename(doc)
             if doc.pipeline_status not in (PipelineStatus.ready, PipelineStatus.error):

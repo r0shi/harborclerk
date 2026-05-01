@@ -24,11 +24,10 @@ from harbor_clerk.models import (
     Chunk,
     Document,
     DocumentPage,
-    DocumentVersion,
     IngestionJob,
     User,
 )
-from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -185,29 +184,22 @@ async def purge_run(
     purged = 0
 
     for doc in docs:
-        # Load versions for storage cleanup
-        versions_result = await session.execute(select(DocumentVersion).where(DocumentVersion.doc_id == doc.doc_id))
-        versions = versions_result.scalars().all()
-
-        for ver in versions:
-            # Delete stored object
+        # Delete stored object if present
+        if doc.original_bucket and doc.original_object_key:
             try:
-                storage.remove_object(ver.original_bucket, ver.original_object_key)
+                storage.remove_object(doc.original_bucket, doc.original_object_key)
             except Exception as e:
                 logger.warning(
                     "Failed to delete object %s/%s: %s",
-                    ver.original_bucket,
-                    ver.original_object_key,
+                    doc.original_bucket,
+                    doc.original_object_key,
                     e,
                 )
 
-            # Cascade delete DB rows: chunks, pages, ingestion_jobs
-            await session.execute(delete(Chunk).where(Chunk.version_id == ver.version_id))
-            await session.execute(delete(DocumentPage).where(DocumentPage.version_id == ver.version_id))
-            await session.execute(delete(IngestionJob).where(IngestionJob.version_id == ver.version_id))
-
-        # Delete versions and document
-        await session.execute(delete(DocumentVersion).where(DocumentVersion.doc_id == doc.doc_id))
+        # Cascade delete child rows (FK cascades handle most, but explicit for clarity)
+        await session.execute(delete(Chunk).where(Chunk.doc_id == doc.doc_id))
+        await session.execute(delete(DocumentPage).where(DocumentPage.doc_id == doc.doc_id))
+        await session.execute(delete(IngestionJob).where(IngestionJob.doc_id == doc.doc_id))
         await session.delete(doc)
         purged += 1
 
@@ -256,12 +248,12 @@ async def reaper_run(
                 continue
 
         logger.warning(
-            "Reaping orphan job: version=%s stage=%s heartbeat_at=%s",
-            job.version_id,
+            "Reaping orphan job: doc=%s stage=%s heartbeat_at=%s",
+            job.doc_id,
             job.stage.value,
             job.heartbeat_at,
         )
-        orphans.append((job.version_id, job.stage))
+        orphans.append((job.doc_id, job.stage))
 
     # Commit any pending state and log audit before re-enqueuing
     await log_audit(
@@ -273,8 +265,8 @@ async def reaper_run(
     await session.commit()
 
     # Re-enqueue orphans (each creates its own sync session)
-    for version_id, stage in orphans:
-        enqueue_stage(version_id, stage)
+    for doc_id, stage in orphans:
+        enqueue_stage(doc_id, stage)
 
     logger.info("Reaped %d orphan jobs", len(orphans))
     return {"reaped": len(orphans)}
@@ -302,50 +294,46 @@ async def clear_queue(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Cancel all queued and running ingestion jobs, reset versions to their last stable state.
+    """Cancel all queued and running ingestion jobs, reset documents to their last stable state.
 
     Use when the queue is in a bad state from bugs/restarts and needs a clean slate.
     Does NOT delete documents or re-trigger ingestion — just clears stuck jobs.
     """
-    from harbor_clerk.models import DocumentVersion, IngestionJob
-    from harbor_clerk.models.enums import JobStatus, VersionStatus
-
     # Cancel all queued/running jobs
     result = await session.execute(
         select(IngestionJob).where(IngestionJob.status.in_([JobStatus.queued, JobStatus.running]))
     )
     jobs = result.scalars().all()
     cancelled = 0
-    version_ids = set()
+    doc_ids_affected: set[uuid.UUID] = set()
     for job in jobs:
         job.status = JobStatus.error
         job.error = "Cancelled by admin (queue clear)"
-        version_ids.add(job.version_id)
+        doc_ids_affected.add(job.doc_id)
         cancelled += 1
 
-    # Reset affected versions: if all their non-error stages are done, set to ready
-    for vid in version_ids:
-        version = await session.get(DocumentVersion, vid)
-        if version and version.status not in (VersionStatus.ready, VersionStatus.error):
-            # Check if the version has completed finalize
+    # Reset affected documents: if finalize completed, set ready; otherwise error
+    for did in doc_ids_affected:
+        doc = await session.get(Document, did)
+        if doc and doc.pipeline_status not in (PipelineStatus.ready, PipelineStatus.error):
             fin_result = await session.execute(
                 select(IngestionJob).where(
-                    IngestionJob.version_id == vid,
+                    IngestionJob.doc_id == did,
                     IngestionJob.stage == JobStage.finalize,
                     IngestionJob.status == JobStatus.done,
                 )
             )
             if fin_result.scalar_one_or_none():
-                version.status = VersionStatus.ready
+                doc.pipeline_status = PipelineStatus.ready
             else:
-                version.status = VersionStatus.error
-                version.error = "Queue cleared before pipeline completed"
+                doc.pipeline_status = PipelineStatus.error
+                doc.error = "Queue cleared before pipeline completed"
 
     await log_audit(session, user_id=admin.id, action="clear_queue", detail={"cancelled": cancelled})
     await session.commit()
 
-    logger.info("Queue cleared: %d jobs cancelled, %d versions affected", cancelled, len(version_ids))
-    return {"cancelled": cancelled, "versions_affected": len(version_ids)}
+    logger.info("Queue cleared: %d jobs cancelled, %d documents affected", cancelled, len(doc_ids_affected))
+    return {"cancelled": cancelled, "versions_affected": len(doc_ids_affected)}
 
 
 @router.post("/system/run-migrations")
@@ -402,17 +390,9 @@ async def reprocess_all(
 
     count = 0
     for doc in docs:
-        version_id = doc.latest_version_id
-        if version_id is None:
-            continue
-
-        ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id))
-        version = ver_result.scalar_one_or_none()
-        if version is None:
-            continue
-
-        version.status = VersionStatus.queued
-        version.error = None
+        doc.pipeline_status = PipelineStatus.queued
+        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
+        doc.error = None
         count += 1
 
     await log_audit(
@@ -425,10 +405,8 @@ async def reprocess_all(
 
     # Reset and re-enqueue outside the async session (sync calls)
     for doc in docs:
-        if doc.latest_version_id is None:
-            continue
-        reset_jobs(doc.latest_version_id)
-        enqueue_stage(doc.latest_version_id, JobStage.extract)
+        reset_jobs(doc.doc_id)
+        enqueue_stage(doc.doc_id, JobStage.extract)
 
     logger.info("Reprocess-all: %d documents queued", count)
     return {"reprocessed": count}
@@ -446,29 +424,27 @@ async def resummarize_all(
     """
     from harbor_clerk.worker.pipeline import enqueue_stage
 
-    # Find active documents with ready versions that have chunks
+    # Find active documents that are ready (pipeline complete)
     result = await session.execute(
-        select(DocumentVersion.version_id)
-        .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-        .where(
+        select(Document.doc_id).where(
             Document.status == "active",
-            DocumentVersion.status == VersionStatus.ready,
+            Document.pipeline_status == PipelineStatus.ready,
         )
     )
-    version_ids = [row[0] for row in result.all()]
+    doc_ids_ready = [row[0] for row in result.all()]
 
     await log_audit(
         session,
         user_id=admin.id,
         action="resummarize_all",
-        detail={"resummarized_count": len(version_ids)},
+        detail={"resummarized_count": len(doc_ids_ready)},
     )
     await session.commit()
 
     # Enqueue summarize jobs outside the async session (sync calls)
     count = 0
-    for vid in version_ids:
-        enqueue_stage(vid, JobStage.summarize)
+    for did in doc_ids_ready:
+        enqueue_stage(did, JobStage.summarize)
         count += 1
 
     logger.info("Resummarize-all: %d documents queued", count)
@@ -502,9 +478,7 @@ async def delete_all_documents(
 
     # TRUNCATE CASCADE all document-related tables
     await session.execute(
-        text(
-            "TRUNCATE entities, chunks, document_headings, document_pages, ingestion_jobs, document_versions, documents, uploads CASCADE"
-        )
+        text("TRUNCATE entities, chunks, document_headings, document_pages, ingestion_jobs, documents, uploads CASCADE")
     )
 
     await log_audit(

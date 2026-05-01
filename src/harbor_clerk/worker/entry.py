@@ -141,9 +141,7 @@ def _lookup_filename(doc_id: uuid.UUID) -> str | None:
 
     session = get_sync_session()
     try:
-        doc = session.execute(
-            select(Document).where(Document.doc_id == doc_id)
-        ).scalar_one_or_none()
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
         if doc:
             if doc.original_object_key:
                 return posixpath.basename(doc.original_object_key)
@@ -197,9 +195,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
                 job.error = error_msg
                 job.finished_at = datetime.now(UTC)
 
-            doc = session.execute(
-                select(Document).where(Document.doc_id == doc_id)
-            ).scalar_one_or_none()
+            doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
             if doc:
                 doc.pipeline_status = PipelineStatus.error
                 doc.error = error_msg

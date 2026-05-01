@@ -121,8 +121,8 @@ async def _session_reaper_loop() -> None:
                 orphan_jobs = orphan_result.scalars().all()
                 for job in orphan_jobs:
                     logger.warning(
-                        "Reaper: re-queuing orphan job version=%s stage=%s (heartbeat=%s)",
-                        job.version_id,
+                        "Reaper: re-queuing orphan job doc=%s stage=%s (heartbeat=%s)",
+                        job.doc_id,
                         job.stage.value,
                         job.heartbeat_at,
                     )

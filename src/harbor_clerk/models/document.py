@@ -23,7 +23,9 @@ class Document(Base):
         nullable=False,
     )
     pipeline_seq: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default=text("0"),
+        Integer,
+        nullable=False,
+        server_default=text("0"),
     )
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_model: Mapped[str | None] = mapped_column(Text, nullable=True)

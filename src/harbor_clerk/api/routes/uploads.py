@@ -31,13 +31,15 @@ from harbor_clerk.api.schemas.uploads import (
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import Settings, get_settings
 from harbor_clerk.db import get_session
-from harbor_clerk.models import Document, DocumentVersion, Upload, UploadSession
-from harbor_clerk.models.enums import JobStage, VersionStatus
+from harbor_clerk.models import Document, Upload, UploadSession
+from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["uploads"])
 
+# Note: a local copy of this set also lives in harbor_clerk/watcher/events.py.
+# The watcher keeps its own copy to avoid a watcher → api dependency.
 ALLOWED_EXTENSIONS = {
     # Documents
     ".pdf",
@@ -144,13 +146,11 @@ async def upload_files(
         sha256_bytes = sha.digest()
         mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
 
-        # Check for duplicate by SHA256
-        dup_result = await session.execute(
-            select(DocumentVersion).where(DocumentVersion.original_sha256 == sha256_bytes)
-        )
-        dup_version = dup_result.scalar_one_or_none()
+        # Check for duplicate by SHA256 directly on Document
+        dup_result = await session.execute(select(Document).where(Document.sha256 == sha256_bytes))
+        dup_doc = dup_result.scalar_one_or_none()
 
-        if dup_version is not None:
+        if dup_doc is not None:
             upload_row = Upload(
                 user_id=principal.id if principal.type == "user" else None,
                 original_filename=file.filename or "unknown",
@@ -159,8 +159,7 @@ async def upload_files(
                 sha256=sha256_bytes,
                 minio_bucket=settings.minio_bucket,
                 minio_object_key="",  # not stored for duplicates
-                doc_id=dup_version.doc_id,
-                version_id=dup_version.version_id,
+                doc_id=dup_doc.doc_id,
                 status="duplicate",
             )
             session.add(upload_row)
@@ -172,8 +171,7 @@ async def upload_files(
                     size_bytes=total_size,
                     mime_type=mime,
                     status="duplicate",
-                    duplicate_doc_id=str(dup_version.doc_id),
-                    duplicate_version_id=str(dup_version.version_id),
+                    duplicate_doc_id=str(dup_doc.doc_id),
                 )
             )
             continue
@@ -229,7 +227,7 @@ async def _confirm_single(
 ) -> ConfirmUploadResponse:
     """Core confirm logic shared by single and batch endpoints.
 
-    Raises HTTPException on validation errors.
+    Creates a Document directly (no DocumentVersion). Raises HTTPException on validation errors.
     """
     try:
         upload_uuid = uuid.UUID(upload_id_str)
@@ -251,12 +249,40 @@ async def _confirm_single(
     if action == "new_document":
         filename = upload.original_filename
         title = filename.rsplit(".", 1)[0] if "." in filename else filename
-        doc = Document(title=title, canonical_filename=filename)
+        safe_name = os.path.basename(filename) or "file"
+        # Allocate canonical storage key
+        new_doc_id = uuid.uuid4()
+        canonical_key = f"versions/{new_doc_id}/{safe_name}"
+        storage = get_storage()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            storage.copy_and_delete,
+            upload.minio_bucket,
+            upload.minio_object_key,
+            settings.minio_bucket,
+            canonical_key,
+        )
+
+        doc = Document(
+            doc_id=new_doc_id,
+            title=title,
+            canonical_filename=filename,
+            sha256=upload.sha256,
+            pipeline_status=PipelineStatus.queued,
+            mime_type=upload.mime_type,
+            size_bytes=upload.size_bytes,
+            source_path=source_path,
+            original_bucket=settings.minio_bucket,
+            original_object_key=canonical_key,
+        )
         session.add(doc)
         await session.flush()
         doc_id = doc.doc_id
 
     elif action == "new_version":
+        # In the flat schema "new version" means replacing the content of the existing document.
+        # We update the document in place with the new content fields.
         if existing_doc_id is None:
             raise HTTPException(status_code=422, detail="existing_doc_id required for new_version")
         try:
@@ -272,52 +298,48 @@ async def _confirm_single(
         doc = doc_result.scalar_one_or_none()
         if doc is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+        safe_name = os.path.basename(upload.original_filename) or "file"
+        canonical_key = f"versions/{doc_id}/{safe_name}"
+        storage = get_storage()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            storage.copy_and_delete,
+            upload.minio_bucket,
+            upload.minio_object_key,
+            settings.minio_bucket,
+            canonical_key,
+        )
+
+        # Update doc with new content
+        doc.sha256 = upload.sha256
+        doc.pipeline_status = PipelineStatus.queued
+        doc.mime_type = upload.mime_type
+        doc.size_bytes = upload.size_bytes
+        doc.source_path = source_path
+        doc.original_bucket = settings.minio_bucket
+        doc.original_object_key = canonical_key
+        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
+        doc.error = None
+
     else:
         raise HTTPException(status_code=422, detail="action must be 'new_document' or 'new_version'")
 
-    version = DocumentVersion(
-        doc_id=doc_id,
-        original_sha256=upload.sha256,
-        original_bucket=settings.minio_bucket,
-        original_object_key="",
-        mime_type=upload.mime_type,
-        size_bytes=upload.size_bytes,
-        status=VersionStatus.queued,
-        source_path=source_path,
-    )
-    session.add(version)
-    await session.flush()
-
-    safe_name = os.path.basename(upload.original_filename) or "file"
-    canonical_key = f"versions/{version.version_id}/{safe_name}"
-    storage = get_storage()
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
-        storage.copy_and_delete,
-        upload.minio_bucket,
-        upload.minio_object_key,
-        settings.minio_bucket,
-        canonical_key,
-    )
-    version.original_object_key = canonical_key
-
     upload.doc_id = doc_id
-    upload.version_id = version.version_id
     upload.status = "processing"
 
     await log_audit(
         session,
         user_id=principal.id if principal.type == "user" else None,
         action="confirm_upload",
-        target_type="document_version",
-        target_id=version.version_id,
+        target_type="document",
+        target_id=doc_id,
         detail={"action": action, "doc_id": str(doc_id)},
     )
 
     return ConfirmUploadResponse(
         doc_id=str(doc_id),
-        version_id=str(version.version_id),
         status="processing",
     )
 
@@ -342,7 +364,7 @@ async def confirm_upload(
 
     from harbor_clerk.worker.pipeline import enqueue_stage
 
-    enqueue_stage(uuid.UUID(result.version_id), JobStage.extract)
+    enqueue_stage(uuid.UUID(result.doc_id), JobStage.extract)
 
     return result
 
@@ -355,7 +377,7 @@ async def confirm_upload_batch(
 ):
     settings = get_settings()
     results: list[BatchConfirmResultItem] = []
-    version_ids_to_enqueue: list[uuid.UUID] = []
+    doc_ids_to_enqueue: list[uuid.UUID] = []
 
     for item in body.items:
         try:
@@ -372,11 +394,10 @@ async def confirm_upload_batch(
                 BatchConfirmResultItem(
                     upload_id=item.upload_id,
                     doc_id=confirm_result.doc_id,
-                    version_id=confirm_result.version_id,
                     status=confirm_result.status,
                 )
             )
-            version_ids_to_enqueue.append(uuid.UUID(confirm_result.version_id))
+            doc_ids_to_enqueue.append(uuid.UUID(confirm_result.doc_id))
         except HTTPException as exc:
             results.append(
                 BatchConfirmResultItem(
@@ -393,8 +414,8 @@ async def confirm_upload_batch(
     loop = asyncio.get_running_loop()
 
     def _enqueue_all():
-        for vid in version_ids_to_enqueue:
-            enqueue_stage(vid, JobStage.extract)
+        for did in doc_ids_to_enqueue:
+            enqueue_stage(did, JobStage.extract)
 
     await loop.run_in_executor(None, _enqueue_all)
 
@@ -429,7 +450,6 @@ async def list_uploads(
             original_filename=u.original_filename,
             status=u.status,
             doc_id=str(u.doc_id) if u.doc_id else None,
-            version_id=str(u.version_id) if u.version_id else None,
             created_at=u.created_at,
         )
         for u in uploads
@@ -554,11 +574,11 @@ async def upload_file_to_session(
     sha256_hex = sha.hexdigest()
     mime = file.content_type or mimetypes.guess_type(fname)[0] or "application/octet-stream"
 
-    # Duplicate check
-    dup_result = await db.execute(select(DocumentVersion).where(DocumentVersion.original_sha256 == sha256_bytes))
-    dup_version = dup_result.scalar_one_or_none()
+    # Duplicate check — match by SHA256 on Document directly
+    dup_result = await db.execute(select(Document).where(Document.sha256 == sha256_bytes))
+    dup_doc = dup_result.scalar_one_or_none()
 
-    if dup_version is not None:
+    if dup_doc is not None:
         upload_row = Upload(
             user_id=principal.id if principal.type == "user" else None,
             session_id=us.session_id,
@@ -569,8 +589,7 @@ async def upload_file_to_session(
             sha256=sha256_bytes,
             minio_bucket=settings.minio_bucket,
             minio_object_key="",
-            doc_id=dup_version.doc_id,
-            version_id=dup_version.version_id,
+            doc_id=dup_doc.doc_id,
             status="duplicate",
         )
         db.add(upload_row)
@@ -584,39 +603,37 @@ async def upload_file_to_session(
             sha256=sha256_hex,
             filename=fname,
             size_bytes=total_size,
-            duplicate_doc_id=str(dup_version.doc_id),
-            duplicate_version_id=str(dup_version.version_id),
+            duplicate_doc_id=str(dup_doc.doc_id),
         )
 
     if us.auto_confirm:
-        # Auto-confirm: create document + version immediately
+        # Auto-confirm: create Document directly with all content fields
         safe_name = os.path.basename(fname) or "file"
         title = safe_name.rsplit(".", 1)[0] if "." in safe_name else safe_name
-        doc = Document(title=title, canonical_filename=safe_name)
-        db.add(doc)
-        await db.flush()
+        new_doc_id = uuid.uuid4()
+        canonical_key = f"versions/{new_doc_id}/{safe_name}"
 
-        version = DocumentVersion(
-            doc_id=doc.doc_id,
-            original_sha256=sha256_bytes,
-            original_bucket=settings.minio_bucket,
-            original_object_key="",
-            mime_type=mime,
-            size_bytes=total_size,
-            status=VersionStatus.queued,
-            source_path=source_path,
-        )
-        db.add(version)
-        await db.flush()
-
-        canonical_key = f"versions/{version.version_id}/{safe_name}"
         content = b"".join(chunks)
         storage = get_storage()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, storage.put_object, settings.minio_bucket, canonical_key, io.BytesIO(content), total_size, mime
         )
-        version.original_object_key = canonical_key
+
+        doc = Document(
+            doc_id=new_doc_id,
+            title=title,
+            canonical_filename=safe_name,
+            sha256=sha256_bytes,
+            pipeline_status=PipelineStatus.queued,
+            mime_type=mime,
+            size_bytes=total_size,
+            source_path=source_path,
+            original_bucket=settings.minio_bucket,
+            original_object_key=canonical_key,
+        )
+        db.add(doc)
+        await db.flush()
 
         upload_row = Upload(
             user_id=principal.id if principal.type == "user" else None,
@@ -629,7 +646,6 @@ async def upload_file_to_session(
             minio_bucket=settings.minio_bucket,
             minio_object_key=canonical_key,
             doc_id=doc.doc_id,
-            version_id=version.version_id,
             status="processing",
         )
         db.add(upload_row)
@@ -639,8 +655,8 @@ async def upload_file_to_session(
             db,
             user_id=principal.id if principal.type == "user" else None,
             action="confirm_upload",
-            target_type="document_version",
-            target_id=version.version_id,
+            target_type="document",
+            target_id=doc.doc_id,
             detail={"action": "new_document", "doc_id": str(doc.doc_id), "session_id": str(us.session_id)},
         )
         await db.commit()
@@ -648,7 +664,7 @@ async def upload_file_to_session(
         # Enqueue extraction outside the session
         from harbor_clerk.worker.pipeline import enqueue_stage
 
-        await loop.run_in_executor(None, enqueue_stage, version.version_id, JobStage.extract)
+        await loop.run_in_executor(None, enqueue_stage, doc.doc_id, JobStage.extract)
 
         return SessionFileUploadResponse(
             upload_id=str(upload_row.upload_id),
@@ -658,7 +674,6 @@ async def upload_file_to_session(
             filename=fname,
             size_bytes=total_size,
             doc_id=str(doc.doc_id),
-            version_id=str(version.version_id),
         )
     else:
         # Review mode: store to temp location
@@ -719,7 +734,7 @@ async def confirm_session(
 
     settings = get_settings()
     results: list[BatchConfirmResultItem] = []
-    version_ids_to_enqueue: list[uuid.UUID] = []
+    doc_ids_to_enqueue: list[uuid.UUID] = []
 
     confirmed_count = 0
     failed_count = 0
@@ -738,11 +753,10 @@ async def confirm_session(
                 BatchConfirmResultItem(
                     upload_id=str(upload.upload_id),
                     doc_id=confirm_result.doc_id,
-                    version_id=confirm_result.version_id,
                     status=confirm_result.status,
                 )
             )
-            version_ids_to_enqueue.append(uuid.UUID(confirm_result.version_id))
+            doc_ids_to_enqueue.append(uuid.UUID(confirm_result.doc_id))
             confirmed_count += 1
         except HTTPException as exc:
             results.append(
@@ -771,8 +785,8 @@ async def confirm_session(
     loop = asyncio.get_running_loop()
 
     def _enqueue_all():
-        for vid in version_ids_to_enqueue:
-            enqueue_stage(vid, JobStage.extract)
+        for did in doc_ids_to_enqueue:
+            enqueue_stage(did, JobStage.extract)
 
     await loop.run_in_executor(None, _enqueue_all)
 
