@@ -71,9 +71,10 @@ def test_rename_one_renamed_one_orphan(sync_session, fs_backend):
     _put(fs_backend, old_key)
     _put(fs_backend, orphan_key)
 
-    with patch("harbor_clerk.maintenance.rename_originals.get_storage", return_value=fs_backend), patch(
-        "harbor_clerk.maintenance.rename_originals.get_settings"
-    ) as mock_settings:
+    with (
+        patch("harbor_clerk.maintenance.rename_originals.get_storage", return_value=fs_backend),
+        patch("harbor_clerk.maintenance.rename_originals.get_settings") as mock_settings,
+    ):
         mock_settings.return_value.minio_bucket = "originals"
         renamed, orphans = rename_all(sync_session)
 
@@ -95,9 +96,10 @@ def test_rename_idempotent(sync_session, fs_backend):
     _make_doc(sync_session, doc_id, "bar.pdf")
 
     # No objects under the old prefix — second run should skip cleanly
-    with patch("harbor_clerk.maintenance.rename_originals.get_storage", return_value=fs_backend), patch(
-        "harbor_clerk.maintenance.rename_originals.get_settings"
-    ) as mock_settings:
+    with (
+        patch("harbor_clerk.maintenance.rename_originals.get_storage", return_value=fs_backend),
+        patch("harbor_clerk.maintenance.rename_originals.get_settings") as mock_settings,
+    ):
         mock_settings.return_value.minio_bucket = "originals"
         renamed, orphans = rename_all(sync_session)
 
@@ -117,9 +119,10 @@ def test_rename_multiple_docs_distinct_filenames(sync_session, fs_backend):
     _put(fs_backend, old_a, b"alpha-data")
     _put(fs_backend, old_b, b"beta-data")
 
-    with patch("harbor_clerk.maintenance.rename_originals.get_storage", return_value=fs_backend), patch(
-        "harbor_clerk.maintenance.rename_originals.get_settings"
-    ) as mock_settings:
+    with (
+        patch("harbor_clerk.maintenance.rename_originals.get_storage", return_value=fs_backend),
+        patch("harbor_clerk.maintenance.rename_originals.get_settings") as mock_settings,
+    ):
         mock_settings.return_value.minio_bucket = "originals"
         renamed, orphans = rename_all(sync_session)
 
