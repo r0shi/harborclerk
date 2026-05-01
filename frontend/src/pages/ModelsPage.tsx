@@ -38,6 +38,7 @@ export default function ModelsPage() {
   const [downloading, setDownloading] = useState<Set<string>>(new Set())
   const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(new Map())
   const [yarnEnabled, setYarnEnabled] = useState(false)
+  const [summaryForceAfm, setSummaryForceAfm] = useState(false)
 
   const loadModelsRef = useRef(loadModels)
   useEffect(() => {
@@ -50,6 +51,8 @@ export default function ModelsPage() {
       setModels(data)
       const yarnStatus = await get<{ yarn_enabled: boolean }>('/api/chat/models/yarn')
       setYarnEnabled(yarnStatus.yarn_enabled)
+      const afmStatus = await get<{ summary_force_apple_intelligence: boolean }>('/api/chat/models/summary-afm')
+      setSummaryForceAfm(afmStatus.summary_force_apple_intelligence)
       const orphanList = await get<OrphanInfo[]>('/api/chat/models/orphaned')
       setOrphans(orphanList)
       // Seed downloading set from server state
@@ -237,6 +240,16 @@ export default function ModelsPage() {
       setYarnEnabled(enabled)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to toggle YaRN')
+    }
+  }
+
+  async function handleSummaryForceAfmToggle(enabled: boolean) {
+    setError('')
+    try {
+      await put(`/api/chat/models/summary-afm?enabled=${enabled}`)
+      setSummaryForceAfm(enabled)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to toggle Apple Intelligence summaries')
     }
   }
 
@@ -485,6 +498,35 @@ export default function ModelsPage() {
           )}
         </div>
       )}
+
+      {/* Always use Apple Intelligence for summaries */}
+      <div className="mt-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-medium text-gray-900 dark:text-gray-100">
+              Always use Apple Intelligence for summaries
+            </div>
+            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+              Skips the local LLM for the summarize stage and uses Apple Intelligence instead. Faster and lower-power on
+              Apple Silicon. Chat, research, and document-type classification still use the active model.
+            </p>
+          </div>
+          <button
+            onClick={() => handleSummaryForceAfmToggle(!summaryForceAfm)}
+            className={`relative ml-4 inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors duration-200 ${
+              summaryForceAfm ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+            }`}
+            role="switch"
+            aria-checked={summaryForceAfm}
+          >
+            <span
+              className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                summaryForceAfm ? 'translate-x-[22px]' : 'translate-x-[2px]'
+              } mt-[2px]`}
+            />
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
