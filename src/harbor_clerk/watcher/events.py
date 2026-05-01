@@ -7,6 +7,7 @@ provided session. Caller is responsible for commit.
 
 import hashlib
 import logging
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,6 +24,15 @@ from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
 
 logger = logging.getLogger(__name__)
+
+# SHA-256 of empty content. Every 0-byte file produces this digest,
+# so it's NOT a unique fingerprint and must never be used as a dedup
+# match target — otherwise the cross-content dedup branch in
+# `handle_event` would incorrectly group every transiently-empty file
+# (think: network-share copy mid-transfer) into the same Document.
+# See `_should_ignore_for_dedup` and the early "skip 0-byte files" check
+# in `handle_event` below.
+_EMPTY_FILE_SHA256 = hashlib.sha256(b"").digest()
 
 
 class EventKind(str, Enum):
@@ -112,8 +122,33 @@ def handle_event(session: Session, event: FileEvent) -> None:
             existing.removed_at = datetime.now(UTC)
         return
 
+    # Skip 0-byte files. Network shares (NFS / SMB / .AppleDouble-bearing
+    # filesystems) frequently expose files as 0 bytes mid-copy. Hashing
+    # them returns the empty-file sha256 (e3b0c4...), which is identical
+    # for every empty file. The cross-content dedup branch below would
+    # then incorrectly link unrelated 0-byte files to whichever Document
+    # was created first for an empty file — and the modify branch would
+    # subsequently attach each file's real-content version to that wrong
+    # Document. The next watchdog event (after the file finishes copying)
+    # will arrive with real content and be handled normally.
+    try:
+        if os.path.getsize(event.absolute_path) == 0:
+            logger.debug("watcher: skipping 0-byte file %s", event.relative_path)
+            return
+    except OSError:
+        # File vanished between event and stat (renamed away mid-flight, etc.)
+        return
+
     # Create / modified events: compute sha then dispatch
     sha = _sha256_of(event.absolute_path)
+
+    # Defensive: even if the size check above somehow lets one through
+    # (race between getsize and read; truncate-to-zero between syscalls),
+    # never accept the empty-file sha as a real fingerprint. Same harm
+    # as the size check prevents.
+    if sha == _EMPTY_FILE_SHA256:
+        logger.debug("watcher: skipping event with empty-file sha for %s", event.relative_path)
+        return
 
     # Existing active row, same sha → no-op
     if existing is not None and existing.status == WatchedFileStatus.active and existing.sha256 == sha:
