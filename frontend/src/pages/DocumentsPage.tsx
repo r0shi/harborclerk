@@ -221,6 +221,12 @@ export default function DocumentsPage() {
   const [sortField, setSortField] = useState<'updated' | 'created' | 'title'>(() => initField('sortField', 'updated'))
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => initField('sortDir', 'desc'))
 
+  // Filename filter input — declared up here (above the sessionStorage
+  // save useEffect that reads it) so the dependency array doesn't trip
+  // a use-before-declaration error. The handler + debounce timer live
+  // further down with the other filter handlers.
+  const [filterInput, setFilterInput] = useState(() => initField('filterInput', ''))
+
   // Entity autocomplete
   const [entityInput, setEntityInput] = useState(() => initField('entityInput', '', 'entity'))
   const [entitySuggestions, setEntitySuggestions] = useState<
@@ -267,7 +273,12 @@ export default function DocumentsPage() {
     const state: SavedDocsState = {
       currentPage,
       filter,
-      filterInput: entityInput,
+      // filterInput is the filename-filter textbox value. It MUST be
+      // saved as itself, not as entityInput — those are two different
+      // textboxes. Mixing them caused the textbox to render empty after
+      // a remount while the underlying `filter` was still applied,
+      // leaving no visible way to clear the filter.
+      filterInput,
       mimeFilter,
       langFilter,
       docTypeFilter,
@@ -284,6 +295,7 @@ export default function DocumentsPage() {
   }, [
     currentPage,
     filter,
+    filterInput,
     mimeFilter,
     langFilter,
     docTypeFilter,
@@ -386,9 +398,9 @@ export default function DocumentsPage() {
     loadDocs(currentPage, pageSize, filter)
   }, [loadDocs, currentPage, pageSize, filter])
 
-  // Debounce filter input
+  // Debounce filter input. (filterInput state itself is declared higher up
+  // alongside entityInput so the save useEffect can include it in its deps.)
   const filterTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const [filterInput, setFilterInput] = useState(() => initField('filterInput', ''))
 
   function handleFilterChange(value: string) {
     setFilterInput(value)
