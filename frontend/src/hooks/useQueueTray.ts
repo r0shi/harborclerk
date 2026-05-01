@@ -252,28 +252,67 @@ export function useQueueTray() {
 
   useJobEvents(onEvent)
 
-  // Backfill: fetch all active jobs on mount so the queue tray shows
-  // current state immediately instead of waiting for new SSE events.
+  // Backfill + periodic resync. Fetches /api/jobs/active to (a) populate
+  // initial state on mount and (b) correct drift caused by missed SSE
+  // events.
+  //
+  // Drift happens because the SSE connection auto-reconnects after a
+  // disconnect (network blip, sleep/wake, idle TCP timeout, backend
+  // hiccup during model switch) and starts streaming from "now" — every
+  // job event that fired during the gap is lost. With long ingestion
+  // runs the Active count can diverge from reality by hundreds of items.
+  //
+  // The fix runs the same backfill on a 15 s interval, and after each
+  // response any vid in activeItems that is NOT in the response gets
+  // removed silently (no toast, no completed-list entry — those events
+  // already fired in the past, the user has moved on). SSE remains the
+  // primary update channel; this is the truth-correction layer.
   useEffect(() => {
     if (!token) return
     let cancelled = false
-    async function backfill() {
+
+    async function resync() {
       try {
         const res = await fetch('/api/jobs/active', {
           headers: { Authorization: `Bearer ${token}` },
         })
         if (!res.ok || cancelled) return
         const events: JobEvent[] = await res.json()
+
+        // Apply each event through the normal handler so create/update
+        // logic stays in one place. Backfill events are always for
+        // queued/running stages, so they never trigger the finalize-done
+        // or error branches in onEvent.
         for (const event of events) {
-          if (!cancelled) onEvent(event)
+          if (cancelled) return
+          onEvent(event)
         }
+
+        // Ghost-removal: anything in activeItems that's not in the
+        // backfill response has finished (or errored) and we missed the
+        // notification. Drop it silently.
+        const liveVids = new Set(events.map((e) => e.version_id))
+        setActiveItems((prev) => {
+          let changed = false
+          const next = new Map(prev)
+          for (const vid of next.keys()) {
+            if (!liveVids.has(vid)) {
+              next.delete(vid)
+              changed = true
+            }
+          }
+          return changed ? next : prev
+        })
       } catch {
-        // non-fatal — SSE will catch up
+        // non-fatal — next tick will retry; SSE may be carrying the load.
       }
     }
-    backfill()
+
+    resync()
+    const id = setInterval(resync, 15_000)
     return () => {
       cancelled = true
+      clearInterval(id)
     }
   }, [token, onEvent])
 
