@@ -248,3 +248,53 @@ def test_handle_event_ignores_macosx_archive_metadata(sync_session, folder, tmp_
     )
     sync_session.commit()
     assert sync_session.query(WatchedFile).count() == 0
+
+
+def test_zero_byte_file_is_skipped(sync_session, folder, tmp_path):
+    """Regression: 0-byte files (network share mid-copy, etc.) MUST NOT be
+    ingested. Their empty-file sha256 would otherwise act as a non-discriminating
+    dedup magnet that links unrelated 0-byte files into the same Document and
+    propagates wrong-doc linkage when real content arrives."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"")  # 0 bytes
+    handle_event(
+        sync_session,
+        FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)),
+    )
+    sync_session.commit()
+    assert sync_session.query(WatchedFile).count() == 0
+    assert sync_session.query(Document).count() == 0
+
+
+def test_zero_byte_files_dont_collide_into_one_doc(sync_session, folder, tmp_path):
+    """Regression for the empty-sha-collision bug: two 0-byte files at
+    different paths must not get linked to a single Document via dedup."""
+    a = tmp_path / "a.pdf"
+    b = tmp_path / "b.pdf"
+    a.write_bytes(b"")
+    b.write_bytes(b"")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "a.pdf", str(a)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "b.pdf", str(b)))
+    sync_session.commit()
+    # Neither should have been ingested at all (both 0 bytes).
+    assert sync_session.query(WatchedFile).count() == 0
+    assert sync_session.query(Document).count() == 0
+
+
+def test_file_grows_from_zero_to_real_content_ingests_normally(sync_session, folder, tmp_path):
+    """After the 0-byte event is skipped, the next event with real content
+    must ingest cleanly — with no stale watched_file row poisoning the
+    'active+different sha' modify branch."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+    assert sync_session.query(WatchedFile).count() == 0  # skipped
+
+    f.write_bytes(b"real content")
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+
+    wfs = sync_session.query(WatchedFile).all()
+    assert len(wfs) == 1
+    assert wfs[0].sha256 == hashlib.sha256(b"real content").digest()
