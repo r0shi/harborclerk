@@ -438,10 +438,7 @@ export default function DocumentDetailPage() {
       setDoc((prev) => {
         if (!prev) return prev
         // Only handle events for this document
-        // TODO: useJobEvents will be updated in Task 10 to emit doc_id as primary field.
-        // For now use doc_id if present, fall back to checking via the doc itself.
-        const eventDocId = event.doc_id ?? (event as { version_id?: string }).version_id
-        if (eventDocId && eventDocId !== prev.doc_id) return prev
+        if (event.doc_id && event.doc_id !== prev.doc_id) return prev
 
         const jobs = [...prev.jobs]
         const jIdx = jobs.findIndex((j) => j.stage === event.stage)

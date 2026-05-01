@@ -11,7 +11,7 @@ export interface StageState {
 }
 
 export interface DocumentQueueItem {
-  version_id: string
+  doc_id: string
   filename: string
   stages: Map<string, StageState>
   current_stage: string
@@ -22,8 +22,7 @@ export interface DocumentQueueItem {
 }
 
 export interface CompletedItem {
-  version_id: string
-  doc_id?: string
+  doc_id: string
   filename: string
   status: 'done' | 'error'
   error_stage?: string
@@ -98,15 +97,15 @@ export function useQueueTray() {
   const purgeTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
 
   // Schedule purge of a completed item after TTL (different for done vs error)
-  const schedulePurge = useCallback((versionId: string, ttl: number) => {
-    const existing = purgeTimersRef.current.get(versionId)
+  const schedulePurge = useCallback((docId: string, ttl: number) => {
+    const existing = purgeTimersRef.current.get(docId)
     if (existing) clearTimeout(existing)
 
     const timer = setTimeout(() => {
-      setCompleted((prev) => prev.filter((c) => c.version_id !== versionId))
-      purgeTimersRef.current.delete(versionId)
+      setCompleted((prev) => prev.filter((c) => c.doc_id !== docId))
+      purgeTimersRef.current.delete(docId)
     }, ttl)
-    purgeTimersRef.current.set(versionId, timer)
+    purgeTimersRef.current.set(docId, timer)
   }, [])
 
   // Trigger toast (with debouncing)
@@ -128,18 +127,17 @@ export function useQueueTray() {
 
   const onEvent = useCallback(
     (event: JobEvent) => {
-      const vid = event.version_id
+      const did = event.doc_id
       const stage = event.stage
       const status = event.status as StageState['status']
 
       // Handle finalize done -> move to completed
       if (stage === 'finalize' && status === 'done') {
-        const existing = activeItemsRef.current.get(vid)
-        const filename = event.filename || existing?.filename || vid
+        const existing = activeItemsRef.current.get(did)
+        const filename = event.filename || existing?.filename || did
 
         const entry: CompletedItem = {
-          version_id: vid,
-          doc_id: event.doc_id,
+          doc_id: did,
           filename,
           status: 'done',
           page_count: event.page_count,
@@ -149,25 +147,25 @@ export function useQueueTray() {
 
         setActiveItems((prev) => {
           const next = new Map(prev)
-          next.delete(vid)
+          next.delete(did)
           return next
         })
         setCompleted((prev) => {
-          const filtered = prev.filter((c) => c.version_id !== vid)
+          const filtered = prev.filter((c) => c.doc_id !== did)
           return [entry, ...filtered]
         })
-        schedulePurge(vid, COMPLETED_TTL)
+        schedulePurge(did, COMPLETED_TTL)
         triggerToast()
         return
       }
 
       // Handle error -> move to completed
       if (status === 'error') {
-        const existing = activeItemsRef.current.get(vid)
-        const filename = event.filename || existing?.filename || vid
+        const existing = activeItemsRef.current.get(did)
+        const filename = event.filename || existing?.filename || did
 
         const entry: CompletedItem = {
-          version_id: vid,
+          doc_id: did,
           filename,
           status: 'error',
           error_stage: stage,
@@ -176,35 +174,35 @@ export function useQueueTray() {
 
         setActiveItems((prev) => {
           const next = new Map(prev)
-          next.delete(vid)
+          next.delete(did)
           return next
         })
         setCompleted((prev) => {
-          const filtered = prev.filter((c) => c.version_id !== vid)
+          const filtered = prev.filter((c) => c.doc_id !== did)
           return [entry, ...filtered]
         })
-        schedulePurge(vid, ERROR_TTL)
+        schedulePurge(did, ERROR_TTL)
         triggerToast()
         return
       }
 
-      // If this version is in the completed list, remove it (re-queued)
+      // If this doc is in the completed list, remove it (re-queued)
       setCompleted((prev) => {
-        if (!prev.some((c) => c.version_id === vid)) return prev
-        const timer = purgeTimersRef.current.get(vid)
+        if (!prev.some((c) => c.doc_id === did)) return prev
+        const timer = purgeTimersRef.current.get(did)
         if (timer) {
           clearTimeout(timer)
-          purgeTimersRef.current.delete(vid)
+          purgeTimersRef.current.delete(did)
         }
-        return prev.filter((c) => c.version_id !== vid)
+        return prev.filter((c) => c.doc_id !== did)
       })
 
       // Active event: update or create DocumentQueueItem
       setActiveItems((prev) => {
         const next = new Map(prev)
-        const existing = next.get(vid)
+        const existing = next.get(did)
         const stages = new Map(existing?.stages || [])
-        const filename = event.filename || existing?.filename || vid
+        const filename = event.filename || existing?.filename || did
 
         // If this is a new item and the event is for a stage beyond extract,
         // pre-fill earlier stages as done (e.g. resummarize only re-runs summarize)
@@ -232,8 +230,8 @@ export function useQueueTray() {
         const overall_progress = computeOverallProgress(stages)
         const itemStatus = computeItemStatus(stages)
 
-        next.set(vid, {
-          version_id: vid,
+        next.set(did, {
+          doc_id: did,
           filename,
           stages,
           current_stage,
@@ -291,7 +289,7 @@ export function useQueueTray() {
         // Ghost-removal: anything in activeItems that's not in the
         // backfill response has finished (or errored) and we missed the
         // notification. Drop it silently.
-        const liveVids = new Set(events.map((e) => e.version_id))
+        const liveVids = new Set(events.map((e) => e.doc_id))
         setActiveItems((prev) => {
           let changed = false
           const next = new Map(prev)

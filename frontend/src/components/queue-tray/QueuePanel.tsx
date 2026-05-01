@@ -83,7 +83,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
                   </div>
                   <div className="space-y-1">
                     {active.map((item) => (
-                      <DocumentRow key={item.version_id} item={item} />
+                      <DocumentRow key={item.doc_id} item={item} />
                     ))}
                   </div>
                 </div>
@@ -100,7 +100,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
                   </div>
                   <div className="space-y-2">
                     {completedDone.map((item) => (
-                      <CompletedRow key={item.version_id} item={item} />
+                      <CompletedRow key={item.doc_id} item={item} />
                     ))}
                   </div>
                 </div>
@@ -117,7 +117,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
                   </div>
                   <div className="space-y-2">
                     {completedErrors.map((item) => (
-                      <CompletedRow key={item.version_id} item={item} />
+                      <CompletedRow key={item.doc_id} item={item} />
                     ))}
                   </div>
                 </div>
