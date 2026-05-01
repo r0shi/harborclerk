@@ -13,10 +13,10 @@ from sqlalchemy import select
 
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.events import publish_job_event
-from harbor_clerk.models import DocumentPage, DocumentVersion, IngestionJob
+from harbor_clerk.models import Document, DocumentPage, IngestionJob
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
-from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
 
@@ -52,37 +52,38 @@ def _pdf_to_images(data: bytes) -> list[Image.Image]:
     return images
 
 
-def run_ocr(version_id: uuid.UUID) -> None:
+def run_ocr(doc_id: uuid.UUID) -> None:
     """Run OCR on pages that need it."""
-    if not mark_stage_running(version_id, JobStage.ocr):
+    if not mark_stage_running(doc_id, JobStage.ocr):
         return
 
     session = get_sync_session()
     try:
-        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        worker_seq = doc.pipeline_seq
 
         # If OCR not needed, just mark done
-        if not version.needs_ocr:
+        if not doc.needs_ocr:
             session.close()
-            mark_stage_done(version_id, JobStage.ocr)
+            mark_stage_done(doc_id, JobStage.ocr)
             return
 
-        # Read from storage if available; fall back to source_path for watched folder versions
-        if version.original_object_key:
+        # Read from storage if available; fall back to source_path for watched folder docs
+        if doc.original_object_key:
             storage = get_storage()
-            response = storage.get_object(version.original_bucket, version.original_object_key)
+            response = storage.get_object(doc.original_bucket, doc.original_object_key)
             data = response.read()
-        elif version.source_path and os.path.exists(version.source_path):
-            data = Path(version.source_path).read_bytes()
+        elif doc.source_path and os.path.exists(doc.source_path):
+            data = Path(doc.source_path).read_bytes()
         else:
-            raise RuntimeError(f"No source for version {version_id}")
+            raise RuntimeError(f"No source for doc {doc_id}")
 
-        mime = (version.mime_type or "").lower()
+        mime = (doc.mime_type or "").lower()
 
         # Update job progress total
         job = session.execute(
             select(IngestionJob).where(
-                IngestionJob.version_id == version_id,
+                IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == JobStage.ocr,
             )
         ).scalar_one()
@@ -94,22 +95,27 @@ def run_ocr(version_id: uuid.UUID) -> None:
 
             text, confidence = _ocr_image_bytes(data)
 
+            # Race check before writing results
+            if not check_pipeline_seq(session, doc_id, worker_seq):
+                logger.info("ocr: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+                return
+
             page = session.execute(
                 select(DocumentPage).where(
-                    DocumentPage.version_id == version_id,
+                    DocumentPage.doc_id == doc_id,
                     DocumentPage.page_num == 1,
                 )
             ).scalar_one()
             page.page_text = text
             page.ocr_used = True
             page.ocr_confidence = confidence
-            version.extracted_chars = len(text)
+            doc.extracted_chars = len(text)
 
             job.progress_current = 1
             session.commit()
-            publish_job_event(version_id, "ocr", "running", progress=1, total=1)
+            publish_job_event(doc_id, "ocr", "running", progress=1, total=1)
 
-        elif mime == "application/pdf" or (version.original_object_key or version.source_path or "").endswith(".pdf"):
+        elif mime == "application/pdf" or (doc.original_object_key or doc.source_path or "").endswith(".pdf"):
             # PDF → page images → OCR (using pypdfium2)
             images = _pdf_to_images(data)
             job.progress_total = len(images)
@@ -117,13 +123,14 @@ def run_ocr(version_id: uuid.UUID) -> None:
 
             pages = (
                 session.execute(
-                    select(DocumentPage).where(DocumentPage.version_id == version_id).order_by(DocumentPage.page_num)
+                    select(DocumentPage).where(DocumentPage.doc_id == doc_id).order_by(DocumentPage.page_num)
                 )
                 .scalars()
                 .all()
             )
 
             total_chars = 0
+            ocr_results = []
             for i, img in enumerate(images):
                 page_num = i + 1
                 # Convert PIL image to bytes for OCR
@@ -132,7 +139,14 @@ def run_ocr(version_id: uuid.UUID) -> None:
                 img_bytes = buf.getvalue()
 
                 text, confidence = _ocr_image_bytes(img_bytes)
+                ocr_results.append((page_num, text, confidence))
 
+            # Race check before writing results
+            if not check_pipeline_seq(session, doc_id, worker_seq):
+                logger.info("ocr: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+                return
+
+            for i, (page_num, text, confidence) in enumerate(ocr_results):
                 # Find or create page
                 page = None
                 for p in pages:
@@ -141,7 +155,7 @@ def run_ocr(version_id: uuid.UUID) -> None:
                         break
                 if page is None:
                     page = DocumentPage(
-                        version_id=version_id,
+                        doc_id=doc_id,
                         page_num=page_num,
                         page_text="",
                     )
@@ -160,9 +174,9 @@ def run_ocr(version_id: uuid.UUID) -> None:
 
                 job.progress_current = i + 1
                 session.commit()
-                publish_job_event(version_id, "ocr", "running", progress=i + 1, total=len(images))
+                publish_job_event(doc_id, "ocr", "running", progress=i + 1, total=len(images))
 
-            version.extracted_chars = total_chars
+            doc.extracted_chars = total_chars
             session.commit()
         else:
             logger.warning("OCR requested for unsupported mime type: %s", mime)
@@ -170,4 +184,4 @@ def run_ocr(version_id: uuid.UUID) -> None:
     finally:
         session.close()
 
-    mark_stage_done(version_id, JobStage.ocr)
+    mark_stage_done(doc_id, JobStage.ocr)

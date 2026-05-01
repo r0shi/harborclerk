@@ -21,8 +21,8 @@ from sqlalchemy import case, select, update
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import _make_sync_url, get_sync_session
 from harbor_clerk.events import publish_job_event
-from harbor_clerk.models import DocumentVersion, IngestionJob
-from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
+from harbor_clerk.models import Document, IngestionJob
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.worker.pipeline import STAGE_CONFIG
 from harbor_clerk.worker.stages import STAGE_FUNCTIONS
 
@@ -72,7 +72,7 @@ def _wait_for_notify(conn, timeout=30):
             conn.notifies.pop(0)
 
 
-def _heartbeat_loop(version_id: uuid.UUID, stage: JobStage, stop_event: threading.Event):
+def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, stop_event: threading.Event):
     """Update heartbeat_at every HEARTBEAT_INTERVAL seconds until stop_event is set."""
     while not stop_event.wait(timeout=HEARTBEAT_INTERVAL):
         session = get_sync_session()
@@ -80,7 +80,7 @@ def _heartbeat_loop(version_id: uuid.UUID, stage: JobStage, stop_event: threadin
             session.execute(
                 update(IngestionJob)
                 .where(
-                    IngestionJob.version_id == version_id,
+                    IngestionJob.doc_id == doc_id,
                     IngestionJob.stage == stage,
                 )
                 .values(heartbeat_at=datetime.now(UTC))
@@ -124,10 +124,10 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
         row.status = JobStatus.running
         row.started_at = now
         row.heartbeat_at = now
-        version_id = row.version_id
+        doc_id = row.doc_id
         stage = row.stage
         session.commit()
-        return (version_id, stage)
+        return (doc_id, stage)
     except Exception:
         session.rollback()
         raise
@@ -135,40 +135,40 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
         session.close()
 
 
-def _lookup_filename(version_id: uuid.UUID) -> str | None:
-    """Look up the original filename for a version."""
+def _lookup_filename(doc_id: uuid.UUID) -> str | None:
+    """Look up the original filename for a document."""
     import posixpath
 
     session = get_sync_session()
     try:
-        version = session.execute(
-            select(DocumentVersion).where(DocumentVersion.version_id == version_id)
+        doc = session.execute(
+            select(Document).where(Document.doc_id == doc_id)
         ).scalar_one_or_none()
-        if version:
-            if version.original_object_key:
-                return posixpath.basename(version.original_object_key)
-            if version.source_path:
-                return posixpath.basename(version.source_path)
+        if doc:
+            if doc.original_object_key:
+                return posixpath.basename(doc.original_object_key)
+            if doc.source_path:
+                return posixpath.basename(doc.source_path)
             return "unknown"
         return None
     finally:
         session.close()
 
 
-def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
+def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
     """Run a stage function with timeout enforcement via signal.alarm() and heartbeat."""
     _, timeout, _ = STAGE_CONFIG[stage]
     func = STAGE_FUNCTIONS[stage]
-    filename = _lookup_filename(version_id)
+    filename = _lookup_filename(doc_id)
 
-    logger.info("Starting %s for version %s (timeout=%ds)", stage.value, version_id, timeout)
-    publish_job_event(version_id, stage.value, "running", filename=filename)
+    logger.info("Starting %s for doc %s (timeout=%ds)", stage.value, doc_id, timeout)
+    publish_job_event(doc_id, stage.value, "running", filename=filename)
 
     # Start heartbeat thread
     stop_heartbeat = threading.Event()
     hb_thread = threading.Thread(
         target=_heartbeat_loop,
-        args=(version_id, stage, stop_heartbeat),
+        args=(doc_id, stage, stop_heartbeat),
         daemon=True,
     )
     hb_thread.start()
@@ -179,16 +179,16 @@ def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(timeout)
     try:
-        func(version_id)
+        func(doc_id)
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
-        logger.error("Job %s/%s failed: %s", version_id, stage.value, error_msg)
+        logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
 
         session = get_sync_session()
         try:
             job = session.execute(
                 select(IngestionJob).where(
-                    IngestionJob.version_id == version_id,
+                    IngestionJob.doc_id == doc_id,
                     IngestionJob.stage == stage,
                 )
             ).scalar_one_or_none()
@@ -197,18 +197,18 @@ def execute_job(version_id: uuid.UUID, stage: JobStage) -> None:
                 job.error = error_msg
                 job.finished_at = datetime.now(UTC)
 
-            version = session.execute(
-                select(DocumentVersion).where(DocumentVersion.version_id == version_id)
+            doc = session.execute(
+                select(Document).where(Document.doc_id == doc_id)
             ).scalar_one_or_none()
-            if version:
-                version.status = VersionStatus.error
-                version.error = error_msg
+            if doc:
+                doc.pipeline_status = PipelineStatus.error
+                doc.error = error_msg
 
             session.commit()
         finally:
             session.close()
 
-        publish_job_event(version_id, stage.value, "error", error=error_msg, filename=filename)
+        publish_job_event(doc_id, stage.value, "error", error=error_msg, filename=filename)
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old_handler)

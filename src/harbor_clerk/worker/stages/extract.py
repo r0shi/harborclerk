@@ -10,11 +10,11 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import DocumentHeading, DocumentPage, DocumentVersion
+from harbor_clerk.models import Document, DocumentHeading, DocumentPage
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
 from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
-from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
 
@@ -160,27 +160,28 @@ def _extract_headings_via_tika(
         return []
 
 
-def run_extract(version_id: uuid.UUID) -> None:
+def run_extract(doc_id: uuid.UUID) -> None:
     """Download file from storage, extract text, store pages."""
-    if not mark_stage_running(version_id, JobStage.extract):
+    if not mark_stage_running(doc_id, JobStage.extract):
         return
 
     session = get_sync_session()
     try:
-        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        worker_seq = doc.pipeline_seq
 
-        # Read from storage if available; fall back to source_path for watched folder versions
-        if version.original_object_key:
+        # Read from storage if available; fall back to source_path for watched folder docs
+        if doc.original_object_key:
             storage = get_storage()
-            response = storage.get_object(version.original_bucket, version.original_object_key)
+            response = storage.get_object(doc.original_bucket, doc.original_object_key)
             data = response.read()
-        elif version.source_path and os.path.exists(version.source_path):
-            data = Path(version.source_path).read_bytes()
+        elif doc.source_path and os.path.exists(doc.source_path):
+            data = Path(doc.source_path).read_bytes()
         else:
-            raise RuntimeError(f"No source for version {version_id}: source_path and original_object_key both empty")
+            raise RuntimeError(f"No source for doc {doc_id}: source_path and original_object_key both empty")
 
-        mime = (version.mime_type or "").lower()
-        obj_key = (version.original_object_key or version.source_path or "").lower()
+        mime = (doc.mime_type or "").lower()
+        obj_key = (doc.original_object_key or doc.source_path or "").lower()
 
         # Sniff RTF content regardless of extension/MIME
         is_rtf = data[:5] == b"{\\rtf"
@@ -214,31 +215,37 @@ def run_extract(version_id: uuid.UUID) -> None:
             # Unknown type — try Tika
             pages = _extract_via_tika(data, mime or "application/octet-stream")
 
-        # Delete existing pages for this version (idempotency)
+        # Compute totals before the race check
+        total_chars = sum(len(text) for _, text in pages)
+
+        # Race check before writing results
+        if not check_pipeline_seq(session, doc_id, worker_seq):
+            logger.info("extract: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+            return
+
+        # Delete existing pages for this doc (idempotency)
         existing_pages = (
-            session.execute(select(DocumentPage).where(DocumentPage.version_id == version_id)).scalars().all()
+            session.execute(select(DocumentPage).where(DocumentPage.doc_id == doc_id)).scalars().all()
         )
         for p in existing_pages:
             session.delete(p)
         session.flush()
 
         # Store pages
-        total_chars = 0
         for page_num, text in pages:
             page = DocumentPage(
-                version_id=version_id,
+                doc_id=doc_id,
                 page_num=page_num,
                 page_text=text,
                 ocr_used=False,
             )
             session.add(page)
-            total_chars += len(text)
 
         # Extract headings from Tika XHTML (skip images and plain text)
         skip_headings = is_image or mime in _SKIP_HEADINGS_MIMES or obj_key.endswith(_SKIP_HEADINGS_EXTS)
         # Delete existing headings (idempotency)
         existing_headings = (
-            session.execute(select(DocumentHeading).where(DocumentHeading.version_id == version_id)).scalars().all()
+            session.execute(select(DocumentHeading).where(DocumentHeading.doc_id == doc_id)).scalars().all()
         )
         for h in existing_headings:
             session.delete(h)
@@ -249,7 +256,7 @@ def run_extract(version_id: uuid.UUID) -> None:
             for hd in headings:
                 session.add(
                     DocumentHeading(
-                        version_id=version_id,
+                        doc_id=doc_id,
                         level=hd["level"],
                         title=hd["title"],
                         page_num=hd["page_num"],
@@ -258,9 +265,9 @@ def run_extract(version_id: uuid.UUID) -> None:
                 )
             if headings:
                 logger.info(
-                    "Extracted %d headings for version %s",
+                    "Extracted %d headings for doc %s",
                     len(headings),
-                    version_id,
+                    doc_id,
                 )
 
         # Determine if OCR is needed
@@ -307,32 +314,32 @@ def run_extract(version_id: uuid.UUID) -> None:
         is_never_ocr = is_rtf or mime in _NEVER_OCR_MIMES or obj_key.endswith(_NEVER_OCR_EXTS)
 
         if is_image:
-            version.needs_ocr = True
-            version.has_text_layer = False
+            doc.needs_ocr = True
+            doc.has_text_layer = False
         elif is_pdf:
             all_text = " ".join(text for _, text in pages)
             ratio = _alpha_ratio(all_text)
-            version.has_text_layer = total_chars > 0
-            version.needs_ocr = total_chars < 500 or ratio < 0.2
+            doc.has_text_layer = total_chars > 0
+            doc.needs_ocr = total_chars < 500 or ratio < 0.2
         elif is_never_ocr:
-            version.needs_ocr = False
-            version.has_text_layer = True
+            doc.needs_ocr = False
+            doc.has_text_layer = True
         else:
             # Unknown type — don't OCR
-            version.needs_ocr = False
-            version.has_text_layer = total_chars > 0
+            doc.needs_ocr = False
+            doc.has_text_layer = total_chars > 0
 
-        version.extracted_chars = total_chars
+        doc.extracted_chars = total_chars
 
         session.commit()
         logger.info(
-            "Extracted %d pages, %d chars for version %s (needs_ocr=%s)",
+            "Extracted %d pages, %d chars for doc %s (needs_ocr=%s)",
             len(pages),
             total_chars,
-            version_id,
-            version.needs_ocr,
+            doc_id,
+            doc.needs_ocr,
         )
     finally:
         session.close()
 
-    mark_stage_done(version_id, JobStage.extract)
+    mark_stage_done(doc_id, JobStage.extract)

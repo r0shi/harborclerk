@@ -8,9 +8,9 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import Chunk, DocumentPage, DocumentVersion
+from harbor_clerk.models import Chunk, Document, DocumentPage
 from harbor_clerk.models.enums import JobStage
-from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
 
@@ -99,27 +99,28 @@ def _find_page_range(
     return page_start, page_end
 
 
-def run_chunk(version_id: uuid.UUID) -> None:
+def run_chunk(doc_id: uuid.UUID) -> None:
     """Split extracted text into overlapping chunks."""
-    if not mark_stage_running(version_id, JobStage.chunk):
+    if not mark_stage_running(doc_id, JobStage.chunk):
         return
 
     session = get_sync_session()
     try:
-        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        worker_seq = doc.pipeline_seq
 
         pages = (
             session.execute(
-                select(DocumentPage).where(DocumentPage.version_id == version_id).order_by(DocumentPage.page_num)
+                select(DocumentPage).where(DocumentPage.doc_id == doc_id).order_by(DocumentPage.page_num)
             )
             .scalars()
             .all()
         )
 
         if not pages:
-            logger.warning("No pages to chunk for version %s", version_id)
+            logger.warning("No pages to chunk for doc %s", doc_id)
             session.close()
-            mark_stage_done(version_id, JobStage.chunk)
+            mark_stage_done(doc_id, JobStage.chunk)
             return
 
         # Concatenate all page text with page boundary tracking
@@ -138,15 +139,20 @@ def run_chunk(version_id: uuid.UUID) -> None:
         # Remove trailing newline
         full_text = full_text.rstrip()
 
+        # Split into chunks (compute before race check)
+        settings = get_settings()
+        chunk_ranges = _split_text(full_text, target=settings.chunk_target_size, overlap=settings.chunk_overlap)
+
+        # Race check before writing results
+        if not check_pipeline_seq(session, doc_id, worker_seq):
+            logger.info("chunk: pipeline_seq bumped during processing for %s, aborting write", doc_id)
+            return
+
         # Delete existing chunks (idempotency)
-        existing = session.execute(select(Chunk).where(Chunk.version_id == version_id)).scalars().all()
+        existing = session.execute(select(Chunk).where(Chunk.doc_id == doc_id)).scalars().all()
         for c in existing:
             session.delete(c)
         session.flush()
-
-        # Split into chunks
-        settings = get_settings()
-        chunk_ranges = _split_text(full_text, target=settings.chunk_target_size, overlap=settings.chunk_overlap)
 
         for i, (char_start, char_end) in enumerate(chunk_ranges):
             chunk_text = full_text[char_start:char_end]
@@ -170,8 +176,7 @@ def run_chunk(version_id: uuid.UUID) -> None:
                 ocr_confidence = sum(confidences) / len(confidences)
 
             chunk = Chunk(
-                version_id=version_id,
-                doc_id=version.doc_id,
+                doc_id=doc_id,
                 chunk_num=i,
                 page_start=page_start,
                 page_end=page_end,
@@ -185,8 +190,8 @@ def run_chunk(version_id: uuid.UUID) -> None:
             session.add(chunk)
 
         session.commit()
-        logger.info("Created %d chunks for version %s", len(chunk_ranges), version_id)
+        logger.info("Created %d chunks for doc %s", len(chunk_ranges), doc_id)
     finally:
         session.close()
 
-    mark_stage_done(version_id, JobStage.chunk)
+    mark_stage_done(doc_id, JobStage.chunk)

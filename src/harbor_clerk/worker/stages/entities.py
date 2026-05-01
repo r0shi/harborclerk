@@ -6,54 +6,59 @@ import uuid
 from sqlalchemy import select
 
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import Chunk, DocumentVersion
+from harbor_clerk.models import Chunk, Document
 from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.ner import extract_entities_batch
-from harbor_clerk.worker.pipeline import mark_stage_done, mark_stage_running
+from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
 
 
-def run_entities(version_id: uuid.UUID) -> None:
-    """Extract named entities from all chunks for this version."""
-    if not mark_stage_running(version_id, JobStage.entities):
+def run_entities(doc_id: uuid.UUID) -> None:
+    """Extract named entities from all chunks for this doc."""
+    if not mark_stage_running(doc_id, JobStage.entities):
         return
 
     session = get_sync_session()
     try:
-        version = session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id)).scalar_one()
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        worker_seq = doc.pipeline_seq
 
         chunks = (
-            session.execute(select(Chunk).where(Chunk.version_id == version_id).order_by(Chunk.chunk_num))
+            session.execute(select(Chunk).where(Chunk.doc_id == doc_id).order_by(Chunk.chunk_num))
             .scalars()
             .all()
         )
 
         if not chunks:
-            logger.warning("No chunks to extract entities from for version %s", version_id)
+            logger.warning("No chunks to extract entities from for doc %s", doc_id)
             session.close()
-            mark_stage_done(version_id, JobStage.entities, entity_count=0)
+            mark_stage_done(doc_id, JobStage.entities, entity_count=0)
+            return
+
+        # Batch NER (compute before race check)
+        batch_input = [(c.chunk_text, c.language or "english") for c in chunks]
+        batch_results = extract_entities_batch(batch_input)
+
+        # Race check before writing results
+        if not check_pipeline_seq(session, doc_id, worker_seq):
+            logger.info("entities: pipeline_seq bumped during processing for %s, aborting write", doc_id)
             return
 
         # Delete existing entities for idempotency
-        existing = session.execute(select(Entity).where(Entity.version_id == version_id)).scalars().all()
+        existing = session.execute(select(Entity).where(Entity.doc_id == doc_id)).scalars().all()
         for e in existing:
             session.delete(e)
         session.flush()
-
-        # Batch NER
-        batch_input = [(c.chunk_text, c.language or "english") for c in chunks]
-        batch_results = extract_entities_batch(batch_input)
 
         entity_count = 0
         for chunk, ents in zip(chunks, batch_results):
             for ent in ents:
                 session.add(
                     Entity(
-                        version_id=version_id,
                         chunk_id=chunk.chunk_id,
-                        doc_id=version.doc_id,
+                        doc_id=doc_id,
                         entity_text=ent.text,
                         entity_type=ent.type,
                         start_char=ent.start_char,
@@ -64,12 +69,12 @@ def run_entities(version_id: uuid.UUID) -> None:
 
         session.commit()
         logger.info(
-            "Extracted %d entities from %d chunks for version %s",
+            "Extracted %d entities from %d chunks for doc %s",
             entity_count,
             len(chunks),
-            version_id,
+            doc_id,
         )
     finally:
         session.close()
 
-    mark_stage_done(version_id, JobStage.entities, entity_count=entity_count)
+    mark_stage_done(doc_id, JobStage.entities, entity_count=entity_count)

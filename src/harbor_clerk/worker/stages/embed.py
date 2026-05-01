@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 64
 
 
-def run_embed(version_id: uuid.UUID) -> None:
-    """Generate embeddings for all chunks of a version."""
-    if not mark_stage_running(version_id, JobStage.embed):
+def run_embed(doc_id: uuid.UUID) -> None:
+    """Generate embeddings for all chunks of a doc."""
+    if not mark_stage_running(doc_id, JobStage.embed):
         return
 
     settings = get_settings()
@@ -29,22 +29,22 @@ def run_embed(version_id: uuid.UUID) -> None:
         # Load chunks missing embeddings
         chunks = (
             session.execute(
-                select(Chunk).where(Chunk.version_id == version_id, Chunk.embedding.is_(None)).order_by(Chunk.chunk_num)
+                select(Chunk).where(Chunk.doc_id == doc_id, Chunk.embedding.is_(None)).order_by(Chunk.chunk_num)
             )
             .scalars()
             .all()
         )
 
         if not chunks:
-            logger.info("No chunks to embed for version %s", version_id)
+            logger.info("No chunks to embed for doc %s", doc_id)
             session.close()
-            mark_stage_done(version_id, JobStage.embed)
+            mark_stage_done(doc_id, JobStage.embed)
             return
 
         # Update job progress total
         job = session.execute(
             select(IngestionJob).where(
-                IngestionJob.version_id == version_id,
+                IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == JobStage.embed,
             )
         ).scalar_one()
@@ -52,6 +52,8 @@ def run_embed(version_id: uuid.UUID) -> None:
         session.commit()
 
         # Process in batches
+        # Note: embeddings are written incrementally; no pipeline_seq race check needed
+        # because embeddings are idempotent and a re-run will overwrite cleanly.
         processed = 0
         for batch_start in range(0, len(chunks), BATCH_SIZE):
             batch = chunks[batch_start : batch_start + BATCH_SIZE]
@@ -72,15 +74,15 @@ def run_embed(version_id: uuid.UUID) -> None:
             job.progress_current = processed
             session.commit()
             publish_job_event(
-                version_id,
+                doc_id,
                 "embed",
                 "running",
                 progress=processed,
                 total=len(chunks),
             )
 
-        logger.info("Embedded %d chunks for version %s", len(chunks), version_id)
+        logger.info("Embedded %d chunks for doc %s", len(chunks), doc_id)
     finally:
         session.close()
 
-    mark_stage_done(version_id, JobStage.embed)
+    mark_stage_done(doc_id, JobStage.embed)
