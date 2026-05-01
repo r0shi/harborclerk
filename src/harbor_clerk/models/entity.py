@@ -11,12 +11,6 @@ class Entity(Base):
     __tablename__ = "entities"
 
     entity_id: Mapped[uuid_pk]
-    version_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("document_versions.version_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
     chunk_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("chunks.chunk_id", ondelete="CASCADE"),

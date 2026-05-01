@@ -2,9 +2,15 @@
 
 import uuid
 
-from harbor_clerk.models import Chunk, Document, DocumentVersion, Entity
-from harbor_clerk.models.enums import VersionStatus
+from harbor_clerk.models import Chunk, Document, Entity
+from harbor_clerk.models.enums import PipelineStatus
 from tests.conftest import auth_header
+
+# Minimal required fields for a Document row (sha256 NOT NULL, pipeline_status NOT NULL)
+_DOC_DEFAULTS = {
+    "sha256": b"\x00" * 32,
+    "pipeline_status": PipelineStatus.ready,
+}
 
 
 async def test_list_documents_empty(client, admin_user, admin_token):
@@ -18,7 +24,7 @@ async def test_list_documents_empty(client, admin_user, admin_token):
 
 
 async def test_list_documents_with_doc(client, admin_user, admin_token, db_session):
-    doc = Document(title="Test Doc", status="active")
+    doc = Document(title="Test Doc", status="active", **_DOC_DEFAULTS)
     db_session.add(doc)
     await db_session.flush()
 
@@ -31,8 +37,8 @@ async def test_list_documents_with_doc(client, admin_user, admin_token, db_sessi
 
 
 async def test_list_documents_excludes_deleted(client, admin_user, admin_token, db_session):
-    doc_active = Document(title="Active", status="active")
-    doc_deleted = Document(title="Deleted", status="deleted")
+    doc_active = Document(title="Active", status="active", **_DOC_DEFAULTS)
+    doc_deleted = Document(title="Deleted", status="deleted", **_DOC_DEFAULTS)
     db_session.add_all([doc_active, doc_deleted])
     await db_session.flush()
 
@@ -53,8 +59,10 @@ async def test_list_documents_requires_auth(client):
 async def test_list_documents_filter(client, admin_user, admin_token, db_session):
     db_session.add_all(
         [
-            Document(title="Budget Report 2024", canonical_filename="budget_2024.pdf", status="active"),
-            Document(title="Meeting Notes", canonical_filename="notes.txt", status="active"),
+            Document(
+                title="Budget Report 2024", canonical_filename="budget_2024.pdf", status="active", **_DOC_DEFAULTS
+            ),
+            Document(title="Meeting Notes", canonical_filename="notes.txt", status="active", **_DOC_DEFAULTS),
         ]
     )
     await db_session.flush()
@@ -68,7 +76,7 @@ async def test_list_documents_filter(client, admin_user, admin_token, db_session
 
 async def test_list_documents_pagination(client, admin_user, admin_token, db_session):
     for i in range(5):
-        db_session.add(Document(title=f"Doc {i}", status="active"))
+        db_session.add(Document(title=f"Doc {i}", status="active", **_DOC_DEFAULTS))
     await db_session.flush()
 
     resp = await client.get("/api/docs?limit=2&offset=0", headers=auth_header(admin_token))
@@ -87,7 +95,7 @@ async def test_list_documents_pagination(client, admin_user, admin_token, db_ses
 
 async def test_list_documents_limit_zero_returns_all(client, admin_user, admin_token, db_session):
     for i in range(3):
-        db_session.add(Document(title=f"Doc {i}", status="active"))
+        db_session.add(Document(title=f"Doc {i}", status="active", **_DOC_DEFAULTS))
     await db_session.flush()
 
     resp = await client.get("/api/docs?limit=0", headers=auth_header(admin_token))
@@ -99,8 +107,8 @@ async def test_list_documents_limit_zero_returns_all(client, admin_user, admin_t
 async def test_list_documents_filter_special_chars(client, admin_user, admin_token, db_session):
     db_session.add_all(
         [
-            Document(title="100% Complete", canonical_filename="report.pdf", status="active"),
-            Document(title="Other Doc", canonical_filename="other.pdf", status="active"),
+            Document(title="100% Complete", canonical_filename="report.pdf", status="active", **_DOC_DEFAULTS),
+            Document(title="Other Doc", canonical_filename="other.pdf", status="active", **_DOC_DEFAULTS),
         ]
     )
     await db_session.flush()
@@ -118,29 +126,22 @@ async def test_get_document_not_found(client, admin_user, admin_token):
 
 
 async def test_corpus_overview_happy(client, admin_user, admin_token, db_session):
-    doc = Document(title="Overview Doc", status="active")
-    db_session.add(doc)
-    await db_session.flush()
-
-    version = DocumentVersion(
-        doc_id=doc.doc_id,
-        original_sha256=b"sha256_for_overview_test_12345678",
-        original_bucket="originals",
-        original_object_key=f"originals/versions/{uuid.uuid4()}/test.pdf",
+    doc = Document(
+        title="Overview Doc",
+        status="active",
+        sha256=b"\x00" * 32,
         mime_type="application/pdf",
         size_bytes=5000,
-        status=VersionStatus.ready,
+        pipeline_status=PipelineStatus.ready,
         source_path="test.pdf",
         summary="A summary.",
     )
-    db_session.add(version)
+    db_session.add(doc)
     await db_session.flush()
-    doc.latest_version_id = version.version_id
 
     for i in range(3):
         db_session.add(
             Chunk(
-                version_id=version.version_id,
                 doc_id=doc.doc_id,
                 chunk_num=i,
                 page_start=1,
@@ -182,32 +183,15 @@ async def test_corpus_overview_empty(client, admin_user, admin_token):
 
 
 async def test_find_related_happy(client, admin_user, admin_token, db_session):
-    doc1 = Document(title="ML Guide", status="active")
-    doc2 = Document(title="DL Intro", status="active")
+    doc1 = Document(title="ML Guide", status="active", **_DOC_DEFAULTS)
+    doc2 = Document(title="DL Intro", status="active", **_DOC_DEFAULTS)
     db_session.add_all([doc1, doc2])
-    await db_session.flush()
-
-    for doc in [doc1, doc2]:
-        ver = DocumentVersion(
-            doc_id=doc.doc_id,
-            original_sha256=f"sha_{doc.title[:6]}".encode().ljust(31, b"_"),
-            original_bucket="originals",
-            original_object_key=f"originals/versions/{doc.doc_id}/f.pdf",
-            mime_type="application/pdf",
-            size_bytes=1000,
-            status=VersionStatus.ready,
-            source_path="f.pdf",
-        )
-        db_session.add(ver)
-        await db_session.flush()
-        doc.latest_version_id = ver.version_id
     await db_session.flush()
 
     emb = [0.9, 0.1] + [0.0] * 382
     for doc in [doc1, doc2]:
         db_session.add(
             Chunk(
-                version_id=doc.latest_version_id,
                 doc_id=doc.doc_id,
                 chunk_num=0,
                 page_start=1,
@@ -236,7 +220,7 @@ async def test_find_related_not_found(client, admin_user, admin_token):
 
 
 async def test_delete_document_requires_admin(client, regular_user, user_token, db_session):
-    doc = Document(title="To Delete", status="active")
+    doc = Document(title="To Delete", status="active", **_DOC_DEFAULTS)
     db_session.add(doc)
     await db_session.flush()
 
@@ -248,26 +232,11 @@ async def test_delete_document_requires_admin(client, regular_user, user_token, 
 
 
 async def test_get_document_entities_happy(client, admin_user, admin_token, db_session):
-    doc = Document(title="Entity Doc", status="active")
+    doc = Document(title="Entity Doc", status="active", **_DOC_DEFAULTS)
     db_session.add(doc)
     await db_session.flush()
 
-    version = DocumentVersion(
-        doc_id=doc.doc_id,
-        original_sha256=b"sha256_for_entity_test_12345678",
-        original_bucket="originals",
-        original_object_key=f"originals/versions/{doc.doc_id}/test.pdf",
-        mime_type="application/pdf",
-        size_bytes=5000,
-        status=VersionStatus.ready,
-        source_path="test.pdf",
-    )
-    db_session.add(version)
-    await db_session.flush()
-    doc.latest_version_id = version.version_id
-
     chunk = Chunk(
-        version_id=version.version_id,
         doc_id=doc.doc_id,
         chunk_num=0,
         page_start=1,
@@ -283,7 +252,6 @@ async def test_get_document_entities_happy(client, admin_user, admin_token, db_s
     db_session.add_all(
         [
             Entity(
-                version_id=version.version_id,
                 chunk_id=chunk.chunk_id,
                 doc_id=doc.doc_id,
                 entity_text="John Smith",
@@ -292,7 +260,6 @@ async def test_get_document_entities_happy(client, admin_user, admin_token, db_s
                 end_char=10,
             ),
             Entity(
-                version_id=version.version_id,
                 chunk_id=chunk.chunk_id,
                 doc_id=doc.doc_id,
                 entity_text="Acme Corp",
@@ -317,23 +284,8 @@ async def test_get_document_entities_happy(client, admin_user, admin_token, db_s
 
 
 async def test_get_document_entities_empty(client, admin_user, admin_token, db_session):
-    doc = Document(title="Empty Entity Doc", status="active")
+    doc = Document(title="Empty Entity Doc", status="active", **_DOC_DEFAULTS)
     db_session.add(doc)
-    await db_session.flush()
-
-    version = DocumentVersion(
-        doc_id=doc.doc_id,
-        original_sha256=b"sha256_for_empty_entity_test_12",
-        original_bucket="originals",
-        original_object_key=f"originals/versions/{doc.doc_id}/test.pdf",
-        mime_type="application/pdf",
-        size_bytes=1000,
-        status=VersionStatus.ready,
-        source_path="test.pdf",
-    )
-    db_session.add(version)
-    await db_session.flush()
-    doc.latest_version_id = version.version_id
     await db_session.flush()
 
     resp = await client.get(f"/api/docs/{doc.doc_id}/entities", headers=auth_header(admin_token))

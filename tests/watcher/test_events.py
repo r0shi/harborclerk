@@ -2,9 +2,12 @@ import hashlib
 
 import pytest
 
+from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.document import Document
-from harbor_clerk.models.document_version import DocumentVersion
-from harbor_clerk.models.enums import JobStage, JobStatus
+from harbor_clerk.models.document_heading import DocumentHeading
+from harbor_clerk.models.document_page import DocumentPage
+from harbor_clerk.models.entity import Entity
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watcher.events import EventKind, FileEvent, _should_ignore, handle_event
@@ -18,7 +21,13 @@ def folder(sync_session):
     return f
 
 
-def test_created_file_creates_watched_file_and_extract_job(sync_session, folder, tmp_path):
+# ---------------------------------------------------------------------------
+# Core state-machine tests (4 active-event branches + deleted-event branch)
+# ---------------------------------------------------------------------------
+
+
+def test_new_file_creates_document_and_extract_job(sync_session, folder, tmp_path):
+    """A created event for a fresh path → 1 Document, 1 IngestionJob (extract)."""
     f = tmp_path / "doc.pdf"
     f.write_bytes(b"hello world")
     event = FileEvent(
@@ -30,81 +39,104 @@ def test_created_file_creates_watched_file_and_extract_job(sync_session, folder,
     handle_event(sync_session, event)
     sync_session.commit()
 
-    wf = sync_session.query(WatchedFile).filter_by(folder_id=folder.folder_id).one()
+    assert sync_session.query(Document).count() == 1
+    doc = sync_session.query(Document).one()
+    assert doc.pipeline_status == PipelineStatus.queued
+    assert doc.pipeline_seq == 0
+    assert doc.sha256 == hashlib.sha256(b"hello world").digest()
+
+    wf = sync_session.query(WatchedFile).one()
     assert wf.relative_path == "doc.pdf"
     assert wf.sha256 == hashlib.sha256(b"hello world").digest()
     assert wf.status == WatchedFileStatus.active
+    assert wf.doc_id == doc.doc_id
 
-    job = sync_session.query(IngestionJob).filter_by(version_id=wf.version_id, stage=JobStage.extract).one()
+    job = sync_session.query(IngestionJob).one()
+    assert job.doc_id == doc.doc_id
+    assert job.stage == JobStage.extract
     assert job.status == JobStatus.queued
 
 
-def test_modified_file_with_new_sha_creates_new_version(sync_session, folder, tmp_path):
-    f = tmp_path / "doc.pdf"
-    f.write_bytes(b"v1")
-    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
-    sync_session.commit()
-    v1 = sync_session.query(WatchedFile).one().version_id
-
-    f.write_bytes(b"v2")
-    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "doc.pdf", str(f)))
-    sync_session.commit()
-
-    wf = sync_session.query(WatchedFile).one()
-    assert wf.version_id != v1
-    assert wf.sha256 == hashlib.sha256(b"v2").digest()
-
-
-def test_deleted_file_marks_watched_file_removed(sync_session, folder, tmp_path):
-    f = tmp_path / "doc.pdf"
-    f.write_bytes(b"x")
-    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
-    sync_session.commit()
-    f.unlink()
-    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "doc.pdf", str(f)))
-    sync_session.commit()
-
-    wf = sync_session.query(WatchedFile).one()
-    assert wf.status == WatchedFileStatus.removed
-    assert wf.removed_at is not None
-
-
-def test_modified_with_same_sha_is_noop(sync_session, folder, tmp_path):
+def test_modify_same_sha_is_noop(sync_session, folder, tmp_path):
+    """Branch 1: existing+active+same SHA → no-op (no new job, no state change)."""
     f = tmp_path / "doc.pdf"
     f.write_bytes(b"unchanged")
     handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
     sync_session.commit()
-    v1 = sync_session.query(WatchedFile).one().version_id
+
+    original_doc = sync_session.query(Document).one()
+    original_seq = original_doc.pipeline_seq
 
     handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "doc.pdf", str(f)))
     sync_session.commit()
 
-    wf = sync_session.query(WatchedFile).one()
-    assert wf.version_id == v1
+    assert sync_session.query(Document).count() == 1
+    doc = sync_session.query(Document).one()
+    assert doc.pipeline_seq == original_seq
+    # Only one job from the original create
+    assert sync_session.query(IngestionJob).count() == 1
 
 
-def test_modified_with_new_sha_reuses_existing_document(sync_session, folder, tmp_path):
-    """Modify must add a new DocumentVersion to the existing Document, not create a new Document."""
+def test_modify_replaces_in_place(sync_session, folder, tmp_path):
+    """Branch 2: existing+active+different SHA → bumps pipeline_seq, deletes children, enqueues extract.
+
+    The doc_id is preserved (chat citations / conversation references stay valid).
+    Old chunks/entities/pages/headings/jobs are wiped.
+    """
     f = tmp_path / "doc.pdf"
     f.write_bytes(b"v1")
     handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
     sync_session.commit()
+
     wf = sync_session.query(WatchedFile).one()
     original_doc_id = wf.doc_id
 
+    # Simulate child rows that exist after v1 ingestion
+    doc = sync_session.query(Document).one()
+    chunk = Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="old content")
+    page = DocumentPage(doc_id=doc.doc_id, page_num=1)
+    heading = DocumentHeading(doc_id=doc.doc_id, level=1, title="Old heading", position=0)
+    sync_session.add_all([chunk, page, heading])
+    sync_session.flush()
+    entity = Entity(
+        chunk_id=chunk.chunk_id, doc_id=doc.doc_id, entity_text="Alice", entity_type="PERSON", start_char=0, end_char=5
+    )
+    sync_session.add(entity)
+    sync_session.commit()
+
+    # Sanity: child rows exist
+    assert sync_session.query(Chunk).count() == 1
+    assert sync_session.query(DocumentPage).count() == 1
+    assert sync_session.query(DocumentHeading).count() == 1
+    assert sync_session.query(Entity).count() == 1
+
+    # Write new content and fire a modify event
     f.write_bytes(b"v2")
     handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "doc.pdf", str(f)))
     sync_session.commit()
 
-    wf = sync_session.query(WatchedFile).one()
-    assert wf.doc_id == original_doc_id  # same Document
-    # New version on the same Document
-    doc = sync_session.query(Document).filter_by(doc_id=original_doc_id).one()
-    assert doc.latest_version_id == wf.version_id
+    doc = sync_session.query(Document).one()
+    assert doc.doc_id == original_doc_id  # same doc, replace in place
+    assert doc.pipeline_seq == 1  # was 0
+    assert doc.sha256 == hashlib.sha256(b"v2").digest()
+    assert doc.pipeline_status == PipelineStatus.queued
+    assert doc.error is None
+
+    # Old child rows wiped
+    assert sync_session.query(Chunk).count() == 0
+    assert sync_session.query(Entity).count() == 0
+    assert sync_session.query(DocumentPage).count() == 0
+    assert sync_session.query(DocumentHeading).count() == 0
+
+    # Exactly one new extract job for the same doc_id
+    jobs = sync_session.query(IngestionJob).all()
+    assert len(jobs) == 1
+    assert jobs[0].doc_id == original_doc_id
+    assert jobs[0].stage == JobStage.extract
 
 
-def test_dedup_by_sha_across_folders(sync_session, tmp_path):
-    """A new file in folder B with the same sha as an existing file in folder A links to the existing Document."""
+def test_no_cross_path_dedup(sync_session, tmp_path):
+    """Two different paths with the same SHA → two distinct Documents (no cross-content dedup)."""
     folder_a = WatchedFolder(path="/tmp/a", display_name="a", bookmark_data=None)
     folder_b = WatchedFolder(path="/tmp/b", display_name="b", bookmark_data=None)
     sync_session.add_all([folder_a, folder_b])
@@ -114,27 +146,46 @@ def test_dedup_by_sha_across_folders(sync_session, tmp_path):
     f_a.write_bytes(b"shared content")
     handle_event(sync_session, FileEvent(EventKind.created, folder_a.folder_id, "a.pdf", str(f_a)))
     sync_session.commit()
-    wf_a = sync_session.query(WatchedFile).filter_by(folder_id=folder_a.folder_id).one()
 
     f_b = tmp_path / "b.pdf"
-    f_b.write_bytes(b"shared content")  # same content → same sha
+    f_b.write_bytes(b"shared content")  # same content → same SHA
     handle_event(sync_session, FileEvent(EventKind.created, folder_b.folder_id, "b.pdf", str(f_b)))
     sync_session.commit()
 
-    wf_b = sync_session.query(WatchedFile).filter_by(folder_id=folder_b.folder_id).one()
-    assert wf_b.doc_id == wf_a.doc_id
-    # Only one Document exists
-    assert sync_session.query(Document).count() == 1
+    # Two independent Documents (no dedup)
+    assert sync_session.query(Document).count() == 2
+    assert sync_session.query(WatchedFile).count() == 2
+    assert sync_session.query(IngestionJob).count() == 2
+
+    doc_ids = {wf.doc_id for wf in sync_session.query(WatchedFile).all()}
+    assert len(doc_ids) == 2  # each WatchedFile points to a different Document
 
 
-def test_resurrect_with_same_sha_does_not_create_new_version(sync_session, folder, tmp_path):
-    """If a removed file is recreated with the same sha, just flip active. No new Document/Version."""
+def test_deleted_event_marks_removed(sync_session, folder, tmp_path):
+    """Active row + deleted event → status=removed, removed_at set."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"x")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+
+    f.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+
+    wf = sync_session.query(WatchedFile).one()
+    assert wf.status == WatchedFileStatus.removed
+    assert wf.removed_at is not None
+
+
+def test_resurrect_same_sha(sync_session, folder, tmp_path):
+    """Branch 3: removed row + created event with same SHA → status=active, no new ingestion."""
     f = tmp_path / "doc.pdf"
     f.write_bytes(b"hello")
     handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
     sync_session.commit()
-    wf = sync_session.query(WatchedFile).one()
-    original_version_id = wf.version_id
+
+    original_doc_id = sync_session.query(WatchedFile).one().doc_id
+    original_seq = sync_session.query(Document).one().pipeline_seq
 
     f.unlink()
     handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "doc.pdf", str(f)))
@@ -147,19 +198,23 @@ def test_resurrect_with_same_sha_does_not_create_new_version(sync_session, folde
     wf = sync_session.query(WatchedFile).one()
     assert wf.status == WatchedFileStatus.active
     assert wf.removed_at is None
-    assert wf.version_id == original_version_id  # NO new version
-    assert sync_session.query(DocumentVersion).count() == 1
+    assert wf.doc_id == original_doc_id
+
+    doc = sync_session.query(Document).one()
+    assert doc.pipeline_seq == original_seq  # no re-ingest
+    # No new jobs beyond the original extract job (which may have been deleted/run)
+    # But there must NOT be a second extract job created for the resurrect
+    assert sync_session.query(IngestionJob).count() == 1  # only the original
 
 
-def test_resurrect_with_new_sha_creates_new_version_on_same_doc(sync_session, folder, tmp_path):
-    """If a removed file is recreated with different content, treat like modify on existing doc."""
+def test_resurrect_different_sha(sync_session, folder, tmp_path):
+    """Branch 4: removed row + created event with different SHA → status=active + reprocess."""
     f = tmp_path / "doc.pdf"
     f.write_bytes(b"v1")
     handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
     sync_session.commit()
-    wf = sync_session.query(WatchedFile).one()
-    original_doc_id = wf.doc_id
-    original_version_id = wf.version_id
+
+    original_doc_id = sync_session.query(WatchedFile).one().doc_id
 
     f.unlink()
     handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "doc.pdf", str(f)))
@@ -172,11 +227,78 @@ def test_resurrect_with_new_sha_creates_new_version_on_same_doc(sync_session, fo
     wf = sync_session.query(WatchedFile).one()
     assert wf.status == WatchedFileStatus.active
     assert wf.removed_at is None
-    assert wf.doc_id == original_doc_id  # same Document
-    assert wf.version_id != original_version_id  # new Version
+    assert wf.doc_id == original_doc_id  # same Document (replace in place)
+
+    doc = sync_session.query(Document).one()
+    assert doc.pipeline_seq == 1  # was 0
+    assert doc.sha256 == hashlib.sha256(b"v2").digest()
+    assert doc.pipeline_status == PipelineStatus.queued
+
+    # One extract job (old deleted, new one created)
+    jobs = sync_session.query(IngestionJob).all()
+    assert len(jobs) == 1
+    assert jobs[0].doc_id == original_doc_id
+    assert jobs[0].stage == JobStage.extract
 
 
-# --- _should_ignore filter tests ---
+# ---------------------------------------------------------------------------
+# 0-byte file regression tests (preserved from PR #252)
+# ---------------------------------------------------------------------------
+
+
+def test_zero_byte_file_is_skipped(sync_session, folder, tmp_path):
+    """Regression: 0-byte files (network share mid-copy, etc.) MUST NOT be ingested."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"")  # 0 bytes
+    handle_event(
+        sync_session,
+        FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)),
+    )
+    sync_session.commit()
+    assert sync_session.query(WatchedFile).count() == 0
+    assert sync_session.query(Document).count() == 0
+
+
+def test_zero_byte_files_dont_collide_into_one_doc(sync_session, folder, tmp_path):
+    """Regression for the empty-sha-collision bug: two 0-byte files at
+    different paths must not get linked to a single Document via dedup."""
+    a = tmp_path / "a.pdf"
+    b = tmp_path / "b.pdf"
+    a.write_bytes(b"")
+    b.write_bytes(b"")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "a.pdf", str(a)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "b.pdf", str(b)))
+    sync_session.commit()
+    # Neither should have been ingested at all (both 0 bytes).
+    assert sync_session.query(WatchedFile).count() == 0
+    assert sync_session.query(Document).count() == 0
+
+
+def test_file_grows_from_zero_to_real_content_ingests_normally(sync_session, folder, tmp_path):
+    """After the 0-byte event is skipped, the next event with real content
+    must ingest cleanly — with no stale watched_file row poisoning the
+    'active+different sha' modify branch."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+    assert sync_session.query(WatchedFile).count() == 0  # skipped
+
+    f.write_bytes(b"real content")
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+
+    wfs = sync_session.query(WatchedFile).all()
+    assert len(wfs) == 1
+    assert wfs[0].sha256 == hashlib.sha256(b"real content").digest()
+
+    doc = sync_session.query(Document).one()
+    assert doc.pipeline_status == PipelineStatus.queued
+
+
+# ---------------------------------------------------------------------------
+# _should_ignore filter tests
+# ---------------------------------------------------------------------------
 
 
 class TestShouldIgnore:
@@ -248,53 +370,3 @@ def test_handle_event_ignores_macosx_archive_metadata(sync_session, folder, tmp_
     )
     sync_session.commit()
     assert sync_session.query(WatchedFile).count() == 0
-
-
-def test_zero_byte_file_is_skipped(sync_session, folder, tmp_path):
-    """Regression: 0-byte files (network share mid-copy, etc.) MUST NOT be
-    ingested. Their empty-file sha256 would otherwise act as a non-discriminating
-    dedup magnet that links unrelated 0-byte files into the same Document and
-    propagates wrong-doc linkage when real content arrives."""
-    f = tmp_path / "doc.pdf"
-    f.write_bytes(b"")  # 0 bytes
-    handle_event(
-        sync_session,
-        FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)),
-    )
-    sync_session.commit()
-    assert sync_session.query(WatchedFile).count() == 0
-    assert sync_session.query(Document).count() == 0
-
-
-def test_zero_byte_files_dont_collide_into_one_doc(sync_session, folder, tmp_path):
-    """Regression for the empty-sha-collision bug: two 0-byte files at
-    different paths must not get linked to a single Document via dedup."""
-    a = tmp_path / "a.pdf"
-    b = tmp_path / "b.pdf"
-    a.write_bytes(b"")
-    b.write_bytes(b"")
-    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "a.pdf", str(a)))
-    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "b.pdf", str(b)))
-    sync_session.commit()
-    # Neither should have been ingested at all (both 0 bytes).
-    assert sync_session.query(WatchedFile).count() == 0
-    assert sync_session.query(Document).count() == 0
-
-
-def test_file_grows_from_zero_to_real_content_ingests_normally(sync_session, folder, tmp_path):
-    """After the 0-byte event is skipped, the next event with real content
-    must ingest cleanly — with no stale watched_file row poisoning the
-    'active+different sha' modify branch."""
-    f = tmp_path / "doc.pdf"
-    f.write_bytes(b"")
-    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
-    sync_session.commit()
-    assert sync_session.query(WatchedFile).count() == 0  # skipped
-
-    f.write_bytes(b"real content")
-    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "doc.pdf", str(f)))
-    sync_session.commit()
-
-    wfs = sync_session.query(WatchedFile).all()
-    assert len(wfs) == 1
-    assert wfs[0].sha256 == hashlib.sha256(b"real content").digest()

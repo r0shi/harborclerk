@@ -276,10 +276,33 @@ async def two_topic_docs(db_session: AsyncSession):
     db_session.add_all([topic_a, topic_b])
     await db_session.commit()
 
+    from harbor_clerk.models.enums import PipelineStatus
+
     docs = [
-        Document(title="ScopeTest A1", canonical_filename="a1.txt", topic_id=9001, status="active"),
-        Document(title="ScopeTest A2", canonical_filename="a2.txt", topic_id=9001, status="active"),
-        Document(title="ScopeTest B1", canonical_filename="b1.txt", topic_id=9002, status="active"),
+        Document(
+            title="ScopeTest A1",
+            canonical_filename="a1.txt",
+            topic_id=9001,
+            status="active",
+            sha256=b"\x01" * 32,
+            pipeline_status=PipelineStatus.ready,
+        ),
+        Document(
+            title="ScopeTest A2",
+            canonical_filename="a2.txt",
+            topic_id=9001,
+            status="active",
+            sha256=b"\x02" * 32,
+            pipeline_status=PipelineStatus.ready,
+        ),
+        Document(
+            title="ScopeTest B1",
+            canonical_filename="b1.txt",
+            topic_id=9002,
+            status="active",
+            sha256=b"\x03" * 32,
+            pipeline_status=PipelineStatus.ready,
+        ),
     ]
     for d in docs:
         db_session.add(d)

@@ -38,7 +38,7 @@ def test_upgrade_to_head(alembic_cfg, sync_engine):
         "users",
         "api_keys",
         "documents",
-        "document_versions",
+        # document_versions was dropped by migration 0017 (flat document model)
         "document_pages",
         "document_headings",
         "chunks",
@@ -51,6 +51,7 @@ def test_upgrade_to_head(alembic_cfg, sync_engine):
         "chat_messages",
     ):
         assert expected in tables, f"Table {expected} missing after upgrade"
+    assert "document_versions" not in tables, "document_versions should be absent after 0017"
 
 
 def test_downgrade_to_base(alembic_cfg, sync_engine):

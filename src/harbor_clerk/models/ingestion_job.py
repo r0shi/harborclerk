@@ -14,9 +14,9 @@ class IngestionJob(Base):
     __tablename__ = "ingestion_jobs"
 
     job_id: Mapped[uuid_pk]
-    version_id: Mapped[uuid.UUID] = mapped_column(
+    doc_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("document_versions.version_id", ondelete="CASCADE"),
+        ForeignKey("documents.doc_id", ondelete="CASCADE"),
         nullable=False,
     )
     stage: Mapped[JobStage] = mapped_column(
@@ -57,4 +57,4 @@ class IngestionJob(Base):
         nullable=True,
     )
 
-    __table_args__ = (UniqueConstraint("version_id", "stage", name="uq_jobs_version_stage"),)
+    __table_args__ = (UniqueConstraint("doc_id", "stage", name="uq_jobs_doc_stage"),)

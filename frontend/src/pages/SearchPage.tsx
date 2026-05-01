@@ -5,7 +5,6 @@ import { post } from '../api'
 interface SearchHit {
   chunk_id: string
   doc_id: string
-  version_id: string
   chunk_num: number
   chunk_text: string
   page_start?: number
@@ -19,7 +18,6 @@ interface SearchHit {
 
 interface ConflictSource {
   doc_id: string
-  version_id: string
   title: string
 }
 
@@ -310,7 +308,7 @@ export default function SearchPage() {
             <div className="mb-4 rounded-sm bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-400">
               <strong>Possible conflict:</strong> Similar content found across multiple sources:{' '}
               {results.conflict_sources.map((s, i) => (
-                <span key={s.version_id}>
+                <span key={s.doc_id}>
                   {i > 0 && ', '}
                   <Link to={`/docs/${s.doc_id}`} className="font-medium text-amber-900 dark:text-amber-300 underline">
                     {s.title}

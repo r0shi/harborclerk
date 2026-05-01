@@ -121,8 +121,8 @@ async def _session_reaper_loop() -> None:
                 orphan_jobs = orphan_result.scalars().all()
                 for job in orphan_jobs:
                     logger.warning(
-                        "Reaper: re-queuing orphan job version=%s stage=%s (heartbeat=%s)",
-                        job.version_id,
+                        "Reaper: re-queuing orphan job doc=%s stage=%s (heartbeat=%s)",
+                        job.doc_id,
                         job.stage.value,
                         job.heartbeat_at,
                     )
@@ -204,7 +204,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Harbor Clerk API")
 
     # Verify database schema is up to date
-    _EXPECTED_SCHEMA_VERSION = "0015"
+    _EXPECTED_SCHEMA_VERSION = "0017"
     try:
         from harbor_clerk.db import async_session_factory
 
@@ -231,6 +231,31 @@ async def lifespan(app: FastAPI):
 
     # Ensure storage bucket exists
     get_storage().ensure_bucket(settings.minio_bucket)
+
+    # One-shot post-migration rename pass for 0017 flatten — idempotent
+    try:
+        from harbor_clerk.maintenance.rename_originals import rename_all
+
+        # Quick pre-check: skip the pass if no version-prefixed keys exist.
+        # rename_all is idempotent so this is just an optimization.
+        backend = get_storage()
+        has_version_keys = False
+        for _ in backend.list_objects(settings.minio_bucket, prefix="originals/versions/", recursive=True):
+            has_version_keys = True
+            break
+        if has_version_keys:
+            from harbor_clerk.db_sync import get_sync_session
+
+            s = get_sync_session()
+            try:
+                renamed, orphans = rename_all(s)
+                logger.info("0017 rename pass: %d renamed, %d orphans deleted", renamed, orphans)
+            finally:
+                s.close()
+        else:
+            logger.info("0017 rename pass: no legacy keys found, skipping")
+    except Exception:
+        logger.exception("0017 rename pass failed — continuing anyway")
 
     # Warm up BERTopic process pool in background (numba JIT takes ~1 min first time)
     from harbor_clerk.topics import warmup_topic_pool

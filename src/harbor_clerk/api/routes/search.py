@@ -32,7 +32,6 @@ def _hit_to_out(h) -> SearchHitOut:
     return SearchHitOut(
         chunk_id=h.chunk_id,
         doc_id=h.doc_id,
-        version_id=h.version_id,
         chunk_num=h.chunk_num,
         chunk_text=h.chunk_text,
         page_start=h.page_start,
@@ -52,7 +51,6 @@ async def search(
     session: AsyncSession = Depends(get_session),
 ):
     doc_id = uuid.UUID(body.doc_id) if body.doc_id else None
-    version_id = uuid.UUID(body.version_id) if body.version_id else None
     doc_ids = [uuid.UUID(d) for d in body.doc_ids] if body.doc_ids else None
 
     # Per-API-key scope: intersect with visible doc_ids for scoped keys.
@@ -94,7 +92,6 @@ async def search(
         body.query,
         k=body.k,
         doc_id=doc_id,
-        version_id=version_id,
         offset=body.offset,
         doc_ids=doc_ids,
         after=body.after,
@@ -136,7 +133,6 @@ async def search(
         conflict_sources=[
             ConflictSourceOut(
                 doc_id=cs.doc_id,
-                version_id=cs.version_id,
                 title=cs.title,
             )
             for cs in result.conflict_sources
@@ -184,10 +180,10 @@ async def read_passages(
     context_after: dict[uuid.UUID, str] = {}
     if body.include_context and chunks:
         for chunk in chunks.values():
-            # Previous chunk
+            # Previous chunk (same doc)
             prev_result = await session.execute(
                 select(Chunk.chunk_text).where(
-                    Chunk.version_id == chunk.version_id,
+                    Chunk.doc_id == chunk.doc_id,
                     Chunk.chunk_num == chunk.chunk_num - 1,
                 )
             )
@@ -195,10 +191,10 @@ async def read_passages(
             if prev_text:
                 context_before[chunk.chunk_id] = prev_text
 
-            # Next chunk
+            # Next chunk (same doc)
             next_result = await session.execute(
                 select(Chunk.chunk_text).where(
-                    Chunk.version_id == chunk.version_id,
+                    Chunk.doc_id == chunk.doc_id,
                     Chunk.chunk_num == chunk.chunk_num + 1,
                 )
             )
@@ -217,7 +213,6 @@ async def read_passages(
             PassageDetail(
                 chunk_id=str(cid),
                 doc_id=str(chunk.doc_id),
-                version_id=str(chunk.version_id),
                 chunk_num=chunk.chunk_num,
                 chunk_text=chunk.chunk_text,
                 page_start=chunk.page_start,

@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.orm import aliased
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
@@ -21,11 +21,10 @@ from harbor_clerk.models import (
     Document,
     DocumentHeading,
     DocumentPage,
-    DocumentVersion,
     Entity,
     IngestionJob,
 )
-from harbor_clerk.models.enums import JobStage, VersionStatus
+from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
 from harbor_clerk.search import SearchHit, SearchResult, hybrid_search
 
@@ -448,43 +447,43 @@ async def _resolve_headings(
 ) -> dict[tuple[str, int], str]:
     """Bulk-resolve the nearest heading at or before each hit's page.
 
-    Returns a map of (version_id_str, page_start) → heading title.
+    Returns a map of (doc_id_str, page_start) → heading title.
     """
-    # Collect unique (version_id, page_start) pairs that have pages
+    # Collect unique (doc_id, page_start) pairs that have pages
     pairs: set[tuple[uuid.UUID, int]] = set()
     for h in hits:
         if h.page_start is not None:
-            pairs.add((uuid.UUID(h.version_id), h.page_start))
+            pairs.add((uuid.UUID(h.doc_id), h.page_start))
 
     if not pairs:
         return {}
 
-    # Load all headings for the relevant versions
-    version_ids = list({vid for vid, _ in pairs})
+    # Load all headings for the relevant documents
+    doc_ids = list({did for did, _ in pairs})
     heading_result = await session.execute(
         select(DocumentHeading)
-        .where(DocumentHeading.version_id.in_(version_ids))
-        .order_by(DocumentHeading.version_id, DocumentHeading.position)
+        .where(DocumentHeading.doc_id.in_(doc_ids))
+        .order_by(DocumentHeading.doc_id, DocumentHeading.position)
     )
     headings = heading_result.scalars().all()
 
-    # Group headings by version_id
-    headings_by_version: dict[uuid.UUID, list[DocumentHeading]] = {}
+    # Group headings by doc_id
+    headings_by_doc: dict[uuid.UUID, list[DocumentHeading]] = {}
     for heading in headings:
-        headings_by_version.setdefault(heading.version_id, []).append(heading)
+        headings_by_doc.setdefault(heading.doc_id, []).append(heading)
 
-    # For each (version_id, page), find the nearest heading at or before that page
+    # For each (doc_id, page), find the nearest heading at or before that page
     result_map: dict[tuple[str, int], str] = {}
-    for vid, page in pairs:
-        version_headings = headings_by_version.get(vid, [])
+    for did, page in pairs:
+        doc_headings = headings_by_doc.get(did, [])
         best: DocumentHeading | None = None
-        for heading in version_headings:
+        for heading in doc_headings:
             if heading.page_num is not None and heading.page_num <= page:
                 best = heading
             elif heading.page_num is not None and heading.page_num > page:
                 break
         if best is not None:
-            result_map[(str(vid), page)] = best.title
+            result_map[(str(did), page)] = best.title
 
     return result_map
 
@@ -507,7 +506,6 @@ def _format_search_response(
             "chunk_id": h.chunk_id,
             "doc_id": h.doc_id,
             "doc_title": h.doc_title,
-            "version_id": h.version_id,
             "score": h.score,
             "language": h.language,
         }
@@ -515,7 +513,7 @@ def _format_search_response(
             hit["pages"] = f"{h.page_start}-{h.page_end}" if h.page_end != h.page_start else str(h.page_start)
             # Include nearest heading for document context
             if heading_map:
-                heading = heading_map.get((h.version_id, h.page_start))
+                heading = heading_map.get((h.doc_id, h.page_start))
                 if heading:
                     hit["section"] = heading
         # Detail mode formatting
@@ -539,9 +537,7 @@ def _format_search_response(
     }
     if result.possible_conflict:
         resp["possible_conflict"] = True
-        resp["conflict_sources"] = [
-            {"doc_id": cs.doc_id, "version_id": cs.version_id, "title": cs.title} for cs in result.conflict_sources
-        ]
+        resp["conflict_sources"] = [{"doc_id": cs.doc_id, "title": cs.title} for cs in result.conflict_sources]
     return resp
 
 
@@ -583,7 +579,7 @@ async def kb_search(
       "brief": first ~200 characters per chunk (adjustable via brief_chars) —
         use when scanning 20-50 results to identify which are worth
         reading in full via kb_read_passages
-      "compact": metadata only (chunk_id, doc_id, version_id, doc_title,
+      "compact": metadata only (chunk_id, doc_id, doc_title,
         score, pages, language — no text) — use when surveying a broad result set (50+) to
         understand score distribution and document coverage before
         narrowing down
@@ -943,7 +939,7 @@ async def kb_read_passages(
             if include_context:
                 prev = await session.execute(
                     select(Chunk.chunk_text).where(
-                        Chunk.version_id == chunk.version_id,
+                        Chunk.doc_id == chunk.doc_id,
                         Chunk.chunk_num == chunk.chunk_num - 1,
                     )
                 )
@@ -955,7 +951,7 @@ async def kb_read_passages(
 
                 nxt = await session.execute(
                     select(Chunk.chunk_text).where(
-                        Chunk.version_id == chunk.version_id,
+                        Chunk.doc_id == chunk.doc_id,
                         Chunk.chunk_num == chunk.chunk_num + 1,
                     )
                 )
@@ -995,7 +991,7 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
         result = await session.execute(
             select(Chunk)
             .where(
-                Chunk.version_id == target.version_id,
+                Chunk.doc_id == target.doc_id,
                 Chunk.chunk_num.between(target.chunk_num - n, target.chunk_num + n),
             )
             .order_by(Chunk.chunk_num)
@@ -1030,7 +1026,6 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
         {
             "doc_id": str(target.doc_id),
             "doc_title": doc.title if doc else None,
-            "version_id": str(target.version_id),
             "target_chunk_num": target.chunk_num,
             "chunks": chunks,
         },
@@ -1055,41 +1050,31 @@ async def kb_get_document(doc_id: str) -> str:
         if visible_ids is not None and did not in visible_ids:
             return json.dumps({"error": "Document not found"})
 
-        result = await session.execute(
-            select(Document).options(selectinload(Document.versions)).where(Document.doc_id == did)
-        )
+        result = await session.execute(select(Document).where(Document.doc_id == did))
         doc = result.scalar_one_or_none()
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
-        versions = []
-        for v in doc.versions or []:
-            jobs_result = await session.execute(select(IngestionJob).where(IngestionJob.version_id == v.version_id))
-            jobs = [
-                {"stage": j.stage.value, "status": j.status.value, "error": j.error}
-                for j in jobs_result.scalars().all()
-            ]
-            versions.append(
-                {
-                    "version_id": str(v.version_id),
-                    "status": v.status.value,
-                    "summary": v.summary,
-                    "mime_type": v.mime_type,
-                    "size_bytes": v.size_bytes,
-                    "extracted_chars": v.extracted_chars,
-                    "source_path": v.source_path,
-                    "created_at": v.created_at.isoformat(),
-                    "jobs": jobs,
-                }
-            )
+        jobs_result = await session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == did).order_by(IngestionJob.created_at)
+        )
+        jobs = [
+            {"stage": j.stage.value, "status": j.status.value, "error": j.error} for j in jobs_result.scalars().all()
+        ]
 
     return json.dumps(
         {
             "doc_id": str(doc.doc_id),
             "title": doc.title,
             "status": doc.status,
-            "latest_version_id": str(doc.latest_version_id) if doc.latest_version_id else None,
-            "versions": versions,
+            "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
+            "summary": doc.summary,
+            "mime_type": doc.mime_type,
+            "size_bytes": doc.size_bytes,
+            "extracted_chars": doc.extracted_chars,
+            "source_path": doc.source_path,
+            "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+            "jobs": jobs,
         },
         indent=2,
     )
@@ -1111,7 +1096,6 @@ async def kb_list_recent(limit: int = 20) -> str:
         count_q = select(func.count()).select_from(Document).where(Document.status == "active")
         list_q = (
             select(Document)
-            .options(selectinload(Document.versions))
             .where(Document.status == "active")
             .order_by(Document.updated_at.desc())
             .limit(min(limit, 100))
@@ -1130,22 +1114,13 @@ async def kb_list_recent(limit: int = 20) -> str:
 
     items = []
     for doc in docs:
-        latest_status = None
-        latest_summary = None
-        if doc.latest_version_id and doc.versions:
-            for v in doc.versions:
-                if v.version_id == doc.latest_version_id:
-                    latest_status = v.status.value
-                    latest_summary = v.summary
-                    break
         items.append(
             {
                 "doc_id": str(doc.doc_id),
                 "title": doc.title,
-                "summary": latest_summary,
+                "summary": doc.summary,
                 "status": doc.status,
-                "latest_version_status": latest_status,
-                "version_count": len(doc.versions) if doc.versions else 0,
+                "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
                 "updated_at": doc.updated_at.isoformat(),
             }
         )
@@ -1209,7 +1184,7 @@ async def kb_corpus_overview(limit: int = 50) -> str:
             _scoped(
                 select(func.count())
                 .select_from(Chunk)
-                .join(Document, Document.latest_version_id == Chunk.version_id)
+                .join(Document, Document.doc_id == Chunk.doc_id)
                 .where(Document.status == "active")
             )
         )
@@ -1219,18 +1194,18 @@ async def kb_corpus_overview(limit: int = 50) -> str:
             _scoped(
                 select(func.count())
                 .select_from(DocumentPage)
-                .join(Document, Document.latest_version_id == DocumentPage.version_id)
+                .join(Document, Document.doc_id == DocumentPage.doc_id)
                 .where(Document.status == "active")
             )
         )
         total_pages = page_count_result.scalar() or 0
 
-        # Language distribution from chunks (scoped to active docs' latest versions)
+        # Language distribution from chunks (scoped to active docs)
         lang_rows = (
             await session.execute(
                 _scoped(
                     select(Chunk.language, func.count())
-                    .join(Document, Document.latest_version_id == Chunk.version_id)
+                    .join(Document, Document.doc_id == Chunk.doc_id)
                     .where(Document.status == "active")
                 )
                 .group_by(Chunk.language)
@@ -1239,15 +1214,15 @@ async def kb_corpus_overview(limit: int = 50) -> str:
         ).all()
         languages = {row[0]: row[1] for row in lang_rows if row[0]}
 
-        # Mime type breakdown from latest versions of active docs
+        # Mime type breakdown from active docs
         mime_rows = (
             await session.execute(
                 _scoped(
-                    select(DocumentVersion.mime_type, func.count())
-                    .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-                    .where(Document.status == "active")
+                    select(Document.mime_type, func.count()).where(
+                        Document.status == "active", Document.mime_type.isnot(None)
+                    )
                 )
-                .group_by(DocumentVersion.mime_type)
+                .group_by(Document.mime_type)
                 .order_by(func.count().desc())
             )
         ).all()
@@ -1263,13 +1238,7 @@ async def kb_corpus_overview(limit: int = 50) -> str:
         oldest = date_row[0].isoformat() if date_row[0] else None
         newest = date_row[1].isoformat() if date_row[1] else None
 
-        list_q = (
-            select(Document)
-            .options(selectinload(Document.versions))
-            .where(Document.status == "active")
-            .order_by(Document.updated_at.desc())
-            .limit(limit)
-        )
+        list_q = select(Document).where(Document.status == "active").order_by(Document.updated_at.desc()).limit(limit)
         if visible_ids is not None:
             list_q = list_q.where(Document.doc_id.in_(visible_ids))
         result = await session.execute(list_q)
@@ -1277,20 +1246,12 @@ async def kb_corpus_overview(limit: int = 50) -> str:
 
     items = []
     for doc in docs:
-        summary = None
-        status = None
-        if doc.latest_version_id and doc.versions:
-            for v in doc.versions:
-                if v.version_id == doc.latest_version_id:
-                    summary = v.summary
-                    status = v.status.value
-                    break
         items.append(
             {
                 "doc_id": str(doc.doc_id),
                 "title": doc.title,
-                "summary": summary,
-                "status": status,
+                "summary": doc.summary,
+                "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
                 "updated_at": doc.updated_at.isoformat(),
             }
         )
@@ -1332,17 +1293,8 @@ async def kb_ingest_status(doc_id: str) -> str:
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
-        vid = doc.latest_version_id
-        if vid is None and doc.versions:
-            vid = doc.versions[-1].version_id
-        if vid is None:
-            return json.dumps({"error": "No versions"})
-
-        ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == vid))
-        version = ver_result.scalar_one()
-
         jobs_result = await session.execute(
-            select(IngestionJob).where(IngestionJob.version_id == vid).order_by(IngestionJob.created_at)
+            select(IngestionJob).where(IngestionJob.doc_id == did).order_by(IngestionJob.created_at)
         )
         jobs = [
             {
@@ -1359,8 +1311,7 @@ async def kb_ingest_status(doc_id: str) -> str:
     return json.dumps(
         {
             "doc_id": str(did),
-            "version_id": str(vid),
-            "version_status": version.status.value,
+            "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
             "jobs": jobs,
         },
         indent=2,
@@ -1384,27 +1335,19 @@ async def kb_reprocess(doc_id: str) -> str:
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
-        vid = doc.latest_version_id
-        if vid is None and doc.versions:
-            vid = doc.versions[-1].version_id
-        if vid is None:
-            return json.dumps({"error": "No version to reprocess"})
-
-        ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == vid))
-        version = ver_result.scalar_one()
-        version.status = VersionStatus.queued
-        version.error = None
+        doc.pipeline_status = PipelineStatus.queued
+        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
+        doc.error = None
         await session.commit()
 
     from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
 
-    reset_jobs(vid)
-    enqueue_stage(vid, JobStage.extract)
+    reset_jobs(did)
+    enqueue_stage(did, JobStage.extract)
 
     return json.dumps(
         {
             "doc_id": str(did),
-            "version_id": str(vid),
             "status": "reprocessing",
         }
     )
@@ -1426,38 +1369,27 @@ async def kb_document_outline(doc_id: str) -> str:
         if visible_ids is not None and did not in visible_ids:
             return json.dumps({"error": "Document not found"})
 
-        result = await session.execute(
-            select(Document)
-            .options(selectinload(Document.versions))
-            .where(Document.doc_id == did, Document.status == "active")
-        )
+        result = await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
         doc = result.scalar_one_or_none()
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
-        vid = doc.latest_version_id
-        if vid is None and doc.versions:
-            vid = doc.versions[-1].version_id
-        if vid is None:
-            return json.dumps({"error": "No versions available"})
-
         headings_result = await session.execute(
-            select(DocumentHeading).where(DocumentHeading.version_id == vid).order_by(DocumentHeading.position)
+            select(DocumentHeading).where(DocumentHeading.doc_id == did).order_by(DocumentHeading.position)
         )
         headings = headings_result.scalars().all()
 
         page_count = (
-            await session.execute(select(func.count()).select_from(DocumentPage).where(DocumentPage.version_id == vid))
+            await session.execute(select(func.count()).select_from(DocumentPage).where(DocumentPage.doc_id == did))
         ).scalar_one()
 
         chunk_count = (
-            await session.execute(select(func.count()).select_from(Chunk).where(Chunk.version_id == vid))
+            await session.execute(select(func.count()).select_from(Chunk).where(Chunk.doc_id == did))
         ).scalar_one()
 
     return json.dumps(
         {
             "doc_id": str(doc.doc_id),
-            "version_id": str(vid),
             "title": doc.title,
             "page_count": page_count,
             "chunk_count": chunk_count,
@@ -1499,22 +1431,18 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         if visible_ids is not None and target_id not in visible_ids:
             return json.dumps({"error": "Document not found"})
 
-        # Verify document exists and get latest version
+        # Verify document exists
         doc = (
             await session.execute(select(Document).where(Document.doc_id == target_id, Document.status == "active"))
         ).scalar_one_or_none()
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
-        version_id = doc.latest_version_id
-        if version_id is None:
-            return json.dumps({"error": "Document has no versions"})
-
-        # Get all embeddings for this document's latest version
+        # Get all embeddings for this document's chunks
         rows = (
             await session.execute(
                 select(Chunk.embedding).where(
-                    Chunk.version_id == version_id,
+                    Chunk.doc_id == target_id,
                     Chunk.embedding.isnot(None),
                 )
             )
@@ -1532,14 +1460,14 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         n = len(rows)
         avg = [v / n for v in avg]
 
-        # Find nearest chunks from OTHER active documents' latest versions
+        # Find nearest chunks from OTHER active documents
         distance = Chunk.embedding.cosine_distance(avg)
         nearest_q = (
             select(
                 Chunk.doc_id,
                 func.min(distance).label("min_distance"),
             )
-            .join(Document, Document.latest_version_id == Chunk.version_id)
+            .join(Document, Document.doc_id == Chunk.doc_id)
             .where(
                 Document.status == "active",
                 Chunk.embedding.isnot(None),
@@ -1557,9 +1485,7 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         related_ids = [row[0] for row in nearest]
         distances = {row[0]: float(row[1]) for row in nearest}
 
-        docs_result = await session.execute(
-            select(Document).options(selectinload(Document.versions)).where(Document.doc_id.in_(related_ids))
-        )
+        docs_result = await session.execute(select(Document).where(Document.doc_id.in_(related_ids)))
         related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
 
     items = []
@@ -1567,17 +1493,11 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         rdoc = related_docs.get(rid)
         if not rdoc:
             continue
-        summary = None
-        if rdoc.latest_version_id and rdoc.versions:
-            for v in rdoc.versions:
-                if v.version_id == rdoc.latest_version_id:
-                    summary = v.summary
-                    break
         items.append(
             {
                 "doc_id": str(rid),
                 "title": rdoc.title,
-                "summary": summary,
+                "summary": rdoc.summary,
                 "similarity": round(1.0 - distances[rid], 4),
             }
         )
@@ -1631,26 +1551,16 @@ async def kb_entity_search(
             did = uuid.UUID(doc_id)
             if visible_ids is not None and did not in visible_ids:
                 return json.dumps({"error": "Document not found"})
-            # Scope to latest version of the document
+            # Scope to the document
             doc = (
                 await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
             ).scalar_one_or_none()
             if doc is None:
                 return json.dumps({"error": "Document not found"})
-            if doc.latest_version_id:
-                base_filter.append(Entity.version_id == doc.latest_version_id)
-            else:
-                return json.dumps({"entities": [], "total": 0, "has_more": False})
+            base_filter.append(Entity.doc_id == did)
         else:
-            # Scope to active docs' latest versions
-            base_filter.append(
-                Entity.version_id.in_(
-                    select(Document.latest_version_id).where(
-                        Document.status == "active",
-                        Document.latest_version_id.isnot(None),
-                    )
-                )
-            )
+            # Scope to active docs
+            base_filter.append(Entity.doc_id.in_(select(Document.doc_id).where(Document.status == "active")))
             if visible_ids is not None:
                 base_filter.append(Entity.doc_id.in_(visible_ids))
 
@@ -1737,7 +1647,7 @@ async def kb_entity_overview(doc_id: str | None = None) -> str:
         if visible_ids is not None and not visible_ids:
             return json.dumps(empty_resp)
 
-        # Build version filter
+        # Build doc filter
         if doc_id:
             did = uuid.UUID(doc_id)
             if visible_ids is not None and did not in visible_ids:
@@ -1747,18 +1657,9 @@ async def kb_entity_overview(doc_id: str | None = None) -> str:
             ).scalar_one_or_none()
             if doc is None:
                 return json.dumps({"error": "Document not found"})
-            if not doc.latest_version_id:
-                return json.dumps(empty_resp)
-            version_filter = [Entity.version_id == doc.latest_version_id]
+            version_filter = [Entity.doc_id == did]
         else:
-            version_filter = [
-                Entity.version_id.in_(
-                    select(Document.latest_version_id).where(
-                        Document.status == "active",
-                        Document.latest_version_id.isnot(None),
-                    )
-                )
-            ]
+            version_filter = [Entity.doc_id.in_(select(Document.doc_id).where(Document.status == "active"))]
             if visible_ids is not None:
                 version_filter.append(Entity.doc_id.in_(visible_ids))
 
@@ -1857,7 +1758,7 @@ async def kb_entity_cooccurrence(
         if visible_ids is not None and not visible_ids:
             return json.dumps(empty_resp)
 
-        # Version filter: active docs' latest versions
+        # Doc filter: active docs
         if doc_id:
             did = uuid.UUID(doc_id)
             if visible_ids is not None and did not in visible_ids:
@@ -1867,17 +1768,12 @@ async def kb_entity_cooccurrence(
             ).scalar_one_or_none()
             if doc is None:
                 return json.dumps({"error": "Document not found"})
-            if not doc.latest_version_id:
-                return json.dumps(empty_resp)
-            version_filter_e1 = [e1.version_id == doc.latest_version_id]
-            version_filter_e2 = [e2.version_id == doc.latest_version_id]
+            version_filter_e1 = [e1.doc_id == did]
+            version_filter_e2 = [e2.doc_id == did]
         else:
-            active_versions = select(Document.latest_version_id).where(
-                Document.status == "active",
-                Document.latest_version_id.isnot(None),
-            )
-            version_filter_e1 = [e1.version_id.in_(active_versions)]
-            version_filter_e2 = [e2.version_id.in_(active_versions)]
+            active_doc_ids = select(Document.doc_id).where(Document.status == "active")
+            version_filter_e1 = [e1.doc_id.in_(active_doc_ids)]
+            version_filter_e2 = [e2.doc_id.in_(active_doc_ids)]
             if visible_ids is not None:
                 version_filter_e1.append(e1.doc_id.in_(visible_ids))
                 version_filter_e2.append(e2.doc_id.in_(visible_ids))
@@ -1891,7 +1787,7 @@ async def kb_entity_cooccurrence(
         if scope == "chunk":
             join_cond = e2.chunk_id == e1.chunk_id
         else:
-            join_cond = e2.version_id == e1.version_id
+            join_cond = e2.doc_id == e1.doc_id
 
         # Co-occurring entity filters
         cooccur_filter = [*version_filter_e2]
@@ -1982,30 +1878,20 @@ async def kb_read_document(
         if visible_ids is not None and did not in visible_ids:
             return json.dumps({"error": "Document not found"})
 
-        result = await session.execute(
-            select(Document)
-            .options(selectinload(Document.versions))
-            .where(Document.doc_id == did, Document.status == "active")
-        )
+        result = await session.execute(select(Document).where(Document.doc_id == did, Document.status == "active"))
         doc = result.scalar_one_or_none()
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
-        vid = doc.latest_version_id
-        if vid is None and doc.versions:
-            vid = doc.versions[-1].version_id
-        if vid is None:
-            return json.dumps({"error": "No versions available"})
-
         # Total page count
         page_count = (
-            await session.execute(select(func.count()).select_from(DocumentPage).where(DocumentPage.version_id == vid))
+            await session.execute(select(func.count()).select_from(DocumentPage).where(DocumentPage.doc_id == did))
         ).scalar_one()
 
         if page_count == 0:
             # Fallback: concatenate chunks (page_start/page_end not applicable)
             chunk_rows = (
-                (await session.execute(select(Chunk).where(Chunk.version_id == vid).order_by(Chunk.chunk_num)))
+                (await session.execute(select(Chunk).where(Chunk.doc_id == did).order_by(Chunk.chunk_num)))
                 .scalars()
                 .all()
             )
@@ -2030,7 +1916,6 @@ async def kb_read_document(
 
             resp: dict = {
                 "doc_id": str(doc.doc_id),
-                "version_id": str(vid),
                 "title": doc.title,
                 "source": "chunks",
                 "page_count": 0,
@@ -2044,7 +1929,7 @@ async def kb_read_document(
             return json.dumps(resp, indent=2)
 
         # Query pages with optional range filter
-        query = select(DocumentPage).where(DocumentPage.version_id == vid).order_by(DocumentPage.page_num)
+        query = select(DocumentPage).where(DocumentPage.doc_id == did).order_by(DocumentPage.page_num)
         if page_start is not None:
             query = query.where(DocumentPage.page_num >= page_start)
         if page_end is not None:
@@ -2083,7 +1968,6 @@ async def kb_read_document(
     return json.dumps(
         {
             "doc_id": str(doc.doc_id),
-            "version_id": str(vid),
             "title": doc.title,
             "source": "pages",
             "page_count": page_count,

@@ -11,7 +11,7 @@ class UploadSource(str, enum.Enum):
     watch_folder = "watch_folder"
 
 
-class VersionStatus(str, enum.Enum):
+class PipelineStatus(str, enum.Enum):
     queued = "queued"
     extracting = "extracting"
     extracted = "extracted"
@@ -45,3 +45,7 @@ class JobStatus(str, enum.Enum):
     running = "running"
     done = "done"
     error = "error"
+
+
+# Back-compat alias — remove once all consumers are updated to PipelineStatus
+VersionStatus = PipelineStatus

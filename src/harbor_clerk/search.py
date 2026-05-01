@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
-from harbor_clerk.models import Chunk, Document, DocumentVersion
+from harbor_clerk.models import Chunk, Document
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ConflictSource:
     doc_id: str
-    version_id: str
     title: str
 
 
@@ -26,7 +25,6 @@ class ConflictSource:
 class SearchHit:
     chunk_id: str
     doc_id: str
-    version_id: str
     chunk_num: int
     chunk_text: str
     page_start: int | None
@@ -75,7 +73,6 @@ async def hybrid_search(
     query: str,
     k: int = 10,
     doc_id: uuid.UUID | None = None,
-    version_id: uuid.UUID | None = None,
     offset: int = 0,
     *,
     doc_ids: list[uuid.UUID] | None = None,
@@ -95,22 +92,20 @@ async def hybrid_search(
         scope_filters.append(Chunk.doc_id == doc_id)
     if doc_ids is not None:
         scope_filters.append(Chunk.doc_id.in_(doc_ids))
-    if version_id is not None:
-        scope_filters.append(Chunk.version_id == version_id)
     if language is not None:
         scope_filters.append(Chunk.language == language)
 
-    # Version-level filters → subquery on version_ids
-    version_conditions = []
+    # Document-level filters — subquery on doc_ids
+    doc_conditions = []
     if after is not None:
-        version_conditions.append(DocumentVersion.created_at >= after)
+        doc_conditions.append(Document.created_at >= after)
     if before is not None:
-        version_conditions.append(DocumentVersion.created_at < before)
+        doc_conditions.append(Document.created_at < before)
     if mime_type is not None:
-        version_conditions.append(DocumentVersion.mime_type == mime_type)
-    if version_conditions:
-        version_subq = select(DocumentVersion.version_id).where(*version_conditions)
-        scope_filters.append(Chunk.version_id.in_(version_subq))
+        doc_conditions.append(Document.mime_type == mime_type)
+    if doc_conditions:
+        doc_subq = select(Document.doc_id).where(*doc_conditions)
+        scope_filters.append(Chunk.doc_id.in_(doc_subq))
 
     # Dynamic candidate limit: pull enough candidates for k + offset
     candidate_limit = max(30, k + offset + 20)
@@ -167,19 +162,15 @@ async def hybrid_search(
     chunks_result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(chunk_ids_list)))
     chunks_by_id: dict[uuid.UUID, Chunk] = {c.chunk_id: c for c in chunks_result.scalars().all()}
 
-    # Load documents for latest_version_id check and titles
-    doc_ids = {c.doc_id for c in chunks_by_id.values()}
-    docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
+    # Load documents for titles and OCR-confidence boost
+    doc_ids_set = {c.doc_id for c in chunks_by_id.values()}
+    docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids_set))))
     docs_by_id: dict[uuid.UUID, Document] = {d.doc_id: d for d in docs_result.scalars().all()}
 
     for cid, score in combined.items():
         chunk = chunks_by_id.get(cid)
         if chunk is None:
             continue
-        doc = docs_by_id.get(chunk.doc_id)
-        # Boost for latest version
-        if doc and doc.latest_version_id == chunk.version_id:
-            score += 0.1
         # Boost for OCR confidence
         if chunk.ocr_confidence is not None:
             score += 0.05 * (chunk.ocr_confidence / 100.0)
@@ -200,7 +191,6 @@ async def hybrid_search(
             SearchHit(
                 chunk_id=str(cid),
                 doc_id=str(chunk.doc_id),
-                version_id=str(chunk.version_id),
                 chunk_num=chunk.chunk_num,
                 chunk_text=chunk.chunk_text,
                 page_start=chunk.page_start,
@@ -221,15 +211,14 @@ async def hybrid_search(
         top_score = top3[0].score
         threshold = top_score * 0.9  # within 10%
         close_hits = [h for h in top3 if h.score >= threshold]
-        unique_sources = {(h.doc_id, h.version_id) for h in close_hits}
-        if len(unique_sources) > 1:
+        unique_docs = {h.doc_id for h in close_hits}
+        if len(unique_docs) > 1:
             possible_conflict = True
-            for doc_id_str, version_id_str in unique_sources:
+            for doc_id_str in unique_docs:
                 doc = docs_by_id.get(uuid.UUID(doc_id_str))
                 conflict_sources.append(
                     ConflictSource(
                         doc_id=doc_id_str,
-                        version_id=version_id_str,
                         title=doc.title if doc else "Unknown",
                     )
                 )

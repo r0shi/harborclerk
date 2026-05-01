@@ -3,8 +3,7 @@
 import uuid
 
 from harbor_clerk.models.document import Document
-from harbor_clerk.models.document_version import DocumentVersion
-from harbor_clerk.models.enums import JobStage, JobStatus, VersionStatus
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from tests.conftest import auth_header
@@ -64,35 +63,31 @@ async def _seed_folder_with_jobs(db_session):
     db_session.add(folder)
     await db_session.flush()
 
-    async def _add_file(content: bytes):
-        doc = Document(title="d", status="active")
+    async def _add_file(sha: bytes) -> uuid.UUID:
+        doc = Document(title="d", status="active", sha256=sha, pipeline_status=PipelineStatus.queued)
         db_session.add(doc)
-        await db_session.flush()
-        version = DocumentVersion(doc_id=doc.doc_id, original_sha256=content, status=VersionStatus.queued)
-        db_session.add(version)
         await db_session.flush()
         wf = WatchedFile(
             folder_id=folder.folder_id,
-            relative_path=content.decode("ascii", errors="ignore") or "f",
+            relative_path=sha.hex()[:8],
             bookmark_data=b"",
-            sha256=content,
+            sha256=sha,
             doc_id=doc.doc_id,
-            version_id=version.version_id,
             status=WatchedFileStatus.active,
         )
         db_session.add(wf)
-        return version.version_id
+        return doc.doc_id
 
-    v_a = await _add_file(b"a" * 32)
-    v_b = await _add_file(b"b" * 32)
+    doc_a = await _add_file(b"a" * 32)
+    doc_b = await _add_file(b"b" * 32)
 
     db_session.add_all(
         [
-            IngestionJob(version_id=v_a, stage=JobStage.extract, status=JobStatus.done),
-            IngestionJob(version_id=v_a, stage=JobStage.ocr, status=JobStatus.running),
-            IngestionJob(version_id=v_a, stage=JobStage.chunk, status=JobStatus.queued),
-            IngestionJob(version_id=v_b, stage=JobStage.extract, status=JobStatus.done),
-            IngestionJob(version_id=v_b, stage=JobStage.ocr, status=JobStatus.error),
+            IngestionJob(doc_id=doc_a, stage=JobStage.extract, status=JobStatus.done),
+            IngestionJob(doc_id=doc_a, stage=JobStage.ocr, status=JobStatus.running),
+            IngestionJob(doc_id=doc_a, stage=JobStage.chunk, status=JobStatus.queued),
+            IngestionJob(doc_id=doc_b, stage=JobStage.extract, status=JobStatus.done),
+            IngestionJob(doc_id=doc_b, stage=JobStage.ocr, status=JobStatus.error),
         ]
     )
     await db_session.flush()
@@ -175,27 +170,20 @@ async def test_folder_progress_only_counts_active_files(client, admin_token, db_
     await db_session.flush()
 
     async def _seed(status: WatchedFileStatus):
-        doc = Document(title="d", status="active")
+        sha = str(uuid.uuid4()).encode()[:32].ljust(32, b"\x00")
+        doc = Document(title="d", status="active", sha256=sha, pipeline_status=PipelineStatus.queued)
         db_session.add(doc)
-        await db_session.flush()
-        ver = DocumentVersion(
-            doc_id=doc.doc_id,
-            original_sha256=str(uuid.uuid4()).encode(),
-            status=VersionStatus.queued,
-        )
-        db_session.add(ver)
         await db_session.flush()
         wf = WatchedFile(
             folder_id=folder.folder_id,
             relative_path=str(uuid.uuid4()),
             bookmark_data=b"",
-            sha256=str(uuid.uuid4()).encode(),
+            sha256=sha,
             doc_id=doc.doc_id,
-            version_id=ver.version_id,
             status=status,
         )
         db_session.add(wf)
-        return ver.version_id
+        return doc.doc_id
 
     await _seed(WatchedFileStatus.active)
     await _seed(WatchedFileStatus.removed)

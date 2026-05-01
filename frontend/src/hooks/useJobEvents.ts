@@ -2,14 +2,13 @@ import { useEffect, useRef } from 'react'
 import { useAuth } from '../auth'
 
 export interface JobEvent {
-  version_id: string
+  doc_id: string
   stage: string
   status: string
   progress?: number
   total?: number
   error?: string
   filename?: string
-  doc_id?: string
   page_count?: number
   chunk_count?: number
 }

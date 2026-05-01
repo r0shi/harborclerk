@@ -20,8 +20,7 @@ from harbor_clerk.api.routes.uploads import ALLOWED_EXTENSIONS
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.models.document import Document
-from harbor_clerk.models.document_version import DocumentVersion
-from harbor_clerk.models.enums import JobStage, JobStatus, UploadSource, VersionStatus
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus, UploadSource
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
@@ -203,7 +202,7 @@ async def _folder_progress_event_generator(session_factory=None):
                         .label("done"),
                     )
                     .outerjoin(WatchedFile, WatchedFile.folder_id == WatchedFolder.folder_id)
-                    .outerjoin(IngestionJob, IngestionJob.version_id == WatchedFile.version_id)
+                    .outerjoin(IngestionJob, IngestionJob.doc_id == WatchedFile.doc_id)
                     .group_by(WatchedFolder.folder_id, WatchedFolder.last_scan_at)
                 )
                 rows = (await sess.execute(stmt)).all()
@@ -283,7 +282,7 @@ async def get_folder_progress(
 
     result = await session.execute(
         select(IngestionJob.stage, IngestionJob.status, func.count())
-        .join(WatchedFile, WatchedFile.version_id == IngestionJob.version_id)
+        .join(WatchedFile, WatchedFile.doc_id == IngestionJob.doc_id)
         .where(
             WatchedFile.folder_id == folder_id,
             WatchedFile.status == WatchedFileStatus.active,
@@ -439,7 +438,7 @@ async def delete_folder(
     # Delete folder first (cascades to watched_files via FK)
     await session.execute(delete(WatchedFolder).where(WatchedFolder.folder_id == fid))
 
-    # Delete linked documents via SQL DELETE (DB cascades handle versions, chunks, etc.)
+    # Delete linked documents via SQL DELETE (DB cascades handle chunks, jobs, etc.)
     # Using raw DELETE avoids SQLAlchemy ORM autoflush FK conflicts
     if doc_ids:
         await session.execute(delete(Document).where(Document.doc_id.in_(doc_ids)))
@@ -502,7 +501,7 @@ async def ingest_file(
 
     # Case 1: active + same SHA256 → skip
     if wf and wf.status == WatchedFileStatus.active and wf.sha256 == sha256_bytes:
-        return {"action": "skipped", "doc_id": str(wf.doc_id), "version_id": str(wf.version_id)}
+        return {"action": "skipped", "doc_id": str(wf.doc_id)}
 
     # Case 2: removed file at same path — resurrect (bookmark may differ after Trash restore)
     if wf and wf.status == WatchedFileStatus.removed:
@@ -515,72 +514,56 @@ async def ingest_file(
             doc = doc_result.scalar_one_or_none()
             if doc:
                 doc.status = "active"
-
-            if wf.version_id:
-                ver_result = await session.execute(
-                    select(DocumentVersion).where(DocumentVersion.version_id == wf.version_id)
-                )
-                ver = ver_result.scalar_one_or_none()
-                if ver:
-                    ver.source_path = body.source_path
+                doc.source_path = body.source_path
 
         if wf.sha256 != sha256_bytes:
-            # SHA changed — re-ingest with new version
+            # SHA changed — re-ingest same document with updated content
             wf.sha256 = sha256_bytes
-            version_id = await _create_new_version(
-                session, wf.doc_id, sha256_bytes, body.source_path, body.mime_type, filename
-            )
-            wf.version_id = version_id
+            if wf.doc_id:
+                doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
+                doc = doc_result.scalar_one_or_none()
+                if doc:
+                    doc.sha256 = sha256_bytes
+                    doc.pipeline_status = PipelineStatus.queued
+                    doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
+                    doc.source_path = body.source_path
+                    doc.mime_type = body.mime_type
+                    await session.commit()
+                    await asyncio.to_thread(enqueue_stage, doc.doc_id, JobStage.extract, priority=10)
+                    return {"action": "updated", "doc_id": str(doc.doc_id)}
 
-            # Update doc latest_version_id
+        await session.commit()
+        return {"action": "resurrected", "doc_id": str(wf.doc_id)}
+
+    # Case 3: active + different SHA256 → re-ingest same document
+    if wf and wf.status == WatchedFileStatus.active and wf.sha256 != sha256_bytes:
+        wf.sha256 = sha256_bytes
+        wf.bookmark_data = bookmark_bytes
+        if wf.doc_id:
             doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
             doc = doc_result.scalar_one_or_none()
             if doc:
-                doc.latest_version_id = version_id
-
-            await session.commit()
-            await asyncio.to_thread(enqueue_stage, version_id, JobStage.extract, priority=10)
-            return {"action": "updated", "doc_id": str(wf.doc_id), "version_id": str(version_id)}
-
-        await session.commit()
-        return {"action": "resurrected", "doc_id": str(wf.doc_id), "version_id": str(wf.version_id)}
-
-    # Case 3: active + different SHA256 → new version
-    if wf and wf.status == WatchedFileStatus.active and wf.sha256 != sha256_bytes:
-        version_id = await _create_new_version(
-            session, wf.doc_id, sha256_bytes, body.source_path, body.mime_type, filename
-        )
-        # Update doc
-        doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
-        doc = doc_result.scalar_one_or_none()
-        if doc:
-            doc.latest_version_id = version_id
-
-        wf.sha256 = sha256_bytes
-        wf.version_id = version_id
-        wf.bookmark_data = bookmark_bytes
-        await session.commit()
-        await asyncio.to_thread(enqueue_stage, version_id, JobStage.extract, priority=10)
-        return {"action": "updated", "doc_id": str(wf.doc_id), "version_id": str(version_id)}
+                doc.sha256 = sha256_bytes
+                doc.pipeline_status = PipelineStatus.queued
+                doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
+                doc.source_path = body.source_path
+                doc.mime_type = body.mime_type
+                await session.commit()
+                await asyncio.to_thread(enqueue_stage, doc.doc_id, JobStage.extract, priority=10)
+                return {"action": "updated", "doc_id": str(doc.doc_id)}
 
     # Case 4: new file
-    doc = Document(title=PurePosixPath(filename).stem, canonical_filename=filename, status="active")
-    session.add(doc)
-    await session.flush()
-
-    version = DocumentVersion(
-        doc_id=doc.doc_id,
-        original_sha256=sha256_bytes,
-        original_bucket=None,
-        original_object_key=None,
+    doc = Document(
+        title=PurePosixPath(filename).stem,
+        canonical_filename=filename,
+        status="active",
+        sha256=sha256_bytes,
         mime_type=body.mime_type,
         source_path=body.source_path,
-        status=VersionStatus.queued,
+        pipeline_status=PipelineStatus.queued,
     )
-    session.add(version)
+    session.add(doc)
     await session.flush()
-
-    doc.latest_version_id = version.version_id
 
     upload = Upload(
         user_id=None,  # watched folder uploads are system-initiated, no real user
@@ -591,7 +574,6 @@ async def ingest_file(
         minio_bucket="",
         minio_object_key="",
         doc_id=doc.doc_id,
-        version_id=version.version_id,
         source_path=body.source_path,
         status="confirmed",
     )
@@ -603,14 +585,13 @@ async def ingest_file(
         bookmark_data=bookmark_bytes,
         sha256=sha256_bytes,
         doc_id=doc.doc_id,
-        version_id=version.version_id,
         status=WatchedFileStatus.active,
     )
     session.add(new_wf)
     await session.commit()
 
-    await asyncio.to_thread(enqueue_stage, version.version_id, JobStage.extract, priority=10)
-    return {"action": "created", "doc_id": str(doc.doc_id), "version_id": str(version.version_id)}
+    await asyncio.to_thread(enqueue_stage, doc.doc_id, JobStage.extract, priority=10)
+    return {"action": "created", "doc_id": str(doc.doc_id)}
 
 
 @router.post("/remove")
@@ -674,40 +655,12 @@ async def rename_file(
     wf.relative_path = body.new_relative_path
     wf.bookmark_data = _parse_base64(body.bookmark_data, "bookmark_data")
 
-    # Update source_path on the version
-    if wf.version_id:
-        ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == wf.version_id))
-        ver = ver_result.scalar_one_or_none()
-        if ver:
-            ver.source_path = body.source_path
+    # Update source_path on the document
+    if wf.doc_id:
+        doc_result = await session.execute(select(Document).where(Document.doc_id == wf.doc_id))
+        doc = doc_result.scalar_one_or_none()
+        if doc:
+            doc.source_path = body.source_path
 
     await session.commit()
     return {"action": "renamed", "doc_id": str(wf.doc_id)}
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-async def _create_new_version(
-    session: AsyncSession,
-    doc_id: uuid.UUID,
-    sha256: bytes,
-    source_path: str,
-    mime_type: str,
-    filename: str,
-) -> uuid.UUID:
-    """Create a new DocumentVersion for an existing document."""
-    version = DocumentVersion(
-        doc_id=doc_id,
-        original_sha256=sha256,
-        original_bucket=None,
-        original_object_key=None,
-        mime_type=mime_type,
-        source_path=source_path,
-        status=VersionStatus.queued,
-    )
-    session.add(version)
-    await session.flush()
-    return version.version_id

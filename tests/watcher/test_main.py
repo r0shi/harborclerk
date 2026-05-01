@@ -29,7 +29,6 @@ def _commit_folder(factory, path: str) -> uuid.UUID:
 def _truncate_watched(factory):
     """Clean up watched_folders/watched_files between tests since this test does its own commits outside the cleanup-on-yield fixture pattern."""
     from harbor_clerk.models.document import Document
-    from harbor_clerk.models.document_version import DocumentVersion
     from harbor_clerk.models.ingestion_job import IngestionJob
 
     sess = factory()
@@ -38,7 +37,6 @@ def _truncate_watched(factory):
         sess.query(WatchedFile).delete()
         sess.query(WatchedFolder).delete()
         sess.query(IngestionJob).delete()
-        sess.query(DocumentVersion).delete()
         sess.query(Document).delete()
         sess.commit()
     finally:

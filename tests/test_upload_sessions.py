@@ -96,7 +96,6 @@ async def test_upload_file_auto_confirm(client, admin_user, admin_token):
     assert data["filename"] == "test.txt"
     assert data["source_path"] == "folder/test.txt"
     assert data["doc_id"] is not None
-    assert data["version_id"] is not None
     assert len(data["sha256"]) == 64  # hex sha256
 
     # Session should reflect upload
@@ -129,7 +128,6 @@ async def test_upload_file_review_mode(client, admin_user, admin_token):
     data = resp.json()
     assert data["status"] == "pending_confirmation"
     assert data["doc_id"] is None
-    assert data["version_id"] is None
 
 
 # --- Duplicate detection ---

@@ -10,7 +10,6 @@ from harbor_clerk.db import async_session_factory
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.corpus_topic import CorpusTopic, CorpusTopicsMeta
 from harbor_clerk.models.document import Document
-from harbor_clerk.models.document_version import DocumentVersion
 
 logger = logging.getLogger(__name__)
 
@@ -134,13 +133,12 @@ async def recompute_topics() -> None:
                 select(
                     Chunk.doc_id,
                     Document.title,
-                    DocumentVersion.summary,
+                    Document.summary,
                     func.avg(Chunk.embedding).cast(Text).label("centroid"),
                 )
                 .join(Document, Document.doc_id == Chunk.doc_id)
-                .join(DocumentVersion, Document.latest_version_id == DocumentVersion.version_id)
                 .where(Document.status == "active", Chunk.embedding.isnot(None))
-                .group_by(Chunk.doc_id, Document.title, DocumentVersion.summary)
+                .group_by(Chunk.doc_id, Document.title, Document.summary)
             )
         ).all()
 
@@ -210,8 +208,8 @@ async def recompute_topics() -> None:
         # Compute hash from doc count and latest version timestamp
         max_ts_row = (
             await session.execute(
-                select(func.max(DocumentVersion.created_at).cast(Text)).where(
-                    DocumentVersion.doc_id.in_(doc_ids),
+                select(func.max(Document.updated_at).cast(Text)).where(
+                    Document.doc_id.in_(doc_ids),
                 )
             )
         ).scalar_one_or_none()
@@ -298,11 +296,9 @@ async def check_and_recompute_topics(session) -> None:
         if doc_count < MIN_DOCS_FOR_TOPICS:
             return
 
-        # Get latest version timestamp as staleness indicator
+        # Get latest doc update timestamp as staleness indicator
         latest_ts = await session.execute(
-            select(func.max(DocumentVersion.created_at).cast(Text))
-            .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-            .where(Document.status == "active")
+            select(func.max(Document.updated_at).cast(Text)).where(Document.status == "active")
         )
         latest_str = latest_ts.scalar_one_or_none() or ""
         current_hash = f"{doc_count}:{latest_str}"

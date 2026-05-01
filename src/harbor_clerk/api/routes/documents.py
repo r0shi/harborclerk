@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from harbor_clerk.api.deps import Principal, require_admin, require_read_access
 from harbor_clerk.api.schemas.documents import (
@@ -25,7 +24,6 @@ from harbor_clerk.api.schemas.documents import (
     PageContent,
     PaginatedDocuments,
     RelatedDocumentsResponse,
-    VersionInfo,
 )
 from harbor_clerk.api.scope import apply_key_scope
 from harbor_clerk.audit import log_audit
@@ -35,11 +33,10 @@ from harbor_clerk.models import (
     Document,
     DocumentHeading,
     DocumentPage,
-    DocumentVersion,
     Entity,
     IngestionJob,
 )
-from harbor_clerk.models.enums import JobStage, VersionStatus
+from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFolder
 from harbor_clerk.storage import get_storage
 
@@ -87,16 +84,11 @@ async def list_documents(
         pattern = f"%{escaped}%"
         base = base.where(Document.title.ilike(pattern) | Document.canonical_filename.ilike(pattern))
 
-    # Version-based filters: join to latest version
-    if mime_type or doc_type:
-        base = base.join(
-            DocumentVersion,
-            Document.latest_version_id == DocumentVersion.version_id,
-        )
-        if mime_type:
-            base = base.where(DocumentVersion.mime_type == mime_type)
-        if doc_type:
-            base = base.where(DocumentVersion.doc_type == doc_type)
+    # Flat filters directly on Document
+    if mime_type:
+        base = base.where(Document.mime_type == mime_type)
+    if doc_type:
+        base = base.where(Document.doc_type == doc_type)
 
     # Language filter: docs that have chunks in this language
     if language:
@@ -124,7 +116,7 @@ async def list_documents(
     }[sort]
     order = sort_column.asc() if sort_dir == "asc" else sort_column.desc()
 
-    query = base.options(selectinload(Document.versions)).order_by(order).offset(offset)
+    query = base.order_by(order).offset(offset)
     if limit > 0:
         query = query.limit(limit)
 
@@ -133,43 +125,19 @@ async def list_documents(
 
     summaries = []
     for doc in docs:
-        latest_status = None
-        latest_summary = None
-        latest_summary_model = None
-        latest_doc_type = None
-        latest_source_path = None
-        version_count = len(doc.versions) if doc.versions else 0
-        if doc.latest_version_id and doc.versions:
-            for v in doc.versions:
-                if v.version_id == doc.latest_version_id:
-                    latest_status = v.status.value
-                    latest_summary = v.summary
-                    latest_summary_model = v.summary_model
-                    latest_doc_type = v.doc_type
-                    latest_source_path = v.source_path
-                    break
-        if latest_status is None and doc.versions:
-            latest_v = doc.versions[-1]
-            latest_status = latest_v.status.value
-            latest_summary = latest_v.summary
-            latest_summary_model = latest_v.summary_model
-            latest_doc_type = latest_v.doc_type
-            latest_source_path = latest_v.source_path
-
         summaries.append(
             DocumentSummary(
                 doc_id=str(doc.doc_id),
                 title=doc.title,
                 canonical_filename=doc.canonical_filename,
                 status=doc.status,
-                latest_version_status=latest_status,
-                version_count=version_count,
+                pipeline_status=doc.pipeline_status.value if doc.pipeline_status else None,
                 created_at=doc.created_at,
                 updated_at=doc.updated_at,
-                summary=latest_summary,
-                summary_model=latest_summary_model,
-                doc_type=latest_doc_type,
-                source_path=latest_source_path,
+                summary=doc.summary,
+                summary_model=doc.summary_model,
+                doc_type=doc.doc_type,
+                source_path=doc.source_path,
                 topic_id=doc.topic_id,
             )
         )
@@ -177,8 +145,8 @@ async def list_documents(
     # Enrich with watched file info (batch lookup — graceful if table doesn't exist yet)
     if summaries:
         try:
-            doc_ids = [uuid.UUID(s.doc_id) for s in summaries]
-            wf_result = await session.execute(select(WatchedFile).where(WatchedFile.doc_id.in_(doc_ids)))
+            doc_ids_list = [uuid.UUID(s.doc_id) for s in summaries]
+            wf_result = await session.execute(select(WatchedFile).where(WatchedFile.doc_id.in_(doc_ids_list)))
             wf_by_doc: dict[str, WatchedFile] = {}
             for wf in wf_result.scalars().all():
                 if wf.doc_id:
@@ -226,7 +194,7 @@ async def corpus_overview(
     chunk_count_q = (
         select(func.count())
         .select_from(Chunk)
-        .join(Document, Document.latest_version_id == Chunk.version_id)
+        .join(Document, Document.doc_id == Chunk.doc_id)
         .where(Document.status == "active")
     )
     if visible_ids is not None:
@@ -236,7 +204,7 @@ async def corpus_overview(
     total_pages_q = (
         select(func.count())
         .select_from(DocumentPage)
-        .join(Document, Document.latest_version_id == DocumentPage.version_id)
+        .join(Document, Document.doc_id == DocumentPage.doc_id)
         .where(Document.status == "active")
     )
     if visible_ids is not None:
@@ -245,7 +213,7 @@ async def corpus_overview(
 
     lang_q = (
         select(Chunk.language, func.count())
-        .join(Document, Document.latest_version_id == Chunk.version_id)
+        .join(Document, Document.doc_id == Chunk.doc_id)
         .where(Document.status == "active")
     )
     if visible_ids is not None:
@@ -253,14 +221,10 @@ async def corpus_overview(
     lang_rows = (await session.execute(lang_q.group_by(Chunk.language).order_by(func.count().desc()))).all()
     languages = {row[0]: row[1] for row in lang_rows if row[0]}
 
-    mime_q = (
-        select(DocumentVersion.mime_type, func.count())
-        .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-        .where(Document.status == "active")
-    )
+    mime_q = select(Document.mime_type, func.count()).where(Document.status == "active", Document.mime_type.isnot(None))
     if visible_ids is not None:
         mime_q = mime_q.where(Document.doc_id.in_(visible_ids))
-    mime_rows = (await session.execute(mime_q.group_by(DocumentVersion.mime_type).order_by(func.count().desc()))).all()
+    mime_rows = (await session.execute(mime_q.group_by(Document.mime_type).order_by(func.count().desc()))).all()
     mime_types = {row[0]: row[1] for row in mime_rows if row[0]}
 
     date_q = select(func.min(Document.updated_at), func.max(Document.updated_at)).where(Document.status == "active")
@@ -268,7 +232,7 @@ async def corpus_overview(
         date_q = date_q.where(Document.doc_id.in_(visible_ids))
     date_row = (await session.execute(date_q)).one()
 
-    docs_q = select(Document).options(selectinload(Document.versions)).where(Document.status == "active")
+    docs_q = select(Document).where(Document.status == "active")
     if visible_ids is not None:
         docs_q = docs_q.where(Document.doc_id.in_(visible_ids))
     result = await session.execute(docs_q.order_by(Document.updated_at.desc()).limit(200))
@@ -276,20 +240,12 @@ async def corpus_overview(
 
     items = []
     for doc in docs:
-        summary = None
-        ver_status = None
-        if doc.latest_version_id and doc.versions:
-            for v in doc.versions:
-                if v.version_id == doc.latest_version_id:
-                    summary = v.summary
-                    ver_status = v.status.value
-                    break
         items.append(
             {
                 "doc_id": str(doc.doc_id),
                 "title": doc.title,
-                "summary": summary,
-                "status": ver_status,
+                "summary": doc.summary,
+                "status": doc.pipeline_status.value if doc.pipeline_status else None,
                 "updated_at": doc.updated_at,
             }
         )
@@ -323,7 +279,6 @@ async def entity_autocomplete(
 
     filters = [
         Document.status == "active",
-        Document.latest_version_id == Entity.version_id,
         Entity.entity_text.ilike(f"%{q}%"),
     ]
     if entity_type:
@@ -389,26 +344,18 @@ async def document_filters(
         visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
 
     # MIME types
-    mime_q = (
-        select(DocumentVersion.mime_type, func.count())
-        .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-        .where(Document.status == "active", DocumentVersion.mime_type.isnot(None))
-    )
+    mime_q = select(Document.mime_type, func.count()).where(Document.status == "active", Document.mime_type.isnot(None))
     if visible_ids is not None:
         mime_q = mime_q.where(Document.doc_id.in_(visible_ids))
-    mime_rows = (await session.execute(mime_q.group_by(DocumentVersion.mime_type).order_by(func.count().desc()))).all()
+    mime_rows = (await session.execute(mime_q.group_by(Document.mime_type).order_by(func.count().desc()))).all()
 
     # Doc types
-    doc_type_q = (
-        select(DocumentVersion.doc_type, func.count())
-        .join(Document, Document.latest_version_id == DocumentVersion.version_id)
-        .where(Document.status == "active", DocumentVersion.doc_type.isnot(None))
+    doc_type_q = select(Document.doc_type, func.count()).where(
+        Document.status == "active", Document.doc_type.isnot(None)
     )
     if visible_ids is not None:
         doc_type_q = doc_type_q.where(Document.doc_id.in_(visible_ids))
-    doc_type_rows = (
-        await session.execute(doc_type_q.group_by(DocumentVersion.doc_type).order_by(func.count().desc()))
-    ).all()
+    doc_type_rows = (await session.execute(doc_type_q.group_by(Document.doc_type).order_by(func.count().desc()))).all()
 
     # Languages
     lang_q = (
@@ -453,60 +400,39 @@ async def get_document(
     doc_query = apply_key_scope(
         select(Document).where(Document.doc_id == doc_id),
         principal,
-    ).options(selectinload(Document.versions))
+    )
     result = await session.execute(doc_query)
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    # Load jobs for each version
-    version_ids = [v.version_id for v in (doc.versions or [])]
-    jobs_by_version: dict[uuid.UUID, list[IngestionJob]] = {}
-    if version_ids:
-        jobs_result = await session.execute(select(IngestionJob).where(IngestionJob.version_id.in_(version_ids)))
-        for job in jobs_result.scalars().all():
-            jobs_by_version.setdefault(job.version_id, []).append(job)
+    # Load jobs for this doc
+    jobs_result = await session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc_id))
+    job_rows = jobs_result.scalars().all()
 
-    versions = []
-    for v in doc.versions or []:
-        jobs = []
-        for j in jobs_by_version.get(v.version_id, []):
-            job_status = j.status.value
-            error = j.error
-            # Surface skipped stages with reason instead of showing "done"
-            if j.metrics and j.metrics.get("skipped"):
-                job_status = "skipped"
-                reason = j.metrics.get("reason", "")
-                if reason == "spacy_unavailable":
-                    error = "spaCy NER models not available"
-                elif reason:
-                    error = reason
-            jobs.append(
-                JobInfo(
-                    job_id=str(j.job_id),
-                    stage=j.stage.value,
-                    status=job_status,
-                    progress_current=j.progress_current,
-                    progress_total=j.progress_total,
-                    error=error,
-                    created_at=j.created_at,
-                    started_at=j.started_at,
-                    finished_at=j.finished_at,
-                )
-            )
-        versions.append(
-            VersionInfo(
-                version_id=str(v.version_id),
-                status=v.status.value,
-                mime_type=v.mime_type,
-                size_bytes=v.size_bytes,
-                has_text_layer=v.has_text_layer,
-                needs_ocr=v.needs_ocr,
-                extracted_chars=v.extracted_chars,
-                source_path=v.source_path,
-                error=v.error,
-                created_at=v.created_at,
-                jobs=jobs,
+    jobs = []
+    for j in job_rows:
+        job_status = j.status.value
+        error = j.error
+        # Surface skipped stages with reason instead of showing "done"
+        if j.metrics and j.metrics.get("skipped"):
+            job_status = "skipped"
+            reason = j.metrics.get("reason", "")
+            if reason == "spacy_unavailable":
+                error = "spaCy NER models not available"
+            elif reason:
+                error = reason
+        jobs.append(
+            JobInfo(
+                job_id=str(j.job_id),
+                stage=j.stage.value,
+                status=job_status,
+                progress_current=j.progress_current,
+                progress_total=j.progress_total,
+                error=error,
+                created_at=j.created_at,
+                started_at=j.started_at,
+                finished_at=j.finished_at,
             )
         )
 
@@ -515,9 +441,20 @@ async def get_document(
         title=doc.title,
         canonical_filename=doc.canonical_filename,
         status=doc.status,
+        pipeline_status=doc.pipeline_status.value if doc.pipeline_status else None,
+        pipeline_seq=doc.pipeline_seq,
+        summary=doc.summary,
+        doc_type=doc.doc_type,
+        mime_type=doc.mime_type,
+        source_path=doc.source_path,
+        has_text_layer=doc.has_text_layer,
+        needs_ocr=doc.needs_ocr,
+        extracted_chars=doc.extracted_chars,
+        size_bytes=doc.size_bytes,
+        error=doc.error,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
-        versions=versions,
+        jobs=jobs,
     )
 
 
@@ -529,22 +466,16 @@ async def get_document_content(
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
-    # Get document + latest version
+    # Get document
     doc_query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
     doc_query = apply_key_scope(doc_query, principal)
-    result = await session.execute(doc_query.options(selectinload(Document.versions)))
+    result = await session.execute(doc_query)
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    version_id = doc.latest_version_id
-    if version_id is None and doc.versions:
-        version_id = doc.versions[-1].version_id
-    if version_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No versions available")
-
-    # Build page query
-    query = select(DocumentPage).where(DocumentPage.version_id == version_id).order_by(DocumentPage.page_num)
+    # Build page query — directly by doc_id
+    query = select(DocumentPage).where(DocumentPage.doc_id == doc_id).order_by(DocumentPage.page_num)
 
     if pages is not None:
         # Parse "1-3" or "5"
@@ -597,7 +528,6 @@ async def get_document_content(
 
     return DocumentContentResponse(
         doc_id=str(doc_id),
-        version_id=str(version_id),
         pages=page_contents,
         total_chars=total_chars,
     )
@@ -612,36 +542,27 @@ async def get_document_outline(
     """Get document heading outline/structure with page and chunk counts."""
     doc_query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
     doc_query = apply_key_scope(doc_query, principal)
-    result = await session.execute(doc_query.options(selectinload(Document.versions)))
+    result = await session.execute(doc_query)
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    version_id = doc.latest_version_id
-    if version_id is None and doc.versions:
-        version_id = doc.versions[-1].version_id
-    if version_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No versions available")
-
-    # Fetch headings, page count, chunk count
+    # Fetch headings, page count, chunk count — all keyed by doc_id
     headings_result = await session.execute(
-        select(DocumentHeading).where(DocumentHeading.version_id == version_id).order_by(DocumentHeading.position)
+        select(DocumentHeading).where(DocumentHeading.doc_id == doc_id).order_by(DocumentHeading.position)
     )
     headings = headings_result.scalars().all()
 
     page_count_result = await session.execute(
-        select(func.count()).select_from(DocumentPage).where(DocumentPage.version_id == version_id)
+        select(func.count()).select_from(DocumentPage).where(DocumentPage.doc_id == doc_id)
     )
     page_count = page_count_result.scalar_one()
 
-    chunk_count_result = await session.execute(
-        select(func.count()).select_from(Chunk).where(Chunk.version_id == version_id)
-    )
+    chunk_count_result = await session.execute(select(func.count()).select_from(Chunk).where(Chunk.doc_id == doc_id))
     chunk_count = chunk_count_result.scalar_one()
 
     return DocumentOutlineResponse(
         doc_id=str(doc_id),
-        version_id=str(version_id),
         title=doc.title,
         page_count=page_count,
         chunk_count=chunk_count,
@@ -658,21 +579,15 @@ async def get_document_entities(
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get deduplicated entities with mention counts for a document's latest version."""
+    """Get deduplicated entities with mention counts for a document."""
     doc_query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
     doc_query = apply_key_scope(doc_query, principal)
-    result = await session.execute(doc_query.options(selectinload(Document.versions)))
+    result = await session.execute(doc_query)
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    version_id = doc.latest_version_id
-    if version_id is None and doc.versions:
-        version_id = doc.versions[-1].version_id
-    if version_id is None:
-        return DocumentEntitiesResponse(doc_id=str(doc_id), entities=[], total=0, entity_types=[])
-
-    filters = [Entity.version_id == version_id]
+    filters = [Entity.doc_id == doc_id]
     if entity_type:
         filters.append(Entity.entity_type == entity_type)
 
@@ -693,14 +608,11 @@ async def get_document_entities(
 
     entities = [EntityOut(entity_text=r[0], entity_type=r[1], mention_count=r[2]) for r in rows]
 
-    # Get all distinct entity types for this version
+    # Get all distinct entity types for this doc
     type_rows = (
         (
             await session.execute(
-                select(Entity.entity_type)
-                .where(Entity.version_id == version_id)
-                .distinct()
-                .order_by(Entity.entity_type)
+                select(Entity.entity_type).where(Entity.doc_id == doc_id).distinct().order_by(Entity.entity_type)
             )
         )
         .scalars()
@@ -729,15 +641,11 @@ async def find_related_documents(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    version_id = doc.latest_version_id
-    if version_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No versions available")
-
-    # Get embeddings for this document
+    # Get embeddings for this document's chunks (all keyed by doc_id)
     rows = (
         await session.execute(
             select(Chunk.embedding).where(
-                Chunk.version_id == version_id,
+                Chunk.doc_id == doc_id,
                 Chunk.embedding.isnot(None),
             )
         )
@@ -760,7 +668,7 @@ async def find_related_documents(
     distance = Chunk.embedding.cosine_distance(avg)
     nearest_q = (
         select(Chunk.doc_id, func.min(distance).label("min_distance"))
-        .join(Document, Document.latest_version_id == Chunk.version_id)
+        .join(Document, Document.doc_id == Chunk.doc_id)
         .where(
             Document.status == "active",
             Chunk.embedding.isnot(None),
@@ -776,9 +684,7 @@ async def find_related_documents(
     related_ids = [row[0] for row in nearest]
     distances = {row[0]: float(row[1]) for row in nearest}
 
-    docs_result = await session.execute(
-        select(Document).options(selectinload(Document.versions)).where(Document.doc_id.in_(related_ids))
-    )
+    docs_result = await session.execute(select(Document).where(Document.doc_id.in_(related_ids)))
     related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
 
     items = []
@@ -786,17 +692,11 @@ async def find_related_documents(
         rdoc = related_docs.get(rid)
         if not rdoc:
             continue
-        summary = None
-        if rdoc.latest_version_id and rdoc.versions:
-            for v in rdoc.versions:
-                if v.version_id == rdoc.latest_version_id:
-                    summary = v.summary
-                    break
         items.append(
             {
                 "doc_id": str(rid),
                 "title": rdoc.title,
-                "summary": summary,
+                "summary": rdoc.summary,
                 "similarity": round(1.0 - distances[rid], 4),
             }
         )
@@ -810,40 +710,31 @@ async def download_document(
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
-    """Download the original file for the latest version of a document."""
+    """Download the original file for a document."""
     query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
     query = apply_key_scope(query, principal)
-    result = await session.execute(query.options(selectinload(Document.versions)))
+    result = await session.execute(query)
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    version_id = doc.latest_version_id
-    if version_id is None and doc.versions:
-        version_id = doc.versions[-1].version_id
-    if version_id is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No versions available")
-
-    ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id))
-    version = ver_result.scalar_one()
-
     import os
     from pathlib import Path
 
-    # Read from storage if available; fall back to source_path for watched folder versions
-    if version.original_object_key:
+    # Read from storage if available; fall back to source_path for watched folder files
+    if doc.original_object_key:
         storage = get_storage()
-        obj = storage.get_object(version.original_bucket, version.original_object_key)
+        obj = storage.get_object(doc.original_bucket, doc.original_object_key)
         file_bytes = obj.read()
-        filename = posixpath.basename(version.original_object_key)
-    elif version.source_path and os.path.exists(version.source_path):
-        # Watched folder version — no stored object, read from original location
-        file_bytes = Path(version.source_path).read_bytes()
-        filename = posixpath.basename(version.source_path)
+        filename = posixpath.basename(doc.original_object_key)
+    elif doc.source_path and os.path.exists(doc.source_path):
+        # Watched folder file — no stored object, read from original location
+        file_bytes = Path(doc.source_path).read_bytes()
+        filename = posixpath.basename(doc.source_path)
     else:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source file unavailable")
 
-    content_type = version.mime_type or "application/octet-stream"
+    content_type = doc.mime_type or "application/octet-stream"
 
     from urllib.parse import quote
 
@@ -887,26 +778,15 @@ async def reprocess_document(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(Document)
-        .where(Document.doc_id == doc_id, Document.status == "active")
-        .options(selectinload(Document.versions))
-    )
+    result = await session.execute(select(Document).where(Document.doc_id == doc_id, Document.status == "active"))
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    version_id = doc.latest_version_id
-    if version_id is None and doc.versions:
-        version_id = doc.versions[-1].version_id
-    if version_id is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No version to reprocess")
-
-    # Reset version status
-    ver_result = await session.execute(select(DocumentVersion).where(DocumentVersion.version_id == version_id))
-    version = ver_result.scalar_one()
-    version.status = VersionStatus.queued
-    version.error = None
+    # Bump pipeline_seq to invalidate any in-flight workers
+    doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
+    doc.pipeline_status = PipelineStatus.queued
+    doc.error = None
 
     await log_audit(
         session,
@@ -914,18 +794,16 @@ async def reprocess_document(
         action="reprocess_document",
         target_type="document",
         target_id=doc_id,
-        detail={"version_id": str(version_id)},
     )
     await session.commit()
 
     from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
 
-    reset_jobs(version_id)
-    enqueue_stage(version_id, JobStage.extract)
+    reset_jobs(doc_id)
+    enqueue_stage(doc_id, JobStage.extract)
 
     return {
         "doc_id": str(doc_id),
-        "version_id": str(version_id),
         "status": "reprocessing",
     }
 
@@ -936,31 +814,20 @@ async def resummarize_document(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """Re-run only the summarize stage on the latest version of a document."""
-    result = await session.execute(
-        select(Document)
-        .where(Document.doc_id == doc_id, Document.status == "active")
-        .options(selectinload(Document.versions))
-    )
+    """Re-run only the summarize stage on a document."""
+    result = await session.execute(select(Document).where(Document.doc_id == doc_id, Document.status == "active"))
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
-
-    version_id = doc.latest_version_id
-    if version_id is None and doc.versions:
-        version_id = doc.versions[-1].version_id
-    if version_id is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No version to resummarize")
 
     await session.commit()
 
     from harbor_clerk.worker.pipeline import enqueue_stage
 
-    enqueue_stage(version_id, JobStage.summarize)
+    enqueue_stage(doc_id, JobStage.summarize)
 
     return {
         "doc_id": str(doc_id),
-        "version_id": str(version_id),
         "status": "resummarizing",
     }
 
@@ -971,20 +838,14 @@ async def cancel_processing(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(Document)
-        .where(Document.doc_id == doc_id, Document.status == "active")
-        .options(selectinload(Document.versions))
-    )
+    result = await session.execute(select(Document).where(Document.doc_id == doc_id, Document.status == "active"))
     doc = result.scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    from harbor_clerk.worker.pipeline import cancel_version_jobs
+    from harbor_clerk.worker.pipeline import cancel_doc_jobs
 
-    total_cancelled = 0
-    for v in doc.versions or []:
-        total_cancelled += cancel_version_jobs(v.version_id)
+    total_cancelled = cancel_doc_jobs(doc_id)
 
     await log_audit(
         session,

@@ -29,7 +29,6 @@ interface DocSummary {
   canonical_filename?: string
   status: string
   latest_version_status?: string
-  version_count: number
   created_at: string
   updated_at: string
   summary?: string
@@ -811,9 +810,6 @@ export default function DocumentsPage() {
                     Status
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-                    Versions
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
                     Updated
                   </th>
                   <th className="w-10"></th>
@@ -942,7 +938,6 @@ export default function DocumentsPage() {
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">{doc.version_count}</td>
                         <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                           {new Date(doc.updated_at).toLocaleDateString()}
                         </td>

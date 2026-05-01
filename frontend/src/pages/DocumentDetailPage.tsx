@@ -9,36 +9,33 @@ interface JobInfo {
   job_id: string
   stage: string
   status: string
-  progress_current?: number
-  progress_total?: number
-  error?: string
+  progress_current?: number | null
+  progress_total?: number | null
+  error?: string | null
   created_at: string
-  started_at?: string
-  finished_at?: string
-}
-
-interface VersionInfo {
-  version_id: string
-  status: string
-  mime_type?: string
-  size_bytes?: number
-  has_text_layer?: boolean
-  needs_ocr?: boolean
-  extracted_chars?: number
-  source_path?: string
-  error?: string
-  created_at: string
-  jobs: JobInfo[]
+  started_at?: string | null
+  finished_at?: string | null
 }
 
 interface DocumentDetail {
   doc_id: string
   title: string
-  canonical_filename?: string
+  canonical_filename: string | null
   status: string
+  pipeline_status: string | null
+  pipeline_seq: number | null
+  summary: string | null
+  doc_type: string | null
+  mime_type: string | null
+  source_path: string | null
+  has_text_layer: boolean | null
+  needs_ocr: boolean | null
+  extracted_chars: number | null
+  size_bytes: number | null
+  error: string | null
   created_at: string
   updated_at: string
-  versions: VersionInfo[]
+  jobs: JobInfo[]
 }
 
 interface PageContent {
@@ -50,7 +47,6 @@ interface PageContent {
 
 interface ContentResponse {
   doc_id: string
-  version_id: string
   pages: PageContent[]
   total_chars: number
 }
@@ -93,13 +89,13 @@ function JobStatusBadge({ status }: { status: string }) {
   return <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>{status}</span>
 }
 
-function VersionBanner({ version }: { version: VersionInfo }) {
-  const hasJobs = version.jobs.length > 0
-  const allDone = hasJobs && version.jobs.every((j) => j.status === 'done')
-  const hasError = version.jobs.some((j) => j.status === 'error')
-  const runningJob = version.jobs.find((j) => j.status === 'running' || j.status === 'queued')
+function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
+  const hasJobs = doc.jobs.length > 0
+  const allDone = hasJobs && doc.jobs.every((j) => j.status === 'done' || j.status === 'skipped')
+  const hasError = doc.jobs.some((j) => j.status === 'error')
+  const runningJob = doc.jobs.find((j) => j.status === 'running' || j.status === 'queued')
 
-  if (version.status === 'ready' || allDone) {
+  if (doc.pipeline_status === 'ready' || allDone) {
     return (
       <div className="mb-3 flex items-center gap-2 rounded-lg bg-green-50 dark:bg-green-900/20 px-3 py-2 text-sm text-green-700 dark:text-green-400">
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -111,7 +107,7 @@ function VersionBanner({ version }: { version: VersionInfo }) {
   }
 
   if (hasError) {
-    const errorJob = version.jobs.find((j) => j.status === 'error')
+    const errorJob = doc.jobs.find((j) => j.status === 'error')
     return (
       <div className="mb-3 flex items-center gap-2 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
         <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -124,11 +120,11 @@ function VersionBanner({ version }: { version: VersionInfo }) {
   }
 
   if (runningJob) {
-    const doneCount = version.jobs.filter((j) => j.status === 'done').length
+    const doneCount = doc.jobs.filter((j) => j.status === 'done' || j.status === 'skipped').length
     return (
       <div className="mb-3 flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
         <div className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-        Processing — stage {doneCount + 1} of {version.jobs.length}
+        Processing — stage {doneCount + 1} of {doc.jobs.length}
       </div>
     )
   }
@@ -441,35 +437,44 @@ export default function DocumentDetailPage() {
     (event: JobEvent) => {
       setDoc((prev) => {
         if (!prev) return prev
-        // Find the version this event belongs to
-        const vIdx = prev.versions.findIndex((v) => v.version_id === event.version_id)
-        if (vIdx === -1) return prev
+        // Only handle events for this document
+        if (event.doc_id && event.doc_id !== prev.doc_id) return prev
 
-        const versions = [...prev.versions]
-        const version = { ...versions[vIdx], jobs: [...versions[vIdx].jobs] }
-        versions[vIdx] = version
+        const jobs = [...prev.jobs]
+        const jIdx = jobs.findIndex((j) => j.stage === event.stage)
 
-        // Find the matching job
-        const jIdx = version.jobs.findIndex((j) => j.stage === event.stage)
-        if (jIdx === -1) return prev
-
-        const job = { ...version.jobs[jIdx] }
-        job.status = event.status
-        if (event.progress !== undefined) job.progress_current = event.progress
-        if (event.total !== undefined) job.progress_total = event.total
-        if (event.error) job.error = event.error
-        if (event.status === 'done') job.finished_at = new Date().toISOString()
-        if (event.status === 'running' && !job.started_at) job.started_at = new Date().toISOString()
-        version.jobs[jIdx] = job
+        if (jIdx === -1) {
+          // New job not in initial response — append
+          jobs.push({
+            job_id: '',
+            stage: event.stage,
+            status: event.status,
+            progress_current: event.progress ?? null,
+            progress_total: event.total ?? null,
+            error: event.error ?? null,
+            created_at: new Date().toISOString(),
+            started_at: event.status === 'running' ? new Date().toISOString() : null,
+            finished_at: event.status === 'done' ? new Date().toISOString() : null,
+          })
+        } else {
+          const job = { ...jobs[jIdx] }
+          job.status = event.status
+          if (event.progress !== undefined) job.progress_current = event.progress
+          if (event.total !== undefined) job.progress_total = event.total
+          if (event.error) job.error = event.error
+          if (event.status === 'done') job.finished_at = new Date().toISOString()
+          if (event.status === 'running' && !job.started_at) job.started_at = new Date().toISOString()
+          jobs[jIdx] = job
+        }
 
         // Check if all jobs are done → refresh from API for final state
-        const allDone = version.jobs.every((j) => j.status === 'done')
+        const allDone = jobs.every((j) => j.status === 'done' || j.status === 'skipped')
         if (allDone) {
           // Async refresh — won't affect this render, next state update will
           loadDoc()
         }
 
-        return { ...prev, versions }
+        return { ...prev, jobs }
       })
     },
     [id],
@@ -509,7 +514,11 @@ export default function DocumentDetailPage() {
     }
   }, [urlShowContent, urlTargetPage, loading])
 
-  const hasProcessing = doc?.versions.some((v) => v.status !== 'ready' && v.status !== 'error')
+  const isReady =
+    doc?.pipeline_status === 'ready' ||
+    (doc?.jobs.length ? doc.jobs.every((j) => j.status === 'done' || j.status === 'skipped') : false)
+
+  const hasProcessing = doc && !isReady && doc.pipeline_status !== 'error'
 
   async function handleCancel() {
     setActionLoading(true)
@@ -528,7 +537,6 @@ export default function DocumentDetailPage() {
     setActionLoading(true)
     try {
       await post(`/api/docs/${id}/reprocess`)
-      // Reload doc
       const updated = await get<DocumentDetail>(`/api/docs/${id}`)
       setDoc(updated)
     } catch (e) {
@@ -539,7 +547,7 @@ export default function DocumentDetailPage() {
   }
 
   async function handleDelete() {
-    if (!confirm('Delete this document and all its versions? This cannot be undone.')) return
+    if (!confirm('Delete this document? This cannot be undone.')) return
     setActionLoading(true)
     try {
       await del(`/api/docs/${id}`)
@@ -553,16 +561,6 @@ export default function DocumentDetailPage() {
   if (loading) return <div className="text-gray-500 dark:text-gray-400">Loading...</div>
   if (error && !doc) return <div className="text-red-600 dark:text-red-400">Error: {error}</div>
   if (!doc) return <div className="text-gray-500 dark:text-gray-400">Not found</div>
-
-  // Version numbering: API returns newest first, but "Version 1" = oldest
-  const versionsWithNumber = doc.versions.map((v, i) => ({
-    ...v,
-    versionNumber: doc.versions.length - i,
-  }))
-
-  const allVersionsReady = doc.versions.every((v) => v.status === 'ready')
-  const versionCount = doc.versions.length
-  const versionLabel = `${versionCount} version${versionCount !== 1 ? 's' : ''}`
 
   return (
     <div>
@@ -612,6 +610,28 @@ export default function DocumentDetailPage() {
         Created {new Date(doc.created_at).toLocaleString()} | Updated {new Date(doc.updated_at).toLocaleString()}
       </div>
 
+      <DocStatusBanner doc={doc} />
+
+      {/* File metadata line */}
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-sm">
+          <span className="font-medium">{doc.mime_type || 'unknown type'}</span>
+          {doc.size_bytes != null && (
+            <span className="ml-2 text-gray-500 dark:text-gray-400">{(doc.size_bytes / 1024).toFixed(0)} KB</span>
+          )}
+        </div>
+        <JobStatusBadge status={doc.status} />
+      </div>
+
+      {doc.error && <div className="mb-2 text-sm text-red-600 dark:text-red-400">Error: {doc.error}</div>}
+
+      <div className="text-xs text-gray-400 mb-1">
+        {doc.extracted_chars != null && <span>Chars: {doc.extracted_chars} | </span>}
+        OCR: {doc.needs_ocr ? 'yes' : 'no'} | Text layer: {doc.has_text_layer ? 'yes' : 'no'}
+      </div>
+
+      {doc.source_path && <div className="mb-2 text-xs text-gray-400 break-all">Source: {doc.source_path}</div>}
+
       <DocumentStatsDisclosure docId={doc.doc_id} />
 
       {related.length > 0 && (
@@ -641,83 +661,44 @@ export default function DocumentDetailPage() {
         </details>
       )}
 
-      <div className="mt-6 mb-6">
-        <Disclosure
-          label={<span className="text-lg font-semibold">{versionLabel}</span>}
-          defaultOpen={!allVersionsReady}
-        >
-          <div className="space-y-4">
-            {versionsWithNumber.map((v) => {
-              const versionNotReady = v.status !== 'ready'
-              return (
-                <div key={v.version_id} className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-5">
-                  <div className="mb-2 text-sm font-semibold text-gray-800 dark:text-gray-200">
-                    Version {v.versionNumber}{' '}
-                    <span className="font-normal text-gray-500 dark:text-gray-400">
-                      ({new Date(v.created_at).toLocaleDateString()})
-                    </span>
-                  </div>
-                  <VersionBanner version={v} />
-                  <div className="mb-2 flex items-center justify-between">
-                    <div className="text-sm">
-                      <span className="font-medium">{v.mime_type || 'unknown type'}</span>
-                      {v.size_bytes != null && (
-                        <span className="ml-2 text-gray-500 dark:text-gray-400">
-                          {(v.size_bytes / 1024).toFixed(0)} KB
-                        </span>
-                      )}
-                    </div>
-                    <JobStatusBadge status={v.status} />
-                  </div>
-                  {v.error && <div className="mb-2 text-sm text-red-600 dark:text-red-400">Error: {v.error}</div>}
-                  <div className="text-xs text-gray-400">
-                    {v.extracted_chars != null && <span>Chars: {v.extracted_chars} | </span>}
-                    OCR: {v.needs_ocr ? 'yes' : 'no'} | Text layer: {v.has_text_layer ? 'yes' : 'no'}
-                  </div>
-                  {v.source_path && <div className="mt-1 text-xs text-gray-400 break-all">Source: {v.source_path}</div>}
-
-                  {v.jobs.length > 0 && (
-                    <div className="mt-3">
-                      <Disclosure label="Ingestion Jobs" defaultOpen={versionNotReady}>
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-xs text-gray-500 dark:text-gray-400">
-                              <th className="pb-1 pr-3">Stage</th>
-                              <th className="pb-1 pr-3">Status</th>
-                              <th className="pb-1 pr-3">Progress</th>
-                              <th className="pb-1">Time</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {v.jobs.map((j) => (
-                              <tr key={j.job_id} className="border-b border-gray-100 dark:border-gray-700">
-                                <td className="py-1 pr-3 font-medium">{j.stage}</td>
-                                <td className="py-1 pr-3">
-                                  <JobStatusBadge status={j.status} />
-                                </td>
-                                <td className="py-1 pr-3 text-gray-500 dark:text-gray-400">
-                                  {j.progress_total ? `${j.progress_current || 0}/${j.progress_total}` : '\u2014'}
-                                </td>
-                                <td className="py-1 text-xs text-gray-400">
-                                  {j.finished_at
-                                    ? new Date(j.finished_at).toLocaleTimeString()
-                                    : j.started_at
-                                      ? 'running...'
-                                      : 'queued'}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </Disclosure>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        </Disclosure>
-      </div>
+      {doc.jobs.length > 0 && (
+        <div className="mt-6 mb-6">
+          <Disclosure label="Ingestion Jobs" defaultOpen={!isReady}>
+            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-5">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-xs text-gray-500 dark:text-gray-400">
+                    <th className="pb-1 pr-3">Stage</th>
+                    <th className="pb-1 pr-3">Status</th>
+                    <th className="pb-1 pr-3">Progress</th>
+                    <th className="pb-1">Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {doc.jobs.map((j) => (
+                    <tr key={j.job_id || j.stage} className="border-b border-gray-100 dark:border-gray-700">
+                      <td className="py-1 pr-3 font-medium">{j.stage}</td>
+                      <td className="py-1 pr-3">
+                        <JobStatusBadge status={j.status} />
+                      </td>
+                      <td className="py-1 pr-3 text-gray-500 dark:text-gray-400">
+                        {j.progress_total ? `${j.progress_current || 0}/${j.progress_total}` : '—'}
+                      </td>
+                      <td className="py-1 text-xs text-gray-400">
+                        {j.finished_at
+                          ? new Date(j.finished_at).toLocaleTimeString()
+                          : j.started_at
+                            ? 'running...'
+                            : 'queued'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Disclosure>
+        </div>
+      )}
 
       <h2 className="mb-2 mt-6 text-lg font-semibold">Content</h2>
       {!showContent ? (

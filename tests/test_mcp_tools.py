@@ -30,10 +30,9 @@ from harbor_clerk.models import (
     Document,
     DocumentHeading,
     DocumentPage,
-    DocumentVersion,
     Entity,
 )
-from harbor_clerk.models.enums import VersionStatus
+from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.search import ConflictSource, SearchHit, SearchResult
 
 # ---------------------------------------------------------------------------
@@ -69,39 +68,29 @@ async def mock_session_factory(db_session: AsyncSession, _engine, monkeypatch):
 
 @pytest.fixture
 async def sample_doc(db_session: AsyncSession):
-    """Create a Document + DocumentVersion (status=ready)."""
-    doc = Document(title="Test Document", status="active")
-    db_session.add(doc)
-    await db_session.flush()
-
-    version = DocumentVersion(
-        doc_id=doc.doc_id,
-        original_sha256=b"fake_sha256_for_testing_1234567",
-        original_bucket="originals",
-        original_object_key=f"originals/versions/{uuid.uuid4()}/test.pdf",
+    """Create a flat Document (pipeline_status=ready) with all required fields."""
+    doc = Document(
+        title="Test Document",
+        status="active",
+        sha256=b"fake_sha256_for_testing_12345678",
+        pipeline_status=PipelineStatus.ready,
         mime_type="application/pdf",
         size_bytes=12345,
-        status=VersionStatus.ready,
         source_path="test.pdf",
         summary="A test document summary.",
     )
-    db_session.add(version)
+    db_session.add(doc)
     await db_session.flush()
-
-    doc.latest_version_id = version.version_id
-    await db_session.flush()
-
-    return doc, version
+    return doc
 
 
 @pytest.fixture
 async def sample_chunks(db_session: AsyncSession, sample_doc):
     """Create 5 chunks (chunk_num 0–4) for the sample document."""
-    doc, version = sample_doc
+    doc = sample_doc
     chunks = []
     for i in range(5):
         chunk = Chunk(
-            version_id=version.version_id,
             doc_id=doc.doc_id,
             chunk_num=i,
             page_start=i + 1,
@@ -276,14 +265,12 @@ async def test_get_document_happy(
     mock_session_factory,
     sample_doc,
 ):
-    """Returns document details with version info."""
-    doc, version = sample_doc
+    """Returns document details with flat pipeline info."""
+    doc = sample_doc
     result = json.loads(await kb_get_document(str(doc.doc_id)))
     assert result["title"] == "Test Document"
-    assert result["latest_version_id"] == str(version.version_id)
-    assert len(result["versions"]) == 1
-    assert result["versions"][0]["status"] == "ready"
-    assert result["versions"][0]["summary"] == "A test document summary."
+    assert result["pipeline_status"] == "ready"
+    assert result["summary"] == "A test document summary."
 
 
 async def test_get_document_not_found(
@@ -313,7 +300,7 @@ async def test_list_recent_returns_docs(
     result = json.loads(await kb_list_recent())
     assert len(result["documents"]) == 1
     assert result["documents"][0]["title"] == "Test Document"
-    assert result["documents"][0]["latest_version_status"] == "ready"
+    assert result["documents"][0]["pipeline_status"] == "ready"
 
 
 async def test_list_recent_limit(
@@ -325,7 +312,7 @@ async def test_list_recent_limit(
     """Limit parameter is respected."""
     # Create 3 documents
     for i in range(3):
-        doc = Document(title=f"Doc {i}", status="active")
+        doc = Document(title=f"Doc {i}", status="active", sha256=bytes([i]) * 32, pipeline_status=PipelineStatus.ready)
         db_session.add(doc)
     await db_session.flush()
 
@@ -356,8 +343,9 @@ async def test_corpus_overview(
     assert result["date_range"]["oldest"] is not None
     assert result["date_range"]["newest"] is not None
     assert len(result["documents"]) == 1
-    assert result["documents"][0]["title"] == "Test Document"
-    assert result["documents"][0]["summary"] == "A test document summary."
+    doc = result["documents"][0]
+    assert doc["title"] == "Test Document"
+    assert doc["summary"] == "A test document summary."
     assert result["truncated"] is False
 
 
@@ -386,11 +374,10 @@ async def test_corpus_overview_multilingual(
     sample_doc,
 ):
     """Language distribution correctly counts per-language chunks."""
-    doc, version = sample_doc
+    doc = sample_doc
     for i, lang in enumerate(["en", "en", "fr", "fr", "fr"]):
         db_session.add(
             Chunk(
-                version_id=version.version_id,
                 doc_id=doc.doc_id,
                 chunk_num=i,
                 page_start=1,
@@ -419,30 +406,38 @@ async def test_find_related_happy(
     mock_session_factory,
 ):
     """Returns related documents ranked by embedding similarity."""
-    # Create two documents with embeddings
-    doc1 = Document(title="Machine Learning Guide", status="active")
-    doc2 = Document(title="Deep Learning Intro", status="active")
-    doc3 = Document(title="Cooking Recipes", status="active")
+    # Create three flat documents (no DocumentVersion)
+    doc1 = Document(
+        title="Machine Learning Guide",
+        status="active",
+        sha256=b"sha_ml_guide____________________",
+        pipeline_status=PipelineStatus.ready,
+        mime_type="application/pdf",
+        size_bytes=1000,
+        source_path="ml.pdf",
+        summary="Summary of Machine Learning Guide",
+    )
+    doc2 = Document(
+        title="Deep Learning Intro",
+        status="active",
+        sha256=b"sha_dl_intro____________________",
+        pipeline_status=PipelineStatus.ready,
+        mime_type="application/pdf",
+        size_bytes=1000,
+        source_path="dl.pdf",
+        summary="Summary of Deep Learning Intro",
+    )
+    doc3 = Document(
+        title="Cooking Recipes",
+        status="active",
+        sha256=b"sha_cooking_recipes_____________",
+        pipeline_status=PipelineStatus.ready,
+        mime_type="application/pdf",
+        size_bytes=1000,
+        source_path="cooking.pdf",
+        summary="Summary of Cooking Recipes",
+    )
     db_session.add_all([doc1, doc2, doc3])
-    await db_session.flush()
-
-    # Create versions
-    for doc in [doc1, doc2, doc3]:
-        ver = DocumentVersion(
-            doc_id=doc.doc_id,
-            original_sha256=f"sha_{doc.title[:8]}".encode().ljust(31, b"_"),
-            original_bucket="originals",
-            original_object_key=f"originals/versions/{doc.doc_id}/f.pdf",
-            mime_type="application/pdf",
-            size_bytes=1000,
-            status=VersionStatus.ready,
-            source_path="f.pdf",
-            summary=f"Summary of {doc.title}",
-        )
-        db_session.add(ver)
-        await db_session.flush()
-        doc.latest_version_id = ver.version_id
-
     await db_session.flush()
 
     # Embeddings: doc1 and doc2 are similar, doc3 is different
@@ -450,12 +445,10 @@ async def test_find_related_happy(
     similar_emb = [0.9, 0.1, 0.0, 0.0] + [0.0] * 380
     different_emb = [0.0, 0.0, 0.9, 0.1] + [0.0] * 380
 
-    for _i, doc in enumerate([doc1, doc2, doc3]):
-        ver_id = doc.latest_version_id
+    for doc in [doc1, doc2, doc3]:
         emb = similar_emb if doc in (doc1, doc2) else different_emb
         db_session.add(
             Chunk(
-                version_id=ver_id,
                 doc_id=doc.doc_id,
                 chunk_num=0,
                 page_start=1,
@@ -497,7 +490,7 @@ async def test_find_related_no_embeddings(
     sample_chunks,
 ):
     """Returns empty list when document has no embeddings."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_find_related(str(doc.doc_id)))
     assert result["related"] == []
     assert "No embeddings" in result.get("note", "")
@@ -508,12 +501,15 @@ async def test_find_related_no_embeddings(
 # ---------------------------------------------------------------------------
 
 
-def _make_hit(doc_id="d1", doc_title="Doc 1", chunk_id=None, score=1.0, language="english"):
+_DOC_ID_1 = str(uuid.uuid4())
+_DOC_ID_2 = str(uuid.uuid4())
+
+
+def _make_hit(doc_id=None, doc_title="Doc 1", chunk_id=None, score=1.0, language="english"):
     """Helper to build a SearchHit."""
     return SearchHit(
         chunk_id=chunk_id or str(uuid.uuid4()),
-        doc_id=doc_id,
-        version_id=str(uuid.uuid4()),
+        doc_id=doc_id or _DOC_ID_1,
         chunk_num=0,
         chunk_text="some text",
         page_start=1,
@@ -537,7 +533,6 @@ def mock_hybrid_search(monkeypatch):
         query,
         k=10,
         doc_id=None,
-        version_id=None,
         offset=0,
         *,
         doc_ids=None,
@@ -550,7 +545,6 @@ def mock_hybrid_search(monkeypatch):
             query=query,
             k=k,
             doc_id=doc_id,
-            version_id=version_id,
             offset=offset,
             doc_ids=doc_ids,
             after=after,
@@ -725,7 +719,6 @@ def mock_hybrid_search_multi(monkeypatch):
         query,
         k=10,
         doc_id=None,
-        version_id=None,
         offset=0,
         *,
         doc_ids=None,
@@ -739,7 +732,6 @@ def mock_hybrid_search_multi(monkeypatch):
                 query=query,
                 k=k,
                 doc_id=doc_id,
-                version_id=version_id,
                 offset=offset,
                 doc_ids=doc_ids,
                 after=after,
@@ -893,7 +885,7 @@ async def test_batch_search_conflict_forwarded(
     """possible_conflict and conflict_sources propagate in batch results."""
     calls, result_obj = mock_hybrid_search_multi
     result_obj.possible_conflict = True
-    result_obj.conflict_sources = [ConflictSource(doc_id="d1", version_id="v1", title="T")]
+    result_obj.conflict_sources = [ConflictSource(doc_id="d1", title="T")]
     _set_result(result_obj, [_make_hit()])
 
     raw = await kb_batch_search(queries=["q1"])
@@ -945,12 +937,12 @@ async def test_batch_search_has_more(
 
 @pytest.fixture
 async def sample_headings(db_session: AsyncSession, sample_doc):
-    """Create headings for the sample document's version."""
-    _, version = sample_doc
+    """Create headings for the sample document."""
+    doc = sample_doc
     headings = []
     for i, (level, title) in enumerate([(1, "Introduction"), (2, "Background"), (2, "Methods"), (1, "Results")]):
         h = DocumentHeading(
-            version_id=version.version_id,
+            doc_id=doc.doc_id,
             level=level,
             title=title,
             page_num=i + 1,
@@ -964,12 +956,12 @@ async def sample_headings(db_session: AsyncSession, sample_doc):
 
 @pytest.fixture
 async def sample_pages(db_session: AsyncSession, sample_doc):
-    """Create pages for the sample document's version."""
-    _, version = sample_doc
+    """Create pages for the sample document."""
+    doc = sample_doc
     pages = []
     for i in range(3):
         p = DocumentPage(
-            version_id=version.version_id,
+            doc_id=doc.doc_id,
             page_num=i + 1,
             page_text=f"Page {i + 1} content.",
             ocr_used=False,
@@ -991,10 +983,9 @@ async def test_document_outline_happy(
     sample_chunks,
 ):
     """Outline returns headings, page count, and chunk count."""
-    doc, version = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_document_outline(str(doc.doc_id)))
     assert result["doc_id"] == str(doc.doc_id)
-    assert result["version_id"] == str(version.version_id)
     assert result["title"] == "Test Document"
     assert result["page_count"] == 3
     assert result["chunk_count"] == 5
@@ -1028,7 +1019,7 @@ async def test_document_outline_no_headings(
     sample_chunks,
 ):
     """Document with no headings returns empty list, not error."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_document_outline(str(doc.doc_id)))
     assert result["headings"] == []
     assert result["page_count"] == 3
@@ -1043,7 +1034,7 @@ async def test_document_outline_no_headings(
 @pytest.fixture
 async def sample_entities(db_session: AsyncSession, sample_doc, sample_chunks):
     """Create entities for the sample document's chunks."""
-    doc, version = sample_doc
+    doc = sample_doc
     chunks = sample_chunks
     entities = []
     entity_data = [
@@ -1055,7 +1046,6 @@ async def sample_entities(db_session: AsyncSession, sample_doc, sample_chunks):
     ]
     for chunk, text, etype, start, end in entity_data:
         e = Entity(
-            version_id=version.version_id,
             chunk_id=chunk.chunk_id,
             doc_id=doc.doc_id,
             entity_text=text,
@@ -1184,13 +1174,13 @@ async def test_entity_cooccurrence_document_scope(
     sample_chunks,
     sample_entities,
 ):
-    """Document scope: all entities in same version as 'Paris'."""
+    """Document scope: all entities in same document as 'Paris'."""
     result = json.loads(await kb_entity_cooccurrence("Paris", scope="document"))
     texts = {c["entity_text"] for c in result["cooccurrences"]}
     assert "John Smith" in texts
     assert "Acme Corp" in texts
     assert "New York" in texts
-    # John Smith appears in 2 chunks in the same version
+    # John Smith appears in 2 chunks in the same document
     john = next(c for c in result["cooccurrences"] if c["entity_text"] == "John Smith")
     assert john["cooccurrence_count"] == 2
 
@@ -1267,7 +1257,7 @@ async def test_entity_cooccurrence_doc_id_scoped(
     sample_entities,
 ):
     """Scope to a specific document."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_entity_cooccurrence("John Smith", doc_id=str(doc.doc_id)))
     texts = {c["entity_text"] for c in result["cooccurrences"]}
     assert "Acme Corp" in texts
@@ -1303,10 +1293,9 @@ async def test_read_document_full(
     sample_pages,
 ):
     """Full document returns all pages in order."""
-    doc, version = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_read_document(str(doc.doc_id)))
     assert result["doc_id"] == str(doc.doc_id)
-    assert result["version_id"] == str(version.version_id)
     assert result["title"] == "Test Document"
     assert result["page_count"] == 3
     assert result["pages_returned"] == 3
@@ -1326,7 +1315,7 @@ async def test_read_document_page_range(
     sample_pages,
 ):
     """Page range returns only requested pages."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_read_document(str(doc.doc_id), page_start=1, page_end=2))
     assert result["pages_returned"] == 2
     assert [p["page_num"] for p in result["pages"]] == [1, 2]
@@ -1341,7 +1330,7 @@ async def test_read_document_single_page(
     sample_pages,
 ):
     """Single page request returns exactly that page."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_read_document(str(doc.doc_id), page_start=2, page_end=2))
     assert result["pages_returned"] == 1
     assert result["pages"][0]["page_num"] == 2
@@ -1357,7 +1346,7 @@ async def test_read_document_max_chars_truncation(
     sample_pages,
 ):
     """max_chars truncates output and sets truncated=true."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_read_document(str(doc.doc_id), max_chars=20))
     assert result["truncated"] is True
     assert result["total_chars"] <= 20
@@ -1385,7 +1374,7 @@ async def test_read_document_chunk_fallback(
     sample_chunks,
 ):
     """When no pages exist, falls back to chunks."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_read_document(str(doc.doc_id)))
     assert result["source"] == "chunks"
     assert result["page_count"] == 0
@@ -1403,7 +1392,7 @@ async def test_read_document_chunk_fallback_with_page_range_note(
     sample_chunks,
 ):
     """Chunk fallback warns when page_start/page_end are provided."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_read_document(str(doc.doc_id), page_start=1, page_end=2))
     assert result["source"] == "chunks"
     assert "note" in result
@@ -1419,7 +1408,7 @@ async def test_read_document_chunk_fallback_truncation(
     sample_chunks,
 ):
     """max_chars truncation works in the chunk fallback path."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_read_document(str(doc.doc_id), max_chars=20))
     assert result["source"] == "chunks"
     assert result["truncated"] is True
@@ -1446,7 +1435,7 @@ async def test_read_document_inactive_not_found(
     sample_doc,
 ):
     """Archived/inactive document returns not found."""
-    doc, _ = sample_doc
+    doc = sample_doc
     doc.status = "archived"
     await db_session.flush()
     result = json.loads(await kb_read_document(str(doc.doc_id)))
@@ -1463,7 +1452,7 @@ async def test_read_document_pages_source_field(
     sample_pages,
 ):
     """Pages path includes source='pages' for consistent response shape."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_read_document(str(doc.doc_id)))
     assert result["source"] == "pages"
 
@@ -1477,7 +1466,7 @@ async def test_read_document_page_range_beyond_bounds(
     sample_pages,
 ):
     """Page range beyond actual pages returns empty."""
-    doc, _ = sample_doc
+    doc = sample_doc
     result = json.loads(await kb_read_document(str(doc.doc_id), page_start=10, page_end=20))
     assert result["pages_returned"] == 0
     assert result["pages"] == []
