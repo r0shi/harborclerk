@@ -572,10 +572,10 @@ export default function DocumentsPage() {
             className="w-64 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
           />
           <Link
-            to="/upload"
+            to="/folders"
             className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
           >
-            Upload
+            Folders
           </Link>
         </div>
       </div>
@@ -754,8 +754,8 @@ export default function DocumentsPage() {
       {total === 0 && !hasFilters ? (
         <p className="text-gray-500 dark:text-gray-400">
           No documents yet.{' '}
-          <Link to="/upload" className="text-blue-600 dark:text-blue-400 hover:underline">
-            Upload one
+          <Link to="/folders" className="text-blue-600 dark:text-blue-400 hover:underline">
+            Add a watched folder
           </Link>
           .
         </p>
