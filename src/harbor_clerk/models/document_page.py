@@ -11,7 +11,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from harbor_clerk.models.base import Base, uuid_pk
 
@@ -20,9 +20,9 @@ class DocumentPage(Base):
     __tablename__ = "document_pages"
 
     page_id: Mapped[uuid_pk]
-    version_id: Mapped[uuid.UUID] = mapped_column(
+    doc_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("document_versions.version_id", ondelete="CASCADE"),
+        ForeignKey("documents.doc_id", ondelete="CASCADE"),
         nullable=False,
     )
     page_num: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -38,6 +38,4 @@ class DocumentPage(Base):
         Computed("char_length(page_text)", persisted=True),
     )
 
-    version = relationship("DocumentVersion", back_populates="pages")
-
-    __table_args__ = (UniqueConstraint("version_id", "page_num", name="uq_pages_version_page"),)
+    __table_args__ = (UniqueConstraint("doc_id", "page_num", name="uq_pages_doc_page"),)

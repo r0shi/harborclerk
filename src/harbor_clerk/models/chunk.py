@@ -21,11 +21,6 @@ class Chunk(Base):
     __tablename__ = "chunks"
 
     chunk_id: Mapped[uuid_pk]
-    version_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("document_versions.version_id", ondelete="CASCADE"),
-        nullable=False,
-    )
     doc_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("documents.doc_id", ondelete="CASCADE"),
@@ -66,4 +61,4 @@ class Chunk(Base):
 
     entities = relationship("Entity", back_populates="chunk", cascade="all, delete-orphan")
 
-    __table_args__ = (UniqueConstraint("version_id", "chunk_num", name="uq_chunks_version_num"),)
+    __table_args__ = (UniqueConstraint("doc_id", "chunk_num", name="uq_chunks_doc_num"),)

@@ -11,11 +11,11 @@ from harbor_clerk.models.corpus_topic import CorpusTopic, CorpusTopicsMeta
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_heading import DocumentHeading
 from harbor_clerk.models.document_page import DocumentPage
-from harbor_clerk.models.document_version import DocumentVersion
 from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import (
     JobStage,
     JobStatus,
+    PipelineStatus,
     UploadSource,
     UserRole,
     VersionStatus,
@@ -35,6 +35,7 @@ __all__ = [
     "Base",
     "UserRole",
     "UploadSource",
+    "PipelineStatus",
     "VersionStatus",
     "JobStage",
     "JobStatus",
@@ -44,7 +45,6 @@ __all__ = [
     "Document",
     "Upload",
     "UploadSession",
-    "DocumentVersion",
     "DocumentPage",
     "DocumentHeading",
     "Chunk",

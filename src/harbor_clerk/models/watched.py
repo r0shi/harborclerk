@@ -49,7 +49,6 @@ class WatchedFile(Base):
         ForeignKey("documents.doc_id", ondelete="SET NULL"),
         nullable=True,
     )
-    version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     status: Mapped[WatchedFileStatus] = mapped_column(
         Enum(WatchedFileStatus, name="watched_file_status", create_type=False),
         nullable=False,
