@@ -433,6 +433,32 @@ async def get_yarn_status(
     return {"yarn_enabled": settings.llm_yarn_enabled}
 
 
+@router.put("/chat/models/summary-afm", status_code=200)
+async def toggle_summary_force_afm(
+    principal: Principal = Depends(require_admin),
+    enabled: bool = True,
+):
+    """Toggle "Always use Apple Intelligence for summaries". When enabled,
+    the summarize pipeline stage skips the local LLM and goes straight to
+    AFM (or extractive fallback if AFM unavailable). doc_type and chat
+    still use the active LLM model."""
+    settings = get_settings()
+    settings.summary_force_apple_intelligence = enabled
+    sync_native_config("summary_force_apple_intelligence", enabled)
+    return {
+        "status": "enabled" if enabled else "disabled",
+        "summary_force_apple_intelligence": enabled,
+    }
+
+
+@router.get("/chat/models/summary-afm", status_code=200)
+async def get_summary_force_afm(
+    principal: Principal = Depends(require_user),
+):
+    settings = get_settings()
+    return {"summary_force_apple_intelligence": settings.summary_force_apple_intelligence}
+
+
 @router.delete("/chat/models/{model_id}", status_code=204)
 async def remove_model(
     model_id: str,

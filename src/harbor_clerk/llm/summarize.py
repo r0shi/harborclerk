@@ -627,6 +627,18 @@ def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[s
     if not chunks:
         return "", ""
 
+    # User has opted to skip the local LLM for summaries entirely
+    # (Models page → "Always use Apple Intelligence for summaries"). Skip
+    # straight to AFM. If AFM is unavailable for any reason (binary not
+    # found, macOS version too old, timeout), fall through to extractive.
+    if settings.summary_force_apple_intelligence:
+        logger.info("Summarize forced to Apple Intelligence by setting (skipping local LLM)")
+        ai_summary = _apple_intelligence_summary(chunks, max_chars)
+        if _has_visible_content(ai_summary):
+            return ai_summary, "apple-intelligence"  # type: ignore[return-value]
+        logger.warning("Apple Intelligence unavailable while forced; falling back to extractive")
+        return _extractive_fallback(chunks, max_chars), "extractive"
+
     # Try LLM if a model is active
     if settings.llm_model_id:
         model = get_model(settings.llm_model_id)

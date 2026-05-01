@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     llama_server_url: str = Field(default="http://localhost:8102")
     llm_model_id: str = Field(default="")
     llm_yarn_enabled: bool = Field(default=False)
+    # When true, the summarize pipeline stage skips the local LLM entirely
+    # and goes straight to Apple Intelligence (or extractive fallback if
+    # AFM is unavailable). Useful when the user prefers AFM's speed/quality
+    # for summaries while still wanting the LLM for chat / research.
+    summary_force_apple_intelligence: bool = Field(default=False)
     models_dir: str = Field(default="./data/models")
 
     # Native macOS app config file (set by Swift via env var)
@@ -135,6 +140,8 @@ def refresh_llm_settings() -> None:
             settings.llm_model_id = data["llm_model_id"]
         if "llm_yarn_enabled" in data:
             settings.llm_yarn_enabled = bool(data["llm_yarn_enabled"])
+        if "summary_force_apple_intelligence" in data:
+            settings.summary_force_apple_intelligence = bool(data["summary_force_apple_intelligence"])
     except Exception:
         logger.debug("Failed to refresh LLM settings from %s", path, exc_info=True)
 

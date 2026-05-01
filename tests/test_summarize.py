@@ -239,11 +239,12 @@ class TestCallLlmRetry:
 # --- generate_summary tests ---
 
 
-def _mock_settings(llm_model_id="test-model"):
+def _mock_settings(llm_model_id="test-model", summary_force_apple_intelligence=False):
     s = MagicMock()
     s.llm_model_id = llm_model_id
     s.summary_max_chars = 500
     s.llama_server_url = "http://localhost:8102"
+    s.summary_force_apple_intelligence = summary_force_apple_intelligence
     return s
 
 
@@ -358,6 +359,43 @@ class TestGenerateSummary:
             summary, model = generate_summary(chunks)
             assert model == "extractive"
             assert summary
+
+    def test_force_afm_skips_llm_and_uses_apple_intelligence(self):
+        """When summary_force_apple_intelligence is set, the LLM is never called
+        and the result is attributed to apple-intelligence."""
+        mock_call = MagicMock()
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.get_settings",
+                return_value=_mock_settings(summary_force_apple_intelligence=True),
+            ),
+            patch("harbor_clerk.llm.summarize._call_llm", mock_call),
+            patch(
+                "harbor_clerk.llm.summarize._apple_intelligence_summary",
+                return_value="AFM-generated summary.",
+            ),
+        ):
+            summary, model = generate_summary(["A" * 100])
+            assert summary == "AFM-generated summary."
+            assert model == "apple-intelligence"
+            mock_call.assert_not_called()
+
+    def test_force_afm_falls_back_to_extractive_when_afm_unavailable(self):
+        """If AFM is unavailable while forced, fall through to extractive — not the LLM."""
+        mock_call = MagicMock()
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.get_settings",
+                return_value=_mock_settings(summary_force_apple_intelligence=True),
+            ),
+            patch("harbor_clerk.llm.summarize._call_llm", mock_call),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_summary", return_value=None),
+        ):
+            chunks = ["A" * 100]
+            summary, model = generate_summary(chunks)
+            assert model == "extractive"
+            assert summary
+            mock_call.assert_not_called()
 
 
 class TestTruncateAtSentence:
