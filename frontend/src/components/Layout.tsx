@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth'
 import BackButton from './BackButton'
 import { LLMStatusBanner, LLMStatusProvider } from './LLMStatusBanner'
 import { QueueTray } from './queue-tray'
+import CorpusEmptyBanner from './CorpusEmptyBanner'
+import OnboardingWizard from './OnboardingWizard'
+import { useCorpusBannerState } from '../hooks/useCorpusBannerState'
 
 function TabLink({ to, end, children }: { to: string; end?: boolean; children: React.ReactNode }) {
   return (
@@ -24,10 +27,26 @@ function TabLink({ to, end, children }: { to: string; end?: boolean; children: R
 }
 
 export default function Layout() {
-  const { user, logout, isAdmin } = useAuth()
+  const { user, logout, isAdmin, updatePreferences } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
+  const location = useLocation()
+  const bannerState = useCorpusBannerState()
+  const bannerSuppressedPath =
+    location.pathname === '/folders' ||
+    location.pathname.startsWith('/admin') ||
+    location.pathname.startsWith('/preferences')
+  const showBanner = bannerState !== null && !bannerSuppressedPath
+  const showWizard = !!user && !user.preferences?.onboardingComplete
+
+  async function handleOnboardingComplete() {
+    try {
+      await updatePreferences({ onboardingComplete: true })
+    } catch {
+      // Best-effort persistence; wizard closes locally regardless.
+    }
+  }
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -129,11 +148,13 @@ export default function Layout() {
       </nav>
       <LLMStatusProvider>
         <main className="mx-auto max-w-7xl px-4 py-6">
+          {showBanner && bannerState && <CorpusEmptyBanner state={bannerState} />}
           <BackButton />
           <Outlet />
         </main>
         <QueueTray />
         <LLMStatusBanner />
+        {showWizard && <OnboardingWizard onComplete={handleOnboardingComplete} />}
       </LLMStatusProvider>
     </div>
   )

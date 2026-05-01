@@ -152,17 +152,17 @@ export default function OnboardingWizard({ onComplete }: Props) {
               Track ingestion progress
             </h2>
             <p className="mb-3 text-sm text-(--color-text-secondary)">
-              Documents go through a 7-stage pipeline (extract → OCR → chunk → entities → embed → summarize →
-              finalize). Two places to watch:
+              Documents go through a 7-stage pipeline (extract → OCR → chunk → entities → embed → summarize → finalize).
+              Two places to watch:
             </p>
             <ul className="mb-6 space-y-2 text-sm text-(--color-text-secondary)">
               <li>
-                <strong className="text-(--color-text-primary)">Server menubar</strong> — click the Harbor Clerk icon
-                in your menu bar to see backend services running locally (Postgres, workers, the LLM if active).
+                <strong className="text-(--color-text-primary)">Server menubar</strong> — click the Harbor Clerk icon in
+                your menu bar to see backend services running locally (Postgres, workers, the LLM if active).
               </li>
               <li>
-                <strong className="text-(--color-text-primary)">Observatory tab</strong> — visit{' '}
-                <code>/stats</code> for the live pipeline diagram and per-stage timing charts.
+                <strong className="text-(--color-text-primary)">Observatory tab</strong> — visit <code>/stats</code> for
+                the live pipeline diagram and per-stage timing charts.
               </li>
             </ul>
             <div className="flex items-center justify-between">
