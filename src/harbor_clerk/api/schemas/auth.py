@@ -26,6 +26,12 @@ class UserInfo(BaseModel):
 class PreferencesUpdate(BaseModel):
     theme: str | None = None
     page_size: int | None = None
+    # JSONB-stored boolean set when the user completes (or dismisses) the
+    # first-run onboarding wizard. Frontend reads `preferences.onboardingComplete`
+    # in Layout.tsx to decide whether to render <OnboardingWizard />.
+    # Naming is camelCase to match the existing frontend type and the JSONB
+    # key the wizard reads — mixing snake/camel here is intentional, not a bug.
+    onboardingComplete: bool | None = None
 
 
 class PasswordChangeRequest(BaseModel):
