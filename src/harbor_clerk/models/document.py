@@ -19,7 +19,7 @@ class Document(Base):
     # Per-content state (pulled up from former DocumentVersion in 0017 migration)
     sha256: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     pipeline_status: Mapped[PipelineStatus] = mapped_column(
-        Enum(PipelineStatus, name="version_status", create_type=False),
+        Enum(PipelineStatus, name="pipeline_status", create_type=False),
         nullable=False,
     )
     pipeline_seq: Mapped[int] = mapped_column(
