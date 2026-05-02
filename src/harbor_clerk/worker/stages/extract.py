@@ -67,7 +67,13 @@ def _extract_txt(data: bytes) -> list[tuple[int, str]]:
 
 
 def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list[tuple[int, str]]:
-    """Extract text via Apache Tika. For PDFs, splits on form feed characters."""
+    """Extract text via Apache Tika. For PDFs, splits on form feed characters.
+
+    On 422 (Unprocessable Entity), Tika has refused to parse the file but doesn't
+    say why in the response body. Refetch via `/rmeta/text` to surface the
+    underlying parser exception (POI/PDFBox bug, malformed file, etc.) in the
+    raised error so it shows up in the doc's pipeline_status=error message.
+    """
     settings = get_settings()
     if not settings.tika_url:
         raise RuntimeError(
@@ -79,6 +85,9 @@ def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list
         headers={"Content-Type": mime_type, "Accept": "text/plain"},
         timeout=120,
     )
+    if resp.status_code == 422:
+        detail = _fetch_tika_exception_detail(data, mime_type)
+        raise RuntimeError(f"Tika rejected file (422): {detail}")
     resp.raise_for_status()
     text = resp.text.strip()
 
@@ -88,6 +97,38 @@ def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list
         return [(i + 1, p.strip()) for i, p in enumerate(raw_pages) if p.strip()]
 
     return _paginate_text(text, settings.synthetic_page_chars)
+
+
+def _fetch_tika_exception_detail(data: bytes, mime_type: str) -> str:
+    """Refetch via /rmeta/text to extract X-TIKA:EXCEPTION:container_exception.
+
+    Best-effort diagnostic — failures here just produce a generic message.
+    Truncates the stacktrace to the first line so the error column stays usable.
+    """
+    settings = get_settings()
+    try:
+        resp = httpx.put(
+            f"{settings.tika_url}/rmeta/text",
+            content=data,
+            headers={"Content-Type": mime_type, "Accept": "application/json"},
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            return f"rmeta returned {resp.status_code}"
+        meta_list = resp.json()
+        if not isinstance(meta_list, list) or not meta_list:
+            return "rmeta returned empty list"
+        meta = meta_list[0]
+        # Tika exposes container parser failures under this key
+        exc = meta.get("X-TIKA:EXCEPTION:container_exception", "")
+        if not exc:
+            return "no container_exception in rmeta response"
+        # First line carries the exception type + message; rest is a Java stacktrace
+        first_line = exc.split("\n", 1)[0].strip()
+        # Cap to keep the DB error column compact
+        return first_line[:300]
+    except Exception as e:  # noqa: BLE001 — best-effort diagnostic
+        return f"rmeta refetch failed: {type(e).__name__}: {e}"
 
 
 def _alpha_ratio(text: str) -> float:
