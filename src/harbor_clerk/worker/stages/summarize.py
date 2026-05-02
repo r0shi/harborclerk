@@ -71,4 +71,4 @@ def run_summarize(doc_id: uuid.UUID) -> None:
     finally:
         session.close()
 
-    mark_stage_done(doc_id, JobStage.summarize)
+    mark_stage_done(doc_id, JobStage.summarize, worker_seq=worker_seq)

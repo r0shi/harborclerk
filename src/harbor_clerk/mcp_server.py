@@ -568,10 +568,10 @@ async def kb_search(
     Filters (all optional):
       doc_id: restrict to a single document (mutually exclusive with doc_ids)
       doc_ids: restrict to multiple documents (list of UUIDs, max 50)
-      after: only versions created at or after this ISO datetime
-      before: only versions created before this ISO datetime
+      after: only documents updated at or after this ISO datetime
+      before: only documents updated before this ISO datetime
       language: chunk language filter ("english" or "french")
-      mime_type: version MIME type filter (e.g. "application/pdf")
+      mime_type: document MIME type filter (e.g. "application/pdf")
 
     detail levels control how much text is returned per hit:
       "full" (default): complete chunk text — best for reading a small
@@ -969,7 +969,7 @@ async def kb_read_passages(
 @mcp.tool()
 async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
     """Expand context around a chunk — returns the target plus up to N chunks
-    before and after from the same document version, in order.
+    before and after from the same document, in order.
 
     Use after kb_search or kb_read_passages when you need more surrounding
     text. The target chunk is marked with "is_target": true.
@@ -1035,12 +1035,10 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
 
 @mcp.tool()
 async def kb_get_document(doc_id: str) -> str:
-    """Get full metadata for a document: title, status, and all versions.
-
-    Each version includes its processing status, summary, MIME type,
-    file size, extracted character count, and ingestion pipeline jobs.
-    Use this to inspect a specific document after finding it via search
-    or kb_list_recent.
+    """Get full metadata for a document: title, processing status, summary,
+    MIME type, file size, extracted character count, and ingestion pipeline
+    jobs. Use this to inspect a specific document after finding it via
+    search or kb_list_recent.
     """
     principal = _get_principal()
     did = uuid.UUID(doc_id)
@@ -1084,9 +1082,9 @@ async def kb_get_document(doc_id: str) -> str:
 async def kb_list_recent(limit: int = 20) -> str:
     """List documents ordered by most recently updated, with summaries.
 
-    Returns title, summary, status, version count, and update timestamp
-    for each document. Use this to see what's new or recently changed,
-    or as a paginated document browser (max 100 per call).
+    Returns title, summary, status, and update timestamp for each document.
+    Use this to see what's new or recently changed, or as a paginated
+    document browser (max 100 per call).
     """
     principal = _get_principal()
 
@@ -1273,7 +1271,7 @@ async def kb_corpus_overview(limit: int = 50) -> str:
 
 @mcp.tool()
 async def kb_ingest_status(doc_id: str) -> str:
-    """Check ingestion pipeline progress for a document's latest version.
+    """Check ingestion pipeline progress for a document.
 
     Returns the status of each pipeline stage (extract → ocr → chunk →
     entities → embed → summarize → finalize) with progress counts,
@@ -1358,8 +1356,8 @@ async def kb_document_outline(doc_id: str) -> str:
     """Get the heading outline/structure of a document, including page and chunk counts.
 
     Returns the heading hierarchy (h1-h6), total page count, and total chunk count
-    for the latest version of the document. Useful for understanding document structure
-    before reading specific sections.
+    for the document. Useful for understanding document structure before reading
+    specific sections.
     """
     principal = _get_principal()
     did = uuid.UUID(doc_id)
@@ -1522,7 +1520,7 @@ async def kb_entity_search(
     Args:
         query: Substring search on entity text (case-insensitive).
         entity_type: Filter by entity type (PERSON, ORG, GPE, LOC, DATE, etc.).
-        doc_id: Scope to a single document's latest version.
+        doc_id: Scope to a single document.
         deduplicate: If true, group by entity_text+entity_type and return mention counts.
         limit: Max results (1-100, default 20).
         offset: Pagination offset.
@@ -1632,7 +1630,7 @@ async def kb_entity_overview(doc_id: str | None = None) -> str:
     and places appear in the knowledge base.
 
     Args:
-        doc_id: Optional — scope to a single document's latest version.
+        doc_id: Optional — scope to a single document.
     """
     principal = _get_principal()
 
@@ -1733,9 +1731,9 @@ async def kb_entity_cooccurrence(
     Args:
         entity_text: The entity text to find co-occurrences for (case-insensitive).
         entity_type: Optional — filter the source entity by type (PERSON, ORG, etc.).
-        scope: "chunk" (same chunk) or "document" (same document version). Default "chunk".
+        scope: "chunk" (same chunk) or "document" (same document). Default "chunk".
         cooccur_type: Optional — filter co-occurring entities by type.
-        doc_id: Optional — scope to a single document's latest version.
+        doc_id: Optional — scope to a single document.
         limit: Max results (1-100, default 20).
         offset: Pagination offset.
     """
@@ -1857,7 +1855,7 @@ async def kb_read_document(
     kb_read_passages for targeted retrieval. Use this only for specific
     page ranges after checking kb_document_outline.
 
-    Returns page-level text from DocumentPage rows for the latest version.
+    Returns page-level text from DocumentPage rows for the document.
     If no pages exist (e.g. plain-text files), falls back to concatenated chunks.
     Use page_start/page_end to limit the range. max_chars caps total output
     (default 50 000, max 100 000).

@@ -130,3 +130,104 @@ def test_rename_multiple_docs_distinct_filenames(sync_session, fs_backend):
     assert orphans == 0
     assert fs_backend.get_object("originals", f"originals/docs/{doc_id_a}/alpha.pdf").read() == b"alpha-data"
     assert fs_backend.get_object("originals", f"originals/docs/{doc_id_b}/beta.pdf").read() == b"beta-data"
+
+
+def _make_bug_era_doc(session, doc_id: uuid.UUID, filename: str) -> Document:
+    """Create a Document whose original_object_key matches the Stage-3 PR #255
+    bug-era pattern (bare ``versions/<doc_id>/<filename>``, no ``originals/`` prefix).
+    """
+    doc = Document(
+        doc_id=doc_id,
+        title="Test bug-era",
+        canonical_filename=filename,
+        status="active",
+        sha256=str(doc_id).encode("ascii").ljust(32, b"x")[:32],
+        pipeline_status=PipelineStatus.ready,
+        original_bucket="originals",
+        original_object_key=f"versions/{doc_id}/{filename}",
+    )
+    session.add(doc)
+    session.commit()
+    return doc
+
+
+def test_rename_bug_era_versions_migrates_to_originals_docs(sync_session, fs_backend):
+    """Phase 2: a doc written with the Stage-3 bug-era bare ``versions/<doc_id>/<f>``
+    key is renamed to spec-compliant ``originals/docs/<doc_id>/<f>``, and the
+    Document.original_object_key is updated in place to reflect the new location.
+    """
+    doc_id = uuid.uuid4()
+    doc = _make_bug_era_doc(sync_session, doc_id, "bug.pdf")
+    assert doc.original_object_key == f"versions/{doc_id}/bug.pdf"
+
+    bug_key = f"versions/{doc_id}/bug.pdf"
+    _put(fs_backend, bug_key, b"bug-era-content")
+
+    with (
+        patch("harbor_clerk.maintenance.rename_originals.get_storage", return_value=fs_backend),
+        patch("harbor_clerk.maintenance.rename_originals.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.minio_bucket = "originals"
+        renamed, orphans = rename_all(sync_session)
+
+    assert renamed == 1
+    assert orphans == 0
+
+    # File moved
+    new_key = f"originals/docs/{doc_id}/bug.pdf"
+    assert fs_backend.get_object("originals", new_key).read() == b"bug-era-content"
+    with pytest.raises(FileNotFoundError):
+        fs_backend.get_object("originals", bug_key)
+
+    # Document row updated to point at the new key
+    sync_session.refresh(doc)
+    assert doc.original_object_key == new_key
+
+
+def test_rename_bug_era_orphan_deleted(sync_session, fs_backend):
+    """A bare ``versions/<some_id>/<f>`` object with no matching Document row
+    is treated as an orphan and deleted."""
+    orphan_key = f"versions/{uuid.uuid4()}/orphan.pdf"
+    _put(fs_backend, orphan_key, b"orphan")
+
+    with (
+        patch("harbor_clerk.maintenance.rename_originals.get_storage", return_value=fs_backend),
+        patch("harbor_clerk.maintenance.rename_originals.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.minio_bucket = "originals"
+        renamed, orphans = rename_all(sync_session)
+
+    assert renamed == 0
+    assert orphans == 1
+    with pytest.raises(FileNotFoundError):
+        fs_backend.get_object("originals", orphan_key)
+
+
+def test_rename_runs_both_phases(sync_session, fs_backend):
+    """Single rename_all() call handles a legacy ``originals/versions/`` key AND
+    a bug-era bare ``versions/`` key in one invocation."""
+    # Legacy doc — fixture sets original_object_key to "originals/docs/<id>/<f>"
+    legacy_doc_id = uuid.uuid4()
+    legacy_doc = _make_doc(sync_session, legacy_doc_id, "legacy.pdf")
+    legacy_old = f"originals/versions/{uuid.uuid4()}/legacy.pdf"
+    _put(fs_backend, legacy_old, b"legacy-content")
+
+    # Bug-era doc — original_object_key starts with "versions/"
+    bug_doc_id = uuid.uuid4()
+    bug_doc = _make_bug_era_doc(sync_session, bug_doc_id, "bug.pdf")
+    bug_old = f"versions/{bug_doc_id}/bug.pdf"
+    _put(fs_backend, bug_old, b"bug-content")
+
+    with (
+        patch("harbor_clerk.maintenance.rename_originals.get_storage", return_value=fs_backend),
+        patch("harbor_clerk.maintenance.rename_originals.get_settings") as mock_settings,
+    ):
+        mock_settings.return_value.minio_bucket = "originals"
+        renamed, orphans = rename_all(sync_session)
+
+    assert renamed == 2
+    assert orphans == 0
+    assert fs_backend.get_object("originals", legacy_doc.original_object_key).read() == b"legacy-content"
+    sync_session.refresh(bug_doc)
+    assert bug_doc.original_object_key == f"originals/docs/{bug_doc_id}/bug.pdf"
+    assert fs_backend.get_object("originals", bug_doc.original_object_key).read() == b"bug-content"

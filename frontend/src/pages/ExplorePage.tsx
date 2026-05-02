@@ -35,7 +35,6 @@ interface DocSummary {
   title: string
   canonical_filename?: string
   status: string
-  latest_version_status?: string
   updated_at: string
   summary?: string
   summary_model?: string
@@ -860,7 +859,7 @@ function ExploreDocList({
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <StatusBadge status={doc.latest_version_status || doc.status} />
+                          <StatusBadge status={doc.status} />
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                           {new Date(doc.updated_at).toLocaleDateString()}

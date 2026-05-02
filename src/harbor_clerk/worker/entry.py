@@ -69,6 +69,21 @@ def _resolve_tmpdir_symlinks() -> None:
     TMPDIR is already set to `/var/folders/.../T/`. Only matters when the
     worker is launched from a context where TMPDIR is unset and Python's
     tempfile module falls back to `/tmp`.
+
+    Two layers of belt-and-suspenders:
+
+    1. ``os.environ["TMPDIR"]`` — durable; inherited by every subprocess
+       and read by every C extension that consults the standard env var.
+       This is the primary fix.
+    2. ``tempfile.tempdir`` — the in-process cache used by pure-Python
+       ``NamedTemporaryFile`` etc. Mutable module-level state that some
+       libraries (notably ``pytest`` itself, certain ``click``-based tools,
+       and rare cases in ``multiprocessing``) reset to ``None`` to force a
+       re-detection. If that happens mid-process, ``tempfile`` will re-read
+       TMPDIR from the env var (which we set in step 1), so the fix is
+       resilient. The redundancy here is intentional — assigning both
+       guarantees the very next ``NamedTemporaryFile`` call lands on the
+       resolved path without depending on internal cache invalidation.
     """
     import tempfile
 
@@ -77,7 +92,8 @@ def _resolve_tmpdir_symlinks() -> None:
     if current != resolved:
         os.environ["TMPDIR"] = resolved + os.sep
         # Re-init tempfile's cached temp dir so subsequent NamedTemporaryFile
-        # calls (including pytesseract's) see the new TMPDIR.
+        # calls (including pytesseract's) see the new TMPDIR. See the docstring
+        # above for why we set both env var AND module attribute.
         tempfile.tempdir = resolved
         logger.info("Resolved TMPDIR symlink: %s -> %s", current, resolved)
 

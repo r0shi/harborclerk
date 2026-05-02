@@ -308,18 +308,66 @@ def advance_pipeline(doc_id: uuid.UUID) -> None:
         session.close()
 
 
-def mark_stage_done(doc_id: uuid.UUID, stage: JobStage, **extra_event_fields) -> None:
-    """Mark a stage as done and advance the pipeline."""
+def mark_stage_done(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    *,
+    worker_seq: int | None = None,
+    **extra_event_fields,
+) -> None:
+    """Mark a stage as done and advance the pipeline.
+
+    If ``worker_seq`` is provided, verifies the doc's ``pipeline_seq`` still
+    matches before marking. If it has been bumped (e.g. by a watcher
+    reprocess that fired between the stage's data write and this call),
+    silently exits — the new pipeline run will produce fresh results and
+    mark its own jobs done. This prevents the worker from falsely marking
+    a freshly-queued IngestionJob as done when the original job row was
+    deleted by ``_reprocess_doc``.
+    """
     done_status = STAGE_DONE_STATUS[stage]
 
     session = get_sync_session()
+    filename = ""
     try:
+        # Race check: did pipeline_seq bump while we were running?
+        if worker_seq is not None:
+            current_seq = session.execute(
+                select(Document.pipeline_seq).where(Document.doc_id == doc_id)
+            ).scalar_one_or_none()
+            if current_seq is None:
+                logger.warning(
+                    "mark_stage_done: doc %s no longer exists, skipping mark-done for %s",
+                    doc_id,
+                    stage.value,
+                )
+                return
+            if current_seq != worker_seq:
+                logger.info(
+                    "mark_stage_done: pipeline_seq bumped during %s for %s "
+                    "(worker=%s, current=%s) — skipping mark-done; new pipeline owns it",
+                    stage.value,
+                    doc_id,
+                    worker_seq,
+                    current_seq,
+                )
+                return
+
         job = session.execute(
             select(IngestionJob).where(
                 IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == stage,
             )
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if job is None:
+            # Job row was deleted (e.g. by reprocess between the seq check and now).
+            # Exit silently — the new pipeline owns its own job rows.
+            logger.info(
+                "mark_stage_done: no IngestionJob row for doc=%s stage=%s, skipping",
+                doc_id,
+                stage.value,
+            )
+            return
         job.status = JobStatus.done
         job.finished_at = datetime.now(UTC)
 
@@ -339,17 +387,58 @@ def mark_stage_done(doc_id: uuid.UUID, stage: JobStage, **extra_event_fields) ->
         advance_pipeline(doc_id)
 
 
-def mark_stage_running(doc_id: uuid.UUID, stage: JobStage) -> bool:
-    """Check that job hasn't been cancelled. Returns False if errored/cancelled."""
+def mark_stage_running(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    *,
+    worker_seq: int | None = None,
+) -> bool:
+    """Check that the job hasn't been cancelled and (optionally) that the
+    doc's ``pipeline_seq`` still matches.
+
+    Returns False if the stage should not run:
+      - The doc no longer exists
+      - ``worker_seq`` was provided and the doc's seq has bumped
+      - The IngestionJob row is missing (e.g. deleted by reprocess)
+      - The job status is ``error`` (cancelled by user)
+    """
     session = get_sync_session()
     filename = None
     try:
+        if worker_seq is not None:
+            current_seq = session.execute(
+                select(Document.pipeline_seq).where(Document.doc_id == doc_id)
+            ).scalar_one_or_none()
+            if current_seq is None:
+                logger.info(
+                    "Skipping %s for doc %s — doc no longer exists",
+                    stage.value,
+                    doc_id,
+                )
+                return False
+            if current_seq != worker_seq:
+                logger.info(
+                    "Skipping %s for doc %s — pipeline_seq bumped (worker=%s, current=%s)",
+                    stage.value,
+                    doc_id,
+                    worker_seq,
+                    current_seq,
+                )
+                return False
+
         job = session.execute(
             select(IngestionJob).where(
                 IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == stage,
             )
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if job is None:
+            logger.info(
+                "Skipping %s for doc %s — IngestionJob row missing (likely deleted by reprocess)",
+                stage.value,
+                doc_id,
+            )
+            return False
         if job.status == JobStatus.error:
             logger.info(
                 "Skipping %s for doc %s — already cancelled/errored",
@@ -415,7 +504,3 @@ def cancel_doc_jobs(doc_id: uuid.UUID) -> int:
         )
 
     return cancelled
-
-
-# Back-compat alias — remove once API layer (Task 6) is updated to cancel_doc_jobs
-cancel_version_jobs = cancel_doc_jobs

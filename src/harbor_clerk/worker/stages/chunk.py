@@ -118,7 +118,7 @@ def run_chunk(doc_id: uuid.UUID) -> None:
         if not pages:
             logger.warning("No pages to chunk for doc %s", doc_id)
             session.close()
-            mark_stage_done(doc_id, JobStage.chunk)
+            mark_stage_done(doc_id, JobStage.chunk, worker_seq=worker_seq)
             return
 
         # Concatenate all page text with page boundary tracking
@@ -192,4 +192,4 @@ def run_chunk(doc_id: uuid.UUID) -> None:
     finally:
         session.close()
 
-    mark_stage_done(doc_id, JobStage.chunk)
+    mark_stage_done(doc_id, JobStage.chunk, worker_seq=worker_seq)

@@ -252,7 +252,7 @@ async def _confirm_single(
         safe_name = os.path.basename(filename) or "file"
         # Allocate canonical storage key
         new_doc_id = uuid.uuid4()
-        canonical_key = f"versions/{new_doc_id}/{safe_name}"
+        canonical_key = f"originals/docs/{new_doc_id}/{safe_name}"
         storage = get_storage()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
@@ -300,7 +300,7 @@ async def _confirm_single(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
         safe_name = os.path.basename(upload.original_filename) or "file"
-        canonical_key = f"versions/{doc_id}/{safe_name}"
+        canonical_key = f"originals/docs/{doc_id}/{safe_name}"
         storage = get_storage()
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
@@ -611,7 +611,7 @@ async def upload_file_to_session(
         safe_name = os.path.basename(fname) or "file"
         title = safe_name.rsplit(".", 1)[0] if "." in safe_name else safe_name
         new_doc_id = uuid.uuid4()
-        canonical_key = f"versions/{new_doc_id}/{safe_name}"
+        canonical_key = f"originals/docs/{new_doc_id}/{safe_name}"
 
         content = b"".join(chunks)
         storage = get_storage()
