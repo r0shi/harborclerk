@@ -50,6 +50,38 @@ HEARTBEAT_INTERVAL = 30  # seconds
 _shutdown = False
 
 
+def _resolve_tmpdir_symlinks() -> None:
+    """Set TMPDIR to the realpath of the system temp directory.
+
+    On macOS, the default `/tmp` is a symlink to `/private/tmp`. The bundled
+    Homebrew-built tesseract (via Leptonica) cannot open files passed as
+    `/tmp/<file>` — it falls back to interpreting the input file's first line
+    as a list of filenames, which for a PNG means treating the magic bytes
+    `\\x89PNG\\r\\n\\x1a\\n` as a path. The resulting Leptonica error is
+    written to stderr with the binary `\\x89` byte still in it, and pytesseract's
+    `get_errors()` blows up trying to UTF-8-decode that stderr — surfacing as
+    `UnicodeDecodeError: 'utf-8' codec can't decode byte 0x89 in position N`.
+
+    Replacing TMPDIR with `/private/tmp` (the realpath) sidesteps the symlink
+    issue: pytesseract writes its temp PNG to a path tesseract can actually open.
+
+    No-op on Linux (`/tmp` isn't a symlink) and on macOS user sessions where
+    TMPDIR is already set to `/var/folders/.../T/`. Only matters when the
+    worker is launched from a context where TMPDIR is unset and Python's
+    tempfile module falls back to `/tmp`.
+    """
+    import tempfile
+
+    current = tempfile.gettempdir()
+    resolved = os.path.realpath(current)
+    if current != resolved:
+        os.environ["TMPDIR"] = resolved + os.sep
+        # Re-init tempfile's cached temp dir so subsequent NamedTemporaryFile
+        # calls (including pytesseract's) see the new TMPDIR.
+        tempfile.tempdir = resolved
+        logger.info("Resolved TMPDIR symlink: %s -> %s", current, resolved)
+
+
 def _handle_signal(signum, frame):
     global _shutdown
     _shutdown = True
@@ -228,6 +260,8 @@ def main():
 
     queue_suffix = "-".join(args.queues)
     setup_logging(f"worker-{queue_suffix}", settings.log_level)
+
+    _resolve_tmpdir_symlinks()
 
     stages: list[JobStage] = []
     for q in args.queues:
