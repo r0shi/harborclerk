@@ -3,9 +3,10 @@
 import pytest
 
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import Document
-from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.models import Document, IngestionJob
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.worker.pipeline import check_pipeline_seq
+from harbor_clerk.worker.stages.finalize import run_finalize
 
 
 @pytest.mark.asyncio
@@ -90,5 +91,49 @@ async def test_check_pipeline_seq_passes_at_higher_seq(db_session):
         assert check_pipeline_seq(sync_session, doc.doc_id, 2) is True
         # Old worker that started with seq=1: mismatch → False
         assert check_pipeline_seq(sync_session, doc.doc_id, 1) is False
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_run_finalize_completes_without_typeerror(db_session):
+    """Regression: finalize.py was passing doc_id both positionally AND as a kwarg
+    to mark_stage_done(), which raises `TypeError: got multiple values for argument 'doc_id'`.
+    Asserting that run_finalize completes without exception covers the regression."""
+    doc = Document(
+        title="Finalize regression",
+        canonical_filename="finalize.pdf",
+        status="active",
+        sha256=b"f" * 32,
+        pipeline_status=PipelineStatus.summarized,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    # The finalize stage requires a queued IngestionJob row to claim
+    job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.queued)
+    db_session.add(job)
+    await db_session.commit()
+
+    # run_finalize is sync; call it directly. If it raises TypeError, this test fails.
+    run_finalize(doc.doc_id)
+
+    # Verify side effects: pipeline_status flipped to ready, job marked done
+    sync_session = get_sync_session()
+    try:
+        from sqlalchemy import select
+
+        refreshed_doc = sync_session.execute(
+            select(Document).where(Document.doc_id == doc.doc_id)
+        ).scalar_one()
+        assert refreshed_doc.pipeline_status == PipelineStatus.ready
+
+        refreshed_job = sync_session.execute(
+            select(IngestionJob).where(
+                IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.finalize
+            )
+        ).scalar_one()
+        assert refreshed_job.status == JobStatus.done
     finally:
         sync_session.close()
