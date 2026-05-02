@@ -124,15 +124,11 @@ async def test_run_finalize_completes_without_typeerror(db_session):
     try:
         from sqlalchemy import select
 
-        refreshed_doc = sync_session.execute(
-            select(Document).where(Document.doc_id == doc.doc_id)
-        ).scalar_one()
+        refreshed_doc = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
         assert refreshed_doc.pipeline_status == PipelineStatus.ready
 
         refreshed_job = sync_session.execute(
-            select(IngestionJob).where(
-                IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.finalize
-            )
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.finalize)
         ).scalar_one()
         assert refreshed_job.status == JobStatus.done
     finally:
