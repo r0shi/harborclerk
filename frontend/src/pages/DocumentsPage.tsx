@@ -28,7 +28,6 @@ interface DocSummary {
   title: string
   canonical_filename?: string
   status: string
-  latest_version_status?: string
   created_at: string
   updated_at: string
   summary?: string
@@ -915,8 +914,8 @@ export default function DocumentsPage() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
-                            <StatusBadge status={doc.latest_version_status || doc.status} />
-                            {isAdmin && normalizeStatus(doc.latest_version_status) === 'processing' && (
+                            <StatusBadge status={doc.status} />
+                            {isAdmin && normalizeStatus(doc.status) === 'processing' && (
                               <button
                                 onClick={(e) => {
                                   e.preventDefault()

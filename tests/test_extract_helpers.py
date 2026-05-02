@@ -5,7 +5,13 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from harbor_clerk.worker.stages.extract import _alpha_ratio, _extract_via_tika, _paginate_text
+from harbor_clerk.worker.stages.extract import (
+    _alpha_ratio,
+    _extract_headings_via_tika,
+    _extract_via_tika,
+    _paginate_text,
+    _sanitize_external_string,
+)
 
 # --- _paginate_text ---
 
@@ -145,3 +151,114 @@ def test_tika_non_422_failures_still_raise_via_raise_for_status():
 
     with patch("httpx.put", side_effect=responses), pytest.raises(httpx.HTTPStatusError):
         _extract_via_tika(b"any data", "application/pdf")
+
+
+def test_tika_container_exception_non_string_returns_no_detail():
+    """Tika sometimes serialises container_exception as a list/array for certain
+    exception types (rare but observed). We must not crash trying to .split() it.
+    Instead, treat anything non-string as missing and return the standard
+    'no container_exception' fallback message."""
+    rmeta_payload = [
+        {
+            "X-TIKA:Parsed-By": ["org.apache.tika.parser.pdf.PDFParser"],
+            "X-TIKA:EXCEPTION:container_exception": [
+                "first element of an unexpected list",
+                "second element",
+            ],
+        }
+    ]
+    responses = [_mock_response(422), _mock_response(200, json_data=rmeta_payload)]
+
+    with (
+        patch("httpx.put", side_effect=responses),
+        pytest.raises(RuntimeError, match="no container_exception"),
+    ):
+        _extract_via_tika(b"%PDF...", "application/pdf", is_pdf=True)
+
+
+def test_tika_exception_string_strips_ansi_escapes():
+    """A hostile file could cause Tika's Java exception message to embed ANSI
+    escape sequences (e.g. \\x1b[31m for red). The diagnostic string is logged
+    AND written to the doc's error column — strip them before they land
+    anywhere an operator sees them."""
+    nasty_exc = "java.io.IOException: \x1b[31mDANGER\x1b[0m \x07bell\nstacktrace line"
+    rmeta_payload = [{"X-TIKA:EXCEPTION:container_exception": nasty_exc}]
+    responses = [_mock_response(422), _mock_response(200, json_data=rmeta_payload)]
+
+    with patch("httpx.put", side_effect=responses):
+        try:
+            _extract_via_tika(b"x", "application/pdf", is_pdf=True)
+        except RuntimeError as exc:
+            msg = str(exc)
+            assert "\x1b[31m" not in msg
+            assert "\x07" not in msg
+            # The actual content survives sans the escapes
+            assert "DANGER" in msg
+            assert "java.io.IOException" in msg
+        else:
+            pytest.fail("Expected RuntimeError")
+
+
+def test_extract_headings_via_tika_logs_422_detail():
+    """When the Tika XHTML endpoint returns 422 (same malformed-file scenarios
+    as the primary endpoint), the warning should include the underlying parser
+    exception, not just the generic 'Heading extraction failed' message.
+
+    Patches the module-level logger directly rather than relying on caplog,
+    because other tests in the suite may have reconfigured logging in ways
+    that break propagation to caplog's handler.
+    """
+    rmeta_payload = [
+        {
+            "X-TIKA:EXCEPTION:container_exception": (
+                "java.io.IOException: Page tree root must be a dictionary\n\tat ..."
+            ),
+        }
+    ]
+    responses = [_mock_response(422), _mock_response(200, json_data=rmeta_payload)]
+
+    with (
+        patch("httpx.put", side_effect=responses),
+        patch("harbor_clerk.worker.stages.extract.logger.warning") as mock_warning,
+    ):
+        result = _extract_headings_via_tika(b"%PDF...", "application/pdf", pages=[(1, "x")])
+
+    assert result == []  # Heading extraction is non-fatal; returns [] on 422
+    # The actual exception detail must surface in the warning, not a generic message.
+    # logger.warning is called with a printf-style format string + args; render it
+    # the same way the real logger would so we can assert on the final message text.
+    assert mock_warning.called, "Expected warning log when Tika XHTML returns 422"
+    fmt, *args = mock_warning.call_args.args
+    rendered = fmt % tuple(args)
+    assert "Tika rejected XHTML" in rendered
+    assert "Page tree root must be a dictionary" in rendered
+
+
+# --- _sanitize_external_string ---
+
+
+def test_sanitize_external_string_strips_ansi():
+    s = "\x1b[31mred\x1b[0m text"
+    assert _sanitize_external_string(s) == "red text"
+
+
+def test_sanitize_external_string_strips_control_chars():
+    # Bell (\x07), backspace (\x08), DEL (\x7f) — all control, all stripped.
+    # Tab and newline are converted to spaces by the whitespace-collapse step.
+    s = "before\x07\x08after\x7f"
+    assert _sanitize_external_string(s) == "beforeafter"
+
+
+def test_sanitize_external_string_collapses_whitespace():
+    s = "line one\n\nline   two\t\ttabs"
+    assert _sanitize_external_string(s) == "line one line two tabs"
+
+
+def test_sanitize_external_string_caps_length():
+    s = "x" * 1000
+    out = _sanitize_external_string(s, max_chars=50)
+    assert len(out) == 50
+
+
+def test_sanitize_external_string_handles_empty():
+    assert _sanitize_external_string("") == ""

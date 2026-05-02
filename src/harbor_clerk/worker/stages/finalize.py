@@ -56,6 +56,7 @@ def run_finalize(doc_id: uuid.UUID) -> None:
     mark_stage_done(
         doc_id,
         JobStage.finalize,
+        worker_seq=worker_seq,
         page_count=page_count,
         chunk_count=chunk_count,
     )

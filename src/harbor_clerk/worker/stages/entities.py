@@ -30,7 +30,7 @@ def run_entities(doc_id: uuid.UUID) -> None:
         if not chunks:
             logger.warning("No chunks to extract entities from for doc %s", doc_id)
             session.close()
-            mark_stage_done(doc_id, JobStage.entities, entity_count=0)
+            mark_stage_done(doc_id, JobStage.entities, worker_seq=worker_seq, entity_count=0)
             return
 
         # Batch NER (compute before race check)
@@ -73,4 +73,4 @@ def run_entities(doc_id: uuid.UUID) -> None:
     finally:
         session.close()
 
-    mark_stage_done(doc_id, JobStage.entities, entity_count=entity_count)
+    mark_stage_done(doc_id, JobStage.entities, worker_seq=worker_seq, entity_count=entity_count)

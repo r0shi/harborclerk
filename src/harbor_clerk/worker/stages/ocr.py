@@ -65,7 +65,7 @@ def run_ocr(doc_id: uuid.UUID) -> None:
         # If OCR not needed, just mark done
         if not doc.needs_ocr:
             session.close()
-            mark_stage_done(doc_id, JobStage.ocr)
+            mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)
             return
 
         # Read from storage if available; fall back to source_path for watched folder docs
@@ -184,4 +184,4 @@ def run_ocr(doc_id: uuid.UUID) -> None:
     finally:
         session.close()
 
-    mark_stage_done(doc_id, JobStage.ocr)
+    mark_stage_done(doc_id, JobStage.ocr, worker_seq=worker_seq)

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 
@@ -20,6 +21,26 @@ logger = logging.getLogger(__name__)
 
 # MIME types that are images (OCR-only, no text extraction)
 IMAGE_MIMES = {"image/jpeg", "image/png", "image/tiff"}
+
+# Strip ANSI escape sequences and control characters (except tab/newline) from
+# untrusted strings before they land in logs or the DB error column. Java
+# exceptions surfaced by Tika derive from file content and could in principle
+# contain ANSI CSI sequences or carriage returns crafted by a hostile upload.
+_CONTROL_CHARS_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f]")
+
+
+def _sanitize_external_string(s: str, max_chars: int = 300) -> str:
+    """Strip ANSI/control chars and collapse whitespace; cap length.
+
+    Used for any string that originates from external content (Tika exception
+    messages, file metadata, etc.) before logging or persisting it.
+    """
+    if not s:
+        return ""
+    cleaned = _CONTROL_CHARS_RE.sub("", s)
+    # Collapse internal whitespace runs (incl. embedded newlines) to a single space
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:max_chars]
 
 
 def _paginate_text(text: str, target: int) -> list[tuple[int, str]]:
@@ -104,6 +125,10 @@ def _fetch_tika_exception_detail(data: bytes, mime_type: str) -> str:
 
     Best-effort diagnostic — failures here just produce a generic message.
     Truncates the stacktrace to the first line so the error column stays usable.
+
+    The returned string passes through ``_sanitize_external_string`` so it's
+    safe to log or write to the DB ``error`` column even if Tika echoes back
+    crafted bytes from a hostile file (ANSI escapes, control chars, etc.).
     """
     settings = get_settings()
     try:
@@ -119,16 +144,18 @@ def _fetch_tika_exception_detail(data: bytes, mime_type: str) -> str:
         if not isinstance(meta_list, list) or not meta_list:
             return "rmeta returned empty list"
         meta = meta_list[0]
-        # Tika exposes container parser failures under this key
+        # Tika exposes container parser failures under this key. The value is
+        # *typically* a string (exception class + message + Java stacktrace) but
+        # rare exception classes can serialise as arrays or other JSON shapes —
+        # treat anything non-string as missing.
         exc = meta.get("X-TIKA:EXCEPTION:container_exception", "")
-        if not exc:
+        if not isinstance(exc, str) or not exc:
             return "no container_exception in rmeta response"
         # First line carries the exception type + message; rest is a Java stacktrace
-        first_line = exc.split("\n", 1)[0].strip()
-        # Cap to keep the DB error column compact
-        return first_line[:300]
+        first_line = exc.split("\n", 1)[0]
+        return _sanitize_external_string(first_line)
     except Exception as e:  # noqa: BLE001 — best-effort diagnostic
-        return f"rmeta refetch failed: {type(e).__name__}: {e}"
+        return _sanitize_external_string(f"rmeta refetch failed: {type(e).__name__}: {e}")
 
 
 def _alpha_ratio(text: str) -> float:
@@ -149,7 +176,12 @@ def _extract_headings_via_tika(
     mime_type: str,
     pages: list[tuple[int, str]],
 ) -> list[dict]:
-    """Fetch Tika XHTML and parse headings. Non-fatal — returns [] on failure."""
+    """Fetch Tika XHTML and parse headings. Non-fatal — returns [] on failure.
+
+    On 422 from the XHTML endpoint, log the actual ``container_exception`` (same
+    diagnostic as the primary extract path) so the operator sees a real
+    parser-error message instead of a generic "Heading extraction failed" line.
+    """
     settings = get_settings()
     if not settings.tika_url:
         return []
@@ -160,6 +192,14 @@ def _extract_headings_via_tika(
             headers={"Content-Type": mime_type, "Accept": "text/html"},
             timeout=120,
         )
+        if resp.status_code == 422:
+            detail = _fetch_tika_exception_detail(data, mime_type)
+            logger.warning(
+                "Heading extraction: Tika rejected XHTML for mime=%s (422): %s; continuing without headings",
+                mime_type,
+                detail,
+            )
+            return []
         resp.raise_for_status()
         raw_headings = parse_headings_from_xhtml(resp.text)
         if not raw_headings:
@@ -381,4 +421,4 @@ def run_extract(doc_id: uuid.UUID) -> None:
     finally:
         session.close()
 
-    mark_stage_done(doc_id, JobStage.extract)
+    mark_stage_done(doc_id, JobStage.extract, worker_seq=worker_seq)
