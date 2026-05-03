@@ -29,6 +29,51 @@ from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
 
+
+def _find_alembic_dir() -> Path | None:
+    """Walk parents of this file looking for an `alembic/` directory next to
+    an `alembic.ini`. Works in dev (src layout: repo root has both) and in
+    the bundled macOS app (bundle resource dir has both). Returns None if
+    no candidate is found.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "alembic"
+        if candidate.is_dir() and (parent / "alembic.ini").exists():
+            return candidate
+    return None
+
+
+def _get_expected_schema_version() -> str | None:
+    """Discover the head migration revision via alembic's ScriptDirectory.
+
+    Returns the revision id string (e.g. "0018") or None if alembic isn't
+    importable or the migrations directory can't be located. Called once at
+    startup; the result is logged for the schema-version sanity check.
+
+    This replaces the previous pattern of hardcoding `_EXPECTED_SCHEMA_VERSION`
+    inside the lifespan function — that constant had to be bumped on every
+    new migration, which was easy to forget and produced misleading
+    "schema mismatch" log lines after every release. Reading the head
+    dynamically keeps the check in sync automatically.
+    """
+    try:
+        from alembic.script import ScriptDirectory
+    except ImportError:
+        return None
+
+    alembic_dir = _find_alembic_dir()
+    if alembic_dir is None:
+        return None
+
+    try:
+        script = ScriptDirectory(str(alembic_dir))
+        return script.get_current_head()
+    except Exception:
+        logger.exception("Found alembic dir at %s but could not read head", alembic_dir)
+        return None
+
+
 # Create MCP app + session manager at module level so we can wire lifespan
 from harbor_clerk.mcp_server import create_mcp_app  # noqa: E402
 
@@ -203,8 +248,10 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting Harbor Clerk API")
 
-    # Verify database schema is up to date
-    _EXPECTED_SCHEMA_VERSION = "0018"
+    # Verify database schema is up to date. The expected head is read from
+    # the alembic migrations directory at startup, so this stays correct
+    # automatically as new migrations land — no manual constant bumps.
+    expected = _get_expected_schema_version()
     try:
         from harbor_clerk.db import async_session_factory
 
@@ -215,11 +262,16 @@ async def lifespan(app: FastAPI):
             row = result.first()
             if row is None:
                 logger.error("No alembic_version found — database may not be initialized")
-            elif row[0] != _EXPECTED_SCHEMA_VERSION:
+            elif expected is None:
+                logger.info(
+                    "Database schema version: %s (could not auto-detect expected head; check skipped)",
+                    row[0],
+                )
+            elif row[0] != expected:
                 logger.error(
                     "Database schema version mismatch: have %s, expected %s. Run migrations.",
                     row[0],
-                    _EXPECTED_SCHEMA_VERSION,
+                    expected,
                 )
             else:
                 logger.info("Database schema version: %s (current)", row[0])
