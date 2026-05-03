@@ -7,11 +7,8 @@ interface SystemInfo {
   watch_root: string | null
 }
 
-declare global {
-  interface Window {
-    harborclerk?: { pickFolder: () => Promise<string | null> }
-  }
-}
+// window.harborclerk typing lives in src/types/harborclerk.d.ts (shared
+// across pages/components that touch the native bridge).
 
 interface Props {
   onComplete: () => void

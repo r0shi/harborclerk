@@ -85,6 +85,10 @@ async def health_check(
         "status": "healthy" if overall else "degraded",
         "build": BUILD_HASH,
         "checks": checks,
+        # Deployment-wide capabilities the frontend needs to know about. Kept
+        # in the health response so it's fetched on app boot without a
+        # separate round-trip — see frontend/src/hooks/useSystemConfig.ts.
+        "allow_source_download": get_settings().allow_source_download,
     }
 
 

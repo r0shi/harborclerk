@@ -106,6 +106,16 @@ class Settings(BaseSettings):
     oauth_refresh_token_days: int = Field(default=90)
     oauth_access_token_minutes: int = Field(default=60)
 
+    # Source-file download via the API. Defaults to OFF on every deployment
+    # because the download endpoint exposes the raw bytes of any document the
+    # caller can already see in search — that's a meaningful escalation over
+    # the chunk-excerpt access read-only API keys are designed for. On macOS
+    # native, the menu app does NOT expose a way to flip this on, so the only
+    # way to access source files there is Reveal in Finder (which doesn't go
+    # through the HTTP server). On Docker, an admin can opt in by setting
+    # ALLOW_SOURCE_DOWNLOAD=true in the compose file.
+    allow_source_download: bool = Field(default=False)
+
     @field_validator("public_url")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:

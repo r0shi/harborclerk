@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams, useLocation, Link } from 'reac
 import { get, post, del } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents, type JobEvent } from '../hooks/useJobEvents'
+import { useSystemConfig, type SystemConfig } from '../hooks/useSystemConfig'
 import { ENTITY_TYPE_LABELS } from '../components/stats/CorpusCharts'
 
 interface JobInfo {
@@ -261,6 +262,74 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
 const DEFAULT_HIDDEN_ENTITY_TYPES = new Set(['CARDINAL', 'ORDINAL', 'QUANTITY'])
 
 /**
+ * Source file row: shows the path and exposes whichever of "Reveal in Finder"
+ * and "Download" the deployment supports.
+ *
+ * Reveal: only available when running inside the macOS WKWebView client (the
+ * native bridge `window.harborclerk.revealInFinder` is detected synchronously
+ * — absent in regular browsers and in the Docker web UI). Doesn't go through
+ * the HTTP server at all; calls NSWorkspace directly via the WKScriptMessage
+ * channel registered in macos/HarborClerk/.../ContentView.swift.
+ *
+ * Download: gated by the server-side `allow_source_download` setting. Default
+ * off everywhere — see hooks/useSystemConfig.ts and the backend setting
+ * docstring for the rationale.
+ *
+ * If neither action is available, we still show the path because operators
+ * frequently want to confirm "this is the right file".
+ */
+function SourceFileSection({ doc, sysConfig }: { doc: DocumentDetail; sysConfig: SystemConfig }) {
+  // Anything to display? Watched-folder docs always have source_path; uploaded
+  // docs may have only original_object_key (which is internal storage and not
+  // particularly useful to the user — we don't surface it as a "source path").
+  if (!doc.source_path) return null
+
+  const canReveal = typeof window !== 'undefined' && Boolean(window.harborclerk?.revealInFinder)
+  const canDownload = sysConfig.allowSourceDownload && sysConfig.loaded
+
+  async function handleReveal() {
+    try {
+      await window.harborclerk?.revealInFinder?.(doc.source_path!)
+    } catch {
+      // Swift handler logs its own errors; nothing actionable in the UI.
+    }
+  }
+
+  return (
+    <div className="mb-2 flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="text-xs text-gray-500 dark:text-gray-400">Source</div>
+        <div className="text-xs text-gray-400 break-all font-mono">{doc.source_path}</div>
+      </div>
+      {(canReveal || canDownload) && (
+        <div className="flex shrink-0 items-center gap-2">
+          {canReveal && (
+            <button
+              type="button"
+              onClick={handleReveal}
+              className="rounded-md bg-(--color-bg-tertiary) px-2.5 py-1 text-xs font-medium text-(--color-text-secondary) hover:opacity-80"
+              title="Reveal this file in Finder"
+            >
+              Reveal in Finder
+            </button>
+          )}
+          {canDownload && (
+            <a
+              href={`/api/docs/${doc.doc_id}/download`}
+              download
+              className="rounded-md bg-(--color-bg-tertiary) px-2.5 py-1 text-xs font-medium text-(--color-text-secondary) hover:opacity-80"
+              title="Download the original file"
+            >
+              Download
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * Wrap the chunk-text substring inside a page's text with a `<mark>` tag so
  * the user lands on the exact span that matched their search. Falls back to
  * the unmodified text when:
@@ -431,6 +500,7 @@ export default function DocumentDetailPage() {
   const [searchParams] = useSearchParams()
   const location = useLocation()
   const { isAdmin, user } = useAuth()
+  const sysConfig = useSystemConfig()
 
   // Optional inline highlight target — populated when the user arrives from a
   // search result. The chunk text is passed via React Router state (not URL)
@@ -727,7 +797,7 @@ export default function DocumentDetailPage() {
         OCR: {doc.needs_ocr ? 'yes' : 'no'} | Text layer: {doc.has_text_layer ? 'yes' : 'no'}
       </div>
 
-      {doc.source_path && <div className="mb-2 text-xs text-gray-400 break-all">Source: {doc.source_path}</div>}
+      <SourceFileSection doc={doc} sysConfig={sysConfig} />
 
       <DocumentStatsDisclosure docId={doc.doc_id} />
 

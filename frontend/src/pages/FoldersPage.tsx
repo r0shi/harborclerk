@@ -32,11 +32,8 @@ interface SystemInfo {
   watch_root: string | null
 }
 
-declare global {
-  interface Window {
-    harborclerk?: { pickFolder: () => Promise<string | null> }
-  }
-}
+// window.harborclerk typing lives in src/types/harborclerk.d.ts (shared
+// across pages/components that touch the native bridge).
 
 function errorMessage(e: unknown, fallback: string): string {
   if (e instanceof ApiError || e instanceof Error) return e.message
