@@ -15,7 +15,9 @@ not a corrupt artifact.
 import hashlib
 import logging
 import shutil
+import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import httpx
@@ -24,6 +26,55 @@ from harbor_clerk.lang_packs.storage import artifact_path, lang_dir
 from harbor_clerk.languages import LANGUAGES, Tool
 
 logger = logging.getLogger(__name__)
+
+
+def _spacy_package_name(wheel_path: Path) -> str:
+    """Extract the spaCy package name from a wheel filename.
+
+    Wheel naming convention: ``<package>-<version>-py3-none-any.whl``,
+    e.g. ``fr_core_news_sm-3.8.0-py3-none-any.whl`` -> ``fr_core_news_sm``.
+    """
+    return wheel_path.name.split("-", 1)[0]
+
+
+def extracted_spacy_dir(wheel_path: Path) -> Path:
+    """Where a spaCy NER wheel ends up after extraction.
+
+    spaCy's ``spacy.load(<path>)`` accepts a directory containing the
+    package; we extract the wheel's package contents (skipping
+    ``.dist-info`` metadata) into a sibling directory named after the
+    package itself.
+    """
+    return wheel_path.parent / _spacy_package_name(wheel_path)
+
+
+def _extract_ner_wheel(wheel_path: Path) -> None:
+    """Extract a spaCy model wheel so spaCy can ``load(<path>)`` it.
+
+    The downloaded ``.whl`` is a ZIP. Inside, the spaCy package directory
+    (e.g. ``fr_core_news_sm/``) sits next to a ``*.dist-info/`` metadata
+    directory we don't need. We extract just the package directory.
+
+    Idempotent: removes any prior extraction first to avoid stale files
+    if upstream republishes a model under the same version (unlikely
+    given SHA-pinning, but cheap to guard against).
+    """
+    target_dir = extracted_spacy_dir(wheel_path)
+    package_name = _spacy_package_name(wheel_path)
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+
+    with zipfile.ZipFile(wheel_path, "r") as zf:
+        for member in zf.namelist():
+            # Wheels store package files under "<package_name>/" and
+            # metadata under "<package_name>-<version>.dist-info/". We
+            # only want the former.
+            if member.startswith(f"{package_name}/"):
+                zf.extract(member, wheel_path.parent)
+
+    logger.info("Extracted NER wheel %s -> %s", wheel_path.name, target_dir)
+
 
 DownloadStatus = Literal["installed", "already_installed", "failed"]
 
@@ -88,6 +139,23 @@ def download_artifact(lang_code: str, tool: Tool) -> DownloadResult:
             bytes_written,
             target,
         )
+
+        # Post-install: spaCy NER wheels need to be extracted before
+        # spacy.load() can find the model. The extracted dir lives next
+        # to the wheel; both are deleted together by remove_artifact().
+        if tool == Tool.NER and target.suffix == ".whl":
+            try:
+                _extract_ner_wheel(target)
+            except Exception:
+                logger.exception(
+                    "Wheel extraction failed for %s/%s — install completed but "
+                    "the NER model may not be loadable until you re-install",
+                    lang_code,
+                    tool.value,
+                )
+                # Don't fail the install — the user can retry, or remove
+                # and reinstall. The downloaded wheel is intact.
+
         return DownloadResult(status="installed", bytes_downloaded=bytes_written)
     except Exception as e:
         tmp_target.unlink(missing_ok=True)
@@ -122,6 +190,7 @@ def remove_artifact(lang_code: str, tool: Tool) -> None:
     Cleans up empty parent directories up to (but not including) the
     per-language root, so a fully-removed language leaves only an empty
     ``<lang_packs>/<lang>/`` directory rather than orphaned subdirs.
+    Also removes the extracted spaCy package directory for NER wheels.
     """
     if lang_code not in LANGUAGES:
         return
@@ -129,6 +198,14 @@ def remove_artifact(lang_code: str, tool: Tool) -> None:
     if spec is None:
         return
     target = artifact_path(lang_code, tool)
+
+    # NER wheels have a sibling extracted dir; tear it down first so the
+    # parent-cleanup walk below can rmdir an empty ner/ subdir.
+    if tool == Tool.NER and target.suffix == ".whl":
+        extracted = extracted_spacy_dir(target)
+        if extracted.exists():
+            shutil.rmtree(extracted, ignore_errors=True)
+
     target.unlink(missing_ok=True)
 
     # Walk up removing empty intermediate dirs, stopping at the

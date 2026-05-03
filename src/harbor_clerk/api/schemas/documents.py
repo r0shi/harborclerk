@@ -50,6 +50,11 @@ class DocumentDetail(BaseModel):
     needs_ocr: bool | None = None
     extracted_chars: int | None = None
     size_bytes: int | None = None
+    # ISO 639-1 codes of the languages this doc was OCR'd with. NULL for
+    # legacy docs (pre-2026-05) and for non-OCR'd docs. Drives the
+    # frontend's "this doc was OCR'd in English only — re-OCR with
+    # French now?" reprocess affordance.
+    ocr_languages_used: list[str] | None = None
     error: str | None = None
     created_at: datetime
     updated_at: datetime

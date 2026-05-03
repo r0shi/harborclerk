@@ -240,3 +240,118 @@ def test_installed_languages_includes_french_after_install(monkeypatch, httpserv
     assert "fr" not in installed_languages()
     download_artifact("fr", Tool.OCR)
     assert "fr" in installed_languages()
+
+
+# --- NER wheel extraction ---
+
+
+def _build_fake_spacy_wheel(wheel_path) -> bytes:
+    """Synthesise a minimally-shaped spaCy wheel (zip) so the extractor
+    can be tested without fetching real upstream artifacts.
+
+    Real spaCy wheels contain ``<package>/__init__.py`` + ``meta.json`` +
+    model data, plus a ``<package>-<version>.dist-info/`` metadata dir.
+    We just need both kinds of entries present so the extractor's
+    "skip dist-info, keep package" filter is exercised.
+    """
+    import io
+    import zipfile
+
+    # Wheel naming: <package>-<version>-py3-none-any.whl
+    package_name = wheel_path.name.split("-", 1)[0]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(f"{package_name}/__init__.py", "from spacy.util import get_lang_class\n")
+        zf.writestr(f"{package_name}/meta.json", '{"name": "fake_model", "version": "0.0.0"}\n')
+        zf.writestr(f"{package_name}/vocab/strings.json", "[]")
+        # Simulated dist-info — should be skipped by the extractor
+        zf.writestr(f"{package_name}-3.8.0.dist-info/METADATA", "Metadata-Version: 2.1\n")
+        zf.writestr(f"{package_name}-3.8.0.dist-info/RECORD", "")
+    return buf.getvalue()
+
+
+def _patch_french_with_real_wheel_shape(monkeypatch, httpserver: HTTPServer, tmp_path):
+    """Patch French NER to a fake-but-zip-valid wheel so extraction
+    actually succeeds and we can assert on the extracted layout."""
+    from pathlib import Path
+
+    from harbor_clerk.lang_packs.manager import extracted_spacy_dir
+
+    # Build the wheel bytes against a hypothetical install path
+    install_subpath = "ner/fr_core_news_sm-3.8.0-py3-none-any.whl"
+    fake_target_for_naming = Path(install_subpath)
+    payload = _build_fake_spacy_wheel(fake_target_for_naming)
+    sha = hashlib.sha256(payload).hexdigest()
+    httpserver.expect_request("/fr_core_news_sm-3.8.0-py3-none-any.whl").respond_with_data(payload)
+    fake = LanguageSpec(
+        code="fr",
+        display_name="French",
+        artifacts={
+            Tool.NER: ArtifactSpec(
+                url=httpserver.url_for("/fr_core_news_sm-3.8.0-py3-none-any.whl"),
+                sha256=sha,
+                size_bytes=len(payload),
+                install_subpath=install_subpath,
+            ),
+        },
+    )
+    monkeypatch.setitem(LANGUAGES, "fr", fake)
+    return extracted_spacy_dir
+
+
+def test_ner_wheel_is_extracted_after_install(monkeypatch, httpserver, tmp_path):
+    """After download_artifact installs a NER wheel, the package dir
+    should be extracted alongside it so spaCy can load(<path>) it."""
+    extracted_dir_fn = _patch_french_with_real_wheel_shape(monkeypatch, httpserver, tmp_path)
+
+    result = download_artifact("fr", Tool.NER)
+    assert result.status == "installed"
+
+    wheel = tmp_path / "fr" / "ner" / "fr_core_news_sm-3.8.0-py3-none-any.whl"
+    extracted = extracted_dir_fn(wheel)
+
+    assert extracted.is_dir()
+    assert (extracted / "__init__.py").is_file()
+    assert (extracted / "meta.json").is_file()
+    assert (extracted / "vocab" / "strings.json").is_file()
+    # dist-info metadata should NOT have been extracted
+    assert not (tmp_path / "fr" / "ner" / "fr_core_news_sm-3.8.0.dist-info").exists()
+
+
+def test_remove_ner_artifact_clears_extracted_dir(monkeypatch, httpserver, tmp_path):
+    """remove_artifact must tear down both the wheel and its extracted
+    sibling — leaving the extracted dir behind would let stale models
+    survive a `remove + reinstall with new SHA` flow."""
+    _patch_french_with_real_wheel_shape(monkeypatch, httpserver, tmp_path)
+    download_artifact("fr", Tool.NER)
+    assert (tmp_path / "fr" / "ner" / "fr_core_news_sm").is_dir()
+
+    remove_artifact("fr", Tool.NER)
+
+    assert not (tmp_path / "fr" / "ner" / "fr_core_news_sm-3.8.0-py3-none-any.whl").exists()
+    assert not (tmp_path / "fr" / "ner" / "fr_core_news_sm").exists()
+    # ner/ subdir cleaned up too (it's empty after both removed)
+    assert not (tmp_path / "fr" / "ner").exists()
+
+
+def test_ner_wheel_re_install_replaces_extracted_dir(monkeypatch, httpserver, tmp_path):
+    """If a stale extracted dir is on disk (from a prior install of a
+    different SHA) and we reinstall, the extracted dir should be replaced
+    rather than merged."""
+    _patch_french_with_real_wheel_shape(monkeypatch, httpserver, tmp_path)
+    download_artifact("fr", Tool.NER)
+
+    # Simulate a stale leftover file inside the extracted dir
+    extracted = tmp_path / "fr" / "ner" / "fr_core_news_sm"
+    stale_file = extracted / "stale_leftover.bin"
+    stale_file.write_text("this should be gone after re-install")
+    assert stale_file.exists()
+
+    # Re-install (force by removing the wheel first so we re-fetch)
+    remove_artifact("fr", Tool.NER)
+    download_artifact("fr", Tool.NER)
+
+    # Stale file should be gone
+    assert not stale_file.exists()
+    # Real extracted contents are present
+    assert (extracted / "__init__.py").is_file()
