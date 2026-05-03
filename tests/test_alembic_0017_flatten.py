@@ -29,6 +29,15 @@ def sync_engine():
     engine.dispose()
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _restore_head_after_module(alembic_cfg):
+    """Migration tests leave the DB at the revision they exercised. Restore
+    head when the module finishes so subsequent test files (which expect
+    the current ORM schema) don't see "column does not exist" errors."""
+    yield
+    command.upgrade(alembic_cfg, "head")
+
+
 def test_0017_flattens_two_version_doc(alembic_cfg, sync_engine):
     """A doc with two versions: latest content survives, prior is pruned."""
     # Ensure we are exactly at revision 0016 before inserting test data.

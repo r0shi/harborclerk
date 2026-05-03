@@ -16,20 +16,25 @@ from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import Document, DocumentPage, IngestionJob
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
+from harbor_clerk.worker.ocr_languages import get_ocr_languages_for_doc
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
 
-TESSERACT_LANG = "eng+fra"
 DPI = 300
 
 
-def _ocr_image_bytes(image_data: bytes) -> tuple[str, float]:
-    """OCR a single image, return (text, confidence)."""
+def _ocr_image_bytes(image_data: bytes, lang: str) -> tuple[str, float]:
+    """OCR a single image with the given Tesseract ``-l`` argument.
+
+    Returns ``(text, average_word_confidence)``. The confidence is the
+    mean of non-empty Tesseract word confidences in [0, 100]; 0.0 when
+    no words were extracted.
+    """
     img = Image.open(_io.BytesIO(image_data))
     # Get detailed data for confidence
-    data = pytesseract.image_to_data(img, lang=TESSERACT_LANG, output_type=pytesseract.Output.DICT)
-    text = pytesseract.image_to_string(img, lang=TESSERACT_LANG)
+    data = pytesseract.image_to_data(img, lang=lang, output_type=pytesseract.Output.DICT)
+    text = pytesseract.image_to_string(img, lang=lang)
 
     # Compute average confidence from non-empty words
     confs = [int(c) for c, t in zip(data["conf"], data["text"]) if t.strip() and int(c) >= 0]
@@ -80,6 +85,14 @@ def run_ocr(doc_id: uuid.UUID) -> None:
 
         mime = (doc.mime_type or "").lower()
 
+        # Resolve which Tesseract languages to use for this doc.
+        # Honors the operator's enabled_languages preference, filtered to
+        # those with installed packs. English is always included as the
+        # safe fallback. See harbor_clerk/worker/ocr_languages.py for
+        # the resolution rules.
+        ocr_iso, ocr_lang = get_ocr_languages_for_doc(session)
+        logger.info("OCR for doc %s: using languages %s (-l %s)", doc_id, ocr_iso, ocr_lang)
+
         # Update job progress total
         job = session.execute(
             select(IngestionJob).where(
@@ -93,7 +106,7 @@ def run_ocr(doc_id: uuid.UUID) -> None:
             job.progress_total = 1
             session.commit()
 
-            text, confidence = _ocr_image_bytes(data)
+            text, confidence = _ocr_image_bytes(data, lang=ocr_lang)
 
             # Race check before writing results
             if not check_pipeline_seq(session, doc_id, worker_seq):
@@ -110,6 +123,7 @@ def run_ocr(doc_id: uuid.UUID) -> None:
             page.ocr_used = True
             page.ocr_confidence = confidence
             doc.extracted_chars = len(text)
+            doc.ocr_languages_used = ocr_iso
 
             job.progress_current = 1
             session.commit()
@@ -138,7 +152,7 @@ def run_ocr(doc_id: uuid.UUID) -> None:
                 img.save(buf, format="PNG")
                 img_bytes = buf.getvalue()
 
-                text, confidence = _ocr_image_bytes(img_bytes)
+                text, confidence = _ocr_image_bytes(img_bytes, lang=ocr_lang)
                 ocr_results.append((page_num, text, confidence))
 
             # Race check before writing results
@@ -177,6 +191,7 @@ def run_ocr(doc_id: uuid.UUID) -> None:
                 publish_job_event(doc_id, "ocr", "running", progress=i + 1, total=len(images))
 
             doc.extracted_chars = total_chars
+            doc.ocr_languages_used = ocr_iso
             session.commit()
         else:
             logger.warning("OCR requested for unsupported mime type: %s", mime)

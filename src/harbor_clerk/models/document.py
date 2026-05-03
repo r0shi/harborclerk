@@ -1,4 +1,5 @@
 from sqlalchemy import BigInteger, Boolean, Enum, ForeignKey, Integer, LargeBinary, Text, text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
 from harbor_clerk.models.base import Base, created_at, updated_at, uuid_pk
@@ -39,6 +40,14 @@ class Document(Base):
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     original_bucket: Mapped[str | None] = mapped_column(Text, nullable=True)
     original_object_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ISO 639-1 codes of the languages this doc was OCR'd with. NULL for
+    # non-OCR'd docs and for legacy pre-language-packs docs (we can't
+    # retroactively know what was used). Populated by worker/stages/ocr.py
+    # after a successful OCR pass.
+    ocr_languages_used: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text),
+        nullable=True,
+    )
 
     created_at: Mapped[created_at]
     updated_at: Mapped[updated_at]

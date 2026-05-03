@@ -279,6 +279,21 @@ def main():
 
     _resolve_tmpdir_symlinks()
 
+    # Set up the unified Tesseract data dir so per-language pack
+    # .traineddata files are findable alongside bundled ones. Idempotent
+    # — re-running on worker restart picks up packs installed since the
+    # previous launch. Only relevant for the cpu queue (which runs OCR);
+    # cheap enough to do unconditionally.
+    try:
+        from harbor_clerk.lang_packs.tesseract_setup import setup_unified_tessdata_dir
+
+        setup_unified_tessdata_dir()
+    except Exception:
+        # Don't block worker startup on lang-pack setup failures — OCR
+        # will fall back to whatever TESSDATA_PREFIX was originally set
+        # to (bundled English-only).
+        logger.exception("Failed to set up unified tessdata dir; OCR may not see language packs")
+
     stages: list[JobStage] = []
     for q in args.queues:
         stages.extend(QUEUE_STAGES[q])

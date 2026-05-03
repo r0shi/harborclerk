@@ -15,6 +15,7 @@ from harbor_clerk.api.routes.auth import router as auth_router
 from harbor_clerk.api.routes.chat import router as chat_router
 from harbor_clerk.api.routes.documents import router as documents_router
 from harbor_clerk.api.routes.jobs import router as jobs_router
+from harbor_clerk.api.routes.languages import router as languages_router
 from harbor_clerk.api.routes.oauth import router as oauth_router
 from harbor_clerk.api.routes.research import router as research_router
 from harbor_clerk.api.routes.search import router as search_router
@@ -383,6 +384,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router, prefix="/api")
     app.include_router(research_router, prefix="/api")
     app.include_router(watch_router, prefix="/api")
+    app.include_router(languages_router, prefix="/api")
 
     # OAuth 2.1 endpoints (no /api prefix — /.well-known must be at root)
     app.include_router(oauth_router)

@@ -4,6 +4,7 @@ const ITEMS = [
   { to: '/admin/users', label: 'Users', description: 'Manage user accounts and roles' },
   { to: '/admin/keys', label: 'API Keys', description: 'Create and revoke API keys' },
   { to: '/admin/models', label: 'Models', description: 'Download and manage LLM models' },
+  { to: '/admin/languages', label: 'Languages', description: 'Enable additional languages for OCR and entities' },
   { to: '/admin/retrieval', label: 'Retrieval', description: 'Chat and MCP search behavior' },
   { to: '/admin/rate-limits', label: 'Rate Limits', description: 'Default API key rate limits' },
   { to: '/admin/system/status', label: 'System Status', description: 'Health checks and statistics' },
