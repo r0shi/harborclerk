@@ -112,11 +112,33 @@ struct WebView: NSViewRepresentable {
             contentWorld: .page,
             name: "pickFolder"
         )
+
+        // Reveal-in-Finder bridge: window.harborclerk.revealInFinder(path) opens
+        // Finder with the given file selected. Fire-and-forget — the JS Promise
+        // resolves once the message lands on the Swift side, regardless of
+        // whether the file actually exists. NSWorkspace handles missing files
+        // gracefully (shows the parent dir).
+        //
+        // This is the *only* way macOS users can access source files through
+        // Harbor Clerk — the HTTP download endpoint is disabled by default
+        // and the menu app intentionally exposes no toggle to enable it. By
+        // routing reveal through NSWorkspace instead of through the API
+        // server, we keep the file-access path off the network entirely.
+        let revealHandler = RevealInFinderHandler()
+        config.userContentController.addScriptMessageHandler(
+            revealHandler,
+            contentWorld: .page,
+            name: "revealInFinder"
+        )
+
         let bridgeScript = WKUserScript(
             source: """
             window.harborclerk = window.harborclerk || {};
             window.harborclerk.pickFolder = function() {
                 return window.webkit.messageHandlers.pickFolder.postMessage({});
+            };
+            window.harborclerk.revealInFinder = function(path) {
+                return window.webkit.messageHandlers.revealInFinder.postMessage({path: path});
             };
             """,
             injectionTime: .atDocumentStart,
@@ -292,6 +314,45 @@ final class FolderPickerHandler: NSObject, WKScriptMessageHandlerWithReply {
             } else {
                 replyHandler(nil, nil)
             }
+        }
+    }
+}
+
+// MARK: - Reveal in Finder bridge
+
+/// Bridges window.harborclerk.revealInFinder(path) (called from the doc
+/// detail page) to NSWorkspace.activateFileViewerSelecting. Fire-and-forget;
+/// the JS Promise resolves as soon as the message is delivered.
+///
+/// We use WKScriptMessageHandlerWithReply (not the older
+/// WKScriptMessageHandler) so the JS side gets a real Promise to await on,
+/// matching the existing pickFolder pattern. The reply value is always
+/// nil — there's no useful "did NSWorkspace succeed" signal worth surfacing.
+final class RevealInFinderHandler: NSObject, WKScriptMessageHandlerWithReply {
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage,
+        replyHandler: @escaping (Any?, String?) -> Void
+    ) {
+        // Best-effort path extraction. JS shim wraps the path in {path: "..."}.
+        guard let body = message.body as? [String: Any],
+              let path = body["path"] as? String,
+              !path.isEmpty
+        else {
+            replyHandler(nil, "revealInFinder: missing or empty path")
+            return
+        }
+
+        DispatchQueue.main.async {
+            let url = URL(fileURLWithPath: path)
+            // activateFileViewerSelecting handles missing files gracefully —
+            // it falls back to revealing the parent directory if the file
+            // itself doesn't exist (e.g. user moved/deleted it after
+            // ingestion). Doesn't open the file's contents, just shows it
+            // in Finder, so it's a benign action even if the path turned
+            // out to be unexpected.
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            replyHandler(nil, nil)
         }
     }
 }

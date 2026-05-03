@@ -27,6 +27,7 @@ from harbor_clerk.api.schemas.documents import (
 )
 from harbor_clerk.api.scope import apply_key_scope
 from harbor_clerk.audit import log_audit
+from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.models import (
     Chunk,
@@ -710,7 +711,25 @@ async def download_document(
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
-    """Download the original file for a document."""
+    """Download the original file for a document.
+
+    Gated by the ``allow_source_download`` setting (env: ALLOW_SOURCE_DOWNLOAD).
+    Disabled by default everywhere because the response exposes the raw bytes
+    of the original document — meaningfully more data than the chunk excerpts
+    that read-only API keys were designed to surface. On macOS native, the menu
+    app intentionally does NOT expose a way to enable this; use Reveal in
+    Finder instead. On Docker, an admin can opt in by setting the env var.
+    """
+    if not get_settings().allow_source_download:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Source-file download is disabled on this deployment. "
+                "On macOS, use Reveal in Finder. "
+                "On Docker, an admin can enable downloads by setting ALLOW_SOURCE_DOWNLOAD=true."
+            ),
+        )
+
     query = select(Document).where(Document.doc_id == doc_id, Document.status == "active")
     query = apply_key_scope(query, principal)
     result = await session.execute(query)

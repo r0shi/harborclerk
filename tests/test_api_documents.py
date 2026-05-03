@@ -294,3 +294,56 @@ async def test_get_document_entities_empty(client, admin_user, admin_token, db_s
     assert data["total"] == 0
     assert data["entities"] == []
     assert data["entity_types"] == []
+
+
+async def test_download_returns_403_when_disabled_by_default(client, admin_user, admin_token, db_session, tmp_path):
+    """allow_source_download defaults to False; download must 403 with a clear
+    message instead of silently serving the bytes."""
+    src = tmp_path / "secret.pdf"
+    src.write_bytes(b"%PDF-1.4 secret content")
+    doc = Document(title="Secret", status="active", source_path=str(src), **_DOC_DEFAULTS)
+    db_session.add(doc)
+    await db_session.flush()
+
+    resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+    assert resp.status_code == 403
+    body = resp.json()
+    assert "disabled" in body["detail"].lower()
+    # The error message should point at both the macOS and Docker remediations
+    # so the user knows where to look.
+    assert "ALLOW_SOURCE_DOWNLOAD" in body["detail"]
+    assert "Reveal in Finder" in body["detail"]
+
+
+async def test_download_returns_bytes_when_enabled(client, admin_user, admin_token, db_session, tmp_path):
+    """When the operator explicitly enables source download, the endpoint
+    serves the original bytes."""
+    from harbor_clerk.config import get_settings
+
+    src = tmp_path / "doc.pdf"
+    payload = b"%PDF-1.4 hello world"
+    src.write_bytes(payload)
+    doc = Document(title="Permitted", status="active", source_path=str(src), **_DOC_DEFAULTS)
+    db_session.add(doc)
+    await db_session.flush()
+
+    s = get_settings()
+    original = s.allow_source_download
+    s.allow_source_download = True
+    try:
+        resp = await client.get(f"/api/docs/{doc.doc_id}/download", headers=auth_header(admin_token))
+    finally:
+        s.allow_source_download = original
+
+    assert resp.status_code == 200
+    assert resp.content == payload
+    # Content-Disposition uses RFC 8187 encoding with the filename
+    assert "doc.pdf" in resp.headers["content-disposition"]
+
+
+async def test_download_403_fires_before_doc_existence_check(client, admin_user, admin_token):
+    """Verify the 403 short-circuits before the DB query — i.e. an attacker
+    can't probe doc_id existence via differential 403 vs 404 responses."""
+    fake_id = uuid.uuid4()
+    resp = await client.get(f"/api/docs/{fake_id}/download", headers=auth_header(admin_token))
+    assert resp.status_code == 403
