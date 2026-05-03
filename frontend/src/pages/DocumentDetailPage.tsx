@@ -561,9 +561,7 @@ export default function DocumentDetailPage() {
             // pagination + the page DOM commit before we measure positions.
             requestAnimationFrame(() => {
               requestAnimationFrame(() => {
-                document
-                  .getElementById(`page-${urlTargetPage}`)
-                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                document.getElementById(`page-${urlTargetPage}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
               })
             })
             // Clear highlight after animation

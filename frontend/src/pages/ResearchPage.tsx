@@ -953,7 +953,9 @@ function ModelNudge() {
           />
         </svg>
       </div>
-      <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-2">Choose a model to research with</h3>
+      <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-2">
+        Choose a model to research with
+      </h3>
       <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mb-5">
         Deep Research drives a local LLM through many tool calls — pick a model first.
       </p>
