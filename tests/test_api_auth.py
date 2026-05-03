@@ -102,3 +102,48 @@ async def test_update_preferences_partial_does_not_clobber_existing(client, admi
     prefs = resp.json()["preferences"]
     assert prefs.get("theme") == "dark"
     assert prefs.get("onboardingComplete") is True
+
+
+async def test_update_preferences_enabled_languages_persists(client, admin_user, admin_token):
+    resp = await client.patch(
+        "/api/me/preferences",
+        json={"enabled_languages": ["en", "fr"]},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["preferences"]["enabled_languages"] == ["en", "fr"]
+
+
+async def test_update_preferences_enabled_languages_always_includes_english(client, admin_user, admin_token):
+    """Operator who tries to set ['fr'] (without en) gets ['en', 'fr'] back —
+    English is the bundled fallback and turning it off would silently
+    disable OCR for every doc."""
+    resp = await client.patch(
+        "/api/me/preferences",
+        json={"enabled_languages": ["fr"]},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    enabled = resp.json()["preferences"]["enabled_languages"]
+    assert enabled[0] == "en"
+    assert "fr" in enabled
+
+
+async def test_update_preferences_enabled_languages_dedupes(client, admin_user, admin_token):
+    resp = await client.patch(
+        "/api/me/preferences",
+        json={"enabled_languages": ["en", "fr", "en", "fr"]},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["preferences"]["enabled_languages"] == ["en", "fr"]
+
+
+async def test_update_preferences_enabled_languages_rejects_unknown_codes(client, admin_user, admin_token):
+    resp = await client.patch(
+        "/api/me/preferences",
+        json={"enabled_languages": ["en", "xx"]},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 422
+    assert "xx" in resp.json()["detail"]

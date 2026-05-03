@@ -32,6 +32,13 @@ class PreferencesUpdate(BaseModel):
     # Naming is camelCase to match the existing frontend type and the JSONB
     # key the wizard reads — mixing snake/camel here is intentional, not a bug.
     onboardingComplete: bool | None = None
+    # ISO 639-1 codes of languages the operator has opted in to. Drives
+    # OCR/NER tool selection at job time. English is always implicitly
+    # enabled (it's bundled and is the fallback) — the API normalises by
+    # always inserting "en" if it's missing rather than rejecting the
+    # update, so a user who flips off French doesn't accidentally turn
+    # off OCR entirely.
+    enabled_languages: list[str] | None = None
 
 
 class PasswordChangeRequest(BaseModel):

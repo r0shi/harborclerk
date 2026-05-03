@@ -197,6 +197,15 @@ async def update_preferences(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="page_size must be 10, 25, 50, or 100",
         )
+    if body.enabled_languages is not None:
+        from harbor_clerk.languages import LANGUAGES
+
+        unknown = [c for c in body.enabled_languages if c not in LANGUAGES]
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown language codes: {unknown}",
+            )
 
     result = await session.execute(select(User).where(User.user_id == principal.id))
     user = result.scalar_one_or_none()
@@ -210,6 +219,17 @@ async def update_preferences(
         prefs["page_size"] = body.page_size
     if body.onboardingComplete is not None:
         prefs["onboardingComplete"] = body.onboardingComplete
+    if body.enabled_languages is not None:
+        # Normalise: dedupe, preserve order, always include English (the
+        # bundled fallback). Letting a user accidentally turn off English
+        # would silently disable OCR for every doc — make that impossible.
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for code in ["en", *body.enabled_languages]:
+            if code not in seen:
+                seen.add(code)
+                ordered.append(code)
+        prefs["enabled_languages"] = ordered
 
     await session.execute(update(User).where(User.user_id == principal.id).values(preferences=prefs))
     await session.commit()

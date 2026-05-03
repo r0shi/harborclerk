@@ -16,6 +16,7 @@ import SystemMaintenancePage from './pages/SystemMaintenancePage'
 import ServiceLogsPage from './pages/ServiceLogsPage'
 import ChatPage from './pages/ChatPage'
 import HomePage from './pages/HomePage'
+import LanguagesPage from './pages/LanguagesPage'
 import ModelsPage from './pages/ModelsPage'
 import PreferencesPage from './pages/PreferencesPage'
 import RateLimitSettingsPage from './pages/RateLimitSettingsPage'
@@ -61,6 +62,7 @@ export default function App() {
             <Route path="/admin/system/logs" element={<ServiceLogsPage />} />
             <Route path="/admin/system/maintenance" element={<SystemMaintenancePage />} />
             <Route path="/admin/models" element={<ModelsPage />} />
+            <Route path="/admin/languages" element={<LanguagesPage />} />
             <Route path="/admin/retrieval" element={<RetrievalSettingsPage />} />
             <Route path="/admin/rate-limits" element={<RateLimitSettingsPage />} />
           </Route>
