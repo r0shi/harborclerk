@@ -33,6 +33,7 @@ interface DocumentDetail {
   needs_ocr: boolean | null
   extracted_chars: number | null
   size_bytes: number | null
+  ocr_languages_used: string[] | null
   error: string | null
   created_at: string
   updated_at: string
@@ -260,6 +261,81 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
 }
 
 const DEFAULT_HIDDEN_ENTITY_TYPES = new Set(['CARDINAL', 'ORDINAL', 'QUANTITY'])
+
+// Display name lookup for the small subset of languages we currently
+// surface in the mismatch banner. Falls back to the ISO code when a
+// new language is added on the backend before the frontend is updated.
+const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
+  en: 'English',
+  fr: 'French',
+  de: 'German',
+  es: 'Spanish',
+  it: 'Italian',
+  nl: 'Dutch',
+  pt: 'Portuguese',
+}
+
+function languageDisplay(code: string): string {
+  return LANGUAGE_DISPLAY_NAMES[code] ?? code
+}
+
+/**
+ * Banner shown on the doc detail page when the operator has more
+ * languages enabled than the doc was OCR'd with. Surfaces a one-click
+ * reprocess. Only renders when:
+ *   - The doc was OCR'd at all (ocr_languages_used is non-null) — non-OCR
+ *     docs don't benefit from re-running OCR.
+ *   - The set of enabled languages strictly extends what was used —
+ *     otherwise nothing would change.
+ *   - The viewer is admin (only admins can reprocess).
+ *
+ * For legacy docs (ocr_languages_used = null because they were ingested
+ * before that column existed), we don't second-guess. The operator can
+ * still hit the "Reprocess" button manually.
+ */
+function LanguageMismatchBanner({
+  doc,
+  enabledLanguages,
+  canReprocess,
+  onReprocess,
+  actionLoading,
+}: {
+  doc: DocumentDetail
+  enabledLanguages: string[]
+  canReprocess: boolean
+  onReprocess: () => void
+  actionLoading: boolean
+}) {
+  if (!canReprocess) return null
+  if (!doc.ocr_languages_used || doc.ocr_languages_used.length === 0) return null
+
+  const used = new Set(doc.ocr_languages_used)
+  const missing = enabledLanguages.filter((c) => !used.has(c))
+  if (missing.length === 0) return null
+
+  const missingNames = missing.map(languageDisplay).join(', ')
+  return (
+    <div className="mb-3 flex items-start justify-between gap-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 px-3 py-2 text-sm text-blue-700 dark:text-blue-400">
+      <div className="flex-1 min-w-0">
+        <div className="font-medium">
+          OCR'd in {doc.ocr_languages_used.map(languageDisplay).join(', ')}, but {missingNames}{' '}
+          {missing.length === 1 ? 'is' : 'are'} now enabled.
+        </div>
+        <div className="mt-0.5 text-[12px] opacity-80">
+          Reprocess to extract text in the additional language{missing.length > 1 ? 's' : ''}.
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onReprocess}
+        disabled={actionLoading}
+        className="shrink-0 rounded-md bg-blue-600 px-3 py-1 text-[12px] font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
+      >
+        Reprocess
+      </button>
+    </div>
+  )
+}
 
 /**
  * Source file row: shows the path and exposes whichever of "Reveal in Finder"
@@ -739,6 +815,14 @@ export default function DocumentDetailPage() {
       </div>
 
       <DocStatusBanner doc={doc} />
+
+      <LanguageMismatchBanner
+        doc={doc}
+        enabledLanguages={user?.preferences?.enabled_languages ?? ['en']}
+        canReprocess={isAdmin}
+        onReprocess={handleReprocess}
+        actionLoading={actionLoading}
+      />
 
       {doc.jobs.length > 0 && (
         <div className="mb-4">

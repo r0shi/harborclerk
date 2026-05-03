@@ -1,10 +1,22 @@
-import { useEffect, useState } from 'react'
-import { get, post, ApiError } from '../api'
+import { useCallback, useEffect, useState } from 'react'
+import { get, patch, post, ApiError } from '../api'
 
 interface SystemInfo {
   platform: 'macos' | 'docker'
   picker: 'native' | 'none'
   watch_root: string | null
+}
+
+interface LanguageRow {
+  code: string
+  display_name: string
+  built_in: boolean
+  enabled: boolean
+  tools: Record<string, { status: string; size_bytes?: number | null }>
+}
+
+interface LanguagesListResponse {
+  languages: LanguageRow[]
 }
 
 // window.harborclerk typing lives in src/types/harborclerk.d.ts (shared
@@ -16,12 +28,11 @@ interface Props {
 
 /**
  * First-run onboarding modal. Triggered by Layout.tsx when the logged-in
- * user's preferences.onboardingComplete is missing or false. All four
- * dismissal paths (X, Skip, backdrop click, Get Started) call onComplete,
- * which writes preferences.onboardingComplete = true via updatePreferences().
+ * user's preferences.onboardingComplete is missing or false. All dismissal
+ * paths (X, Skip, backdrop click, Get Started) call onComplete, which
+ * writes preferences.onboardingComplete = true via updatePreferences().
  *
- * Two pages now, structured so adding pages 3 and 4 (with screenshots) is
- * additive: bump TOTAL_PAGES, render a new step in the switch.
+ * Three pages, structured so adding more (with screenshots) is additive.
  *
  * Page 1: welcome + platform-aware folder CTA.
  *   - macOS: "Pick a folder to watch" → window.harborclerk.pickFolder() →
@@ -30,19 +41,63 @@ interface Props {
  *   - Docker: "Read folder setup docs" → opens /docs/watched-folders-docker
  *     in a new tab. Page 2 reachable via Next regardless.
  *
- * Page 2: where-to-watch-progress (menubar status window + Observatory tab).
+ * Page 2: optional non-English language picker. English is bundled and
+ * always on. Other languages download per-tool model files (~15-20 MB
+ * each) — selected ones get installed AND added to enabled_languages
+ * preferences in one go. Skip-friendly.
+ *
+ * Page 3: where-to-watch-progress (menubar status window + Observatory tab).
  */
 export default function OnboardingWizard({ onComplete }: Props) {
   const [page, setPage] = useState(1)
   const [system, setSystem] = useState<SystemInfo | null>(null)
   const [error, setError] = useState('')
   const [picking, setPicking] = useState(false)
+  const [languages, setLanguages] = useState<LanguageRow[]>([])
+  const [selectedLangs, setSelectedLangs] = useState<Set<string>>(new Set())
+  const [installingLangs, setInstallingLangs] = useState(false)
 
   useEffect(() => {
     get<SystemInfo>('/api/watch/system')
       .then(setSystem)
       .catch(() => {})
+    get<LanguagesListResponse>('/api/languages')
+      .then((data) => setLanguages(data.languages))
+      .catch(() => {})
   }, [])
+
+  const installAndContinue = useCallback(async () => {
+    setError('')
+    if (selectedLangs.size === 0) {
+      setPage(3)
+      return
+    }
+    setInstallingLangs(true)
+    try {
+      // Install each selected language's tools (OCR + NER for now).
+      // We do these sequentially to avoid hammering the upstream
+      // host-name (~15-20 MB each) and to give the user honest progress
+      // feedback if anything fails.
+      for (const code of selectedLangs) {
+        const lang = languages.find((l) => l.code === code)
+        if (!lang) continue
+        const tools = Object.keys(lang.tools)
+        if (tools.length > 0) {
+          await post(`/api/languages/${code}/install`, { tools })
+        }
+      }
+      // Persist the operator's enabled-languages preference. Backend
+      // normalises (always inserts 'en' first, dedupes, validates).
+      await patch('/api/me/preferences', {
+        enabled_languages: Array.from(selectedLangs),
+      })
+      setPage(3)
+    } catch (e) {
+      setError(e instanceof ApiError || e instanceof Error ? e.message : 'Failed to install languages')
+    } finally {
+      setInstallingLangs(false)
+    }
+  }, [selectedLangs, languages])
 
   async function handlePickFolder() {
     if (system?.picker !== 'native' || !window.harborclerk) return
@@ -146,6 +201,88 @@ export default function OnboardingWizard({ onComplete }: Props) {
         {page === 2 && (
           <>
             <h2 id="onboarding-title" className="mb-3 text-lg font-bold">
+              Add languages (optional)
+            </h2>
+            <p className="mb-3 text-sm text-(--color-text-secondary)">
+              English is built-in. If you have documents in other languages, pick them now and Harbor Clerk will
+              download the OCR + entity model files (~15-20 MB per language). You can change this later in System
+              Settings → Languages.
+            </p>
+            {error && (
+              <div className="mb-3 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-400">
+                {error}
+              </div>
+            )}
+            <div className="mb-5 max-h-60 overflow-y-auto rounded-md border border-(--color-border) divide-y divide-(--color-border)">
+              {languages.length === 0 ? (
+                <div className="px-3 py-3 text-xs text-(--color-text-secondary)">Loading languages…</div>
+              ) : (
+                languages
+                  .filter((l) => !l.built_in)
+                  .map((lang) => {
+                    const checked = selectedLangs.has(lang.code)
+                    const totalSize = Object.values(lang.tools).reduce((acc, t) => acc + (t.size_bytes ?? 0), 0)
+                    const sizeMB = totalSize > 0 ? `~${(totalSize / (1024 * 1024)).toFixed(0)} MB` : ''
+                    return (
+                      <label
+                        key={lang.code}
+                        className="flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-black/4 dark:hover:bg-white/4 text-sm"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={installingLangs}
+                          onChange={(e) => {
+                            const next = new Set(selectedLangs)
+                            if (e.target.checked) next.add(lang.code)
+                            else next.delete(lang.code)
+                            setSelectedLangs(next)
+                          }}
+                          className="h-4 w-4"
+                        />
+                        <span className="flex-1">{lang.display_name}</span>
+                        <span className="text-[11px] text-gray-400 font-mono">{lang.code}</span>
+                        {sizeMB && <span className="text-[11px] text-gray-400">{sizeMB}</span>}
+                      </label>
+                    )
+                  })
+              )}
+            </div>
+            <div className="flex items-center justify-between">
+              <button
+                onClick={() => setPage(1)}
+                className="text-xs text-(--color-text-secondary) underline hover:no-underline"
+                disabled={installingLangs}
+              >
+                ← Back
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage(3)}
+                  className="text-xs text-(--color-text-secondary) underline hover:no-underline"
+                  disabled={installingLangs}
+                >
+                  Skip
+                </button>
+                <button
+                  onClick={installAndContinue}
+                  disabled={installingLangs}
+                  className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {installingLangs
+                    ? 'Installing…'
+                    : selectedLangs.size === 0
+                      ? 'Continue'
+                      : `Install ${selectedLangs.size} & continue`}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {page === 3 && (
+          <>
+            <h2 id="onboarding-title" className="mb-3 text-lg font-bold">
               Track ingestion progress
             </h2>
             <p className="mb-3 text-sm text-(--color-text-secondary)">
@@ -164,7 +301,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
             </ul>
             <div className="flex items-center justify-between">
               <button
-                onClick={() => setPage(1)}
+                onClick={() => setPage(2)}
                 className="text-xs text-(--color-text-secondary) underline hover:no-underline"
               >
                 ← Back

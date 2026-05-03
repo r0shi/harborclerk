@@ -452,6 +452,7 @@ async def get_document(
         needs_ocr=doc.needs_ocr,
         extracted_chars=doc.extracted_chars,
         size_bytes=doc.size_bytes,
+        ocr_languages_used=doc.ocr_languages_used,
         error=doc.error,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
