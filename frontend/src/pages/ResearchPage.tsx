@@ -1,10 +1,11 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import CitedMarkdown from '../components/CitedMarkdown'
 import ToolResultDisplay from '../components/ToolResultDisplay'
 import { del, get } from '../api'
 import { useChat } from '../contexts/ChatContext'
 import { useResearch, type ToolCallEntry } from '../contexts/ResearchContext'
+import { useLLMStatus } from '../hooks/useLLMStatus'
 import { formatRelativeDate } from '../utils/dates'
 
 interface ResearchSummary {
@@ -99,6 +100,8 @@ export default function ResearchPage() {
   const navigate = useNavigate()
 
   const { isStreaming: chatStreaming } = useChat()
+  const { status: llmStatus } = useLLMStatus()
+  const hasActiveModel = llmStatus.state === 'ready' && llmStatus.model_id !== null
   const [history, setHistory] = useState<ResearchSummary[]>([])
   const [selectedTask, setSelectedTask] = useState<ResearchDetail | null>(null)
   const [question, setQuestionRaw] = useState(() => sessionStorage.getItem('research_draft') ?? '')
@@ -461,7 +464,9 @@ export default function ResearchPage() {
                   comprehensive report. This may take several minutes.
                 </p>
 
-                {isRunning || chatStreaming ? (
+                {!hasActiveModel ? (
+                  <ModelNudge />
+                ) : isRunning || chatStreaming ? (
                   <div className="max-w-md mx-auto rounded-xl border border-amber-200 dark:border-amber-800/40 bg-amber-50/50 dark:bg-amber-900/10 px-4 py-3 text-center">
                     <p className="text-[13px] text-amber-700 dark:text-amber-400">
                       {chatStreaming
@@ -924,6 +929,49 @@ function RoundLabel({ round }: { round: number }) {
       <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
         Round {round}
       </span>
+    </div>
+  )
+}
+
+/* ---- Model onboarding nudge (mirrors ChatPage.ModelNudge tone, retargeted) ---- */
+
+function ModelNudge() {
+  return (
+    <div className="max-w-md mx-auto text-center empty-state-appear">
+      <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-amber-50 dark:bg-amber-900/30 ring-1 ring-amber-200/60 dark:ring-amber-700/40">
+        <svg
+          className="h-7 w-7 text-amber-500 dark:text-amber-400"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={1.5}
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"
+          />
+        </svg>
+      </div>
+      <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-2">
+        Choose a model to research with
+      </h3>
+      <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mb-5">
+        Deep Research drives a local LLM through many tool calls — pick a model first.
+      </p>
+      <Link
+        to="/admin/models"
+        className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2 text-[13px] font-medium text-white shadow-xs hover:bg-blue-700 transition-colors"
+      >
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+          />
+        </svg>
+        Choose a model
+      </Link>
     </div>
   )
 }

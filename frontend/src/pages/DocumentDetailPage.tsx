@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, useLocation, Link } from 'react-router-dom'
 import { get, post, del } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents, type JobEvent } from '../hooks/useJobEvents'
@@ -227,16 +227,61 @@ interface DocStats {
   ocr_confidence: { avg: number; min: number; max: number } | null
 }
 
+// Color palette covering all spaCy entity types we might see. Grouped by
+// semantic kind so related types share a hue family:
+//   blue/indigo:  people + groups (PERSON, NORP)
+//   green/teal:   organizations + products (ORG, PRODUCT, WORK_OF_ART)
+//   amber/orange: places (GPE, LOC, FAC)
+//   cyan/sky:     time (DATE, TIME)
+//   pink/rose:    events + law (EVENT, LAW)
+//   violet/fuchsia: language + culture (LANGUAGE)
+//   emerald:      money/percent (MONEY, PERCENT)
+//   stone:        numbers (CARDINAL, ORDINAL, QUANTITY)
 const ENTITY_TYPE_COLORS: Record<string, string> = {
   PERSON: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+  NORP: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400',
   ORG: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+  PRODUCT: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400',
+  WORK_OF_ART: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
   GPE: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-  LOC: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
+  LOC: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
+  FAC: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
   DATE: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400',
+  TIME: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400',
   EVENT: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
+  LAW: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400',
+  LANGUAGE: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400',
+  MONEY: 'bg-lime-100 text-lime-700 dark:bg-lime-900/30 dark:text-lime-400',
+  PERCENT: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+  CARDINAL: 'bg-stone-100 text-stone-700 dark:bg-stone-800/40 dark:text-stone-300',
+  ORDINAL: 'bg-stone-100 text-stone-700 dark:bg-stone-800/40 dark:text-stone-300',
+  QUANTITY: 'bg-stone-100 text-stone-700 dark:bg-stone-800/40 dark:text-stone-300',
 }
 
 const DEFAULT_HIDDEN_ENTITY_TYPES = new Set(['CARDINAL', 'ORDINAL', 'QUANTITY'])
+
+/**
+ * Wrap the chunk-text substring inside a page's text with a `<mark>` tag so
+ * the user lands on the exact span that matched their search. Falls back to
+ * the unmodified text when:
+ *   - no highlight target was passed (normal navigation, not from search)
+ *   - the chunk text spans multiple pages and doesn't fully appear in any
+ *     single page (partial-match fallback isn't worth the complexity)
+ */
+function renderPageWithHighlight(text: string, highlight: string | null): ReactNode {
+  if (!highlight) return text
+  const trimmed = highlight.trim()
+  if (!trimmed) return text
+  const idx = text.indexOf(trimmed)
+  if (idx === -1) return text
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark className="rounded-sm bg-yellow-200 px-0.5 dark:bg-yellow-700/50 dark:text-yellow-100">{trimmed}</mark>
+      {text.slice(idx + trimmed.length)}
+    </>
+  )
+}
 
 function DocumentStatsDisclosure({ docId }: { docId: string }) {
   const [stats, setStats] = useState<DocStats | null>(null)
@@ -384,7 +429,13 @@ export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
+  const location = useLocation()
   const { isAdmin, user } = useAuth()
+
+  // Optional inline highlight target — populated when the user arrives from a
+  // search result. The chunk text is passed via React Router state (not URL)
+  // because chunk bodies can be long and noisy in the address bar.
+  const highlightChunkText = (location.state as { highlightChunkText?: string } | null)?.highlightChunkText ?? null
   const [doc, setDoc] = useState<DocumentDetail | null>(null)
   const [content, setContent] = useState<ContentResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -506,6 +557,13 @@ export default function DocumentDetailPage() {
             const paginationPage = Math.floor(pageIdx / pageSize) + 1
             setContentPage(paginationPage)
             setHighlightPage(urlTargetPage)
+            // Scroll to the page anchor once it's rendered. Two RAFs let
+            // pagination + the page DOM commit before we measure positions.
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                document.getElementById(`page-${urlTargetPage}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              })
+            })
             // Clear highlight after animation
             setTimeout(() => setHighlightPage(null), 2000)
           }
@@ -612,6 +670,45 @@ export default function DocumentDetailPage() {
 
       <DocStatusBanner doc={doc} />
 
+      {doc.jobs.length > 0 && (
+        <div className="mb-4">
+          <Disclosure label="Ingestion Jobs" defaultOpen={!isReady}>
+            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-5">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-xs text-gray-500 dark:text-gray-400">
+                    <th className="pb-1 pr-3">Stage</th>
+                    <th className="pb-1 pr-3">Status</th>
+                    <th className="pb-1 pr-3">Progress</th>
+                    <th className="pb-1">Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {doc.jobs.map((j) => (
+                    <tr key={j.job_id || j.stage} className="border-b border-gray-100 dark:border-gray-700">
+                      <td className="py-1 pr-3 font-medium">{j.stage}</td>
+                      <td className="py-1 pr-3">
+                        <JobStatusBadge status={j.status} />
+                      </td>
+                      <td className="py-1 pr-3 text-gray-500 dark:text-gray-400">
+                        {j.progress_total ? `${j.progress_current || 0}/${j.progress_total}` : '—'}
+                      </td>
+                      <td className="py-1 text-xs text-gray-400">
+                        {j.finished_at
+                          ? new Date(j.finished_at).toLocaleTimeString()
+                          : j.started_at
+                            ? 'running...'
+                            : 'queued'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Disclosure>
+        </div>
+      )}
+
       {/* File metadata line */}
       <div className="mb-2 flex items-center justify-between">
         <div className="text-sm">
@@ -659,45 +756,6 @@ export default function DocumentDetailPage() {
             ))}
           </div>
         </details>
-      )}
-
-      {doc.jobs.length > 0 && (
-        <div className="mt-6 mb-6">
-          <Disclosure label="Ingestion Jobs" defaultOpen={!isReady}>
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-5">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-xs text-gray-500 dark:text-gray-400">
-                    <th className="pb-1 pr-3">Stage</th>
-                    <th className="pb-1 pr-3">Status</th>
-                    <th className="pb-1 pr-3">Progress</th>
-                    <th className="pb-1">Time</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {doc.jobs.map((j) => (
-                    <tr key={j.job_id || j.stage} className="border-b border-gray-100 dark:border-gray-700">
-                      <td className="py-1 pr-3 font-medium">{j.stage}</td>
-                      <td className="py-1 pr-3">
-                        <JobStatusBadge status={j.status} />
-                      </td>
-                      <td className="py-1 pr-3 text-gray-500 dark:text-gray-400">
-                        {j.progress_total ? `${j.progress_current || 0}/${j.progress_total}` : '—'}
-                      </td>
-                      <td className="py-1 text-xs text-gray-400">
-                        {j.finished_at
-                          ? new Date(j.finished_at).toLocaleTimeString()
-                          : j.started_at
-                            ? 'running...'
-                            : 'queued'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Disclosure>
-        </div>
       )}
 
       <h2 className="mb-2 mt-6 text-lg font-semibold">Content</h2>
@@ -757,6 +815,7 @@ export default function DocumentDetailPage() {
               {visiblePages.map((page) => (
                 <div
                   key={page.page_num}
+                  id={`page-${page.page_num}`}
                   className={`rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4 transition-all duration-500 ${
                     highlightPage === page.page_num ? 'ring-2 ring-(--color-accent)/40' : ''
                   }`}
@@ -769,7 +828,9 @@ export default function DocumentDetailPage() {
                       </span>
                     )}
                   </div>
-                  <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">{page.text}</pre>
+                  <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">
+                    {renderPageWithHighlight(page.text, highlightChunkText)}
+                  </pre>
                 </div>
               ))}
 
