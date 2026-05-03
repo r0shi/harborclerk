@@ -327,6 +327,11 @@ export default function SearchPage() {
                   hit.page_start != null
                     ? `/docs/${hit.doc_id}?showContent=true&page=${hit.page_start}`
                     : `/docs/${hit.doc_id}?showContent=true`
+                // Pass the chunk text via React Router state so the doc detail
+                // page can scroll to and inline-highlight the matching span
+                // within the page text. Avoids URL pollution since chunk
+                // bodies can be long.
+                const linkState = { highlightChunkText: hit.chunk_text, highlightChunkId: hit.chunk_id }
 
                 return (
                   <div
@@ -334,7 +339,11 @@ export default function SearchPage() {
                     className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
                   >
                     <div className="mb-2 flex items-center justify-between">
-                      <Link to={linkTo} className="font-medium text-blue-600 dark:text-blue-400 hover:underline">
+                      <Link
+                        to={linkTo}
+                        state={linkState}
+                        className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                      >
                         {hit.doc_title || 'Untitled'}
                       </Link>
                       <div className="flex items-center space-x-2">
