@@ -2,7 +2,7 @@
 name = "harbor-clerk-test-corpora"
 version = "0.1.0"
 description = "Multi-hour test sweep harness for Harbor Clerk LLM models"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "httpx>=0.28",
     "anthropic>=0.43",
