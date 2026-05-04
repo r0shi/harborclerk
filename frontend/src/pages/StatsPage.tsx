@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { get } from '../api'
 import CorpusCharts from '../components/stats/CorpusCharts'
 import EntityNetwork from '../components/stats/EntityNetwork'
@@ -82,11 +83,26 @@ function TabButton({ id, current, onClick, children }: TabButtonProps) {
 }
 
 export default function StatsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [stats, setStats] = useState<CorpusStats | null>(null)
   const [topics, setTopics] = useState<TopicsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [tab, setTab] = useState<TabId>('corpus')
+  // Initialize from `?tab=pipeline` so deep-links from the queue drawer land
+  // on the right view. Subsequent clicks on the tab buttons keep the URL in
+  // sync via setSearchParams.
+  const [tab, setTab] = useState<TabId>(searchParams.get('tab') === 'pipeline' ? 'pipeline' : 'corpus')
+
+  const selectTab = (next: TabId) => {
+    setTab(next)
+    const params = new URLSearchParams(searchParams)
+    if (next === 'corpus') {
+      params.delete('tab')
+    } else {
+      params.set('tab', next)
+    }
+    setSearchParams(params, { replace: true })
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -136,10 +152,10 @@ export default function StatsPage() {
 
       {/* Tab bar */}
       <div role="tablist" className="flex border-b border-(--color-border)">
-        <TabButton id="corpus" current={tab} onClick={setTab}>
+        <TabButton id="corpus" current={tab} onClick={selectTab}>
           Corpus Statistics
         </TabButton>
-        <TabButton id="pipeline" current={tab} onClick={setTab}>
+        <TabButton id="pipeline" current={tab} onClick={selectTab}>
           Processing Pipeline
         </TabButton>
       </div>

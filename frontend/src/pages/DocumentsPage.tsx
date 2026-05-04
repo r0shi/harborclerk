@@ -26,6 +26,7 @@ interface SavedDocsState {
   sortDir: 'asc' | 'desc'
   scrollY: number
   expanded: string[]
+  selected: string[]
 }
 
 interface DocSummary {
@@ -151,7 +152,22 @@ export default function DocumentsPage() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  // Restore selected doc IDs from sessionStorage so the user keeps their
+  // selection across in-app tab switches and full page reloads. Bulk-action
+  // surfaces (delete/reprocess) read from this set, so the count visible in
+  // the action bar can include doc IDs that aren't on the current page.
+  const [selected, setSelected] = useState<Set<string>>(() => {
+    try {
+      const raw = sessionStorage.getItem(DOCS_STATE_KEY)
+      if (raw) {
+        const saved = JSON.parse(raw) as SavedDocsState
+        return new Set(saved.selected || [])
+      }
+    } catch {
+      /* ignore */
+    }
+    return new Set()
+  })
   const lastSelectedIndex = useRef<number | null>(null)
   const [bulkAction, setBulkAction] = useState('')
   const [confirmingDelete, setConfirmingDelete] = useState(false)
@@ -292,6 +308,7 @@ export default function DocumentsPage() {
       sortDir,
       scrollY: window.scrollY,
       expanded: Array.from(expanded),
+      selected: Array.from(selected),
     }
     sessionStorage.setItem(DOCS_STATE_KEY, JSON.stringify(state))
   }, [
@@ -308,6 +325,7 @@ export default function DocumentsPage() {
     sortField,
     sortDir,
     expanded,
+    selected,
   ])
 
   // Save scroll position before unmount

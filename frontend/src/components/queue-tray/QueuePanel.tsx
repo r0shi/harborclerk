@@ -41,7 +41,11 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
 
   return (
     <div className={`mb-2 ${exiting ? 'panel-exit' : 'panel-enter'}`} onAnimationEnd={handleAnimationEnd}>
-      <div className="w-[360px] max-h-[60vh] flex flex-col rounded-2xl bg-(--bg-vibrancy) backdrop-blur-xl shadow-mac-lg ring-1 ring-(--color-border) overflow-hidden">
+      {/* Fixed height keeps the drawer from jumping vertically when the user
+          switches between Active and Pipeline tabs. The 60vh cap keeps it
+          reasonable on short windows; on tall screens the drawer is a stable
+          540px regardless of which tab's content is shorter. */}
+      <div className="w-[360px] h-[540px] max-h-[60vh] flex flex-col rounded-2xl bg-(--bg-vibrancy) backdrop-blur-xl shadow-mac-lg ring-1 ring-(--color-border) overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-(--color-border)">
           <span className="text-[13px] font-semibold text-(--color-text-primary)">Processing</span>
@@ -72,7 +76,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
 
         {/* Body */}
         <div className="overflow-y-auto queue-panel-scroll flex-1">
-          {tab === 'pipeline' && <PipelineTab />}
+          {tab === 'pipeline' && <PipelineTab onNavigate={onClose} />}
           {tab === 'active' && (
             <>
               {/* Active section */}
