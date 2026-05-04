@@ -11,6 +11,7 @@ dependencies = [
     "tenacity>=9",
     "pypdfium2>=4",
     "Pillow>=12",
+    "spacy>=3.7",
 ]
 
 [project.optional-dependencies]
