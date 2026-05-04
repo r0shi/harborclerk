@@ -50,16 +50,22 @@ fi
 # Use the venv's python directly (not pip script, since shebangs get patched later)
 VENV_PYTHON="$VENV_DIR/bin/python3"
 
+# ── Upgrade pip ──
+# python-build-standalone ships an older pip; upgrade so subsequent installs
+# don't print the "new release available" notice on every invocation.
+echo "==> Upgrading pip"
+"$VENV_PYTHON" -m pip install --no-cache-dir --upgrade --disable-pip-version-check pip
+
 # ── Install packages ──
 echo "==> Installing harbor-clerk"
-"$VENV_PYTHON" -m pip install --no-cache-dir --upgrade "$PROJECT_ROOT"
+"$VENV_PYTHON" -m pip install --no-cache-dir --disable-pip-version-check --upgrade "$PROJECT_ROOT"
 
 echo "==> Installing embedder"
-"$VENV_PYTHON" -m pip install --no-cache-dir --upgrade "$PROJECT_ROOT/embedder"
+"$VENV_PYTHON" -m pip install --no-cache-dir --disable-pip-version-check --upgrade "$PROJECT_ROOT/embedder"
 
 if ! "$VENV_PYTHON" -c "import striprtf" 2>/dev/null; then
     echo "==> Installing striprtf"
-    "$VENV_PYTHON" -m pip install --no-cache-dir striprtf
+    "$VENV_PYTHON" -m pip install --no-cache-dir --disable-pip-version-check striprtf
 else
     echo "==> striprtf already installed, skipping"
 fi
