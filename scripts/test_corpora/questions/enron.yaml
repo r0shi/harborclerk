@@ -1,0 +1,35 @@
+research:
+  - id: enron-research-1
+    text: "What topics dominated email discussions in October 2001?"
+  - id: enron-research-2
+    text: "Identify major themes in Skilling's email communications during the California energy crisis."
+  - id: enron-research-3
+    text: "Compare communication patterns between executives in the months leading up to bankruptcy."
+  - id: enron-research-4
+    text: "Survey discussions of accounting practices and their evolution over time."
+  - id: enron-research-5
+    text: "What were the major business deals discussed in the corpus?"
+  - id: enron-research-6
+    text: "Identify the key external counterparties referenced in executive emails."
+
+ask:
+  - id: enron-ask-1
+    text: "Who emailed Skilling most frequently in 2001?"
+  - id: enron-ask-2
+    text: "What was the date of the earliest email about California in the corpus?"
+  - id: enron-ask-3
+    text: "Find emails about Raptor."
+  - id: enron-ask-4
+    text: "Find emails about LJM."
+  - id: enron-ask-5
+    text: "Find emails containing 'off-balance-sheet'."
+  - id: enron-ask-6
+    text: "What companies are mentioned in the corpus most often?"
+  - id: enron-ask-7
+    text: "Find emails mentioning Arthur Andersen."
+  - id: enron-ask-8
+    text: "List emails forwarded by Lay during 2001."
+  - id: enron-ask-9
+    text: "Find emails about FERC."
+  - id: enron-ask-10
+    text: "What was the subject of the last email Skilling sent before his resignation?"

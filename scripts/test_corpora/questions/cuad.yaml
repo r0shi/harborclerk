@@ -1,0 +1,51 @@
+research:
+  - id: cuad-research-1
+    text: "Compare termination notice periods across the corpus and identify common patterns."
+    notes: ""
+  - id: cuad-research-2
+    text: "Survey governing-law jurisdictions in the corpus and their relative frequency."
+    notes: ""
+  - id: cuad-research-3
+    text: "Compare indemnification scope across contracts — what's typically included and excluded?"
+    notes: ""
+  - id: cuad-research-4
+    text: "Identify contracts with the most restrictive non-compete clauses."
+    notes: ""
+  - id: cuad-research-5
+    text: "Analyze patterns in liability cap clauses (capped, uncapped, super-cap)."
+    notes: ""
+  - id: cuad-research-6
+    text: "Survey confidentiality-period ranges across contracts."
+    notes: ""
+
+ask:
+  - id: cuad-ask-1
+    text: "What is the governing law of the {{contract_a}} agreement?"
+    notes: "fill {{contract_a}} after sampling"
+  - id: cuad-ask-2
+    text: "List all parties to the {{contract_b}} agreement."
+    notes: "fill {{contract_b}}"
+  - id: cuad-ask-3
+    text: "What is the term length of the {{contract_c}} agreement?"
+    notes: ""
+  - id: cuad-ask-4
+    text: "Find contracts mentioning California law."
+    notes: ""
+  - id: cuad-ask-5
+    text: "Find contracts with arbitration clauses in New York."
+    notes: ""
+  - id: cuad-ask-6
+    text: "Which contracts involve a bank as a party?"
+    notes: ""
+  - id: cuad-ask-7
+    text: "List contracts with a perpetual confidentiality term."
+    notes: ""
+  - id: cuad-ask-8
+    text: "Find contracts that prohibit assignment."
+    notes: ""
+  - id: cuad-ask-9
+    text: "What contracts have an exclusivity clause?"
+    notes: ""
+  - id: cuad-ask-10
+    text: "List contracts with a most-favored-nation clause."
+    notes: ""
