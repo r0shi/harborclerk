@@ -37,7 +37,7 @@ def test_atomic_write_no_partial_state(tmp_path: Path, monkeypatch):
 
     sf2 = StateFile(tmp_path / "state.json")
     sf2.load()
-    sf2.set_status("cuad", "m", "q", "standard", Status.IN_PROGRESS)
+    sf2.set_status(4, "cuad", "m", "q", "standard", Status.IN_PROGRESS)
 
     # Simulate a crash by writing a half-state directly to the temp path
     tmp_target = tmp_path / "state.json.tmp"
@@ -50,7 +50,7 @@ def test_atomic_write_no_partial_state(tmp_path: Path, monkeypatch):
 def test_stale_in_progress_reverts_to_pending(tmp_path: Path):
     sf = StateFile(tmp_path / "state.json")
     sf.register([Unit(phase=4, corpus="cuad", model="m", question_id="q", depth="standard")])
-    sf.set_status("cuad", "m", "q", "standard", Status.IN_PROGRESS, heartbeat=time.time() - 7200)
+    sf.set_status(4, "cuad", "m", "q", "standard", Status.IN_PROGRESS, heartbeat=time.time() - 7200)
     sf.save()
 
     sf2 = StateFile(tmp_path / "state.json")
@@ -78,9 +78,18 @@ def test_rerun_selector_flips_matching_to_pending(tmp_path: Path):
         Unit(phase=5, corpus="cuad", model="qwen3.6-35b", question_id="q1", depth="standard"),
         Unit(phase=5, corpus="enron", model="qwen3.6-35b", question_id="q1", depth="standard"),
     ])
-    sf.set_status("cuad", "qwen3.6-35b", "q1", "standard", Status.DONE)
-    sf.set_status("enron", "qwen3.6-35b", "q1", "standard", Status.DONE)
+    sf.set_status(5, "cuad", "qwen3.6-35b", "q1", "standard", Status.DONE)
+    sf.set_status(5, "enron", "qwen3.6-35b", "q1", "standard", Status.DONE)
     sf.rerun({"corpus": "cuad"})
     rows = {(u.corpus, u.status) for u in sf.units()}
     assert ("cuad", Status.PENDING) in rows
     assert ("enron", Status.DONE) in rows
+
+
+def test_register_does_not_collide_across_phases(tmp_path: Path):
+    sf = StateFile(tmp_path / "state.json")
+    sf.register([
+        Unit(phase=4, corpus="cuad", model="qwen3.6-35b", question_id="q1", depth="standard"),
+        Unit(phase=5, corpus="cuad", model="qwen3.6-35b", question_id="q1", depth="standard"),
+    ])
+    assert len(sf.units()) == 2
