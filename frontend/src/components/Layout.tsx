@@ -7,6 +7,7 @@ import { QueueTray } from './queue-tray'
 import CorpusEmptyBanner from './CorpusEmptyBanner'
 import OnboardingWizard from './OnboardingWizard'
 import { useCorpusBannerState } from '../hooks/useCorpusBannerState'
+import { useAreaAccent } from '../hooks/useAreaAccent'
 
 function TabLink({ to, end, children }: { to: string; end?: boolean; children: React.ReactNode }) {
   return (
@@ -33,6 +34,7 @@ export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
   const bannerState = useCorpusBannerState()
+  useAreaAccent()
   const bannerSuppressedPath =
     location.pathname === '/folders' ||
     location.pathname.startsWith('/admin') ||
@@ -68,7 +70,7 @@ export default function Layout() {
   }, [menuOpen])
 
   return (
-    <div className="min-h-screen bg-(--color-bg-secondary)">
+    <div data-layout-root className="min-h-screen bg-(--color-bg-secondary)">
       <nav className="sticky top-0 z-40 border-b border-(--color-border) bg-(--bg-vibrancy) backdrop-blur-xl">
         <div className="mx-auto max-w-7xl px-4">
           <div className="flex h-12 items-center justify-between">
