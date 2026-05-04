@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { post } from '../api'
+import { Card } from '../components/Card'
+import { PageHeader } from '../components/PageHeader'
 
 interface SearchHit {
   chunk_id: string
@@ -231,7 +233,7 @@ export default function SearchPage() {
 
   return (
     <div>
-      <h1 className="mb-4 text-xl font-bold">Search</h1>
+      <PageHeader title="Search" subtitle="Hybrid lexical + semantic retrieval" />
       <form onSubmit={handleSearch} className="mb-6 flex space-x-2">
         <div className="relative flex-1" ref={wrapperRef}>
           <input
@@ -290,7 +292,12 @@ export default function SearchPage() {
         <button
           type="submit"
           disabled={loading}
-          className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
+          className="rounded-md px-4 py-1.5 text-sm font-medium disabled:opacity-50"
+          style={{
+            backgroundColor: 'var(--area-accent-tint)',
+            color: 'var(--area-accent-text)',
+            border: '1px solid var(--area-accent)',
+          }}
         >
           {loading ? 'Searching...' : 'Search'}
         </button>
@@ -334,10 +341,7 @@ export default function SearchPage() {
                 const linkState = { highlightChunkText: hit.chunk_text, highlightChunkId: hit.chunk_id }
 
                 return (
-                  <div
-                    key={hit.chunk_id}
-                    className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
-                  >
+                  <Card key={hit.chunk_id} className="p-4">
                     <div className="mb-2 flex items-center justify-between">
                       <Link
                         to={linkTo}
@@ -373,7 +377,7 @@ export default function SearchPage() {
                         </span>
                       )}
                     </div>
-                  </div>
+                  </Card>
                 )
               })}
 
