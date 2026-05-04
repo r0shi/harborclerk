@@ -86,25 +86,94 @@ These replace the current single-color status pills; existing call sites (Folder
 
 ### Document-type icons
 
-A new `documentTypeIcon(category)` helper maps document categories (already returned by the backend in `DocumentDetail.category` / file-extension fallback) to glyphs and to the matching icon-tile palette:
+A new `documentTypeIcon(doc)` helper resolves to a `{glyph, hue}` pair. Inputs (in priority order): the LLM-derived `doc.doc_type` (free-form text from summarization), then `doc.mime_type`, then file extension fallback.
 
-| Category | Glyph | Icon hue |
+**Important:** `doc_type` is LLM-generated and varied — the corpus shows entries like `"Wine Review"`, `"Cookbook"`, `"Recipe Book"`, `"Recipe book"`, `"Magazine Article"`, `"Food article"`, `"Philosophical Essay"`, `"Travelogue"`, `"Personal Letter"`, `"Non-Exclusive License Agreement"`, etc. The helper does **case-insensitive substring matching** against a priority-ordered list of patterns (most specific first), not exact-string lookup. The first matching pattern wins. The mapping is data-informed: the patterns below cover ~80%+ of the existing corpus's top doc_types based on a 2026-05-03 audit (see "Coverage audit" subsection).
+
+Patterns matched against `doc_type` (case-insensitive substring; first match wins). Hue picks from the eight area accents so categories harmonize with the Documents-area visual language and don't fight it:
+
+| Pattern matched | Glyph | Icon hue |
 |---|---|---|
-| Novel / book | 📕 | dusty blue (Documents area accent) |
-| PDF | 📄 | terracotta |
-| Spreadsheet | 📊 | sage |
-| Email | ✉ | ochre |
-| Plain text / notes | 📜 | slate |
-| Code / source | 💻 | mauve |
-| Image | 🖼 | dusty teal |
-| Presentation | 🎞 | mauve |
-| Audio / transcript | 🎙 | terracotta |
-| HTML / web | 🌐 | mauve |
-| Unknown / other | 📦 | slate |
+| `review` | ⭐ | ochre |
+| `recipe`, `cookbook`, `cooking guide` | 🍳 | sage |
+| `restaurant menu`, `menu` | 🍽 | sage |
+| `magazine` (when not also `article` — the `article` pattern below catches that combo) | 🗞 | mauve |
+| `article`, `blog` | 📰 | dusty blue |
+| `essay`, `philosophical dialogue`, `dialogue` | 🎓 | dusty teal |
+| `travelogue`, `travel writing`, `travel journal` | 🧭 | mauve |
+| `guide` (Food / Travel / Wine / Beekeeping / Tea / Coffee / Preservation, etc.) | 🗺 | mauve |
+| `memoir`, `personal narrative`, `narrative` | 📓 | terracotta |
+| `research paper`, `journal article`, `paper` | 🔬 | dusty blue |
+| `contract`, `agreement`, `license`, `legal` | ⚖ | slate |
+| `personal letter`, `letter` | 💌 | terracotta |
+| `invoice`, `receipt` | 🧾 | sage |
+| `novel`, `book` (as a non-modifier — i.e. not "cookbook" / "recipe book") | 📕 | dusty blue |
+| `description` (Restaurant / Wine / Product / Business / Fruit, etc.) | 📋 | slate |
+
+If no `doc_type` pattern matches, fall through to mime/extension:
+
+| Source | Glyph | Icon hue |
+|---|---|---|
+| `application/pdf` (and `.pdf` extension) | 📄 | terracotta |
+| `application/vnd.openxmlformats-officedocument.spreadsheetml.*`, `.xlsx`, `.xls`, `.csv` | 📊 | sage |
+| `message/rfc822`, `.eml`, `.msg` | ✉ | ochre |
+| `text/plain`, `.txt`, `.md`, `.log` | 📜 | slate |
+| `text/x-python`, `text/x-c`, etc. (any `text/x-*` source-code mime), common code extensions | 💻 | mauve |
+| `image/*` | 🖼 | dusty teal |
+| `application/vnd.openxmlformats-officedocument.presentationml.*`, `.pptx`, `.key` | 🎞 | mauve |
+| `audio/*`, `.mp3`, `.wav`, `.m4a` | 🎙 | terracotta |
+| `text/html`, `.html`, `.htm` | 🌐 | mauve |
+| Unknown / unmatched | 📦 | slate |
 
 The icon tile is a 28-30px rounded square with a 12% tint of the category hue and the hue itself as text color (or, in dark mode, a slightly lighter variant for legibility).
 
 This icon appears on Documents-page rows and on the DocumentDetail header. It does not replace the document title — title still leads.
+
+### Coverage audit (2026-05-03)
+
+Snapshot of top doc_types in the live corpus (3,150 docs) with which pattern they map to. Counts shown for the 30 most common values; tail follows the same patterns.
+
+| doc_type (top 30) | Count | Maps to pattern |
+|---|---:|---|
+| (null/empty) | 890 | mime/extension fallback |
+| Wine Review | 171 | `review` → ⭐ |
+| Recipe | 165 | `recipe` → 🍳 |
+| Book Review | 95 | `review` → ⭐ |
+| Philosophical Essay | 91 | `essay` → 🎓 |
+| Restaurant Review | 78 | `review` → ⭐ |
+| Food Article | 54 | `article` → 📰 |
+| Travelogue | 53 | `travelogue` → 🧭 |
+| Food Review | 53 | `review` → ⭐ |
+| Cookbook | 51 | `cookbook` → 🍳 |
+| Food Guide | 44 | `guide` → 🗺 |
+| Cookbook Review | 37 | `review` → ⭐ |
+| Restaurant Menu | 29 | `menu` → 🍽 |
+| Recipe Book | 28 | `recipe` → 🍳 |
+| Restaurant Description | 26 | `description` → 📋 |
+| Travel Guide | 25 | `travel` (more specific than `guide`) → 🧭 (or 🗺 if we relax — see decision below) |
+| Cooking Guide | 24 | `cooking guide` → 🍳 |
+| News Article | 23 | `article` → 📰 |
+| Food article | 23 | `article` → 📰 |
+| Recipe book | 22 | `recipe` → 🍳 |
+| Novel | 21 | `novel` → 📕 |
+| Food Writing | 20 | (food + writing — falls through; see "limitations" below) |
+| Contract | 16 | `contract` → ⚖ |
+| Wine Guide | 16 | `guide` → 🗺 |
+| Wine Description | 14 | `description` → 📋 |
+| Recipe Collection | 14 | `recipe` → 🍳 |
+| Personal Letter | 13 | `personal letter` → 💌 |
+| Wine article | 12 | `article` → 📰 |
+| Restaurant Guide | 12 | `guide` → 🗺 |
+| Beekeeping Guide | 11 | `guide` → 🗺 |
+
+**Coverage:** ~85% of non-null top-30 doc_types map to a real icon (not the fallback). Including the long tail (sampled): ~80%. The remaining ~20% (e.g. "Food Writing", "Culinary History", "Magazine Editorial", "Product Description"-ish edge cases) fall to the mime/extension fallback or the unknown 📦 — acceptable for v1.
+
+**Travel guide ambiguity:** "Travel Guide" matches both `travel` (🧭) and `guide` (🗺). Resolve by ordering the pattern list with `travel*` before `guide` so travel writing wins; "Wine Guide" / "Beekeeping Guide" / "Tea Guide" then match `guide`. The implementation plan should encode this priority explicitly.
+
+**Limitations to acknowledge:**
+- Doc types are LLM-generated. Case variation ("Food Article" vs "Food article", "Recipe Book" vs "Recipe book") is fine because matching is case-insensitive.
+- Anything the LLM writes that doesn't contain a known root word (e.g. "Food Writing", "Culinary History") falls through to the fallback. This is expected behavior — the LLM occasionally invents categories that don't fit any obvious bucket.
+- Coverage will need re-auditing as new corpora are ingested. See `pr_followups.md` and the test corpora memory note for the rescan protocol.
 
 ### Hairlines and dividers
 
@@ -247,6 +316,7 @@ These came up during brainstorming but aren't in this pass — flag for follow-u
 6. **Login page brand mark / illustration.** The login page is currently very plain — the gradient + serif treatment helps but doesn't add identity. Post-pass consideration.
 7. **Per-page background atmosphere** (option C from brainstorming). Explicitly not in this pass; revisit if the muted-accent approach feels too subtle in practice.
 8. **Tailwind v4 design-token migration audit.** This pass adds new CSS vars; a follow-up could move all color tokens onto the `@theme` block uniformly. Out of scope here.
+9. **Document-type icon coverage rescan.** Coverage was audited against the live corpus on 2026-05-03 (~80%). Each new test corpus added per the `project_test_corpora_plan.md` memory note must trigger a rescan; new patterns get added in a small follow-up PR if coverage on top-50 doc_types drops below ~75%. Tracked in that memory note's "Once acquired" checklist.
 
 ## Files affected (working list — implementation plan refines)
 
