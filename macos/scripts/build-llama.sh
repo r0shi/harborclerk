@@ -4,7 +4,7 @@ set -euo pipefail
 
 DEST_DIR="${DEST_DIR:?DEST_DIR must be set}"
 BUILD_DIR="${BUILD_DIR:-/tmp/llama-build}"
-LLAMA_CPP_TAG="${LLAMA_CPP_TAG:-b8770}"
+LLAMA_CPP_TAG="${LLAMA_CPP_TAG:-b9018}"
 
 mkdir -p "$DEST_DIR" "$BUILD_DIR"
 DEST_DIR="$(cd "$DEST_DIR" && pwd)"
