@@ -15,6 +15,38 @@ APP_PASSWORD="${APP_PASSWORD:?Set APP_PASSWORD env var (app-specific password)}"
 
 echo "==> Signing and notarizing apps"
 
+# Apple's notarization unzips JARs and validates every Mach-O binary inside.
+# `find` only walks the filesystem, so JAR-embedded dylibs must be extracted,
+# signed, and repacked before the parent app bundle is signed.
+sign_jar_dylibs() {
+    local jar_path="$1"
+
+    local dylibs
+    dylibs=$(unzip -Z1 "$jar_path" 2>/dev/null | grep -E '\.dylib$' || true)
+    [ -z "$dylibs" ] && return 0
+
+    local jar_name count abs_jar staging
+    jar_name=$(basename "$jar_path")
+    count=$(printf '%s\n' "$dylibs" | wc -l | tr -d ' ')
+    abs_jar=$(cd "$(dirname "$jar_path")" && pwd)/$(basename "$jar_path")
+    staging=$(mktemp -d)
+
+    echo "    Signing ${count} dylib(s) inside ${jar_name}"
+    (
+        cd "$staging"
+        while IFS= read -r entry; do
+            unzip -o -q "$abs_jar" "$entry"
+            codesign --force --options runtime --sign "$IDENTITY" \
+                --timestamp "$entry"
+        done <<< "$dylibs"
+        # Updates entries in place; preserves everything else.
+        while IFS= read -r entry; do
+            zip -q "$abs_jar" "$entry"
+        done <<< "$dylibs"
+    )
+    rm -rf "$staging"
+}
+
 # ── Codesign helper ──
 codesign_app() {
     local app_path="$1"
@@ -23,7 +55,13 @@ codesign_app() {
 
     echo "==> Codesigning ${app_name}"
 
-    # Sign all nested binaries first
+    # Sign dylibs embedded in JARs (must happen before bundle signing — JAR
+    # mutation invalidates the parent bundle's CodeResources hash).
+    while IFS= read -r jar; do
+        sign_jar_dylibs "$jar"
+    done < <(find "$app_path" -type f -name '*.jar')
+
+    # Sign all loose nested binaries
     find "$app_path" -type f \( -name '*.dylib' -o -name '*.so' -o -perm +111 \) | while read -r binary; do
         # Skip non-Mach-O files
         file "$binary" | grep -q "Mach-O" || continue
@@ -71,11 +109,28 @@ codesign --force --sign "$IDENTITY" --timestamp "$DMG_PATH"
 
 # ── Notarize ──
 echo "==> Submitting for notarization"
+NOTARY_LOG=$(mktemp)
 xcrun notarytool submit "$DMG_PATH" \
     --apple-id "$APPLE_ID" \
     --team-id "$TEAM_ID" \
     --password "$APP_PASSWORD" \
-    --wait
+    --wait | tee "$NOTARY_LOG"
+
+# notarytool's --wait exits 0 even when Apple rejects the submission, so we
+# must read the final status ourselves and surface the failure log.
+NOTARY_STATUS=$(awk '/^[[:space:]]*status:/ { val=$2 } END { print val }' "$NOTARY_LOG")
+SUBMISSION_ID=$(awk '/^[[:space:]]*id:/ { print $2; exit }' "$NOTARY_LOG")
+rm -f "$NOTARY_LOG"
+
+if [ "$NOTARY_STATUS" != "Accepted" ]; then
+    echo "ERROR: Notarization status: ${NOTARY_STATUS:-unknown}"
+    if [ -n "$SUBMISSION_ID" ]; then
+        echo "==> Notary issue log for ${SUBMISSION_ID}:"
+        xcrun notarytool log "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD"
+    fi
+    exit 1
+fi
 
 echo "==> Stapling"
 xcrun stapler staple "$DMG_PATH"
