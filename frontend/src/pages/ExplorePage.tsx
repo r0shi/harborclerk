@@ -4,7 +4,6 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recha
 import { get } from '../api'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
-import { ENTITY_COLORS } from '../components/stats/CorpusCharts'
 
 interface EntityItem {
   entity_text: string
@@ -51,9 +50,9 @@ interface PaginatedDocs {
 }
 
 const ENTITY_SECTIONS = [
-  { type: 'PERSON', label: 'People' },
-  { type: 'GPE', label: 'Places' },
-  { type: 'ORG', label: 'Organizations' },
+  { type: 'PERSON', label: 'People', cssVar: '--entity-person', cssBgVar: '--entity-person-bg' },
+  { type: 'GPE', label: 'Places', cssVar: '--entity-gpe', cssBgVar: '--entity-gpe-bg' },
+  { type: 'ORG', label: 'Organizations', cssVar: '--entity-org', cssBgVar: '--entity-org-bg' },
 ]
 
 const TICK_STYLE = { fontSize: 10, fill: 'var(--color-chart-tick)' }
@@ -299,7 +298,8 @@ function ExploreMain({
             key={section.type}
             label={section.label}
             items={filteredEntities[section.type] || []}
-            color={ENTITY_COLORS[section.type] || '#98989d'}
+            cssVar={section.cssVar}
+            cssBgVar={section.cssBgVar}
             defaultOpen
             onSelect={(entityText) =>
               onOpenSubPane({
@@ -448,13 +448,15 @@ function EntitySection({
   label,
   items,
   defaultOpen,
-  color,
+  cssVar,
+  cssBgVar,
   onSelect,
 }: {
   label: string
   items: EntityItem[]
   defaultOpen: boolean
-  color: string
+  cssVar: string
+  cssBgVar: string
   onSelect: (entityText: string) => void
 }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -489,8 +491,8 @@ function EntitySection({
                   onClick={() => onSelect(item.entity_text)}
                   className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs transition-opacity hover:opacity-80"
                   style={{
-                    backgroundColor: `${color}1f`,
-                    color,
+                    backgroundColor: `var(${cssBgVar})`,
+                    color: `var(${cssVar})`,
                   }}
                 >
                   {item.entity_text}

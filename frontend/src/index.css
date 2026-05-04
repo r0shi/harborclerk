@@ -37,7 +37,7 @@
   --color-border: rgba(0, 0, 0, 0.06);
   --color-accent: #007aff;
   --color-text-primary: #1d1d1f;
-  --color-text-secondary: #6e6e73;
+  --color-text-secondary: #525258;
   --bg-vibrancy: rgba(255, 255, 255, 0.8);
   --color-chart-tick: #6b7280;
 }
@@ -102,6 +102,14 @@
   --area-accent: var(--area-docs-accent);
   --area-accent-tint: var(--area-docs-accent-tint);
   --area-accent-text: var(--area-docs-accent-text);
+
+  /* Entity pill colors — deeper variants for white backgrounds (Explore page) */
+  --entity-person: #0050a8;
+  --entity-person-bg: rgba(0, 80, 168, 0.15);
+  --entity-org: #1f7a36;
+  --entity-org-bg: rgba(31, 122, 54, 0.15);
+  --entity-gpe: #b56a00;
+  --entity-gpe-bg: rgba(181, 106, 0, 0.15);
 }
 
 .dark {
@@ -149,6 +157,14 @@
   --area-accent: var(--area-docs-accent);
   --area-accent-tint: var(--area-docs-accent-tint);
   --area-accent-text: var(--area-docs-accent-text);
+
+  /* Entity pill colors — bright iOS variants for dark surfaces (Explore page) */
+  --entity-person: #007aff;
+  --entity-person-bg: rgba(0, 122, 255, 0.15);
+  --entity-org: #34c759;
+  --entity-org-bg: rgba(52, 199, 89, 0.15);
+  --entity-gpe: #ff9500;
+  --entity-gpe-bg: rgba(255, 149, 0, 0.15);
 }
 
 @layer components {
