@@ -9,7 +9,7 @@
 Local-first document knowledge base with OCR, hybrid search, and chat.
 Drop in PDFs, scans, notes, or research files — Harbor Clerk turns them into a private corpus you can search, explore, and query with local or external LLMs.
 
-![License](https://img.shields.io/github/license/r0shi/harborclerk)
+![License](https://img.shields.io/github/license/r0shi/harborclerk?v=2)
 ![Release](https://img.shields.io/github/v/release/r0shi/harborclerk)
 ![Python](https://img.shields.io/badge/python-3.12+-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Docker-lightgrey)
