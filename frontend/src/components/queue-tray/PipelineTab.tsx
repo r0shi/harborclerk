@@ -3,10 +3,6 @@ import { useQueueSnapshot } from '../../hooks/useQueueSnapshot'
 import WorkerStrip from './WorkerStrip'
 import StageHistogram from './StageHistogram'
 
-interface PipelineTabProps {
-  onNavigate?: () => void
-}
-
 /**
  * "Pipeline" tab inside the drawer — info-dense at-a-glance view of
  * what every queue is doing right now.
@@ -17,9 +13,11 @@ interface PipelineTabProps {
  * The full graphical "panache" view of the pipeline DAG lives on the
  * Observatory page, not here — this tab is the practical status-watcher.
  * The footer link deep-links to Observatory's Processing Pipeline tab so
- * users can jump from at-a-glance to the full diagram.
+ * users can jump from at-a-glance to the full diagram. The drawer stays
+ * open after the navigation so the user can keep watching the queue
+ * while inspecting the diagram.
  */
-export default function PipelineTab({ onNavigate }: PipelineTabProps) {
+export default function PipelineTab() {
   const { snapshot, error } = useQueueSnapshot()
 
   if (!snapshot && !error) {
@@ -58,7 +56,6 @@ export default function PipelineTab({ onNavigate }: PipelineTabProps) {
       <div className="pt-2 border-t border-(--color-border)">
         <Link
           to="/stats?tab=pipeline"
-          onClick={onNavigate}
           className="flex items-center justify-between text-[12px] text-(--color-text-secondary) hover:text-(--color-accent) transition-colors"
         >
           <span>Open full pipeline diagram in Observatory</span>

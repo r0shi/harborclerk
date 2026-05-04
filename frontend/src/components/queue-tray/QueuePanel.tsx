@@ -76,7 +76,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
 
         {/* Body */}
         <div className="overflow-y-auto queue-panel-scroll flex-1">
-          {tab === 'pipeline' && <PipelineTab onNavigate={onClose} />}
+          {tab === 'pipeline' && <PipelineTab />}
           {tab === 'active' && (
             <>
               {/* Active section */}
