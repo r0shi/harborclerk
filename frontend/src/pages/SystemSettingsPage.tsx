@@ -84,7 +84,7 @@ export default function SystemSettingsPage() {
           </h2>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             {section.items.map((item) => (
-              <Card key={item.to} className="p-0">
+              <Card key={item.to} className="p-0" interactive>
                 <Link to={item.to} className="flex items-center gap-3 px-3.5 py-3 text-sm">
                   <IconTile hue={item.hue} size={28}>
                     {item.icon}

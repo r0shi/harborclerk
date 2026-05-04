@@ -164,11 +164,11 @@
     background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.025) 0%, transparent 100%);
   }
 
-  .surface-card:hover {
+  .surface-card-interactive:hover {
     border-color: rgba(0, 0, 0, 0.14);
   }
 
-  .dark .surface-card:hover {
+  .dark .surface-card-interactive:hover {
     border-color: rgba(255, 255, 255, 0.18);
   }
 }
