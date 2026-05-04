@@ -106,6 +106,24 @@ def download_artifact(lang_code: str, tool: Tool) -> DownloadResult:
     target = artifact_path(lang_code, tool)
 
     if target.exists() and verify_artifact(lang_code, tool):
+        # Wheel passed SHA verification, but a NER wheel also needs its
+        # extracted package dir. If the dir is missing (e.g. a previous
+        # _extract_ner_wheel raised due to a transient I/O issue or
+        # permissions error), the model can't be loaded and the install
+        # is silently broken. Re-extract here so a normal retry
+        # (`POST /api/languages/{code}/install` again) self-heals
+        # rather than requiring a remove + reinstall cycle.
+        if tool == Tool.NER and target.suffix == ".whl":
+            extracted = extracted_spacy_dir(target)
+            if not extracted.is_dir():
+                try:
+                    _extract_ner_wheel(target)
+                except Exception:
+                    logger.exception(
+                        "Re-extraction failed for %s/%s; remove + reinstall to recover",
+                        lang_code,
+                        tool.value,
+                    )
         return DownloadResult(status="already_installed")
 
     target.parent.mkdir(parents=True, exist_ok=True)
