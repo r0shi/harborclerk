@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { get, patch, post, ApiError } from '../api'
+import { Card } from './Card'
 
 interface SystemInfo {
   platform: 'macos' | 'docker'
@@ -161,10 +162,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       onClick={onComplete}
     >
-      <div
-        className="relative w-full max-w-[520px] rounded-2xl bg-white dark:bg-[#2c2c2e] p-6 shadow-mac ring-1 ring-(--color-border)"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <Card className="relative w-full max-w-[520px] p-6" onClick={(e) => e.stopPropagation()}>
         <button
           aria-label="Close"
           onClick={onComplete}
@@ -298,7 +296,12 @@ export default function OnboardingWizard({ onComplete }: Props) {
                 <button
                   onClick={installAndContinue}
                   disabled={installingLangs}
-                  className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
+                  className="rounded-md px-4 py-1.5 text-sm font-medium disabled:opacity-50"
+                  style={{
+                    backgroundColor: 'var(--area-settings-accent-tint)',
+                    color: 'var(--area-settings-accent-text)',
+                    border: '1px solid var(--area-settings-accent)',
+                  }}
                 >
                   {installingLangs
                     ? 'Installing…'
@@ -346,7 +349,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
             </div>
           </>
         )}
-      </div>
+      </Card>
     </div>
   )
 }
