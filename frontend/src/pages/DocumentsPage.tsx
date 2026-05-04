@@ -923,7 +923,17 @@ export default function DocumentsPage() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
-                            <StatusPill state={mapDocStatusToPillState(doc.pipeline_status ?? '')} />
+                            {(() => {
+                              const _pipeline = doc.pipeline_status ?? ''
+                              const _pillState = mapDocStatusToPillState(_pipeline)
+                              const _pillLabel =
+                                _pillState === 'active'
+                                  ? 'ready'
+                                  : _pillState === 'pending'
+                                    ? 'queued'
+                                    : _pipeline || 'processing'
+                              return <StatusPill state={_pillState} label={_pillLabel} />
+                            })()}
                             {isAdmin && normalizeStatus(doc.pipeline_status) === 'processing' && (
                               <button
                                 onClick={(e) => {
