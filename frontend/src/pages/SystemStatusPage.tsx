@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { get } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
+import { StatusPill } from '../components/StatusPill'
 
 interface HealthCheck {
   status: string
@@ -86,15 +89,18 @@ export default function SystemStatusPage() {
 
   return (
     <div className="animate-slide-in">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold">System Status</h1>
-        <button
-          onClick={handleRefresh}
-          className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
-        >
-          Refresh
-        </button>
-      </div>
+      <PageHeader
+        title="System Status"
+        subtitle="Health checks and service statistics"
+        actions={
+          <button
+            onClick={handleRefresh}
+            className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          >
+            Refresh
+          </button>
+        }
+      />
 
       {error && (
         <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -122,16 +128,9 @@ export default function SystemStatusPage() {
       )}
 
       {health && (
-        <div className="mb-6">
-          <span
-            className={`rounded-md px-3 py-1 text-[11px] font-medium ${
-              health.status === 'healthy'
-                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
-            }`}
-          >
-            Overall: {health.status}
-          </span>
+        <div className="mb-6 flex items-center gap-2">
+          <span className="text-sm text-(--color-text-secondary)">Overall:</span>
+          <StatusPill state={health.status === 'healthy' ? 'active' : 'error'} label={health.status} />
         </div>
       )}
     </div>
@@ -153,17 +152,9 @@ function HealthCard({
   const statEntries = stats ? Object.entries(stats).filter(([k]) => k !== 'error') : []
 
   return (
-    <div
-      className={`rounded-xl shadow-mac ring-1 ring-(--color-border) p-4 ${
-        ok ? 'bg-green-50 dark:bg-green-900/20' : 'bg-red-50 dark:bg-red-900/20'
-      }`}
-    >
-      <div className="text-sm font-medium text-gray-700 dark:text-gray-300">{name}</div>
-      <div
-        className={`mt-1 text-lg font-bold ${ok ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'}`}
-      >
-        {ok ? 'OK' : status}
-      </div>
+    <Card className={`p-4 ${ok ? 'bg-green-50 dark:bg-green-900/20' : 'bg-red-50 dark:bg-red-900/20'}`}>
+      <div className="mb-1 text-sm font-medium text-gray-700 dark:text-gray-300">{name}</div>
+      <StatusPill state={ok ? 'active' : 'error'} label={ok ? 'OK' : status} />
       {statsLoading && !stats && <div className="mt-2 text-xs text-gray-400">Loading stats...</div>}
       {stats?.error && <div className="mt-2 text-xs text-red-500">{String(stats.error)}</div>}
       {statEntries.length > 0 && (
@@ -176,6 +167,6 @@ function HealthCard({
           ))}
         </dl>
       )}
-    </div>
+    </Card>
   )
 }

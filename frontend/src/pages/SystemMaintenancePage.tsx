@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { get, post } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 export default function SystemMaintenancePage() {
   const [error, setError] = useState('')
@@ -113,7 +115,7 @@ export default function SystemMaintenancePage() {
 
   return (
     <div className="animate-slide-in">
-      <h1 className="mb-4 text-xl font-bold">System Maintenance</h1>
+      <PageHeader title="System Maintenance" subtitle="Purge, reaper, and cleanup actions" />
 
       {error && (
         <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -127,7 +129,7 @@ export default function SystemMaintenancePage() {
         </div>
       )}
 
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) divide-y divide-(--color-border) overflow-hidden">
+      <Card className="divide-y divide-(--color-border) overflow-hidden">
         <div className="px-5 py-4">
           <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
             Permanently remove documents deleted more than 60 days ago, including stored files.
@@ -214,10 +216,10 @@ export default function SystemMaintenancePage() {
             {topicsRunning ? 'Computing topics\u2026' : 'Recompute Topics'}
           </button>
         </div>
-      </div>
+      </Card>
 
       {/* Clear Queue */}
-      <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-5">
+      <Card className="mt-6 p-5">
         <h2 className="text-lg font-semibold mb-2">Processing Queue</h2>
         <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
           Cancel all queued and running ingestion jobs. Use this if the queue is stuck from bugs or restarts. Documents
@@ -240,10 +242,10 @@ export default function SystemMaintenancePage() {
         >
           Clear Queue
         </button>
-      </div>
+      </Card>
 
       {/* Database Migrations */}
-      <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-5">
+      <Card className="mt-6 p-5">
         <h2 className="text-lg font-semibold mb-2">Database</h2>
         <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
           Run pending database migrations. Use this if services failed to start after an update.
@@ -263,10 +265,10 @@ export default function SystemMaintenancePage() {
         >
           Run Migrations
         </button>
-      </div>
+      </Card>
 
       {/* Delete All Documents */}
-      <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-red-200 dark:ring-red-800/50 p-5">
+      <Card className="mt-6 p-5 ring-red-200 dark:ring-red-800/50">
         <h2 className="text-lg font-semibold text-red-700 dark:text-red-400 mb-2">Danger Zone</h2>
         <p className="mb-3 text-sm text-gray-600 dark:text-gray-400">
           Permanently delete <strong>all</strong> documents, versions, chunks, and uploaded files.
@@ -348,7 +350,7 @@ export default function SystemMaintenancePage() {
             </div>
           </div>
         )}
-      </div>
+      </Card>
     </div>
   )
 }

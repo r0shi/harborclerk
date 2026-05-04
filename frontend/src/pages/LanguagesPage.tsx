@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import { del, get, patch, post } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface ToolStatus {
   status: 'not_installed' | 'installed' | 'failed'
@@ -164,11 +166,7 @@ export default function LanguagesPage() {
 
   return (
     <div>
-      <h1 className="mb-4 text-xl font-bold">Languages</h1>
-      <p className="mb-4 text-sm text-(--color-text-secondary)">
-        Choose which languages Harbor Clerk should process. English is built-in. Other languages download per-tool model
-        files (Tesseract OCR, spaCy entities) on demand.
-      </p>
+      <PageHeader title="Languages" subtitle="OCR and entity language packs" />
 
       {error && (
         <div className="mb-3 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -176,7 +174,7 @@ export default function LanguagesPage() {
         </div>
       )}
 
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden divide-y divide-(--color-border)">
+      <Card className="overflow-hidden divide-y divide-(--color-border)">
         {languages.map((lang) => {
           const isBusy = busy.has(lang.code)
           const installedToolCount = Object.values(lang.tools).filter((t) => t.status === 'installed').length
@@ -255,7 +253,7 @@ export default function LanguagesPage() {
             </div>
           )
         })}
-      </div>
+      </Card>
 
       <p className="mt-4 text-[11px] text-gray-400">
         Worker restart required to pick up newly-installed packs. Disabling a language stops new documents from using it
