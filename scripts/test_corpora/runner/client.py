@@ -1,8 +1,8 @@
 """Harbor Clerk REST client used by the test sweep harness.
 
-Targets the same surface the SPA uses. SSE streaming for the Ask flow uses
-``httpx``'s SSE-by-line iteration. All methods retry transient failures
-via ``tenacity`` with exponential backoff.
+Targets the actual Harbor Clerk API surface. SSE streaming for the Ask flow
+uses ``httpx``'s SSE-by-line iteration. Selected methods retry transient
+failures via ``tenacity`` with exponential backoff.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class HarborClerkClient:
         verify: bool = True,
         timeout_seconds: float = 30.0,
     ):
-        headers = {}
+        headers: dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         self._client = httpx.Client(
@@ -36,46 +36,121 @@ class HarborClerkClient:
             timeout=timeout_seconds,
         )
 
-    # ── research ──
+    # ── auth ──
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=15))
-    def start_research(self, question: str, model_id: str, depth: str, time_limit: int) -> str:
-        r = self._client.post(
-            "/api/research/start",
-            json={
-                "question": question,
-                "model_id": model_id,
-                "depth": depth,
-                "time_limit_seconds": time_limit,
-            },
-        )
+    def login(self, email: str, password: str) -> None:
+        """POST /api/auth/login — stores the access token as a Bearer header."""
+        r = self._client.post("/api/auth/login", json={"email": email, "password": password})
         r.raise_for_status()
-        return r.json()["task_id"]
+        token = r.json()["access_token"]
+        self._client.headers["Authorization"] = f"Bearer {token}"
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=15))
-    def poll_research(self, task_id: str) -> dict[str, Any]:
-        r = self._client.get(f"/api/research/{task_id}")
+    # ── model management ──
+
+    def activate_model(self, model_id: str) -> None:
+        """PUT /api/chat/models/{model_id}/activate — async, model loads in the background."""
+        r = self._client.put(f"/api/chat/models/{model_id}/activate")
+        r.raise_for_status()
+
+    def deactivate_model(self) -> None:
+        """PUT /api/chat/models/deactivate — stop the active model."""
+        r = self._client.put("/api/chat/models/deactivate")
+        r.raise_for_status()
+
+    def model_status(self) -> dict[str, Any]:
+        """GET /api/chat/models/status — returns {state, model_id}."""
+        r = self._client.get("/api/chat/models/status")
         r.raise_for_status()
         return r.json()
 
-    def wait_for_research(self, task_id: str, max_wait_seconds: int) -> dict[str, Any]:
-        """Poll until done/error or deadline. Sleep 5s between polls."""
+    def wait_for_model_ready(
+        self,
+        model_id: str,
+        max_wait_seconds: int = 600,
+        poll_seconds: int = 2,
+    ) -> bool:
+        """Poll model_status() until state=='ready' and model_id matches.
+
+        Returns True on success, False on timeout or persistent mismatch.
+        When poll_seconds=0 (test mode) the sleep is skipped.
+        """
         deadline = time.time() + max_wait_seconds
         while time.time() < deadline:
-            res = self.poll_research(task_id)
+            status = self.model_status()
+            if status.get("state") == "ready" and status.get("model_id") == model_id:
+                return True
+            if poll_seconds > 0:
+                time.sleep(poll_seconds)
+        return False
+
+    # ── research ──
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=15))
+    def start_research(
+        self,
+        question: str,
+        depth: str = "standard",
+        time_limit_minutes: int = 30,
+        strategy: str | None = None,
+    ) -> str:
+        """POST /api/research — returns the X-Research-Id header as conv_id.
+
+        The endpoint returns SSE. We open the stream, read the header, then
+        close immediately without draining the body. The server runs the
+        research regardless; we poll via GET to get the result.
+        """
+        body: dict[str, Any] = {
+            "question": question,
+            "depth": depth,
+            "time_limit_minutes": time_limit_minutes,
+        }
+        if strategy is not None:
+            body["strategy"] = strategy
+
+        with self._client.stream("POST", "/api/research", json=body) as r:
+            r.raise_for_status()
+            conv_id = r.headers.get("X-Research-Id")
+            if not conv_id:
+                raise RuntimeError("research start did not return X-Research-Id")
+            return conv_id
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=15))
+    def poll_research(self, conv_id: str) -> dict[str, Any]:
+        """GET /api/research/{conv_id} — returns the JSON body."""
+        r = self._client.get(f"/api/research/{conv_id}")
+        r.raise_for_status()
+        return r.json()
+
+    def wait_for_research(self, conv_id: str, max_wait_seconds: int) -> dict[str, Any]:
+        """Poll until state is done/error or deadline. Sleep 5s between polls."""
+        deadline = time.time() + max_wait_seconds
+        while time.time() < deadline:
+            res = self.poll_research(conv_id)
             if res.get("state") in {"done", "error"}:
                 return res
             time.sleep(5)
-        return {"state": "timeout", "task_id": task_id}
+        return {"state": "timeout", "conv_id": conv_id}
 
     # ── ask (chat SSE) ──
 
-    def stream_ask(self, question: str, model_id: str) -> Iterator[dict]:
-        """Yield SSE event dicts. Returns when ``done`` event received."""
+    def create_conversation(self, title: str | None = None, mode: str = "chat") -> str:
+        """POST /api/chat/conversations — returns conversation_id."""
+        r = self._client.post(
+            "/api/chat/conversations",
+            json={"title": title, "mode": mode},
+        )
+        r.raise_for_status()
+        return r.json()["conversation_id"]
+
+    def stream_ask(self, conv_id: str, content: str) -> Iterator[dict]:
+        """POST /api/chat/conversations/{conv_id}/messages — drain SSE, yield each event dict.
+
+        NOT retried — a partial stream is not safely retryable.
+        """
         with self._client.stream(
             "POST",
-            "/api/chat",
-            json={"message": question, "model_id": model_id, "stream": True},
+            f"/api/chat/conversations/{conv_id}/messages",
+            json={"content": content},
             timeout=httpx.Timeout(connect=10, read=600, write=10, pool=10),
         ) as r:
             r.raise_for_status()
@@ -94,7 +169,8 @@ class HarborClerkClient:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     def pipeline_status(self) -> dict[str, Any]:
-        r = self._client.get("/api/stats/queue")
+        """GET /api/jobs/snapshot."""
+        r = self._client.get("/api/jobs/snapshot")
         r.raise_for_status()
         return r.json()
 
@@ -112,19 +188,25 @@ class HarborClerkClient:
         return False
 
     def health(self) -> dict[str, Any]:
+        """GET /api/system/health."""
         r = self._client.get("/api/system/health")
         r.raise_for_status()
         return r.json()
 
     # ── maintenance ──
 
-    def wipe_db(self, confirm: bool = False) -> None:
+    def delete_all_documents(self, confirm: bool = False) -> None:
+        """POST /api/system/delete-all-documents with the required literal confirmation string."""
         if not confirm:
-            raise RuntimeError("wipe_db requires confirm=True")
-        r = self._client.post("/api/system/maintenance/wipe", json={"confirm": True})
+            raise RuntimeError("delete_all_documents requires confirm=True")
+        r = self._client.post(
+            "/api/system/delete-all-documents",
+            json={"confirmation": "DELETE EVERYTHING"},
+        )
         r.raise_for_status()
 
     def watch_folder_add(self, path: str, name: str | None = None) -> dict[str, Any]:
+        """POST /api/watch/folders."""
         r = self._client.post("/api/watch/folders", json={"path": path, "display_name": name})
         r.raise_for_status()
         return r.json()
