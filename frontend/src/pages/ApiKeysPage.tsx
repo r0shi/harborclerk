@@ -418,7 +418,7 @@ function ScopeFormFields({
             type="date"
             value={state.expiresAt}
             onChange={(e) => setState((s) => ({ ...s, expiresAt: e.target.value }))}
-            className="mt-1.5 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+            className="mt-1.5 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
           />
         )}
       </div>
@@ -550,7 +550,7 @@ function ScopeFormFields({
           value={state.maxSnippetChars}
           onChange={(e) => setState((s) => ({ ...s, maxSnippetChars: e.target.value }))}
           placeholder="No limit"
-          className="w-40 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+          className="w-40 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
         />
       </div>
 
@@ -576,7 +576,7 @@ function ScopeFormFields({
             value={state.rateLimitRpm}
             onChange={(e) => setState((s) => ({ ...s, rateLimitRpm: e.target.value }))}
             placeholder="System default"
-            className="mt-1.5 w-40 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+            className="mt-1.5 w-40 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
           />
         )}
       </div>
@@ -603,7 +603,7 @@ function ScopeFormFields({
             value={state.rateLimitRph}
             onChange={(e) => setState((s) => ({ ...s, rateLimitRph: e.target.value }))}
             placeholder="System default"
-            className="mt-1.5 w-40 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+            className="mt-1.5 w-40 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
           />
         )}
       </div>
@@ -655,7 +655,7 @@ function CreateKeyForm({
             onChange={(e) => setName(e.target.value)}
             required
             placeholder="e.g. Claude Desktop"
-            className="w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
           />
         </div>
 

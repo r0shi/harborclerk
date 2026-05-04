@@ -57,7 +57,7 @@ export default function LoginPage() {
               autoFocus
               autoComplete="username"
               autoCapitalize="off"
-              className="mb-4 w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
+              className="mb-4 w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
             />
             <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
             <input
@@ -67,7 +67,7 @@ export default function LoginPage() {
               required
               autoComplete="current-password"
               autoCapitalize="off"
-              className="mb-6 w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
+              className="mb-6 w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
             />
             <button
               type="submit"

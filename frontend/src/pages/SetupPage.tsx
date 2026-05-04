@@ -102,7 +102,7 @@ export default function SetupPage() {
               autoFocus
               autoComplete="username"
               autoCapitalize="off"
-              className="mb-4 w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
+              className="mb-4 w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
             />
             <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">Password</label>
             <input
@@ -113,7 +113,7 @@ export default function SetupPage() {
               autoComplete="new-password"
               autoCapitalize="off"
               passwordrules="minlength: 12; required: upper; required: lower; required: digit;"
-              className="mb-2 w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
+              className="mb-2 w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
             />
             {password.length > 0 && (
               <ul className="mb-4 space-y-1 text-xs">
@@ -136,7 +136,7 @@ export default function SetupPage() {
               autoComplete="new-password"
               autoCapitalize="off"
               passwordrules="minlength: 12; required: upper; required: lower; required: digit;"
-              className="mb-1 w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
+              className="mb-1 w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm focus:outline-hidden"
             />
             {confirmPassword.length > 0 && !passwordsMatch && (
               <p className="mb-4 text-xs text-red-500 dark:text-red-400">Passwords do not match</p>

@@ -947,7 +947,7 @@ export default function DocumentDetailPage() {
                       setPageSize(Number(e.target.value))
                       setContentPage(1)
                     }}
-                    className="rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
+                    className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-sm text-gray-900 dark:text-gray-100"
                   >
                     {PAGE_SIZE_OPTIONS.map((n) => (
                       <option key={n} value={n}>

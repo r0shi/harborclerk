@@ -79,7 +79,7 @@ export default function Layout() {
   }, [menuOpen])
 
   return (
-    <div data-layout-root className="min-h-screen bg-(--color-bg-secondary)">
+    <div data-layout-root className="min-h-screen bg-(--color-bg-primary)">
       <nav className="sticky top-0 z-40 border-b border-(--color-border) bg-(--bg-vibrancy) backdrop-blur-xl">
         <div className="mx-auto max-w-7xl px-4">
           <div className="flex h-12 items-center justify-between">

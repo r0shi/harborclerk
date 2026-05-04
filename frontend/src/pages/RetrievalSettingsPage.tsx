@@ -66,7 +66,7 @@ function NumberField({ field, value, onChange }: { field: FieldDef; value: numbe
         step={field.step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-24 shrink-0 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm text-right text-(--color-text-primary) tabular-nums"
+        className="w-24 shrink-0 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm text-right text-(--color-text-primary) tabular-nums"
       />
     </div>
   )
@@ -125,7 +125,7 @@ function SearchPaginationField({
             step={kStep}
             value={k}
             onChange={(e) => onKChange(Number(e.target.value))}
-            className="w-24 shrink-0 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm text-right text-(--color-text-primary) tabular-nums"
+            className="w-24 shrink-0 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm text-right text-(--color-text-primary) tabular-nums"
           />
         </div>
       )}
