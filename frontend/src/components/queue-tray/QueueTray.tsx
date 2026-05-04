@@ -36,10 +36,10 @@ export default function QueueTray() {
     }
   }, [trayState, handleKeyDown])
 
-  // Don't render anything if nothing to show
-  if (activeCount === 0 && completedCount === 0 && trayState === 'collapsed') {
-    return null
-  }
+  // The pill is always rendered — even when the queue is empty — so the
+  // user has a persistent affordance to open the drawer and see the
+  // Pipeline tab or recently completed items. The pill itself swaps to a
+  // muted "Queue idle" treatment in that case.
 
   return (
     <div className="fixed bottom-4 left-4 z-50 flex flex-col items-start">
