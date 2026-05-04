@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { del, get, put } from '../api'
 import { Link } from 'react-router-dom'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface IntegrationSettings {
   public_url: string
@@ -46,8 +48,6 @@ function CodeBlock({ children }: { children: string }) {
     </div>
   )
 }
-
-const cardClass = 'rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-6'
 
 export default function IntegrationsPage() {
   const [settings, setSettings] = useState<IntegrationSettings>({ public_url: '', oauth_refresh_token_days: 90 })
@@ -121,7 +121,7 @@ export default function IntegrationsPage() {
 
   return (
     <div className="animate-slide-in space-y-6">
-      <h1 className="text-xl font-bold">Integrations</h1>
+      <PageHeader title="Integrations" subtitle="MCP and external integrations" />
 
       {error && (
         <div className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -130,7 +130,7 @@ export default function IntegrationsPage() {
       )}
 
       {/* Connection Settings */}
-      <div className={cardClass}>
+      <Card className="p-6">
         <h2 className="text-lg font-semibold mb-4">Connection Settings</h2>
 
         <div className="space-y-4">
@@ -177,16 +177,16 @@ export default function IntegrationsPage() {
             </select>
           </div>
         </div>
-      </div>
+      </Card>
 
       {/* Active Connections */}
       {connections.length === 0 ? (
-        <div className={cardClass}>
+        <Card className="p-6">
           <h2 className="text-lg font-semibold mb-4">Active Connections</h2>
           <p className="text-sm text-(--color-text-secondary)">No external AI tools connected yet.</p>
-        </div>
+        </Card>
       ) : (
-        <div className={cardClass}>
+        <Card className="p-6">
           <details>
             <summary className="text-lg font-semibold cursor-pointer">
               Active Connections ({connections.length})
@@ -241,11 +241,11 @@ export default function IntegrationsPage() {
               </table>
             </div>
           </details>
-        </div>
+        </Card>
       )}
 
       {/* Connection Guides */}
-      <div className={cardClass}>
+      <Card className="p-6">
         <div className="grid grid-cols-4 gap-3 mb-6">
           {(['chatgpt', 'claude', 'gemini', 'openclaw'] as const).map((tab) => {
             const info = {
@@ -454,7 +454,7 @@ export default function IntegrationsPage() {
             </div>
           </>
         )}
-      </div>
+      </Card>
     </div>
   )
 }

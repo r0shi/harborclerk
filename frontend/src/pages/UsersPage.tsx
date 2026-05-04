@@ -1,5 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { del, get, patch, post } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface UserInfo {
   user_id: string
@@ -69,15 +71,17 @@ export default function UsersPage() {
 
   return (
     <div className="animate-slide-in">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold">Users</h1>
-        <button
-          onClick={() => setShowCreate(!showCreate)}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
-        >
-          {showCreate ? 'Cancel' : 'Create User'}
-        </button>
-      </div>
+      <PageHeader
+        title="Users"
+        actions={
+          <button
+            onClick={() => setShowCreate(!showCreate)}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
+          >
+            {showCreate ? 'Cancel' : 'Create User'}
+          </button>
+        }
+      />
 
       {error && (
         <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -95,7 +99,7 @@ export default function UsersPage() {
         />
       )}
 
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+      <Card className="overflow-hidden">
         <table className="min-w-full divide-y divide-(--color-border)">
           <thead className="bg-(--color-bg-secondary)">
             <tr>
@@ -159,7 +163,7 @@ export default function UsersPage() {
             ))}
           </tbody>
         </table>
-      </div>
+      </Card>
     </div>
   )
 }
@@ -184,50 +188,49 @@ function CreateUserForm({ onCreated, onError }: { onCreated: () => void; onError
   }
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="mb-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
-    >
-      <div className="grid grid-cols-3 gap-3">
-        <div>
-          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Email</label>
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
-          />
+    <Card className="mb-4 p-4">
+      <form onSubmit={handleSubmit}>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Role</label>
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+            >
+              <option value="user">user</option>
+              <option value="admin">admin</option>
+            </select>
+          </div>
         </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
-          />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Role</label>
-          <select
-            value={role}
-            onChange={(e) => setRole(e.target.value)}
-            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
-          >
-            <option value="user">user</option>
-            <option value="admin">admin</option>
-          </select>
-        </div>
-      </div>
-      <button
-        type="submit"
-        disabled={submitting}
-        className="mt-3 rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
-      >
-        Create
-      </button>
-    </form>
+        <button
+          type="submit"
+          disabled={submitting}
+          className="mt-3 rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
+        >
+          Create
+        </button>
+      </form>
+    </Card>
   )
 }

@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { del, get, patch, post } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 type PermissionTier = 'search' | 'read' | 'full'
 
@@ -217,18 +219,20 @@ export default function ApiKeysPage() {
 
   return (
     <div className="animate-slide-in">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold">API Keys</h1>
-        <button
-          onClick={() => {
-            setShowCreate(!showCreate)
-            setNewKey(null)
-          }}
-          className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
-        >
-          {showCreate ? 'Cancel' : 'Create Key'}
-        </button>
-      </div>
+      <PageHeader
+        title="API Keys"
+        actions={
+          <button
+            onClick={() => {
+              setShowCreate(!showCreate)
+              setNewKey(null)
+            }}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
+          >
+            {showCreate ? 'Cancel' : 'Create Key'}
+          </button>
+        }
+      />
 
       {error && (
         <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -237,7 +241,7 @@ export default function ApiKeysPage() {
       )}
 
       {newKey && (
-        <div className="mb-4 rounded-xl border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4 shadow-mac">
+        <Card className="mb-4 border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20 p-4">
           <p className="mb-2 text-sm font-medium text-green-800 dark:text-green-400">
             API key created! Copy it now — it won't be shown again.
           </p>
@@ -259,7 +263,7 @@ export default function ApiKeysPage() {
               </code>
             </div>
           </div>
-        </div>
+        </Card>
       )}
 
       {showCreate && !newKey && (
@@ -274,7 +278,7 @@ export default function ApiKeysPage() {
         />
       )}
 
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+      <Card className="overflow-hidden">
         <table className="min-w-full divide-y divide-(--color-border)">
           <thead className="bg-(--color-bg-secondary)">
             <tr>
@@ -359,7 +363,7 @@ export default function ApiKeysPage() {
             )}
           </tbody>
         </table>
-      </div>
+      </Card>
 
       {editingKey && (
         <EditKeyModal
@@ -641,34 +645,33 @@ function CreateKeyForm({
   }
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="mb-4 space-y-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4"
-    >
-      <div>
-        <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Key Name</label>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          required
-          placeholder="e.g. Claude Desktop"
-          className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
-        />
-      </div>
+    <Card className="mb-4 space-y-4 p-4">
+      <form onSubmit={handleSubmit}>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Key Name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            required
+            placeholder="e.g. Claude Desktop"
+            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm"
+          />
+        </div>
 
-      <ScopeFormFields state={scope} setState={setScope} topics={topics} folders={folders} />
+        <ScopeFormFields state={scope} setState={setScope} topics={topics} folders={folders} />
 
-      <div className="flex justify-end">
-        <button
-          type="submit"
-          disabled={submitting}
-          className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
-        >
-          Create
-        </button>
-      </div>
-    </form>
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={submitting}
+            className="rounded-lg bg-blue-600 px-4 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 disabled:opacity-50"
+          >
+            Create
+          </button>
+        </div>
+      </form>
+    </Card>
   )
 }
 
@@ -747,7 +750,7 @@ function EditKeyModal({
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-5">
+      <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto p-5">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-bold">Edit Key: {apiKey.name}</h2>
           <button
@@ -789,7 +792,7 @@ function EditKeyModal({
             {submitting ? 'Saving…' : 'Save'}
           </button>
         </div>
-      </div>
+      </Card>
     </div>
   )
 }

@@ -1,44 +1,105 @@
 import { Link } from 'react-router-dom'
+import { useAuth } from '../auth'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
+import { IconTile } from '../components/IconTile'
+import type { AreaHue } from '../hooks/useAreaAccent'
 
-const ITEMS = [
-  { to: '/admin/users', label: 'Users', description: 'Manage user accounts and roles' },
-  { to: '/admin/keys', label: 'API Keys', description: 'Create and revoke API keys' },
-  { to: '/admin/models', label: 'Models', description: 'Download and manage LLM models' },
-  { to: '/admin/languages', label: 'Languages', description: 'Enable additional languages for OCR and entities' },
-  { to: '/admin/retrieval', label: 'Retrieval', description: 'Chat and MCP search behavior' },
-  { to: '/admin/rate-limits', label: 'Rate Limits', description: 'Default API key rate limits' },
-  { to: '/admin/system/status', label: 'System Status', description: 'Health checks and statistics' },
-  { to: '/admin/system/logs', label: 'Service Logs', description: 'View log files and tail commands' },
-  { to: '/admin/system/maintenance', label: 'System Maintenance', description: 'Purge, reaper, and cleanup' },
+interface SettingsItem {
+  to: string
+  label: string
+  sub: string
+  icon: string
+  hue: AreaHue
+}
+
+const SECTIONS: { label: string; items: SettingsItem[] }[] = [
+  {
+    label: 'Access & identity',
+    items: [
+      { to: '/admin/users', label: 'Users', sub: 'Manage accounts and roles', icon: '👥', hue: 'docs' },
+      { to: '/admin/keys', label: 'API Keys', sub: 'Create and revoke API keys', icon: '🔑', hue: 'research' },
+    ],
+  },
+  {
+    label: 'Models & languages',
+    items: [
+      { to: '/admin/models', label: 'Models', sub: 'Download and manage LLM models', icon: '🧠', hue: 'observatory' },
+      { to: '/admin/languages', label: 'Languages', sub: 'OCR & entity language packs', icon: '🌐', hue: 'explore' },
+    ],
+  },
+  {
+    label: 'Behavior & limits',
+    items: [
+      { to: '/admin/retrieval', label: 'Retrieval', sub: 'Chat & MCP search behavior', icon: '🔍', hue: 'search' },
+      { to: '/admin/rate-limits', label: 'Rate Limits', sub: 'Default API key rate limits', icon: '⏱', hue: 'ask' },
+    ],
+  },
+  {
+    label: 'Operations',
+    items: [
+      {
+        to: '/admin/system/status',
+        label: 'System Status',
+        sub: 'Health checks and statistics',
+        icon: '💚',
+        hue: 'observatory',
+      },
+      {
+        to: '/admin/system/logs',
+        label: 'Service Logs',
+        sub: 'View log files and tail commands',
+        icon: '📜',
+        hue: 'settings',
+      },
+      {
+        to: '/admin/system/maintenance',
+        label: 'System Maintenance',
+        sub: 'Purge, reaper, and cleanup',
+        icon: '🧹',
+        hue: 'ask',
+      },
+    ],
+  },
 ]
 
 export default function SystemSettingsPage() {
-  return (
-    <div>
-      <h1 className="mb-4 text-xl font-bold">System Settings</h1>
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden divide-y divide-(--color-border)">
-        {ITEMS.map((item) => (
-          <Link
-            key={item.to}
-            to={item.to}
-            className="flex items-center justify-between px-4 py-3.5 hover:bg-black/3 dark:hover:bg-white/3 transition-colors"
-          >
-            <div>
-              <div className="text-[14px] font-medium text-(--color-text-primary)">{item.label}</div>
-              <div className="text-[12px] text-(--color-text-secondary) mt-0.5">{item.description}</div>
-            </div>
-            <svg
-              className="h-4 w-4 text-gray-300 dark:text-gray-600 shrink-0"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-            </svg>
-          </Link>
-        ))}
+  const { user } = useAuth()
+  if (user?.role !== 'admin') {
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-8">
+        <PageHeader title="System Settings" />
+        <p className="text-sm text-(--color-text-secondary)">Admins only.</p>
       </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-4xl px-4 py-8">
+      <PageHeader title="System Settings" />
+      {SECTIONS.map((section) => (
+        <div key={section.label} className="mb-6">
+          <h2 className="mb-2 font-serif text-base font-semibold tracking-tight text-(--color-text-primary)">
+            {section.label}
+          </h2>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            {section.items.map((item) => (
+              <Card key={item.to} className="p-0">
+                <Link to={item.to} className="flex items-center gap-3 px-3.5 py-3 text-sm">
+                  <IconTile hue={item.hue} size={28}>
+                    {item.icon}
+                  </IconTile>
+                  <div className="flex-1">
+                    <div className="font-medium text-(--color-text-primary)">{item.label}</div>
+                    <div className="text-[11px] text-(--color-text-secondary)">{item.sub}</div>
+                  </div>
+                  <span className="text-(--color-text-secondary) opacity-50">›</span>
+                </Link>
+              </Card>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

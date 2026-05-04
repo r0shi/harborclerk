@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { get, put } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface RetrievalSettings {
   max_history_messages: number
@@ -183,10 +185,7 @@ export default function RetrievalSettingsPage() {
 
   return (
     <div className="animate-slide-in">
-      <h1 className="mb-4 text-xl font-bold">Retrieval Settings</h1>
-      <p className="mb-4 text-sm text-(--color-text-secondary)">
-        Tune how Ask, Research, and MCP search tools retrieve passages from the knowledge base.
-      </p>
+      <PageHeader title="Retrieval" subtitle="Chat &amp; MCP search behavior" />
 
       {error && (
         <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -201,7 +200,7 @@ export default function RetrievalSettingsPage() {
 
       <div className="space-y-6">
         {/* Ask Search */}
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+        <Card className="overflow-hidden">
           <div className="px-4 py-3 bg-(--color-bg-secondary)">
             <h2 className="text-sm font-medium text-(--color-text-primary)">Ask</h2>
           </div>
@@ -226,10 +225,10 @@ export default function RetrievalSettingsPage() {
               onKChange={(v) => updateField('chat_search_k', v)}
             />
           </div>
-        </div>
+        </Card>
 
         {/* Research Search */}
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+        <Card className="overflow-hidden">
           <div className="px-4 py-3 bg-(--color-bg-secondary)">
             <h2 className="text-sm font-medium text-(--color-text-primary)">Research</h2>
           </div>
@@ -246,10 +245,10 @@ export default function RetrievalSettingsPage() {
               onKChange={(v) => updateField('research_search_k', v)}
             />
           </div>
-        </div>
+        </Card>
 
         {/* MCP API */}
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+        <Card className="overflow-hidden">
           <div className="px-4 py-3 bg-(--color-bg-secondary)">
             <h2 className="text-sm font-medium text-(--color-text-primary)">MCP API</h2>
           </div>
@@ -263,7 +262,7 @@ export default function RetrievalSettingsPage() {
               />
             ))}
           </div>
-        </div>
+        </Card>
       </div>
 
       <div className="mt-6 flex gap-3">

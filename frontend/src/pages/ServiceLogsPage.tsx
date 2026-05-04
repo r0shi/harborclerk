@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { get } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface LogFile {
   name: string
@@ -58,53 +60,55 @@ export default function ServiceLogsPage() {
 
   return (
     <div className="animate-slide-in">
-      <h1 className="mb-4 text-xl font-bold">Service Logs</h1>
+      <PageHeader title="Service Logs" />
 
-      {loading ? (
-        <p className="text-sm text-gray-500">Loading...</p>
-      ) : !logs ? (
-        <p className="text-sm text-gray-500">Failed to load log information.</p>
-      ) : logs.mode === 'docker' ? (
-        <div className="space-y-2">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
-            Logs are sent to stdout in Docker mode. Use the Docker CLI to view them:
-          </p>
-          <div className="flex items-center">
-            <code className="block flex-1 rounded-sm bg-(--color-bg-tertiary) px-3 py-2 text-xs font-mono text-(--color-text-primary) select-all">
-              docker compose logs -f app worker-io worker-cpu
-            </code>
-            <CopyButton text="docker compose logs -f app worker-io worker-cpu" />
+      <Card className="p-4">
+        {loading ? (
+          <p className="text-sm text-gray-500">Loading...</p>
+        ) : !logs ? (
+          <p className="text-sm text-gray-500">Failed to load log information.</p>
+        ) : logs.mode === 'docker' ? (
+          <div className="space-y-2">
+            <p className="text-sm text-gray-600 dark:text-gray-400">
+              Logs are sent to stdout in Docker mode. Use the Docker CLI to view them:
+            </p>
+            <div className="flex items-center">
+              <code className="block flex-1 rounded-sm bg-(--color-bg-tertiary) px-3 py-2 text-xs font-mono text-(--color-text-primary) select-all">
+                docker compose logs -f app worker-io worker-cpu
+              </code>
+              <CopyButton text="docker compose logs -f app worker-io worker-cpu" />
+            </div>
           </div>
-        </div>
-      ) : logs.files.length === 0 ? (
-        <p className="text-sm text-gray-500">No log files found.</p>
-      ) : (
-        <div className="space-y-4">
-          {logs.logs_dir && <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">{logs.logs_dir}</p>}
-          {logsByService &&
-            Object.entries(logsByService).map(([service, files]) => (
-              <div key={service}>
-                <h3 className="text-sm font-medium text-(--color-text-primary) mb-1.5">{service}</h3>
-                <div className="space-y-1.5">
-                  {files.map((f) => (
-                    <div key={f.name} className="rounded-lg bg-(--color-bg-secondary) p-3">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-mono text-gray-500 dark:text-gray-400">{f.path}</span>
-                        <span className="text-xs text-gray-500 ml-3 shrink-0">{formatSize(f.size_bytes)}</span>
+        ) : logs.files.length === 0 ? (
+          <p className="text-sm text-gray-500">No log files found.</p>
+        ) : (
+          <div className="space-y-4">
+            {logs.logs_dir && <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">{logs.logs_dir}</p>}
+            {logsByService &&
+              Object.entries(logsByService).map(([service, files]) => (
+                <div key={service}>
+                  <h3 className="text-sm font-medium text-(--color-text-primary) mb-1.5">{service}</h3>
+                  <div className="space-y-1.5">
+                    {files.map((f) => (
+                      <div key={f.name} className="rounded-lg bg-(--color-bg-secondary) p-3">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-mono text-gray-500 dark:text-gray-400">{f.path}</span>
+                          <span className="text-xs text-gray-500 ml-3 shrink-0">{formatSize(f.size_bytes)}</span>
+                        </div>
+                        <div className="flex items-center">
+                          <code className="block flex-1 rounded-sm bg-(--color-bg-tertiary) px-3 py-1.5 text-xs font-mono text-(--color-text-primary) select-all overflow-x-auto">
+                            tail -f &quot;{f.path}&quot;
+                          </code>
+                          <CopyButton text={`tail -f "${f.path}"`} />
+                        </div>
                       </div>
-                      <div className="flex items-center">
-                        <code className="block flex-1 rounded-sm bg-(--color-bg-tertiary) px-3 py-1.5 text-xs font-mono text-(--color-text-primary) select-all overflow-x-auto">
-                          tail -f &quot;{f.path}&quot;
-                        </code>
-                        <CopyButton text={`tail -f "${f.path}"`} />
-                      </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
-        </div>
-      )}
+              ))}
+          </div>
+        )}
+      </Card>
     </div>
   )
 }

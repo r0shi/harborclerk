@@ -1,6 +1,8 @@
 import { FormEvent, useState } from 'react'
 import { useAuth } from '../auth'
 import { post } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
 
@@ -11,10 +13,10 @@ export default function PreferencesPage() {
 
   return (
     <div>
-      <h1 className="mb-6 text-xl font-bold">Preferences</h1>
+      <PageHeader title="Preferences" subtitle="Personal settings" />
 
       <div className="space-y-6">
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-6">
+        <Card className="p-6">
           <h2 className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Theme</h2>
           <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">Choose between light and dark appearance.</p>
           <div className="flex space-x-2">
@@ -39,9 +41,9 @@ export default function PreferencesPage() {
               Dark
             </button>
           </div>
-        </div>
+        </Card>
 
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-6">
+        <Card className="p-6">
           <h2 className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Default page size</h2>
           <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">Number of items shown per page by default.</p>
           <select
@@ -55,7 +57,7 @@ export default function PreferencesPage() {
               </option>
             ))}
           </select>
-        </div>
+        </Card>
 
         <ChangePasswordCard />
       </div>
@@ -111,7 +113,7 @@ function ChangePasswordCard() {
   }
 
   return (
-    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-6">
+    <Card className="p-6">
       <h2 className="mb-1 text-sm font-medium text-gray-900 dark:text-gray-100">Change password</h2>
       <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">
         Requires your current password. New password must be at least 12 characters and contain upper, lower, and digit.
@@ -164,6 +166,6 @@ function ChangePasswordCard() {
           {submitting ? 'Updating…' : 'Update password'}
         </button>
       </form>
-    </div>
+    </Card>
   )
 }
