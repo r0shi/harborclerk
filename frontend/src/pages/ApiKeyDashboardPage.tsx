@@ -2,6 +2,8 @@ import { Fragment, useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { del, get } from '../api'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 /* ---------- types ---------- */
 
@@ -215,49 +217,55 @@ export default function ApiKeyDashboardPage() {
   return (
     <div className="animate-slide-in space-y-6">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <Link to="/admin/keys" className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
-            &larr; API Keys
-          </Link>
-          <h1 className="text-xl font-bold">{keyInfo.name}</h1>
-          <span
-            className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
-              keyInfo.is_active
-                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-            }`}
-          >
-            {keyInfo.is_active ? 'active' : 'revoked'}
-          </span>
-          <span className="text-sm text-gray-500 dark:text-gray-400">{keyInfo.scope_summary}</span>
-        </div>
-        <div>
-          {!purgeConfirm ? (
-            <button
-              onClick={() => setPurgeConfirm(true)}
-              className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-red-700"
-            >
-              Purge Events
-            </button>
-          ) : (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-red-600 dark:text-red-400">Delete all logged events?</span>
-              <button
-                onClick={handlePurge}
-                className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-red-700"
+      <div>
+        <Link to="/admin/keys" className="mb-2 inline-block text-sm text-blue-600 dark:text-blue-400 hover:underline">
+          &larr; API Keys
+        </Link>
+        <PageHeader
+          title={
+            <span className="flex flex-wrap items-center gap-2">
+              {keyInfo.name}
+              <span
+                className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
+                  keyInfo.is_active
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                    : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                }`}
               >
-                Confirm
-              </button>
-              <button
-                onClick={() => setPurgeConfirm(false)}
-                className="rounded-lg bg-gray-200 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600"
-              >
-                Cancel
-              </button>
+                {keyInfo.is_active ? 'active' : 'revoked'}
+              </span>
+            </span>
+          }
+          subtitle={keyInfo.scope_summary}
+          actions={
+            <div>
+              {!purgeConfirm ? (
+                <button
+                  onClick={() => setPurgeConfirm(true)}
+                  className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-red-700"
+                >
+                  Purge Events
+                </button>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-red-600 dark:text-red-400">Delete all logged events?</span>
+                  <button
+                    onClick={handlePurge}
+                    className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-red-700"
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    onClick={() => setPurgeConfirm(false)}
+                    className="rounded-lg bg-gray-200 dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-600"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          }
+        />
       </div>
 
       {error && (
@@ -267,9 +275,7 @@ export default function ApiKeyDashboardPage() {
       )}
 
       {!hasData && !error && (
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-8 text-center text-gray-500 dark:text-gray-400">
-          No events logged yet.
-        </div>
+        <Card className="p-8 text-center text-gray-500 dark:text-gray-400">No events logged yet.</Card>
       )}
 
       {usage && (
@@ -277,7 +283,7 @@ export default function ApiKeyDashboardPage() {
           {/* Summary cards */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
             {/* Requests card */}
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+            <Card className="p-4">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Requests</span>
                 <select
@@ -293,14 +299,10 @@ export default function ApiKeyDashboardPage() {
                 </select>
               </div>
               <p className="mt-2 text-2xl font-bold">{usage.requests[reqRange] ?? 0}</p>
-            </div>
+            </Card>
 
             {/* Errors card */}
-            <div
-              className={`rounded-xl shadow-mac ring-1 ring-(--color-border) p-4 ${
-                (usage.errors[errRange] ?? 0) > 0 ? 'bg-red-50 dark:bg-red-900/10' : 'bg-white dark:bg-[#2c2c2e]'
-              }`}
-            >
+            <Card className={`p-4 ${(usage.errors[errRange] ?? 0) > 0 ? 'bg-red-50 dark:bg-red-900/10' : ''}`}>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Errors</span>
                 <select
@@ -316,14 +318,10 @@ export default function ApiKeyDashboardPage() {
                 </select>
               </div>
               <p className="mt-2 text-2xl font-bold text-red-600 dark:text-red-400">{usage.errors[errRange] ?? 0}</p>
-            </div>
+            </Card>
 
             {/* Denials card */}
-            <div
-              className={`rounded-xl shadow-mac ring-1 ring-(--color-border) p-4 ${
-                (usage.denials[denRange] ?? 0) > 0 ? 'bg-amber-50 dark:bg-amber-900/10' : 'bg-white dark:bg-[#2c2c2e]'
-              }`}
-            >
+            <Card className={`p-4 ${(usage.denials[denRange] ?? 0) > 0 ? 'bg-amber-50 dark:bg-amber-900/10' : ''}`}>
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Denials</span>
                 <select
@@ -341,15 +339,11 @@ export default function ApiKeyDashboardPage() {
               <p className="mt-2 text-2xl font-bold text-amber-600 dark:text-amber-400">
                 {usage.denials[denRange] ?? 0}
               </p>
-            </div>
+            </Card>
 
             {/* Rate Limited card */}
-            <div
-              className={`rounded-xl shadow-mac ring-1 ring-(--color-border) p-4 ${
-                (usage.rate_limited[rlRange] ?? 0) > 0
-                  ? 'bg-orange-50 dark:bg-orange-900/20'
-                  : 'bg-white dark:bg-[#2c2c2e]'
-              }`}
+            <Card
+              className={`p-4 ${(usage.rate_limited[rlRange] ?? 0) > 0 ? 'bg-orange-50 dark:bg-orange-900/20' : ''}`}
             >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Rate Limited</span>
@@ -368,21 +362,21 @@ export default function ApiKeyDashboardPage() {
               <p className="mt-2 text-2xl font-bold text-orange-600 dark:text-orange-400">
                 {usage.rate_limited[rlRange] ?? 0}
               </p>
-            </div>
+            </Card>
 
             {/* Last Used card */}
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+            <Card className="p-4">
               <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Last Used</span>
               <p className="mt-2 text-lg font-semibold">
                 {usage.last_used_at ? formatTimestamp(usage.last_used_at) : 'Never'}
               </p>
-            </div>
+            </Card>
           </div>
 
           {/* Charts */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {/* Requests over time */}
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+            <Card className="p-4">
               <h2 className="mb-3 text-sm font-semibold">Requests over time (30d)</h2>
               {timeline.length > 0 ? (
                 <ResponsiveContainer width="100%" height={240}>
@@ -399,10 +393,10 @@ export default function ApiKeyDashboardPage() {
               ) : (
                 <p className="py-8 text-center text-sm text-gray-400">No timeline data.</p>
               )}
-            </div>
+            </Card>
 
             {/* Tool breakdown */}
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+            <Card className="p-4">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold">Tool breakdown</h2>
                 <select
@@ -429,11 +423,11 @@ export default function ApiKeyDashboardPage() {
               ) : (
                 <p className="py-8 text-center text-sm text-gray-400">No tool data for this range.</p>
               )}
-            </div>
+            </Card>
           </div>
 
           {/* Request log */}
-          <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+          <Card className="overflow-hidden">
             <div className="border-b border-(--color-border) bg-(--color-bg-secondary) p-4">
               <h2 className="mb-3 text-sm font-semibold">Request log</h2>
               <div className="flex flex-wrap items-center gap-3">
@@ -625,7 +619,7 @@ export default function ApiKeyDashboardPage() {
                 No requests match the current filters.
               </p>
             )}
-          </div>
+          </Card>
         </>
       )}
     </div>

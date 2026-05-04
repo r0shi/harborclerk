@@ -1497,6 +1497,9 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
                 "title": rdoc.title,
                 "summary": rdoc.summary,
                 "similarity": round(1.0 - distances[rid], 4),
+                "doc_type": rdoc.doc_type,
+                "mime_type": rdoc.mime_type,
+                "canonical_filename": rdoc.canonical_filename,
             }
         )
 

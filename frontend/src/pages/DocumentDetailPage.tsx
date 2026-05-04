@@ -5,6 +5,12 @@ import { useAuth } from '../auth'
 import { useJobEvents, type JobEvent } from '../hooks/useJobEvents'
 import { useSystemConfig, type SystemConfig } from '../hooks/useSystemConfig'
 import { ENTITY_TYPE_LABELS } from '../components/stats/CorpusCharts'
+import { DEFAULT_HIDDEN_ENTITY_TYPES, entityTypeClass } from '../utils/entityTypeColors'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
+import { StatusPill, type PillState } from '../components/StatusPill'
+import { IconTile } from '../components/IconTile'
+import { documentTypeIcon } from '../utils/documentTypeIcon'
 
 interface JobInfo {
   job_id: string
@@ -229,39 +235,6 @@ interface DocStats {
   ocr_confidence: { avg: number; min: number; max: number } | null
 }
 
-// Color palette covering all spaCy entity types we might see. Grouped by
-// semantic kind so related types share a hue family:
-//   blue/indigo:  people + groups (PERSON, NORP)
-//   green/teal:   organizations + products (ORG, PRODUCT, WORK_OF_ART)
-//   amber/orange: places (GPE, LOC, FAC)
-//   cyan/sky:     time (DATE, TIME)
-//   pink/rose:    events + law (EVENT, LAW)
-//   violet/fuchsia: language + culture (LANGUAGE)
-//   emerald:      money/percent (MONEY, PERCENT)
-//   stone:        numbers (CARDINAL, ORDINAL, QUANTITY)
-const ENTITY_TYPE_COLORS: Record<string, string> = {
-  PERSON: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-  NORP: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400',
-  ORG: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
-  PRODUCT: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400',
-  WORK_OF_ART: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
-  GPE: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-  LOC: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
-  FAC: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
-  DATE: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400',
-  TIME: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400',
-  EVENT: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
-  LAW: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400',
-  LANGUAGE: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400',
-  MONEY: 'bg-lime-100 text-lime-700 dark:bg-lime-900/30 dark:text-lime-400',
-  PERCENT: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
-  CARDINAL: 'bg-stone-100 text-stone-700 dark:bg-stone-800/40 dark:text-stone-300',
-  ORDINAL: 'bg-stone-100 text-stone-700 dark:bg-stone-800/40 dark:text-stone-300',
-  QUANTITY: 'bg-stone-100 text-stone-700 dark:bg-stone-800/40 dark:text-stone-300',
-}
-
-const DEFAULT_HIDDEN_ENTITY_TYPES = new Set(['CARDINAL', 'ORDINAL', 'QUANTITY'])
-
 // Display name lookup for the small subset of languages we currently
 // surface in the mismatch banner. Falls back to the ISO code when a
 // new language is added on the backend before the frontend is updated.
@@ -475,7 +448,7 @@ function DocumentStatsDisclosure({ docId }: { docId: string }) {
         Document Statistics
       </button>
       {open && (
-        <div className="mt-2 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4">
+        <Card className="mt-2 p-4 mb-4">
           {loading ? (
             <p className="text-sm text-(--color-text-secondary)">Loading statistics...</p>
           ) : stats ? (
@@ -527,8 +500,7 @@ function DocumentStatsDisclosure({ docId }: { docId: string }) {
                             className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-opacity ${
                               isHidden
                                 ? 'bg-gray-100 text-gray-400 dark:bg-gray-700/50 dark:text-gray-500 opacity-60'
-                                : ENTITY_TYPE_COLORS[type] ||
-                                  'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+                                : entityTypeClass(type)
                             }`}
                           >
                             {type}: {count}
@@ -548,8 +520,7 @@ function DocumentStatsDisclosure({ docId }: { docId: string }) {
                     {stats.top_entities
                       .filter((e) => !hiddenTypes.has(e.type))
                       .map((e, i) => {
-                        const cls =
-                          ENTITY_TYPE_COLORS[e.type] || 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+                        const cls = entityTypeClass(e.type)
                         return (
                           <span key={i} className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>
                             {e.text}
@@ -564,7 +535,7 @@ function DocumentStatsDisclosure({ docId }: { docId: string }) {
           ) : (
             <p className="text-sm text-(--color-text-secondary)">No statistics available</p>
           )}
-        </div>
+        </Card>
       )}
     </div>
   )
@@ -593,7 +564,15 @@ export default function DocumentDetailPage() {
   const [highlightPage, setHighlightPage] = useState<number | null>(null)
   const contentLoadedRef = useRef(false)
   const [related, setRelated] = useState<
-    { doc_id: string; title: string; summary: string | null; similarity: number }[]
+    {
+      doc_id: string
+      title: string
+      summary: string | null
+      similarity: number
+      doc_type?: string | null
+      mime_type?: string | null
+      canonical_filename?: string | null
+    }[]
   >([])
 
   // URL params for deep linking from search results
@@ -768,40 +747,45 @@ export default function DocumentDetailPage() {
 
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">{doc.title}</h1>
-          {doc.canonical_filename && (
-            <p className="text-sm text-gray-500 dark:text-gray-400">{doc.canonical_filename}</p>
-          )}
+      <div className="mb-4 flex items-start gap-3">
+        <IconTile hue={documentTypeIcon(doc).hue} size={36}>
+          {documentTypeIcon(doc).glyph}
+        </IconTile>
+        <div className="flex-1">
+          <PageHeader
+            title={doc.title}
+            subtitle={doc.canonical_filename ?? undefined}
+            actions={
+              isAdmin ? (
+                <>
+                  {hasProcessing && (
+                    <button
+                      onClick={handleCancel}
+                      disabled={actionLoading}
+                      className="rounded-lg bg-gray-500 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-gray-600 disabled:opacity-50"
+                    >
+                      Cancel Processing
+                    </button>
+                  )}
+                  <button
+                    onClick={handleReprocess}
+                    disabled={actionLoading}
+                    className="rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-amber-600 disabled:opacity-50"
+                  >
+                    Reprocess
+                  </button>
+                  <button
+                    onClick={handleDelete}
+                    disabled={actionLoading}
+                    className="rounded-lg bg-red-500/10 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-500/20 disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
+                </>
+              ) : undefined
+            }
+          />
         </div>
-        {isAdmin && (
-          <div className="flex space-x-2">
-            {hasProcessing && (
-              <button
-                onClick={handleCancel}
-                disabled={actionLoading}
-                className="rounded-lg bg-gray-500 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-gray-600 disabled:opacity-50"
-              >
-                Cancel Processing
-              </button>
-            )}
-            <button
-              onClick={handleReprocess}
-              disabled={actionLoading}
-              className="rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-medium text-white shadow-xs hover:bg-amber-600 disabled:opacity-50"
-            >
-              Reprocess
-            </button>
-            <button
-              onClick={handleDelete}
-              disabled={actionLoading}
-              className="rounded-lg bg-red-500/10 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-500/20 disabled:opacity-50"
-            >
-              Delete
-            </button>
-          </div>
-        )}
       </div>
 
       {error && (
@@ -827,7 +811,7 @@ export default function DocumentDetailPage() {
       {doc.jobs.length > 0 && (
         <div className="mb-4">
           <Disclosure label="Ingestion Jobs" defaultOpen={!isReady}>
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-5">
+            <Card className="p-3">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-xs text-gray-500 dark:text-gray-400">
@@ -838,27 +822,38 @@ export default function DocumentDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {doc.jobs.map((j) => (
-                    <tr key={j.job_id || j.stage} className="border-b border-gray-100 dark:border-gray-700">
-                      <td className="py-1 pr-3 font-medium">{j.stage}</td>
-                      <td className="py-1 pr-3">
-                        <JobStatusBadge status={j.status} />
-                      </td>
-                      <td className="py-1 pr-3 text-gray-500 dark:text-gray-400">
-                        {j.progress_total ? `${j.progress_current || 0}/${j.progress_total}` : '—'}
-                      </td>
-                      <td className="py-1 text-xs text-gray-400">
-                        {j.finished_at
-                          ? new Date(j.finished_at).toLocaleTimeString()
-                          : j.started_at
-                            ? 'running...'
-                            : 'queued'}
-                      </td>
-                    </tr>
-                  ))}
+                  {doc.jobs.map((j) => {
+                    const pillState: PillState =
+                      j.status === 'done'
+                        ? 'active'
+                        : j.status === 'running'
+                          ? 'running'
+                          : j.status === 'error'
+                            ? 'error'
+                            : 'pending'
+                    const pillLabel = j.status === 'done' ? 'done' : j.status === 'queued' ? 'queued' : undefined
+                    return (
+                      <tr key={j.job_id || j.stage} className="border-b border-gray-100 dark:border-gray-700">
+                        <td className="py-1 pr-3 font-medium">{j.stage}</td>
+                        <td className="py-1 pr-3">
+                          <StatusPill state={pillState} label={pillLabel} />
+                        </td>
+                        <td className="py-1 pr-3 text-gray-500 dark:text-gray-400">
+                          {j.progress_total ? `${j.progress_current || 0}/${j.progress_total}` : '—'}
+                        </td>
+                        <td className="py-1 text-xs text-gray-400">
+                          {j.finished_at
+                            ? new Date(j.finished_at).toLocaleTimeString()
+                            : j.started_at
+                              ? 'running...'
+                              : 'queued'}
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
-            </div>
+            </Card>
           </Disclosure>
         </div>
       )}
@@ -886,30 +881,38 @@ export default function DocumentDetailPage() {
       <DocumentStatsDisclosure docId={doc.doc_id} />
 
       {related.length > 0 && (
-        <details className="group mt-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac" open>
-          <summary className="cursor-pointer px-5 py-3 text-sm font-semibold text-(--color-text-primary)">
+        <Card className="mt-4 mb-4">
+          <div className="px-5 py-3 text-sm font-semibold text-(--color-text-primary)">
             Related Documents ({related.length})
-          </summary>
-          <div className="border-t border-(--color-border) px-5 py-3 space-y-1">
-            {related.map((r) => (
-              <Link
-                key={r.doc_id}
-                to={`/docs/${r.doc_id}`}
-                className="block rounded-lg px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-(--color-text-primary) truncate">{r.title}</span>
-                  <span className="ml-2 shrink-0 text-xs tabular-nums text-gray-400">
-                    {Math.round(r.similarity * 100)}% match
-                  </span>
-                </div>
-                {r.summary && (
-                  <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{r.summary}</p>
-                )}
-              </Link>
-            ))}
           </div>
-        </details>
+          <div className="border-t border-(--color-border) px-5 py-3 space-y-1">
+            {related.map((r) => {
+              const icon = documentTypeIcon(r)
+              return (
+                <Link
+                  key={r.doc_id}
+                  to={`/docs/${r.doc_id}`}
+                  className="flex items-start gap-2 rounded-lg px-3 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors"
+                >
+                  <IconTile hue={icon.hue} size={24}>
+                    {icon.glyph}
+                  </IconTile>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-(--color-text-primary) truncate">{r.title}</span>
+                      <span className="ml-2 shrink-0 text-xs tabular-nums text-gray-400">
+                        {Math.round(r.similarity * 100)}% match
+                      </span>
+                    </div>
+                    {r.summary && (
+                      <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{r.summary}</p>
+                    )}
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        </Card>
       )}
 
       <h2 className="mb-2 mt-6 text-lg font-semibold">Content</h2>
@@ -967,10 +970,10 @@ export default function DocumentDetailPage() {
               )}
 
               {visiblePages.map((page) => (
-                <div
+                <Card
                   key={page.page_num}
                   id={`page-${page.page_num}`}
-                  className={`rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac p-4 transition-all duration-500 ${
+                  className={`p-4 transition-all duration-500 ${
                     highlightPage === page.page_num ? 'ring-2 ring-(--color-accent)/40' : ''
                   }`}
                 >
@@ -985,7 +988,7 @@ export default function DocumentDetailPage() {
                   <pre className="whitespace-pre-wrap text-sm text-gray-800 dark:text-gray-200">
                     {renderPageWithHighlight(page.text, highlightChunkText)}
                   </pre>
-                </div>
+                </Card>
               ))}
 
               {totalPages > 1 && (

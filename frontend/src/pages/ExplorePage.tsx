@@ -2,6 +2,8 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { Link } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { get } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface EntityItem {
   entity_text: string
@@ -48,9 +50,9 @@ interface PaginatedDocs {
 }
 
 const ENTITY_SECTIONS = [
-  { type: 'PERSON', label: 'People' },
-  { type: 'GPE', label: 'Places' },
-  { type: 'ORG', label: 'Organizations' },
+  { type: 'PERSON', label: 'People', cssVar: '--entity-person', cssBgVar: '--entity-person-bg' },
+  { type: 'GPE', label: 'Places', cssVar: '--entity-gpe', cssBgVar: '--entity-gpe-bg' },
+  { type: 'ORG', label: 'Organizations', cssVar: '--entity-org', cssBgVar: '--entity-org-bg' },
 ]
 
 const TICK_STYLE = { fontSize: 10, fill: 'var(--color-chart-tick)' }
@@ -254,47 +256,50 @@ function ExploreMain({
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-lg font-semibold text-(--color-text-primary)">Explore</h1>
-
-        {/* Improvement #5: Topic search */}
-        <div className="relative">
-          <svg
-            className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-(--color-text-secondary)"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-          </svg>
-          <input
-            type="text"
-            placeholder="Search topics & entities..."
-            value={topicSearch}
-            onChange={(e) => setTopicSearch(e.target.value)}
-            className="w-64 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac pl-8 pr-3 py-1.5 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
-          />
-          {topicSearch && (
-            <button
-              onClick={() => setTopicSearch('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-(--color-text-secondary) hover:text-(--color-text-primary)"
+      <PageHeader
+        title="Explore"
+        subtitle="People, places, organizations, and topic clusters in your corpus"
+        actions={
+          <div className="relative">
+            <svg
+              className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-(--color-text-secondary)"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
             >
-              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          )}
-        </div>
-      </div>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="search"
+              placeholder="Search topics & entities…"
+              value={topicSearch}
+              onChange={(e) => setTopicSearch(e.target.value)}
+              className="w-64 rounded-md bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) pl-8 pr-8 py-1.5 text-sm ring-1 ring-(--color-border) focus:outline-none focus:ring-2"
+            />
+            {topicSearch && (
+              <button
+                onClick={() => setTopicSearch('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-(--color-text-secondary) hover:text-(--color-text-primary)"
+              >
+                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            )}
+          </div>
+        }
+      />
 
       {/* Entity sections — People / Places / Organizations */}
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden divide-y divide-(--color-border)">
+      <Card className="overflow-hidden divide-y divide-(--color-border)">
         {ENTITY_SECTIONS.map((section) => (
           <EntitySection
             key={section.type}
             label={section.label}
             items={filteredEntities[section.type] || []}
+            cssVar={section.cssVar}
+            cssBgVar={section.cssBgVar}
             defaultOpen
             onSelect={(entityText) =>
               onOpenSubPane({
@@ -306,7 +311,7 @@ function ExploreMain({
             }
           />
         ))}
-      </div>
+      </Card>
 
       {/* Topic Clusters */}
       {clusters.length > 0 && (
@@ -320,14 +325,16 @@ function ExploreMain({
             )}
           </h2>
           {filteredClusters.length === 0 ? (
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-8 text-center">
+            <Card className="px-5 py-8 text-center">
               <p className="text-sm text-(--color-text-secondary)">No topics match your search.</p>
-            </div>
+            </Card>
           ) : (
-            <div className="max-h-96 overflow-y-auto rounded-xl ring-1 ring-(--color-border) p-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="max-h-96 overflow-y-auto p-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {filteredClusters.map((cluster) => (
-                <button
+                <Card
                   key={cluster.cluster_id}
+                  interactive
+                  className="p-3.5 cursor-pointer group"
                   onClick={() =>
                     onOpenSubPane({
                       type: 'cluster',
@@ -335,18 +342,27 @@ function ExploreMain({
                       clusterId: cluster.cluster_id,
                     })
                   }
-                  className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-4 hover:shadow-mac-lg hover:ring-(--color-border)/80 transition-all text-left group"
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      onOpenSubPane({
+                        type: 'cluster',
+                        label: cluster.name,
+                        clusterId: cluster.cluster_id,
+                      })
+                    }
+                  }}
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
-                        style={{ backgroundColor: '#5ac8fa' }}
-                      />
-                      <h3 className="text-[13px] font-semibold text-(--color-text-primary) truncate">{cluster.name}</h3>
-                    </div>
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span
+                      className="inline-block h-2 w-2 rounded-full shrink-0"
+                      style={{ backgroundColor: '#5ac8fa' }}
+                    />
+                    <h4 className="font-medium text-(--color-text-primary) truncate flex-1">{cluster.name}</h4>
                     <svg
-                      className="h-3.5 w-3.5 text-(--color-text-secondary) opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="h-3.5 w-3.5 shrink-0 text-(--color-text-secondary) opacity-0 group-hover:opacity-100 transition-opacity"
                       fill="none"
                       viewBox="0 0 24 24"
                       stroke="currentColor"
@@ -355,7 +371,7 @@ function ExploreMain({
                       <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                     </svg>
                   </div>
-                  {/* Improvement #1: Keyword pills */}
+                  {/* Keyword pills */}
                   {cluster.keywords.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1.5">
                       {cluster.keywords.slice(0, 5).map((kw) => (
@@ -371,7 +387,7 @@ function ExploreMain({
                   <p className="text-[11px] text-(--color-text-secondary) mt-2">
                     {cluster.doc_count} {cluster.doc_count === 1 ? 'document' : 'documents'}
                   </p>
-                </button>
+                </Card>
               ))}
             </div>
           )}
@@ -383,7 +399,7 @@ function ExploreMain({
         <h2 className="text-[13px] font-semibold text-(--color-text-secondary) uppercase tracking-wider mb-3">
           Timeline
         </h2>
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-4">
+        <Card className="px-5 py-4">
           {timelineData.length <= 2 ? (
             timelineData.length === 0 ? (
               <p className="py-4 text-center text-sm text-(--color-text-secondary)">No timeline data yet.</p>
@@ -420,7 +436,7 @@ function ExploreMain({
               </BarChart>
             </ResponsiveContainer>
           )}
-        </div>
+        </Card>
       </section>
     </div>
   )
@@ -432,11 +448,15 @@ function EntitySection({
   label,
   items,
   defaultOpen,
+  cssVar,
+  cssBgVar,
   onSelect,
 }: {
   label: string
   items: EntityItem[]
   defaultOpen: boolean
+  cssVar: string
+  cssBgVar: string
   onSelect: (entityText: string) => void
 }) {
   const [open, setOpen] = useState(defaultOpen)
@@ -469,12 +489,14 @@ function EntitySection({
                 <button
                   key={item.entity_text}
                   onClick={() => onSelect(item.entity_text)}
-                  className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[12px] text-(--color-text-primary) bg-(--color-bg-secondary) hover:bg-black/6 dark:hover:bg-white/10 transition-colors"
+                  className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs transition-opacity hover:opacity-80"
+                  style={{
+                    backgroundColor: `var(${cssBgVar})`,
+                    color: `var(${cssVar})`,
+                  }}
                 >
-                  <span className="font-medium">{item.entity_text}</span>
-                  <span className="rounded-full bg-black/8 dark:bg-white/12 px-1.5 py-0.5 text-[10px] text-(--color-text-secondary) tabular-nums">
-                    {item.doc_count}
-                  </span>
+                  {item.entity_text}
+                  <span className="text-[10px] opacity-70">{item.doc_count}</span>
                 </button>
               ))}
             </div>
@@ -795,12 +817,12 @@ function ExploreDocList({
           <p className="text-sm text-(--color-text-secondary)">Loading...</p>
         </div>
       ) : docs.length === 0 ? (
-        <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-5 py-8 text-center">
+        <Card className="px-5 py-8 text-center">
           <p className="text-sm text-(--color-text-secondary)">No documents found.</p>
-        </div>
+        </Card>
       ) : (
         <>
-          <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+          <Card className="overflow-hidden">
             <table className="min-w-full divide-y divide-(--color-border)">
               <thead className="bg-(--color-bg-secondary)">
                 <tr>
@@ -903,7 +925,7 @@ function ExploreDocList({
                 })}
               </tbody>
             </table>
-          </div>
+          </Card>
 
           {/* Pagination */}
           {totalPages > 1 && (

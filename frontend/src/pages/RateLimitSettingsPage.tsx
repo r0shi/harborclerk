@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { get, put } from '../api'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface RateLimitSettings {
   default_rpm: number
@@ -58,10 +60,7 @@ export default function RateLimitSettingsPage() {
 
   return (
     <div className="animate-slide-in">
-      <h1 className="mb-4 text-xl font-bold">Rate Limits</h1>
-      <p className="mb-4 text-sm text-(--color-text-secondary)">
-        Default rate limits applied to API keys that don&apos;t specify their own limits.
-      </p>
+      <PageHeader title="Rate Limits" />
 
       {error && (
         <div className="mb-4 rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -74,7 +73,7 @@ export default function RateLimitSettingsPage() {
         </div>
       )}
 
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+      <Card className="overflow-hidden">
         <div className="px-4 py-3 bg-(--color-bg-secondary)">
           <h2 className="text-sm font-medium text-(--color-text-primary)">Default Limits</h2>
         </div>
@@ -110,7 +109,7 @@ export default function RateLimitSettingsPage() {
             />
           </div>
         </div>
-      </div>
+      </Card>
 
       <div className="mt-6 flex gap-3">
         <button

@@ -130,6 +130,9 @@ class RelatedDocument(BaseModel):
     title: str
     summary: str | None = None
     similarity: float
+    doc_type: str | None = None
+    mime_type: str | None = None
+    canonical_filename: str | None = None
 
 
 class RelatedDocumentsResponse(BaseModel):

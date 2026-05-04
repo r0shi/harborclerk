@@ -3,6 +3,11 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { get, post, del, downloadBlob } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents } from '../hooks/useJobEvents'
+import { PageHeader } from '../components/PageHeader'
+import { StatusPill, type PillState } from '../components/StatusPill'
+import { IconTile } from '../components/IconTile'
+import { documentTypeIcon } from '../utils/documentTypeIcon'
+import { entityTypeClass } from '../utils/entityTypeColors'
 
 const DOCS_STATE_KEY = 'docs-page-state'
 
@@ -28,6 +33,7 @@ interface DocSummary {
   title: string
   canonical_filename?: string
   status: string
+  pipeline_status?: string
   created_at: string
   updated_at: string
   summary?: string
@@ -70,14 +76,12 @@ function normalizeStatus(status?: string): string {
   return status
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const display = normalizeStatus(status)
-  let cls = 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
-  if (display === 'ready') cls = 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-  else if (display === 'error') cls = 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-  else if (display === 'processing') cls = 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
-
-  return <span className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>{display}</span>
+function mapDocStatusToPillState(pipeline: string): PillState {
+  if (pipeline === 'error') return 'error'
+  if (pipeline === 'ready') return 'active'
+  if (pipeline === 'queued') return 'pending'
+  // All other states are in-progress (extracting / chunking / embedding / etc.).
+  return 'running'
 }
 
 function Pagination({
@@ -571,24 +575,26 @@ export default function DocumentsPage() {
           </Link>
         </div>
       )}
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold">Documents</h1>
-        <div className="flex items-center gap-3">
-          <input
-            type="text"
-            placeholder="Filter by filename..."
-            value={filterInput}
-            onChange={(e) => handleFilterChange(e.target.value)}
-            className="w-64 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
-          />
-          <Link
-            to="/folders"
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
-          >
-            Folders
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        title="Documents"
+        actions={
+          <>
+            <input
+              type="text"
+              placeholder="Filter by filename..."
+              value={filterInput}
+              onChange={(e) => handleFilterChange(e.target.value)}
+              className="w-64 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
+            />
+            <Link
+              to="/folders"
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
+            >
+              Folders
+            </Link>
+          </>
+        }
+      />
       {/* Filter bar */}
       {(filterOptions.mime_types.length > 0 ||
         filterOptions.doc_types.length > 0 ||
@@ -790,7 +796,7 @@ export default function DocumentsPage() {
             />
           )}
 
-          <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) overflow-hidden">
+          <div className="overflow-hidden rounded-[10px] border border-(--color-border) bg-(--color-bg-primary)">
             <table className="min-w-full divide-y divide-(--color-border)">
               <thead className="bg-(--color-bg-secondary)">
                 <tr>
@@ -817,6 +823,7 @@ export default function DocumentsPage() {
               <tbody className="divide-y divide-(--color-border) bg-white dark:bg-[#2c2c2e]">
                 {visibleDocs.map((doc) => {
                   const isExpanded = expanded.has(doc.doc_id)
+                  const { glyph, hue } = documentTypeIcon(doc)
                   return (
                     <Fragment key={doc.doc_id}>
                       <tr className="hover:bg-black/3 dark:hover:bg-white/3">
@@ -830,7 +837,10 @@ export default function DocumentsPage() {
                           />
                         </td>
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-2">
+                            <IconTile hue={hue} size={28}>
+                              {glyph}
+                            </IconTile>
                             <button
                               onClick={() => {
                                 setExpanded((prev) => {
@@ -914,8 +924,18 @@ export default function DocumentsPage() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
-                            <StatusBadge status={doc.status} />
-                            {isAdmin && normalizeStatus(doc.status) === 'processing' && (
+                            {(() => {
+                              const _pipeline = doc.pipeline_status ?? ''
+                              const _pillState = mapDocStatusToPillState(_pipeline)
+                              const _pillLabel =
+                                _pillState === 'active'
+                                  ? 'ready'
+                                  : _pillState === 'pending'
+                                    ? 'queued'
+                                    : _pipeline || 'processing'
+                              return <StatusPill state={_pillState} label={_pillLabel} />
+                            })()}
+                            {isAdmin && normalizeStatus(doc.pipeline_status) === 'processing' && (
                               <button
                                 onClick={(e) => {
                                   e.preventDefault()
@@ -964,8 +984,8 @@ export default function DocumentsPage() {
                       </tr>
                       {isExpanded && (
                         <tr className="bg-gray-50/50 dark:bg-white/2">
-                          <td colSpan={6} className="px-4 py-4 pl-14">
-                            <div className="space-y-3">
+                          <td colSpan={6} className="px-4 py-3 pl-14">
+                            <div className="p-3 space-y-3">
                               {doc.doc_type && (
                                 <div>
                                   <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">
@@ -998,10 +1018,10 @@ export default function DocumentsPage() {
                                     {docEntities[doc.doc_id].slice(0, 15).map((e, i) => (
                                       <span
                                         key={i}
-                                        className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+                                        className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-medium ${entityTypeClass(e.entity_type)}`}
                                       >
                                         {e.entity_text}
-                                        <span className="ml-1 text-gray-400 dark:text-gray-500">{e.entity_type}</span>
+                                        <span className="ml-1 opacity-60">{e.entity_type}</span>
                                       </span>
                                     ))}
                                     {docEntities[doc.doc_id].length > 15 && (

@@ -2,6 +2,9 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth'
 import { del, get, post, put } from '../api'
 import { useLLMStatusContext } from '../components/LLMStatusBanner'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
+import { StatusPill } from '../components/StatusPill'
 
 interface ModelInfo {
   id: string
@@ -273,10 +276,7 @@ export default function ModelsPage() {
 
   return (
     <div className="animate-slide-in">
-      <h1 className="mb-4 text-xl font-bold">LLM Models</h1>
-      <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-        Download and manage models for the built-in chat assistant. Models run locally on this machine.
-      </p>
+      <PageHeader title="Models" subtitle="Download and manage local LLM models" />
 
       {error && (
         <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -284,7 +284,7 @@ export default function ModelsPage() {
         </div>
       )}
 
-      <div className="overflow-hidden rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border)">
+      <Card className="overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-(--color-bg-secondary)">
             <tr>
@@ -368,13 +368,9 @@ export default function ModelsPage() {
                         </td>
                         <td className="px-4 py-3">
                           {model.active ? (
-                            <span className="inline-flex items-center rounded-md bg-blue-100 dark:bg-blue-900/30 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:text-blue-400">
-                              Active
-                            </span>
+                            <StatusPill state="active" label="Active" />
                           ) : model.downloaded ? (
-                            <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
-                              Ready
-                            </span>
+                            <StatusPill state="idle" label="Ready" />
                           ) : downloading.has(model.id) ? (
                             <div className="flex items-center gap-2">
                               <div className="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
@@ -390,7 +386,7 @@ export default function ModelsPage() {
                               </span>
                             </div>
                           ) : (
-                            <span className="text-xs text-gray-400">Not downloaded</span>
+                            <StatusPill state="idle" label="Not downloaded" />
                           )}
                         </td>
                         <td className="px-4 py-3 text-right">
@@ -436,11 +432,11 @@ export default function ModelsPage() {
               ))}
           </tbody>
         </table>
-      </div>
+      </Card>
 
       {/* Orphaned model files */}
       {orphans.length > 0 && (
-        <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+        <Card className="mt-6 p-4">
           <div className="font-medium text-gray-900 dark:text-gray-100">Orphaned model files</div>
           <p className="mt-0.5 mb-3 text-xs text-gray-500 dark:text-gray-400">
             GGUF files on disk that are no longer in the model registry — typically left over from removed or replaced
@@ -462,12 +458,12 @@ export default function ModelsPage() {
               </li>
             ))}
           </ul>
-        </div>
+        </Card>
       )}
 
       {/* YaRN Extended Context */}
       {models.some((m) => m.yarn_available) && (
-        <div className="mt-6 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+        <Card className="mt-6 p-4">
           <div className="flex items-center justify-between">
             <div>
               <div className="font-medium text-gray-900 dark:text-gray-100">Extended Context (YaRN)</div>
@@ -496,11 +492,11 @@ export default function ModelsPage() {
               LLM server will restart with extended context. Not recommended if most prompts are under 32K tokens.
             </p>
           )}
-        </div>
+        </Card>
       )}
 
       {/* Always use Apple Intelligence for summaries */}
-      <div className="mt-4 rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+      <Card className="mt-4 p-4">
         <div className="flex items-center justify-between">
           <div>
             <div className="font-medium text-gray-900 dark:text-gray-100">
@@ -526,7 +522,7 @@ export default function ModelsPage() {
             />
           </button>
         </div>
-      </div>
+      </Card>
     </div>
   )
 }

@@ -1,12 +1,14 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import CitedMarkdown from '../components/CitedMarkdown'
+import { PageHeader } from '../components/PageHeader'
 import ToolResultDisplay from '../components/ToolResultDisplay'
 import { del, get } from '../api'
 import { useChat } from '../contexts/ChatContext'
 import { useResearch, type ToolCallEntry } from '../contexts/ResearchContext'
 import { useLLMStatus } from '../hooks/useLLMStatus'
 import { formatRelativeDate } from '../utils/dates'
+import { topicDotVar } from '../utils/topicDotColor'
 
 interface ResearchSummary {
   conversation_id: string
@@ -330,12 +332,14 @@ export default function ResearchPage() {
         <div className="p-3 pb-2">
           <button
             onClick={handleNewResearch}
-            className="group w-full flex items-center gap-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-[13px] font-medium text-gray-600 dark:text-gray-300 shadow-xs hover:shadow-md hover:border-gray-300 dark:hover:border-gray-600 transition-all duration-200"
+            className="mb-3 inline-flex w-full items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-150"
+            style={{
+              backgroundColor: 'var(--area-accent-tint)',
+              color: 'var(--area-accent-text)',
+              border: '1px solid var(--area-accent)',
+            }}
           >
-            <span className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-600 dark:bg-amber-500 text-white text-xs transition-transform duration-200 group-hover:scale-110">
-              +
-            </span>
-            New Research
+            <span aria-hidden>＋</span> New Research
           </button>
         </div>
 
@@ -359,6 +363,10 @@ export default function ResearchPage() {
               >
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
+                    <span
+                      className="inline-block h-1.5 w-1.5 shrink-0 rounded-full"
+                      style={{ background: topicDotVar(task.conversation_id) }}
+                    />
                     {task.status === 'running' || (isRunning && task.conversation_id === conversationId) ? (
                       <svg className="shrink-0 h-3 w-3 text-blue-500 animate-spin" fill="none" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -451,6 +459,9 @@ export default function ResearchPage() {
 
         {/* Content area */}
         <div className="flex-1 overflow-y-auto">
+          <div className="px-6 pt-5 pb-1">
+            <PageHeader title="Research" subtitle="Deep multi-step research over your corpus" />
+          </div>
           {/* State 1: Idle */}
           {isIdle && (
             <div className="flex h-full items-center justify-center p-8">

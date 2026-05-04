@@ -700,6 +700,9 @@ async def find_related_documents(
                 "title": rdoc.title,
                 "summary": rdoc.summary,
                 "similarity": round(1.0 - distances[rid], 4),
+                "doc_type": rdoc.doc_type,
+                "mime_type": rdoc.mime_type,
+                "canonical_filename": rdoc.canonical_filename,
             }
         )
 

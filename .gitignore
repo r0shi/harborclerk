@@ -17,6 +17,7 @@ build/
 .claude/
 .serena/
 .worktrees/
+.superpowers/
 
 # Frontend
 frontend/node_modules/

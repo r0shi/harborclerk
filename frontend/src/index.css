@@ -4,6 +4,7 @@
 
 @theme {
   --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-serif: 'New York', 'NewYork', ui-serif, Georgia, serif;
 
   --shadow-mac: 0 0.5px 1px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.06);
   --shadow-mac-lg: 0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -33,7 +34,7 @@
   --color-bg-primary: #ffffff;
   --color-bg-secondary: #f5f5f7;
   --color-bg-tertiary: #e8e8ed;
-  --color-border: rgba(0, 0, 0, 0.06);
+  --color-border: rgba(0, 0, 0, 0.15);
   --color-accent: #007aff;
   --color-text-primary: #1d1d1f;
   --color-text-secondary: #6e6e73;
@@ -51,6 +52,141 @@
   --color-text-secondary: #98989d;
   --bg-vibrancy: rgba(28, 28, 30, 0.8);
   --color-chart-tick: #9ca3af;
+}
+
+/* ---- Per-area accent tokens (light mode = :root) ---- */
+
+:root {
+  /* Ask — terracotta (light) */
+  --area-ask-accent: #8a5a42;
+  --area-ask-accent-tint: rgba(138, 90, 66, 0.1);
+  --area-ask-accent-text: #8a5a42;
+
+  /* Research — ochre (light) */
+  --area-research-accent: #966c2e;
+  --area-research-accent-tint: rgba(150, 108, 46, 0.1);
+  --area-research-accent-text: #966c2e;
+
+  /* Folders — warm khaki (light) */
+  --area-folders-accent: #6e6a5a;
+  --area-folders-accent-tint: rgba(110, 106, 90, 0.1);
+  --area-folders-accent-text: #6e6a5a;
+
+  /* Docs — dusty blue (light) */
+  --area-docs-accent: #3f6885;
+  --area-docs-accent-tint: rgba(63, 104, 133, 0.1);
+  --area-docs-accent-text: #3f6885;
+
+  /* Explore — mauve (light) */
+  --area-explore-accent: #6a4d6a;
+  --area-explore-accent-tint: rgba(106, 77, 106, 0.1);
+  --area-explore-accent-text: #6a4d6a;
+
+  /* Search — dusty teal (light) */
+  --area-search-accent: #4a7585;
+  --area-search-accent-tint: rgba(74, 117, 133, 0.1);
+  --area-search-accent-text: #4a7585;
+
+  /* Observatory — sage (light) */
+  --area-observatory-accent: #5a7556;
+  --area-observatory-accent-tint: rgba(90, 117, 86, 0.1);
+  --area-observatory-accent-text: #5a7556;
+
+  /* Settings — slate (light) */
+  --area-settings-accent: #5a5a64;
+  --area-settings-accent-tint: rgba(90, 90, 100, 0.1);
+  --area-settings-accent-text: #5a5a64;
+
+  /* Default — bound by useAreaAccent on the layout root.
+     Pre-auth pages (login/setup) get the docs accent as a neutral fallback. */
+  --area-accent: var(--area-docs-accent);
+  --area-accent-tint: var(--area-docs-accent-tint);
+  --area-accent-text: var(--area-docs-accent-text);
+
+  /* Entity pill colors — deeper variants for white backgrounds (Explore page) */
+  --entity-person: #0050a8;
+  --entity-person-bg: rgba(0, 80, 168, 0.15);
+  --entity-org: #1f7a36;
+  --entity-org-bg: rgba(31, 122, 54, 0.15);
+  --entity-gpe: #b56a00;
+  --entity-gpe-bg: rgba(181, 106, 0, 0.15);
+}
+
+.dark {
+  /* Ask — terracotta (dark) */
+  --area-ask-accent: #a8745a;
+  --area-ask-accent-tint: rgba(168, 116, 90, 0.12);
+  --area-ask-accent-text: #d49d80;
+
+  /* Research — ochre (dark) */
+  --area-research-accent: #b88a4a;
+  --area-research-accent-tint: rgba(184, 138, 74, 0.12);
+  --area-research-accent-text: #d4a574;
+
+  /* Folders — warm khaki (dark) */
+  --area-folders-accent: #8a8576;
+  --area-folders-accent-tint: rgba(138, 133, 118, 0.12);
+  --area-folders-accent-text: #b0aa9a;
+
+  /* Docs — dusty blue (dark) */
+  --area-docs-accent: #5b8aa8;
+  --area-docs-accent-tint: rgba(91, 138, 168, 0.15);
+  --area-docs-accent-text: #8aafc4;
+
+  /* Explore — mauve (dark) */
+  --area-explore-accent: #8a6a8a;
+  --area-explore-accent-tint: rgba(138, 106, 138, 0.15);
+  --area-explore-accent-text: #b890b8;
+
+  /* Search — dusty teal (dark) */
+  --area-search-accent: #6a96a8;
+  --area-search-accent-tint: rgba(106, 150, 168, 0.15);
+  --area-search-accent-text: #90b8c8;
+
+  /* Observatory — sage (dark) */
+  --area-observatory-accent: #7a9670;
+  --area-observatory-accent-tint: rgba(122, 150, 112, 0.15);
+  --area-observatory-accent-text: #a8c49a;
+
+  /* Settings — slate (dark) */
+  --area-settings-accent: #7a7a82;
+  --area-settings-accent-tint: rgba(122, 122, 130, 0.15);
+  --area-settings-accent-text: #a0a0a8;
+
+  /* Default — same fallback chain as light */
+  --area-accent: var(--area-docs-accent);
+  --area-accent-tint: var(--area-docs-accent-tint);
+  --area-accent-text: var(--area-docs-accent-text);
+
+  /* Entity pill colors — bright iOS variants for dark surfaces (Explore page) */
+  --entity-person: #007aff;
+  --entity-person-bg: rgba(0, 122, 255, 0.15);
+  --entity-org: #34c759;
+  --entity-org-bg: rgba(52, 199, 89, 0.15);
+  --entity-gpe: #ff9500;
+  --entity-gpe-bg: rgba(255, 149, 0, 0.15);
+}
+
+@layer components {
+  .surface-card {
+    background-color: var(--color-bg-primary);
+    background-image: linear-gradient(180deg, rgba(0, 0, 0, 0.012) 0%, transparent 100%);
+    border: 1px solid var(--color-border);
+    border-radius: 0.625rem; /* matches existing rounded-[10px] elsewhere */
+    transition: border-color 150ms ease;
+  }
+
+  .dark .surface-card {
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.025) 0%, transparent 100%);
+  }
+
+  .surface-card-interactive:hover {
+    border-color: rgba(0, 0, 0, 0.14);
+  }
+
+  .dark .surface-card-interactive:hover {
+    border-color: rgba(255, 255, 255, 0.18);
+  }
 }
 
 * {

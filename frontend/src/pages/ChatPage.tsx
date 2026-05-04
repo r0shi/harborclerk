@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import CitedMarkdown from '../components/CitedMarkdown'
+import { IconTile } from '../components/IconTile'
 import { del, get, post } from '../api'
 import { useAuth } from '../auth'
 import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../contexts/ChatContext'
@@ -8,6 +9,7 @@ import { useResearch } from '../contexts/ResearchContext'
 import RagContextCard from '../components/RagContextCard'
 import ToolResultDisplay from '../components/ToolResultDisplay'
 import { formatRelativeDate } from '../utils/dates'
+import { topicDotVar } from '../utils/topicDotColor'
 
 interface ConversationSummary {
   conversation_id: string
@@ -261,12 +263,14 @@ export default function ChatPage() {
         <div className="p-3 pb-2">
           <button
             onClick={handleNewChat}
-            className="group w-full flex items-center gap-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3.5 py-2.5 text-[13px] font-medium text-gray-600 dark:text-gray-300 shadow-xs hover:shadow-md hover:border-gray-300 dark:hover:border-gray-600 transition-all duration-200"
+            className="w-full flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition-opacity hover:opacity-80"
+            style={{
+              backgroundColor: 'var(--area-accent-tint)',
+              color: 'var(--area-accent-text)',
+              border: '1px solid var(--area-accent)',
+            }}
           >
-            <span className="flex h-5 w-5 items-center justify-center rounded-md bg-gray-800 dark:bg-gray-200 text-white dark:text-gray-800 text-xs transition-transform duration-200 group-hover:scale-110">
-              +
-            </span>
-            New conversation
+            <span aria-hidden>＋</span> New conversation
           </button>
         </div>
 
@@ -285,16 +289,22 @@ export default function ChatPage() {
                     : 'hover:bg-white/60 dark:hover:bg-gray-800/40'
                 }`}
               >
-                <Link to={`/c/${conv.conversation_id}`} className="flex-1 min-w-0">
-                  <div
-                    className={`text-[13px] font-medium truncate ${
-                      isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'
-                    }`}
-                  >
-                    {conv.title}
-                  </div>
-                  <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
-                    {formatRelativeDate(conv.updated_at)}
+                <Link to={`/c/${conv.conversation_id}`} className="flex-1 min-w-0 flex items-start gap-2">
+                  <span
+                    className="inline-block mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
+                    style={{ background: topicDotVar(conv.conversation_id) }}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className={`text-[13px] font-medium truncate ${
+                        isActive ? 'text-gray-900 dark:text-gray-100' : 'text-gray-600 dark:text-gray-400'
+                      }`}
+                    >
+                      {conv.title}
+                    </div>
+                    <div className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">
+                      {formatRelativeDate(conv.updated_at)}
+                    </div>
                   </div>
                 </Link>
                 <button
@@ -566,40 +576,39 @@ function ModelNudge() {
 
 /* ---- Empty state ---- */
 
+const SUGGESTION_CHIPS = [
+  'What documents mention compliance?',
+  'Summarize the latest report',
+  'Find conflicting information',
+]
+
 function EmptyState() {
   return (
     <div className="flex h-full items-center justify-center p-8">
-      <div className="text-center max-w-md empty-state-appear">
-        <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-gray-100 dark:bg-gray-800">
-          <svg
-            className="h-7 w-7 text-gray-400 dark:text-gray-500"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={1.2}
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m5.231 13.481L15 17.25m-4.5-15H5.625c-.621 0-1.125.504-1.125 1.125v16.5c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9zm3.75 11.625a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"
-            />
-          </svg>
+      <div className="flex flex-col items-center justify-center gap-4 py-16 text-center empty-state-appear max-w-md">
+        <IconTile size={64}>📚</IconTile>
+        <div>
+          <h2 className="font-serif text-2xl font-semibold tracking-tight text-(--color-text-primary)">
+            Ask your documents
+          </h2>
+          <p className="mt-2 text-sm text-(--color-text-secondary)">
+            Start a conversation to search, read, and reason over your library using a local LLM.
+          </p>
         </div>
-        <h3 className="text-[15px] font-semibold text-gray-800 dark:text-gray-200 mb-1.5">Ask your documents</h3>
-        <p className="text-[13px] text-gray-400 dark:text-gray-500 leading-relaxed mb-6">
-          Start a conversation to search, read, and reason over your document library using a local LLM.
-        </p>
         <div className="flex flex-wrap justify-center gap-2">
-          {['What documents mention compliance?', 'Summarize the latest report', 'Find conflicting information'].map(
-            (q) => (
-              <span
-                key={q}
-                className="inline-block rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-1.5 text-[12px] text-gray-500 dark:text-gray-400 shadow-xs cursor-default"
-              >
-                {q}
-              </span>
-            ),
-          )}
+          {SUGGESTION_CHIPS.map((chip) => (
+            <span
+              key={chip}
+              className="rounded-full px-3 py-1 text-xs cursor-default"
+              style={{
+                backgroundColor: 'var(--area-accent-tint)',
+                color: 'var(--area-accent-text)',
+                border: '1px solid var(--area-accent)',
+              }}
+            >
+              {chip}
+            </span>
+          ))}
         </div>
       </div>
     </div>
