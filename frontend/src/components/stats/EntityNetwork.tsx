@@ -111,14 +111,19 @@ export default function EntityNetwork() {
         'link',
         forceLink<EntityNode, EntityEdge>(edges)
           .id((d) => d.id)
-          .distance(80)
-          .strength(0.3),
+          .distance(110)
+          .strength(0.25),
       )
-      .force('charge', forceManyBody().strength(-120))
+      .force(
+        'charge',
+        forceManyBody<EntityNode>()
+          .strength(-260)
+          .distanceMax(width / 1.5),
+      )
       .force('center', forceCenter(width / 2, height / 2))
       .force(
         'collide',
-        forceCollide<EntityNode>().radius((d) => radiusScale(d.mentions) + 4),
+        forceCollide<EntityNode>().radius((d) => radiusScale(d.mentions) + 8),
       )
 
     simRef.current = sim
@@ -178,9 +183,10 @@ export default function EntityNetwork() {
       .join('circle')
       .attr('r', (d: EntityNode) => radiusScale(d.mentions))
       .attr('fill', (d: EntityNode) => typeColor(d.type))
+      .attr('fill-opacity', 0.85)
       .attr('stroke', 'var(--color-bg-primary)')
       .attr('stroke-width', 1.5)
-      .style('cursor', 'pointer')
+      .style('cursor', 'grab')
       .on('mouseenter', (_event: MouseEvent, d: EntityNode) => setHoveredNode(d))
       .on('mouseleave', () => setHoveredNode(null))
       .on('click', (_event: MouseEvent, d: EntityNode) => {
@@ -249,7 +255,8 @@ export default function EntityNetwork() {
       }
     }
 
-    // Drag behavior
+    // Drag behavior — nodes pin in place after drop. Double-click a node or
+    // press "Reset layout" to release pins.
     const dragBehavior = d3Drag<SVGCircleElement, EntityNode>()
       .on('start', (event, d) => {
         wasDragged = false
@@ -262,13 +269,20 @@ export default function EntityNetwork() {
         d.fx = event.x
         d.fy = event.y
       })
-      .on('end', (event, d) => {
+      .on('end', (event, _d) => {
         if (!event.active) sim.alphaTarget(0)
-        d.fx = null
-        d.fy = null
       })
 
     node.call(dragBehavior)
+
+    // Double-click releases a single pinned node back to the simulation
+    node.on('dblclick', (event: MouseEvent, d: EntityNode) => {
+      event.stopPropagation()
+      d.fx = null
+      d.fy = null
+      sim.alphaTarget(0.3).restart()
+      window.setTimeout(() => sim.alphaTarget(0), 600)
+    })
 
     sim.on('tick', () => {
       link
@@ -297,6 +311,16 @@ export default function EntityNetwork() {
     }
   }, [renderGraph])
 
+  const resetLayout = useCallback(() => {
+    const sim = simRef.current
+    if (!sim) return
+    sim.nodes().forEach((n) => {
+      n.fx = null
+      n.fy = null
+    })
+    sim.alpha(0.8).restart()
+  }, [])
+
   const types = data ? [...new Set(data.nodes.map((n) => n.type))] : []
 
   return (
@@ -307,20 +331,31 @@ export default function EntityNetwork() {
       <div className="mb-3 flex items-center justify-between">
         <h3 className="text-[13px] font-semibold text-(--color-text-primary)">
           Entity Network
-          <InfoTip text="This network shows how entities appear together in your documents. Lines connect entities that are mentioned in the same text segments. Thicker lines mean they co-occur more often. Click a node to highlight its connections." />
+          <InfoTip text="This network shows how entities appear together in your documents. Lines connect entities that are mentioned in the same text segments. Thicker lines mean they co-occur more often. Click a node to highlight its connections. Drag a node to pin it; double-click to release." />
         </h3>
-        <div className="flex items-center gap-2">
-          <label className="text-[11px] text-(--color-text-secondary)">Entities:</label>
-          <input
-            type="range"
-            min={20}
-            max={100}
-            step={10}
-            value={limit}
-            onChange={(e) => setLimit(Number(e.target.value))}
-            className="h-1 w-24 accent-(--color-accent)"
-          />
-          <span className="min-w-[2ch] text-[11px] text-(--color-text-secondary)">{limit}</span>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={resetLayout}
+            disabled={!data || data.nodes.length === 0}
+            className="rounded-md px-2 py-0.5 text-[11px] text-(--color-text-secondary) ring-1 ring-(--color-border) hover:bg-(--color-bg-secondary) disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Release all pinned nodes and re-run layout"
+          >
+            Reset layout
+          </button>
+          <div className="flex items-center gap-2">
+            <label className="text-[11px] text-(--color-text-secondary)">Entities:</label>
+            <input
+              type="range"
+              min={20}
+              max={100}
+              step={10}
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value))}
+              className="h-1 w-24 accent-(--color-accent)"
+            />
+            <span className="min-w-[2ch] text-[11px] text-(--color-text-secondary)">{limit}</span>
+          </div>
         </div>
       </div>
 
