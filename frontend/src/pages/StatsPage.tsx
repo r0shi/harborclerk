@@ -10,6 +10,8 @@ import PipelineDiagram from '../components/stats/PipelineDiagram'
 import PipelineTimingChart, { type StageTiming } from '../components/stats/PipelineTimingChart'
 import QueueWaitChart from '../components/stats/QueueWaitChart'
 import { InfoTip } from '../components/InfoTip'
+import { PageHeader } from '../components/PageHeader'
+import { Card } from '../components/Card'
 
 interface TopicCluster {
   cluster_id: number
@@ -42,15 +44,15 @@ type TabId = 'corpus' | 'pipeline'
 
 function StatBadge({ label, value, tip }: { label: string; value: string | number; tip?: string }) {
   return (
-    <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) px-4 py-3">
+    <Card className="px-4 py-3">
       <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide">
         {label}
         {tip && <InfoTip text={tip} />}
       </p>
-      <p className="mt-0.5 text-xl font-semibold text-(--color-text-primary) tabular-nums">
+      <p className="mt-0.5 font-serif text-xl font-semibold text-(--color-text-primary) tabular-nums">
         {typeof value === 'number' ? value.toLocaleString() : value}
       </p>
-    </div>
+    </Card>
   )
 }
 
@@ -74,7 +76,7 @@ function TabButton({ id, current, onClick, children }: TabButtonProps) {
       }`}
     >
       {children}
-      {active && <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-(--color-accent)" />}
+      {active && <span className="absolute inset-x-3 bottom-0 h-0.5 rounded-full bg-(--area-accent)" />}
     </button>
   )
 }
@@ -130,6 +132,8 @@ export default function StatsPage() {
 
   return (
     <div className="space-y-6">
+      <PageHeader title="Observatory" subtitle="Corpus statistics and processing pipeline" />
+
       {/* Tab bar */}
       <div role="tablist" className="flex border-b border-(--color-border)">
         <TabButton id="corpus" current={tab} onClick={setTab}>
@@ -182,21 +186,21 @@ function CorpusTab({ stats, topics }: { stats: CorpusStats; topics: TopicsData |
         <div className="space-y-4">
           <h2 className="text-[15px] font-semibold text-(--color-text-primary)">Topics</h2>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+            <Card className="p-4">
               <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Topic Distribution</h3>
               <TopicTreemap topics={topics.clusters} />
-            </div>
-            <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+            </Card>
+            <Card className="p-4">
               <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Documents by Topic</h3>
               <TopicBarChart topics={topics.clusters} />
-            </div>
+            </Card>
           </div>
-          <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+          <Card className="p-4">
             <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Topic Keywords</h3>
             <div className="max-h-80 overflow-y-auto">
               <TopicKeywords topics={topics.clusters} />
             </div>
-          </div>
+          </Card>
         </div>
       )}
 
@@ -218,29 +222,29 @@ function PipelineTab({ pipelineTiming }: { pipelineTiming: CorpusStats['pipeline
       </h2>
 
       {/* Live diagram */}
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+      <Card className="p-4">
         <h3 className="mb-3 text-[13px] font-semibold text-(--color-text-primary)">Live activity</h3>
         <PipelineDiagram />
-      </div>
+      </Card>
 
       {/* Per-stage timing */}
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+      <Card className="p-4">
         <h3 className="mb-1 text-[13px] font-semibold text-(--color-text-primary)">Processing time per stage</h3>
         <p className="mb-3 text-[12px] text-(--color-text-secondary)">
           How long each stage takes once it starts running, across all completed jobs.
         </p>
         <PipelineTimingChart pipelineTiming={pipelineTiming} />
-      </div>
+      </Card>
 
       {/* Queue wait vs run time */}
-      <div className="rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac ring-1 ring-(--color-border) p-4">
+      <Card className="p-4">
         <h3 className="mb-1 text-[13px] font-semibold text-(--color-text-primary)">Queue wait vs processing time</h3>
         <p className="mb-3 text-[12px] text-(--color-text-secondary)">
           How long jobs wait in the queue before a worker picks them up, vs how long the work itself takes. A long grey
           tail on a stage means workers are saturated.
         </p>
         <QueueWaitChart pipelineTiming={pipelineTiming} />
-      </div>
+      </Card>
     </div>
   )
 }
