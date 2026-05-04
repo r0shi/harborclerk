@@ -73,30 +73,61 @@ export default function OnboardingWizard({ onComplete }: Props) {
       return
     }
     setInstallingLangs(true)
-    try {
-      // Install each selected language's tools (OCR + NER for now).
-      // We do these sequentially to avoid hammering the upstream
-      // host-name (~15-20 MB each) and to give the user honest progress
-      // feedback if anything fails.
-      for (const code of selectedLangs) {
-        const lang = languages.find((l) => l.code === code)
-        if (!lang) continue
-        const tools = Object.keys(lang.tools)
-        if (tools.length > 0) {
-          await post(`/api/languages/${code}/install`, { tools })
-        }
+
+    // Track which selections actually installed; partial failures must
+    // not strand on-disk packs without a corresponding preference. If
+    // German fails but French succeeds, we still want the operator's
+    // enabled_languages to include French — otherwise the pack is on
+    // disk but never used, and the operator has to discover the gap
+    // themselves.
+    const installed: string[] = []
+    const failures: string[] = []
+
+    // Install each selected language's tools sequentially. Sequential
+    // (rather than parallel) avoids hammering the upstream host-name on
+    // small networks and lets a single failure not abort the rest of
+    // the batch.
+    for (const code of selectedLangs) {
+      const lang = languages.find((l) => l.code === code)
+      if (!lang) continue
+      const tools = Object.keys(lang.tools)
+      if (tools.length === 0) {
+        installed.push(code)
+        continue
       }
-      // Persist the operator's enabled-languages preference. Backend
-      // normalises (always inserts 'en' first, dedupes, validates).
-      await patch('/api/me/preferences', {
-        enabled_languages: Array.from(selectedLangs),
-      })
-      setPage(3)
-    } catch (e) {
-      setError(e instanceof ApiError || e instanceof Error ? e.message : 'Failed to install languages')
-    } finally {
-      setInstallingLangs(false)
+      try {
+        await post(`/api/languages/${code}/install`, { tools })
+        installed.push(code)
+      } catch (e) {
+        const msg = e instanceof ApiError || e instanceof Error ? e.message : 'install failed'
+        failures.push(`${code} (${msg})`)
+      }
     }
+
+    if (installed.length > 0) {
+      try {
+        // Backend normalises (always inserts 'en' first, dedupes, validates).
+        await patch('/api/me/preferences', { enabled_languages: installed })
+      } catch (e) {
+        // Pref-save failed but packs are on disk. Surface so the
+        // operator can flip the toggle in System Settings → Languages.
+        failures.push(`preferences save (${e instanceof Error ? e.message : 'unknown'})`)
+      }
+    }
+
+    setInstallingLangs(false)
+
+    if (failures.length > 0) {
+      setError(
+        `Some languages failed to install: ${failures.join(', ')}. ` +
+          `Successfully installed languages are still available — manage them under System Settings → Languages.`,
+      )
+      // Stay on this page so the user sees the error; they can click
+      // Skip to advance once they've read it.
+      return
+    }
+
+    setPage(3)
   }, [selectedLangs, languages])
 
   async function handlePickFolder() {

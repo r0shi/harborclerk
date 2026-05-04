@@ -355,3 +355,38 @@ def test_ner_wheel_re_install_replaces_extracted_dir(monkeypatch, httpserver, tm
     assert not stale_file.exists()
     # Real extracted contents are present
     assert (extracted / "__init__.py").is_file()
+
+
+def test_ner_install_self_heals_when_extraction_was_lost(monkeypatch, httpserver, tmp_path):
+    """Recovery scenario: a previous install completed (wheel verified,
+    SHA matches), but the extracted package directory was wiped (manual
+    cleanup, disk pressure cron, prior failed extraction, etc.). A
+    second `download_artifact()` call should detect the missing extracted
+    dir and re-extract on the spot — without requiring a remove +
+    reinstall cycle the operator might not know to perform.
+
+    Caught by review of PR #266 — the original code returned
+    ``already_installed`` based purely on wheel SHA and never re-extracted.
+    """
+    _patch_french_with_real_wheel_shape(monkeypatch, httpserver, tmp_path)
+
+    # First install — both wheel and extracted dir end up on disk.
+    download_artifact("fr", Tool.NER)
+    extracted = tmp_path / "fr" / "ner" / "fr_core_news_sm"
+    assert extracted.is_dir()
+
+    # Simulate a lost extraction (extracted dir removed, wheel intact).
+    import shutil
+
+    shutil.rmtree(extracted)
+    assert not extracted.exists()
+    wheel = tmp_path / "fr" / "ner" / "fr_core_news_sm-3.8.0-py3-none-any.whl"
+    assert wheel.exists()  # wheel is still verified-by-SHA
+
+    # Re-running install should self-heal: detect the missing dir and
+    # re-extract. Status is still `already_installed` because the wheel
+    # itself was already on disk — the extraction is a quiet repair.
+    result = download_artifact("fr", Tool.NER)
+    assert result.status == "already_installed"
+    assert extracted.is_dir(), "extracted dir should have been re-created"
+    assert (extracted / "__init__.py").is_file()
