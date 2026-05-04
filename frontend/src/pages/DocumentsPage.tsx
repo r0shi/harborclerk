@@ -7,6 +7,7 @@ import { PageHeader } from '../components/PageHeader'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
 import { documentTypeIcon } from '../utils/documentTypeIcon'
+import { entityTypeClass } from '../utils/entityTypeColors'
 
 const DOCS_STATE_KEY = 'docs-page-state'
 
@@ -1017,10 +1018,10 @@ export default function DocumentsPage() {
                                     {docEntities[doc.doc_id].slice(0, 15).map((e, i) => (
                                       <span
                                         key={i}
-                                        className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+                                        className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-medium ${entityTypeClass(e.entity_type)}`}
                                       >
                                         {e.entity_text}
-                                        <span className="ml-1 text-gray-400 dark:text-gray-500">{e.entity_type}</span>
+                                        <span className="ml-1 opacity-60">{e.entity_type}</span>
                                       </span>
                                     ))}
                                     {docEntities[doc.doc_id].length > 15 && (
