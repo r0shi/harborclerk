@@ -246,7 +246,7 @@ export default function SearchPage() {
             }}
             placeholder="Search documents..."
             autoFocus
-            className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-4 py-2 text-sm"
+            className="w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-4 py-2 text-sm"
           />
           {showHistory && history.length > 0 && (
             <div className="absolute z-10 mt-1 w-full rounded-xl bg-white dark:bg-[#2c2c2e] shadow-mac-lg ring-1 ring-(--color-border) overflow-hidden">
@@ -391,7 +391,7 @@ export default function SearchPage() {
                   <select
                     value={pageSize}
                     onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                    className="rounded-md border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) py-0.5 pl-2 pr-6 text-sm"
+                    className="rounded-md border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) py-0.5 pl-2 pr-6 text-sm"
                   >
                     {PAGE_SIZES.map((s) => (
                       <option key={s} value={s}>

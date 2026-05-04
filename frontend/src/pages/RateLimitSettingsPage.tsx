@@ -90,7 +90,7 @@ export default function RateLimitSettingsPage() {
               min={1}
               value={form.default_rpm}
               onChange={(e) => updateField('default_rpm', Number(e.target.value))}
-              className="w-24 shrink-0 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm text-right text-(--color-text-primary) tabular-nums"
+              className="w-24 shrink-0 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm text-right text-(--color-text-primary) tabular-nums"
             />
           </div>
           <div className="flex items-center justify-between gap-4 py-3">
@@ -105,7 +105,7 @@ export default function RateLimitSettingsPage() {
               min={1}
               value={form.default_rph}
               onChange={(e) => updateField('default_rph', Number(e.target.value))}
-              className="w-24 shrink-0 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm text-right text-(--color-text-primary) tabular-nums"
+              className="w-24 shrink-0 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-1.5 text-sm text-right text-(--color-text-primary) tabular-nums"
             />
           </div>
         </div>

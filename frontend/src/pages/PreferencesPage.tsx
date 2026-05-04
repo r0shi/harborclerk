@@ -49,7 +49,7 @@ export default function PreferencesPage() {
           <select
             value={pageSize}
             onChange={(e) => updatePreferences({ page_size: Number(e.target.value) })}
-            className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+            className="rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
           >
             {PAGE_SIZE_OPTIONS.map((n) => (
               <option key={n} value={n}>
@@ -126,7 +126,7 @@ function ChangePasswordCard() {
           value={current}
           onChange={(e) => setCurrent(e.target.value)}
           required
-          className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          className="w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
         />
         <input
           type="password"
@@ -136,7 +136,7 @@ function ChangePasswordCard() {
           onChange={(e) => setNext(e.target.value)}
           required
           minLength={12}
-          className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          className="w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
         />
         <input
           type="password"
@@ -146,7 +146,7 @@ function ChangePasswordCard() {
           onChange={(e) => setConfirm(e.target.value)}
           required
           minLength={12}
-          className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
+          className="w-full rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-3 py-2 text-sm text-gray-900 dark:text-gray-100"
         />
         {error && (
           <div className="rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">

@@ -275,7 +275,7 @@ function ExploreMain({
               placeholder="Search topics & entities…"
               value={topicSearch}
               onChange={(e) => setTopicSearch(e.target.value)}
-              className="w-64 rounded-md bg-(--color-bg-secondary) pl-8 pr-8 py-1.5 text-sm ring-1 ring-(--color-border) focus:outline-none focus:ring-2"
+              className="w-64 rounded-md bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) pl-8 pr-8 py-1.5 text-sm ring-1 ring-(--color-border) focus:outline-none focus:ring-2"
             />
             {topicSearch && (
               <button
@@ -729,7 +729,7 @@ function ExploreDocList({
           placeholder="Filter by filename..."
           value={filterInput}
           onChange={(e) => handleFilterChange(e.target.value)}
-          className="w-52 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-3 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
+          className="w-52 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-3 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
         />
 
         {filterOptions.mime_types.length > 0 && (
@@ -739,7 +739,7 @@ function ExploreDocList({
               setMimeFilter(e.target.value)
               setCurrentPage(1)
             }}
-            className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+            className="rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
           >
             <option value="">All types</option>
             {filterOptions.mime_types.map((m) => (
@@ -758,7 +758,7 @@ function ExploreDocList({
               setTopicFilter(e.target.value)
               setCurrentPage(1)
             }}
-            className="max-w-48 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+            className="max-w-48 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
           >
             <option value="">All topics</option>
             {clusters.map((c) => (

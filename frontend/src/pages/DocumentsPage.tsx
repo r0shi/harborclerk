@@ -584,7 +584,7 @@ export default function DocumentsPage() {
               placeholder="Filter by filename..."
               value={filterInput}
               onChange={(e) => handleFilterChange(e.target.value)}
-              className="w-64 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
+              className="w-64 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-3 py-1.5 text-sm text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
             />
             <Link
               to="/folders"
@@ -612,7 +612,7 @@ export default function DocumentsPage() {
               onChange={(e) => handleEntityInputChange(e.target.value)}
               onFocus={() => entitySuggestions.length > 0 && setShowEntityDropdown(true)}
               onBlur={() => setTimeout(() => setShowEntityDropdown(false), 200)}
-              className="w-48 rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2.5 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
+              className="w-48 rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-2.5 py-1 text-xs text-(--color-text-primary) placeholder-(--color-text-secondary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30 focus:shadow-md transition-shadow"
             />
             {entityFilter && (
               <button
@@ -650,7 +650,7 @@ export default function DocumentsPage() {
                 setMimeFilter(e.target.value)
                 setCurrentPage(1)
               }}
-              className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+              className="rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
             >
               <option value="">All types</option>
               {filterOptions.mime_types.map((m) => (
@@ -669,7 +669,7 @@ export default function DocumentsPage() {
                 setLangFilter(e.target.value)
                 setCurrentPage(1)
               }}
-              className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+              className="rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
             >
               <option value="">All languages</option>
               {filterOptions.languages.map((l) => (
@@ -688,7 +688,7 @@ export default function DocumentsPage() {
                 setDocTypeFilter(e.target.value)
                 setCurrentPage(1)
               }}
-              className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+              className="rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
             >
               <option value="">All categories</option>
               {filterOptions.doc_types.map((d) => (
@@ -707,7 +707,7 @@ export default function DocumentsPage() {
                 setFolderFilter(e.target.value)
                 setCurrentPage(1)
               }}
-              className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+              className="rounded-lg border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
             >
               <option value="">All folders</option>
               {folderOptions.map((f) => {
@@ -1093,7 +1093,7 @@ export default function DocumentsPage() {
                   setCurrentPage(1)
                   updatePreferences({ page_size: n }).catch(() => {})
                 }}
-                className="rounded-md border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-1.5 py-0.5 text-xs focus:ring-2 focus:ring-(--color-accent)/30"
+                className="rounded-md border-0 bg-(--color-bg-primary) dark:bg-(--color-bg-secondary) shadow-mac px-1.5 py-0.5 text-xs focus:ring-2 focus:ring-(--color-accent)/30"
               >
                 {[10, 25, 50, 100].map((n) => (
                   <option key={n} value={n}>
