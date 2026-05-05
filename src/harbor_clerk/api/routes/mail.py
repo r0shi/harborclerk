@@ -8,6 +8,7 @@ via auth) and by Stage 4's UI.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,10 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import Principal, require_admin
 from harbor_clerk.api.schemas.mail import (
+    FolderInfo,
     MailAccountCreate,
     MailAccountResponse,
+    TestConnectionResponse,
 )
 from harbor_clerk.db import get_session
+from harbor_clerk.mail import AuthError, IMAPConnection, discover_folders
 from harbor_clerk.models import MailAccount
 from harbor_clerk.secrets import get_cipher
 
@@ -108,3 +112,78 @@ async def delete_mail_account(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mail account not found")
     await session.delete(account)
     await session.commit()
+
+
+@router.post(
+    "/mail/accounts/{account_id}/test",
+    response_model=TestConnectionResponse,
+)
+async def test_mail_account(
+    account_id: UUID,
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> TestConnectionResponse:
+    """Open an IMAP connection with the stored credentials and run LIST.
+
+    Returns the discovered folder list on success. On auth failure,
+    updates the account row to status='auth_error' so the UI knows
+    re-entry is needed.
+    """
+    account = (
+        await session.execute(select(MailAccount).where(MailAccount.account_id == account_id))
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mail account not found")
+
+    cipher = get_cipher()
+    try:
+        password = cipher.decrypt(account.app_password_ciphertext, account.key_fingerprint).decode()
+    except Exception as exc:
+        logger.warning("decrypt failed for account %s: %s", account_id, exc)
+        account.status = "key_mismatch"
+        account.last_error = "key fingerprint does not match active master key"
+        await session.commit()
+        return TestConnectionResponse(success=False, error=account.last_error)
+
+    conn = IMAPConnection(
+        host=account.imap_host,
+        port=account.imap_port,
+        username=account.imap_username,
+        password=password,
+    )
+    try:
+        await conn.connect()
+        await conn.login()
+        folders = await discover_folders(conn)
+        await conn.logout()
+    except AuthError as exc:
+        account.status = "auth_error"
+        account.last_error = str(exc)
+        await session.commit()
+        return TestConnectionResponse(success=False, error=str(exc))
+    except Exception as exc:
+        # Network errors, timeouts, etc. — don't change account status
+        # (the account isn't broken, just unreachable right now).
+        try:
+            await conn.logout()
+        except Exception:
+            pass
+        return TestConnectionResponse(success=False, error=f"connection failed: {exc}")
+
+    account.status = "active"
+    account.last_error = None
+    account.last_connected_at = datetime.now(UTC)
+    await session.commit()
+
+    return TestConnectionResponse(
+        success=True,
+        folders=[
+            FolderInfo(
+                path=f.path,
+                display_name=f.path,
+                is_system=f.is_system,
+                has_children=r"\HasChildren" in f.flags,
+            )
+            for f in folders
+        ],
+    )

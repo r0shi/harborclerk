@@ -116,3 +116,77 @@ async def test_delete_mail_account_cascades(client, admin_user, admin_token, db_
     list_resp = await client.get("/api/mail/accounts", headers=auth_header(admin_token))
     usernames = {a["imap_username"] for a in list_resp.json()}
     assert "del@example.com" not in usernames
+
+
+async def test_test_connection_endpoint(client, admin_user, admin_token, monkeypatch):
+    """Test connection endpoint: opens IMAP conn, runs LIST, returns folders."""
+    from tests.mail.conftest import FakeIMAP
+
+    FakeIMAP.reset()
+    FakeIMAP.set_login_response("OK", b"OK")
+    FakeIMAP.set_list_response(
+        "OK",
+        [
+            b'(\\HasNoChildren) "/" "INBOX"',
+            b'(\\HasNoChildren) "/" "Clerk"',
+            b"OK LIST completed",
+        ],
+    )
+    monkeypatch.setattr("harbor_clerk.mail.imap_client.aioimaplib.IMAP4_SSL", FakeIMAP)
+
+    body = {
+        "display_name": "test-conn",
+        "provider": "gmail",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "imap_username": "tc@example.com",
+        "app_password": "good",
+    }
+    create_resp = await client.post("/api/mail/accounts", json=body, headers=auth_header(admin_token))
+    account_id = create_resp.json()["account_id"]
+
+    test_resp = await client.post(
+        f"/api/mail/accounts/{account_id}/test",
+        headers=auth_header(admin_token),
+    )
+    assert test_resp.status_code == 200
+    data = test_resp.json()
+    assert data["success"] is True
+    paths = [f["path"] for f in data["folders"]]
+    assert "INBOX" in paths
+    assert "Clerk" in paths
+
+
+async def test_test_connection_auth_error(client, admin_user, admin_token, monkeypatch):
+    from tests.mail.conftest import FakeIMAP
+
+    FakeIMAP.reset()
+    FakeIMAP.set_login_response("NO", b"AUTHENTICATIONFAILED Invalid credentials")
+    monkeypatch.setattr("harbor_clerk.mail.imap_client.aioimaplib.IMAP4_SSL", FakeIMAP)
+
+    body = {
+        "display_name": "auth-fail",
+        "provider": "gmail",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "imap_username": "fail@example.com",
+        "app_password": "wrong",
+    }
+    create_resp = await client.post("/api/mail/accounts", json=body, headers=auth_header(admin_token))
+    account_id = create_resp.json()["account_id"]
+
+    test_resp = await client.post(
+        f"/api/mail/accounts/{account_id}/test",
+        headers=auth_header(admin_token),
+    )
+    assert test_resp.status_code == 200
+    data = test_resp.json()
+    assert data["success"] is False
+    assert "AUTHENTICATIONFAILED" in data["error"]
+    assert data["folders"] == []
+
+    # Account status should now be 'auth_error'
+    list_resp = await client.get("/api/mail/accounts", headers=auth_header(admin_token))
+    a = next(x for x in list_resp.json() if x["imap_username"] == "fail@example.com")
+    assert a["status"] == "auth_error"
+    assert "AUTHENTICATIONFAILED" in a["last_error"]
