@@ -48,7 +48,5 @@ def get_master_key() -> bytes:
     except binascii.Error as exc:
         raise ValueError(f"{_ENV_VAR} is not valid base64: {exc}") from exc
     if len(decoded) != _KEY_LEN:
-        raise ValueError(
-            f"{_ENV_VAR} must decode to exactly {_KEY_LEN} bytes, got {len(decoded)}"
-        )
+        raise ValueError(f"{_ENV_VAR} must decode to exactly {_KEY_LEN} bytes, got {len(decoded)}")
     return decoded
