@@ -178,3 +178,20 @@ def _synthesize_message_id(eml_bytes: bytes) -> str:
     produces the same id even across labels."""
     h = hashlib.sha256(eml_bytes).hexdigest()[:16]
     return f"<synthetic-{h}@harborclerk.local>"
+
+
+def sanitize_subject_for_filename(subject: str) -> str:
+    """Make a subject safe to use as a filesystem path component.
+
+    - Replaces path separators (/ and \\) and control characters with `_`.
+    - Truncates to 200 chars (filesystem limits + sanity).
+    - Preserves Unicode (storage backends handle UTF-8 paths fine).
+    - Empty or whitespace-only input → 'untitled'.
+    """
+    if not subject or not subject.strip():
+        return "untitled"
+    # Replace path separators and any control char (0x00-0x1F)
+    cleaned = re.sub(r"[/\\\x00-\x1f]", "_", subject)
+    # Collapse runs of whitespace into single spaces
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:200] if cleaned else "untitled"

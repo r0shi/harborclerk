@@ -167,3 +167,30 @@ def test_parse_empty_body_returns_empty_string():
     # Don't call set_content — body is empty
     result = parse_eml(msg.as_bytes())
     assert result.body_text == ""
+
+
+from harbor_clerk.mail.parser import sanitize_subject_for_filename
+
+
+def test_sanitize_subject_replaces_path_separators():
+    assert sanitize_subject_for_filename("docs/2026/Q3 contract") == "docs_2026_Q3 contract"
+    assert sanitize_subject_for_filename("a\\b\\c") == "a_b_c"
+
+
+def test_sanitize_subject_strips_control_characters():
+    assert sanitize_subject_for_filename("hello\x00world\nfoo") == "hello_world_foo"
+
+
+def test_sanitize_subject_truncates_long_strings():
+    long_subject = "x" * 500
+    result = sanitize_subject_for_filename(long_subject)
+    assert len(result) <= 200
+
+
+def test_sanitize_subject_preserves_unicode():
+    assert sanitize_subject_for_filename("日本語の件名") == "日本語の件名"
+
+
+def test_sanitize_subject_handles_empty_input():
+    assert sanitize_subject_for_filename("") == "untitled"
+    assert sanitize_subject_for_filename("   ") == "untitled"
