@@ -12,7 +12,7 @@
 
 import { useState } from 'react'
 
-import { createMailAccount, deleteMailAccount, testMailAccount } from '../api/mail'
+import { createMailAccount, deleteMailAccount, testMailAccount, createWatchedLabel } from '../api/mail'
 import type { FolderInfo } from '../types/mail'
 import { PROVIDER_PRESETS, type ProviderPreset } from '../data/mailProviders'
 
@@ -268,7 +268,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 function LabelsStep({
-  accountId: _accountId,
+  accountId,
   folders,
   onBack,
   onCompleted,
@@ -278,11 +278,115 @@ function LabelsStep({
   onBack: () => void
   onCompleted: () => void
 }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Sort: user labels first, then system folders, both alphabetical.
+  const sortedFolders = [...folders].sort((a, b) => {
+    if (a.is_system !== b.is_system) {
+      return a.is_system ? 1 : -1
+    }
+    return a.path.localeCompare(b.path)
+  })
+
+  function toggle(path: string) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) {
+        next.delete(path)
+      } else {
+        next.add(path)
+      }
+      return next
+    })
+  }
+
+  async function handleSubmit() {
+    if (selected.size === 0) {
+      setError('Pick at least one folder to watch.')
+      return
+    }
+    setSubmitting(true)
+    setError(null)
+    const errors: string[] = []
+    for (const path of selected) {
+      try {
+        await createWatchedLabel({
+          account_id: accountId,
+          label_path: path,
+          display_name: path.split('/').pop() || path,
+        })
+      } catch (e) {
+        errors.push(`${path}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    setSubmitting(false)
+    if (errors.length > 0) {
+      setError(errors.join('; '))
+      return
+    }
+    onCompleted()
+  }
+
   return (
     <div className="px-6 py-5">
-      <p>Stub: {folders.length} folders</p>
-      <button onClick={onBack}>Back</button>
-      <button onClick={onCompleted}>Done</button>
+      <p className="text-sm text-(--color-text-secondary) mb-3">
+        Pick which folders to watch. Each folder you tick will be synced into Documents as new mail arrives.
+      </p>
+
+      <div className="max-h-80 overflow-y-auto rounded-md border border-(--color-border)">
+        {sortedFolders.map((folder) => {
+          const isChecked = selected.has(folder.path)
+          return (
+            <label
+              key={folder.path}
+              className="flex items-center gap-2 px-3 py-2 hover:bg-(--color-bg-secondary) cursor-pointer border-b border-(--color-border) last:border-b-0"
+            >
+              <input
+                type="checkbox"
+                checked={isChecked}
+                onChange={() => toggle(folder.path)}
+                className="h-3.5 w-3.5 rounded-sm border-gray-300 text-(--color-accent) focus:ring-(--color-accent)/30"
+              />
+              <span className="flex-1 text-sm">{folder.path}</span>
+              {folder.is_system && (
+                <span
+                  className="text-xs text-amber-600 dark:text-amber-400"
+                  title="System folder. Picking this will sync the entire account; usually you want a user label like 'Clerk' instead."
+                >
+                  System
+                </span>
+              )}
+            </label>
+          )
+        })}
+      </div>
+
+      {error && (
+        <p className="mt-3 text-sm text-red-600 dark:text-red-400" role="alert">
+          {error}
+        </p>
+      )}
+
+      <div className="mt-5 flex justify-between">
+        <button
+          type="button"
+          onClick={onBack}
+          disabled={submitting}
+          className="rounded-lg border border-(--color-border) px-3 py-1.5 text-sm disabled:opacity-50"
+        >
+          Back
+        </button>
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={submitting || selected.size === 0}
+          className="rounded-lg bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        >
+          {submitting ? 'Adding…' : `Watch ${selected.size} folder${selected.size === 1 ? '' : 's'}`}
+        </button>
+      </div>
     </div>
   )
 }
