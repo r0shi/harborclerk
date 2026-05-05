@@ -53,6 +53,30 @@ def test_classify_rate_limit():
     assert kind == "rate_limit"
 
 
+def test_classify_does_not_match_hf_unauthenticated_warning():
+    """HF prints this on every anonymous download — it's informational, not a
+    rate-limit hit. The supervisor must not fire `rate_limit` events on it."""
+    line = (
+        "WARNING huggingface_hub.utils._http Warning: You are sending "
+        "unauthenticated requests to the HF Hub. Please set a HF_TOKEN to "
+        "enable higher rate limits and faster downloads."
+    )
+    assert classify(line) is None
+
+
+def test_classify_rate_limit_phrases():
+    """Exhaustive check of phrases that SHOULD trigger rate_limit."""
+    for line in (
+        "Error code: 429",
+        "anthropic.RateLimitError: too many requests",
+        "rate limit exceeded after 5 retries",
+        "we got rate-limited by upstream",
+        "request was rate limit hit at 17:53",
+    ):
+        kind, _ = classify(line)
+        assert kind == "rate_limit", f"missed: {line!r}"
+
+
 def test_classify_model_activate():
     line = "2026-05-05 12:34:56 INFO activating model qwen3.6-35b (was qwen3-8b)"
     kind, groups = classify(line)

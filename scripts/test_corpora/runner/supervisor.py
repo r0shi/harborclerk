@@ -51,7 +51,16 @@ PATTERNS: dict[str, re.Pattern] = {
     "sample_card": re.compile(r"^\[Phase (?P<phase>\d+) · (?P<model>[\w.\-]+) · (?P<corpus>\w+) · (?P<qid>[\w-]+)\]"),
     "blocked": re.compile(r"sweep stops|^blocked\b", re.IGNORECASE),
     "error": re.compile(r"\b(ERROR|Traceback|OOM|Killed|Connection refused|HTTPStatusError|ReadTimeout)\b"),
-    "rate_limit": re.compile(r"\b429\b|rate.?limit", re.IGNORECASE),
+    # Match real rate-limit signals only:
+    #   - HTTP 429 status codes
+    #   - SDK exception class names (Anthropic, OpenAI)
+    #   - explicit "exceeded" / "hit" / "throttled" wording
+    # Crucially this does NOT match HuggingFace's informational warning
+    # "Please set a HF_TOKEN to enable higher rate limits", which is benign.
+    "rate_limit": re.compile(
+        r"\b429\b|RateLimitError|rate.?limit(?:[\- ](?:exceed|hit|reach|throttl)|ed\b)",
+        re.IGNORECASE,
+    ),
     "model_activate": re.compile(r"activating model (?P<model>[\w.\-]+)"),
     "ingest_start": re.compile(r"clearing existing watch folders|delete_all_documents before ingesting"),
 }
