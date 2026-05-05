@@ -36,3 +36,34 @@ def build_simple_email(
     msg["Date"] = date or formatdate(localtime=False, usegmt=True)
     msg.set_content(body_text)
     return msg.as_bytes()
+
+
+def build_email_with_attachments(
+    *,
+    message_id: str | None = "<with-attach@example.com>",
+    subject: str = "See attached",
+    sender: str = "alice@example.com",
+    body_text: str = "Body text.",
+    attachments: list[tuple[str, str, bytes]] | None = None,
+) -> bytes:
+    """Build a multipart/mixed email with N attachments.
+
+    `attachments` is a list of (filename, mime_type, content) tuples.
+    """
+    msg = EmailMessage()
+    if message_id is not None:
+        msg["Message-ID"] = message_id
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = "bob@example.com"
+    msg["Date"] = formatdate(localtime=False, usegmt=True)
+    msg.set_content(body_text)
+    for filename, mime_type, content in attachments or []:
+        maintype, _, subtype = mime_type.partition("/")
+        msg.add_attachment(
+            content,
+            maintype=maintype,
+            subtype=subtype,
+            filename=filename,
+        )
+    return msg.as_bytes()
