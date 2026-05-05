@@ -159,6 +159,46 @@ def test_supervisor_attributes_consecutive_errors_to_active_model(tmp_path: Path
     assert rec["model"] == "deepseek-r1-8b"
 
 
+def test_supervisor_does_not_flag_stuck_when_log_is_noisy(tmp_path: Path):
+    """Phase 1 baseline generation prints lots of unrecognized httpx INFO lines
+    but no sample_cards. The supervisor must treat any log activity as
+    liveness — only true silence (no lines at all) should trigger 'stuck'."""
+    log = tmp_path / "test.log"
+    # Many unrecognized lines, then a completion to end the supervisor cleanly.
+    log.write_text(
+        "\n".join(
+            [
+                "INFO httpx HTTP Request: POST https://api.anthropic.com/v1/messages 200 OK",
+                "INFO httpx HTTP Request: POST https://api.anthropic.com/v1/messages 200 OK",
+                "INFO httpx HTTP Request: POST https://api.anthropic.com/v1/messages 200 OK",
+                "sweep complete after 100s",
+            ]
+        )
+        + "\n"
+    )
+
+    out = io.StringIO()
+    from scripts.test_corpora.runner import supervisor as sup
+
+    original = sup.tail_lines
+
+    def fake_tail(path, poll_seconds=1.0):
+        yield from log.read_text().splitlines()
+
+    sup.tail_lines = fake_tail
+    try:
+        # stuck_threshold = 0 means any idle window triggers stuck — but since
+        # the lines are read sequentially without an idle gap, none should fire.
+        sup.supervise(log, out=out, notify=False, stuck_threshold=0)
+    finally:
+        sup.tail_lines = original
+
+    events = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    types = [e["event"] for e in events]
+    assert "stuck" not in types
+    assert "completion" in types
+
+
 def test_supervisor_resets_error_counter_on_sample_card(tmp_path: Path):
     """A successful completion (sample_card) between errors clears the streak."""
     events = _run_supervisor_against(
