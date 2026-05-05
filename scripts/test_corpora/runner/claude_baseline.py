@@ -20,7 +20,6 @@ from typing import Any
 
 import anthropic
 
-
 SYSTEM_PROMPT = """You are answering a user's question about a specific document corpus.
 You have access to the corpus only through the provided MCP tools (kb_search,
 kb_read_passages, kb_get_document, kb_find_related, etc.). Use them as
@@ -95,9 +94,12 @@ class BaselineGenerator:
 
     def _collect_doc_ids(self, obj: Any) -> None:
         if isinstance(obj, dict):
-            if "doc_id" in obj and isinstance(obj["doc_id"], str):
-                if obj["doc_id"] not in self._doc_ids_seen:
-                    self._doc_ids_seen.append(obj["doc_id"])
+            if (
+                "doc_id" in obj
+                and isinstance(obj["doc_id"], str)
+                and obj["doc_id"] not in self._doc_ids_seen
+            ):
+                self._doc_ids_seen.append(obj["doc_id"])
             for v in obj.values():
                 self._collect_doc_ids(v)
         elif isinstance(obj, list):

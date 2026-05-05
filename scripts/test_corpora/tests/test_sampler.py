@@ -1,6 +1,4 @@
-import io
-
-from scripts.test_corpora.runner.sampler import Sampler, CompletionEvent
+from scripts.test_corpora.runner.sampler import CompletionEvent, Sampler
 
 
 def make_event(idx: int) -> CompletionEvent:

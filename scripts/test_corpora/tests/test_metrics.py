@@ -1,6 +1,6 @@
 from scripts.test_corpora.runner.metrics import (
-    citation_overlap,
     citation_extra,
+    citation_overlap,
     entity_overlap,
 )
 

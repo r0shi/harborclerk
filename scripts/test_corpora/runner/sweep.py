@@ -39,10 +39,9 @@ from scripts.test_corpora.corpora.manifest import CorpusManifest
 from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
 from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
 from scripts.test_corpora.runner.judge import JudgeClient
-from scripts.test_corpora.runner.metrics import citation_overlap, citation_extra, entity_overlap
+from scripts.test_corpora.runner.metrics import citation_extra, citation_overlap, entity_overlap
 from scripts.test_corpora.runner.sampler import CompletionEvent, Sampler
 from scripts.test_corpora.runner.state import StateFile, Status, Unit
-
 
 log = logging.getLogger("sweep")
 

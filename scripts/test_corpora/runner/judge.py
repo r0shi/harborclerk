@@ -14,7 +14,6 @@ import re
 
 import anthropic
 
-
 JUDGE_PROMPT = """You are evaluating whether a local LLM's answer reaches the same factual
 ground as a Claude baseline answer to the same question.
 

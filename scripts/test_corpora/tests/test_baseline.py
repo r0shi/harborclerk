@@ -1,4 +1,3 @@
-import json
 from unittest.mock import MagicMock
 
 from scripts.test_corpora.runner.claude_baseline import BaselineGenerator, BaselineResult

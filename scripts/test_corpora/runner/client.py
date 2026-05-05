@@ -59,11 +59,10 @@ class SyncMcpSession:
             self._url,
             headers=self._headers,
             timeout=self._timeout,
-        ) as (read, write, _):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.list_tools()
-                return result.tools
+        ) as (read, write, _), ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.list_tools()
+            return result.tools
 
     async def _call_tool_async(self, name: str, args: dict) -> Any:
         from mcp import ClientSession
@@ -73,10 +72,9 @@ class SyncMcpSession:
             self._url,
             headers=self._headers,
             timeout=self._timeout,
-        ) as (read, write, _):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                return await session.call_tool(name, args)
+        ) as (read, write, _), ClientSession(read, write) as session:
+            await session.initialize()
+            return await session.call_tool(name, args)
 
     # ── public synchronous API ──
 
@@ -90,7 +88,7 @@ class SyncMcpSession:
 
     # ── context manager ──
 
-    def __enter__(self) -> "SyncMcpSession":
+    def __enter__(self) -> SyncMcpSession:
         return self
 
     def __exit__(self, *_: Any) -> None:

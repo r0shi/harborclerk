@@ -60,7 +60,7 @@ class Unit:
         }
 
     @classmethod
-    def from_json(cls, d: dict) -> "Unit":
+    def from_json(cls, d: dict) -> Unit:
         return cls(
             phase=d["phase"],
             corpus=d["corpus"],
@@ -201,7 +201,7 @@ class StateFile:
 
     # ── context manager ──
 
-    def __enter__(self) -> "StateFile":
+    def __enter__(self) -> StateFile:
         self.acquire_lock()
         return self
 
