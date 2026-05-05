@@ -5,8 +5,10 @@ from datetime import UTC, datetime
 import pytest
 
 from harbor_clerk.mail.imap_client import IMAPConnection
-from harbor_clerk.mail.ingest import create_email_document, fetch_eml_bytes
-from harbor_clerk.mail.parser import EmailParseResult
+from harbor_clerk.mail.ingest import create_attachment_documents, create_email_document, fetch_eml_bytes
+from harbor_clerk.mail.parser import AttachmentSpec, EmailParseResult
+from harbor_clerk.models import Document
+from harbor_clerk.models.enums import PipelineStatus
 
 
 @pytest.fixture
@@ -79,3 +81,55 @@ async def test_create_email_document_persists_metadata(db_session, watched_label
     assert doc.original_object_key is not None
     assert str(doc.doc_id) in doc.original_object_key
     assert doc.original_object_key.endswith(".eml")
+
+
+async def test_create_attachment_documents_links_to_parent(db_session, watched_label):
+    # Set up parent email Document
+    parent = Document(
+        title="Parent email",
+        canonical_filename="parent.eml",
+        sha256=b"\x01" * 32,
+        pipeline_status=PipelineStatus.queued,
+        mime_type="message/rfc822",
+        email_message_id="<parent@example.com>",
+        email_label_path=watched_label.label_path,
+    )
+    db_session.add(parent)
+    await db_session.flush()
+
+    attachments = [
+        AttachmentSpec(filename="contract.pdf", mime_type="application/pdf", content=b"%PDF-1.4 fake"),
+        AttachmentSpec(
+            filename="addendum.docx",
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            content=b"PK fake docx",
+        ),
+    ]
+    parsed = EmailParseResult(
+        message_id="<parent@example.com>",
+        subject="Parent email",
+        from_address="alice@example.com",
+        from_name="Alice",
+        date_sent=datetime(2026, 4, 30, tzinfo=UTC),
+        attachments=attachments,
+    )
+
+    docs = await create_attachment_documents(
+        db_session,
+        parsed=parsed,
+        parent_doc=parent,
+        label=watched_label,
+    )
+    await db_session.flush()
+
+    assert len(docs) == 2
+    assert docs[0].title == "contract.pdf"
+    assert docs[0].email_parent_doc_id == parent.doc_id
+    assert docs[0].email_message_id == "<parent@example.com>"
+    assert docs[0].mime_type == "application/pdf"
+    assert docs[0].original_object_key.endswith("contract.pdf")
+    # created_at inherits from parent's send date so attachments sort with their email
+    assert docs[0].created_at == datetime(2026, 4, 30, tzinfo=UTC)
+
+    assert docs[1].title == "addendum.docx"
+    assert docs[1].email_parent_doc_id == parent.doc_id
