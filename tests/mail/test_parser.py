@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from harbor_clerk.mail.parser import parse_eml
+from harbor_clerk.mail.parser import parse_eml, sanitize_subject_for_filename
 from tests.mail.fixtures.build_eml import build_email_with_attachments, build_simple_email
 
 
@@ -167,9 +167,6 @@ def test_parse_empty_body_returns_empty_string():
     # Don't call set_content — body is empty
     result = parse_eml(msg.as_bytes())
     assert result.body_text == ""
-
-
-from harbor_clerk.mail.parser import sanitize_subject_for_filename
 
 
 def test_sanitize_subject_replaces_path_separators():
