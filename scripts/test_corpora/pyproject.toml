@@ -1,0 +1,27 @@
+[project]
+name = "harbor-clerk-test-corpora"
+version = "0.1.0"
+description = "Multi-hour test sweep harness for Harbor Clerk LLM models"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "httpx>=0.28",
+    "anthropic>=0.43",
+    "mcp>=1.9",
+    "pyyaml>=6",
+    "tenacity>=9",
+    "pypdfium2>=4",
+    "Pillow>=12",
+    "spacy>=3.7",
+    "huggingface_hub>=0.25",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=9",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["../.."]

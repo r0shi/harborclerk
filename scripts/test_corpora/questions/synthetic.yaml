@@ -1,0 +1,46 @@
+research:
+  - id: synthetic-research-1
+    text: "Compare quarterly performance trends across departments at Marbledock & Associates."
+  - id: synthetic-research-2
+    text: "What are the consistent themes in employee onboarding documents?"
+  - id: synthetic-research-3
+    text: "Identify the major vendor relationships and their evolution over the year."
+  - id: synthetic-research-4
+    text: "Survey policy changes across the year and their stated rationale."
+  - id: synthetic-research-5
+    text: "Compare meeting agenda patterns across the board over time."
+  - id: synthetic-research-6
+    cross_language: true
+    variants:
+      - lang: en
+        text: "What were the major board decisions in Q3?"
+      - lang: fr
+        text: "Quelles étaient les principales décisions du conseil au troisième trimestre?"
+
+ask:
+  - id: synthetic-ask-1
+    text: "What was the agreed price in the Q3 vendor contract with Globex Supplies?"
+    notes: "answer in synthetic-corpus ground truth sidecar"
+  - id: synthetic-ask-2
+    text: "Who signed the new employee handbook policy update of 2025-06?"
+  - id: synthetic-ask-3
+    text: "Find documents about the Polestar Industries account."
+  - id: synthetic-ask-4
+    text: "List all invoices from Initech Software in 2025."
+  - id: synthetic-ask-5
+    text: "What was the total of invoices in March 2025?"
+  - id: synthetic-ask-6
+    text: "What policies were updated in Q2 2025?"
+  - id: synthetic-ask-7
+    text: "Quel est le sujet du procès-verbal de la réunion du conseil de mars 2025?"
+  - id: synthetic-ask-8
+    text: "List all signatories of board meetings in 2025."
+  - id: synthetic-ask-9
+    text: "Find marketing copy mentioning the Skylight campaign."
+  - id: synthetic-ask-10
+    cross_language: true
+    variants:
+      - lang: en
+        text: "Find the bilingual employee handbook from 2025."
+      - lang: fr
+        text: "Trouvez le manuel des employés bilingue de 2025."
