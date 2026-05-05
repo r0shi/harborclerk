@@ -156,7 +156,12 @@ In a second terminal, start the supervisor:
 # on BIG
 uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
     scripts.test_corpora.runner.supervisor \
-    --log-file ~/sweep-logs/phase01-big.log
+    --log-file ~/sweep-logs/phase01-big.log \
+    --workdir "$WORKDIR" --run-id "$RUN"
+# --workdir + --run-id let the heartbeat events include real progress
+# numbers (state.json summary, corpus/baseline file counts).
+# --heartbeat-seconds N changes the cadence (default 600s = 10 min,
+# 0 disables).
 ```
 
 Expected wall-clock: ~10 min for Phase 0 (synthetic generation dominates) + ~30-60 min for Phase 1 (48 questions × ~30-60 s each, Sonnet tool-call rounds).
@@ -196,7 +201,8 @@ tmux new -d -s sweep-mini "uv --project scripts/test_corpora run python -m \
 
 uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
     scripts.test_corpora.runner.supervisor \
-    --log-file ~/sweep-logs/phase4-mini.log
+    --log-file ~/sweep-logs/phase4-mini.log \
+    --workdir "$WORKDIR" --run-id "$RUN"
 ```
 
 Wall-clock estimate: 6 models × 50 questions × ~5 min average = **~25 hours**. The corpus-outer loop ordering means only 3 DB wipes total (one per corpus), not 18.
@@ -216,7 +222,8 @@ tmux new -d -s sweep-big "uv --project scripts/test_corpora run python -m \
 
 uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
     scripts.test_corpora.runner.supervisor \
-    --log-file ~/sweep-logs/phase4-big.log
+    --log-file ~/sweep-logs/phase4-big.log \
+    --workdir "$WORKDIR" --run-id "$RUN"
 ```
 
 Wall-clock estimate: 2 models × 50 questions × ~10-15 min average = **~17-25 hours** (the larger models are slower).
@@ -253,7 +260,8 @@ tmux new -d -s sweep-parity "uv --project scripts/test_corpora run python -m \
 
 uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
     scripts.test_corpora.runner.supervisor \
-    --log-file ~/sweep-logs/phase5-big.log
+    --log-file ~/sweep-logs/phase5-big.log \
+    --workdir "$WORKDIR" --run-id "$RUN"
 ```
 
 Wall-clock estimate: ~17-25 hours of model runs + ~$1-2 in Sonnet judge calls (100 calls × ~$0.01-0.02 each).

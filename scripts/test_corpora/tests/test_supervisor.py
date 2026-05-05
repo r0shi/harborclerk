@@ -13,6 +13,7 @@ from pathlib import Path
 from scripts.test_corpora.runner.supervisor import (
     PATTERNS,
     classify,
+    summarize_progress,
 )
 
 # ── classifier ───────────────────────────────────────────────────────────────
@@ -197,6 +198,117 @@ def test_supervisor_does_not_flag_stuck_when_log_is_noisy(tmp_path: Path):
     types = [e["event"] for e in events]
     assert "stuck" not in types
     assert "completion" in types
+
+
+# ── progress summary ────────────────────────────────────────────────────────
+
+
+def test_summarize_progress_empty_when_no_workdir():
+    assert summarize_progress(None, "run") == {}
+    assert summarize_progress(Path("/nope"), None) == {}
+
+
+def test_summarize_progress_reads_state_and_dirs(tmp_path: Path):
+    workdir = tmp_path / "wd"
+    run_id = "test-run"
+    run_dir = workdir / "results" / run_id
+    run_dir.mkdir(parents=True)
+
+    # state.json: 2 phase-0 done, 1 phase-0 in_progress, 50 phase-1 pending
+    (run_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "units": [
+                    {"phase": 0, "status": "done", "corpus": "cuad"},
+                    {"phase": 0, "status": "done", "corpus": "enron"},
+                    {"phase": 0, "status": "in_progress", "corpus": "synthetic"},
+                ]
+                + [{"phase": 1, "status": "pending", "corpus": "cuad"} for _ in range(50)]
+            }
+        )
+    )
+
+    # synthetic generation 42 docs in
+    (workdir / "synthetic" / "ingest").mkdir(parents=True)
+    for i in range(42):
+        (workdir / "synthetic" / "ingest" / f"doc-{i:04d}.txt").write_text("x")
+
+    # 7 baselines for cuad written so far
+    (run_dir / "baselines" / "cuad").mkdir(parents=True)
+    for i in range(7):
+        (run_dir / "baselines" / "cuad" / f"q{i}.json").write_text("{}")
+
+    summary = summarize_progress(workdir, run_id)
+    assert summary["state"] == {
+        "0": {"done": 2, "in_progress": 1},
+        "1": {"pending": 50},
+    }
+    assert summary["corpus_synthetic_files"] == 42
+    assert summary["baselines_cuad"] == 7
+
+
+def test_supervisor_emits_heartbeat_event(tmp_path: Path):
+    """heartbeat_seconds=0.0 forces a heartbeat on every loop iteration."""
+    log = tmp_path / "test.log"
+    log.write_text(
+        "\n".join(
+            [
+                "INFO routine activity 1",
+                "INFO routine activity 2",
+                "sweep complete after 10s",
+            ]
+        )
+        + "\n"
+    )
+
+    out = io.StringIO()
+    from scripts.test_corpora.runner import supervisor as sup
+
+    original = sup.tail_lines
+
+    def fake_tail(path, poll_seconds=1.0):
+        yield from log.read_text().splitlines()
+
+    sup.tail_lines = fake_tail
+    try:
+        sup.supervise(
+            log,
+            out=out,
+            notify=False,
+            stuck_threshold=999,
+            heartbeat_seconds=0.0001,  # tiny → fires basically every iteration
+        )
+    finally:
+        sup.tail_lines = original
+
+    events = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    types = [e["event"] for e in events]
+    assert "heartbeat" in types
+    hb = next(e for e in events if e["event"] == "heartbeat")
+    assert "uptime_seconds" in hb
+    assert "lines_seen" in hb
+    assert "log" in hb
+
+
+def test_supervisor_does_not_emit_heartbeat_when_disabled(tmp_path: Path):
+    log = tmp_path / "test.log"
+    log.write_text("INFO line\nsweep complete after 1s\n")
+    out = io.StringIO()
+    from scripts.test_corpora.runner import supervisor as sup
+
+    original = sup.tail_lines
+
+    def fake_tail(path, poll_seconds=1.0):
+        yield from log.read_text().splitlines()
+
+    sup.tail_lines = fake_tail
+    try:
+        sup.supervise(log, out=out, notify=False, stuck_threshold=999, heartbeat_seconds=0)
+    finally:
+        sup.tail_lines = original
+
+    events = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+    assert "heartbeat" not in [e["event"] for e in events]
 
 
 def test_supervisor_resets_error_counter_on_sample_card(tmp_path: Path):
