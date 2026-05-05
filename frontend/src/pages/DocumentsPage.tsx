@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { get, post, del, downloadBlob } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents } from '../hooks/useJobEvents'
+import { useSystemConfig } from '../hooks/useSystemConfig'
 import { PageHeader } from '../components/PageHeader'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
@@ -147,6 +148,8 @@ function Pagination({
 export default function DocumentsPage() {
   const { user, isAdmin, updatePreferences } = useAuth()
   const [searchParams] = useSearchParams()
+  const sysConfig = useSystemConfig()
+  const canDownload = sysConfig.allowSourceDownload && sysConfig.loaded
   const [pageSize, setPageSize] = useState(user?.preferences?.page_size || 10)
   const [docs, setDocs] = useState<DocSummary[]>([])
   const [total, setTotal] = useState(0)
@@ -802,6 +805,7 @@ export default function DocumentsPage() {
               isAdmin={isAdmin}
               bulkAction={bulkAction}
               confirmingDelete={confirmingDelete}
+              canDownload={canDownload}
               onReprocess={handleBulkReprocess}
               onResummarize={handleBulkResummarize}
               onDelete={handleBulkDelete}
@@ -979,25 +983,27 @@ export default function DocumentsPage() {
                           {new Date(doc.updated_at).toLocaleDateString()}
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <button
-                            onClick={() => handleDownload(doc.doc_id)}
-                            className="rounded-sm p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
-                            title="Download original"
-                          >
-                            <svg
-                              className="h-4 w-4"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              stroke="currentColor"
-                              strokeWidth={2}
+                          {canDownload && (
+                            <button
+                              onClick={() => handleDownload(doc.doc_id)}
+                              className="rounded-sm p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                              title="Download original"
                             >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
-                              />
-                            </svg>
-                          </button>
+                              <svg
+                                className="h-4 w-4"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={2}
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+                                />
+                              </svg>
+                            </button>
+                          )}
                         </td>
                       </tr>
                       {isExpanded && (
@@ -1083,6 +1089,7 @@ export default function DocumentsPage() {
               isAdmin={isAdmin}
               bulkAction={bulkAction}
               confirmingDelete={confirmingDelete}
+              canDownload={canDownload}
               onReprocess={handleBulkReprocess}
               onResummarize={handleBulkResummarize}
               onDelete={handleBulkDelete}
@@ -1134,6 +1141,7 @@ function BulkActionsBar({
   isAdmin,
   bulkAction,
   confirmingDelete,
+  canDownload,
   onReprocess,
   onResummarize,
   onDelete,
@@ -1145,6 +1153,7 @@ function BulkActionsBar({
   isAdmin: boolean
   bulkAction: string
   confirmingDelete: boolean
+  canDownload: boolean
   onReprocess: () => void
   onResummarize: () => void
   onDelete: () => void
@@ -1174,13 +1183,15 @@ function BulkActionsBar({
           </button>
         </>
       )}
-      <button
-        onClick={onDownload}
-        disabled={!!bulkAction}
-        className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-50"
-      >
-        {bulkAction === 'download' ? 'Downloading...' : 'Download'}
-      </button>
+      {canDownload && (
+        <button
+          onClick={onDownload}
+          disabled={!!bulkAction}
+          className="rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-50"
+        >
+          {bulkAction === 'download' ? 'Downloading...' : 'Download'}
+        </button>
+      )}
       {isAdmin &&
         (confirmingDelete ? (
           <div className="flex items-center gap-1.5">
