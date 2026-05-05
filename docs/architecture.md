@@ -17,6 +17,10 @@ graph TB
         api["FastAPI<br/>REST API + MCP + SPA"]
     end
 
+    subgraph Watcher
+        watcher["Watcher<br/>Python watchdog<br/>FSEvents / inotify / polling"]
+    end
+
     subgraph Workers
         wio["Worker (io queue)<br/>extract, chunk, entities,<br/>summarize, finalize"]
         wcpu["Worker (cpu queue)<br/>OCR, embed"]
@@ -24,12 +28,12 @@ graph TB
 
     subgraph Data
         pg[("PostgreSQL 18<br/>+ pgvector + pg_trgm")]
-        store["Object Storage<br/>MinIO or Filesystem"]
+        fs["Source filesystem<br/>(read in place)"]
     end
 
     subgraph Services
         tika["Apache Tika<br/>text extraction"]
-        embedder["Embedder<br/>all-MiniLM-L6-v2<br/>384-dim"]
+        embedder["Embedder<br/>multilingual-e5-small<br/>384-dim"]
         llama["llama.cpp<br/>local LLM inference"]
     end
 
@@ -38,27 +42,30 @@ graph TB
     caddy --> api
 
     api -- "async queries" --> pg
-    api -- "upload/download" --> store
     api -- "chat streaming" --> llama
     api -- "SSE /api/jobs/stream" --> browser
 
+    watcher -- "scan + LISTEN" --> fs
+    watcher -- "enqueue ingest jobs" --> pg
+
     wio -- "poll jobs<br/>LISTEN/NOTIFY" --> pg
     wcpu -- "poll jobs<br/>LISTEN/NOTIFY" --> pg
+    wio -- "read source" --> fs
+    wcpu -- "read source" --> fs
     wio -- "extract" --> tika
     wcpu -- "OCR" --> tika
     wcpu -- "embed" --> embedder
-    wio -- "store originals" --> store
 
     llama -. "tool calls<br/>via API" .-> api
 ```
 
 ## Ingestion Pipeline
 
-Seven idempotent stages, each guarded by row-level lock on `(version_id, stage)`:
+Seven idempotent stages, each guarded by a row-level lock on `(doc_id, stage)`:
 
 ```mermaid
 graph LR
-    upload(("Upload"))
+    drop(("File appears in<br/>watched folder"))
 
     extract["1. extract<br/><i>io queue</i><br/>Tika / plain text"]
     ocr["2. ocr<br/><i>cpu queue</i><br/>pypdfium2 + Tesseract"]
@@ -70,7 +77,7 @@ graph LR
 
     finalize["7. finalize<br/><i>io queue</i><br/>mark complete"]
 
-    upload --> extract --> ocr --> chunk
+    drop --> extract --> ocr --> chunk
 
     chunk --> entities & embed & summarize
 
@@ -90,7 +97,7 @@ graph LR
     query["Search Query"]
     fts["PostgreSQL FTS<br/>bilingual (en + fr)"]
     vec["pgvector<br/>cosine similarity"]
-    merge["Merge & Dedupe<br/>version boost<br/>OCR confidence boost"]
+    merge["Normalize & merge scores<br/>OCR-confidence boost"]
     results["Top K Results<br/>with citations"]
 
     query --> fts & vec
@@ -108,19 +115,27 @@ graph TB
     subgraph docker["Docker Compose"]
         gw["gateway<br/>Caddy"]
         app["app<br/>FastAPI"]
+        watcher["watcher<br/>(harbor-clerk-watcher)"]
         wio["worker-io"]
         wcpu["worker-cpu"]
         emb["embedder"]
         pg[("postgres<br/>pgvector/pgvector:pg18")]
-        minio["minio"]
+        minio["minio<br/>(legacy upload API)"]
         tika["tika"]
         llama["llama-server"]
     end
 
+    host_fs["Host bind mount<br/>./data/watch"]
+
     gw --> app
-    app --> pg & minio & llama
-    wio --> pg & tika & minio
+    app --> pg & llama
+    app -. "legacy uploads" .-> minio
+    watcher --> pg
+    watcher -- "WATCH_ROOT<br/>/data/watch" --> host_fs
+    wio --> pg & tika
+    wio --> host_fs
     wcpu --> pg & tika & emb
+    wcpu --> host_fs
 ```
 
 ### macOS Native
@@ -134,17 +149,30 @@ graph TB
         emb["Embedder<br/>(subprocess)"]
         llama["llama.cpp<br/>(subprocess)"]
         api["harbor-clerk-api<br/>(subprocess)"]
+        watcher["harbor-clerk-watcher<br/>(subprocess)"]
         wio["worker io<br/>(subprocess)"]
         wcpu["worker cpu<br/>(subprocess)"]
     end
 
-    client["Harbor Clerk<br/>(WKWebView app)"]
+    subgraph client["Harbor Clerk (WKWebView app)"]
+        spa["React SPA"]
+        bridge["Swift JS bridges<br/>pickFolder · revealInFinder"]
+    end
 
-    sm --> pg & tika & emb & llama & api & wio & wcpu
-    client -- "http://localhost:8000" --> api
+    user_dirs["User-picked folders<br/>(anywhere on disk)"]
+
+    sm --> pg & tika & emb & llama & api & watcher & wio & wcpu
+    spa -- "http://localhost:8000" --> api
+    spa -. "window.harborclerk" .-> bridge
+    bridge -. "NSOpenPanel · NSWorkspace" .-> user_dirs
+    watcher --> user_dirs
+    wio --> user_dirs
+    wcpu --> user_dirs
 ```
 
 ## Data Model (key tables)
+
+The document model is flat: each `documents` row tracks one source file, including its current ingestion status, summary, and OCR/extraction metadata. Previous versions are not retained as a separate table — reprocessing updates the row in place.
 
 ```mermaid
 erDiagram
@@ -152,15 +180,14 @@ erDiagram
     users ||--o{ conversations : has
     conversations ||--o{ chat_messages : contains
 
-    documents ||--o{ document_versions : has
-    document_versions ||--o{ document_pages : has
-    document_versions ||--o{ document_headings : has
-    document_versions ||--o{ chunks : has
-    document_versions ||--o{ entities : has
-    document_versions ||--o{ ingestion_jobs : tracks
+    watched_folders ||--o{ watched_files : tracks
+    watched_files ||--o| documents : "ingests as"
 
-    upload_sessions ||--o{ uploads : groups
-    uploads ||--o| document_versions : creates
+    documents ||--o{ document_pages : has
+    documents ||--o{ document_headings : has
+    documents ||--o{ chunks : has
+    documents ||--o{ entities : has
+    documents ||--o{ ingestion_jobs : tracks
 
     chunks {
         text content
@@ -171,12 +198,11 @@ erDiagram
 
     documents {
         text title
-        text filename
-    }
-
-    document_versions {
+        text canonical_filename
+        text source_path
         enum status
         text summary
+        bytea sha256
     }
 
     ingestion_jobs {
@@ -184,7 +210,16 @@ erDiagram
         enum status
         timestamp heartbeat_at
     }
+
+    watched_folders {
+        text path
+        text label
+        bool auto_discovered
+        text unavailable_reason
+    }
 ```
+
+> The legacy `uploads` and `upload_sessions` tables remain in the schema to keep the `POST /api/uploads/*` endpoints alive for non-interactive callers (planned email ingestion). The web UI no longer offers a direct upload affordance.
 
 ## Auth Model
 
@@ -200,6 +235,6 @@ graph LR
     hash --> api
 
     api -- "role: admin" --> full["Full Access"]
-    api -- "role: user" --> limited["Read + Upload"]
-    api -- "api_key" --> readonly["Read-Only"]
+    api -- "role: user" --> limited["Read"]
+    api -- "api_key" --> readonly["Read-Only (scoped)"]
 ```
