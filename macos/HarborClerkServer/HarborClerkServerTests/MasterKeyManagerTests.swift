@@ -60,4 +60,14 @@ final class MasterKeyManagerTests: XCTestCase {
         // 32 bytes → 44 chars base64 (with padding)
         XCTAssertEqual(encoded.count, 44)
     }
+
+    // Note: a Swift unit test for ServiceManager.pythonEnvironment() was
+    // attempted here but reproducibly hangs the XCTest runner in this dev
+    // environment (macOS 26 + Xcode 26 beta — runner fails to establish
+    // connection when MasterKeyManagerTests imports ServiceManager). The
+    // env-var wiring (HARBOR_CLERK_MASTER_KEY → Python subprocesses) is
+    // instead verified end-to-end by Task 12's smoke test, which encrypts a
+    // value, persists it to mail_accounts via the storage backend, and
+    // round-trips through decrypt — exercising the full Swift → env → Python
+    // → Cipher chain when the macOS app is running.
 }
