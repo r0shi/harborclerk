@@ -1,0 +1,138 @@
+"""Shared fixtures for mail tests.
+
+The FakeIMAP class is a minimal in-process replacement for
+aioimaplib.IMAP4_SSL — it implements just the methods the sync engine
+calls and lets tests stage canned responses.
+"""
+
+from __future__ import annotations
+
+
+class _Response:
+    """Mimic aioimaplib's response tuple shape: (result, lines)."""
+
+    def __init__(self, result: str, lines: list[bytes] | bytes):
+        self.result = result
+        self.lines = lines if isinstance(lines, list) else [lines]
+
+
+class FakeIMAP:
+    """In-process IMAP fake.
+
+    Use class-level setters to stage responses; instance methods consume
+    them. Reset via `reset()` between tests if you reuse the fixture.
+    """
+
+    _login_response: _Response | None = None
+    _list_response: _Response | None = None
+    _select_response: _Response | None = None
+    _uid_search_response: _Response | None = None
+    _uid_fetch_response: _Response | None = None
+    _capability_response: _Response | None = None
+    _idle_events: list[bytes] = []
+
+    def __init__(self, host: str, port: int = 993, **_kwargs):
+        self.host = host
+        self.port = port
+        self.connected = False
+        self.logged_in = False
+
+    @classmethod
+    def set_login_response(cls, result: str, line: bytes) -> None:
+        cls._login_response = _Response(result, line)
+
+    @classmethod
+    def set_list_response(cls, result: str, lines: list[bytes]) -> None:
+        cls._list_response = _Response(result, lines)
+
+    @classmethod
+    def set_select_response(cls, result: str, lines: list[bytes]) -> None:
+        cls._select_response = _Response(result, lines)
+
+    @classmethod
+    def set_uid_search_response(cls, result: str, lines: list[bytes]) -> None:
+        cls._uid_search_response = _Response(result, lines)
+
+    @classmethod
+    def set_uid_fetch_response(cls, result: str, lines: list[bytes]) -> None:
+        cls._uid_fetch_response = _Response(result, lines)
+
+    @classmethod
+    def set_capability_response(cls, result: str, lines: list[bytes]) -> None:
+        cls._capability_response = _Response(result, lines)
+
+    @classmethod
+    def set_idle_events(cls, events: list[bytes]) -> None:
+        cls._idle_events = events
+
+    @classmethod
+    def reset(cls) -> None:
+        cls._login_response = None
+        cls._list_response = None
+        cls._select_response = None
+        cls._uid_search_response = None
+        cls._uid_fetch_response = None
+        cls._capability_response = None
+        cls._idle_events = []
+
+    async def wait_hello_from_server(self) -> None:
+        self.connected = True
+
+    async def login(self, username: str, password: str):
+        resp = self._login_response or _Response("OK", b"OK")
+        if resp.result == "OK":
+            self.logged_in = True
+        return resp.result, resp.lines
+
+    async def logout(self):
+        self.logged_in = False
+        self.connected = False
+        return "OK", [b"BYE"]
+
+    async def list(self, reference: str, mailbox: str):
+        resp = self._list_response or _Response("OK", [])
+        return resp.result, resp.lines
+
+    async def select(self, mailbox: str):
+        resp = self._select_response or _Response("OK", [])
+        return resp.result, resp.lines
+
+    async def uid_search(self, criteria: str):
+        resp = self._uid_search_response or _Response("OK", [b""])
+        return resp.result, resp.lines
+
+    async def uid(self, command: str, *args):
+        if command == "FETCH":
+            resp = self._uid_fetch_response or _Response("OK", [])
+            return resp.result, resp.lines
+        return "OK", []
+
+    async def capability(self):
+        resp = self._capability_response or _Response("OK", [b"CAPABILITY IMAP4rev1 IDLE"])
+        return resp.result, resp.lines
+
+    async def idle_start(self, timeout: float = 0):
+        return "OK", []
+
+    async def idle_done(self):
+        return "OK", []
+
+    async def wait_server_push(self, timeout: float | None = None) -> bytes:
+        if self._idle_events:
+            return self._idle_events.pop(0)
+        raise TimeoutError("no idle events queued")
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_fake_imap_state():
+    """Reset FakeIMAP's class-level response staging between every mail test.
+
+    Without this, leftover responses from a previous test leak into the
+    next — rendering tests order-dependent.
+    """
+    FakeIMAP.reset()
+    yield
+    FakeIMAP.reset()
