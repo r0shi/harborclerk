@@ -17,7 +17,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.mail.cursor import LabelCursor, write_cursor
@@ -237,3 +237,30 @@ async def sync_label_incremental(
     await write_cursor(session, label.label_id, LabelCursor(last_uid_seen=highest_uid, uidvalidity=uidvalidity))
 
     return SyncSummary(fetched_count=len(uids), new_count=new_count, duplicate_count=duplicate_count)
+
+
+async def handle_uidvalidity_change(
+    session: AsyncSession,
+    conn: IMAPConnection,
+    label: WatchedLabel,
+) -> SyncSummary:
+    """Drop all watched_messages for the label, reset cursor, run initial sync.
+
+    Called when `sync_label_incremental` raises UidValidityChanged. Stage 3
+    will react to the deleted watched_messages by soft-deleting their
+    associated email Documents (via the existing 30-day reaper code path).
+
+    Caller must have already authenticated. Caller commits.
+    """
+    logger.warning(
+        "label %s (%s): UIDVALIDITY changed; dropping %d watched_messages and rescanning",
+        label.label_id,
+        label.label_path,
+        label.last_uid_seen,
+    )
+    await session.execute(delete(WatchedMessage).where(WatchedMessage.label_id == label.label_id))
+    label.uidvalidity = None
+    label.last_uid_seen = 0
+    await session.flush()
+
+    return await sync_label_initial(session, conn, label)
