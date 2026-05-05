@@ -24,13 +24,15 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.mail.imap_client import IMAPConnection
-from harbor_clerk.mail.parser import EmailParseResult, sanitize_subject_for_filename
-from harbor_clerk.models import Document, WatchedLabel
-from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.mail.parser import EmailParseResult, parse_eml, sanitize_subject_for_filename
+from harbor_clerk.models import Document, WatchedLabel, WatchedMessage
+from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.storage import get_storage
+from harbor_clerk.worker.pipeline import enqueue_stage
 
 logger = logging.getLogger(__name__)
 
@@ -187,3 +189,98 @@ async def create_attachment_documents(
         session.add(doc)
         docs.append(doc)
     return docs
+
+
+async def ingest_pending_messages(
+    session: AsyncSession,
+    conn: IMAPConnection,
+    label: WatchedLabel,
+) -> IngestSummary:
+    """For each watched_message in this label with email_doc_id=NULL:
+    fetch the .eml, dedup by SHA across labels, create Documents (or link
+    to existing), enqueue extract. Caller commits.
+    """
+    pending = (
+        (
+            await session.execute(
+                select(WatchedMessage).where(
+                    WatchedMessage.label_id == label.label_id,
+                    WatchedMessage.email_doc_id.is_(None),
+                    WatchedMessage.status == "active",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    fetched_count = 0
+    new_email_doc_count = 0
+    new_attachment_doc_count = 0
+    deduped_count = 0
+
+    for msg in pending:
+        try:
+            eml_bytes = await fetch_eml_bytes(conn, msg.imap_uid)
+        except Exception as exc:
+            logger.warning(
+                "fetch_eml_bytes failed for label=%s uid=%s: %s",
+                label.label_id,
+                msg.imap_uid,
+                exc,
+            )
+            continue
+        fetched_count += 1
+        real_sha = hashlib.sha256(eml_bytes).digest()
+        msg.eml_sha256 = real_sha
+
+        # Cross-label dedup: any other watched_message already mapped to a Document with this SHA?
+        existing = (
+            (
+                await session.execute(
+                    select(WatchedMessage).where(
+                        WatchedMessage.eml_sha256 == real_sha,
+                        WatchedMessage.email_doc_id.is_not(None),
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing is not None:
+            msg.email_doc_id = existing.email_doc_id
+            deduped_count += 1
+            continue
+
+        parsed = parse_eml(eml_bytes)
+        email_doc = await create_email_document(
+            session,
+            parsed=parsed,
+            eml_bytes=eml_bytes,
+            eml_sha256=real_sha,
+            label=label,
+        )
+        await session.flush()
+        new_email_doc_count += 1
+
+        attachment_docs = await create_attachment_documents(
+            session,
+            parsed=parsed,
+            parent_doc=email_doc,
+            label=label,
+        )
+        await session.flush()
+        new_attachment_doc_count += len(attachment_docs)
+
+        msg.email_doc_id = email_doc.doc_id
+
+        # Enqueue extract for the email and each attachment
+        for d in [email_doc, *attachment_docs]:
+            enqueue_stage(d.doc_id, JobStage.extract)
+
+    return IngestSummary(
+        fetched_count=fetched_count,
+        new_email_doc_count=new_email_doc_count,
+        new_attachment_doc_count=new_attachment_doc_count,
+        deduped_count=deduped_count,
+    )

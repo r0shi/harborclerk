@@ -1,14 +1,17 @@
 """Tests for the email-ingest pipeline (watched_messages → Documents)."""
 
+import hashlib
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 
 from harbor_clerk.mail.imap_client import IMAPConnection
 from harbor_clerk.mail.ingest import create_attachment_documents, create_email_document, fetch_eml_bytes
 from harbor_clerk.mail.parser import AttachmentSpec, EmailParseResult
 from harbor_clerk.models import Document
 from harbor_clerk.models.enums import PipelineStatus
+from tests.mail.fixtures.build_eml import build_email_with_attachments
 
 
 @pytest.fixture
@@ -133,3 +136,158 @@ async def test_create_attachment_documents_links_to_parent(db_session, watched_l
 
     assert docs[1].title == "addendum.docx"
     assert docs[1].email_parent_doc_id == parent.doc_id
+
+
+async def test_ingest_creates_email_and_attachment_docs(db_session, watched_label, mock_aioimap, monkeypatch):
+    # Patch enqueue_stage so it doesn't try to open a sync DB session in test context
+    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", lambda *a, **kw: None)
+
+    from harbor_clerk.mail.ingest import ingest_pending_messages
+    from harbor_clerk.models import WatchedMessage
+
+    # Pre-populate a watched_message row (simulating Stage 2 sync output)
+    eml = build_email_with_attachments(
+        message_id="<full@example.com>",
+        subject="Full ingest test",
+        body_text="Body.",
+        attachments=[("contract.pdf", "application/pdf", b"%PDF-1.4 fake")],
+    )
+    placeholder_sha = hashlib.sha256(b"placeholder").digest()
+    msg = WatchedMessage(
+        label_id=watched_label.label_id,
+        message_id="<full@example.com>",
+        imap_uid=42,
+        eml_sha256=placeholder_sha,
+        status="active",
+        email_doc_id=None,  # not yet ingested
+    )
+    db_session.add(msg)
+    await db_session.flush()
+
+    # Mock IMAP FETCH to return the .eml bytes
+    mock_aioimap.set_login_response("OK", b"OK")
+    mock_aioimap.set_uid_fetch_response(
+        "OK",
+        [
+            b"42 (UID 42 BODY[] {%d}" % len(eml),
+            eml,
+            b")",
+            b"OK FETCH completed",
+        ],
+    )
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    summary = await ingest_pending_messages(db_session, conn, watched_label)
+    await conn.logout()
+    await db_session.commit()
+
+    assert summary.fetched_count == 1
+    assert summary.new_email_doc_count == 1
+    assert summary.new_attachment_doc_count == 1
+    assert summary.deduped_count == 0
+
+    # watched_message now has real SHA + email_doc_id pointer
+    await db_session.refresh(msg)
+    assert msg.eml_sha256 != placeholder_sha
+    assert msg.eml_sha256 == hashlib.sha256(eml).digest()
+    assert msg.email_doc_id is not None
+
+    # Email Document exists
+    email_doc = (await db_session.execute(select(Document).where(Document.doc_id == msg.email_doc_id))).scalar_one()
+    assert email_doc.title == "Full ingest test"
+    assert email_doc.mime_type == "message/rfc822"
+
+    # Attachment Document exists, linked to email
+    attachments = (
+        (await db_session.execute(select(Document).where(Document.email_parent_doc_id == msg.email_doc_id)))
+        .scalars()
+        .all()
+    )
+    assert len(attachments) == 1
+    assert attachments[0].title == "contract.pdf"
+
+
+async def test_ingest_dedupes_across_labels_via_sha(db_session, mail_account, mock_aioimap, monkeypatch):
+    """Same email already ingested via another label → reuse the existing
+    email_doc_id without creating a new Document."""
+    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", lambda *a, **kw: None)
+
+    from harbor_clerk.mail.ingest import ingest_pending_messages
+    from harbor_clerk.models import WatchedLabel, WatchedMessage
+
+    label_a = WatchedLabel(account_id=mail_account.account_id, label_path="LabelA", display_name="LabelA")
+    label_b = WatchedLabel(account_id=mail_account.account_id, label_path="LabelB", display_name="LabelB")
+    db_session.add_all([label_a, label_b])
+    await db_session.flush()
+
+    eml = build_email_with_attachments(
+        message_id="<dup@example.com>",
+        subject="Dup",
+        body_text="x",
+    )
+    real_sha = hashlib.sha256(eml).digest()
+
+    # Pre-populate label_a with an already-ingested watched_message
+    parent_doc = Document(
+        title="Dup",
+        canonical_filename="Dup.eml",
+        sha256=real_sha,
+        pipeline_status=PipelineStatus.ready,
+        mime_type="message/rfc822",
+        email_message_id="<dup@example.com>",
+        original_object_key="originals/existing/dup.eml",
+        original_bucket="originals",
+    )
+    db_session.add(parent_doc)
+    await db_session.flush()
+    msg_a = WatchedMessage(
+        label_id=label_a.label_id,
+        message_id="<dup@example.com>",
+        imap_uid=1,
+        eml_sha256=real_sha,
+        status="active",
+        email_doc_id=parent_doc.doc_id,
+    )
+    db_session.add(msg_a)
+
+    # Now label_b discovers the same message (placeholder SHA)
+    placeholder_sha = hashlib.sha256(b"placeholder-b").digest()
+    msg_b = WatchedMessage(
+        label_id=label_b.label_id,
+        message_id="<dup@example.com>",
+        imap_uid=99,
+        eml_sha256=placeholder_sha,
+        status="active",
+        email_doc_id=None,
+    )
+    db_session.add(msg_b)
+    await db_session.flush()
+
+    mock_aioimap.set_login_response("OK", b"OK")
+    mock_aioimap.set_uid_fetch_response(
+        "OK",
+        [
+            b"99 (UID 99 BODY[] {%d}" % len(eml),
+            eml,
+            b")",
+            b"OK FETCH completed",
+        ],
+    )
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    summary = await ingest_pending_messages(db_session, conn, label_b)
+    await conn.logout()
+    await db_session.commit()
+
+    assert summary.deduped_count == 1
+    assert summary.new_email_doc_count == 0
+    assert summary.new_attachment_doc_count == 0
+
+    # msg_b should now point at the same Document as msg_a
+    await db_session.refresh(msg_b)
+    assert msg_b.email_doc_id == parent_doc.doc_id
+    assert msg_b.eml_sha256 == real_sha
