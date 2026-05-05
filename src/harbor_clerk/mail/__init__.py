@@ -14,5 +14,13 @@ from harbor_clerk.mail.exceptions import (
     UidValidityChanged,
 )
 from harbor_clerk.mail.imap_client import IMAPConnection
+from harbor_clerk.mail.labels import Folder, discover_folders
 
-__all__ = ["AuthError", "IMAPConnection", "IdleNotSupported", "UidValidityChanged"]
+__all__ = [
+    "AuthError",
+    "Folder",
+    "IMAPConnection",
+    "IdleNotSupported",
+    "UidValidityChanged",
+    "discover_folders",
+]
