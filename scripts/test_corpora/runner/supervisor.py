@@ -68,6 +68,11 @@ PATTERNS: dict[str, re.Pattern] = {
 # How long without ANY recognised activity before we flag the sweep as stuck.
 STUCK_THRESHOLD_SECONDS = 30 * 60
 
+# How often to emit a "heartbeat" event with summary stats. Useful as a
+# liveness check during long Phase 0 / Phase 1 stretches that don't emit
+# sample_cards. Default 10 minutes; pass --heartbeat-seconds 0 to disable.
+HEARTBEAT_INTERVAL_SECONDS = 10 * 60
+
 
 # ── Auto-skip rules ──────────────────────────────────────────────────────────
 #
@@ -81,7 +86,11 @@ CONSECUTIVE_ERROR_THRESHOLD = 3
 
 @dataclasses.dataclass
 class SupervisorState:
+    started_at: float
     last_progress_at: float
+    last_heartbeat_at: float
+    last_classifier_match_at: float
+    lines_seen: int
     # Per-model error streak. A sample_card for that model clears it. The streak
     # is intentionally model-only, not per-(model, corpus): if a model is broken
     # for one corpus it'll usually be broken for all of them, so attributing the
@@ -92,12 +101,63 @@ class SupervisorState:
 
     @classmethod
     def fresh(cls) -> SupervisorState:
+        now = time.time()
         return cls(
-            last_progress_at=time.time(),
+            started_at=now,
+            last_progress_at=now,
+            last_heartbeat_at=now,
+            last_classifier_match_at=now,
+            lines_seen=0,
             consecutive_errors=defaultdict(int),
             last_phase_seen=None,
             current_model=None,
         )
+
+
+# ── Progress probe ────────────────────────────────────────────────────────────
+
+
+def summarize_progress(workdir: Path | None, run_id: str | None) -> dict:
+    """Read state.json + corpus / baseline / response dirs and return a
+    summary dict for inclusion in heartbeat events. Empty dict when neither
+    workdir nor run_id is set, which is the no-config case."""
+    if not workdir or not run_id:
+        return {}
+    summary: dict[str, object] = {}
+
+    state_path = workdir / "results" / run_id / "state.json"
+    if state_path.exists():
+        try:
+            data = json.loads(state_path.read_text())
+            by_phase: dict[str, dict[str, int]] = {}
+            for u in data.get("units", []):
+                phase_key = str(u.get("phase"))
+                status = u.get("status", "?")
+                by_phase.setdefault(phase_key, {})
+                by_phase[phase_key][status] = by_phase[phase_key].get(status, 0) + 1
+            summary["state"] = by_phase
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Per-corpus ingest dir file counts (Phase 0 visibility).
+    for corpus in ("cuad", "enron", "synthetic"):
+        ingest = workdir / corpus / "ingest"
+        if ingest.exists():
+            summary[f"corpus_{corpus}_files"] = sum(1 for _ in ingest.glob("*"))
+
+    # Per-corpus baseline counts (Phase 1 visibility).
+    baselines = workdir / "results" / run_id / "baselines"
+    if baselines.exists():
+        for corpus_dir in baselines.iterdir():
+            if corpus_dir.is_dir():
+                summary[f"baselines_{corpus_dir.name}"] = sum(1 for _ in corpus_dir.glob("*.json"))
+
+    # Total response count (Phase 4/5 visibility — flat sum, not per model).
+    responses = workdir / "results" / run_id / "responses"
+    if responses.exists():
+        summary["responses_total"] = sum(1 for _ in responses.rglob("*.json"))
+
+    return summary
 
 
 # ── Notifications ─────────────────────────────────────────────────────────────
@@ -152,16 +212,73 @@ def emit(event: dict, out: TextIO) -> None:
     out.flush()
 
 
+def _maybe_heartbeat(
+    state: SupervisorState,
+    out: TextIO,
+    log_path: Path,
+    workdir: Path | None,
+    run_id: str | None,
+    interval: float,
+) -> None:
+    """Emit a heartbeat event if enough time has passed since the last one.
+    Heartbeats include uptime + lines seen + state.json summary so the
+    operator (or a downstream subagent) can see real progress without
+    waiting for the harness's next sample_card."""
+    if interval <= 0:
+        return
+    now = time.time()
+    if now - state.last_heartbeat_at < interval:
+        return
+    state.last_heartbeat_at = now
+    event: dict = {
+        "event": "heartbeat",
+        "uptime_seconds": int(now - state.started_at),
+        "lines_seen": state.lines_seen,
+        "seconds_since_last_match": int(now - state.last_classifier_match_at),
+        "log": str(log_path),
+    }
+    progress = summarize_progress(workdir, run_id)
+    if progress:
+        event["progress"] = progress
+    emit(event, out)
+
+
 def supervise(
     log_path: Path,
     out: TextIO = sys.stdout,
     notify: bool = True,
     stuck_threshold: float = STUCK_THRESHOLD_SECONDS,
+    heartbeat_seconds: float = HEARTBEAT_INTERVAL_SECONDS,
+    workdir: Path | None = None,
+    run_id: str | None = None,
 ) -> None:
     """Main loop. Returns only when 'completion' is seen or the log file disappears."""
     state = SupervisorState.fresh()
 
+    # Initial heartbeat at startup so the operator gets immediate feedback
+    # ("supervisor is alive, here's the current state of the sweep") rather
+    # than silence until the first classifier match.
+    if heartbeat_seconds > 0:
+        initial = {
+            "event": "heartbeat",
+            "uptime_seconds": 0,
+            "lines_seen": 0,
+            "seconds_since_last_match": 0,
+            "log": str(log_path),
+            "initial": True,
+        }
+        progress = summarize_progress(workdir, run_id)
+        if progress:
+            initial["progress"] = progress
+        emit(initial, out)
+
     for line in tail_lines(log_path):
+        # Periodic heartbeat — fires whether or not new log lines arrived,
+        # so the operator gets a regular "still alive" signal even during
+        # silent stretches (rare in practice; common during synthetic-corpus
+        # generation in Phase 0).
+        _maybe_heartbeat(state, out, log_path, workdir, run_id, heartbeat_seconds)
+
         # Stuck check (fires when tail returns None and we've been idle too long).
         # "Stuck" means the log file itself has stopped growing — a true hang.
         # Phases like baseline generation don't emit sample_cards but do produce
@@ -179,10 +296,12 @@ def supervise(
 
         # Any incoming log line counts as evidence the harness is alive.
         state.last_progress_at = time.time()
+        state.lines_seen += 1
 
         match = classify(line)
         if not match:
             continue
+        state.last_classifier_match_at = time.time()
         kind, groups = match
 
         # Track current model so we can attribute errors to the right (model, corpus) bucket
@@ -272,6 +391,23 @@ def make_parser() -> argparse.ArgumentParser:
         default=STUCK_THRESHOLD_SECONDS,
         help="Idle time before flagging as stuck",
     )
+    p.add_argument(
+        "--heartbeat-seconds",
+        type=int,
+        default=HEARTBEAT_INTERVAL_SECONDS,
+        help="Emit a periodic heartbeat event every N seconds (0 disables)",
+    )
+    p.add_argument(
+        "--workdir",
+        type=Path,
+        default=None,
+        help="Harness workdir; if set, heartbeats include corpus/baseline/response file counts",
+    )
+    p.add_argument(
+        "--run-id",
+        default=None,
+        help="Run id; combined with --workdir, heartbeats include state.json summary",
+    )
     return p
 
 
@@ -280,7 +416,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.log_file.exists():
         print(f"log file not found: {args.log_file}", file=sys.stderr)
         return 2
-    supervise(args.log_file, notify=not args.no_notify, stuck_threshold=args.stuck_threshold_seconds)
+    workdir = args.workdir.expanduser() if args.workdir else None
+    supervise(
+        args.log_file,
+        notify=not args.no_notify,
+        stuck_threshold=args.stuck_threshold_seconds,
+        heartbeat_seconds=args.heartbeat_seconds,
+        workdir=workdir,
+        run_id=args.run_id,
+    )
     return 0
 
 
