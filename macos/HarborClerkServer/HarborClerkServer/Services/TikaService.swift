@@ -28,6 +28,13 @@ final class TikaService: ManagedService {
             "--port", String(port),
         ]
 
+        // Tika 3.x forks a child JVM that resolves `java` from PATH; point it at the bundled JRE.
+        let javaHome = Bundle.main.resourceURL!.appendingPathComponent("java/Contents/Home").path
+        proc.environment = [
+            "JAVA_HOME": javaHome,
+            "PATH": "\(javaHome)/bin:/usr/bin:/bin",
+        ]
+
         let pipe = Log.createPipe(category: "tika")
         proc.standardOutput = pipe
         proc.standardError = pipe
