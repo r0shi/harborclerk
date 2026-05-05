@@ -15,12 +15,15 @@ from harbor_clerk.mail.exceptions import (
 )
 from harbor_clerk.mail.imap_client import IMAPConnection
 from harbor_clerk.mail.labels import Folder, discover_folders
+from harbor_clerk.mail.sync import SyncSummary, sync_label_initial
 
 __all__ = [
     "AuthError",
     "Folder",
     "IMAPConnection",
     "IdleNotSupported",
+    "SyncSummary",
     "UidValidityChanged",
     "discover_folders",
+    "sync_label_initial",
 ]
