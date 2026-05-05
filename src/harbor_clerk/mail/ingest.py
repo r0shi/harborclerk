@@ -16,11 +16,20 @@ Documents are NOT deleted from this module — the lifecycle handler in
 
 from __future__ import annotations
 
+import io
 import logging
 import re
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.mail.imap_client import IMAPConnection
+from harbor_clerk.mail.parser import EmailParseResult, sanitize_subject_for_filename
+from harbor_clerk.models import Document, WatchedLabel
+from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -67,3 +76,61 @@ def _extract_literal(fetch_lines: list[bytes]) -> bytes:
             expect_body = True
     # Reconstruct: aioimaplib splits the literal on \r\n; we need to rejoin
     return b"\r\n".join(body_chunks)
+
+
+async def create_email_document(
+    session: AsyncSession,
+    *,
+    parsed: EmailParseResult,
+    eml_bytes: bytes,
+    eml_sha256: bytes,
+    label: WatchedLabel,
+) -> Document:
+    """Create the email Document, save the .eml to storage, return the row.
+
+    Caller flushes/commits. Caller is responsible for also creating attachment
+    Documents (Task 7) and updating the watched_message pointer.
+
+    The Document's `created_at` is set to `email_date_sent` (per spec) so the
+    Documents page sorts by send date, not ingest time.
+    """
+    doc_id = uuid.uuid4()
+    safe_subject = sanitize_subject_for_filename(parsed.subject)
+    storage_key = f"originals/{doc_id}/{safe_subject}.eml"
+
+    storage = get_storage()
+    storage.put_object(
+        bucket="originals",
+        key=storage_key,
+        data=io.BytesIO(eml_bytes),
+        length=len(eml_bytes),
+        content_type="message/rfc822",
+    )
+
+    # Use the spec's send-date-as-created-at semantics. Fall back to now()
+    # when the email had no Date header (rare).
+    created_at = parsed.date_sent or datetime.now(UTC)
+
+    doc = Document(
+        doc_id=doc_id,
+        title=parsed.subject,
+        canonical_filename=f"{safe_subject}.eml",
+        sha256=eml_sha256,
+        pipeline_status=PipelineStatus.queued,
+        mime_type="message/rfc822",
+        size_bytes=len(eml_bytes),
+        original_object_key=storage_key,
+        original_bucket="originals",
+        email_message_id=parsed.message_id,
+        email_thread_id=parsed.thread_id,
+        email_from_address=parsed.from_address,
+        email_from_name=parsed.from_name,
+        email_to_addresses=parsed.to_addresses or None,
+        email_cc_addresses=parsed.cc_addresses or None,
+        email_date_sent=parsed.date_sent,
+        email_label_path=label.label_path,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    session.add(doc)
+    return doc
