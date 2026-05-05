@@ -25,9 +25,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from harbor_clerk.mail.document_lifecycle import (
+    restore_documents_for_relabeled,
+    soft_delete_documents_for_unlabeled,
+)
 from harbor_clerk.mail.exceptions import AuthError, UidValidityChanged
 from harbor_clerk.mail.idle import poll_or_idle_loop
 from harbor_clerk.mail.imap_client import IMAPConnection
+from harbor_clerk.mail.ingest import ingest_pending_messages
 from harbor_clerk.mail.lifecycle import detect_unlabeled_messages
 from harbor_clerk.mail.sync import (
     handle_uidvalidity_change,
@@ -173,6 +178,12 @@ class MailObserver:
                         except UidValidityChanged:
                             await handle_uidvalidity_change(session, c, lbl)
                     await detect_unlabeled_messages(session, c, lbl)
+                    # Stage 3: turn newly-discovered watched_messages into Documents
+                    await ingest_pending_messages(session, c, lbl)
+                    # Stage 3: lifecycle — soft-delete Documents whose watched_messages went unlabeled
+                    await soft_delete_documents_for_unlabeled(session, lbl)
+                    # Stage 3: lifecycle — restore Documents that came back via re-label
+                    await restore_documents_for_relabeled(session, lbl)
                     lbl.last_synced_at = datetime.now(UTC)
                     await session.commit()
                 except Exception as exc:
