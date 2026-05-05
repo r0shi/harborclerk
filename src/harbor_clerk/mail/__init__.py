@@ -8,6 +8,10 @@ or changes.
 See spec docs/superpowers/specs/2026-05-04-email-ingestion-design.md.
 """
 
+from harbor_clerk.mail.document_lifecycle import (
+    restore_documents_for_relabeled,
+    soft_delete_documents_for_unlabeled,
+)
 from harbor_clerk.mail.exceptions import (
     AuthError,
     IdleNotSupported,
@@ -42,6 +46,8 @@ __all__ = [
     "SyncSummary",
     "UidValidityChanged",
     "detect_unlabeled_messages",
+    "restore_documents_for_relabeled",
+    "soft_delete_documents_for_unlabeled",
     "discover_folders",
     "handle_uidvalidity_change",
     "ingest_pending_messages",
