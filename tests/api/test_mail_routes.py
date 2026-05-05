@@ -296,3 +296,43 @@ async def test_delete_watched_label(client, admin_user, admin_token):
 
     list_resp = await client.get("/api/mail/labels", headers=auth_header(admin_token))
     assert not any(it["label_id"] == label_id for it in list_resp.json())
+
+
+async def test_rescan_label_resets_cursor(client, admin_user, admin_token, db_session):
+    from harbor_clerk.models import WatchedLabel
+
+    body = {
+        "display_name": "rescan",
+        "provider": "gmail",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "imap_username": "rescan@example.com",
+        "app_password": "x",
+    }
+    create = await client.post("/api/mail/accounts", json=body, headers=auth_header(admin_token))
+    account_id = create.json()["account_id"]
+    label_resp = await client.post(
+        "/api/mail/labels",
+        json={"account_id": account_id, "label_path": "Rescan", "display_name": "Rescan"},
+        headers=auth_header(admin_token),
+    )
+    label_id = label_resp.json()["label_id"]
+
+    # Manually set a cursor
+    label = (await db_session.execute(select(WatchedLabel).where(WatchedLabel.label_id == label_id))).scalar_one()
+    label.last_uid_seen = 100
+    label.uidvalidity = 12345
+    await db_session.commit()
+
+    # Trigger rescan
+    resp = await client.post(
+        f"/api/mail/labels/{label_id}/rescan",
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "rescan-queued"
+
+    # Cursor should be reset
+    await db_session.refresh(label)
+    assert label.last_uid_seen == 0
+    assert label.uidvalidity is None

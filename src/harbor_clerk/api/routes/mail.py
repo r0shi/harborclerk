@@ -262,3 +262,30 @@ async def delete_watched_label(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="watched label not found")
     await session.delete(label)
     await session.commit()
+
+
+@router.post(
+    "/mail/labels/{label_id}/rescan",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def rescan_label(
+    label_id: UUID,
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Trigger a full rescan of a watched label.
+
+    Resets the cursor (uidvalidity, last_uid_seen) so the supervisor's next
+    tick treats this label as new and runs an initial sync. Existing
+    watched_messages rows are preserved — re-sync hits the dedup check and
+    no-ops on rows whose Message-IDs are already known.
+
+    Returns 202 Accepted; the actual rescan happens asynchronously.
+    """
+    label = (await session.execute(select(WatchedLabel).where(WatchedLabel.label_id == label_id))).scalar_one_or_none()
+    if label is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="watched label not found")
+    label.uidvalidity = None
+    label.last_uid_seen = 0
+    await session.commit()
+    return {"status": "rescan-queued"}
