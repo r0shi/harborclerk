@@ -16,6 +16,7 @@ Documents are NOT deleted from this module — the lifecycle handler in
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import re
@@ -134,3 +135,55 @@ async def create_email_document(
     )
     session.add(doc)
     return doc
+
+
+async def create_attachment_documents(
+    session: AsyncSession,
+    *,
+    parsed: EmailParseResult,
+    parent_doc: Document,
+    label: WatchedLabel,
+) -> list[Document]:
+    """Create one Document per parsed attachment. Bytes saved to storage,
+    linked back to the parent email via email_parent_doc_id.
+
+    Caller flushes/commits.
+    """
+    storage = get_storage()
+    docs: list[Document] = []
+    for attachment in parsed.attachments:
+        doc_id = uuid.uuid4()
+        # Use the original filename (sanitized to be path-safe) for storage
+        safe_filename = sanitize_subject_for_filename(attachment.filename)
+        storage_key = f"originals/{doc_id}/{safe_filename}"
+
+        storage.put_object(
+            bucket="originals",
+            key=storage_key,
+            data=io.BytesIO(attachment.content),
+            length=len(attachment.content),
+            content_type=attachment.mime_type,
+        )
+
+        sha = hashlib.sha256(attachment.content).digest()
+
+        doc = Document(
+            doc_id=doc_id,
+            title=attachment.filename,
+            canonical_filename=safe_filename,
+            sha256=sha,
+            pipeline_status=PipelineStatus.queued,
+            mime_type=attachment.mime_type,
+            size_bytes=len(attachment.content),
+            original_object_key=storage_key,
+            original_bucket="originals",
+            email_parent_doc_id=parent_doc.doc_id,
+            email_message_id=parsed.message_id,
+            email_label_path=label.label_path,
+            email_date_sent=parsed.date_sent,
+            created_at=parsed.date_sent or datetime.now(UTC),
+            updated_at=parsed.date_sent or datetime.now(UTC),
+        )
+        session.add(doc)
+        docs.append(doc)
+    return docs
