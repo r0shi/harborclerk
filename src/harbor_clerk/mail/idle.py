@@ -58,11 +58,9 @@ async def poll_or_idle_loop(
                     await conn.client.idle_done()
                 await on_tick(conn)
             except asyncio.CancelledError:
-                # Try to clean up IDLE state best-effort
-                try:
-                    await conn.client.idle_done()
-                except Exception:
-                    pass
+                # Inner `finally` already called idle_done(); calling it twice would
+                # send DONE\r\n with no IDLE session open — protocol error against
+                # real IMAP servers (Gmail, Exchange).
                 raise
     else:
         logger.info("conn %s: IDLE unsupported, polling every %.0fs", conn.host, poll_interval)
