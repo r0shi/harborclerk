@@ -11,5 +11,6 @@ moves degrade gracefully (raise KeyMismatch instead of producing garbage).
 """
 
 from harbor_clerk.secrets.cipher import Cipher, KeyMismatch
+from harbor_clerk.secrets.keysource import MissingMasterKey, get_master_key
 
-__all__ = ["Cipher", "KeyMismatch"]
+__all__ = ["Cipher", "KeyMismatch", "MissingMasterKey", "get_master_key"]
