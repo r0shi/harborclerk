@@ -14,7 +14,7 @@ async def test_mail_account_round_trip(db_session):
         imap_host="imap.gmail.com",
         imap_port=993,
         imap_username="alex@example.com",
-        app_password_ciphertext=b"\x00" * 100,  # placeholder; cipher comes in Task 4
+        app_password_ciphertext=b"\x00" * 100,  # dummy bytes — model-layer test, isolated from cipher
         key_fingerprint=b"\x00" * 8,
         status="active",
     )
