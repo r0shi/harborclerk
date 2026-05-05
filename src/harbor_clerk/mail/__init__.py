@@ -13,6 +13,7 @@ from harbor_clerk.mail.exceptions import (
     IdleNotSupported,
     UidValidityChanged,
 )
+from harbor_clerk.mail.idle import poll_or_idle_loop, server_supports_idle
 from harbor_clerk.mail.imap_client import IMAPConnection
 from harbor_clerk.mail.labels import Folder, discover_folders
 from harbor_clerk.mail.sync import (
@@ -31,6 +32,8 @@ __all__ = [
     "UidValidityChanged",
     "discover_folders",
     "handle_uidvalidity_change",
+    "poll_or_idle_loop",
+    "server_supports_idle",
     "sync_label_incremental",
     "sync_label_initial",
 ]
