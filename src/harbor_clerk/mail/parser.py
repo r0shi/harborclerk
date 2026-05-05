@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from email import message_from_bytes
+from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 
@@ -50,7 +51,11 @@ def parse_eml(eml_bytes: bytes) -> EmailParseResult:
     """
     msg: Message = message_from_bytes(eml_bytes)
     message_id = msg.get("Message-ID") or msg.get("Message-Id") or _synthesize_message_id(eml_bytes)
-    subject = msg.get("Subject") or "(no subject)"
+    raw_subject = msg.get("Subject")
+    if raw_subject:
+        subject = str(make_header(decode_header(raw_subject)))
+    else:
+        subject = "(no subject)"
     sender_header = msg.get("From") or ""
     from_name, from_address = parseaddr(sender_header)
     to_addresses = _parse_addresses(msg.get_all("To") or [])
