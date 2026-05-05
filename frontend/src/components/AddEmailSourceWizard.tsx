@@ -12,6 +12,7 @@
 
 import { useState } from 'react'
 
+import { createMailAccount, deleteMailAccount, testMailAccount } from '../api/mail'
 import type { FolderInfo } from '../types/mail'
 import { PROVIDER_PRESETS, type ProviderPreset } from '../data/mailProviders'
 
@@ -112,12 +113,157 @@ function CredentialsStep({
   onBack: () => void
   onConnected: (accountId: string, folders: FolderInfo[]) => void
 }) {
+  const [displayName, setDisplayName] = useState('')
+  const [imapHost, setImapHost] = useState(preset.imap_host)
+  const [imapPort, setImapPort] = useState(preset.imap_port)
+  const [imapUsername, setImapUsername] = useState('')
+  const [appPassword, setAppPassword] = useState('')
+  const [testing, setTesting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const isGeneric = preset.id === 'generic'
+  const canSubmit = !!(displayName && imapHost && imapPort && imapUsername && appPassword) && !testing
+
+  async function handleTest() {
+    setTesting(true)
+    setError(null)
+    let createdAccountId: string | null = null
+    try {
+      const account = await createMailAccount({
+        display_name: displayName,
+        provider: preset.id,
+        imap_host: imapHost,
+        imap_port: imapPort,
+        imap_username: imapUsername,
+        app_password: appPassword,
+      })
+      createdAccountId = account.account_id
+      const result = await testMailAccount(account.account_id)
+      if (!result.success) {
+        setError(result.error || 'Connection failed')
+        return
+      }
+      onConnected(account.account_id, result.folders)
+    } catch (e) {
+      if (createdAccountId !== null) {
+        try {
+          await deleteMailAccount(createdAccountId)
+        } catch {
+          /* ignore cleanup failures */
+        }
+      }
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setTesting(false)
+    }
+  }
+
   return (
     <div className="px-6 py-5">
-      <p className="text-sm">Stub: {preset.name}</p>
-      <button onClick={onBack}>Back</button>
-      <button onClick={() => onConnected('stub', [])}>Continue</button>
+      <h3 className="text-sm font-medium mb-2">{preset.name}</h3>
+      {preset.app_password_help_url && (
+        <p className="text-xs text-(--color-text-secondary) mb-4">
+          Need an app password?{' '}
+          <a
+            href={preset.app_password_help_url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-(--color-accent) underline"
+          >
+            {preset.app_password_help_label}
+          </a>
+        </p>
+      )}
+
+      <div className="space-y-3">
+        <Field label="Display name">
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder={preset.id === 'gmail' ? 'Personal Gmail' : 'My account'}
+            className="input-base"
+          />
+        </Field>
+        <Field label="Email address">
+          <input
+            type="email"
+            value={imapUsername}
+            onChange={(e) => setImapUsername(e.target.value)}
+            placeholder="you@example.com"
+            className="input-base"
+            autoComplete="username"
+          />
+        </Field>
+        <Field label="App password">
+          <input
+            type="password"
+            value={appPassword}
+            onChange={(e) => setAppPassword(e.target.value)}
+            placeholder="xxxx-xxxx-xxxx-xxxx"
+            className="input-base"
+            autoComplete="new-password"
+          />
+        </Field>
+        {isGeneric && (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="IMAP host">
+              <input
+                type="text"
+                value={imapHost}
+                onChange={(e) => setImapHost(e.target.value)}
+                placeholder="imap.example.com"
+                className="input-base"
+              />
+            </Field>
+            <Field label="Port">
+              <input
+                type="number"
+                value={imapPort}
+                onChange={(e) => setImapPort(Number(e.target.value))}
+                min={1}
+                max={65535}
+                className="input-base"
+              />
+            </Field>
+          </div>
+        )}
+      </div>
+
+      {error && (
+        <p className="mt-3 text-sm text-red-600 dark:text-red-400" role="alert">
+          {error}
+        </p>
+      )}
+
+      <div className="mt-5 flex justify-between">
+        <button
+          type="button"
+          onClick={onBack}
+          disabled={testing}
+          className="rounded-lg border border-(--color-border) px-3 py-1.5 text-sm disabled:opacity-50"
+        >
+          Back
+        </button>
+        <button
+          type="button"
+          onClick={handleTest}
+          disabled={!canSubmit}
+          className="rounded-lg bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        >
+          {testing ? 'Testing…' : 'Test connection'}
+        </button>
+      </div>
     </div>
+  )
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="text-xs font-medium text-(--color-text-secondary) block mb-1">{label}</span>
+      {children}
+    </label>
   )
 }
 

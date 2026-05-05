@@ -168,6 +168,10 @@
 }
 
 @layer components {
+  .input-base {
+    @apply w-full rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-2.5 py-1.5 text-sm text-(--color-text-primary) focus:outline-none focus:ring-2 focus:ring-(--color-accent)/30;
+  }
+
   .surface-card {
     background-color: var(--color-bg-primary);
     background-image: linear-gradient(180deg, rgba(0, 0, 0, 0.012) 0%, transparent 100%);
