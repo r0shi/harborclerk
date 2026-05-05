@@ -29,6 +29,11 @@ export default function EmailSection() {
   const [error, setError] = useState<string | null>(null)
   const [showWizard, setShowWizard] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
+  // Two-click confirmation state. window.confirm() is unusable here because the
+  // macOS native app wraps this UI in a WKWebView, where window.confirm silently
+  // returns false (see CLAUDE.md "Gotchas & Fixes"). Same pattern as FoldersPage.
+  const [pendingDeleteAccountId, setPendingDeleteAccountId] = useState<string | null>(null)
+  const [pendingDeleteLabelId, setPendingDeleteLabelId] = useState<string | null>(null)
 
   async function reload() {
     setLoading(true)
@@ -86,9 +91,14 @@ export default function EmailSection() {
   }
 
   async function handleRemoveAccount(accountId: string) {
-    if (!window.confirm('Remove this email source? Existing Documents stay in the corpus; only future syncs stop.')) {
+    if (pendingDeleteAccountId !== accountId) {
+      setPendingDeleteAccountId(accountId)
+      setTimeout(() => {
+        setPendingDeleteAccountId((cur) => (cur === accountId ? null : cur))
+      }, 5000)
       return
     }
+    setPendingDeleteAccountId(null)
     setBusy(accountId)
     try {
       await deleteMailAccount(accountId)
@@ -99,9 +109,14 @@ export default function EmailSection() {
   }
 
   async function handleRemoveLabel(labelId: string) {
-    if (!window.confirm('Stop watching this label? Existing Documents stay in the corpus.')) {
+    if (pendingDeleteLabelId !== labelId) {
+      setPendingDeleteLabelId(labelId)
+      setTimeout(() => {
+        setPendingDeleteLabelId((cur) => (cur === labelId ? null : cur))
+      }, 5000)
       return
     }
+    setPendingDeleteLabelId(null)
     setBusy(labelId)
     try {
       await deleteWatchedLabel(labelId)
@@ -168,8 +183,9 @@ export default function EmailSection() {
                     onClick={() => handleRemoveAccount(account.account_id)}
                     disabled={busy !== null}
                     className="text-xs rounded-md border border-(--color-border) px-2 py-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+                    title="Existing Documents stay in the corpus; only future syncs stop"
                   >
-                    Remove
+                    {pendingDeleteAccountId === account.account_id ? 'Click again to confirm' : 'Remove'}
                   </button>
                 </div>
               </div>
@@ -204,8 +220,9 @@ export default function EmailSection() {
                           onClick={() => handleRemoveLabel(label.label_id)}
                           disabled={busy !== null}
                           className="text-xs rounded-md border border-(--color-border) px-2 py-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50"
+                          title="Existing Documents stay in the corpus"
                         >
-                          Remove
+                          {pendingDeleteLabelId === label.label_id ? 'Click again to confirm' : 'Remove'}
                         </button>
                       </div>
                     </li>
