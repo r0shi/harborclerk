@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { del, get, patch, post, ApiError } from '../api'
+import { useAuth } from '../auth'
 import { useFolderProgress } from '../hooks/useFolderProgress'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
+import EmailSection from '../components/EmailSection'
 
 interface FolderInfo {
   folder_id: string
@@ -77,6 +79,7 @@ function AddFolderButton({ onClick }: { onClick: () => void }) {
 }
 
 export default function FoldersPage() {
+  const { isAdmin } = useAuth()
   const [system, setSystem] = useState<SystemInfo | null>(null)
   const [folders, setFolders] = useState<FolderInfo[]>([])
   const [progress, setProgress] = useState<Record<string, ProgressInfo>>({})
@@ -246,6 +249,11 @@ export default function FoldersPage() {
           })}
         </div>
       )}
+
+      {/* Email accounts are admin-only — every /api/mail/* endpoint requires
+          admin. Hide the section for non-admins so they don't see buttons
+          that 403 on click. */}
+      {isAdmin && <EmailSection />}
     </div>
   )
 }

@@ -59,6 +59,13 @@ const SECTIONS: { label: string; items: SettingsItem[] }[] = [
         icon: '🧹',
         hue: 'ask',
       },
+      {
+        to: '/admin/system/security',
+        label: 'Security',
+        sub: 'Encryption status and master key management',
+        icon: '🔒',
+        hue: 'research',
+      },
     ],
   },
 ]

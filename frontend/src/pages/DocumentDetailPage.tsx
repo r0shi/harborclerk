@@ -11,6 +11,7 @@ import { Card } from '../components/Card'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
 import { documentTypeIcon } from '../utils/documentTypeIcon'
+import EmailMetadataSection from '../components/EmailMetadataSection'
 
 interface JobInfo {
   job_id: string
@@ -44,6 +45,15 @@ interface DocumentDetail {
   created_at: string
   updated_at: string
   jobs: JobInfo[]
+  email_message_id?: string | null
+  email_thread_id?: string | null
+  email_parent_doc_id?: string | null
+  email_from_address?: string | null
+  email_from_name?: string | null
+  email_to_addresses?: string[] | null
+  email_cc_addresses?: string[] | null
+  email_date_sent?: string | null
+  email_label_path?: string | null
 }
 
 interface PageContent {
@@ -877,6 +887,17 @@ export default function DocumentDetailPage() {
       </div>
 
       <SourceFileSection doc={doc} sysConfig={sysConfig} />
+
+      <EmailMetadataSection
+        emailMessageId={doc.email_message_id}
+        emailFromAddress={doc.email_from_address}
+        emailFromName={doc.email_from_name}
+        emailToAddresses={doc.email_to_addresses}
+        emailCcAddresses={doc.email_cc_addresses}
+        emailDateSent={doc.email_date_sent}
+        emailLabelPath={doc.email_label_path}
+        emailParentDocId={doc.email_parent_doc_id}
+      />
 
       <DocumentStatsDisclosure docId={doc.doc_id} />
 

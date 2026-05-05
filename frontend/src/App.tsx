@@ -26,6 +26,7 @@ import ExplorePage from './pages/ExplorePage'
 import ResearchPage from './pages/ResearchPage'
 import SystemSettingsPage from './pages/SystemSettingsPage'
 import IntegrationsPage from './pages/IntegrationsPage'
+import SecuritySettingsPage from './pages/SecuritySettingsPage'
 
 function ChatRedirect() {
   const { conversationId } = useParams<{ conversationId: string }>()
@@ -61,6 +62,7 @@ export default function App() {
             <Route path="/admin/system/status" element={<SystemStatusPage />} />
             <Route path="/admin/system/logs" element={<ServiceLogsPage />} />
             <Route path="/admin/system/maintenance" element={<SystemMaintenancePage />} />
+            <Route path="/admin/system/security" element={<SecuritySettingsPage />} />
             <Route path="/admin/models" element={<ModelsPage />} />
             <Route path="/admin/languages" element={<LanguagesPage />} />
             <Route path="/admin/retrieval" element={<RetrievalSettingsPage />} />
