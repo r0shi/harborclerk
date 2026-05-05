@@ -16,10 +16,14 @@ def test_login_stores_bearer_token():
         if request.url.path == "/api/auth/login":
             body = json.loads(request.content)
             assert body == {"email": "a@b.c", "password": "pw"}
-            return httpx.Response(200, json={"access_token": "tok-xyz", "token_type": "bearer", "user": {"email": "a@b.c"}})
+            return httpx.Response(
+                200, json={"access_token": "tok-xyz", "token_type": "bearer", "user": {"email": "a@b.c"}}
+            )
         # Subsequent call should carry the bearer
         assert request.headers.get("Authorization") == "Bearer tok-xyz"
-        return httpx.Response(200, json={"queues": {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}})
+        return httpx.Response(
+            200, json={"queues": {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}}
+        )
 
     c = make_client(handler)
     c.login("a@b.c", "pw")
@@ -71,7 +75,7 @@ def test_start_research_extracts_x_research_id_header():
         return httpx.Response(
             200,
             headers={"X-Research-Id": "conv-abc", "Content-Type": "text/event-stream"},
-            content=b"data: {\"type\":\"started\"}\n\n",
+            content=b'data: {"type":"started"}\n\n',
         )
 
     c = make_client(handler)
@@ -82,6 +86,7 @@ def test_start_research_extracts_x_research_id_header():
 def test_poll_research_returns_completed():
     """poll_research should pass through whatever the server returns — the terminal
     value check lives in wait_for_research."""
+
     def handler(request):
         assert request.url.path == "/api/research/conv-abc"
         return httpx.Response(200, json={"status": "completed", "report": "A", "citations": []})
@@ -112,6 +117,7 @@ def test_wait_for_research_returns_on_completed():
 
 def test_wait_for_research_timeout():
     """wait_for_research returns a timeout dict if deadline is hit without terminal status."""
+
     def handler(request):
         return httpx.Response(200, json={"status": "running"})
 
@@ -124,7 +130,9 @@ def test_wait_for_research_timeout():
 def test_pipeline_status_quiet():
     def handler(request):
         assert request.url.path == "/api/jobs/snapshot"
-        return httpx.Response(200, json={"queues": {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}})
+        return httpx.Response(
+            200, json={"queues": {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}}
+        )
 
     c = make_client(handler)
     assert c.pipeline_quiet() is True
@@ -132,7 +140,9 @@ def test_pipeline_status_quiet():
 
 def test_pipeline_status_busy():
     def handler(request):
-        return httpx.Response(200, json={"queues": {"io": {"queued": 5, "running": 1}, "cpu": {"queued": 0, "running": 0}}})
+        return httpx.Response(
+            200, json={"queues": {"io": {"queued": 5, "running": 1}, "cpu": {"queued": 0, "running": 0}}}
+        )
 
     c = make_client(handler)
     assert c.pipeline_quiet() is False

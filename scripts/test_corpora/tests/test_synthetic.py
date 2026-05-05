@@ -9,7 +9,9 @@ def test_synthetic_acquire_writes_doc_and_sidecar(tmp_path: Path):
     fake_anthropic = MagicMock()
     # Mock returns a templated invoice
     fake_anthropic.messages.create.return_value.content = [
-        MagicMock(text='{"text": "INVOICE\\nVendor: Acme\\nTotal: $12,500", "facts": {"vendor": "Acme", "total_usd": 12500}}')
+        MagicMock(
+            text='{"text": "INVOICE\\nVendor: Acme\\nTotal: $12,500", "facts": {"vendor": "Acme", "total_usd": 12500}}'
+        )
     ]
 
     with patch.object(synthetic, "_make_client", return_value=fake_anthropic):

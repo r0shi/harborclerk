@@ -118,7 +118,7 @@ def _generate_one(
 ) -> dict:
     template = PROMPT_TEMPLATES[doc_type]
     # Pick a deterministic-ish date in 2025
-    date = f"2025-{rng.randint(1,12):02d}-{rng.randint(1,28):02d}"
+    date = f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}"
     prompt = template.format(
         company_name=COMPANY["name"],
         date=date,

@@ -29,10 +29,13 @@ def _download_release(workdir: Path) -> Path:
     archive = workdir / "cuad_v1.zip"
     if archive.exists():
         return archive
-    with httpx.Client(
-        follow_redirects=True,
-        timeout=httpx.Timeout(connect=30, read=600, write=30, pool=30),
-    ) as c, c.stream("GET", CUAD_RELEASE_URL) as r:
+    with (
+        httpx.Client(
+            follow_redirects=True,
+            timeout=httpx.Timeout(connect=30, read=600, write=30, pool=30),
+        ) as c,
+        c.stream("GET", CUAD_RELEASE_URL) as r,
+    ):
         r.raise_for_status()
         with archive.open("wb") as f:
             for chunk in r.iter_bytes(chunk_size=1024 * 1024):

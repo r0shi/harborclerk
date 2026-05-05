@@ -48,6 +48,7 @@ log = logging.getLogger("sweep")
 
 # ── argparse ──
 
+
 def make_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sweep")
     p.add_argument("--run-id", required=True)
@@ -80,6 +81,7 @@ def _phase_range(s: str) -> set[int]:
 
 
 # ── state planning ──
+
 
 def _question_ids(corpus_questions: dict) -> list[str]:
     """Return all question ids in a corpus's YAML, expanding cross-language pairs to lang-suffixed ids."""
@@ -137,7 +139,9 @@ def _plan_units(questions_by_corpus: dict[str, dict], phases: set[int], depth: s
         elif phase == 2:
             # smoke — one model, one corpus. Skipped if cuad isn't in scope.
             if "cuad" in questions_by_corpus:
-                units.append(Unit(phase=2, corpus="cuad", model="qwen3.6-35b", question_id="cuad-research-1", depth=depth))
+                units.append(
+                    Unit(phase=2, corpus="cuad", model="qwen3.6-35b", question_id="cuad-research-1", depth=depth)
+                )
         elif phase == 3:
             # depth coverage — same model × all three depths on cuad. Skipped if cuad isn't in scope.
             if "cuad" in questions_by_corpus:
@@ -171,6 +175,7 @@ def _plan_units(questions_by_corpus: dict[str, dict], phases: set[int], depth: s
 
 # ── phase handlers ──
 
+
 def _phase0_acquire(corpus_id: str, workdir: Path) -> CorpusManifest:
     if corpus_id == "cuad":
         return cuad.acquire(workdir / "cuad")
@@ -181,8 +186,9 @@ def _phase0_acquire(corpus_id: str, workdir: Path) -> CorpusManifest:
     raise ValueError(f"unknown corpus {corpus_id}")
 
 
-def _phase1_baseline(client: anthropic.Anthropic, mcp_session, corpus: str, question_id: str,
-                     question_text: str, results_dir: Path) -> dict:
+def _phase1_baseline(
+    client: anthropic.Anthropic, mcp_session, corpus: str, question_id: str, question_text: str, results_dir: Path
+) -> dict:
     gen = BaselineGenerator(client=client, mcp_session=mcp_session)
     res = gen.run_question(question=question_text, question_id=question_id, corpus=corpus)
     BaselineGenerator.write(res, results_dir, corpus)
@@ -239,6 +245,7 @@ def _run_local(
 
 # ── ingestion helper ──
 
+
 def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest) -> None:
     log.info("clearing existing watch folders before ingesting %s", manifest.corpus_id)
     for folder in hc.watch_folder_list():
@@ -254,6 +261,7 @@ def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest) -> None:
 
 # ── model switch helper ──
 
+
 def _ensure_model(hc: HarborClerkClient, current_model: str | None, target_model: str) -> str:
     """Activate target_model if it differs from current_model. Returns the new current_model."""
     if current_model == target_model:
@@ -266,6 +274,7 @@ def _ensure_model(hc: HarborClerkClient, current_model: str | None, target_model
 
 
 # ── main ──
+
 
 def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
@@ -302,8 +311,7 @@ def main(argv: list[str] | None = None) -> int:
             unknown = requested - set(questions_by_corpus)
             if unknown:
                 raise RuntimeError(
-                    f"--corpora has unknown values: {sorted(unknown)}. "
-                    f"Known: {sorted(questions_by_corpus)}"
+                    f"--corpora has unknown values: {sorted(unknown)}. Known: {sorted(questions_by_corpus)}"
                 )
             questions_by_corpus = {c: q for c, q in questions_by_corpus.items() if c in requested}
             log.info("--corpora filter: %s", sorted(questions_by_corpus))
@@ -346,11 +354,22 @@ def main(argv: list[str] | None = None) -> int:
         metrics_f = metrics_path.open("a", newline="")
         metrics_writer = csv.writer(metrics_f)
         if new_csv:
-            metrics_writer.writerow([
-                "phase", "corpus", "model", "question_id", "depth",
-                "status", "citation_overlap", "citation_extra", "entity_overlap",
-                "latency_seconds", "judge_verdict", "judge_completeness",
-            ])
+            metrics_writer.writerow(
+                [
+                    "phase",
+                    "corpus",
+                    "model",
+                    "question_id",
+                    "depth",
+                    "status",
+                    "citation_overlap",
+                    "citation_extra",
+                    "entity_overlap",
+                    "latency_seconds",
+                    "judge_verdict",
+                    "judge_completeness",
+                ]
+            )
 
         sampler = Sampler(every_n=cfg.SAMPLE_EVERY_N)
         sweep_started = time.time()
@@ -384,10 +403,12 @@ def main(argv: list[str] | None = None) -> int:
                         if f.is_file():
                             (unified_dir / f"{c}__{f.name}").write_bytes(f.read_bytes())
                 unified_manifest = CorpusManifest(
-                    corpus_id="unified", ingest_dir=unified_dir,
+                    corpus_id="unified",
+                    ingest_dir=unified_dir,
                     doc_count=sum(m.doc_count for m in manifests.values()),
                     total_size_bytes=sum(m.total_size_bytes for m in manifests.values()),
-                    license="various", notes="unified pass",
+                    license="various",
+                    notes="unified pass",
                 )
                 if not args.dry_run:
                     _ingest_corpus(hc, unified_manifest)
@@ -432,11 +453,19 @@ def main(argv: list[str] | None = None) -> int:
                         text, _lang = _question_text(questions_by_corpus[u.corpus], u.question_id)
                         out = _phase1_baseline(anthro, mcp_session, u.corpus, u.question_id, text, run_dir)
                     elif phase in (2, 3, 4, 5, 6):
-                        owning_corpus = u.corpus if u.corpus != "unified" else _find_owning_corpus(u.question_id, questions_by_corpus)
+                        owning_corpus = (
+                            u.corpus
+                            if u.corpus != "unified"
+                            else _find_owning_corpus(u.question_id, questions_by_corpus)
+                        )
                         text, _lang = _question_text(questions_by_corpus[owning_corpus], u.question_id)
                         out = _run_local(
-                            hc=hc, corpus=u.corpus, model=u.model, question_id=u.question_id,
-                            question_text=text, depth=u.depth,
+                            hc=hc,
+                            corpus=u.corpus,
+                            model=u.model,
+                            question_id=u.question_id,
+                            question_text=text,
+                            depth=u.depth,
                             time_limit_minutes=args.time_limit_minutes,
                             is_research=_is_research(u.question_id),
                             results_dir=run_dir,
@@ -471,9 +500,15 @@ def main(argv: list[str] | None = None) -> int:
                         eo = entity_overlap(baseline.get("answer", ""), model_answer, lang="en")
 
                         if phase == 5:
-                            owning_c = u.corpus if u.corpus != "unified" else _find_owning_corpus(u.question_id, questions_by_corpus)
+                            owning_c = (
+                                u.corpus
+                                if u.corpus != "unified"
+                                else _find_owning_corpus(u.question_id, questions_by_corpus)
+                            )
                             text_for_judge, _ = _question_text(questions_by_corpus[owning_c], u.question_id)
-                            v = judge.judge(question=text_for_judge, baseline=baseline.get("answer", ""), model_answer=model_answer)
+                            v = judge.judge(
+                                question=text_for_judge, baseline=baseline.get("answer", ""), model_answer=model_answer
+                            )
                             (run_dir / "judge" / u.corpus / u.model).mkdir(parents=True, exist_ok=True)
                             (run_dir / "judge" / u.corpus / u.model / f"{u.question_id}__{u.depth}.json").write_text(
                                 json.dumps(dataclasses.asdict(v), indent=2)
@@ -481,22 +516,39 @@ def main(argv: list[str] | None = None) -> int:
                             judge_verdict = v.verdict
                             judge_completeness = v.completeness
 
-                        sampler.note(CompletionEvent(
-                            phase=phase, corpus=u.corpus, model=u.model, question_id=u.question_id,
-                            baseline_answer=baseline.get("answer", "")[:200],
-                            model_answer=model_answer[:200],
-                            citation_overlap=co, citation_extra=ce, entity_overlap=eo,
-                            latency_seconds=latency,
-                            elapsed_total_seconds=int(time.time() - sweep_started),
-                        ))
+                        sampler.note(
+                            CompletionEvent(
+                                phase=phase,
+                                corpus=u.corpus,
+                                model=u.model,
+                                question_id=u.question_id,
+                                baseline_answer=baseline.get("answer", "")[:200],
+                                model_answer=model_answer[:200],
+                                citation_overlap=co,
+                                citation_extra=ce,
+                                entity_overlap=eo,
+                                latency_seconds=latency,
+                                elapsed_total_seconds=int(time.time() - sweep_started),
+                            )
+                        )
 
                 row_unit = sf.get(u.phase, u.corpus, u.model, u.question_id, u.depth)
-                metrics_writer.writerow([
-                    phase, u.corpus, u.model, u.question_id, u.depth,
-                    row_unit.status.value if row_unit else "unknown",
-                    f"{co:.3f}", ce, f"{eo:.3f}", f"{latency:.1f}",
-                    judge_verdict, judge_completeness,
-                ])
+                metrics_writer.writerow(
+                    [
+                        phase,
+                        u.corpus,
+                        u.model,
+                        u.question_id,
+                        u.depth,
+                        row_unit.status.value if row_unit else "unknown",
+                        f"{co:.3f}",
+                        ce,
+                        f"{eo:.3f}",
+                        f"{latency:.1f}",
+                        judge_verdict,
+                        judge_completeness,
+                    ]
+                )
                 metrics_f.flush()
 
             sampler.print_summary_table(phase=phase)

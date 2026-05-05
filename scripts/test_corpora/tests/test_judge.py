@@ -7,16 +7,20 @@ from scripts.test_corpora.runner.judge import JudgeClient, JudgeVerdict
 def test_judge_parses_structured_response():
     fake_anthropic = MagicMock()
     fake_anthropic.messages.create.return_value.content = [
-        MagicMock(text=json.dumps({
-            "claim_recall": 4,
-            "claim_precision": 5,
-            "entity_recall": 4,
-            "completeness": 4,
-            "missing_facts": ["one fact"],
-            "extra_facts": [],
-            "contradictions": [],
-            "verdict": "pass",
-        }))
+        MagicMock(
+            text=json.dumps(
+                {
+                    "claim_recall": 4,
+                    "claim_precision": 5,
+                    "entity_recall": 4,
+                    "completeness": 4,
+                    "missing_facts": ["one fact"],
+                    "extra_facts": [],
+                    "contradictions": [],
+                    "verdict": "pass",
+                }
+            )
+        )
     ]
 
     j = JudgeClient(client=fake_anthropic)
@@ -30,10 +34,22 @@ def test_judge_parses_structured_response():
 def test_judge_handles_extra_text_around_json():
     fake_anthropic = MagicMock()
     fake_anthropic.messages.create.return_value.content = [
-        MagicMock(text="Here is the verdict:\n```json\n" + json.dumps({
-            "claim_recall": 3, "claim_precision": 3, "entity_recall": 3, "completeness": 3,
-            "missing_facts": [], "extra_facts": [], "contradictions": [], "verdict": "marginal",
-        }) + "\n```")
+        MagicMock(
+            text="Here is the verdict:\n```json\n"
+            + json.dumps(
+                {
+                    "claim_recall": 3,
+                    "claim_precision": 3,
+                    "entity_recall": 3,
+                    "completeness": 3,
+                    "missing_facts": [],
+                    "extra_facts": [],
+                    "contradictions": [],
+                    "verdict": "marginal",
+                }
+            )
+            + "\n```"
+        )
     ]
 
     j = JudgeClient(client=fake_anthropic)

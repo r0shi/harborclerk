@@ -60,8 +60,8 @@ class Sampler:
         self.out.write(f"  Baseline: {_truncate(ev.baseline_answer, 90)}\n")
         self.out.write(f"  Model:    {_truncate(ev.model_answer, 90)}\n")
         self.out.write(
-            f"  Sources: {ev.citation_overlap*100:5.1f}% recall (+{ev.citation_extra} extra)  "
-            f"·  Entities: {ev.entity_overlap*100:5.1f}%  "
+            f"  Sources: {ev.citation_overlap * 100:5.1f}% recall (+{ev.citation_extra} extra)  "
+            f"·  Entities: {ev.entity_overlap * 100:5.1f}%  "
             f"·  Latency {ev.latency_seconds:.1f}s\n\n"
         )
         self.out.flush()

@@ -74,10 +74,12 @@ def test_lock_prevents_concurrent_runs(tmp_path: Path):
 
 def test_rerun_selector_flips_matching_to_pending(tmp_path: Path):
     sf = StateFile(tmp_path / "state.json")
-    sf.register([
-        Unit(phase=5, corpus="cuad", model="qwen3.6-35b", question_id="q1", depth="standard"),
-        Unit(phase=5, corpus="enron", model="qwen3.6-35b", question_id="q1", depth="standard"),
-    ])
+    sf.register(
+        [
+            Unit(phase=5, corpus="cuad", model="qwen3.6-35b", question_id="q1", depth="standard"),
+            Unit(phase=5, corpus="enron", model="qwen3.6-35b", question_id="q1", depth="standard"),
+        ]
+    )
     sf.set_status(5, "cuad", "qwen3.6-35b", "q1", "standard", Status.DONE)
     sf.set_status(5, "enron", "qwen3.6-35b", "q1", "standard", Status.DONE)
     sf.rerun({"corpus": "cuad"})
@@ -88,8 +90,10 @@ def test_rerun_selector_flips_matching_to_pending(tmp_path: Path):
 
 def test_register_does_not_collide_across_phases(tmp_path: Path):
     sf = StateFile(tmp_path / "state.json")
-    sf.register([
-        Unit(phase=4, corpus="cuad", model="qwen3.6-35b", question_id="q1", depth="standard"),
-        Unit(phase=5, corpus="cuad", model="qwen3.6-35b", question_id="q1", depth="standard"),
-    ])
+    sf.register(
+        [
+            Unit(phase=4, corpus="cuad", model="qwen3.6-35b", question_id="q1", depth="standard"),
+            Unit(phase=5, corpus="cuad", model="qwen3.6-35b", question_id="q1", depth="standard"),
+        ]
+    )
     assert len(sf.units()) == 2

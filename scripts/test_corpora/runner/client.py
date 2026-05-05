@@ -55,11 +55,14 @@ class SyncMcpSession:
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
 
-        async with streamable_http_client(
-            self._url,
-            headers=self._headers,
-            timeout=self._timeout,
-        ) as (read, write, _), ClientSession(read, write) as session:
+        async with (
+            streamable_http_client(
+                self._url,
+                headers=self._headers,
+                timeout=self._timeout,
+            ) as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
             await session.initialize()
             result = await session.list_tools()
             return result.tools
@@ -68,11 +71,14 @@ class SyncMcpSession:
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
 
-        async with streamable_http_client(
-            self._url,
-            headers=self._headers,
-            timeout=self._timeout,
-        ) as (read, write, _), ClientSession(read, write) as session:
+        async with (
+            streamable_http_client(
+                self._url,
+                headers=self._headers,
+                timeout=self._timeout,
+            ) as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
             await session.initialize()
             return await session.call_tool(name, args)
 
@@ -200,9 +206,7 @@ class HarborClerkClient:
         r.raise_for_status()
         return r.json()
 
-    def wait_for_research(
-        self, conv_id: str, max_wait_seconds: int, poll_seconds: int = 5
-    ) -> dict[str, Any]:
+    def wait_for_research(self, conv_id: str, max_wait_seconds: int, poll_seconds: int = 5) -> dict[str, Any]:
         """Poll until status is completed/failed/interrupted or deadline.
 
         Harbor Clerk returns a ``ResearchDetail`` object whose terminal values

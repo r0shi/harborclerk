@@ -70,10 +70,7 @@ class BaselineGenerator:
             return []
         # mcp.types.Tool has .name, .description, .inputSchema
         tools = self._mcp.list_tools()  # sync wrapper expected
-        return [
-            {"name": t.name, "description": t.description or "", "input_schema": t.inputSchema}
-            for t in tools
-        ]
+        return [{"name": t.name, "description": t.description or "", "input_schema": t.inputSchema} for t in tools]
 
     def _exec_tool(self, name: str, args: dict) -> str:
         """Execute one MCP tool call, capture any doc_ids in the result."""
@@ -94,11 +91,7 @@ class BaselineGenerator:
 
     def _collect_doc_ids(self, obj: Any) -> None:
         if isinstance(obj, dict):
-            if (
-                "doc_id" in obj
-                and isinstance(obj["doc_id"], str)
-                and obj["doc_id"] not in self._doc_ids_seen
-            ):
+            if "doc_id" in obj and isinstance(obj["doc_id"], str) and obj["doc_id"] not in self._doc_ids_seen:
                 self._doc_ids_seen.append(obj["doc_id"])
             for v in obj.values():
                 self._collect_doc_ids(v)
@@ -134,11 +127,13 @@ class BaselineGenerator:
                 if getattr(block, "type", None) == "tool_use":
                     tool_call_count += 1
                     out = self._exec_tool(block.name, block.input)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": out,
-                    })
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": out,
+                        }
+                    )
             messages.append({"role": "user", "content": tool_results})
 
         # Final answer is the last text block in the assistant turn
