@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { get } from '../api'
+import { listMailAccounts } from '../api/mail'
+import type { MailAccountResponse } from '../types/mail'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
 import { StatusPill } from '../components/StatusPill'
@@ -133,6 +135,8 @@ export default function SystemStatusPage() {
           <StatusPill state={health.status === 'healthy' ? 'active' : 'error'} label={health.status} />
         </div>
       )}
+
+      <MailAccountsStatus />
     </div>
   )
 }
@@ -168,5 +172,89 @@ function HealthCard({
         </dl>
       )}
     </Card>
+  )
+}
+
+function statusBadgeClass(status: MailAccountResponse['status']): string {
+  switch (status) {
+    case 'active':
+      return 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300'
+    case 'paused':
+      return 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'
+    case 'auth_error':
+    case 'key_mismatch':
+      return 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300'
+  }
+}
+
+function MailAccountsStatus() {
+  const [accounts, setAccounts] = useState<MailAccountResponse[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const result = await listMailAccounts()
+        if (!cancelled) setAccounts(result)
+      } catch {
+        if (!cancelled) setAccounts([])
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (loading) {
+    return (
+      <section className="mb-6">
+        <h2 className="text-base font-medium mb-2">Mail Accounts</h2>
+        <p className="text-sm text-(--color-text-secondary)">Loading…</p>
+      </section>
+    )
+  }
+
+  if (accounts.length === 0) {
+    return (
+      <section className="mb-6">
+        <h2 className="text-base font-medium mb-2">Mail Accounts</h2>
+        <p className="text-sm text-(--color-text-secondary)">
+          No mail accounts connected. Add one from{' '}
+          <a href="/folders" className="text-(--color-accent) hover:underline">
+            Folders
+          </a>
+          .
+        </p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="mb-6">
+      <h2 className="text-base font-medium mb-2">Mail Accounts</h2>
+      <ul className="rounded-md border border-(--color-border) divide-y divide-(--color-border)">
+        {accounts.map((a) => (
+          <li key={a.account_id} className="px-3 py-2 flex items-center justify-between text-sm">
+            <div>
+              <div className="font-medium">{a.display_name}</div>
+              <div className="text-xs text-(--color-text-secondary)">{a.imap_username}</div>
+              {a.last_error && <div className="text-xs text-red-600 dark:text-red-400 mt-0.5">{a.last_error}</div>}
+            </div>
+            <div className="flex items-center gap-3">
+              {a.last_connected_at && (
+                <span className="text-xs text-(--color-text-secondary)">
+                  last connected {new Date(a.last_connected_at).toLocaleString()}
+                </span>
+              )}
+              <span className={`text-xs px-2 py-0.5 rounded-full ${statusBadgeClass(a.status)}`}>{a.status}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
