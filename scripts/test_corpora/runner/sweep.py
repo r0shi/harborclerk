@@ -124,10 +124,28 @@ def _find_owning_corpus(question_id: str, questions_by_corpus: dict) -> str:
     raise KeyError(f"no owning corpus for {question_id}")
 
 
-def _plan_units(questions_by_corpus: dict[str, dict], phases: set[int], depth: str) -> list[Unit]:
-    """Generate the full Unit set for the sweep — every cell across all phases."""
+def _plan_units(
+    questions_by_corpus: dict[str, dict],
+    phases: set[int],
+    depth: str,
+    models_filter: set[str] | None = None,
+) -> list[Unit]:
+    """Generate the full Unit set for the sweep — every cell across all phases.
+
+    ``models_filter`` (when set) restricts the model loops in phases 2-6 to
+    that subset. Useful for splitting Phase 4 across machines: a 32 GB Mac
+    mini runs the smaller 6 models while a bigger machine runs Gemma 26B
+    + Qwen3.6 35B in parallel.
+    """
     units: list[Unit] = []
     corpora = list(questions_by_corpus)
+
+    def _phase4_models() -> list[str]:
+        return [m for m in cfg.ALL_MODELS if models_filter is None or m in models_filter]
+
+    def _phase5_models() -> list[str]:
+        return [m for m in cfg.TOP_MODELS if models_filter is None or m in models_filter]
+
     for phase in sorted(phases):
         if phase == 0:
             for c in corpora:
@@ -137,14 +155,15 @@ def _plan_units(questions_by_corpus: dict[str, dict], phases: set[int], depth: s
                 for q in _question_ids(qs):
                     units.append(Unit(phase=1, corpus=c, model="claude-baseline", question_id=q, depth="n/a"))
         elif phase == 2:
-            # smoke — one model, one corpus. Skipped if cuad isn't in scope.
-            if "cuad" in questions_by_corpus:
+            # smoke — one model, one corpus. Skipped if cuad or qwen3.6-35b isn't in scope.
+            if "cuad" in questions_by_corpus and (models_filter is None or "qwen3.6-35b" in models_filter):
                 units.append(
                     Unit(phase=2, corpus="cuad", model="qwen3.6-35b", question_id="cuad-research-1", depth=depth)
                 )
         elif phase == 3:
-            # depth coverage — same model × all three depths on cuad. Skipped if cuad isn't in scope.
-            if "cuad" in questions_by_corpus:
+            # depth coverage — same model × all three depths on cuad. Skipped if cuad or
+            # qwen3.6-35b isn't in scope.
+            if "cuad" in questions_by_corpus and (models_filter is None or "qwen3.6-35b" in models_filter):
                 for d in cfg.DEPTHS:
                     for q in _question_ids(questions_by_corpus["cuad"]):
                         units.append(Unit(phase=3, corpus="cuad", model="qwen3.6-35b", question_id=q, depth=d))
@@ -152,18 +171,18 @@ def _plan_units(questions_by_corpus: dict[str, dict], phases: set[int], depth: s
             # Corpus is outer loop so each corpus change (= full re-ingest) happens only
             # once per corpus rather than once per (model, corpus) pair.
             for c, qs in questions_by_corpus.items():
-                for m in cfg.ALL_MODELS:
+                for m in _phase4_models():
                     for q in _question_ids(qs):
                         units.append(Unit(phase=4, corpus=c, model=m, question_id=q, depth=depth))
         elif phase == 5:
             # Same rationale: 3 re-ingests (one per corpus) instead of 6 (one per model×corpus).
             for c, qs in questions_by_corpus.items():
-                for m in cfg.TOP_MODELS:
+                for m in _phase5_models():
                     for q in _question_ids(qs):
                         units.append(Unit(phase=5, corpus=c, model=m, question_id=q, depth=depth))
         elif phase == 6:
             # unified pass — first 3 research questions from each available corpus
-            for m in cfg.TOP_MODELS:
+            for m in _phase5_models():
                 unified_qs: list[str] = []
                 for c in ("cuad", "enron", "synthetic"):
                     if c in questions_by_corpus:
@@ -316,10 +335,21 @@ def main(argv: list[str] | None = None) -> int:
             questions_by_corpus = {c: q for c, q in questions_by_corpus.items() if c in requested}
             log.info("--corpora filter: %s", sorted(questions_by_corpus))
 
+        # Apply --models filter: scope phase 2-6 model loops to listed models. Used for
+        # splitting Phase 4 across machines (32 GB Mac mini for the 6 smaller models, a
+        # bigger machine for Gemma 26B + Qwen3.6 35B).
+        models_filter: set[str] | None = None
+        if args.models:
+            models_filter = {m.strip() for m in args.models.split(",") if m.strip()}
+            unknown_m = models_filter - set(cfg.ALL_MODELS)
+            if unknown_m:
+                raise RuntimeError(f"--models has unknown values: {sorted(unknown_m)}. Known: {sorted(cfg.ALL_MODELS)}")
+            log.info("--models filter: %s", sorted(models_filter))
+
         # Plan units if state is empty
         phases = _phase_range(args.phases)
         if not sf.units():
-            sf.register(_plan_units(questions_by_corpus, phases, args.depth))
+            sf.register(_plan_units(questions_by_corpus, phases, args.depth, models_filter=models_filter))
             sf.save()
 
         # Apply --rerun / --skip
