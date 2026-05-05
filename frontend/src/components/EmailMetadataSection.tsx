@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 
 import { listMailAccounts } from '../api/mail'
 import type { MailAccountResponse } from '../types/mail'
@@ -113,9 +114,9 @@ export default function EmailMetadataSection(props: EmailMetadataSectionProps) {
           </a>
         )}
         {emailParentDocId && (
-          <a href={`/docs/${emailParentDocId}`} className="text-(--color-accent) hover:underline">
+          <Link to={`/docs/${emailParentDocId}`} className="text-(--color-accent) hover:underline">
             ← Part of this email
-          </a>
+          </Link>
         )}
       </div>
     </div>
@@ -123,13 +124,17 @@ export default function EmailMetadataSection(props: EmailMetadataSectionProps) {
 }
 
 function buildViewInGmailUrl(authuserAddress: string, messageId: string): string {
-  // mail.google.com/mail/u/?authuser=<our address>#search/rfc822msgid:<message-id>
-  // authuser= picks the right logged-in Gmail account in the user's browser.
+  // mail.google.com/mail/u/<email>/#search/rfc822msgid:<message-id>
+  // The /u/<value>/ path segment is what Gmail uses to pick which signed-in
+  // identity to route to — `?authuser=` is an OAuth hint that mail.google.com
+  // ignores for routing, and a numeric index would only be right by accident.
+  // Putting the email address in the path lets Google match it to the correct
+  // signed-in session.
   // The Message-ID needs URL encoding; we strip the surrounding angle brackets
   // per Gmail's search-operator docs.
   const id = messageId.replace(/^<|>$/g, '')
   return (
-    `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(authuserAddress)}` +
+    `https://mail.google.com/mail/u/${encodeURIComponent(authuserAddress)}/` +
     `#search/rfc822msgid:${encodeURIComponent(id)}`
   )
 }
