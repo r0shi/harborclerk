@@ -136,3 +136,36 @@ def _reset_fake_imap_state():
     FakeIMAP.reset()
     yield
     FakeIMAP.reset()
+
+
+from uuid import uuid4  # noqa: E402
+
+from harbor_clerk.models import MailAccount, WatchedLabel  # noqa: E402
+
+
+@pytest.fixture
+async def mail_account(db_session) -> MailAccount:
+    account = MailAccount(
+        display_name="sync-test",
+        provider="generic",
+        imap_host="imap.example.com",
+        imap_port=993,
+        imap_username=f"sync-{uuid4()}@example.com",
+        app_password_ciphertext=b"\x00" * 100,
+        key_fingerprint=b"\x00" * 8,
+    )
+    db_session.add(account)
+    await db_session.flush()
+    return account
+
+
+@pytest.fixture
+async def watched_label(db_session, mail_account) -> WatchedLabel:
+    lbl = WatchedLabel(
+        account_id=mail_account.account_id,
+        label_path="Sync",
+        display_name="Sync",
+    )
+    db_session.add(lbl)
+    await db_session.flush()
+    return lbl
