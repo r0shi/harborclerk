@@ -8,6 +8,7 @@ Lifecycle:
     folder add/remove/enable/disable from the API without restart.
 """
 
+import asyncio
 import logging
 import os
 import signal
@@ -26,6 +27,7 @@ from harbor_clerk.models.watched import WatchedFolder
 from harbor_clerk.watcher.db_listener import listen_for_folder_changes
 from harbor_clerk.watcher.discovery import scan_watch_root
 from harbor_clerk.watcher.events import EventKind, FileEvent, handle_event
+from harbor_clerk.watcher.mail_observer import MailObserver
 from harbor_clerk.watcher.observer import FolderObserver
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,9 @@ class WatcherDaemon:
         self._observers: dict[uuid.UUID, FolderObserver] = {}
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        self._mail_thread: threading.Thread | None = None
+        self._mail_observer: MailObserver | None = None
+        self._mail_loop: asyncio.AbstractEventLoop | None = None
 
     def _on_event(self, event: FileEvent) -> None:
         sess = self._session_factory()
@@ -172,8 +177,29 @@ class WatcherDaemon:
             t.start()
             self._threads.append(t)
 
+        def _run_mail_observer() -> None:
+            self._mail_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._mail_loop)
+            self._mail_observer = MailObserver()
+            try:
+                self._mail_loop.run_until_complete(self._mail_observer.run())
+            except Exception:
+                logger.exception("watcher: mail observer exited with error — filesystem watcher continues")
+            finally:
+                self._mail_loop.close()
+
+        self._mail_thread = threading.Thread(target=_run_mail_observer, name="mail-observer", daemon=True)
+        self._mail_thread.start()
+
     def stop(self) -> None:
         self._stop.set()
+        if self._mail_loop is not None and self._mail_observer is not None and self._mail_loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(self._mail_observer.stop(), self._mail_loop).result(timeout=10)
+            except Exception:
+                logger.exception("watcher: error stopping mail observer")
+        if self._mail_thread is not None:
+            self._mail_thread.join(timeout=10)
         for obs in self._observers.values():
             obs.stop()
         self._observers.clear()
