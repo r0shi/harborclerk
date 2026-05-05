@@ -162,16 +162,23 @@ def supervise(
     state = SupervisorState.fresh()
 
     for line in tail_lines(log_path):
-        # Stuck check (fires when tail returns None and we've been idle too long)
+        # Stuck check (fires when tail returns None and we've been idle too long).
+        # "Stuck" means the log file itself has stopped growing — a true hang.
+        # Phases like baseline generation don't emit sample_cards but do produce
+        # plenty of routine httpx/INFO log activity, so we treat ANY line as a
+        # heartbeat. last_progress_at is updated on every line read below.
         if line is None:
             idle = time.time() - state.last_progress_at
             if idle > stuck_threshold:
                 event = {"event": "stuck", "idle_seconds": int(idle), "log": str(log_path)}
                 emit(event, out)
                 if notify:
-                    macos_notify("Sweep stuck", f"No progress in {int(idle / 60)} min")
+                    macos_notify("Sweep stuck", f"No log activity in {int(idle / 60)} min")
                 state.last_progress_at = time.time()  # reset to avoid re-firing every poll
             continue
+
+        # Any incoming log line counts as evidence the harness is alive.
+        state.last_progress_at = time.time()
 
         match = classify(line)
         if not match:
