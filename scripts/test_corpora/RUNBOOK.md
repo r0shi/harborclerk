@@ -93,18 +93,42 @@ mkdir -p ~/sweep-logs
 
 ### On both machines
 
-Check Harbor Clerk is running and admin login works:
+Harbor Clerk listens differently depending on how you run it:
+
+| Setup | URL | TLS? |
+| --- | --- | --- |
+| **macOS native** (Harbor Clerk Server menubar app) | `http://localhost:<api_port>` (default 8100, configurable in Preferences) | no |
+| **Docker Compose** | `https://localhost:443` (Caddy with self-signed cert) | yes (use `--insecure` to skip verify) |
+
+Find your `api_port` if you've changed the default:
 
 ```bash
-curl -k https://localhost/api/system/health    # expect {ok: true}
+jq .api_port "$HOME/Library/Application Support/Harbor Clerk/config.json"
 ```
 
-Set env vars for the sweep:
+Set env vars for the sweep. Adjust `HC_API_BASE` to match your setup:
 
 ```bash
+# macOS native (most common)
+export HC_API_BASE="http://localhost:8100"
+
+# OR Docker Compose
+# export HC_API_BASE="https://localhost"   # then add --insecure to sweep invocations
+
 export ANTHROPIC_API_KEY="sk-ant-..."
 export HC_USERNAME="admin@example.com"          # must be admin role
 export HC_PASSWORD="..."
+```
+
+Verify Harbor Clerk is up and admin login works:
+
+```bash
+curl "$HC_API_BASE/api/system/health"          # expect {ok: true, ...}
+
+curl -X POST "$HC_API_BASE/api/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$HC_USERNAME\",\"password\":\"$HC_PASSWORD\"}" | jq .access_token
+# expect a non-null JWT string
 ```
 
 ---
@@ -120,7 +144,7 @@ cd /path/to/mcp-gateway
 tmux new -d -s sweep-prep "uv --project scripts/test_corpora run python -m \
     scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir \"$WORKDIR\" \
-    --phases 0-1 --insecure \
+    --phases 0-1 \
     2>&1 | tee ~/sweep-logs/phase01-big.log"
 
 # detach is automatic with -d. Reattach with: tmux attach -t sweep-prep
@@ -167,7 +191,7 @@ tmux new -d -s sweep-mini "uv --project scripts/test_corpora run python -m \
     --run-id $RUN --workdir \"$WORKDIR\" \
     --phases 4 \
     --models smollm3-3b,qwen3-4b,phi-4-mini,qwen3-8b,deepseek-r1-8b,gpt-oss-20b \
-    --insecure \
+    \
     2>&1 | tee ~/sweep-logs/phase4-mini.log"
 
 uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
@@ -187,7 +211,7 @@ tmux new -d -s sweep-big "uv --project scripts/test_corpora run python -m \
     --run-id $RUN --workdir \"$WORKDIR\" \
     --phases 4 \
     --models gemma-26b,qwen3.6-35b \
-    --insecure \
+    \
     2>&1 | tee ~/sweep-logs/phase4-big.log"
 
 uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
@@ -224,7 +248,7 @@ cd /path/to/mcp-gateway
 tmux new -d -s sweep-parity "uv --project scripts/test_corpora run python -m \
     scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir \"$WORKDIR\" \
-    --phases 5 --insecure \
+    --phases 5 \
     2>&1 | tee ~/sweep-logs/phase5-big.log"
 
 uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
@@ -244,7 +268,7 @@ cd /path/to/mcp-gateway
 tmux new -d -s sweep-unified "uv --project scripts/test_corpora run python -m \
     scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir \"$WORKDIR\" \
-    --phases 6 --insecure \
+    --phases 6 \
     2>&1 | tee ~/sweep-logs/phase6-big.log"
 ```
 
@@ -283,7 +307,7 @@ The harness state file (`results/<run-id>/state.json`) tracks every cell. To res
 # add --resume to any sweep invocation
 uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir "$WORKDIR" \
-    --phases 4 --models <same-list> --resume --insecure 2>&1 | tee -a ~/sweep-logs/phase4-mini.log
+    --phases 4 --models <same-list> --resume 2>&1 | tee -a ~/sweep-logs/phase4-mini.log
 ```
 
 The `--resume` flag is largely a no-op — the state file already auto-resumes — but it makes intent explicit. Stale `IN_PROGRESS` rows older than 2× the time-budget revert to `PENDING` automatically.
@@ -307,7 +331,7 @@ rm "$WORKDIR/results/$RUN/state.json.lock"
 Restart Harbor Clerk's LLM model via the UI or:
 
 ```bash
-curl -k -X PUT https://localhost/api/chat/models/<model_id>/activate
+curl -X PUT "$HC_API_BASE/api/chat/models/<model_id>/activate"
 ```
 
 Then re-run the sweep with `--resume`.
@@ -326,7 +350,7 @@ Skip it:
 ```bash
 uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir "$WORKDIR" \
-    --skip "model=deepseek-r1-8b" --insecure
+    --skip "model=deepseek-r1-8b"
 ```
 
 This is exactly what the supervisor recommends after 3 consecutive errors. Re-run the sweep to skip the rest of that model's units.

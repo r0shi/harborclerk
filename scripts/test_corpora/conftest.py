@@ -10,7 +10,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-API_BASE = os.environ.get("HC_API_BASE", "https://localhost")
+# Default targets the macOS native Harbor Clerk Server on its default api_port.
+# Override via HC_API_BASE if you've changed the port (Preferences → API port)
+# or if you're running Harbor Clerk via Docker Compose (use "https://localhost"
+# and pass --insecure on sweep invocations to tolerate Caddy's self-signed cert).
+API_BASE = os.environ.get("HC_API_BASE", "http://localhost:8100")
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 
 # All eight downloaded models, by Harbor Clerk model_id. Phase 4 sweeps over
