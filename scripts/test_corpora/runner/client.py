@@ -3,10 +3,14 @@
 Targets the actual Harbor Clerk API surface. SSE streaming for the Ask flow
 uses ``httpx``'s SSE-by-line iteration. Selected methods retry transient
 failures via ``tenacity`` with exponential backoff.
+
+Also provides :class:`SyncMcpSession` — a thin synchronous wrapper around the
+async ``mcp`` SDK, used by the Phase 1 baseline generator.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import Iterator
@@ -14,6 +18,83 @@ from typing import Any
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+
+class SyncMcpSession:
+    """Synchronous façade over ``mcp.ClientSession`` + streamable-HTTP transport.
+
+    Opens the MCP connection once via :meth:`connect`, exposes ``list_tools()``
+    and ``call_tool()`` as synchronous calls (each wraps a fresh ``asyncio.run``),
+    and tears the session down via :meth:`close`.
+
+    Use as a context manager::
+
+        with SyncMcpSession(url="https://localhost/mcp", headers={...}) as sess:
+            tools = sess.list_tools()
+            result = sess.call_tool("kb_search", {"query": "..."})
+
+    Design note: ``asyncio.run()`` per call is slightly wasteful (each call
+    creates/destroys an event loop) but is safe and avoids the complexity of
+    a background thread running a persistent event loop. For Phase 1 baselines
+    — which are latency-insensitive — this is the simplest correct approach.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        timeout: float = 60.0,
+    ) -> None:
+        self._url = url
+        self._headers = headers or {}
+        self._timeout = timeout
+
+    # ── async internals ──
+
+    async def _list_tools_async(self) -> list[Any]:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+
+        async with streamable_http_client(
+            self._url,
+            headers=self._headers,
+            timeout=self._timeout,
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.list_tools()
+                return result.tools
+
+    async def _call_tool_async(self, name: str, args: dict) -> Any:
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+
+        async with streamable_http_client(
+            self._url,
+            headers=self._headers,
+            timeout=self._timeout,
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await session.call_tool(name, args)
+
+    # ── public synchronous API ──
+
+    def list_tools(self) -> list[Any]:
+        """Return a list of ``mcp.types.Tool`` objects."""
+        return asyncio.run(self._list_tools_async())
+
+    def call_tool(self, name: str, args: dict) -> Any:
+        """Execute one MCP tool call and return the ``CallToolResult``."""
+        return asyncio.run(self._call_tool_async(name, args))
+
+    # ── context manager ──
+
+    def __enter__(self) -> "SyncMcpSession":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        pass  # each call manages its own connection lifecycle
 
 
 class HarborClerkClient:
@@ -121,15 +202,23 @@ class HarborClerkClient:
         r.raise_for_status()
         return r.json()
 
-    def wait_for_research(self, conv_id: str, max_wait_seconds: int) -> dict[str, Any]:
-        """Poll until state is done/error or deadline. Sleep 5s between polls."""
+    def wait_for_research(
+        self, conv_id: str, max_wait_seconds: int, poll_seconds: int = 5
+    ) -> dict[str, Any]:
+        """Poll until status is completed/failed/interrupted or deadline.
+
+        Harbor Clerk returns a ``ResearchDetail`` object whose terminal values
+        are ``completed``, ``failed``, and ``interrupted`` (not ``done`` / ``error``).
+        When poll_seconds=0 the sleep is skipped (test mode).
+        """
         deadline = time.time() + max_wait_seconds
         while time.time() < deadline:
             res = self.poll_research(conv_id)
-            if res.get("state") in {"done", "error"}:
+            if res.get("status") in {"completed", "failed", "interrupted"}:
                 return res
-            time.sleep(5)
-        return {"state": "timeout", "conv_id": conv_id}
+            if poll_seconds > 0:
+                time.sleep(poll_seconds)
+        return {"status": "timeout", "conv_id": conv_id}
 
     # ── ask (chat SSE) ──
 
@@ -206,7 +295,23 @@ class HarborClerkClient:
         r.raise_for_status()
 
     def watch_folder_add(self, path: str, name: str | None = None) -> dict[str, Any]:
-        """POST /api/watch/folders."""
-        r = self._client.post("/api/watch/folders", json={"path": path, "display_name": name})
+        """POST /api/watch/folders.
+
+        ``name`` is accepted for caller convenience but the Watch API schema only
+        has ``path`` and ``recursive``; ``display_name`` is silently ignored by
+        the server.
+        """
+        r = self._client.post("/api/watch/folders", json={"path": path})
         r.raise_for_status()
         return r.json()
+
+    def watch_folder_list(self) -> list[dict]:
+        """GET /api/watch/folders — returns a list of registered watch-folder objects."""
+        r = self._client.get("/api/watch/folders")
+        r.raise_for_status()
+        return r.json()
+
+    def watch_folder_delete(self, folder_id: str) -> None:
+        """DELETE /api/watch/folders/{folder_id}."""
+        r = self._client.delete(f"/api/watch/folders/{folder_id}")
+        r.raise_for_status()

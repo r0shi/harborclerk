@@ -37,7 +37,7 @@ from scripts.test_corpora import conftest as cfg
 from scripts.test_corpora.corpora import cuad, enron, synthetic
 from scripts.test_corpora.corpora.manifest import CorpusManifest
 from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
-from scripts.test_corpora.runner.client import HarborClerkClient
+from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
 from scripts.test_corpora.runner.judge import JudgeClient
 from scripts.test_corpora.runner.metrics import citation_overlap, citation_extra, entity_overlap
 from scripts.test_corpora.runner.sampler import CompletionEvent, Sampler
@@ -143,13 +143,16 @@ def _plan_units(questions_by_corpus: dict[str, dict], phases: set[int], depth: s
                 for q in _question_ids(questions_by_corpus["cuad"]):
                     units.append(Unit(phase=3, corpus="cuad", model="qwen3.6-35b", question_id=q, depth=d))
         elif phase == 4:
-            for m in cfg.ALL_MODELS:
-                for c, qs in questions_by_corpus.items():
+            # Corpus is outer loop so each corpus change (= full re-ingest) happens only
+            # once per corpus rather than once per (model, corpus) pair.
+            for c, qs in questions_by_corpus.items():
+                for m in cfg.ALL_MODELS:
                     for q in _question_ids(qs):
                         units.append(Unit(phase=4, corpus=c, model=m, question_id=q, depth=depth))
         elif phase == 5:
-            for m in cfg.TOP_MODELS:
-                for c, qs in questions_by_corpus.items():
+            # Same rationale: 3 re-ingests (one per corpus) instead of 6 (one per model×corpus).
+            for c, qs in questions_by_corpus.items():
+                for m in cfg.TOP_MODELS:
                     for q in _question_ids(qs):
                         units.append(Unit(phase=5, corpus=c, model=m, question_id=q, depth=depth))
         elif phase == 6:
@@ -195,17 +198,24 @@ def _run_local(
     if is_research:
         conv_id = hc.start_research(question_text, depth=depth, time_limit_minutes=time_limit_minutes)
         result = hc.wait_for_research(conv_id, max_wait_seconds=time_limit_minutes * 60 + 120)
+        # Normalize: ResearchDetail returns "report", chat returns "answer".
+        # Store under "answer" so all downstream metrics code uses a uniform key.
+        normalized_answer = result.get("report") or result.get("answer", "")
+        result["answer"] = normalized_answer
     else:
         # Ask flow: create a chat conversation, then send the question, drain SSE
         conv_id = hc.create_conversation(mode="chat")
         events = list(hc.stream_ask(conv_id, question_text))
-        # Aggregate the final answer + citations from the SSE event stream
-        final_text = "".join(e.get("delta", "") for e in events if e.get("type") == "delta")
+        # Harbor Clerk chat SSE emits {type: "token", content: "<text>"} for tokens.
+        # Citations are in the final {type: "done"} event's rag_context.citations field.
+        final_text = "".join(e.get("content", "") for e in events if e.get("type") == "token")
         citations: list[dict] = []
         for e in events:
-            if e.get("type") == "citations":
-                citations.extend(e.get("citations", []))
-        result = {"state": "done", "answer": final_text, "citations": citations, "conversation_id": conv_id}
+            if e.get("type") == "done":
+                rc = e.get("rag_context") or {}
+                for c in rc.get("citations", []) or e.get("citations", []):
+                    citations.append(c if isinstance(c, dict) else {"doc_id": c})
+        result = {"status": "completed", "answer": final_text, "citations": citations, "conversation_id": conv_id}
 
     out = {
         "corpus": corpus,
@@ -224,6 +234,9 @@ def _run_local(
 # ── ingestion helper ──
 
 def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest) -> None:
+    log.info("clearing existing watch folders before ingesting %s", manifest.corpus_id)
+    for folder in hc.watch_folder_list():
+        hc.watch_folder_delete(folder["folder_id"])
     log.info("delete_all_documents before ingesting %s", manifest.corpus_id)
     hc.delete_all_documents(confirm=True)
     log.info("adding watch folder for %s", manifest.ingest_dir)
@@ -326,6 +339,11 @@ def main(argv: list[str] | None = None) -> int:
         current_corpus_in_db: str | None = None
         current_model: str | None = None
 
+        # Phase 1 MCP session — lazily opened the first time Phase 1 runs.
+        # SyncMcpSession connects to Harbor Clerk's /mcp endpoint so that the
+        # Sonnet 4.6 baseline generator has real KB tools available.
+        mcp_session: SyncMcpSession | None = None
+
         # Process units in phase order
         for phase in sorted(phases):
             phase_units = [u for u in sf.units() if u.phase == phase and u.status == Status.PENDING]
@@ -382,8 +400,17 @@ def main(argv: list[str] | None = None) -> int:
                         out = {"manifest": dataclasses.asdict(manifests[u.corpus])}
                         out["manifest"]["ingest_dir"] = str(out["manifest"]["ingest_dir"])
                     elif phase == 1:
+                        # Lazily open the MCP session on first Phase 1 unit.
+                        if mcp_session is None:
+                            log.info("opening MCP session at %s/mcp for Phase 1 baselines", args.api_base)
+                            bearer = hc._client.headers.get("Authorization")
+                            mcp_headers: dict[str, str] = {"Authorization": bearer} if bearer else {}
+                            mcp_session = SyncMcpSession(
+                                url=f"{args.api_base}/mcp",
+                                headers=mcp_headers,
+                            )
                         text, _lang = _question_text(questions_by_corpus[u.corpus], u.question_id)
-                        out = _phase1_baseline(anthro, None, u.corpus, u.question_id, text, run_dir)
+                        out = _phase1_baseline(anthro, mcp_session, u.corpus, u.question_id, text, run_dir)
                     elif phase in (2, 3, 4, 5, 6):
                         owning_corpus = u.corpus if u.corpus != "unified" else _find_owning_corpus(u.question_id, questions_by_corpus)
                         text, _lang = _question_text(questions_by_corpus[owning_corpus], u.question_id)
@@ -413,7 +440,8 @@ def main(argv: list[str] | None = None) -> int:
                     # Cross-language ids resolve their baseline to the canonical EN id
                     if not baseline_path.exists() and "__" in u.question_id:
                         canonical = u.question_id.split("__")[0]
-                        baseline_path = run_dir / "baselines" / u.corpus / f"{canonical}.json"
+                        # Phase 1 always writes <id>__en.json / <id>__fr.json, never a bare <id>.json
+                        baseline_path = run_dir / "baselines" / u.corpus / f"{canonical}__en.json"
                     if baseline_path.exists():
                         baseline = json.loads(baseline_path.read_text())
                         model_answer = out.get("result", {}).get("answer", "")

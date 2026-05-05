@@ -1,5 +1,4 @@
-import io
-import tarfile
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,17 +6,15 @@ from scripts.test_corpora.corpora import cuad
 
 
 def _make_fake_release(path: Path) -> None:
-    """Build a tiny tar.gz that mimics the CUAD release layout."""
-    with tarfile.open(path, "w:gz") as t:
+    """Build a tiny .zip that mimics the CUAD release layout."""
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as z:
         for i in range(5):
             data = b"%PDF-1.4\nfake contract " + str(i).encode()
-            info = tarfile.TarInfo(name=f"CUAD_v1/contracts/contract_{i:03d}.pdf")
-            info.size = len(data)
-            t.addfile(info, io.BytesIO(data))
+            z.writestr(f"CUAD_v1/contracts/contract_{i:03d}.pdf", data)
 
 
 def test_cuad_acquire_idempotent(tmp_path: Path):
-    archive = tmp_path / "cuad-fake.tar.gz"
+    archive = tmp_path / "cuad-fake.zip"
     _make_fake_release(archive)
 
     with patch.object(cuad, "_download_release", return_value=archive):

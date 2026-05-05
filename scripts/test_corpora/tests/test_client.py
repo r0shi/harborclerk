@@ -79,14 +79,46 @@ def test_start_research_extracts_x_research_id_header():
     assert conv_id == "conv-abc"
 
 
-def test_poll_research_returns_done():
+def test_poll_research_returns_completed():
+    """poll_research should pass through whatever the server returns — the terminal
+    value check lives in wait_for_research."""
     def handler(request):
         assert request.url.path == "/api/research/conv-abc"
-        return httpx.Response(200, json={"state": "done", "answer": "A", "citations": []})
+        return httpx.Response(200, json={"status": "completed", "report": "A", "citations": []})
 
     c = make_client(handler)
     res = c.poll_research("conv-abc")
-    assert res["state"] == "done"
+    assert res["status"] == "completed"
+
+
+def test_wait_for_research_returns_on_completed():
+    """wait_for_research should return as soon as status == 'completed'."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First poll: still running
+            return httpx.Response(200, json={"status": "running", "report": None})
+        # Second poll: done
+        return httpx.Response(200, json={"status": "completed", "report": "Final answer"})
+
+    c = make_client(handler)
+    res = c.wait_for_research("conv-abc", max_wait_seconds=10, poll_seconds=0)
+    assert res["status"] == "completed"
+    assert res["report"] == "Final answer"
+    assert calls["n"] == 2
+
+
+def test_wait_for_research_timeout():
+    """wait_for_research returns a timeout dict if deadline is hit without terminal status."""
+    def handler(request):
+        return httpx.Response(200, json={"status": "running"})
+
+    c = make_client(handler)
+    res = c.wait_for_research("conv-xyz", max_wait_seconds=0, poll_seconds=0)
+    assert res["status"] == "timeout"
+    assert res["conv_id"] == "conv-xyz"
 
 
 def test_pipeline_status_quiet():
@@ -135,3 +167,62 @@ def test_create_conversation_returns_id():
 
     c = make_client(handler)
     assert c.create_conversation(mode="chat") == "conv-xyz"
+
+
+def test_stream_ask_aggregates_token_events():
+    """stream_ask should yield token events with type='token' and content=<text>."""
+    sse_body = (
+        b'data: {"type": "token", "content": "hello"}\n\n'
+        b'data: {"type": "token", "content": " world"}\n\n'
+        b'data: {"type": "done", "rag_context": {"citations": []}}\n\n'
+    )
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            content=sse_body,
+        )
+
+    c = make_client(handler)
+    events = list(c.stream_ask("conv-abc", "What is X?"))
+    tokens = [e for e in events if e.get("type") == "token"]
+    final_text = "".join(e.get("content", "") for e in tokens)
+    assert final_text == "hello world"
+    assert any(e.get("type") == "done" for e in events)
+
+
+def test_watch_folder_list_returns_list():
+    def handler(request):
+        assert request.method == "GET"
+        assert request.url.path == "/api/watch/folders"
+        return httpx.Response(200, json=[{"folder_id": "f1", "path": "/tmp/a"}])
+
+    c = make_client(handler)
+    folders = c.watch_folder_list()
+    assert folders == [{"folder_id": "f1", "path": "/tmp/a"}]
+
+
+def test_watch_folder_delete_calls_delete():
+    seen: list[tuple[str, str]] = []
+
+    def handler(request):
+        seen.append((request.method, request.url.path))
+        return httpx.Response(204)
+
+    c = make_client(handler)
+    c.watch_folder_delete("folder-42")
+    assert ("DELETE", "/api/watch/folders/folder-42") in seen
+
+
+def test_watch_folder_add_sends_path_only():
+    """watch_folder_add should send only 'path' (display_name is ignored by server)."""
+    seen_body: list[dict] = []
+
+    def handler(request):
+        seen_body.append(json.loads(request.content))
+        return httpx.Response(200, json={"folder_id": "new-id"})
+
+    c = make_client(handler)
+    c.watch_folder_add("/some/path", name="my-folder")
+    assert seen_body[0] == {"path": "/some/path"}

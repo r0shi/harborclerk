@@ -11,7 +11,7 @@ so the test does not hit the network.
 from __future__ import annotations
 
 import shutil
-import tarfile
+import zipfile
 from pathlib import Path
 
 import httpx
@@ -26,7 +26,7 @@ SAMPLE_SIZE_DEFAULT = 80
 
 def _download_release(workdir: Path) -> Path:
     workdir.mkdir(parents=True, exist_ok=True)
-    archive = workdir / "cuad_v1.tar.gz"
+    archive = workdir / "cuad_v1.zip"
     if archive.exists():
         return archive
     with httpx.Client(
@@ -46,8 +46,8 @@ def _extract(archive: Path, workdir: Path) -> Path:
     if extracted.exists():
         return extracted
     extracted.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive, "r:*") as t:
-        t.extractall(extracted)
+    with zipfile.ZipFile(archive, "r") as z:
+        z.extractall(extracted)
     return extracted
 
 
