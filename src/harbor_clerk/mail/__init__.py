@@ -8,6 +8,10 @@ or changes.
 See spec docs/superpowers/specs/2026-05-04-email-ingestion-design.md.
 """
 
+from harbor_clerk.mail.document_lifecycle import (
+    restore_documents_for_relabeled,
+    soft_delete_documents_for_unlabeled,
+)
 from harbor_clerk.mail.exceptions import (
     AuthError,
     IdleNotSupported,
@@ -15,8 +19,15 @@ from harbor_clerk.mail.exceptions import (
 )
 from harbor_clerk.mail.idle import poll_or_idle_loop, server_supports_idle
 from harbor_clerk.mail.imap_client import IMAPConnection
+from harbor_clerk.mail.ingest import IngestSummary, ingest_pending_messages
 from harbor_clerk.mail.labels import Folder, discover_folders
 from harbor_clerk.mail.lifecycle import detect_unlabeled_messages
+from harbor_clerk.mail.parser import (
+    AttachmentSpec,
+    EmailParseResult,
+    parse_eml,
+    sanitize_subject_for_filename,
+)
 from harbor_clerk.mail.sync import (
     SyncSummary,
     handle_uidvalidity_change,
@@ -25,16 +36,24 @@ from harbor_clerk.mail.sync import (
 )
 
 __all__ = [
+    "AttachmentSpec",
     "AuthError",
+    "EmailParseResult",
     "Folder",
     "IMAPConnection",
     "IdleNotSupported",
+    "IngestSummary",
     "SyncSummary",
     "UidValidityChanged",
     "detect_unlabeled_messages",
+    "restore_documents_for_relabeled",
+    "soft_delete_documents_for_unlabeled",
     "discover_folders",
     "handle_uidvalidity_change",
+    "ingest_pending_messages",
+    "parse_eml",
     "poll_or_idle_loop",
+    "sanitize_subject_for_filename",
     "server_supports_idle",
     "sync_label_incremental",
     "sync_label_initial",
