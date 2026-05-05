@@ -12,20 +12,48 @@ See [`docs/superpowers/specs/2026-05-04-test-corpora-execution-design.md`](../..
 Prerequisite: Harbor Clerk is running locally — either the macOS Server
 app or `docker compose up`. The harness talks to it over `https://localhost`.
 
+The harness has its own `pyproject.toml` and venv (separate from Harbor
+Clerk's main venv, since it needs different deps — `anthropic`, `mcp`,
+`tenacity`, `pypdfium2`, etc.). Use `uv --project scripts/test_corpora` so
+uv picks the harness venv but the cwd stays at the repo root (so the
+`scripts.test_corpora.runner.sweep` module path resolves):
+
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 export HC_USERNAME="admin@example.com"
 export HC_PASSWORD="..."
 cd /path/to/mcp-gateway
-uv run python -m scripts.test_corpora.runner.sweep \
+uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
     --run-id 2026-05-05-full \
     --workdir ~/Library/Application\ Support/Harbor\ Clerk/test-corpora \
     --insecure   # if Harbor Clerk uses Caddy's self-signed cert
 ```
 
+First-time setup (one-time per fresh harness venv):
+
+```bash
+cd /path/to/mcp-gateway/scripts/test_corpora
+uv sync --extra test
+uv run python -m spacy download en_core_web_sm   # for entity_overlap metric
+```
+
 The harness will log in with `HC_USERNAME` / `HC_PASSWORD` (must be an admin
 account — Phase 4+ calls `delete_all_documents` between corpora). If those
 env vars are missing, only `--phases 0` and `--dry-run` will succeed.
+
+## Scope a run with --corpora / --phases
+
+`--corpora` filters to a subset of corpora (comma-separated):
+
+```bash
+# Phase 0 acquisition for CUAD only — skips the synthetic generation that
+# would cost ~$3-5 in Anthropic API spend
+uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
+    --run-id smoke-$(date +%s) --phases 0 --corpora cuad --insecure
+```
+
+`--phases` filters to a subset of phases (range or comma list): `--phases 0`,
+`--phases 0-2`, `--phases 1,4,5`.
 
 ## Resume after interrupt
 

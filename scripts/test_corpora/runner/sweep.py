@@ -136,12 +136,15 @@ def _plan_units(questions_by_corpus: dict[str, dict], phases: set[int], depth: s
                 for q in _question_ids(qs):
                     units.append(Unit(phase=1, corpus=c, model="claude-baseline", question_id=q, depth="n/a"))
         elif phase == 2:
-            # smoke — one model, one corpus
-            units.append(Unit(phase=2, corpus="cuad", model="qwen3.6-35b", question_id="cuad-research-1", depth=depth))
+            # smoke — one model, one corpus. Skipped if cuad isn't in scope.
+            if "cuad" in questions_by_corpus:
+                units.append(Unit(phase=2, corpus="cuad", model="qwen3.6-35b", question_id="cuad-research-1", depth=depth))
         elif phase == 3:
-            for d in cfg.DEPTHS:
-                for q in _question_ids(questions_by_corpus["cuad"]):
-                    units.append(Unit(phase=3, corpus="cuad", model="qwen3.6-35b", question_id=q, depth=d))
+            # depth coverage — same model × all three depths on cuad. Skipped if cuad isn't in scope.
+            if "cuad" in questions_by_corpus:
+                for d in cfg.DEPTHS:
+                    for q in _question_ids(questions_by_corpus["cuad"]):
+                        units.append(Unit(phase=3, corpus="cuad", model="qwen3.6-35b", question_id=q, depth=d))
         elif phase == 4:
             # Corpus is outer loop so each corpus change (= full re-ingest) happens only
             # once per corpus rather than once per (model, corpus) pair.
@@ -156,9 +159,13 @@ def _plan_units(questions_by_corpus: dict[str, dict], phases: set[int], depth: s
                     for q in _question_ids(qs):
                         units.append(Unit(phase=5, corpus=c, model=m, question_id=q, depth=depth))
         elif phase == 6:
-            # unified pass — same questions but corpus="unified"
+            # unified pass — first 3 research questions from each available corpus
             for m in cfg.TOP_MODELS:
-                for q in _question_ids(questions_by_corpus["cuad"])[:3] + _question_ids(questions_by_corpus["enron"])[:3]:
+                unified_qs: list[str] = []
+                for c in ("cuad", "enron", "synthetic"):
+                    if c in questions_by_corpus:
+                        unified_qs.extend(_question_ids(questions_by_corpus[c])[:3])
+                for q in unified_qs:
                     units.append(Unit(phase=6, corpus="unified", model=m, question_id=q, depth=depth))
     return units
 
@@ -287,6 +294,20 @@ def main(argv: list[str] | None = None) -> int:
         for c in ("cuad", "enron", "synthetic"):
             q_path = Path(__file__).parent.parent / "questions" / f"{c}.yaml"
             questions_by_corpus[c] = yaml.safe_load(q_path.read_text())
+
+        # Apply --corpora filter: scope plan_units to listed corpora only.
+        # Useful for first-time smoke runs that want to skip the synthetic
+        # corpus (which costs ~$3-5 in Anthropic API spend to generate).
+        if args.corpora:
+            requested = {c.strip() for c in args.corpora.split(",") if c.strip()}
+            unknown = requested - set(questions_by_corpus)
+            if unknown:
+                raise RuntimeError(
+                    f"--corpora has unknown values: {sorted(unknown)}. "
+                    f"Known: {sorted(questions_by_corpus)}"
+                )
+            questions_by_corpus = {c: q for c, q in questions_by_corpus.items() if c in requested}
+            log.info("--corpora filter: %s", sorted(questions_by_corpus))
 
         # Plan units if state is empty
         phases = _phase_range(args.phases)
