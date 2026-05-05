@@ -13,6 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isQuitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // First-launch master key bootstrap. Idempotent — generates the key in
+        // Keychain only on the very first launch; subsequent launches just read.
+        // Must run before ServiceManager.startAll() because the Python subprocesses
+        // need this key in their environment (Task 10 injects it).
+        _ = MasterKeyManager.production.loadOrGenerate()
+
         serviceManager = ServiceManager()
         healthChecker = HealthChecker(serviceManager: serviceManager)
         serviceManager.healthChecker = healthChecker
