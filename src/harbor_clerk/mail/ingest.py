@@ -16,6 +16,7 @@ Documents are NOT deleted from this module — the lifecycle handler in
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import logging
@@ -232,6 +233,14 @@ async def ingest_pending_messages(
             continue
         fetched_count += 1
         real_sha = hashlib.sha256(eml_bytes).digest()
+        # IMPORTANT: assigning real_sha to this row's eml_sha256 BEFORE the
+        # cross-label dedup query below is safe because:
+        #   1. SQLAlchemy's autoflush will write the new value before the SELECT.
+        #   2. The SELECT filters on `email_doc_id.is_not(None)`, and this row's
+        #      email_doc_id is still NULL — so it cannot match itself.
+        # If a future refactor removes the email_doc_id IS NOT NULL clause, move
+        # the eml_sha256 assignment to AFTER the dedup query (and after we either
+        # linked or created a Document) to prevent self-matching.
         msg.eml_sha256 = real_sha
 
         # Cross-label dedup: any other watched_message already mapped to a Document with this SHA?
@@ -252,31 +261,50 @@ async def ingest_pending_messages(
             deduped_count += 1
             continue
 
-        parsed = parse_eml(eml_bytes)
-        email_doc = await create_email_document(
-            session,
-            parsed=parsed,
-            eml_bytes=eml_bytes,
-            eml_sha256=real_sha,
-            label=label,
-        )
-        await session.flush()
-        new_email_doc_count += 1
+        try:
+            parsed = parse_eml(eml_bytes)
+            email_doc = await create_email_document(
+                session,
+                parsed=parsed,
+                eml_bytes=eml_bytes,
+                eml_sha256=real_sha,
+                label=label,
+            )
+            await session.flush()
 
-        attachment_docs = await create_attachment_documents(
-            session,
-            parsed=parsed,
-            parent_doc=email_doc,
-            label=label,
-        )
-        await session.flush()
-        new_attachment_doc_count += len(attachment_docs)
+            attachment_docs = await create_attachment_documents(
+                session,
+                parsed=parsed,
+                parent_doc=email_doc,
+                label=label,
+            )
+            await session.flush()
 
-        msg.email_doc_id = email_doc.doc_id
+            msg.email_doc_id = email_doc.doc_id
 
-        # Enqueue extract for the email and each attachment
-        for d in [email_doc, *attachment_docs]:
-            enqueue_stage(d.doc_id, JobStage.extract)
+            # enqueue_stage is sync (uses psycopg2). Run in the default thread executor
+            # so the event loop stays responsive — the mail observer's per-label tasks
+            # all share one event loop, and a large ingest batch could otherwise stall
+            # IMAP IDLE handling for other labels.
+            loop = asyncio.get_running_loop()
+            for d in [email_doc, *attachment_docs]:
+                await loop.run_in_executor(None, enqueue_stage, d.doc_id, JobStage.extract)
+
+            new_email_doc_count += 1
+            new_attachment_doc_count += len(attachment_docs)
+        except Exception as exc:
+            logger.warning(
+                "ingest failed for label=%s uid=%s: %s — leaving for next tick",
+                label.label_id,
+                msg.imap_uid,
+                exc,
+            )
+            # Roll back this savepoint so other messages in the batch still commit.
+            # Without per-message savepoints we'd need session.rollback() which
+            # would discard the eml_sha256 update too. Instead: reset email_doc_id
+            # and continue. Next tick will re-pick this message via email_doc_id IS NULL.
+            msg.email_doc_id = None
+            continue
 
     return IngestSummary(
         fetched_count=fetched_count,
