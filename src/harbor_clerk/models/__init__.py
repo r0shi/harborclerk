@@ -21,6 +21,7 @@ from harbor_clerk.models.enums import (
     VersionStatus,
 )
 from harbor_clerk.models.ingestion_job import IngestionJob
+from harbor_clerk.models.mail_account import MailAccount
 from harbor_clerk.models.model_settings import ModelSettings
 from harbor_clerk.models.oauth_client import OAuthClient
 from harbor_clerk.models.oauth_code import OAuthCode
@@ -30,6 +31,8 @@ from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.upload_session import UploadSession
 from harbor_clerk.models.user import User
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+from harbor_clerk.models.watched_label import WatchedLabel
+from harbor_clerk.models.watched_message import WatchedMessage
 
 __all__ = [
     "Base",
@@ -63,4 +66,7 @@ __all__ = [
     "WatchedFolder",
     "WatchedFile",
     "WatchedFileStatus",
+    "MailAccount",
+    "WatchedLabel",
+    "WatchedMessage",
 ]

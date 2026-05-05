@@ -276,7 +276,7 @@ final class ServiceManager: ObservableObject {
         let settings = AppSettings.shared
 
         // Set base environment on all Python services
-        let env = pythonEnvironment()
+        let env = Self.pythonEnvironment()
         for service in services {
             if let pySvc = service as? PythonService {
                 pySvc.baseEnvironment = env
@@ -453,7 +453,7 @@ final class ServiceManager: ObservableObject {
 
         // Ensure Python services have env set
         if let pySvc = service as? PythonService, pySvc.baseEnvironment.isEmpty {
-            pySvc.baseEnvironment = pythonEnvironment()
+            pySvc.baseEnvironment = Self.pythonEnvironment()
         }
         service.state = .starting
         notifyStateChanged()
@@ -660,7 +660,7 @@ final class ServiceManager: ObservableObject {
         }
 
         // 6. Update environment on all affected python services
-        let env = pythonEnvironment()
+        let env = Self.pythonEnvironment()
         for svc in nonWorkerPython {
             if let pySvc = svc as? PythonService {
                 pySvc.baseEnvironment = env
@@ -839,7 +839,7 @@ final class ServiceManager: ObservableObject {
             }
 
             // Update Python services' env so restarts pick up the new model ID
-            let env = pythonEnvironment()
+            let env = Self.pythonEnvironment()
             for service in services {
                 if let pySvc = service as? PythonService {
                     pySvc.baseEnvironment = env
@@ -851,13 +851,21 @@ final class ServiceManager: ObservableObject {
     // MARK: - Environment
 
     /// Build the full environment dict for Python services.
-    func pythonEnvironment() -> [String: String] {
+    nonisolated static func pythonEnvironment() -> [String: String] {
         let settings = AppSettings.shared
         let bundle = Bundle.main.resourceURL!
 
         let hashFile = bundle.appendingPathComponent("venv/build-hash.txt")
         let buildHash = (try? String(contentsOf: hashFile, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+
+        // Master encryption key for secret storage. See MasterKeyManager and the
+        // Python harbor_clerk.secrets module. Read from Keychain (the bootstrap
+        // call in AppDelegate.applicationDidFinishLaunching ensures it exists)
+        // and exported to subprocesses as the same env var Docker operators set
+        // directly — one Python code path on both deployments.
+        let masterKey = MasterKeyManager.production.loadOrGenerate()
+        let masterKeyB64 = MasterKeyManager.production.base64Encoded(key: masterKey)
 
         return [
             "BUILD_HASH": buildHash,
@@ -884,6 +892,7 @@ final class ServiceManager: ObservableObject {
             "LLM_YARN_ENABLED": settings.llmYarnEnabled ? "true" : "false",
             "MODELS_DIR": settings.modelsDir.path,
             "NATIVE_CONFIG_FILE": settings.configURL.path,
+            "HARBOR_CLERK_MASTER_KEY": masterKeyB64,
         ]
     }
 }

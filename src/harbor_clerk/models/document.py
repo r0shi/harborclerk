@@ -1,5 +1,8 @@
-from sqlalchemy import BigInteger, Boolean, Enum, ForeignKey, Integer, LargeBinary, Text, text
-from sqlalchemy.dialects.postgresql import ARRAY
+import uuid
+from datetime import datetime
+
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, LargeBinary, Text, text
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from harbor_clerk.models.base import Base, created_at, updated_at, uuid_pk
@@ -48,6 +51,23 @@ class Document(Base):
         ARRAY(Text),
         nullable=True,
     )
+
+    # Email-ingest metadata. Populated only for email and attachment Documents;
+    # NULL for watched-folder and uploaded Documents. See spec
+    # docs/superpowers/specs/2026-05-04-email-ingestion-design.md.
+    email_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_parent_doc_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.doc_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    email_from_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_from_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_to_addresses: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    email_cc_addresses: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    email_date_sent: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_label_path: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[created_at]
     updated_at: Mapped[updated_at]
