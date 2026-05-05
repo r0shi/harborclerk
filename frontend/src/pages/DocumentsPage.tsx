@@ -154,6 +154,8 @@ export default function DocumentsPage() {
   // Finder via `window.harborclerk.revealInFinder`, not download.
   const canDownload = sysConfig.allowSourceDownload && sysConfig.loaded
   const [searchParams] = useSearchParams()
+  const sysConfig = useSystemConfig()
+  const canDownload = sysConfig.allowSourceDownload && sysConfig.loaded
   const [pageSize, setPageSize] = useState(user?.preferences?.page_size || 10)
   const [docs, setDocs] = useState<DocSummary[]>([])
   const [total, setTotal] = useState(0)
