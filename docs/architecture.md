@@ -238,3 +238,7 @@ graph LR
     api -- "role: user" --> limited["Read"]
     api -- "api_key" --> readonly["Read-Only (scoped)"]
 ```
+
+- **Secret storage** — sensitive values (mail-account app passwords, future
+  OAuth tokens, etc.) are encrypted in Postgres with a master key managed per
+  deployment. See [secrets-and-keys.md](secrets-and-keys.md).

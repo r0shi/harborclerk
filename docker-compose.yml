@@ -23,6 +23,7 @@ services:
     environment:
       LLAMA_SERVER_URL: http://llama-server:8080
       MODELS_DIR: /models
+      HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
     volumes:
       - llama_models:/models
     depends_on:
@@ -46,6 +47,8 @@ services:
     command: ["harbor-clerk-worker", "--queues", "io"]
     restart: unless-stopped
     env_file: .env
+    environment:
+      HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
     depends_on:
       app:
         condition: service_healthy
@@ -59,6 +62,8 @@ services:
     command: ["harbor-clerk-worker", "--queues", "cpu"]
     restart: unless-stopped
     env_file: .env
+    environment:
+      HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
     depends_on:
       app:
         condition: service_healthy
@@ -74,6 +79,7 @@ services:
     env_file: .env
     environment:
       WATCH_ROOT: ${WATCH_ROOT:-/data/watch}
+      HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
     volumes:
       - ./data/watch:/data/watch
     depends_on:
