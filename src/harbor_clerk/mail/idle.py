@@ -52,7 +52,16 @@ async def poll_or_idle_loop(
                             event = await asyncio.wait_for(conn.client.wait_server_push(), timeout=idle_timeout)
                         except TimeoutError:
                             break  # IDLE refresh; no events
-                        if b"EXISTS" in event or b"EXPUNGE" in event:
+                        # `event` is a list[bytes] from aioimaplib's IdleCommand.queue:
+                        # each element is one IMAP response line like b"* 5 EXISTS",
+                        # or the [b"stop_wait_server_push"] sentinel when the
+                        # idle_timeout call_later fires. Substring-scan each line
+                        # for the events we care about. Plain `b"EXISTS" in event`
+                        # does element membership against the list and never matches.
+                        if any(
+                            b"EXISTS" in line or b"EXPUNGE" in line or b"stop_wait_server_push" in line
+                            for line in event
+                        ):
                             break
                 finally:
                     await conn.client.idle_done()

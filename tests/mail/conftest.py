@@ -117,9 +117,13 @@ class FakeIMAP:
     async def idle_done(self):
         return "OK", []
 
-    async def wait_server_push(self, timeout: float | None = None) -> bytes:
+    async def wait_server_push(self, timeout: float | None = None) -> list[bytes]:
+        # Match real aioimaplib: IdleCommand.queue holds list[bytes] (each
+        # element is one IMAP response line); wait_server_push() returns one
+        # such list per push. Tests stage individual lines via set_idle_events;
+        # we wrap each as [line] to mirror the real shape.
         if self._idle_events:
-            return self._idle_events.pop(0)
+            return [self._idle_events.pop(0)]
         raise TimeoutError("no idle events queued")
 
 
