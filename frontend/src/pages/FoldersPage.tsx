@@ -5,6 +5,7 @@ import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
+import EmailSection from '../components/EmailSection'
 
 interface FolderInfo {
   folder_id: string
@@ -246,6 +247,8 @@ export default function FoldersPage() {
           })}
         </div>
       )}
+
+      <EmailSection />
     </div>
   )
 }
