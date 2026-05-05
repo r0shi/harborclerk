@@ -22,10 +22,12 @@ from harbor_clerk.api.schemas.mail import (
     MailAccountCreate,
     MailAccountResponse,
     TestConnectionResponse,
+    WatchedLabelCreate,
+    WatchedLabelResponse,
 )
 from harbor_clerk.db import get_session
 from harbor_clerk.mail import AuthError, IMAPConnection, discover_folders
-from harbor_clerk.models import MailAccount
+from harbor_clerk.models import MailAccount, WatchedLabel
 from harbor_clerk.secrets import get_cipher
 
 logger = logging.getLogger(__name__)
@@ -187,3 +189,76 @@ async def test_mail_account(
             for f in folders
         ],
     )
+
+
+def _label_to_response(lbl: WatchedLabel) -> WatchedLabelResponse:
+    return WatchedLabelResponse(
+        label_id=lbl.label_id,
+        account_id=lbl.account_id,
+        label_path=lbl.label_path,
+        display_name=lbl.display_name,
+        status=lbl.status,  # type: ignore[arg-type]
+        last_error=lbl.last_error,
+        last_synced_at=lbl.last_synced_at,
+        last_uid_seen=lbl.last_uid_seen,
+        uidvalidity=lbl.uidvalidity,
+        created_at=lbl.created_at,
+    )
+
+
+@router.post(
+    "/mail/labels",
+    response_model=WatchedLabelResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_watched_label(
+    body: WatchedLabelCreate,
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> WatchedLabelResponse:
+    """Add a watched label to an account. The sync engine picks it up
+    via LISTEN/NOTIFY and starts a sync task on the next supervisor tick."""
+    account = (
+        await session.execute(select(MailAccount).where(MailAccount.account_id == body.account_id))
+    ).scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mail account not found")
+
+    label = WatchedLabel(
+        account_id=body.account_id,
+        label_path=body.label_path,
+        display_name=body.display_name,
+    )
+    session.add(label)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"label '{body.label_path}' already watched on this account",
+        )
+    await session.commit()
+    return _label_to_response(label)
+
+
+@router.get("/mail/labels", response_model=list[WatchedLabelResponse])
+async def list_watched_labels(
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[WatchedLabelResponse]:
+    rows = (await session.execute(select(WatchedLabel).order_by(WatchedLabel.created_at))).scalars().all()
+    return [_label_to_response(lbl) for lbl in rows]
+
+
+@router.delete("/mail/labels/{label_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_watched_label(
+    label_id: UUID,
+    principal: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    label = (await session.execute(select(WatchedLabel).where(WatchedLabel.label_id == label_id))).scalar_one_or_none()
+    if label is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="watched label not found")
+    await session.delete(label)
+    await session.commit()

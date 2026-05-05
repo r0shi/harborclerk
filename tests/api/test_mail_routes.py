@@ -190,3 +190,109 @@ async def test_test_connection_auth_error(client, admin_user, admin_token, monke
     a = next(x for x in list_resp.json() if x["imap_username"] == "fail@example.com")
     assert a["status"] == "auth_error"
     assert "AUTHENTICATIONFAILED" in a["last_error"]
+
+
+async def test_create_watched_label(client, admin_user, admin_token):
+    body = {
+        "display_name": "label-test",
+        "provider": "gmail",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "imap_username": "labels@example.com",
+        "app_password": "x",
+    }
+    create = await client.post("/api/mail/accounts", json=body, headers=auth_header(admin_token))
+    account_id = create.json()["account_id"]
+
+    label_body = {"account_id": account_id, "label_path": "Clerk", "display_name": "Clerk"}
+    resp = await client.post("/api/mail/labels", json=label_body, headers=auth_header(admin_token))
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["label_path"] == "Clerk"
+    assert data["status"] == "active"
+    assert data["last_uid_seen"] == 0
+    assert data["uidvalidity"] is None  # not yet synced
+
+
+async def test_create_watched_label_duplicate_returns_409(client, admin_user, admin_token):
+    body = {
+        "display_name": "dup-label",
+        "provider": "gmail",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "imap_username": "duplab@example.com",
+        "app_password": "x",
+    }
+    create = await client.post("/api/mail/accounts", json=body, headers=auth_header(admin_token))
+    account_id = create.json()["account_id"]
+
+    label_body = {"account_id": account_id, "label_path": "Same", "display_name": "Same"}
+    r1 = await client.post("/api/mail/labels", json=label_body, headers=auth_header(admin_token))
+    assert r1.status_code == 201
+    r2 = await client.post("/api/mail/labels", json=label_body, headers=auth_header(admin_token))
+    assert r2.status_code == 409
+
+
+async def test_create_watched_label_unknown_account_404(client, admin_user, admin_token):
+    label_body = {
+        "account_id": "00000000-0000-0000-0000-000000000000",
+        "label_path": "Clerk",
+        "display_name": "Clerk",
+    }
+    resp = await client.post("/api/mail/labels", json=label_body, headers=auth_header(admin_token))
+    assert resp.status_code == 404
+
+
+async def test_list_watched_labels(client, admin_user, admin_token):
+    body = {
+        "display_name": "list-labels",
+        "provider": "gmail",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "imap_username": "lstlab@example.com",
+        "app_password": "x",
+    }
+    create = await client.post("/api/mail/accounts", json=body, headers=auth_header(admin_token))
+    account_id = create.json()["account_id"]
+    await client.post(
+        "/api/mail/labels",
+        json={"account_id": account_id, "label_path": "L1", "display_name": "L1"},
+        headers=auth_header(admin_token),
+    )
+    await client.post(
+        "/api/mail/labels",
+        json={"account_id": account_id, "label_path": "L2", "display_name": "L2"},
+        headers=auth_header(admin_token),
+    )
+
+    resp = await client.get("/api/mail/labels", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    items = resp.json()
+    paths = [it["label_path"] for it in items if it["account_id"] == account_id]
+    assert "L1" in paths
+    assert "L2" in paths
+
+
+async def test_delete_watched_label(client, admin_user, admin_token):
+    body = {
+        "display_name": "del-label",
+        "provider": "gmail",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "imap_username": "dellab@example.com",
+        "app_password": "x",
+    }
+    create = await client.post("/api/mail/accounts", json=body, headers=auth_header(admin_token))
+    account_id = create.json()["account_id"]
+    label_resp = await client.post(
+        "/api/mail/labels",
+        json={"account_id": account_id, "label_path": "ToDelete", "display_name": "ToDelete"},
+        headers=auth_header(admin_token),
+    )
+    label_id = label_resp.json()["label_id"]
+
+    resp = await client.delete(f"/api/mail/labels/{label_id}", headers=auth_header(admin_token))
+    assert resp.status_code == 204
+
+    list_resp = await client.get("/api/mail/labels", headers=auth_header(admin_token))
+    assert not any(it["label_id"] == label_id for it in list_resp.json())
