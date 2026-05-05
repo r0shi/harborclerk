@@ -68,8 +68,35 @@ def parse_eml(eml_bytes: bytes) -> EmailParseResult:
         date_sent=date_sent,
         thread_id=thread_id,
         body_text=body_text,
-        attachments=[],  # Task 2 fills this
+        attachments=_extract_attachments(msg),
     )
+
+
+def _extract_attachments(msg: Message) -> list[AttachmentSpec]:
+    """Walk the multipart tree and collect Content-Disposition: attachment parts.
+
+    Inline images and other non-attachment parts are skipped per spec —
+    Stage 3 only ingests parts the sender deliberately attached.
+    """
+    attachments: list[AttachmentSpec] = []
+    if not msg.is_multipart():
+        return attachments
+    for part in msg.walk():
+        if not _is_attachment(part):
+            continue
+        content = part.get_payload(decode=True)
+        if content is None:
+            continue
+        filename = part.get_filename() or "attachment"
+        mime_type = part.get_content_type() or "application/octet-stream"
+        attachments.append(
+            AttachmentSpec(
+                filename=filename,
+                mime_type=mime_type,
+                content=content,
+            )
+        )
+    return attachments
 
 
 def _parse_addresses(headers: list[str]) -> list[str]:

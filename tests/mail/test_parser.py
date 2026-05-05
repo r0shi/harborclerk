@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from harbor_clerk.mail.parser import parse_eml
-from tests.mail.fixtures.build_eml import build_simple_email
+from tests.mail.fixtures.build_eml import build_email_with_attachments, build_simple_email
 
 
 def test_parse_minimal_message_id_subject_body():
@@ -51,3 +51,67 @@ def test_parse_no_attachments_for_text_only():
     eml = build_simple_email()
     result = parse_eml(eml)
     assert result.attachments == []
+
+
+def test_parse_attachment_extracts_bytes():
+    pdf_bytes = b"%PDF-1.4 fake pdf content for test"
+    eml = build_email_with_attachments(
+        attachments=[("contract.pdf", "application/pdf", pdf_bytes)],
+    )
+    result = parse_eml(eml)
+    assert len(result.attachments) == 1
+    att = result.attachments[0]
+    assert att.filename == "contract.pdf"
+    assert att.mime_type == "application/pdf"
+    assert att.content == pdf_bytes
+
+
+def test_parse_multiple_attachments_preserves_order():
+    eml = build_email_with_attachments(
+        attachments=[
+            ("a.pdf", "application/pdf", b"a-content"),
+            ("b.txt", "text/plain", b"b-content"),
+            ("c.jpg", "image/jpeg", b"c-content"),
+        ],
+    )
+    result = parse_eml(eml)
+    filenames = [a.filename for a in result.attachments]
+    assert filenames == ["a.pdf", "b.txt", "c.jpg"]
+
+
+def test_parse_inline_image_is_NOT_an_attachment():
+    """Inline images (Content-Disposition: inline) are skipped per spec.
+    Only Content-Disposition: attachment counts."""
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["Message-ID"] = "<inline@example.com>"
+    msg["Subject"] = "With inline image"
+    msg["From"] = "alice@example.com"
+    msg["To"] = "bob@example.com"
+    msg.set_content("Body text.")
+    msg.add_attachment(
+        b"fake-png-bytes",
+        maintype="image",
+        subtype="png",
+        filename="signature.png",
+        disposition="inline",
+    )
+    result = parse_eml(msg.as_bytes())
+    assert result.attachments == []  # inline image is NOT collected
+    assert "Body text" in result.body_text
+
+
+def test_parse_body_prefers_text_plain_over_html():
+    from email.message import EmailMessage
+
+    msg = EmailMessage()
+    msg["Message-ID"] = "<alt@example.com>"
+    msg["Subject"] = "alt"
+    msg["From"] = "alice@example.com"
+    msg["To"] = "bob@example.com"
+    msg.set_content("PLAIN body")
+    msg.add_alternative("<p>HTML body</p>", subtype="html")
+    result = parse_eml(msg.as_bytes())
+    assert "PLAIN body" in result.body_text
+    assert "HTML body" not in result.body_text
