@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harbor_clerk.config import get_settings
 from harbor_clerk.mail.imap_client import IMAPConnection
 from harbor_clerk.mail.parser import EmailParseResult, parse_eml, sanitize_subject_for_filename
 from harbor_clerk.models import Document, WatchedLabel, WatchedMessage
@@ -101,14 +102,22 @@ async def create_email_document(
     doc_id = uuid.uuid4()
     safe_subject = sanitize_subject_for_filename(parsed.subject)
     storage_key = f"originals/{doc_id}/{safe_subject}.eml"
+    bucket = get_settings().minio_bucket
 
+    # storage.put_object is sync (blocking I/O). Wrap in run_in_executor so
+    # large attachments don't stall the mail observer's shared event loop.
+    # Same pattern as uploads.py:619 and the enqueue_stage call below.
     storage = get_storage()
-    storage.put_object(
-        bucket="originals",
-        key=storage_key,
-        data=io.BytesIO(eml_bytes),
-        length=len(eml_bytes),
-        content_type="message/rfc822",
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: storage.put_object(
+            bucket=bucket,
+            key=storage_key,
+            data=io.BytesIO(eml_bytes),
+            length=len(eml_bytes),
+            content_type="message/rfc822",
+        ),
     )
 
     # Use the spec's send-date-as-created-at semantics. Fall back to now()
@@ -124,7 +133,7 @@ async def create_email_document(
         mime_type="message/rfc822",
         size_bytes=len(eml_bytes),
         original_object_key=storage_key,
-        original_bucket="originals",
+        original_bucket=bucket,
         email_message_id=parsed.message_id,
         email_thread_id=parsed.thread_id,
         email_from_address=parsed.from_address,
@@ -153,6 +162,8 @@ async def create_attachment_documents(
     Caller flushes/commits.
     """
     storage = get_storage()
+    bucket = get_settings().minio_bucket
+    loop = asyncio.get_running_loop()
     docs: list[Document] = []
     for attachment in parsed.attachments:
         doc_id = uuid.uuid4()
@@ -160,12 +171,16 @@ async def create_attachment_documents(
         safe_filename = sanitize_subject_for_filename(attachment.filename)
         storage_key = f"originals/{doc_id}/{safe_filename}"
 
-        storage.put_object(
-            bucket="originals",
-            key=storage_key,
-            data=io.BytesIO(attachment.content),
-            length=len(attachment.content),
-            content_type=attachment.mime_type,
+        # See create_email_document for why this is wrapped.
+        await loop.run_in_executor(
+            None,
+            lambda key=storage_key, content=attachment.content, mime=attachment.mime_type: storage.put_object(
+                bucket=bucket,
+                key=key,
+                data=io.BytesIO(content),
+                length=len(content),
+                content_type=mime,
+            ),
         )
 
         sha = hashlib.sha256(attachment.content).digest()
@@ -179,7 +194,7 @@ async def create_attachment_documents(
             mime_type=attachment.mime_type,
             size_bytes=len(attachment.content),
             original_object_key=storage_key,
-            original_bucket="originals",
+            original_bucket=bucket,
             email_parent_doc_id=parent_doc.doc_id,
             email_message_id=parsed.message_id,
             email_label_path=label.label_path,
