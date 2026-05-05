@@ -7,9 +7,14 @@ import pytest
 from sqlalchemy import select
 
 from harbor_clerk.mail.imap_client import IMAPConnection
-from harbor_clerk.mail.ingest import create_attachment_documents, create_email_document, fetch_eml_bytes
+from harbor_clerk.mail.ingest import (
+    create_attachment_documents,
+    create_email_document,
+    fetch_eml_bytes,
+    ingest_pending_messages,
+)
 from harbor_clerk.mail.parser import AttachmentSpec, EmailParseResult
-from harbor_clerk.models import Document
+from harbor_clerk.models import Document, WatchedMessage
 from harbor_clerk.models.enums import PipelineStatus
 from tests.mail.fixtures.build_eml import build_email_with_attachments
 
@@ -291,3 +296,58 @@ async def test_ingest_dedupes_across_labels_via_sha(db_session, mail_account, mo
     await db_session.refresh(msg_b)
     assert msg_b.email_doc_id == parent_doc.doc_id
     assert msg_b.eml_sha256 == real_sha
+
+
+async def test_ingest_enqueues_extract_for_each_new_doc(db_session, watched_label, mock_aioimap, monkeypatch):
+    """ingest_pending_messages should call enqueue_stage(extract) for the
+    email Document and each attachment Document."""
+    enqueued: list[tuple] = []
+
+    def _capture_enqueue(doc_id, stage, *, priority=0):
+        enqueued.append((doc_id, stage, priority))
+
+    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", _capture_enqueue)
+
+    eml = build_email_with_attachments(
+        message_id="<enq@example.com>",
+        subject="enqueue test",
+        attachments=[
+            ("a.pdf", "application/pdf", b"%PDF a"),
+            ("b.pdf", "application/pdf", b"%PDF b"),
+        ],
+    )
+    msg = WatchedMessage(
+        label_id=watched_label.label_id,
+        message_id="<enq@example.com>",
+        imap_uid=7,
+        eml_sha256=hashlib.sha256(b"placeholder").digest(),
+        status="active",
+        email_doc_id=None,
+    )
+    db_session.add(msg)
+    await db_session.flush()
+
+    mock_aioimap.set_login_response("OK", b"OK")
+    mock_aioimap.set_uid_fetch_response(
+        "OK",
+        [
+            b"7 (UID 7 BODY[] {%d}" % len(eml),
+            eml,
+            b")",
+            b"OK FETCH completed",
+        ],
+    )
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    summary = await ingest_pending_messages(db_session, conn, watched_label)
+    await conn.logout()
+
+    assert summary.new_email_doc_count == 1
+    assert summary.new_attachment_doc_count == 2
+
+    from harbor_clerk.models.enums import JobStage
+
+    assert len(enqueued) == 3  # email + 2 attachments
+    assert all(stage == JobStage.extract for _, stage, _ in enqueued)
