@@ -162,3 +162,78 @@ async def sync_label_initial(
     await write_cursor(session, label.label_id, LabelCursor(last_uid_seen=highest_uid, uidvalidity=uidvalidity))
 
     return SyncSummary(fetched_count=len(uids), new_count=new_count, duplicate_count=duplicate_count)
+
+
+async def sync_label_incremental(
+    session: AsyncSession,
+    conn: IMAPConnection,
+    label: WatchedLabel,
+) -> SyncSummary:
+    """Fetch messages with UID > last_uid_seen and append to watched_messages.
+
+    Caller must have already authenticated. Caller commits.
+    """
+    select_result, select_lines = await conn.client.select(label.label_path)
+    if select_result != "OK":
+        return SyncSummary(0, 0, 0)
+
+    uidvalidity = _parse_uidvalidity(select_lines)
+    if label.uidvalidity is not None and uidvalidity != label.uidvalidity:
+        # UIDVALIDITY changed — caller must trigger a full rescan instead.
+        # We refuse to advance the cursor in this case.
+        from harbor_clerk.mail.exceptions import UidValidityChanged
+
+        raise UidValidityChanged(f"label {label.label_path}: uidvalidity {label.uidvalidity} → {uidvalidity}")
+
+    # Search for UIDs strictly greater than last_uid_seen.
+    next_uid = label.last_uid_seen + 1
+    search_query = f"UID {next_uid}:*"
+    search_result, search_lines = await conn.client.uid_search(search_query)
+    if search_result != "OK":
+        return SyncSummary(0, 0, 0)
+
+    uids = _parse_uid_list(search_lines)
+    # IMAP `UID N:*` always returns at least UIDNEXT-1 even if no messages
+    # match; filter those out.
+    uids = [u for u in uids if u >= next_uid]
+    if not uids:
+        return SyncSummary(0, 0, 0)
+
+    uid_set = ",".join(str(u) for u in uids)
+    fetch_result, fetch_lines = await conn.client.uid("FETCH", uid_set, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    if fetch_result != "OK":
+        return SyncSummary(0, 0, 0)
+    uid_to_mid = _parse_fetch_response(fetch_lines)
+
+    new_count = 0
+    duplicate_count = 0
+    for uid in uids:
+        message_id = uid_to_mid.get(uid) or _synthesize_message_id(uid, label.label_id)
+        existing = (
+            await session.execute(
+                select(WatchedMessage).where(
+                    WatchedMessage.label_id == label.label_id,
+                    WatchedMessage.message_id == message_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            duplicate_count += 1
+            continue
+        placeholder_sha = hashlib.sha256(f"placeholder:{label.label_id}:{uid}".encode()).digest()
+        msg = WatchedMessage(
+            label_id=label.label_id,
+            message_id=message_id,
+            imap_uid=uid,
+            eml_sha256=placeholder_sha,
+            status="active",
+        )
+        session.add(msg)
+        new_count += 1
+
+    await session.flush()
+
+    highest_uid = max(uids)
+    await write_cursor(session, label.label_id, LabelCursor(last_uid_seen=highest_uid, uidvalidity=uidvalidity))
+
+    return SyncSummary(fetched_count=len(uids), new_count=new_count, duplicate_count=duplicate_count)
