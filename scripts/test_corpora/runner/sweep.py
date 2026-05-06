@@ -46,6 +46,18 @@ from scripts.test_corpora.runner.state import StateFile, Status, Unit
 log = logging.getLogger("sweep")
 
 
+# state.json files written before the model-id alignment used informal labels
+# that 404 on PUT /api/chat/models/<id>/activate. Migrate on load so a
+# resumed sweep doesn't try to activate phantom models. Idempotent —
+# anything not in the map is left alone.
+_LEGACY_MODEL_ID_RENAMES = {
+    "phi-4-mini": "phi4-mini",
+    "deepseek-r1-8b": "deepseek-r1-0528-8b",
+    "gemma-26b": "gemma4-26b-a4b",
+    "qwen3.6-35b": "qwen36-35b-a3b",
+}
+
+
 # ── argparse ──
 
 
@@ -404,6 +416,15 @@ def main(argv: list[str] | None = None) -> int:
     sf.acquire_lock()
     try:
         sf.load()
+
+        # Migrate legacy model ids in state.json before any other logic
+        # consults sf.units(). Without this, --resume on a state file
+        # written before PR #300 keeps trying to activate the old labels
+        # (e.g. gemma-26b) which 404 against HC's actual registry.
+        n_renamed = sf.rename_model_ids(_LEGACY_MODEL_ID_RENAMES)
+        if n_renamed:
+            sf.save()
+            log.warning("migrated %d legacy model ids in state.json", n_renamed)
 
         # Load question YAML for each corpus
         questions_by_corpus = {}
