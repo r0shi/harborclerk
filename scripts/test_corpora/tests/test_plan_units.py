@@ -81,3 +81,49 @@ def test_phase4_corpus_then_model_ordering_minimizes_db_wipes():
     transitions = sum(1 for a, b in zip(units, units[1:]) if a.corpus != b.corpus)
     # 2 corpora → exactly 1 transition (cuad block, then enron block)
     assert transitions == 1
+
+
+def test_phase_planning_is_additive_after_prior_phase(tmp_path):
+    """Regression: invoking the harness with --phases 4 after --phases 0-1
+    has already populated state.json must still register phase 4 units.
+    The original gate was ``if not sf.units()`` which silently skipped
+    planning for every later phase. Now we register only the missing
+    phases additively."""
+    from scripts.test_corpora.runner.state import StateFile, Unit
+
+    sf = StateFile(tmp_path / "state.json")
+    # Simulate: phase 0/1 already done from a prior run
+    sf.register(
+        [
+            Unit(phase=0, corpus="cuad", model="-", question_id="-", depth="-"),
+            Unit(phase=1, corpus="cuad", model="claude-baseline", question_id="cuad-research-1", depth="n/a"),
+        ]
+    )
+    sf.save()
+
+    # Sanity check: state has phases {0, 1}, no phase 4
+    existing_phases = {u.phase for u in sf.units()}
+    assert existing_phases == {0, 1}
+
+    # The new gate: register units for any requested phase that's not present
+    requested = {4}
+    missing_phases = requested - existing_phases
+    assert missing_phases == {4}
+
+    new_units = _plan_units(
+        _qbc(["cuad"]),
+        missing_phases,
+        "standard",
+        models_filter={"qwen3.6-35b"},
+    )
+    assert len(new_units) > 0, "missing-phase planning produced zero units"
+    assert all(u.phase == 4 for u in new_units), "all new units must be phase 4"
+
+    sf.register(new_units)
+    sf.save()
+
+    # Reload and verify both phases coexist
+    sf2 = StateFile(tmp_path / "state.json")
+    sf2.load()
+    phases_seen = {u.phase for u in sf2.units()}
+    assert phases_seen == {0, 1, 4}, f"expected phases {{0,1,4}}, got {phases_seen}"
