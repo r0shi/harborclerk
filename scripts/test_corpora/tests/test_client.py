@@ -47,12 +47,26 @@ def test_wait_for_model_ready_returns_true_when_ready():
 
     def handler(request):
         calls["n"] += 1
-        # First call: loading. Second call: ready.
+        # First call: loading. Subsequent: ready.
         state = "loading" if calls["n"] == 1 else "ready"
         return httpx.Response(200, json={"state": state, "model_id": "qwen3-8b"})
 
     c = make_client(handler)
-    assert c.wait_for_model_ready("qwen3-8b", max_wait_seconds=5, poll_seconds=0) is True
+    assert c.wait_for_model_ready("qwen3-8b", max_wait_seconds=5, poll_seconds=0, consecutive_ready_required=3) is True
+
+
+def test_wait_for_model_ready_requires_consecutive_ready_polls():
+    """Single 'ready' flicker between 'loading' readings must NOT satisfy
+    the wait. HC reports ready as soon as llama-server's /health returns 200,
+    but llama-server can briefly answer 200 before the model is generation-
+    ready. We require 3 consecutive ready readings to ride that out."""
+    states = iter(["loading", "ready", "loading", "ready", "ready", "ready"])
+
+    def handler(request):
+        return httpx.Response(200, json={"state": next(states), "model_id": "qwen3-8b"})
+
+    c = make_client(handler)
+    assert c.wait_for_model_ready("qwen3-8b", max_wait_seconds=10, poll_seconds=0, consecutive_ready_required=3) is True
 
 
 def test_wait_for_model_ready_returns_false_on_wrong_model():
@@ -61,7 +75,7 @@ def test_wait_for_model_ready_returns_false_on_wrong_model():
 
     c = make_client(handler)
     # Wants qwen3-8b but the active is qwen3-4b — should time out and return False
-    assert c.wait_for_model_ready("qwen3-8b", max_wait_seconds=1, poll_seconds=0) is False
+    assert c.wait_for_model_ready("qwen3-8b", max_wait_seconds=1, poll_seconds=0, consecutive_ready_required=3) is False
 
 
 def test_poll_research_returns_completed():
