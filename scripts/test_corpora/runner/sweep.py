@@ -273,6 +273,46 @@ def _run_local(
 # ── ingestion helper ──
 
 
+def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
+    """Return True iff HC already has the given corpus loaded.
+
+    Two checks: a watch folder whose ``path`` equals ``manifest.ingest_dir``,
+    AND ``document_count() >= 50% of manifest.doc_count``. The doc-count
+    floor matches ``_ingest_corpus``'s "ingest looks incomplete" sanity
+    check, so anything we'd accept fresh we also accept on resume.
+
+    Pure point-in-time check — the caller is responsible for ensuring HC's
+    queue is drained before trusting the doc count (see ``_can_skip_ingest``).
+    """
+    target = str(manifest.ingest_dir)
+    folders = hc.watch_folder_list()
+    if not any(f.get("path") == target for f in folders):
+        return False
+    threshold = max(1, int(manifest.doc_count * 0.5))
+    return hc.document_count() >= threshold
+
+
+def _can_skip_ingest(
+    hc: HarborClerkClient,
+    manifest: CorpusManifest,
+    max_drain_wait: int = 4 * 3600,
+) -> bool:
+    """Decide whether to skip ``_ingest_corpus``'s wipe-and-re-ingest cycle.
+
+    Used at sweep startup, before the first per-unit ingest decision in
+    phases 4/5/6. If a previous sweep died mid-ingest, HC may still have
+    pending jobs in the queue — trusting ``document_count`` while the
+    queue is draining could let research start against a partial corpus.
+    So we drain first (up to ``max_drain_wait``), then ask whether HC's
+    state matches the manifest.
+    """
+    if not hc.pipeline_quiet():
+        log.info("pipeline still draining at startup — waiting before checking corpus state")
+        if not hc.wait_for_quiet_pipeline(max_wait_seconds=max_drain_wait):
+            return False
+    return _hc_corpus_matches(hc, manifest)
+
+
 def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest) -> None:
     """Wipe the DB, register the corpus's ingest dir, wait for ingestion to
     fully complete before returning.
@@ -509,20 +549,32 @@ def main(argv: list[str] | None = None) -> int:
                     notes="unified pass",
                 )
                 if not args.dry_run:
-                    _ingest_corpus(hc, unified_manifest)
-                    current_corpus_in_db = "unified"
+                    if current_corpus_in_db is None and _can_skip_ingest(hc, unified_manifest):
+                        log.info("HC already has unified corpus loaded — skipping re-ingest")
+                        current_corpus_in_db = "unified"
+                    elif current_corpus_in_db != "unified":
+                        _ingest_corpus(hc, unified_manifest)
+                        current_corpus_in_db = "unified"
 
             for u in phase_units:
                 if args.dry_run and phase > 0:
                     log.info("dry-run: skipping %s", u)
                     continue
 
-                # Ensure correct corpus is in the DB for phases 4/5 (unified for 6)
+                # Ensure correct corpus is in the DB for phases 4/5 (unified for 6).
+                # On a fresh process (current_corpus_in_db is None) we first ask HC
+                # whether it already has u.corpus loaded AND its queue has drained —
+                # if so, skip the wipe so `--resume` after a mid-corpus crash doesn't
+                # lose the existing ingest.
                 if phase in (4, 5) and u.corpus != current_corpus_in_db:
                     if u.corpus not in manifests:
                         manifests[u.corpus] = _phase0_acquire(u.corpus, workdir)
-                    _ingest_corpus(hc, manifests[u.corpus])
-                    current_corpus_in_db = u.corpus
+                    if current_corpus_in_db is None and _can_skip_ingest(hc, manifests[u.corpus]):
+                        log.info("HC already has %s loaded — skipping re-ingest", u.corpus)
+                        current_corpus_in_db = u.corpus
+                    elif u.corpus != current_corpus_in_db:
+                        _ingest_corpus(hc, manifests[u.corpus])
+                        current_corpus_in_db = u.corpus
 
                 # Ensure correct model is active for phases 2-6
                 if phase in (2, 3, 4, 5, 6) and u.model not in (None, "-", "claude-baseline"):
