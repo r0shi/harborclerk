@@ -66,7 +66,14 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--run-id", required=True)
     p.add_argument("--workdir", default=str(cfg.WORKDIR_DEFAULT))
     p.add_argument("--api-base", default=cfg.API_BASE)
-    p.add_argument("--resume", action="store_true")
+    p.add_argument(
+        "--resume",
+        action="store_true",
+        help="acknowledge that state.json already exists and continue from it. "
+        "Required when state.json exists; harmless when it doesn't. Without "
+        "this flag, an existing state file fails fast so a re-used --run-id "
+        "doesn't silently inherit a prior run's units.",
+    )
     p.add_argument("--rerun", default="")
     p.add_argument("--skip", default="")
     p.add_argument("--phases", default="0-6")
@@ -416,6 +423,16 @@ def main(argv: list[str] | None = None) -> int:
     sf.acquire_lock()
     try:
         sf.load()
+
+        # Guard against accidentally re-using a --run-id from a prior run.
+        # Without --resume, an existing state.json fails fast — otherwise the
+        # sweep would silently inherit whatever was there.
+        if sf.units() and not args.resume:
+            raise SystemExit(
+                f"state.json at {state_path} already has {len(sf.units())} units. "
+                "Pass --resume to continue from it, --rerun '<selectors>' to flip "
+                "specific cells back to PENDING, or pick a fresh --run-id."
+            )
 
         # Migrate legacy model ids in state.json before any other logic
         # consults sf.units(). Without this, --resume on a state file

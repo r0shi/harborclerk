@@ -346,7 +346,7 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.swee
     --phases 4 --models <same-list> --resume 2>&1 | tee -a ~/sweep-logs/phase4-mini.log
 ```
 
-The `--resume` flag is largely a no-op — the state file already auto-resumes — but it makes intent explicit. Stale `IN_PROGRESS` rows older than 2× the time-budget revert to `PENDING` automatically.
+The `--resume` flag is required when `state.json` already exists — without it, the sweep fails fast so a typo'd or re-used `--run-id` can't silently inherit a prior run's cells. Stale `IN_PROGRESS` rows older than 2× the time-budget revert to `PENDING` automatically.
 
 ### Stale `state.lock`
 
