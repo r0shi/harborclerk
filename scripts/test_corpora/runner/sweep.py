@@ -460,8 +460,11 @@ def main(argv: list[str] | None = None) -> int:
         if sf.units() and not args.resume:
             raise SystemExit(
                 f"state.json at {state_path} already has {len(sf.units())} units. "
-                "Pass --resume to continue from it, --rerun '<selectors>' to flip "
-                "specific cells back to PENDING, or pick a fresh --run-id."
+                "To proceed, either:\n"
+                "  - add --resume to continue from this state (combine with "
+                "--rerun '<selectors>' or --skip '<selectors>' to adjust which "
+                "cells run)\n"
+                "  - or pick a fresh --run-id to start a new run"
             )
 
         # Migrate legacy model ids in state.json before any other logic
