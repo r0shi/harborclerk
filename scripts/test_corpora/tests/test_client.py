@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from scripts.test_corpora.runner.client import HarborClerkClient
+from scripts.test_corpora.runner.client import HarborClerkClient, _evaluate_health, _WatchdogState
 
 
 def make_client(handler) -> HarborClerkClient:
@@ -375,6 +375,70 @@ def test_run_research_drains_sse_stream_until_done():
     assert conv_id == "conv-abc"
     assert result["status"] == "completed"
     assert result["report"] == "hello world"
+
+
+def test_evaluate_health_no_abort_when_model_ready_and_research_running():
+    state = _WatchdogState()
+    kind, detail = _evaluate_health("ready", "running", state)
+    assert kind is None and detail is None
+    assert state.model_bad == 0
+    assert state.research_bad == 0
+
+
+def test_evaluate_health_aborts_after_two_consecutive_model_bad():
+    """Two consecutive non-ready model readings must trigger model_unhealthy.
+    This is the case we're trying to catch: llama-server crashes, HC's
+    /api/chat/models/status flips from 'ready' to 'loading'/'errored'/etc.,
+    and the harness needs to bail rather than wait for HC's read timeout."""
+    state = _WatchdogState()
+    kind, _ = _evaluate_health("loading", None, state)
+    assert kind is None  # one bad reading isn't enough
+    assert state.model_bad == 1
+    kind, detail = _evaluate_health("loading", None, state)
+    assert kind == "model_unhealthy"
+    assert "loading" in (detail or "")
+
+
+def test_evaluate_health_treats_status_call_failure_as_bad():
+    """If GET /api/chat/models/status itself raises, the watchdog passes
+    None for model_state. Two such failures count as bad — HC API death
+    is just as much a stopper as model death."""
+    state = _WatchdogState()
+    _evaluate_health(None, None, state)
+    kind, _ = _evaluate_health(None, None, state)
+    assert kind == "model_unhealthy"
+
+
+def test_evaluate_health_resets_on_recovery():
+    """A transient blip ('loading' once, then 'ready') must NOT trigger
+    a bail — otherwise model warm-up races would kill every research."""
+    state = _WatchdogState()
+    _evaluate_health("loading", None, state)
+    assert state.model_bad == 1
+    kind, _ = _evaluate_health("ready", None, state)
+    assert kind is None
+    assert state.model_bad == 0
+
+
+def test_evaluate_health_aborts_after_two_consecutive_research_failed():
+    """If HC has marked the research interrupted/failed but somehow the SSE
+    stream is still open, the watchdog should bail. Same threshold so a
+    transient poll error doesn't masquerade as a state transition."""
+    state = _WatchdogState()
+    _evaluate_health("ready", "interrupted", state)
+    kind, detail = _evaluate_health("ready", "interrupted", state)
+    assert kind == "research_failed"
+    assert "interrupted" in (detail or "")
+
+
+def test_evaluate_health_research_bad_resets_on_running():
+    """Research status flipping to 'running' between bad readings resets
+    the counter — only a sustained bad state triggers a bail."""
+    state = _WatchdogState()
+    _evaluate_health("ready", "interrupted", state)
+    assert state.research_bad == 1
+    _evaluate_health("ready", "running", state)
+    assert state.research_bad == 0
 
 
 def test_run_research_returns_interrupted_when_server_interrupts():
