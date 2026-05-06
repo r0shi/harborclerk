@@ -170,6 +170,29 @@ class HarborClerkClient:
 
     # ── research ──
 
+    def active_research(self) -> dict[str, Any]:
+        """GET /api/research/active — returns ``{conversation_id, status}`` or
+        a falsy ``conversation_id`` when nothing is running."""
+        r = self._client.get("/api/research/active")
+        r.raise_for_status()
+        return r.json()
+
+    def delete_research(self, conv_id: str) -> None:
+        """DELETE /api/research/{conv_id}. Used to clean up orphaned
+        research tasks left behind when a previous sweep was killed
+        mid-Phase-4."""
+        r = self._client.delete(f"/api/research/{conv_id}")
+        r.raise_for_status()
+
+    def cleanup_orphan_research(self) -> str | None:
+        """If a research task is currently active, delete it. Returns the
+        conv_id that was deleted (or None). Idempotent."""
+        active = self.active_research()
+        conv_id = active.get("conversation_id")
+        if conv_id:
+            self.delete_research(conv_id)
+        return conv_id
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=15))
     def start_research(
         self,

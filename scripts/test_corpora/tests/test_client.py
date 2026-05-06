@@ -264,3 +264,51 @@ def test_sync_mcp_session_uses_correct_streamable_function():
         "client.py should import streamablehttp_client (with headers support), "
         "not streamable_http_client (which doesn't take headers)."
     )
+
+
+def test_active_research_returns_state():
+    """Light coverage for the GET /api/research/active happy path."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/research/active"
+        return httpx.Response(200, json={"conversation_id": "conv-orphan", "status": "running"})
+
+    c = make_client(handler)
+    res = c.active_research()
+    assert res["conversation_id"] == "conv-orphan"
+
+
+def test_cleanup_orphan_research_deletes_when_active():
+    """If GET /research/active returns a conv_id, cleanup_orphan_research
+    must DELETE it. This prevents the 409 Conflict on the very next
+    start_research after a killed sweep."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url.path}")
+        if request.method == "GET" and request.url.path == "/api/research/active":
+            return httpx.Response(200, json={"conversation_id": "conv-orphan", "status": "running"})
+        if request.method == "DELETE" and request.url.path == "/api/research/conv-orphan":
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    deleted = c.cleanup_orphan_research()
+    assert deleted == "conv-orphan"
+    assert "GET /api/research/active" in seen
+    assert "DELETE /api/research/conv-orphan" in seen
+
+
+def test_cleanup_orphan_research_no_op_when_idle():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url.path}")
+        return httpx.Response(200, json={"conversation_id": None, "status": None})
+
+    c = make_client(handler)
+    deleted = c.cleanup_orphan_research()
+    assert deleted is None
+    # Should have called GET but NOT DELETE
+    assert any("GET" in s for s in seen)
+    assert not any("DELETE" in s for s in seen)
