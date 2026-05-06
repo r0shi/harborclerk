@@ -588,7 +588,10 @@ def main(argv: list[str] | None = None) -> int:
                         result = out.get("result", {}) or {}
                         result_status = result.get("status")
                         result_answer = result.get("answer") or ""
-                        if result_status == "completed" and result_answer:
+                        if result.get("harness_aborted"):
+                            final_status = Status.ERROR
+                            error_msg = f"harness aborted research: {result.get('harness_abort_reason', 'unknown')}"
+                        elif result_status == "completed" and result_answer:
                             final_status = Status.DONE
                         elif result_status == "completed" and not result_answer:
                             final_status = Status.DEGRADED

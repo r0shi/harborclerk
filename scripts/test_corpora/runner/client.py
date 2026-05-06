@@ -12,12 +12,59 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+# Watchdog tunables for run_research. Two consecutive bad readings (~60s by
+# default) force the SSE stream closed so we don't sit on a hung llama-server.
+WATCHDOG_INTERVAL_SECONDS = 30
+WATCHDOG_THRESHOLD = 2
+
+
+@dataclass
+class _WatchdogState:
+    model_bad: int = 0
+    research_bad: int = 0
+
+
+def _evaluate_health(
+    model_state: str | None,
+    research_status: str | None,
+    state: _WatchdogState,
+    threshold: int = WATCHDOG_THRESHOLD,
+) -> tuple[str | None, str | None]:
+    """Update consecutive-bad counters and decide whether to abort an in-flight research.
+
+    Returns ``(abort_kind, abort_detail)`` — both ``None`` when no abort.
+
+    A "bad" model reading is anything other than ``state == "ready"`` (including
+    ``model_state is None``, which means the status call itself failed). A "bad"
+    research reading is one of ``{interrupted, failed, error}``; anything else,
+    including ``None`` (no conv_id yet, or transient poll failure), resets that
+    counter. We require ``threshold`` consecutive bad readings before bailing —
+    one transient blip shouldn't kill a long-running research.
+    """
+    if model_state == "ready":
+        state.model_bad = 0
+    else:
+        state.model_bad += 1
+    if state.model_bad >= threshold:
+        return ("model_unhealthy", f"model state={model_state}")
+
+    if research_status in ("interrupted", "failed", "error"):
+        state.research_bad += 1
+    else:
+        state.research_bad = 0
+    if state.research_bad >= threshold:
+        return ("research_failed", f"research status={research_status}")
+
+    return (None, None)
 
 
 class SyncMcpSession:
@@ -217,6 +264,13 @@ class HarborClerkClient:
         stream early — which an earlier version of this client did —
         ends every research at round 0 with ``status="interrupted"``.
 
+        A watchdog thread polls model + research status every
+        ``WATCHDOG_INTERVAL_SECONDS``. Two consecutive bad readings
+        (model not ``ready``, or research already ``interrupted``/``failed``)
+        forces the SSE stream closed so we don't sit on a hung llama-server.
+        When that happens the returned dict carries ``harness_aborted=True``
+        plus ``harness_abort_reason``.
+
         This call is NOT retried by ``tenacity`` because partial SSE
         streams can't be safely re-opened against the same conv_id.
         """
@@ -233,30 +287,87 @@ class HarborClerkClient:
         read_timeout = time_limit_minutes * 60 + 180
         timeout = httpx.Timeout(connect=30, read=read_timeout, write=10, pool=10)
 
-        conv_id: str | None = None
+        abort_event = threading.Event()
+        abort_reason: dict[str, str] = {}
+        conv_id_holder: list[str | None] = [None]
+        response_holder: list[Any] = [None]
+
+        def _close_stream() -> None:
+            r = response_holder[0]
+            if r is not None:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+
+        def _watchdog() -> None:
+            wstate = _WatchdogState()
+            while not abort_event.wait(WATCHDOG_INTERVAL_SECONDS):
+                try:
+                    ms_state = self.model_status().get("state")
+                except Exception:
+                    ms_state = None
+                rs_status: str | None = None
+                cid = conv_id_holder[0]
+                if cid:
+                    try:
+                        rs_status = self.poll_research(cid).get("status")
+                    except Exception:
+                        rs_status = None
+                kind, detail = _evaluate_health(ms_state, rs_status, wstate)
+                if kind is not None:
+                    abort_reason["kind"] = kind
+                    abort_reason["detail"] = detail or kind
+                    _close_stream()
+                    return
+
+        watchdog: threading.Thread | None = None
         with self._client.stream("POST", "/api/research", json=body, timeout=timeout) as r:
             r.raise_for_status()
             conv_id = r.headers.get("X-Research-Id")
             if not conv_id:
                 raise RuntimeError("research start did not return X-Research-Id")
-            # Drain the SSE stream until done/error. This is what keeps the
-            # research alive server-side.
-            for line in r.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                payload = line[6:]
-                if not payload.strip():
-                    continue
-                try:
-                    event = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                etype = event.get("type")
-                if etype in ("done", "error"):
-                    break
+            conv_id_holder[0] = conv_id
+            response_holder[0] = r
+
+            watchdog = threading.Thread(target=_watchdog, daemon=True)
+            watchdog.start()
+
+            try:
+                for line in r.iter_lines():
+                    if abort_event.is_set():
+                        break
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[6:]
+                    if not payload.strip():
+                        continue
+                    try:
+                        event = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    etype = event.get("type")
+                    if etype in ("done", "error"):
+                        break
+            except Exception:
+                # Watchdog forced the stream closed → expected. Anything else
+                # is a real error worth surfacing.
+                if not abort_reason:
+                    raise
+            finally:
+                abort_event.set()
+                if watchdog is not None:
+                    watchdog.join(timeout=5)
 
         # Fetch the final state (status, report, citations, messages).
-        return conv_id, self.poll_research(conv_id)
+        final = self.poll_research(conv_id)
+        if abort_reason:
+            final = {
+                **final,
+                "harness_aborted": True,
+                "harness_abort_reason": abort_reason.get("detail", "unknown"),
+            }
+        return conv_id, final
 
     def wait_for_research(self, conv_id: str, max_wait_seconds: int, poll_seconds: int = 5) -> dict[str, Any]:
         """[Deprecated] Poll until status is completed/failed/interrupted or deadline.
