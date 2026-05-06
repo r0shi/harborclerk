@@ -542,6 +542,48 @@ def test_evaluate_health_research_bad_resets_on_running():
     assert state.research_bad == 0
 
 
+def test_evaluate_health_aborts_on_sse_silence():
+    """The 'zombie llama' case: model_status keeps reporting ready, research
+    keeps reporting running, but no SSE events have flowed for longer than
+    the silence threshold. Single-shot — sustained inactivity by definition."""
+    state = _WatchdogState()
+    kind, detail = _evaluate_health(
+        "ready",
+        "running",
+        state,
+        silence_seconds=301,
+        silence_threshold_seconds=300,
+    )
+    assert kind == "sse_silent"
+    assert "no SSE events for 301s" in (detail or "")
+
+
+def test_evaluate_health_does_not_trigger_silence_below_threshold():
+    """Silence below the threshold must NOT trigger — otherwise every slow
+    research round (notes phase 30-60s, planning phase ~30s) would bail."""
+    state = _WatchdogState()
+    kind, _ = _evaluate_health(
+        "ready",
+        "running",
+        state,
+        silence_seconds=299,
+        silence_threshold_seconds=300,
+    )
+    assert kind is None
+
+
+def test_evaluate_health_silence_check_does_not_eat_research_failure():
+    """A research that's both silent AND has flipped to status=failed should
+    surface as research_failed (the more specific signal) — silence is the
+    fallback for when nothing else fires."""
+    state = _WatchdogState()
+    # Two consecutive failed readings + long silence
+    _evaluate_health("ready", "failed", state, silence_seconds=999, silence_threshold_seconds=300)
+    kind, detail = _evaluate_health("ready", "failed", state, silence_seconds=999, silence_threshold_seconds=300)
+    assert kind == "research_failed"
+    assert "failed" in (detail or "")
+
+
 def test_run_research_returns_interrupted_when_server_interrupts():
     """If HC reports the task as interrupted (e.g. real disconnect for
     some other reason, or model-switch race), run_research must surface

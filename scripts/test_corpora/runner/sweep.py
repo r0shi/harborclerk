@@ -598,6 +598,18 @@ def main(argv: list[str] | None = None) -> int:
         current_corpus_in_db: str | None = None
         current_model: str | None = None
 
+        # HC-unreachability circuit breaker. When the sweep is running and HC
+        # restarts (e.g. menubar's granular restart on model switch), every
+        # in-flight request gets ConnectError until HC comes back. Without a
+        # limit, the loop burns through dozens of pending units marking each
+        # ERROR. Track consecutive ConnectErrors and bail cleanly once we're
+        # confident HC isn't coming back on its own. Units that hit
+        # ConnectError get flipped back to PENDING on bail so --resume
+        # picks them up after HC restarts.
+        hc_connect_errors = 0
+        hc_connect_error_units: list[Unit] = []
+        HC_UNREACHABLE_CONSECUTIVE_LIMIT = 3
+
         # Phase 1 MCP session — lazily opened the first time Phase 1 runs.
         # SyncMcpSession connects to Harbor Clerk's /mcp endpoint so that the
         # Sonnet 4.6 baseline generator has real KB tools available.
@@ -791,9 +803,55 @@ def main(argv: list[str] | None = None) -> int:
                             final_status.value,
                             error_msg,
                         )
+                except httpx.ConnectError as exc:
+                    # HC is refusing connections — likely restarting. Mark the
+                    # unit ERROR for now, but track it so we can flip it back
+                    # to PENDING if we end up bailing.
+                    hc_connect_errors += 1
+                    hc_connect_error_units.append(u)
+                    log.exception(
+                        "unit failed (HC unreachable, consecutive %d/%d): %s",
+                        hc_connect_errors,
+                        HC_UNREACHABLE_CONSECUTIVE_LIMIT,
+                        u,
+                    )
+                    sf.set_status(u.phase, u.corpus, u.model, u.question_id, u.depth, Status.ERROR, error=str(exc))
+                    if hc_connect_errors >= HC_UNREACHABLE_CONSECUTIVE_LIMIT:
+                        # Flip every connect-error victim from this run back
+                        # to PENDING so a plain `--resume` after HC comes
+                        # back picks them up. Without this the user would
+                        # need an extra `--rerun status=error` step.
+                        for failed_u in hc_connect_error_units:
+                            cur = sf.get(
+                                failed_u.phase, failed_u.corpus, failed_u.model, failed_u.question_id, failed_u.depth
+                            )
+                            if cur is not None:
+                                cur.status = Status.PENDING
+                                cur.heartbeat = None
+                                cur.started_at = None
+                                cur.error = None
+                        sf.save()
+                        log.error(
+                            "HC API at %s unreachable for %d consecutive units; "
+                            "exiting cleanly. Restart HC and re-run with --resume.",
+                            args.api_base,
+                            hc_connect_errors,
+                        )
+                        raise SystemExit(
+                            f"HC API at {args.api_base} unreachable for {hc_connect_errors} consecutive units; "
+                            "exiting cleanly so --resume picks up where we left off."
+                        ) from exc
                 except (httpx.HTTPError, RuntimeError, KeyError) as exc:
                     log.exception("unit failed: %s", u)
                     sf.set_status(u.phase, u.corpus, u.model, u.question_id, u.depth, Status.ERROR, error=str(exc))
+                    # Non-connect error: HC is reachable, just this unit failed.
+                    hc_connect_errors = 0
+                    hc_connect_error_units.clear()
+                else:
+                    # Successful unit (no exception in the try). Reset the
+                    # circuit-breaker counters; we just talked to HC, it's up.
+                    hc_connect_errors = 0
+                    hc_connect_error_units.clear()
                 finally:
                     # If the unit is still IN_PROGRESS — meaning an uncaught
                     # exception (KeyboardInterrupt, tenacity.RetryError, etc.)
