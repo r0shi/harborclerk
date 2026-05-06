@@ -76,7 +76,7 @@ uv run python -m scripts.test_corpora.runner.sweep \
 
 ```bash
 uv run python -m scripts.test_corpora.runner.sweep \
-    --run-id 2026-05-05-full --rerun "phase=5,model=qwen3.6-35b,corpus=cuad"
+    --run-id 2026-05-05-full --rerun "phase=5,model=qwen36-35b-a3b,corpus=cuad"
 ```
 
 ## Output layout

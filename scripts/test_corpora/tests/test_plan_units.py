@@ -23,33 +23,33 @@ def test_models_filter_restricts_phase4_loop():
         _qbc(["cuad"]),
         phases={4},
         depth="standard",
-        models_filter={"qwen3-8b", "phi-4-mini"},
+        models_filter={"qwen3-8b", "phi4-mini"},
     )
     models = {u.model for u in units}
-    assert models == {"qwen3-8b", "phi-4-mini"}
+    assert models == {"qwen3-8b", "phi4-mini"}
 
 
 def test_models_filter_restricts_phase5_to_top_subset():
     """Phase 5 normally includes both TOP_MODELS. A filter that excludes
-    qwen3.6-35b should leave only gemma-26b in Phase 5."""
+    qwen36-35b-a3b should leave only gemma4-26b-a4b in Phase 5."""
     units = _plan_units(
         _qbc(["cuad"]),
         phases={5},
         depth="standard",
-        models_filter={"gemma-26b"},
+        models_filter={"gemma4-26b-a4b"},
     )
     models = {u.model for u in units}
-    assert models == {"gemma-26b"}
+    assert models == {"gemma4-26b-a4b"}
 
 
 def test_models_filter_excludes_phase2_smoke_when_qwen35_filtered_out():
-    """Phase 2 hard-codes qwen3.6-35b. If that model isn't in the filter, no
+    """Phase 2 hard-codes qwen36-35b-a3b. If that model isn't in the filter, no
     Phase 2 unit should be planned."""
     units = _plan_units(
         _qbc(["cuad"]),
         phases={2},
         depth="standard",
-        models_filter={"phi-4-mini"},
+        models_filter={"phi4-mini"},
     )
     assert units == []
 
@@ -75,7 +75,7 @@ def test_phase4_corpus_then_model_ordering_minimizes_db_wipes():
         _qbc(["cuad", "enron"]),
         phases={4},
         depth="standard",
-        models_filter={"qwen3-8b", "phi-4-mini"},
+        models_filter={"qwen3-8b", "phi4-mini"},
     )
     # Walk the unit list and count corpus transitions
     transitions = sum(1 for a, b in zip(units, units[1:]) if a.corpus != b.corpus)
@@ -114,7 +114,7 @@ def test_phase_planning_is_additive_after_prior_phase(tmp_path):
         _qbc(["cuad"]),
         missing_phases,
         "standard",
-        models_filter={"qwen3.6-35b"},
+        models_filter={"qwen36-35b-a3b"},
     )
     assert len(new_units) > 0, "missing-phase planning produced zero units"
     assert all(u.phase == 4 for u in new_units), "all new units must be phase 4"

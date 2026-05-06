@@ -17,21 +17,23 @@ from pathlib import Path
 API_BASE = os.environ.get("HC_API_BASE", "http://localhost:8100")
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 
-# All eight downloaded models, by Harbor Clerk model_id. Phase 4 sweeps over
-# this list. Phase 5 uses TOP_MODELS only.
+# All eight downloaded models, by Harbor Clerk model_id. These MUST match the
+# canonical ids in src/harbor_clerk/llm/models.py — anything else 404s on
+# PUT /api/chat/models/<id>/activate. Phase 4 sweeps over this list. Phase 5
+# uses TOP_MODELS only.
 ALL_MODELS = [
     "qwen3-8b",
     "qwen3-4b",
-    "phi-4-mini",
-    "deepseek-r1-8b",
-    "gemma-26b",
+    "phi4-mini",
+    "deepseek-r1-0528-8b",
+    "gemma4-26b-a4b",
     "smollm3-3b",
     "gpt-oss-20b",
-    "qwen3.6-35b",
+    "qwen36-35b-a3b",
 ]
 
 # Two largest by parameter count. Used for Phases 5 and 6 parity comparison.
-TOP_MODELS = ["qwen3.6-35b", "gemma-26b"]
+TOP_MODELS = ["qwen36-35b-a3b", "gemma4-26b-a4b"]
 
 DEPTHS = ["light", "standard", "thorough"]
 DEFAULT_DEPTH = "standard"
