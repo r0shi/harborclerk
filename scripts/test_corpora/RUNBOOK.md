@@ -8,6 +8,23 @@ This runbook is the operations companion to:
 
 ---
 
+## ⚠️  This sweep is destructive
+
+The harness **wipes the Harbor Clerk instance it talks to**. Every Phase 4 / Phase 5 / Phase 6 corpus ingest calls:
+
+1. `DELETE` for every existing watch folder
+2. `POST /api/system/delete-all-documents` (drops all documents, chunks, entities, embeddings, ingestion jobs, uploads, and originals storage objects)
+3. Adds the corpus's own watch folder
+
+**If you have personal documents in this Harbor Clerk instance, they will be deleted.** Conversations, chat messages, users, and API keys are preserved — only document-shaped data is wiped.
+
+If you want to keep an existing corpus intact, run the sweep against a **separate Harbor Clerk instance**:
+
+- spin up a second instance via Docker on a different port (e.g. `docker compose up` with a remapped 443→8443) and set `HC_API_BASE` accordingly, or
+- use the Mac mini's instance which is presumed clean (this is the natural fit for the split BIG/MINI flow below).
+
+---
+
 ## Moving parts
 
 ```
