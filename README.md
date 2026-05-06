@@ -8,8 +8,8 @@
 
 Local-first document archive for non-technical offices. Point Harbor Clerk at a folder of PDFs, scans, notes, or research files; it OCRs, indexes, and lets you search, browse, and chat with everything — all on your own machine, all with citations.
 
-![License](https://img.shields.io/github/license/r0shi/harborclerk?v=2)
-![Release](https://img.shields.io/github/v/release/r0shi/harborclerk)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Release](https://img.shields.io/badge/release-v0.9.1-blue)
 ![Python](https://img.shields.io/badge/python-3.12+-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Docker-lightgrey)
 
