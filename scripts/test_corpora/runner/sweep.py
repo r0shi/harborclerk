@@ -227,6 +227,12 @@ def _run_local(
 ) -> dict:
     """Run one local-model question. Assumes the right model is already active and loaded."""
     if is_research:
+        # Clean up any orphan research task from a prior killed sweep before
+        # POSTing a new one — otherwise Harbor Clerk returns 409 Conflict
+        # and the harness wedges. Idempotent: no-op when nothing is active.
+        orphan = hc.cleanup_orphan_research()
+        if orphan:
+            log.warning("cleaned up orphan research task %s before starting new one", orphan)
         conv_id = hc.start_research(question_text, depth=depth, time_limit_minutes=time_limit_minutes)
         result = hc.wait_for_research(conv_id, max_wait_seconds=time_limit_minutes * 60 + 120)
         # Normalize: ResearchDetail returns "report", chat returns "answer".
