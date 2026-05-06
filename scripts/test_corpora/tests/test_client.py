@@ -154,10 +154,41 @@ def test_delete_all_documents_sends_literal_confirmation():
 def test_create_conversation_returns_id():
     def handler(request):
         assert request.url.path == "/api/chat/conversations"
-        return httpx.Response(200, json={"conversation_id": "conv-xyz", "mode": "chat"})
+        return httpx.Response(200, json={"conversation_id": "conv-xyz"})
 
     c = make_client(handler)
-    assert c.create_conversation(mode="chat") == "conv-xyz"
+    assert c.create_conversation(title="my-test") == "conv-xyz"
+
+
+def test_create_conversation_sends_only_title_no_null_no_mode():
+    """Regression for the 422 bug: HC's CreateConversationRequest is
+    ``title: str`` (no None default, no ``mode`` field). The harness used
+    to send ``{"title": null, "mode": "chat"}`` which Pydantic rejects.
+    Body must be exactly ``{"title": "<string>"}``."""
+    seen_bodies: list[dict] = []
+
+    def handler(request):
+        seen_bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"conversation_id": "conv-xyz"})
+
+    c = make_client(handler)
+    c.create_conversation(title="cuad-ask-1")
+    assert seen_bodies == [{"title": "cuad-ask-1"}]
+
+
+def test_create_conversation_default_title_is_string():
+    """When no title is passed, the harness must still send a non-null
+    string — never ``{"title": null}``."""
+    seen_bodies: list[dict] = []
+
+    def handler(request):
+        seen_bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"conversation_id": "conv-xyz"})
+
+    c = make_client(handler)
+    c.create_conversation()  # no title arg
+    assert isinstance(seen_bodies[0].get("title"), str)
+    assert seen_bodies[0]["title"]  # non-empty
 
 
 def test_stream_ask_aggregates_token_events():
