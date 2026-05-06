@@ -5,6 +5,11 @@ three structurally-different corpora (CUAD legal contracts, Enron email
 subset, synthetic bilingual small-business). Six sequential phases, fully
 restartable.
 
+> **⚠️  Destructive.** This sweep wipes the Harbor Clerk instance's documents,
+> watch folders, and storage objects between every corpus ingest. Use a
+> dedicated HC instance — never run it against one that holds documents you
+> care about. See [RUNBOOK.md](RUNBOOK.md#%EF%B8%8F--this-sweep-is-destructive) for the full impact list.
+
 See [`docs/superpowers/specs/2026-05-04-test-corpora-execution-design.md`](../../docs/superpowers/specs/2026-05-04-test-corpora-execution-design.md) for the full design.
 
 ## Quickstart
