@@ -129,6 +129,17 @@ curl -X POST "$HC_API_BASE/api/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"$HC_USERNAME\",\"password\":\"$HC_PASSWORD\"}" | jq .access_token
 # expect a non-null JWT string
+
+# Optional: verify the MCP endpoint accepts JWT bearer tokens. Phase 1 baselines
+# need this. The path is /mcp/mcp because Harbor Clerk mounts the MCP ASGI
+# app at /mcp and FastMCP's streamable_http_app() in turn mounts its handler
+# at /mcp internally. Override the canonical path via HC_MCP_URL if your
+# deployment differs.
+JWT=$(curl -sX POST "$HC_API_BASE/api/auth/login" -H "Content-Type: application/json" \
+    -d "{\"email\":\"$HC_USERNAME\",\"password\":\"$HC_PASSWORD\"}" | jq -r .access_token)
+curl -sI -X POST "$HC_API_BASE/mcp/mcp" -H "Authorization: Bearer $JWT" | head -1
+# expect 4xx with a body explaining missing MCP protocol headers — NOT 404 or 405.
+# A 405 means the path is wrong; 404 means the MCP app isn't mounted.
 ```
 
 ---

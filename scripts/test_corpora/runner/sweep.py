@@ -472,12 +472,18 @@ def main(argv: list[str] | None = None) -> int:
                         out["manifest"]["ingest_dir"] = str(out["manifest"]["ingest_dir"])
                     elif phase == 1:
                         # Lazily open the MCP session on first Phase 1 unit.
+                        # Harbor Clerk mounts the MCP ASGI app at /mcp and
+                        # FastMCP's streamable_http_app() exposes its handler
+                        # at /mcp internally, so the canonical full path is
+                        # /mcp/mcp. Override via HC_MCP_URL env var for
+                        # non-standard deployments.
                         if mcp_session is None:
-                            log.info("opening MCP session at %s/mcp for Phase 1 baselines", args.api_base)
+                            mcp_url = os.environ.get("HC_MCP_URL") or f"{args.api_base}/mcp/mcp"
+                            log.info("opening MCP session at %s for Phase 1 baselines", mcp_url)
                             bearer = hc._client.headers.get("Authorization")
                             mcp_headers: dict[str, str] = {"Authorization": bearer} if bearer else {}
                             mcp_session = SyncMcpSession(
-                                url=f"{args.api_base}/mcp",
+                                url=mcp_url,
                                 headers=mcp_headers,
                             )
                         text, _lang = _question_text(questions_by_corpus[u.corpus], u.question_id)
