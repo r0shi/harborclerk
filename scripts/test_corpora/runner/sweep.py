@@ -393,11 +393,30 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError(f"--models has unknown values: {sorted(unknown_m)}. Known: {sorted(cfg.ALL_MODELS)}")
             log.info("--models filter: %s", sorted(models_filter))
 
-        # Plan units if state is empty
+        # Plan units for any requested phase that doesn't already have units
+        # registered in state.json. Earlier versions of this harness gated on
+        # ``if not sf.units()`` (state file completely empty), which silently
+        # skipped Phase 4 planning on a re-invocation that came after Phase
+        # 0/1 had already populated the state file. Register additively
+        # instead — never disturbs phases that already have units.
         phases = _phase_range(args.phases)
-        if not sf.units():
-            sf.register(_plan_units(questions_by_corpus, phases, args.depth, models_filter=models_filter))
+        existing_phases = {u.phase for u in sf.units()}
+        missing_phases = phases - existing_phases
+        if missing_phases:
+            new_units = _plan_units(
+                questions_by_corpus,
+                missing_phases,
+                args.depth,
+                models_filter=models_filter,
+            )
+            sf.register(new_units)
             sf.save()
+            log.info(
+                "registered %d new units for phases %s (existing: %s)",
+                len(new_units),
+                sorted(missing_phases),
+                sorted(existing_phases) or "none",
+            )
 
         # Apply --rerun / --skip
         if args.rerun:
