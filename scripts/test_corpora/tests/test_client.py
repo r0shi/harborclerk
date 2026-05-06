@@ -236,3 +236,31 @@ def test_watch_folder_add_sends_path_only():
     c = make_client(handler)
     c.watch_folder_add("/some/path", name="my-folder")
     assert seen_body[0] == {"path": "/some/path"}
+
+
+def test_sync_mcp_session_uses_correct_streamable_function():
+    """Regression test for the streamable_http_client / streamablehttp_client
+    confusion. The MCP SDK exports both names; only one accepts a `headers`
+    kwarg, which we depend on for forwarding HC's bearer token. This test
+    checks the exact symbol is imported AND that its signature accepts
+    `headers`. Without it, Phase 1 baselines crash on the very first MCP
+    list_tools() call after Phase 0 completes."""
+    import inspect
+
+    from mcp.client.streamable_http import streamablehttp_client
+
+    sig = inspect.signature(streamablehttp_client)
+    assert "headers" in sig.parameters, (
+        f"MCP SDK's streamablehttp_client no longer accepts headers — signature is {sig}. "
+        f"The harness needs that param to forward HC's bearer token to the MCP endpoint."
+    )
+
+    # Also assert SyncMcpSession imports the right name (catches future regressions
+    # where someone swaps it back to the no-headers variant).
+    import scripts.test_corpora.runner.client as client_module
+
+    source = inspect.getsource(client_module)
+    assert "from mcp.client.streamable_http import streamablehttp_client" in source, (
+        "client.py should import streamablehttp_client (with headers support), "
+        "not streamable_http_client (which doesn't take headers)."
+    )

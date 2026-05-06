@@ -53,10 +53,10 @@ class SyncMcpSession:
 
     async def _list_tools_async(self) -> list[Any]:
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamable_http_client
+        from mcp.client.streamable_http import streamablehttp_client
 
         async with (
-            streamable_http_client(
+            streamablehttp_client(
                 self._url,
                 headers=self._headers,
                 timeout=self._timeout,
@@ -69,10 +69,10 @@ class SyncMcpSession:
 
     async def _call_tool_async(self, name: str, args: dict) -> Any:
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamable_http_client
+        from mcp.client.streamable_http import streamablehttp_client
 
         async with (
-            streamable_http_client(
+            streamablehttp_client(
                 self._url,
                 headers=self._headers,
                 timeout=self._timeout,
