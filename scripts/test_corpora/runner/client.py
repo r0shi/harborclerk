@@ -33,6 +33,69 @@ class _WatchdogState:
     research_bad: int = 0
 
 
+class _JWTRefreshAuth(httpx.Auth):
+    """``httpx.Auth`` that injects a Bearer token and re-logs in on 401.
+
+    HC's JWT access token TTL defaults to 30 minutes
+    (``settings.jwt_access_token_expire_minutes``). Phase 4 research cells
+    regularly run longer than that, after which every request returns 401
+    and the harness used to crash. This Auth catches 401, re-issues
+    ``POST /api/auth/login`` with the saved credentials, and retries the
+    original request with the fresh token.
+
+    Lazy initial login: the first authenticated request triggers the
+    initial login. So bad credentials surface on the first real call,
+    not at ``HarborClerkClient.login`` time.
+    """
+
+    def __init__(self, email: str, password: str, login_path: str = "/api/auth/login") -> None:
+        self._email = email
+        self._password = password
+        self._login_path = login_path
+        self._token: str | None = None
+
+    def auth_flow(self, request: httpx.Request):
+        # Login itself MUST NOT trigger a 401-retry — that would loop forever
+        # if credentials are wrong.
+        if request.url.path == self._login_path:
+            yield request
+            return
+
+        if self._token is None:
+            yield from self._do_login(request)
+
+        if self._token is not None:
+            request.headers["Authorization"] = f"Bearer {self._token}"
+        response = yield request
+
+        if response.status_code == 401:
+            # Read the body so the connection can be released back to the pool
+            # before we issue another request through it.
+            response.read()
+            yield from self._do_login(request)
+            if self._token is not None:
+                request.headers["Authorization"] = f"Bearer {self._token}"
+                yield request
+
+    def _do_login(self, base_request: httpx.Request):
+        login_url = base_request.url.copy_with(
+            path=self._login_path,
+            raw_path=self._login_path.encode(),
+            query=b"",
+        )
+        login_req = httpx.Request(
+            "POST",
+            login_url,
+            json={"email": self._email, "password": self._password},
+        )
+        login_resp = yield login_req
+        login_resp.read()
+        if login_resp.status_code == 200:
+            self._token = login_resp.json().get("access_token")
+        # If login failed (bad creds, server down), leave _token unchanged
+        # and let the caller's original 401 surface to the user.
+
+
 def _evaluate_health(
     model_state: str | None,
     research_status: str | None,
@@ -171,11 +234,14 @@ class HarborClerkClient:
     # ── auth ──
 
     def login(self, email: str, password: str) -> None:
-        """POST /api/auth/login — stores the access token as a Bearer header."""
-        r = self._client.post("/api/auth/login", json={"email": email, "password": password})
-        r.raise_for_status()
-        token = r.json()["access_token"]
-        self._client.headers["Authorization"] = f"Bearer {token}"
+        """Install JWT auth that handles initial login + auto-refresh on 401.
+
+        Credentials are saved on the auth object so that long-running
+        sweeps don't crash when HC's 30-minute access token expires
+        mid-research. The initial login is lazy — the first authenticated
+        request triggers it, and bad credentials surface there as 401.
+        """
+        self._client.auth = _JWTRefreshAuth(email, password)
 
     # ── model management ──
 
