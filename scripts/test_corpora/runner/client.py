@@ -26,6 +26,16 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 WATCHDOG_INTERVAL_SECONDS = 30
 WATCHDOG_THRESHOLD = 2
 
+# Maximum seconds of SSE-event silence before run_research's watchdog forces
+# the stream closed. HC's research_stream emits events frequently during
+# normal operation (round_started, search results, LLM call boundaries).
+# Sustained silence — while ``model_status`` keeps reporting ``ready`` —
+# means llama-server's HTTP server is alive but stuck mid-inference (the
+# "zombie llama" failure mode). 5 minutes is long enough to ride out a
+# slow search round on a Mac mini, short enough to bail before a 30-min
+# read timeout on a truly stuck research.
+SSE_EVENT_SILENCE_TIMEOUT_SECONDS = 5 * 60
+
 
 @dataclass
 class _WatchdogState:
@@ -100,18 +110,28 @@ def _evaluate_health(
     model_state: str | None,
     research_status: str | None,
     state: _WatchdogState,
+    silence_seconds: float = 0.0,
     threshold: int = WATCHDOG_THRESHOLD,
+    silence_threshold_seconds: float = SSE_EVENT_SILENCE_TIMEOUT_SECONDS,
 ) -> tuple[str | None, str | None]:
     """Update consecutive-bad counters and decide whether to abort an in-flight research.
 
     Returns ``(abort_kind, abort_detail)`` — both ``None`` when no abort.
 
-    A "bad" model reading is anything other than ``state == "ready"`` (including
-    ``model_state is None``, which means the status call itself failed). A "bad"
-    research reading is one of ``{interrupted, failed, error}``; anything else,
-    including ``None`` (no conv_id yet, or transient poll failure), resets that
-    counter. We require ``threshold`` consecutive bad readings before bailing —
-    one transient blip shouldn't kill a long-running research.
+    Three independent abort conditions:
+
+    - ``model_unhealthy``: model_status != "ready" for ``threshold`` consecutive
+      readings (or the status call itself raised, surfaced as ``model_state=None``).
+    - ``research_failed``: HC reports research status in {interrupted, failed, error}
+      for ``threshold`` consecutive readings.
+    - ``sse_silent``: ``silence_seconds`` since the last SSE event has met or
+      exceeded ``silence_threshold_seconds``. Catches the "zombie llama" case
+      where llama-server's HTTP server keeps answering /health 200 (so
+      model_state stays "ready") but inference is wedged and no events flow.
+
+    The two consecutive-bad checks fire only after ``threshold`` readings so
+    one transient blip doesn't kill a long-running research. The silence
+    check is single-shot — by definition it represents sustained inactivity.
     """
     if model_state == "ready":
         state.model_bad = 0
@@ -126,6 +146,9 @@ def _evaluate_health(
         state.research_bad = 0
     if state.research_bad >= threshold:
         return ("research_failed", f"research status={research_status}")
+
+    if silence_seconds >= silence_threshold_seconds:
+        return ("sse_silent", f"no SSE events for {silence_seconds:.0f}s")
 
     return (None, None)
 
@@ -373,6 +396,10 @@ class HarborClerkClient:
         abort_reason: dict[str, str] = {}
         conv_id_holder: list[str | None] = [None]
         response_holder: list[Any] = [None]
+        # Last-event timestamp; updated by the main loop on every parsed SSE
+        # event. The watchdog reads it to detect the "zombie llama" case where
+        # the model_status keeps reporting `ready` but no events flow.
+        last_event_at: list[float] = [time.time()]
 
         def _close_stream() -> None:
             r = response_holder[0]
@@ -396,7 +423,8 @@ class HarborClerkClient:
                         rs_status = self.poll_research(cid).get("status")
                     except Exception:
                         rs_status = None
-                kind, detail = _evaluate_health(ms_state, rs_status, wstate)
+                silence = time.time() - last_event_at[0]
+                kind, detail = _evaluate_health(ms_state, rs_status, wstate, silence_seconds=silence)
                 if kind is not None:
                     abort_reason["kind"] = kind
                     abort_reason["detail"] = detail or kind
@@ -428,6 +456,10 @@ class HarborClerkClient:
                         event = json.loads(payload)
                     except json.JSONDecodeError:
                         continue
+                    # Refresh silence timer on every successfully-parsed event,
+                    # so the watchdog only fires when the server actually goes
+                    # quiet (not just when we're slow to drain a buffer).
+                    last_event_at[0] = time.time()
                     etype = event.get("type")
                     if etype in ("done", "error"):
                         break
