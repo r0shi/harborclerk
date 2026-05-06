@@ -64,25 +64,6 @@ def test_wait_for_model_ready_returns_false_on_wrong_model():
     assert c.wait_for_model_ready("qwen3-8b", max_wait_seconds=1, poll_seconds=0) is False
 
 
-def test_start_research_extracts_x_research_id_header():
-    def handler(request):
-        assert request.url.path == "/api/research"
-        body = json.loads(request.content)
-        assert body["question"] == "What?"
-        assert body["depth"] == "standard"
-        assert body["time_limit_minutes"] == 30
-        # Return SSE stream with the conv_id in headers
-        return httpx.Response(
-            200,
-            headers={"X-Research-Id": "conv-abc", "Content-Type": "text/event-stream"},
-            content=b'data: {"type":"started"}\n\n',
-        )
-
-    c = make_client(handler)
-    conv_id = c.start_research("What?", depth="standard", time_limit_minutes=30)
-    assert conv_id == "conv-abc"
-
-
 def test_poll_research_returns_completed():
     """poll_research should pass through whatever the server returns — the terminal
     value check lives in wait_for_research."""
@@ -359,3 +340,64 @@ def test_document_count_uses_total_field():
 
     c = make_client(handler)
     assert c.document_count() == 1234
+
+
+def test_run_research_drains_sse_stream_until_done():
+    """Regression test for the interrupted-on-disconnect bug. The harness
+    MUST hold the SSE stream open until the server emits ``done``;
+    closing early triggers HC's research_stream finally-block which
+    marks the task ``interrupted`` and yields empty answers."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/research":
+            # Simulate an SSE response with several events ending in 'done'
+            body = (
+                'data: {"type":"started"}\n\n'
+                'data: {"type":"token","content":"hello "}\n\n'
+                'data: {"type":"token","content":"world"}\n\n'
+                'data: {"type":"done","conversation_id":"conv-abc"}\n\n'
+            )
+            return httpx.Response(
+                200,
+                headers={"X-Research-Id": "conv-abc", "Content-Type": "text/event-stream"},
+                content=body,
+            )
+        # Final poll for ResearchDetail
+        if request.method == "GET" and request.url.path == "/api/research/conv-abc":
+            return httpx.Response(
+                200,
+                json={"status": "completed", "report": "hello world", "conversation_id": "conv-abc"},
+            )
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    conv_id, result = c.run_research("Q?", depth="standard", time_limit_minutes=1)
+    assert conv_id == "conv-abc"
+    assert result["status"] == "completed"
+    assert result["report"] == "hello world"
+
+
+def test_run_research_returns_interrupted_when_server_interrupts():
+    """If HC reports the task as interrupted (e.g. real disconnect for
+    some other reason, or model-switch race), run_research must surface
+    that status faithfully so the caller can downgrade the unit."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/research":
+            body = 'data: {"type":"error","message":"llm error"}\n\n'
+            return httpx.Response(
+                200,
+                headers={"X-Research-Id": "conv-int", "Content-Type": "text/event-stream"},
+                content=body,
+            )
+        if request.method == "GET" and request.url.path == "/api/research/conv-int":
+            return httpx.Response(
+                200,
+                json={"status": "interrupted", "report": None, "error": "llm error"},
+            )
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    conv_id, result = c.run_research("Q?", depth="standard", time_limit_minutes=1)
+    assert result["status"] == "interrupted"
+    assert result.get("report") is None

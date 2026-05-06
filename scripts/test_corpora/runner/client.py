@@ -194,18 +194,31 @@ class HarborClerkClient:
         return conv_id
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=15))
-    def start_research(
+    def poll_research(self, conv_id: str) -> dict[str, Any]:
+        """GET /api/research/{conv_id} — returns the JSON body."""
+        r = self._client.get(f"/api/research/{conv_id}")
+        r.raise_for_status()
+        return r.json()
+
+    def run_research(
         self,
         question: str,
         depth: str = "standard",
         time_limit_minutes: int = 30,
         strategy: str | None = None,
-    ) -> str:
-        """POST /api/research — returns the X-Research-Id header as conv_id.
+    ) -> tuple[str, dict[str, Any]]:
+        """POST /api/research and drain the SSE stream until the research
+        finishes server-side. Returns ``(conv_id, ResearchDetail)``.
 
-        The endpoint returns SSE. We open the stream, read the header, then
-        close immediately without draining the body. The server runs the
-        research regardless; we poll via GET to get the result.
+        Harbor Clerk's research handler runs as an SSE generator; if the
+        client disconnects mid-stream, the handler's finally block marks
+        the task ``interrupted``. So we MUST hold the connection open
+        for the duration. Trying to "fire and poll" by closing the
+        stream early — which an earlier version of this client did —
+        ends every research at round 0 with ``status="interrupted"``.
+
+        This call is NOT retried by ``tenacity`` because partial SSE
+        streams can't be safely re-opened against the same conv_id.
         """
         body: dict[str, Any] = {
             "question": question,
@@ -215,25 +228,44 @@ class HarborClerkClient:
         if strategy is not None:
             body["strategy"] = strategy
 
-        with self._client.stream("POST", "/api/research", json=body) as r:
+        # Read timeout must accommodate the full time_limit + slack for
+        # synthesis tail.
+        read_timeout = time_limit_minutes * 60 + 180
+        timeout = httpx.Timeout(connect=30, read=read_timeout, write=10, pool=10)
+
+        conv_id: str | None = None
+        with self._client.stream("POST", "/api/research", json=body, timeout=timeout) as r:
             r.raise_for_status()
             conv_id = r.headers.get("X-Research-Id")
             if not conv_id:
                 raise RuntimeError("research start did not return X-Research-Id")
-            return conv_id
+            # Drain the SSE stream until done/error. This is what keeps the
+            # research alive server-side.
+            for line in r.iter_lines():
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                if not payload.strip():
+                    continue
+                try:
+                    event = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                etype = event.get("type")
+                if etype in ("done", "error"):
+                    break
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=15))
-    def poll_research(self, conv_id: str) -> dict[str, Any]:
-        """GET /api/research/{conv_id} — returns the JSON body."""
-        r = self._client.get(f"/api/research/{conv_id}")
-        r.raise_for_status()
-        return r.json()
+        # Fetch the final state (status, report, citations, messages).
+        return conv_id, self.poll_research(conv_id)
 
     def wait_for_research(self, conv_id: str, max_wait_seconds: int, poll_seconds: int = 5) -> dict[str, Any]:
-        """Poll until status is completed/failed/interrupted or deadline.
+        """[Deprecated] Poll until status is completed/failed/interrupted or deadline.
 
-        Harbor Clerk returns a ``ResearchDetail`` object whose terminal values
-        are ``completed``, ``failed``, and ``interrupted`` (not ``done`` / ``error``).
+        Kept for backward-compat in tests but no longer used by the sweep —
+        ``run_research`` now blocks on the SSE stream itself, which is the
+        only safe way (closing the stream early triggers HC's
+        interrupted-on-disconnect handler).
+
         When poll_seconds=0 the sleep is skipped (test mode).
         """
         deadline = time.time() + max_wait_seconds

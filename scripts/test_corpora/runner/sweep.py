@@ -233,8 +233,10 @@ def _run_local(
         orphan = hc.cleanup_orphan_research()
         if orphan:
             log.warning("cleaned up orphan research task %s before starting new one", orphan)
-        conv_id = hc.start_research(question_text, depth=depth, time_limit_minutes=time_limit_minutes)
-        result = hc.wait_for_research(conv_id, max_wait_seconds=time_limit_minutes * 60 + 120)
+        # run_research drains the SSE stream until the research finishes
+        # server-side. Closing the stream early would trigger HC's
+        # "interrupted-on-disconnect" handler and produce empty results.
+        conv_id, result = hc.run_research(question_text, depth=depth, time_limit_minutes=time_limit_minutes)
         # Normalize: ResearchDetail returns "report", chat returns "answer".
         # Store under "answer" so all downstream metrics code uses a uniform key.
         normalized_answer = result.get("report") or result.get("answer", "")
@@ -573,7 +575,51 @@ def main(argv: list[str] | None = None) -> int:
                             results_dir=run_dir,
                         )
 
-                    sf.set_status(u.phase, u.corpus, u.model, u.question_id, u.depth, Status.DONE)
+                    # For local-model questions (phases 2-6), inspect the
+                    # ResearchDetail / chat result and downgrade the unit
+                    # status when the result is not a clean completion.
+                    # Without this, the harness used to mark "interrupted"
+                    # research tasks as DONE — leaving cells with empty
+                    # answers in metrics.csv that looked like real
+                    # completions.
+                    final_status = Status.DONE
+                    error_msg: str | None = None
+                    if phase in (2, 3, 4, 5, 6):
+                        result = out.get("result", {}) or {}
+                        result_status = result.get("status")
+                        result_answer = result.get("answer") or ""
+                        if result_status == "completed" and result_answer:
+                            final_status = Status.DONE
+                        elif result_status == "completed" and not result_answer:
+                            final_status = Status.DEGRADED
+                            error_msg = "completed with empty answer"
+                        elif result_status == "interrupted":
+                            final_status = Status.ERROR
+                            error_msg = "research interrupted by Harbor Clerk"
+                        elif result_status in ("failed", "timeout"):
+                            final_status = Status.ERROR
+                            error_msg = f"research finished with status={result_status}"
+                        else:
+                            final_status = Status.ERROR
+                            error_msg = f"unexpected result status: {result_status!r}"
+                    sf.set_status(
+                        u.phase,
+                        u.corpus,
+                        u.model,
+                        u.question_id,
+                        u.depth,
+                        final_status,
+                        error=error_msg,
+                    )
+                    if final_status != Status.DONE:
+                        log.warning(
+                            "unit %s/%s/%s ended with %s: %s",
+                            u.corpus,
+                            u.model,
+                            u.question_id,
+                            final_status.value,
+                            error_msg,
+                        )
                 except (httpx.HTTPError, RuntimeError, KeyError) as exc:
                     log.exception("unit failed: %s", u)
                     sf.set_status(u.phase, u.corpus, u.model, u.question_id, u.depth, Status.ERROR, error=str(exc))
