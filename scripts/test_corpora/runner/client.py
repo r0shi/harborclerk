@@ -301,6 +301,34 @@ class HarborClerkClient:
             time.sleep(poll_seconds)
         return False
 
+    def wait_for_pipeline_activity(self, max_wait_seconds: int = 120, poll_seconds: int = 2) -> bool:
+        """Wait until the queue is *non*-empty (something has been enqueued).
+
+        Used right after ``watch_folder_add`` to close the race where the
+        watcher hasn't scanned the folder yet — without this, a quick
+        ``wait_for_quiet_pipeline`` poll could see an empty queue, declare
+        the corpus ingested, and start research on zero documents.
+        """
+        deadline = time.time() + max_wait_seconds
+        while time.time() < deadline:
+            if not self.pipeline_quiet():
+                return True
+            if poll_seconds > 0:
+                time.sleep(poll_seconds)
+        return False
+
+    def document_count(self) -> int:
+        """GET /api/docs?limit=0 — total active document count.
+
+        Used to verify ingestion landed the expected number of documents.
+        Note: counts everything HC's watcher decided to ingest, which may
+        include synthetic-corpus JSON sidecars unless HC's watcher filters
+        them.
+        """
+        r = self._client.get("/api/docs", params={"limit": 0})
+        r.raise_for_status()
+        return r.json().get("total", 0)
+
     def health(self) -> dict[str, Any]:
         """GET /api/system/health."""
         r = self._client.get("/api/system/health")

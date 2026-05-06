@@ -312,3 +312,50 @@ def test_cleanup_orphan_research_no_op_when_idle():
     # Should have called GET but NOT DELETE
     assert any("GET" in s for s in seen)
     assert not any("DELETE" in s for s in seen)
+
+
+def test_wait_for_pipeline_activity_returns_true_on_first_busy_poll():
+    """When the queue is empty initially and becomes busy, the helper
+    returns True. With poll_seconds=0 we hit the second response on the
+    next iteration."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                200, json={"queues": {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}}
+            )
+        return httpx.Response(
+            200, json={"queues": {"io": {"queued": 7, "running": 0}, "cpu": {"queued": 0, "running": 0}}}
+        )
+
+    c = make_client(handler)
+    assert c.wait_for_pipeline_activity(max_wait_seconds=5, poll_seconds=0) is True
+
+
+def test_wait_for_pipeline_activity_returns_false_on_timeout():
+    """If the queue stays empty until the deadline, the helper returns False —
+    the caller can decide whether that's a watcher misconfiguration."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"queues": {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}}
+        )
+
+    c = make_client(handler)
+    # max_wait_seconds=0 → first poll only, no busy state ever → False
+    assert c.wait_for_pipeline_activity(max_wait_seconds=0, poll_seconds=0) is False
+
+
+def test_document_count_uses_total_field():
+    """document_count returns the response body's `total` field, ignoring
+    `items` (we pass limit=0 to avoid the actual list)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/docs"
+        assert request.url.params.get("limit") == "0"
+        return httpx.Response(200, json={"items": [], "total": 1234, "limit": 0, "offset": 0})
+
+    c = make_client(handler)
+    assert c.document_count() == 1234
