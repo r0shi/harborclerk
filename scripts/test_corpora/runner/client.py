@@ -200,17 +200,33 @@ class HarborClerkClient:
         model_id: str,
         max_wait_seconds: int = 600,
         poll_seconds: int = 2,
+        consecutive_ready_required: int = 3,
     ) -> bool:
-        """Poll model_status() until state=='ready' and model_id matches.
+        """Poll model_status() until state=='ready' and model_id matches for
+        ``consecutive_ready_required`` consecutive polls.
+
+        HC's ``/api/chat/models/status`` reports ``ready`` as soon as
+        llama-server's ``/health`` returns 200 — but llama-server's HTTP
+        server can come up slightly before the model is actually warm
+        enough to generate, so a single ready reading sometimes leads to
+        an immediate research failure on the first generation. Requiring
+        3 consecutive readings (with default poll_seconds=2 → ~4-6s of
+        stable ``ready``) closes that race without forcing a fixed
+        post-load sleep.
 
         Returns True on success, False on timeout or persistent mismatch.
         When poll_seconds=0 (test mode) the sleep is skipped.
         """
         deadline = time.time() + max_wait_seconds
+        consecutive = 0
         while time.time() < deadline:
             status = self.model_status()
             if status.get("state") == "ready" and status.get("model_id") == model_id:
-                return True
+                consecutive += 1
+                if consecutive >= consecutive_ready_required:
+                    return True
+            else:
+                consecutive = 0
             if poll_seconds > 0:
                 time.sleep(poll_seconds)
         return False

@@ -10,7 +10,11 @@ import httpx
 
 from scripts.test_corpora.corpora.manifest import CorpusManifest
 from scripts.test_corpora.runner.client import HarborClerkClient
-from scripts.test_corpora.runner.sweep import _can_skip_ingest, _hc_corpus_matches
+from scripts.test_corpora.runner.sweep import (
+    _can_skip_ingest,
+    _hc_corpus_matches,
+    _is_retryable_research_failure,
+)
 
 
 def _make_client(handler) -> HarborClerkClient:
@@ -143,3 +147,55 @@ def test_hc_corpus_matches_handles_tiny_corpus_floor():
     c = _make_client(handler)
     m = CorpusManifest(corpus_id="x", ingest_dir=Path("/tmp/x"), doc_count=1, total_size_bytes=1, license="ignored")
     assert _hc_corpus_matches(c, m) is False
+
+
+# ── retry decision logic ──
+
+
+def test_is_retryable_when_research_failed():
+    """status=failed → retry. Most common case: llama-server hiccup or
+    model-not-warm-yet despite HC reporting ready."""
+    assert _is_retryable_research_failure({"result": {"status": "failed"}}) is True
+
+
+def test_is_retryable_when_research_interrupted():
+    """status=interrupted → retry. SSE stream closed mid-run."""
+    assert _is_retryable_research_failure({"result": {"status": "interrupted"}}) is True
+
+
+def test_is_retryable_when_harness_aborted():
+    """harness_aborted=True → retry. Watchdog forced the stream closed
+    because the model went unhealthy. Retry covers auto-recovery."""
+    assert (
+        _is_retryable_research_failure(
+            {
+                "result": {
+                    "status": "interrupted",
+                    "harness_aborted": True,
+                    "harness_abort_reason": "model state=loading",
+                }
+            }
+        )
+        is True
+    )
+
+
+def test_not_retryable_when_completed_with_answer():
+    """Successful research must NEVER retry, even on flaky-looking results."""
+    assert _is_retryable_research_failure({"result": {"status": "completed", "answer": "yes"}}) is False
+
+
+def test_not_retryable_when_completed_empty_answer():
+    """Completed-with-empty-answer is a model behaviour, not a transient.
+    Same query against same model won't suddenly succeed — don't waste
+    a retry slot."""
+    assert _is_retryable_research_failure({"result": {"status": "completed", "answer": ""}}) is False
+
+
+def test_not_retryable_when_no_result_block():
+    """Phase 0/1 outputs don't have a result block; never retry those.
+    (The caller already gates retry on _is_research, but the helper itself
+    should be safe to call with anything.)"""
+    assert _is_retryable_research_failure({}) is False
+    assert _is_retryable_research_failure({"result": {}}) is False
+    assert _is_retryable_research_failure({"result": None}) is False

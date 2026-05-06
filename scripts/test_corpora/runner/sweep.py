@@ -58,6 +58,36 @@ _LEGACY_MODEL_ID_RENAMES = {
 }
 
 
+# How long to wait between the original research and a one-shot retry on
+# transient failure (failed / interrupted / harness_aborted). 30s lets a
+# briefly wedged llama-server recover; longer doesn't help and just delays
+# the eventual ERROR.
+RESEARCH_RETRY_DELAY_SECONDS = 30
+
+
+def _is_retryable_research_failure(out: dict) -> bool:
+    """Whether ``out["result"]`` warrants a one-shot retry.
+
+    Retryable:
+      - ``status == "failed"`` — HC's research raised an error mid-stream.
+        Most often a llama-server hiccup, sometimes a model that wasn't
+        actually warm yet despite ``model_status == "ready"``.
+      - ``status == "interrupted"`` — HC's SSE stream closed before
+        completion. Could be a real disconnect or a watchdog catch.
+      - ``harness_aborted`` — our watchdog forced the stream closed
+        because the model went unhealthy. The retry covers the case
+        where the model recovers (auto-restart, transient glitch).
+
+    Not retryable: ``status == "completed"`` (even with an empty answer —
+    same query against same model won't suddenly succeed), or non-research
+    output (chat questions don't go through this path).
+    """
+    result = out.get("result", {}) or {}
+    if result.get("harness_aborted"):
+        return True
+    return result.get("status") in ("failed", "interrupted")
+
+
 # ── argparse ──
 
 
@@ -664,6 +694,40 @@ def main(argv: list[str] | None = None) -> int:
                             is_research=_is_research(u.question_id),
                             results_dir=run_dir,
                         )
+
+                        # One-shot retry on transient research failures. The most
+                        # common cause is the model wasn't actually warm despite
+                        # HC reporting state=ready; second-most-common is
+                        # llama-server hiccup mid-run that recovered. Wait, verify
+                        # the model is still ready, then re-run the same question
+                        # at the same depth. If the retry also fails the unit gets
+                        # the normal status downgrade (ERROR) below.
+                        if _is_research(u.question_id) and _is_retryable_research_failure(out):
+                            res = out.get("result", {}) or {}
+                            log.warning(
+                                "research %s/%s/%s failed (status=%s, harness_aborted=%s); retrying once after %ds",
+                                u.corpus,
+                                u.model,
+                                u.question_id,
+                                res.get("status"),
+                                bool(res.get("harness_aborted")),
+                                RESEARCH_RETRY_DELAY_SECONDS,
+                            )
+                            time.sleep(RESEARCH_RETRY_DELAY_SECONDS)
+                            if not hc.wait_for_model_ready(u.model, max_wait_seconds=600):
+                                log.warning("model %s not ready before retry — accepting failure", u.model)
+                            else:
+                                out = _run_local(
+                                    hc=hc,
+                                    corpus=u.corpus,
+                                    model=u.model,
+                                    question_id=u.question_id,
+                                    question_text=text,
+                                    depth=u.depth,
+                                    time_limit_minutes=args.time_limit_minutes,
+                                    is_research=True,
+                                    results_dir=run_dir,
+                                )
 
                     # For local-model questions (phases 2-6), inspect the
                     # ResearchDetail / chat result and downgrade the unit
