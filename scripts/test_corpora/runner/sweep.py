@@ -273,6 +273,26 @@ def _run_local(
 # ── ingestion helper ──
 
 
+def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
+    """Return True iff HC already has the given corpus loaded.
+
+    Used at sweep startup (before the first per-unit ingest decision) to
+    skip the wipe-and-re-ingest cycle when the user is resuming a sweep
+    that was killed mid-run with the right corpus still in the DB.
+
+    Two checks: a watch folder whose ``path`` equals ``manifest.ingest_dir``,
+    AND ``document_count() >= 50% of manifest.doc_count``. The doc-count
+    floor matches ``_ingest_corpus``'s "ingest looks incomplete" sanity
+    check, so anything we'd accept fresh we also accept on resume.
+    """
+    target = str(manifest.ingest_dir)
+    folders = hc.watch_folder_list()
+    if not any(f.get("path") == target for f in folders):
+        return False
+    threshold = max(1, int(manifest.doc_count * 0.5))
+    return hc.document_count() >= threshold
+
+
 def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest) -> None:
     """Wipe the DB, register the corpus's ingest dir, wait for ingestion to
     fully complete before returning.
@@ -509,20 +529,31 @@ def main(argv: list[str] | None = None) -> int:
                     notes="unified pass",
                 )
                 if not args.dry_run:
-                    _ingest_corpus(hc, unified_manifest)
-                    current_corpus_in_db = "unified"
+                    if current_corpus_in_db is None and _hc_corpus_matches(hc, unified_manifest):
+                        log.info("HC already has unified corpus loaded — skipping re-ingest")
+                        current_corpus_in_db = "unified"
+                    elif current_corpus_in_db != "unified":
+                        _ingest_corpus(hc, unified_manifest)
+                        current_corpus_in_db = "unified"
 
             for u in phase_units:
                 if args.dry_run and phase > 0:
                     log.info("dry-run: skipping %s", u)
                     continue
 
-                # Ensure correct corpus is in the DB for phases 4/5 (unified for 6)
+                # Ensure correct corpus is in the DB for phases 4/5 (unified for 6).
+                # On a fresh process (current_corpus_in_db is None) we first ask HC
+                # whether it already has u.corpus loaded — if so, skip the wipe so
+                # `--resume` after a mid-corpus crash doesn't lose the existing ingest.
                 if phase in (4, 5) and u.corpus != current_corpus_in_db:
                     if u.corpus not in manifests:
                         manifests[u.corpus] = _phase0_acquire(u.corpus, workdir)
-                    _ingest_corpus(hc, manifests[u.corpus])
-                    current_corpus_in_db = u.corpus
+                    if current_corpus_in_db is None and _hc_corpus_matches(hc, manifests[u.corpus]):
+                        log.info("HC already has %s loaded — skipping re-ingest", u.corpus)
+                        current_corpus_in_db = u.corpus
+                    elif u.corpus != current_corpus_in_db:
+                        _ingest_corpus(hc, manifests[u.corpus])
+                        current_corpus_in_db = u.corpus
 
                 # Ensure correct model is active for phases 2-6
                 if phase in (2, 3, 4, 5, 6) and u.model not in (None, "-", "claude-baseline"):
