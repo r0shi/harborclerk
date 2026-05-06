@@ -113,6 +113,28 @@ class StateFile:
         for u in units:
             self._units.setdefault(u.key(), u)
 
+    def rename_model_ids(self, rename_map: dict[str, str]) -> int:
+        """Rewrite every unit whose model id appears in ``rename_map``.
+
+        Used to migrate state.json files written before a model-id rename.
+        Because ``model`` is part of the unit key, we must delete the old
+        entry and re-insert under the new key. Returns the count rewritten;
+        caller is responsible for ``save()``.
+
+        If the new key already exists (caller has both old + new registered
+        — unusual but possible), the existing new entry wins and the old
+        is dropped.
+        """
+        renamed: list[tuple[tuple, Unit]] = []
+        for old_key, u in self._units.items():
+            if u.model in rename_map:
+                renamed.append((old_key, u))
+        for old_key, u in renamed:
+            del self._units[old_key]
+            new_unit = dataclasses.replace(u, model=rename_map[u.model])
+            self._units.setdefault(new_unit.key(), new_unit)
+        return len(renamed)
+
     def units(self) -> list[Unit]:
         return list(self._units.values())
 
