@@ -30,6 +30,62 @@ def test_login_stores_bearer_token():
     assert c.pipeline_quiet() is True
 
 
+def test_jwt_refresh_on_401_relogins_and_retries():
+    """When a request returns 401 with an expired token, the client must
+    transparently re-login and retry. Without this, long-running phase 4
+    cells crash when HC's 30-minute access token TTL elapses mid-research."""
+    bearers_seen: list[str | None] = []
+    login_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/login":
+            login_count["n"] += 1
+            return httpx.Response(200, json={"access_token": "tok-fresh", "token_type": "bearer"})
+
+        if request.url.path == "/api/jobs/snapshot":
+            bearer = request.headers.get("Authorization")
+            bearers_seen.append(bearer)
+            # The "stale" pre-seeded token returns 401; the freshly-issued
+            # token returns 200. This is exactly what HC does when the JWT
+            # passes its TTL.
+            if bearer == "Bearer tok-stale":
+                return httpx.Response(401, json={"detail": "Token expired"})
+            return httpx.Response(
+                200, json={"queues": {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}}
+            )
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    c.login("a@b.c", "pw")
+    # Pre-seed a stale token to simulate "logged in 30 min ago, now expired"
+    # without having to wait through tokens lifecycle.
+    c._client.auth._token = "tok-stale"
+    assert c.pipeline_quiet() is True
+
+    # Exactly one login: the refresh after 401. (Pre-seed bypasses lazy login.)
+    assert login_count["n"] == 1
+    # The first attempt sent the stale token; the retry must carry the fresh one.
+    assert bearers_seen == ["Bearer tok-stale", "Bearer tok-fresh"]
+
+
+def test_jwt_refresh_does_not_loop_when_login_itself_401s():
+    """If credentials are wrong, login() returns 401. We must NOT retry the
+    login forever — the /api/auth/login path is skipped in auth_flow's
+    401-retry. The original request's 401 still surfaces."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/login":
+            return httpx.Response(401, json={"detail": "Invalid credentials"})
+        return httpx.Response(401, json={"detail": "Token expired"})
+
+    c = make_client(handler)
+    c.login("wrong@b.c", "pw")
+    # Use model_status (no tenacity retry wrapper) so we see the underlying
+    # HTTPStatusError directly without it being wrapped in RetryError.
+    with pytest.raises(httpx.HTTPStatusError):
+        c.model_status()
+
+
 def test_activate_model_calls_put():
     seen: list[tuple[str, str]] = []
 
