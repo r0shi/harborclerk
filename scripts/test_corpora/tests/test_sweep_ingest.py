@@ -10,7 +10,7 @@ import httpx
 
 from scripts.test_corpora.corpora.manifest import CorpusManifest
 from scripts.test_corpora.runner.client import HarborClerkClient
-from scripts.test_corpora.runner.sweep import _hc_corpus_matches
+from scripts.test_corpora.runner.sweep import _can_skip_ingest, _hc_corpus_matches
 
 
 def _make_client(handler) -> HarborClerkClient:
@@ -84,6 +84,48 @@ def test_hc_corpus_matches_false_when_doc_count_below_threshold():
 
     c = _make_client(handler)
     assert _hc_corpus_matches(c, _manifest(doc_count=80)) is False
+
+
+def test_can_skip_ingest_true_when_quiet_and_loaded():
+    """Happy path for --resume: queue is quiet, folder + count match → True."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/jobs/snapshot":
+            return httpx.Response(
+                200, json={"queues": {"io": {"queued": 0, "running": 0}, "cpu": {"queued": 0, "running": 0}}}
+            )
+        if request.url.path == "/api/watch/folders":
+            return httpx.Response(200, json=[{"folder_id": "f1", "path": "/tmp/cuad-ingest"}])
+        if request.url.path == "/api/docs":
+            return httpx.Response(200, json={"items": [], "total": 80, "limit": 0})
+        return httpx.Response(404)
+
+    c = _make_client(handler)
+    assert _can_skip_ingest(c, _manifest(), max_drain_wait=0) is True
+
+
+def test_can_skip_ingest_false_when_queue_busy_and_no_drain_budget():
+    """Mid-ingest case the user flagged: HC has 51% of expected docs but
+    the queue is still draining. With max_drain_wait=0 the helper bails
+    out and returns False, forcing _ingest_corpus to wipe + re-ingest
+    rather than letting research start against a partial corpus."""
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        if request.url.path == "/api/jobs/snapshot":
+            return httpx.Response(
+                200, json={"queues": {"io": {"queued": 5, "running": 1}, "cpu": {"queued": 0, "running": 0}}}
+            )
+        return httpx.Response(404)
+
+    c = _make_client(handler)
+    assert _can_skip_ingest(c, _manifest(), max_drain_wait=0) is False
+    # Critical: with the queue busy we must NEVER read document_count and decide
+    # based on a moving number. Verify the helper short-circuited before
+    # calling /api/docs or /api/watch/folders.
+    assert "/api/docs" not in seen_paths
+    assert "/api/watch/folders" not in seen_paths
 
 
 def test_hc_corpus_matches_handles_tiny_corpus_floor():
