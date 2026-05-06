@@ -272,6 +272,14 @@ def _run_local(
 
 
 def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest) -> None:
+    """Wipe the DB, register the corpus's ingest dir, wait for ingestion to
+    fully complete before returning.
+
+    Three-phase wait closes the race where the harness checks ``pipeline_quiet``
+    in the brief window between ``watch_folder_add`` returning and the
+    watcher actually scanning the folder. Without this, the harness would
+    declare the corpus ingested and start research against zero documents.
+    """
     log.info("clearing existing watch folders before ingesting %s", manifest.corpus_id)
     for folder in hc.watch_folder_list():
         hc.watch_folder_delete(folder["folder_id"])
@@ -279,9 +287,42 @@ def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest) -> None:
     hc.delete_all_documents(confirm=True)
     log.info("adding watch folder for %s", manifest.ingest_dir)
     hc.watch_folder_add(str(manifest.ingest_dir), name=f"test-corpora-{manifest.corpus_id}")
+
+    # Phase 1: confirm watcher actually started enqueueing. Some corpora
+    # (CUAD's 80 PDFs) can finish ingesting in under the 30s poll interval,
+    # so this is essential — without it, the next poll could see an empty
+    # queue before the queue ever filled and proceed.
+    log.info("waiting for watcher to begin enqueueing files for %s", manifest.corpus_id)
+    if not hc.wait_for_pipeline_activity(max_wait_seconds=120):
+        raise RuntimeError(
+            f"watcher never enqueued any jobs for {manifest.corpus_id} within 120s — "
+            f"verify the ingest dir contains supported files: {manifest.ingest_dir}"
+        )
+
+    # Phase 2: wait for the queue to drain (existing behaviour).
     log.info("waiting for pipeline to drain (this can take a while)")
     if not hc.wait_for_quiet_pipeline(max_wait_seconds=4 * 3600):
         raise RuntimeError(f"pipeline never drained for {manifest.corpus_id}")
+
+    # Phase 3: warning-level sanity check on document count. Treated as
+    # informational because the synthetic corpus has JSON sidecars in the
+    # ingest dir that HC may or may not ingest depending on its allowed
+    # extensions, so an exact match isn't guaranteed.
+    actual = hc.document_count()
+    if actual < manifest.doc_count * 0.5:
+        log.error(
+            "ingest looks incomplete for %s: HC has %d active docs, manifest expected %d",
+            manifest.corpus_id,
+            actual,
+            manifest.doc_count,
+        )
+    else:
+        log.info(
+            "ingest verified for %s: HC has %d active docs (manifest expected %d)",
+            manifest.corpus_id,
+            actual,
+            manifest.doc_count,
+        )
 
 
 # ── model switch helper ──
