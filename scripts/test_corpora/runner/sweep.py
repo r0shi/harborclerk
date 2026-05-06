@@ -155,18 +155,18 @@ def _plan_units(
                 for q in _question_ids(qs):
                     units.append(Unit(phase=1, corpus=c, model="claude-baseline", question_id=q, depth="n/a"))
         elif phase == 2:
-            # smoke — one model, one corpus. Skipped if cuad or qwen3.6-35b isn't in scope.
-            if "cuad" in questions_by_corpus and (models_filter is None or "qwen3.6-35b" in models_filter):
+            # smoke — one model, one corpus. Skipped if cuad or qwen36-35b-a3b isn't in scope.
+            if "cuad" in questions_by_corpus and (models_filter is None or "qwen36-35b-a3b" in models_filter):
                 units.append(
-                    Unit(phase=2, corpus="cuad", model="qwen3.6-35b", question_id="cuad-research-1", depth=depth)
+                    Unit(phase=2, corpus="cuad", model="qwen36-35b-a3b", question_id="cuad-research-1", depth=depth)
                 )
         elif phase == 3:
             # depth coverage — same model × all three depths on cuad. Skipped if cuad or
-            # qwen3.6-35b isn't in scope.
-            if "cuad" in questions_by_corpus and (models_filter is None or "qwen3.6-35b" in models_filter):
+            # qwen36-35b-a3b isn't in scope.
+            if "cuad" in questions_by_corpus and (models_filter is None or "qwen36-35b-a3b" in models_filter):
                 for d in cfg.DEPTHS:
                     for q in _question_ids(questions_by_corpus["cuad"]):
-                        units.append(Unit(phase=3, corpus="cuad", model="qwen3.6-35b", question_id=q, depth=d))
+                        units.append(Unit(phase=3, corpus="cuad", model="qwen36-35b-a3b", question_id=q, depth=d))
         elif phase == 4:
             # Corpus is outer loop so each corpus change (= full re-ingest) happens only
             # once per corpus rather than once per (model, corpus) pair.

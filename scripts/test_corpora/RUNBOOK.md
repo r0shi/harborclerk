@@ -45,7 +45,7 @@ If you want to keep an existing corpus intact, run the sweep against a **separat
    │  sweep harness              │               │              │  sweep harness           │
    │   ├ Phase 0,1,5,6           │◀──────────────┘              │   ├ Phase 0 (cached)     │
    │   └ Phase 4 top 2 models    │                              │   └ Phase 4 6 small      │
-   │      (gemma-26b, qwen3.6)   │                              │      (smollm3-3b...      │
+   │      (gemma4-26b, qwen36)   │                              │      (smollm3-3b...      │
    │                             │                              │       gpt-oss-20b)       │
    │  supervisor.py              │                              │  supervisor.py           │
    │   └ tail log → notify       │                              │   └ tail log → notify    │
@@ -223,7 +223,7 @@ tmux new -d -s sweep-mini "uv --project scripts/test_corpora run python -m \
     scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir \"$WORKDIR\" \
     --phases 4 \
-    --models smollm3-3b,qwen3-4b,phi-4-mini,qwen3-8b,deepseek-r1-8b,gpt-oss-20b \
+    --models smollm3-3b,qwen3-4b,phi4-mini,qwen3-8b,deepseek-r1-0528-8b,gpt-oss-20b \
     \
     2>&1 | tee ~/sweep-logs/phase4-mini.log"
 
@@ -244,7 +244,7 @@ tmux new -d -s sweep-big "uv --project scripts/test_corpora run python -m \
     scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir \"$WORKDIR\" \
     --phases 4 \
-    --models gemma-26b,qwen3.6-35b \
+    --models gemma4-26b-a4b,qwen36-35b-a3b \
     \
     2>&1 | tee ~/sweep-logs/phase4-big.log"
 
@@ -322,7 +322,7 @@ In a Claude Code session on the relevant machine:
 >
 > - **`phase_boundary`** — log it; no action needed
 > - **`completion`** — log it; tell me the sweep is done
-> - **`skip_recommendation`** — investigate the last 50 lines of the harness log around the failure. If the model is `deepseek-r1-8b` (known research-mode flake), accept the recommendation and run `uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep --run-id $RUN --skip "model=<model>"` to mark its remaining units SKIPPED. For any other model, page me with the failure context and don't auto-skip.
+> - **`skip_recommendation`** — investigate the last 50 lines of the harness log around the failure. If the model is `deepseek-r1-0528-8b` (known research-mode flake), accept the recommendation and run `uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep --run-id $RUN --skip "model=<model>"` to mark its remaining units SKIPPED. For any other model, page me with the failure context and don't auto-skip.
 > - **`stuck`** — investigate the last 100 lines of the harness log. If you see `llama-server` errors or `Connection refused`, ask me whether to restart Harbor Clerk's LLM service. If you see only Anthropic 429/503, just wait.
 > - **`rate_limit`** — log and wait; the harness retries with exponential backoff
 > - **any unhandled event type** — page me
@@ -386,7 +386,7 @@ Skip it:
 ```bash
 uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir "$WORKDIR" \
-    --skip "model=deepseek-r1-8b"
+    --skip "model=deepseek-r1-0528-8b"
 ```
 
 This is exactly what the supervisor recommends after 3 consecutive errors. Re-run the sweep to skip the rest of that model's units.
