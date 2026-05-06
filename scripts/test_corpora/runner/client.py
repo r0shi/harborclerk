@@ -390,12 +390,16 @@ class HarborClerkClient:
 
     # ── ask (chat SSE) ──
 
-    def create_conversation(self, title: str | None = None, mode: str = "chat") -> str:
-        """POST /api/chat/conversations — returns conversation_id."""
-        r = self._client.post(
-            "/api/chat/conversations",
-            json={"title": title, "mode": mode},
-        )
+    def create_conversation(self, title: str = "test-corpora") -> str:
+        """POST /api/chat/conversations — returns conversation_id.
+
+        HC's ``CreateConversationRequest`` schema is ``title: str`` (no longer
+        optional), and there is no ``mode`` field. Earlier versions of the
+        harness sent ``{"title": null, "mode": "chat"}`` which Pydantic
+        rejects with 422 ("Input should be a valid string"). We now always
+        pass a non-empty title and never send ``mode``.
+        """
+        r = self._client.post("/api/chat/conversations", json={"title": title})
         r.raise_for_status()
         return r.json()["conversation_id"]
 

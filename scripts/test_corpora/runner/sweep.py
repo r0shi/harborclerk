@@ -262,7 +262,7 @@ def _run_local(
         result["answer"] = normalized_answer
     else:
         # Ask flow: create a chat conversation, then send the question, drain SSE
-        conv_id = hc.create_conversation(mode="chat")
+        conv_id = hc.create_conversation(title=f"test-corpora/{corpus}/{model}/{question_id}")
         events = list(hc.stream_ask(conv_id, question_text))
         # Harbor Clerk chat SSE emits {type: "token", content: "<text>"} for tokens.
         # Citations are in the final {type: "done"} event's rag_context.citations field.
