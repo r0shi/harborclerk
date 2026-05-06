@@ -467,6 +467,17 @@ def main(argv: list[str] | None = None) -> int:
                 "  - or pick a fresh --run-id to start a new run"
             )
 
+        # Recover units left IN_PROGRESS by a previous crashed run.
+        # We hold the state lock now, so any unit still IN_PROGRESS is by
+        # definition orphaned (no other writer can have it). Flip them back
+        # to PENDING so --resume picks them up. Threshold=0 → "anything
+        # whose heartbeat is older than now", which is everything still on
+        # disk by the time we reach this point.
+        n_recovered = sf.recover_stale(stale_threshold_seconds=0)
+        if n_recovered:
+            sf.save()
+            log.warning("recovered %d unit(s) left IN_PROGRESS by a prior crashed run", n_recovered)
+
         # Migrate legacy model ids in state.json before any other logic
         # consults sf.units(). Without this, --resume on a state file
         # written before PR #300 keeps trying to activate the old labels
@@ -784,6 +795,22 @@ def main(argv: list[str] | None = None) -> int:
                     log.exception("unit failed: %s", u)
                     sf.set_status(u.phase, u.corpus, u.model, u.question_id, u.depth, Status.ERROR, error=str(exc))
                 finally:
+                    # If the unit is still IN_PROGRESS — meaning an uncaught
+                    # exception (KeyboardInterrupt, tenacity.RetryError, etc.)
+                    # is propagating out — flip it back to PENDING so a
+                    # `--resume` invocation picks it up cleanly without
+                    # needing `--rerun`.
+                    current = sf.get(u.phase, u.corpus, u.model, u.question_id, u.depth)
+                    if current is not None and current.status == Status.IN_PROGRESS:
+                        log.warning(
+                            "unit %s/%s/%s left IN_PROGRESS by uncaught exception; flipping to PENDING for --resume",
+                            u.corpus,
+                            u.model,
+                            u.question_id,
+                        )
+                        current.status = Status.PENDING
+                        current.heartbeat = None
+                        current.started_at = None
                     sf.save()
 
                 latency = time.time() - t0

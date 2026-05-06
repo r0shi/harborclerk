@@ -166,11 +166,21 @@ class StateFile:
     # ── recovery ──
 
     def recover_stale(self, stale_threshold_seconds: float) -> int:
-        """Flip in_progress units with stale heartbeats back to pending. Returns count."""
+        """Flip in_progress units with stale heartbeats back to pending.
+
+        Uses ``>=`` so that ``stale_threshold_seconds=0`` means "every
+        IN_PROGRESS unit", which is the right answer at sweep startup
+        (we just took the lock, no other writer can hold a unit).
+        Returns the count flipped.
+        """
         now = time.time()
         n = 0
         for u in self._units.values():
-            if u.status == Status.IN_PROGRESS and u.heartbeat and (now - u.heartbeat) > stale_threshold_seconds:
+            if (
+                u.status == Status.IN_PROGRESS
+                and u.heartbeat is not None
+                and (now - u.heartbeat) >= stale_threshold_seconds
+            ):
                 u.status = Status.PENDING
                 u.heartbeat = None
                 u.started_at = None
@@ -179,11 +189,29 @@ class StateFile:
 
     # ── selectors ──
 
+    @staticmethod
+    def _selector_matches(actual: object, wanted: str) -> bool:
+        """Compare a unit field's value against a CLI selector value.
+
+        Handles three field shapes the CLI plumbs through:
+          - ``str`` fields (``corpus``, ``model``, ``question_id``, ``depth``):
+            direct string compare.
+          - ``int`` fields (``phase``): coerce wanted to int when comparing,
+            so ``--rerun 'phase=4'`` matches ``Unit.phase = 4``.
+          - ``Status(str, Enum)`` fields (``status``): compare against
+            ``.value``. ``str(Status.ERROR)`` returns ``'Status.ERROR'`` (Enum
+            default), not ``'error'``, so the previous string compare silently
+            failed for every status selector.
+        """
+        if isinstance(actual, enum.Enum):
+            return str(actual.value) == wanted
+        return str(actual) == wanted
+
     def rerun(self, selectors: dict[str, str]) -> int:
         """Flip units matching all selectors back to PENDING. Returns count."""
         n = 0
         for u in self._units.values():
-            if all(str(getattr(u, k, "")) == str(v) for k, v in selectors.items()):
+            if all(self._selector_matches(getattr(u, k, ""), v) for k, v in selectors.items()):
                 u.status = Status.PENDING
                 u.heartbeat = None
                 u.started_at = None
@@ -194,7 +222,7 @@ class StateFile:
     def skip(self, selectors: dict[str, str]) -> int:
         n = 0
         for u in self._units.values():
-            if all(str(getattr(u, k, "")) == str(v) for k, v in selectors.items()):
+            if all(self._selector_matches(getattr(u, k, ""), v) for k, v in selectors.items()):
                 u.status = Status.SKIPPED
                 n += 1
         return n

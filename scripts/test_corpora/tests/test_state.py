@@ -148,3 +148,110 @@ def test_rename_model_ids_returns_zero_on_clean_state(tmp_path: Path):
     n = sf.rename_model_ids({"gemma-26b": "gemma4-26b-a4b"})
     assert n == 0
     assert sf.get(4, "cuad", "qwen3-8b", "q1", "standard") is not None
+
+
+# ── selector matching ──
+
+
+def test_rerun_status_selector_matches_enum_value(tmp_path: Path):
+    """Regression for the Enum-vs-string mismatch: --rerun 'status=error'
+    used to silently flip 0 units because str(Status.ERROR) returns
+    'Status.ERROR', not 'error'. The fix compares against .value for
+    Enum fields. Critical for recovering chat-422 / model-warmup ERROR
+    cells without manual state.json surgery."""
+    sf = StateFile(tmp_path / "state.json")
+    sf.register(
+        [
+            Unit(phase=4, corpus="cuad", model="m", question_id="q1", depth="standard"),
+            Unit(phase=4, corpus="cuad", model="m", question_id="q2", depth="standard"),
+            Unit(phase=4, corpus="cuad", model="m", question_id="q3", depth="standard"),
+        ]
+    )
+    sf.set_status(4, "cuad", "m", "q1", "standard", Status.DONE)
+    sf.set_status(4, "cuad", "m", "q2", "standard", Status.ERROR)
+    sf.set_status(4, "cuad", "m", "q3", "standard", Status.ERROR)
+
+    n = sf.rerun({"status": "error"})
+    assert n == 2
+
+    # Both ERROR units flipped to PENDING; DONE stayed DONE
+    statuses = {u.question_id: u.status for u in sf.units()}
+    assert statuses["q1"] == Status.DONE
+    assert statuses["q2"] == Status.PENDING
+    assert statuses["q3"] == Status.PENDING
+
+
+def test_rerun_int_selector_still_matches_phase(tmp_path: Path):
+    """Regression: the selector fix must not break int comparisons.
+    --rerun 'phase=4' has always worked and keeps working."""
+    sf = StateFile(tmp_path / "state.json")
+    sf.register(
+        [
+            Unit(phase=4, corpus="cuad", model="m", question_id="q1", depth="standard"),
+            Unit(phase=5, corpus="cuad", model="m", question_id="q1", depth="standard"),
+        ]
+    )
+    sf.set_status(4, "cuad", "m", "q1", "standard", Status.DONE)
+    sf.set_status(5, "cuad", "m", "q1", "standard", Status.DONE)
+
+    n = sf.rerun({"phase": "4"})
+    assert n == 1
+    statuses = {u.phase: u.status for u in sf.units()}
+    assert statuses[4] == Status.PENDING
+    assert statuses[5] == Status.DONE
+
+
+def test_rerun_combines_status_and_other_selectors(tmp_path: Path):
+    """Selectors AND together: --rerun 'status=error,corpus=cuad' should
+    match only ERROR cells from cuad, leaving ERROR cells from other
+    corpora untouched."""
+    sf = StateFile(tmp_path / "state.json")
+    sf.register(
+        [
+            Unit(phase=4, corpus="cuad", model="m", question_id="q1", depth="standard"),
+            Unit(phase=4, corpus="enron", model="m", question_id="q1", depth="standard"),
+        ]
+    )
+    sf.set_status(4, "cuad", "m", "q1", "standard", Status.ERROR)
+    sf.set_status(4, "enron", "m", "q1", "standard", Status.ERROR)
+
+    n = sf.rerun({"status": "error", "corpus": "cuad"})
+    assert n == 1
+    cuad_unit = sf.get(4, "cuad", "m", "q1", "standard")
+    enron_unit = sf.get(4, "enron", "m", "q1", "standard")
+    assert cuad_unit is not None and cuad_unit.status == Status.PENDING
+    assert enron_unit is not None and enron_unit.status == Status.ERROR
+
+
+def test_skip_status_selector_matches_enum_value(tmp_path: Path):
+    """Same selector fix applies to --skip; verify it works end-to-end."""
+    sf = StateFile(tmp_path / "state.json")
+    sf.register([Unit(phase=4, corpus="cuad", model="deepseek-r1-0528-8b", question_id="q1", depth="standard")])
+    sf.set_status(4, "cuad", "deepseek-r1-0528-8b", "q1", "standard", Status.ERROR)
+
+    n = sf.skip({"status": "error"})
+    assert n == 1
+    u = sf.get(4, "cuad", "deepseek-r1-0528-8b", "q1", "standard")
+    assert u is not None and u.status == Status.SKIPPED
+
+
+def test_recover_stale_with_threshold_zero_flips_all_in_progress(tmp_path: Path):
+    """recover_stale(0) is what sweep startup uses to clean up units left
+    IN_PROGRESS by a crashed prior run. Must flip every IN_PROGRESS unit
+    regardless of how recently its heartbeat was set."""
+    sf = StateFile(tmp_path / "state.json")
+    sf.register(
+        [
+            Unit(phase=4, corpus="cuad", model="m", question_id="q1", depth="standard"),
+            Unit(phase=4, corpus="cuad", model="m", question_id="q2", depth="standard"),
+        ]
+    )
+    sf.set_status(4, "cuad", "m", "q1", "standard", Status.IN_PROGRESS)
+    # q2 stays PENDING
+
+    n = sf.recover_stale(stale_threshold_seconds=0)
+    assert n == 1
+    u1 = sf.get(4, "cuad", "m", "q1", "standard")
+    assert u1 is not None and u1.status == Status.PENDING
+    assert u1.heartbeat is None
+    assert u1.started_at is None
