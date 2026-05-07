@@ -349,27 +349,29 @@ def test_sync_mcp_session_uses_correct_streamable_function():
 
 
 def test_active_research_returns_state():
-    """Light coverage for the GET /api/research/active happy path."""
+    """Light coverage for the GET /api/research/active happy path.
+    HC's response schema is ``{active: bool, research_id: str|None}``."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/research/active"
-        return httpx.Response(200, json={"conversation_id": "conv-orphan", "status": "running"})
+        return httpx.Response(200, json={"active": True, "research_id": "conv-orphan"})
 
     c = make_client(handler)
     res = c.active_research()
-    assert res["conversation_id"] == "conv-orphan"
+    assert res["research_id"] == "conv-orphan"
 
 
 def test_cleanup_orphan_research_deletes_when_active():
-    """If GET /research/active returns a conv_id, cleanup_orphan_research
-    must DELETE it. This prevents the 409 Conflict on the very next
-    start_research after a killed sweep."""
+    """If GET /research/active reports an active research, cleanup_orphan_research
+    must DELETE it. Regression: an earlier version read the wrong field
+    (``conversation_id`` instead of ``research_id``), so cleanup silently
+    no-op'd and the next POST /research 409'd until manual purge."""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(f"{request.method} {request.url.path}")
         if request.method == "GET" and request.url.path == "/api/research/active":
-            return httpx.Response(200, json={"conversation_id": "conv-orphan", "status": "running"})
+            return httpx.Response(200, json={"active": True, "research_id": "conv-orphan"})
         if request.method == "DELETE" and request.url.path == "/api/research/conv-orphan":
             return httpx.Response(200, json={"ok": True})
         return httpx.Response(404)
@@ -382,17 +384,33 @@ def test_cleanup_orphan_research_deletes_when_active():
 
 
 def test_cleanup_orphan_research_no_op_when_idle():
+    """When HC reports no active research, don't call DELETE."""
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(f"{request.method} {request.url.path}")
-        return httpx.Response(200, json={"conversation_id": None, "status": None})
+        return httpx.Response(200, json={"active": False, "research_id": None})
 
     c = make_client(handler)
     deleted = c.cleanup_orphan_research()
     assert deleted is None
     # Should have called GET but NOT DELETE
     assert any("GET" in s for s in seen)
+    assert not any("DELETE" in s for s in seen)
+
+
+def test_cleanup_orphan_research_ignores_research_id_when_active_false():
+    """Defensive: even if HC returns a stale research_id with active=False
+    (shouldn't happen, but the schema allows it), don't try to DELETE."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url.path}")
+        return httpx.Response(200, json={"active": False, "research_id": "ghost-id"})
+
+    c = make_client(handler)
+    deleted = c.cleanup_orphan_research()
+    assert deleted is None
     assert not any("DELETE" in s for s in seen)
 
 
