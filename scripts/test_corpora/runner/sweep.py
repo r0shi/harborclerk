@@ -739,8 +739,13 @@ def main(argv: list[str] | None = None) -> int:
                         if mcp_session is None:
                             mcp_url = os.environ.get("HC_MCP_URL") or f"{args.api_base}/mcp/mcp"
                             log.info("opening MCP session at %s for Phase 1 baselines", mcp_url)
-                            bearer = hc._client.headers.get("Authorization")
-                            mcp_headers: dict[str, str] = {"Authorization": bearer} if bearer else {}
+                            # Forward HC's bearer to the separate MCP httpx client.
+                            # After PR #306 the token lives inside hc._client.auth, not
+                            # in client.headers — `get_bearer_token` triggers the lazy
+                            # login if needed and returns the active token. Without
+                            # this, the MCP session goes out unauthenticated and 401s.
+                            token = hc.get_bearer_token()
+                            mcp_headers: dict[str, str] = {"Authorization": f"Bearer {token}"} if token else {}
                             mcp_session = SyncMcpSession(
                                 url=mcp_url,
                                 headers=mcp_headers,
