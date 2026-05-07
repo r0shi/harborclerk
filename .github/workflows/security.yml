@@ -23,19 +23,6 @@ jobs:
         with:
           virtual-environment: .venv
           severity: HIGH
-          # Three CVEs in smolagents 1.22.0, all in the LocalPythonExecutor
-          # (its sandboxed code-exec feature) — no fix available. Vendor
-          # is unresponsive per the CVE notes. We only import "from smolagents
-          # import Tool" in src/harbor_clerk/llm/research_tools.py — none of
-          # our code invokes the executor, so these CVEs do not apply to us.
-          # Revisit whenever smolagents publishes a fix.
-          #   CVE-2026-4963 — evaluate_* in local_python_executor
-          #   CVE-2026-2654 — SSRF via LocalPythonExecutor.requests.get/post
-          #   CVE-2025-14931 — pickle deserialization → RCE
-          ignore-vulns: |
-            CVE-2026-4963
-            CVE-2026-2654
-            CVE-2025-14931
 
       - name: npm audit (high/critical)
         run: cd frontend && npm ci && npm audit --audit-level=high
