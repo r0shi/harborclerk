@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import { stageLabel } from '../../utils/stageLabel'
 import { PIPELINE_STAGES, type DocumentQueueItem } from '../../hooks/useQueueTray'
 import StageBar from './StageBar'
@@ -7,7 +7,7 @@ interface DocumentRowProps {
   item: DocumentQueueItem
 }
 
-export default function DocumentRow({ item }: DocumentRowProps) {
+function DocumentRow({ item }: DocumentRowProps) {
   const [expanded, setExpanded] = useState(false)
 
   const currentState = item.stages.get(item.current_stage)
@@ -152,3 +152,9 @@ function stageName(stage: string): string {
       return stage
   }
 }
+
+// Memoized so the panel can re-render on every SSE event without
+// re-rendering 10K rows. The `item` prop is reference-stable for docs
+// the event didn't touch (useQueueTray clones the outer Map but
+// preserves the inner item refs), so memo skips most of the rows.
+export default memo(DocumentRow)

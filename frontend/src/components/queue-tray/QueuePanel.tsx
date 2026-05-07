@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import type { DocumentQueueItem, CompletedItem } from '../../hooks/useQueueTray'
 import DocumentRow from './DocumentRow'
 import CompletedRow from './CompletedRow'
@@ -12,9 +13,15 @@ interface QueuePanelProps {
 
 type TabId = 'active' | 'pipeline'
 
+// Threshold above which we virtualize the Active list. Below this, the
+// classic non-virtualized layout is fine and avoids absolute-positioning
+// quirks for tiny lists.
+const VIRTUALIZE_THRESHOLD = 30
+
 export default function QueuePanel({ activeItems, completed, onClose }: QueuePanelProps) {
   const [exiting, setExiting] = useState(false)
   const [tab, setTab] = useState<TabId>('active')
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   const handleClose = () => {
     setExiting(true)
@@ -27,10 +34,11 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
     }
   }
 
-  // Sort active items by enqueue order (oldest first = stable ordering)
-  const active = Array.from(activeItems.values()).sort((a, b) => a.enqueued_at - b.enqueued_at)
-
-  // Split completed into done vs errors
+  // Map iteration order matches insertion order (Map.set preserves order
+  // when the key already exists). The hook always sets the same
+  // enqueued_at value for an existing doc, so iteration order matches
+  // enqueued-time order without an explicit sort.
+  const active = Array.from(activeItems.values())
   const completedDone = completed.filter((c) => c.status === 'done')
   const completedErrors = completed.filter((c) => c.status === 'error')
 
@@ -38,6 +46,17 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
   const hasCompleted = completedDone.length > 0
   const hasErrors = completedErrors.length > 0
   const activeCount = active.length
+  const shouldVirtualize = activeCount > VIRTUALIZE_THRESHOLD
+
+  // The virtualizer is always created (rules of hooks) but only used
+  // when shouldVirtualize is true. estimateSize is the collapsed
+  // DocumentRow height; measureElement re-measures on mount/expand.
+  const virtualizer = useVirtualizer({
+    count: shouldVirtualize ? activeCount : 0,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 76,
+    overscan: 4,
+  })
 
   return (
     <div className={`mb-2 ${exiting ? 'panel-exit' : 'panel-enter'}`} onAnimationEnd={handleAnimationEnd}>
@@ -75,12 +94,44 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
         </div>
 
         {/* Body */}
-        <div className="overflow-y-auto queue-panel-scroll flex-1">
+        <div ref={scrollRef} className="overflow-y-auto queue-panel-scroll flex-1">
           {tab === 'pipeline' && <PipelineTab />}
           {tab === 'active' && (
             <>
-              {/* Active section */}
-              {hasActive && (
+              {/* Active section. Virtualized once we cross VIRTUALIZE_THRESHOLD
+                  rows so 10K-doc ingests don't render 10K <DocumentRow>s on
+                  every SSE event. */}
+              {hasActive && shouldVirtualize && (
+                <div className="px-4 py-2">
+                  <div className="text-[11px] font-medium uppercase tracking-wider text-(--color-text-secondary) mb-2">
+                    Active
+                  </div>
+                  <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative', width: '100%' }}>
+                    {virtualizer.getVirtualItems().map((virtualItem) => {
+                      const item = active[virtualItem.index]
+                      return (
+                        <div
+                          key={item.doc_id}
+                          ref={virtualizer.measureElement}
+                          data-index={virtualItem.index}
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            width: '100%',
+                            transform: `translateY(${virtualItem.start}px)`,
+                          }}
+                        >
+                          <DocumentRow item={item} />
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Active section, non-virtualized fast path for small lists */}
+              {hasActive && !shouldVirtualize && (
                 <div className="px-4 py-2">
                   <div className="text-[11px] font-medium uppercase tracking-wider text-(--color-text-secondary) mb-2">
                     Active
