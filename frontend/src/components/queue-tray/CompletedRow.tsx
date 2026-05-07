@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { stageLabel } from '../../utils/stageLabel'
 import type { CompletedItem } from '../../hooks/useQueueTray'
@@ -7,7 +7,7 @@ interface CompletedRowProps {
   item: CompletedItem
 }
 
-export default function CompletedRow({ item }: CompletedRowProps) {
+function CompletedRow({ item }: CompletedRowProps) {
   const [, tick] = useState(0)
   useEffect(() => {
     const id = setInterval(() => tick((n) => n + 1), 30_000)
@@ -90,3 +90,8 @@ function formatAge(timestamp: number): string {
   const hours = Math.round(minutes / 60)
   return `${hours}h ago`
 }
+
+// Memoized for the same reason as DocumentRow — the parent panel
+// re-renders on every SSE event, but completed items don't change after
+// they land in the list (the time-ago tick is internal state).
+export default memo(CompletedRow)
