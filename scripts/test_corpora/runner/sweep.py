@@ -687,12 +687,15 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("dry-run: skipping %s", u)
                     continue
 
-                # Ensure correct corpus is in the DB for phases 4/5 (unified for 6).
-                # On a fresh process (current_corpus_in_db is None) we first ask HC
-                # whether it already has u.corpus loaded AND its queue has drained —
-                # if so, skip the wipe so `--resume` after a mid-corpus crash doesn't
-                # lose the existing ingest.
-                if phase in (4, 5) and u.corpus != current_corpus_in_db:
+                # Ensure correct corpus is in the DB for phases 1/4/5 (unified for 6).
+                # Phase 1 baselines call HC's MCP for KB tools — Sonnet's queries hit
+                # whatever is currently in HC's DB, so a fresh sweep that doesn't
+                # ingest first generates baselines against the wrong corpus (or no
+                # corpus at all). On a fresh process (current_corpus_in_db is None)
+                # we first ask HC whether it already has u.corpus loaded AND its
+                # queue has drained — if so, skip the wipe so `--resume` after a
+                # mid-corpus crash doesn't lose the existing ingest.
+                if phase in (1, 4, 5) and u.corpus != current_corpus_in_db:
                     if u.corpus not in manifests:
                         manifests[u.corpus] = _phase0_acquire(u.corpus, workdir)
                     # Belt-and-suspenders: if Phase 0's ingest dir got cleaned up
