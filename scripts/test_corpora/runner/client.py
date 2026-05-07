@@ -323,8 +323,9 @@ class HarborClerkClient:
     # ── research ──
 
     def active_research(self) -> dict[str, Any]:
-        """GET /api/research/active — returns ``{conversation_id, status}`` or
-        a falsy ``conversation_id`` when nothing is running."""
+        """GET /api/research/active — returns
+        ``{"active": bool, "research_id": str | None}``. ``research_id`` is
+        only set when ``active`` is True."""
         r = self._client.get("/api/research/active")
         r.raise_for_status()
         return r.json()
@@ -338,9 +339,15 @@ class HarborClerkClient:
 
     def cleanup_orphan_research(self) -> str | None:
         """If a research task is currently active, delete it. Returns the
-        conv_id that was deleted (or None). Idempotent."""
+        conv_id that was deleted (or None). Idempotent.
+
+        HC's `/research/active` schema is ``{active, research_id}`` — NOT
+        ``{conversation_id, status}``. An earlier version of this method
+        read the wrong field, so cleanup silently no-op'd and the next
+        ``POST /research`` 409'd until the user manually purged state.
+        """
         active = self.active_research()
-        conv_id = active.get("conversation_id")
+        conv_id = active.get("research_id") if active.get("active") else None
         if conv_id:
             self.delete_research(conv_id)
         return conv_id
