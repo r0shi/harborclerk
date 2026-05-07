@@ -101,6 +101,15 @@ function shortMime(mime: string): string {
   return map[mime] || mime.split('/').pop()?.toUpperCase() || mime
 }
 
+// Pre-compute slice percentage so the tooltip doesn't depend on
+// recharts populating `payload.percent` itself. recharts v3 drops that
+// field for single-slice pies, which is how a 260-doc OCR breakdown
+// ended up rendering "NaN%".
+function withPct<T extends { value: number }>(items: T[]): (T & { pct: number })[] {
+  const total = items.reduce((s, d) => s + d.value, 0)
+  return items.map((d) => ({ ...d, pct: total > 0 ? d.value / total : 0 }))
+}
+
 function CustomTooltip({
   active,
   payload,
@@ -123,21 +132,24 @@ function PieTooltip({
   payload,
 }: {
   active?: boolean
-  payload?: { name: string; value: number; payload: { percent: number } }[]
+  payload?: { name: string; value: number; payload: { pct: number } }[]
 }) {
   if (!active || !payload?.length) return null
   const d = payload[0]
+  // Read pct off our own pre-computed field — recharts v3 doesn't reliably
+  // populate `payload.percent` for single-slice pies, which surfaced as
+  // "NaN%" in the OCR Breakdown when only Born Digital had any docs.
   return (
     <div className="rounded-lg bg-white dark:bg-[#3a3a3c] shadow-mac-lg px-3 py-1.5 text-[12px] text-(--color-text-primary) ring-1 ring-(--color-border)">
-      <span className="font-medium">{d.name}</span>: {d.value.toLocaleString()} ({(d.payload.percent * 100).toFixed(0)}
-      %)
+      <span className="font-medium">{d.name}</span>: {d.value.toLocaleString()} ({(d.payload.pct * 100).toFixed(0)}%)
     </div>
   )
 }
 
 export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
   // Language pie data
-  const langData = Object.entries(stats.languages).map(([name, value]) => ({ name, value }))
+  const langRaw = Object.entries(stats.languages).map(([name, value]) => ({ name, value }))
+  const langData = withPct(langRaw)
 
   // Mime bar data
   const mimeData = Object.entries(stats.mime_types)
@@ -145,13 +157,14 @@ export default function CorpusCharts({ stats }: { stats: CorpusStats }) {
     .map(([mime, count]) => ({ name: shortMime(mime), count }))
 
   // OCR pie data
-  const ocrData = [
+  const ocrRaw = [
     { name: 'Born Digital', value: stats.ocr_breakdown.born_digital },
     { name: 'OCR Used', value: stats.ocr_breakdown.ocr_used },
   ].filter((d) => d.value > 0)
   if (stats.ocr_breakdown.unknown > 0) {
-    ocrData.push({ name: 'Pending', value: stats.ocr_breakdown.unknown })
+    ocrRaw.push({ name: 'Pending', value: stats.ocr_breakdown.unknown })
   }
+  const ocrData = withPct(ocrRaw)
 
   // Pipeline timing bar data
   const stageOrder = ['extract', 'ocr', 'chunk', 'entities', 'embed', 'summarize', 'finalize']
