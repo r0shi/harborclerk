@@ -208,15 +208,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showPreferences() {
-        if preferencesWindowController == nil {
-            let view = PreferencesWindow()
-            let hostingController = NSHostingController(rootView: view)
-            let window = NSWindow(contentViewController: hostingController)
-            window.title = "Preferences"
-            window.styleMask = [.titled, .closable, .fullSizeContentView]
-            configureGlassWindow(window, size: NSSize(width: 480, height: 590))
-            preferencesWindowController = NSWindowController(window: window)
+        // If the window is already on screen, just bring it forward — don't
+        // disturb anything the user might be editing.
+        if let controller = preferencesWindowController, controller.window?.isVisible == true {
+            controller.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
         }
+
+        // Otherwise, build a fresh window. PreferencesWindow's @State props
+        // are initialized from AppSettings.shared at view-struct creation
+        // time — if we reused an existing controller after the web app (or
+        // anything else) wrote to config.json, the picker would still show
+        // the previous selection. AppSettings.reload() pulls in the latest
+        // file contents so the freshly-built View captures them.
+        AppSettings.shared.reload()
+        let view = PreferencesWindow()
+        let hostingController = NSHostingController(rootView: view)
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Preferences"
+        window.styleMask = [.titled, .closable, .fullSizeContentView]
+        configureGlassWindow(window, size: NSSize(width: 480, height: 590))
+        preferencesWindowController = NSWindowController(window: window)
         preferencesWindowController?.showWindow(nil)
         preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

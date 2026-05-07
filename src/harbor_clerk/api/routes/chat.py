@@ -20,7 +20,7 @@ from harbor_clerk.api.schemas.chat import (
     ModelOut,
     SendMessageRequest,
 )
-from harbor_clerk.config import get_settings, sync_native_config
+from harbor_clerk.config import get_settings, refresh_llm_settings, sync_native_config
 from harbor_clerk.db import get_session
 from harbor_clerk.llm.chat import chat_stream
 from harbor_clerk.llm.download import (
@@ -258,6 +258,10 @@ async def send_message(
             detail="Research task in progress — chat unavailable until complete",
         )
 
+    # Refresh from config.json so a menubar-side model change between the
+    # user clicking Send and this handler running doesn't yield a 503 even
+    # though a model is now configured.
+    refresh_llm_settings()
     settings = get_settings()
     if not settings.llm_model_id:
         raise HTTPException(
@@ -286,6 +290,12 @@ async def send_message(
 async def list_available_models(
     principal: Principal = Depends(require_user),
 ):
+    # Pick up changes that happened outside this process — most often
+    # the menubar Preferences window writing config.json directly. Without
+    # this, the in-memory settings stays at whatever the last activate/
+    # deactivate handler set, and the web app's "active" badge sticks to
+    # the previous model after a menubar-side switch.
+    refresh_llm_settings()
     settings = get_settings()
     downloaded = set(list_downloaded())
     return [
@@ -394,6 +404,9 @@ async def llm_status(
     llama-server is wedged. The frontend polls it every second or
     two during a model switch.
     """
+    # See list_available_models — refresh to catch menubar-side writes
+    # to config.json that bypass this process.
+    refresh_llm_settings()
     settings = get_settings()
     model_id = settings.llm_model_id or None
 
@@ -429,6 +442,7 @@ async def toggle_yarn(
 async def get_yarn_status(
     principal: Principal = Depends(require_user),
 ):
+    refresh_llm_settings()
     settings = get_settings()
     return {"yarn_enabled": settings.llm_yarn_enabled}
 
@@ -455,6 +469,7 @@ async def toggle_summary_force_afm(
 async def get_summary_force_afm(
     principal: Principal = Depends(require_user),
 ):
+    refresh_llm_settings()
     settings = get_settings()
     return {"summary_force_apple_intelligence": settings.summary_force_apple_intelligence}
 

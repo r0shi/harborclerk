@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 import httpx
 from sqlalchemy import select
 
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.health import report_llm_error, report_llm_success
 from harbor_clerk.llm.models import get_model
@@ -200,6 +200,11 @@ async def chat_stream(
     (the DI session closes when the endpoint returns, before the SSE generator
     has finished streaming).
     """
+    # Pick up model changes that happened outside this process (typically
+    # the menubar Preferences window writing config.json directly). Without
+    # this, chat would stream against whatever model the API server cached
+    # at startup — possibly a model llama-server is no longer hosting.
+    refresh_llm_settings()
     settings = get_settings()
     active_model_id = settings.llm_model_id or None
 

@@ -189,8 +189,19 @@ final class AppSettings: @unchecked Sendable {
         let jsonData = lock.withLock {
             try? JSONSerialization.data(withJSONObject: data, options: .prettyPrinted)
         }
-        if let jsonData {
-            try? jsonData.write(to: configURL)
+        guard let jsonData else { return }
+        // Atomic write — write to a sibling temp file and rename. Without
+        // this, Python's refresh_llm_settings() can briefly observe a
+        // truncated file mid-write, fail to parse, and silently keep its
+        // stale in-memory value for one more poll cycle. Mirrors the
+        // temp+rename pattern in Python's sync_native_config().
+        let dir = configURL.deletingLastPathComponent()
+        let tmpURL = dir.appendingPathComponent(".\(configURL.lastPathComponent).tmp")
+        do {
+            try jsonData.write(to: tmpURL)
+            _ = try FileManager.default.replaceItemAt(configURL, withItemAt: tmpURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tmpURL)
         }
     }
 
