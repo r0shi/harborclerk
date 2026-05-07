@@ -215,7 +215,7 @@ The chat assistant uses tool calls to search, read passages, explore document st
 
 ### Deep Research
 
-For complex questions that require systematically examining your corpus, Research mode runs an autonomous agent (powered by smolagents) that iterates through search, read, and entity tools — then synthesizes its findings into a cited report.
+For complex questions that require systematically examining your corpus, Research mode runs a structured plan→search→read→extract→synthesize pipeline that uses the LLM for bounded steps (query planning, note extraction, synthesis) and drives retrieval from Python with measurable coverage. The result is a cited report.
 
 Configuration per task:
 - **Strategy**: Search-driven (follows leads) or Systematic sweep (reviews every document)
