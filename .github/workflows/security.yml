@@ -23,6 +23,15 @@ jobs:
         with:
           virtual-environment: .venv
           severity: HIGH
+          # Ignore CVE-2026-4963 in smolagents 1.22.0 — no fix available
+          # (vendor unresponsive per the CVE notes). The vulnerability is in
+          # smolagents' local_python_executor.evaluate_* (its sandboxed
+          # code-exec feature). We only import "from smolagents import Tool"
+          # in src/harbor_clerk/llm/research_tools.py — none of our code
+          # invokes the executor, so this CVE does not apply to us. Revisit
+          # whenever smolagents publishes a fix.
+          ignore-vulns: |
+            CVE-2026-4963
 
       - name: npm audit (high/critical)
         run: cd frontend && npm ci && npm audit --audit-level=high
