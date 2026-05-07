@@ -1,16 +1,16 @@
 # Test Corpora Sweep Runbook
 
-How to run the full six-phase LLM evaluation sweep across two machines, mostly unattended.
+How to run the full six-phase LLM evaluation sweep against Harbor Clerk, mostly unattended.
 
-This runbook is the operations companion to:
+This is the operations companion to:
 - [README.md](README.md) — quickstart + dev orientation
 - [`docs/superpowers/specs/2026-05-04-test-corpora-execution-design.md`](../../docs/superpowers/specs/2026-05-04-test-corpora-execution-design.md) — the design
 
 ---
 
-## ⚠️  This sweep is destructive
+## ⚠️ This sweep is destructive
 
-The harness **wipes the Harbor Clerk instance it talks to**. Every Phase 4 / Phase 5 / Phase 6 corpus ingest calls:
+The harness **wipes the Harbor Clerk instance it talks to**. Every Phase 1 / Phase 4 / Phase 5 / Phase 6 corpus ingest calls:
 
 1. `DELETE` for every existing watch folder
 2. `POST /api/system/delete-all-documents` (drops all documents, chunks, entities, embeddings, ingestion jobs, uploads, and originals storage objects)
@@ -18,89 +18,72 @@ The harness **wipes the Harbor Clerk instance it talks to**. Every Phase 4 / Pha
 
 **If you have personal documents in this Harbor Clerk instance, they will be deleted.** Conversations, chat messages, users, and API keys are preserved — only document-shaped data is wiped.
 
-If you want to keep an existing corpus intact, run the sweep against a **separate Harbor Clerk instance**:
+If you want to keep an existing corpus intact, point the sweep at a **separate Harbor Clerk instance**:
 
 - spin up a second instance via Docker on a different port (e.g. `docker compose up` with a remapped 443→8443) and set `HC_API_BASE` accordingly, or
-- use the Mac mini's instance which is presumed clean (this is the natural fit for the split BIG/MINI flow below).
+- use a second Mac that's presumed clean.
 
 ---
 
-## Moving parts
+## Pick your topology
 
-```
-                                    ┌──────────────────────────┐
-                                    │  Anthropic API           │
-                                    │  (baselines + judge)     │
-                                    └────────────┬─────────────┘
-                                                 │
-   ┌─────────────────────────────┐               │              ┌──────────────────────────┐
-   │  BIG  (~36 GB+ Mac, current)│               │              │  MINI (32 GB M4 Pro)     │
-   │                             │               │              │                          │
-   │  Harbor Clerk (native app)  │◀─── REST ─────┤              │  Harbor Clerk (native)   │
-   │   ├ Postgres                │               │              │   ├ Postgres             │
-   │   ├ Tika                    │               │              │   ├ Tika                 │
-   │   ├ Embedder                │               │              │   ├ Embedder             │
-   │   └ llama-server            │               │              │   └ llama-server         │
-   │                             │               │              │                          │
-   │  sweep harness              │               │              │  sweep harness           │
-   │   ├ Phase 0,1,5,6           │◀──────────────┘              │   ├ Phase 0 (cached)     │
-   │   └ Phase 4 top 2 models    │                              │   └ Phase 4 6 small      │
-   │      (gemma4-26b, qwen36)   │                              │      (smollm3-3b...      │
-   │                             │                              │       gpt-oss-20b)       │
-   │  supervisor.py              │                              │  supervisor.py           │
-   │   └ tail log → notify       │                              │   └ tail log → notify    │
-   │                             │                              │                          │
-   │  tmux session "sweep-big"   │                              │  tmux session "sweep-mini"│
-   │  ~/sweep-logs/phase4-big.log│                              │  ~/sweep-logs/phase4-mini│
-   │                             │                              │   .log                   │
-   └────────────────┬────────────┘                              └──────────┬───────────────┘
-                    │                                                      │
-                    │           rsync results/<run-id>/                    │
-                    └──────────────────────────────────────────────────────┘
-                              ⇩  combined results live on BIG
-                                 metrics.csv + judge JSON + state.json
-```
+The sweep can be run on one machine or split across two. The shape of the deployment changes which commands you run and what gets rsynced; the universal pre-flight, recovery, and aggregation steps below are the same.
+
+| Topology | When to use it | Wall-clock | Runbook |
+| --- | --- | --- | --- |
+| **Single machine** | One reasonably-spec'd Mac (≥ 32 GB) with patience. | 60-80 h | [`runbooks/single.md`](runbooks/single.md) |
+| **Two similar machines** | Two Macs of comparable spec (e.g. both M2/M3/M4 with ≥ 32 GB) and **both** able to host Gemma 26B / Qwen 35B. Splits Phases 4 and 5. | 35-45 h | [`runbooks/parallel-twins.md`](runbooks/parallel-twins.md) |
+| **One big + one small** | A larger Mac (≥ 36 GB headroom for Gemma 26B / Qwen 35B) plus a smaller one that runs only the lighter models. Big runs the heavy models; small runs the rest in parallel. | 45-55 h | [`runbooks/heterogeneous.md`](runbooks/heterogeneous.md) |
+
+Each topology runbook has its own diagram and phase-by-phase commands, but inherits the pre-flight, recovery, and aggregation sections below.
+
+---
+
+## Components
 
 | Component | Where | Purpose | Lifetime |
 | --- | --- | --- | --- |
-| `runner/sweep.py` | both machines | the actual harness — runs the six-phase loop | per phase invocation, hours |
-| `runner/supervisor.py` | both machines | tails the harness log, posts macOS notifications, recommends skips | runs alongside the sweep |
-| `tmux` session | both machines | keeps the harness alive across SSH disconnects + Claude session ends | session lifetime |
-| Anthropic API key | both machines | Sonnet 4.6 baselines (Phase 1) and judge (Phase 5) | the sweep |
-| Harbor Clerk admin login (`HC_USERNAME`/`HC_PASSWORD`) | both machines | required for `delete_all_documents` between corpora | the sweep |
-| Claude subagent (Sonnet) | optional, on either machine's Claude session | reads supervisor stdout, decides what to do for ambiguous events | session lifetime |
-| `results/<run-id>/` directory | rsynced between machines | shared state — baselines from BIG, responses from both | through to the final report |
+| `runner/sweep.py` | every machine | the actual harness — runs the six-phase loop | per phase invocation, hours |
+| `runner/supervisor.py` | every machine | tails the harness log, posts macOS notifications, recommends skips | runs alongside the sweep |
+| `tmux` session | every machine | keeps the harness alive across SSH disconnects + Claude session ends | session lifetime |
+| Anthropic API key | every machine | Sonnet 4.6 baselines (Phase 1) and judge (Phase 5) | the sweep |
+| Harbor Clerk admin login (`HC_USERNAME`/`HC_PASSWORD`) | every machine | required for `delete_all_documents` between corpora | the sweep |
+| Claude subagent (Sonnet) | optional, on any session | reads supervisor stdout, decides what to do for ambiguous events | session lifetime |
+| `results/<run-id>/` directory | rsynced between machines (split topologies only) | shared state — baselines, responses, judge verdicts | through to the final report |
 
 ---
 
 ## Pre-flight (do once, before any sweep starts)
 
-### On both machines
+### On every machine
 
 ```bash
 cd /path/to/mcp-gateway/scripts/test_corpora
 uv sync --extra test
 uv run python -m spacy download en_core_web_sm
 
-# verify all 38+ unit tests pass
+# verify all unit tests pass
 uv run pytest -q
 ```
 
-### On `BIG` only
+### SSH alias for split topologies (optional)
 
-Generate an SSH alias to `MINI` so rsync is a one-liner:
+If you're running on two machines, set up an SSH alias on the *coordinator* machine (the one that does the rsyncs) so the rsync commands in the topology runbooks Just Work:
 
 ```bash
-# one-time: ssh-keygen + ssh-copy-id alex@mini.local
-echo "Host mini" >> ~/.ssh/config
-echo "  HostName mini.local" >> ~/.ssh/config
+# one-time on the coordinator:
+# ssh-keygen + ssh-copy-id alex@<other-machine>.local
+echo "Host other" >> ~/.ssh/config
+echo "  HostName <other-machine>.local" >> ~/.ssh/config
 echo "  User $USER" >> ~/.ssh/config
-ssh mini "echo ok"   # should print 'ok' without password prompt
+ssh other "echo ok"   # should print 'ok' without password prompt
 ```
 
-### On both machines
+The topology runbooks use `other` as the placeholder — substitute the real alias.
 
-Pick a stable run-id and shared workdir. **Use the same run-id on both machines.**
+### On every machine
+
+Pick a stable run-id and shared workdir. **Use the same run-id on every machine.**
 
 ```bash
 export RUN=2026-05-05-prod
@@ -108,7 +91,7 @@ export WORKDIR=~/Library/Application\ Support/Harbor\ Clerk/test-corpora
 mkdir -p ~/sweep-logs
 ```
 
-### On both machines
+### On every machine
 
 Harbor Clerk listens differently depending on how you run it:
 
@@ -123,7 +106,7 @@ Find your `api_port` if you've changed the default:
 jq .api_port "$HOME/Library/Application Support/Harbor Clerk/config.json"
 ```
 
-Set env vars for the sweep. Adjust `HC_API_BASE` to match your setup:
+Set env vars for the sweep:
 
 ```bash
 # macOS native (most common)
@@ -159,156 +142,7 @@ curl -sI -X POST "$HC_API_BASE/mcp/mcp" -H "Authorization: Bearer $JWT" | head -
 # A 405 means the path is wrong; 404 means the MCP app isn't mounted.
 ```
 
----
-
-## Phase 0 + 1: corpus acquisition + Claude baselines
-
-Phase 0 acquires all three corpora (cuad, enron, synthetic). Phase 1 generates 48 Claude baselines using Sonnet 4.6 + the Harbor Clerk MCP server. Both run on `BIG` so the `baselines/` dir is colocated with where Phase 5 will read it.
-
-```bash
-# on BIG
-cd /path/to/mcp-gateway
-
-tmux new -d -s sweep-prep "uv --project scripts/test_corpora run python -m \
-    scripts.test_corpora.runner.sweep \
-    --run-id $RUN --workdir \"$WORKDIR\" \
-    --phases 0-1 \
-    2>&1 | tee ~/sweep-logs/phase01-big.log"
-
-# detach is automatic with -d. Reattach with: tmux attach -t sweep-prep
-```
-
-In a second terminal, start the supervisor:
-
-```bash
-# on BIG
-uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
-    scripts.test_corpora.runner.supervisor \
-    --log-file ~/sweep-logs/phase01-big.log \
-    --workdir "$WORKDIR" --run-id "$RUN"
-# --workdir + --run-id let the heartbeat events include real progress
-# numbers (state.json summary, corpus/baseline file counts).
-# --heartbeat-seconds N changes the cadence (default 600s = 10 min,
-# 0 disables).
-```
-
-Expected wall-clock: ~10 min for Phase 0 (synthetic generation dominates) + ~30-60 min for Phase 1 (48 questions × ~30-60 s each, Sonnet tool-call rounds).
-
-When supervisor emits a `completion` event (and you get a macOS notification), proceed to sync.
-
-### Sync results to `MINI`
-
-```bash
-# on BIG
-rsync -av --progress \
-    "$WORKDIR/cuad" "$WORKDIR/enron" "$WORKDIR/synthetic" \
-    "$WORKDIR/results/" \
-    "mini:$WORKDIR/"
-```
-
-`MINI` now has the corpora pre-acquired (so its Phase 0 short-circuits) and the baselines (so it could run Phase 5 too, though Phase 5 is reserved for `BIG`).
-
----
-
-## Phase 4: split sweep across both machines
-
-These two commands run **at the same time** on the two machines. The harness state files don't conflict because each machine has its own `state.json` keyed by the same `run-id`.
-
-### On `MINI` (6 smaller models)
-
-```bash
-cd /path/to/mcp-gateway
-
-tmux new -d -s sweep-mini "uv --project scripts/test_corpora run python -m \
-    scripts.test_corpora.runner.sweep \
-    --run-id $RUN --workdir \"$WORKDIR\" \
-    --phases 4 \
-    --models smollm3-3b,qwen3-4b,phi4-mini,qwen3-8b,deepseek-r1-0528-8b,gpt-oss-20b \
-    \
-    2>&1 | tee ~/sweep-logs/phase4-mini.log"
-
-uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
-    scripts.test_corpora.runner.supervisor \
-    --log-file ~/sweep-logs/phase4-mini.log \
-    --workdir "$WORKDIR" --run-id "$RUN"
-```
-
-Wall-clock estimate: 6 models × 50 questions × ~5 min average = **~25 hours**. The corpus-outer loop ordering means only 3 DB wipes total (one per corpus), not 18.
-
-### On `BIG` (top 2 models)
-
-```bash
-cd /path/to/mcp-gateway
-
-tmux new -d -s sweep-big "uv --project scripts/test_corpora run python -m \
-    scripts.test_corpora.runner.sweep \
-    --run-id $RUN --workdir \"$WORKDIR\" \
-    --phases 4 \
-    --models gemma4-26b-a4b,qwen36-35b-a3b \
-    \
-    2>&1 | tee ~/sweep-logs/phase4-big.log"
-
-uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
-    scripts.test_corpora.runner.supervisor \
-    --log-file ~/sweep-logs/phase4-big.log \
-    --workdir "$WORKDIR" --run-id "$RUN"
-```
-
-Wall-clock estimate: 2 models × 50 questions × ~10-15 min average = **~17-25 hours** (the larger models are slower).
-
-### Sync `MINI`'s responses back
-
-When `MINI`'s supervisor signals completion:
-
-```bash
-# on BIG
-rsync -av --progress \
-    "mini:$WORKDIR/results/$RUN/responses/" \
-    "$WORKDIR/results/$RUN/responses/"
-
-# also pull MINI's metrics.csv rows
-ssh mini "tail -n +2 \"$WORKDIR/results/$RUN/metrics.csv\"" \
-    >> "$WORKDIR/results/$RUN/metrics.csv"
-```
-
-(The CSV append assumes both machines started from the header-only state file. Skip the `tail -n +2` step if you're doing it differently.)
-
----
-
-## Phase 5 (parity) on `BIG`
-
-```bash
-cd /path/to/mcp-gateway
-
-tmux new -d -s sweep-parity "uv --project scripts/test_corpora run python -m \
-    scripts.test_corpora.runner.sweep \
-    --run-id $RUN --workdir \"$WORKDIR\" \
-    --phases 5 \
-    2>&1 | tee ~/sweep-logs/phase5-big.log"
-
-uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
-    scripts.test_corpora.runner.supervisor \
-    --log-file ~/sweep-logs/phase5-big.log \
-    --workdir "$WORKDIR" --run-id "$RUN"
-```
-
-Wall-clock estimate: ~17-25 hours of model runs + ~$1-2 in Sonnet judge calls (100 calls × ~$0.01-0.02 each).
-
----
-
-## Phase 6 (unified) on `BIG`
-
-```bash
-cd /path/to/mcp-gateway
-
-tmux new -d -s sweep-unified "uv --project scripts/test_corpora run python -m \
-    scripts.test_corpora.runner.sweep \
-    --run-id $RUN --workdir \"$WORKDIR\" \
-    --phases 6 \
-    2>&1 | tee ~/sweep-logs/phase6-big.log"
-```
-
-Wall-clock: ~3-5 hours.
+Once these checks pass on every machine, pick your topology and follow its runbook.
 
 ---
 
@@ -318,7 +152,7 @@ Wall-clock: ~3-5 hours.
 
 In a Claude Code session on the relevant machine:
 
-> Watch `~/sweep-logs/phase4-mini.log` via `tail -f`. The `scripts/test_corpora/runner/supervisor.py` watcher prints structured JSON events to its stdout — you have access to that log file at the same path. Your job is to act on these events:
+> Watch `~/sweep-logs/<phase>-<machine>.log` via `tail -f`. The `scripts/test_corpora/runner/supervisor.py` watcher prints structured JSON events to its stdout — you have access to that log file at the same path. Your job is to act on these events:
 >
 > - **`phase_boundary`** — log it; no action needed
 > - **`completion`** — log it; tell me the sweep is done
@@ -343,10 +177,11 @@ The harness state file (`results/<run-id>/state.json`) tracks every cell. To res
 # add --resume to any sweep invocation
 uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir "$WORKDIR" \
-    --phases 4 --models <same-list> --resume 2>&1 | tee -a ~/sweep-logs/phase4-mini.log
+    --phases <same-list> --models <same-list> --resume \
+    2>&1 | tee -a ~/sweep-logs/<phase>-<machine>.log
 ```
 
-The `--resume` flag is required when `state.json` already exists — without it, the sweep fails fast so a typo'd or re-used `--run-id` can't silently inherit a prior run's cells. Stale `IN_PROGRESS` rows older than 2× the time-budget revert to `PENDING` automatically.
+The `--resume` flag is required when `state.json` already exists — without it the sweep fails fast so a typo'd or re-used `--run-id` can't silently inherit a prior run's cells. Stale `IN_PROGRESS` rows older than 2× the time-budget revert to `PENDING` automatically at startup.
 
 ### Stale `state.lock`
 
@@ -370,7 +205,7 @@ Restart Harbor Clerk's LLM model via the UI or:
 curl -X PUT "$HC_API_BASE/api/chat/models/<model_id>/activate"
 ```
 
-Then re-run the sweep with `--resume`.
+Then re-run the sweep with `--resume`. The harness's per-unit ConnectError handling waits up to 120s for HC to come back before incrementing the outage counter, so a brief restart usually doesn't cause unit losses.
 
 ### Anthropic rate-limit storm
 
@@ -391,6 +226,15 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.swee
 
 This is exactly what the supervisor recommends after 3 consecutive errors. Re-run the sweep to skip the rest of that model's units.
 
+### Stale or empty corpus ingest dir
+
+If a Phase 4/5 unit fails with "watcher never enqueued any jobs for `<corpus>` within 120s", the sweep tries to auto-recover by re-acquiring the corpus on the spot. If that fails too, manually nuke the marker and re-run:
+
+```bash
+rm "$WORKDIR/<corpus>/ingest/.acquired"
+# then re-run with --rerun 'phase=0,corpus=<corpus>' and --resume
+```
+
 ---
 
 ## Final aggregation
@@ -398,7 +242,7 @@ This is exactly what the supervisor recommends after 3 consecutive errors. Re-ru
 When all phases are complete:
 
 ```bash
-# on BIG, summarize Phase 4 completion
+# summarize Phase 4 completion
 awk -F, 'NR>1 && $1==4 {key=$3"|"$2; total[key]++; if($6=="done")done[key]++} END {for(k in total) printf "%-30s %3d/%-3d\n", k, done[k], total[k]}' \
     "$WORKDIR/results/$RUN/metrics.csv" | sort
 
@@ -424,10 +268,10 @@ The full per-question detail lives in:
 | --- | --- |
 | Phase 0 synthetic generation | ~$3-5 (Sonnet 4.6, ~280 docs × ~4K tokens each) |
 | Phase 1 Claude baselines | ~$0.50-2 (48 questions × Sonnet tool-call rounds) |
-| Phase 4 (local) | $0 in API; 25-50 GPU-hours total across both machines |
-| Phase 5 model runs | $0 in API; 17-25 GPU-hours on BIG |
+| Phase 4 (local) | $0 in API; 25-50 GPU-hours total across all machines |
+| Phase 5 model runs | $0 in API; 17-25 GPU-hours |
 | Phase 5 judge | ~$1-2 (100 judge calls × ~$0.01-0.02) |
-| Phase 6 | $0 in API; 3-5 GPU-hours on BIG |
+| Phase 6 | $0 in API; 3-5 GPU-hours |
 | **Total Anthropic spend** | **~$5-10** |
 
 ---
@@ -437,9 +281,9 @@ The full per-question detail lives in:
 Wipe and start over:
 
 ```bash
-# Wipe the run dir on both machines
+# Wipe the run dir on every machine
 rm -rf "$WORKDIR/results/$RUN"
-ssh mini "rm -rf \"$WORKDIR/results/$RUN\""
+ssh other "rm -rf \"$WORKDIR/results/$RUN\""   # if multi-machine
 
 # Pick a new run-id
 export RUN=2026-05-06-retry
@@ -447,4 +291,4 @@ export RUN=2026-05-06-retry
 # Start from Phase 0 again
 ```
 
-Phase 0's `.acquired` markers stay, so the actual corpus downloads are cached — only the run-specific state (responses, baselines, metrics) is regenerated.
+Phase 0's `.acquired` markers and the `hf_enron/` HF download cache stay, so corpus acquisition is cheap on re-runs — only the run-specific state (responses, baselines, metrics) is regenerated. The expensive Phase 0 synthetic generation is preserved as long as `synthetic/ingest/.acquired` exists.
