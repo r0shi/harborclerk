@@ -663,6 +663,19 @@ def main(argv: list[str] | None = None) -> int:
                 if phase in (4, 5) and u.corpus != current_corpus_in_db:
                     if u.corpus not in manifests:
                         manifests[u.corpus] = _phase0_acquire(u.corpus, workdir)
+                    # Belt-and-suspenders: if Phase 0's ingest dir got cleaned up
+                    # between runs (manual cleanup, fs eviction, lost mount), the
+                    # ingest below would hit the 120s "watcher never enqueued any
+                    # jobs" timeout. Re-acquire on the spot so the user doesn't
+                    # have to chase a --rerun 'phase=0,corpus=...' workaround.
+                    ingest_dir = manifests[u.corpus].ingest_dir
+                    if not ingest_dir.exists() or not any(ingest_dir.iterdir()):
+                        log.warning(
+                            "ingest dir for %s is missing or empty (%s) — re-acquiring",
+                            u.corpus,
+                            ingest_dir,
+                        )
+                        manifests[u.corpus] = _phase0_acquire(u.corpus, workdir)
                     if current_corpus_in_db is None and _can_skip_ingest(hc, manifests[u.corpus]):
                         log.info("HC already has %s loaded — skipping re-ingest", u.corpus)
                         current_corpus_in_db = u.corpus
