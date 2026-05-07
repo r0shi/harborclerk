@@ -173,14 +173,20 @@ def acquire(
 
     if marker.exists():
         docs = sorted(ingest_dir.glob("*"))
-        return CorpusManifest(
-            corpus_id="synthetic",
-            ingest_dir=ingest_dir,
-            doc_count=sum(1 for d in docs if d.suffix in {".txt", ".pdf"}),
-            total_size_bytes=sum(d.stat().st_size for d in docs if d.is_file()),
-            license="generated",
-            notes="synthetic bilingual small-business",
-        )
+        doc_count = sum(1 for d in docs if d.suffix in {".txt", ".pdf"})
+        # Marker without files is a stale-cache sentinel — fall through to
+        # the generate path so the marker doesn't trick the caller into
+        # thinking a corpus exists when its files are gone.
+        if doc_count > 0:
+            return CorpusManifest(
+                corpus_id="synthetic",
+                ingest_dir=ingest_dir,
+                doc_count=doc_count,
+                total_size_bytes=sum(d.stat().st_size for d in docs if d.is_file()),
+                license="generated",
+                notes="synthetic bilingual small-business",
+            )
+        marker.unlink()  # remove stale marker so future runs don't keep tripping it
 
     ingest_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(42)

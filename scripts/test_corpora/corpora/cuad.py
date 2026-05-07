@@ -64,14 +64,19 @@ def acquire(workdir: Path, sample_size: int = SAMPLE_SIZE_DEFAULT) -> CorpusMani
 
     if marker.exists():
         pdfs = sorted(ingest_dir.glob("*.pdf"))
-        return CorpusManifest(
-            corpus_id="cuad",
-            ingest_dir=ingest_dir,
-            doc_count=len(pdfs),
-            total_size_bytes=sum(p.stat().st_size for p in pdfs),
-            license="CC-BY 4.0",
-            notes=f"CUAD sample of {len(pdfs)} contracts",
-        )
+        # Marker without files is a stale-cache sentinel — fall through to
+        # the download/extract/copy path so the marker doesn't trick the
+        # caller into thinking a corpus exists when its files are gone.
+        if pdfs:
+            return CorpusManifest(
+                corpus_id="cuad",
+                ingest_dir=ingest_dir,
+                doc_count=len(pdfs),
+                total_size_bytes=sum(p.stat().st_size for p in pdfs),
+                license="CC-BY 4.0",
+                notes=f"CUAD sample of {len(pdfs)} contracts",
+            )
+        marker.unlink()  # remove stale marker so future runs don't keep tripping it
 
     archive = _download_release(workdir)
     extracted = _extract(archive, workdir)

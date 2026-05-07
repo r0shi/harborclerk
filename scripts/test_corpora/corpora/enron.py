@@ -52,14 +52,19 @@ def acquire(
 
     if marker.exists():
         emls = sorted(ingest_dir.glob("*.eml"))
-        return CorpusManifest(
-            corpus_id="enron",
-            ingest_dir=ingest_dir,
-            doc_count=len(emls),
-            total_size_bytes=sum(p.stat().st_size for p in emls),
-            license="public domain",
-            notes=f"Enron subset: {len(emls)} emails",
-        )
+        # Marker without files is a stale-cache sentinel — fall through to
+        # the download/filter/copy path so the marker doesn't trick the
+        # caller into thinking a corpus exists when its files are gone.
+        if emls:
+            return CorpusManifest(
+                corpus_id="enron",
+                ingest_dir=ingest_dir,
+                doc_count=len(emls),
+                total_size_bytes=sum(p.stat().st_size for p in emls),
+                license="public domain",
+                notes=f"Enron subset: {len(emls)} emails",
+            )
+        marker.unlink()  # remove stale marker so future runs don't keep tripping it
 
     src = _download_corpus(workdir)
     all_eml = sorted(src.rglob("*.eml"))
