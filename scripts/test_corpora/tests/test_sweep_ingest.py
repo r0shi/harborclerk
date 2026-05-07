@@ -14,6 +14,7 @@ from scripts.test_corpora.runner.sweep import (
     _can_skip_ingest,
     _hc_corpus_matches,
     _is_retryable_research_failure,
+    _wait_for_hc_reachable,
 )
 
 
@@ -199,3 +200,52 @@ def test_not_retryable_when_no_result_block():
     assert _is_retryable_research_failure({}) is False
     assert _is_retryable_research_failure({"result": {}}) is False
     assert _is_retryable_research_failure({"result": None}) is False
+
+
+# ── HC unreachability wait ──
+
+
+def test_wait_for_hc_reachable_returns_true_on_first_success():
+    """Happy path: HC's /system/health returns 200, helper returns True."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/system/health":
+            return httpx.Response(200, json={"status": "healthy"})
+        return httpx.Response(404)
+
+    c = _make_client(handler)
+    assert _wait_for_hc_reachable(c, max_wait_seconds=5) is True
+
+
+def test_wait_for_hc_reachable_returns_true_after_recovery():
+    """HC was down, comes back during the wait — return True so the caller
+    knows to continue. The pattern this catches: model-switch restart of
+    the HC API that completes in 6-15s."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/system/health":
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                # First two probes fail with ConnectError-equivalent
+                raise httpx.ConnectError("Connection refused")
+            return httpx.Response(200, json={"status": "healthy"})
+        return httpx.Response(404)
+
+    c = _make_client(handler)
+    # Plenty of budget so the helper can ride out the first two failures
+    assert _wait_for_hc_reachable(c, max_wait_seconds=30) is True
+    assert calls["n"] >= 3
+
+
+def test_wait_for_hc_reachable_returns_false_on_persistent_outage():
+    """HC stays down past the deadline → return False so the caller
+    increments the outage counter (and eventually bails)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    c = _make_client(handler)
+    # max_wait_seconds=0 means the deadline is already past — we exit
+    # the polling loop immediately without sleeping.
+    assert _wait_for_hc_reachable(c, max_wait_seconds=0) is False
