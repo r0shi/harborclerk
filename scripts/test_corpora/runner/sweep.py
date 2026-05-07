@@ -647,17 +647,51 @@ def main(argv: list[str] | None = None) -> int:
         # Sonnet 4.6 baseline generator has real KB tools available.
         mcp_session: SyncMcpSession | None = None
 
-        # Process units in phase order
-        for phase in sorted(phases):
-            phase_units = [u for u in sf.units() if u.phase == phase and u.status == Status.PENDING]
-            if not phase_units:
-                log.info("phase %d already complete or empty", phase)
+        # Iterate corpus-outer / phase-inner so each corpus is ingested at most
+        # once per sweep run. The previous phase-outer / corpus-inner ordering
+        # forced the corpus to be wiped + re-ingested between phases (e.g.
+        # cuad ingested once for Phase 1 baselines, then again for Phase 4
+        # research, then again for Phase 5 parity) — 10 ingests across a full
+        # sweep, with each ~5-15 min on a Mac mini. Corpus-outer collapses
+        # that to 4 ingests (cuad + enron + synthetic + unified).
+        #
+        # Within a corpus block, units are sorted by (phase, model, question_id)
+        # so Phase 0 acquire runs before Phase 1 ingest, baselines before
+        # research, etc. The unified Phase 6 is special-cased to run LAST
+        # because its ingest dir has to be built from the other three corpora
+        # first.
+        by_corpus: dict[str, list[Unit]] = {}
+        for u in sf.units():
+            if u.status != Status.PENDING:
                 continue
-            log.info("=== phase %d: %d pending units ===", phase, len(phase_units))
+            if u.phase not in phases:
+                continue
+            by_corpus.setdefault(u.corpus, []).append(u)
+        for units_in in by_corpus.values():
+            units_in.sort(key=lambda u: (u.phase, u.model, u.question_id))
+        # Process non-unified corpora first, in stable order, then unified last.
+        ordered_corpora = sorted(c for c in by_corpus if c != "unified")
+        if "unified" in by_corpus:
+            ordered_corpora.append("unified")
 
-            # Phase-specific setup
-            if phase == 6:
-                # unified: build a combined ingest dir
+        if not ordered_corpora:
+            log.info("no pending units in scope")
+
+        for corpus in ordered_corpora:
+            corpus_units = by_corpus[corpus]
+            phases_in_block = sorted(set(u.phase for u in corpus_units))
+            log.info(
+                "=== corpus %s: %d pending units (phases %s) ===",
+                corpus,
+                len(corpus_units),
+                phases_in_block,
+            )
+
+            # Special setup for the unified corpus: build the combined ingest
+            # dir from cuad+enron+synthetic, then ingest. The non-unified
+            # ingest gate inside the per-unit body wouldn't trigger because
+            # phase 6 isn't in (1, 4, 5).
+            if corpus == "unified" and not args.dry_run:
                 unified_dir = workdir / "unified" / "ingest"
                 unified_dir.mkdir(parents=True, exist_ok=True)
                 for c in ("cuad", "enron", "synthetic"):
@@ -669,20 +703,27 @@ def main(argv: list[str] | None = None) -> int:
                 unified_manifest = CorpusManifest(
                     corpus_id="unified",
                     ingest_dir=unified_dir,
-                    doc_count=sum(m.doc_count for m in manifests.values()),
-                    total_size_bytes=sum(m.total_size_bytes for m in manifests.values()),
+                    doc_count=sum(m.doc_count for m in manifests.values() if m.corpus_id != "unified"),
+                    total_size_bytes=sum(m.total_size_bytes for m in manifests.values() if m.corpus_id != "unified"),
                     license="various",
                     notes="unified pass",
                 )
-                if not args.dry_run:
-                    if current_corpus_in_db is None and _can_skip_ingest(hc, unified_manifest):
-                        log.info("HC already has unified corpus loaded — skipping re-ingest")
-                        current_corpus_in_db = "unified"
-                    elif current_corpus_in_db != "unified":
-                        _ingest_corpus(hc, unified_manifest)
-                        current_corpus_in_db = "unified"
+                manifests["unified"] = unified_manifest
+                if current_corpus_in_db is None and _can_skip_ingest(hc, unified_manifest):
+                    log.info("HC already has unified corpus loaded — skipping re-ingest")
+                    current_corpus_in_db = "unified"
+                elif current_corpus_in_db != "unified":
+                    _ingest_corpus(hc, unified_manifest)
+                    current_corpus_in_db = "unified"
 
-            for u in phase_units:
+            last_phase_logged: int | None = None
+            for u in corpus_units:
+                # Phase boundary log within a corpus block, helps eyeball
+                # progress when a corpus contains units across multiple phases.
+                if u.phase != last_phase_logged:
+                    log.info("--- phase %d for %s ---", u.phase, corpus)
+                    last_phase_logged = u.phase
+                phase = u.phase  # rest of the body uses `phase` as a free var
                 if args.dry_run and phase > 0:
                     log.info("dry-run: skipping %s", u)
                     continue
