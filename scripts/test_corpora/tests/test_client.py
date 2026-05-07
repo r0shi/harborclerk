@@ -30,6 +30,59 @@ def test_login_stores_bearer_token():
     assert c.pipeline_quiet() is True
 
 
+def test_get_bearer_token_triggers_lazy_login():
+    """Regression for the Phase 1 MCP-session 401: after PR #306 the JWT
+    lives inside the auth class, populated lazily on the first
+    authenticated request. ``get_bearer_token`` must trigger that login
+    so callers (Phase 1 baselines forwarding auth to a separate MCP
+    httpx client) get a real token, not None."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/login":
+            return httpx.Response(200, json={"access_token": "tok-fresh"})
+        if request.url.path == "/api/system/health":
+            return httpx.Response(200, json={"status": "healthy"})
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    c.login("a@b.c", "pw")
+    # Token has NOT been fetched yet — login() is lazy.
+    assert c._client.auth._token is None
+    # First call to get_bearer_token forces the lazy login and returns the token.
+    assert c.get_bearer_token() == "tok-fresh"
+    assert c._client.auth._token == "tok-fresh"
+
+
+def test_get_bearer_token_returns_existing_token_without_relogin():
+    """Subsequent calls return the cached token without triggering another login."""
+    login_count = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/login":
+            login_count["n"] += 1
+            return httpx.Response(200, json={"access_token": "tok-existing"})
+        if request.url.path == "/api/system/health":
+            return httpx.Response(200, json={"status": "healthy"})
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    c.login("a@b.c", "pw")
+    # Pre-seed the token so get_bearer_token doesn't need to login again.
+    c._client.auth._token = "tok-existing"
+    assert c.get_bearer_token() == "tok-existing"
+    assert login_count["n"] == 0  # No login fired
+
+
+def test_get_bearer_token_returns_none_when_no_auth_configured():
+    """Without ``login()`` first, return None — caller decides what to do."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    assert c.get_bearer_token() is None
+
+
 def test_jwt_refresh_on_401_relogins_and_retries():
     """When a request returns 401 with an expired token, the client must
     transparently re-login and retry. Without this, long-running phase 4

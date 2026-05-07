@@ -266,6 +266,37 @@ class HarborClerkClient:
         """
         self._client.auth = _JWTRefreshAuth(email, password)
 
+    def get_bearer_token(self) -> str | None:
+        """Return the current Bearer token (without the ``Bearer `` prefix), or
+        None if no auth is configured.
+
+        Used by callers that need to forward auth to a separate httpx client
+        managed outside ``HarborClerkClient`` — for example, the MCP session
+        that the Phase 1 baseline generator opens against ``/mcp/mcp``.
+
+        Triggers the lazy login if it hasn't fired yet. Without this, the
+        first call to ``get_bearer_token()`` after ``login()`` would return
+        an empty token because ``_JWTRefreshAuth`` only does the initial
+        POST on the first authenticated request through the wrapped client.
+        """
+        auth = self._client.auth
+        if isinstance(auth, _JWTRefreshAuth):
+            if auth._token is None:
+                # Force lazy login by making any authenticated request. health()
+                # is the cheapest endpoint that goes through the auth flow.
+                try:
+                    self.health()
+                except Exception:
+                    # If health fails for any reason (e.g. HC down), let the
+                    # caller decide how to handle a missing token.
+                    return None
+            return auth._token
+        # Legacy path: token may have been set directly on client headers.
+        h = self._client.headers.get("Authorization", "")
+        if h.startswith("Bearer "):
+            return h[len("Bearer ") :]
+        return None
+
     # ── model management ──
 
     def activate_model(self, model_id: str) -> None:
