@@ -412,9 +412,7 @@ async def test_summarize_not_in_finalize_gate(db_session):
     try:
         # Sequential prefix done
         for stage in (JobStage.extract, JobStage.chunk):
-            sync_session.add(
-                IngestionJob(doc_id=doc.doc_id, stage=stage, status=JobStatus.done)
-            )
+            sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=stage, status=JobStatus.done))
         # Fan-in trio: entities + embed done, summarize still running
         sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.entities, status=JobStatus.done))
         sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.embed, status=JobStatus.done))
