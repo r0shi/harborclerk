@@ -236,7 +236,30 @@ struct PreferencesWindow: View {
     // MARK: - State management
 
     private func markDirty() {
-        needsRestart = true
+        // Recompute against the initial snapshot rather than unconditionally
+        // setting true. Two reasons:
+        //   1. Cancel: revertToInitial() writes every @State back to its
+        //      initial value. Each write fires its .onChange handler, which
+        //      calls markDirty(). If markDirty just set true, those late
+        //      handlers would clobber the explicit `needsRestart = false`
+        //      revertToInitial set first, leaving the banner stuck open.
+        //   2. Manual revert: if the user toggles a setting and then
+        //      toggles it back, the banner correctly dismisses instead of
+        //      staying open over no actual change.
+        needsRestart = isDirty()
+    }
+
+    private func isDirty() -> Bool {
+        return allowRemoteWeb != initial.allowRemoteWeb
+            || allowRemoteMCP != initial.allowRemoteMCP
+            || workerPreset != initial.workerPreset
+            || apiPortText != initial.apiPort
+            || postgresPortText != initial.postgresPort
+            || tikaPortText != initial.tikaPort
+            || embedderPortText != initial.embedderPort
+            || llamaPortText != initial.llamaPort
+            || llmModelId != initial.llmModelId
+            || logLevel != initial.logLevel
     }
 
     /// Write all local @State values to AppSettings (single save).
