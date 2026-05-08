@@ -82,8 +82,23 @@ STAGE_ORDER = [
 # Sequential prefix: these stages run one after another
 _SEQUENTIAL_STAGES = [JobStage.extract, JobStage.ocr, JobStage.chunk]
 
-# Parallel stages: fan out after chunk, fan in before finalize
-_PARALLEL_STAGES = frozenset({JobStage.entities, JobStage.embed, JobStage.summarize})
+# Parallel stages: fan out after chunk, fan in before finalize.
+# Summarize used to live here, but it's NOT a retrieval prerequisite — chunks'
+# FTS columns are populated by Postgres on insert, embeddings come from embed,
+# entity search comes from entities. Summary is decoration consumed only by
+# kb_get_document / kb_list_recent / kb_corpus_overview / kb_find_related and
+# the frontend display. Keeping summarize in the fan-in gated docs from
+# becoming retrievable on `pipeline_status = ready` until the (often slow)
+# LLM call returned. Now summarize is enqueued in parallel with the fan-in
+# trio but does NOT gate finalize.
+_PARALLEL_STAGES = frozenset({JobStage.entities, JobStage.embed})
+
+# Background side-channel: enqueued at the same time as the fan-in trio but
+# never blocks finalize. Doc reaches `ready` once {entities, embed} land plus
+# finalize; summarize runs whenever the dedicated `llm` queue worker is free
+# and yields to interactive chat/research workloads (see worker/stages/
+# summarize.py:_user_llm_active).
+_BACKGROUND_STAGES = frozenset({JobStage.summarize})
 
 # Status after stage completes
 STAGE_DONE_STATUS: dict[JobStage, PipelineStatus] = {
@@ -132,9 +147,13 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
             )
             session.add(job)
 
-        # Update doc pipeline_status
+        # Update doc pipeline_status — background stages (summarize) don't
+        # touch it. The doc may already be `ready` when summarize is
+        # enqueued, and we don't want the badge to regress. See the
+        # matching guard in mark_stage_done.
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        doc.pipeline_status = running_status
+        if stage not in _BACKGROUND_STAGES:
+            doc.pipeline_status = running_status
         doc.error = None
 
         session.commit()
@@ -218,8 +237,9 @@ def advance_pipeline(doc_id: uuid.UUID) -> None:
 
     Three phases:
       1. Sequential prefix: extract → [ocr] → chunk (linear, same as before)
-      2. Fan-out: entities + embed + summarize (all enqueued at once after chunk)
-      3. Fan-in: finalize (only when all parallel stages are done)
+      2. Fan-out: entities + embed enqueued after chunk; summarize enqueued
+         alongside as a background stage (does NOT gate finalize)
+      3. Fan-in: finalize (only when entities + embed are done)
     """
     session = get_sync_session()
     try:
@@ -253,7 +273,7 @@ def advance_pipeline(doc_id: uuid.UUID) -> None:
             enqueue_stage(doc_id, stage, priority=priority)
             return
 
-        # --- Phase 2: Fan-out (entities + embed + summarize) ---
+        # --- Phase 2: Fan-out (entities + embed) + background (summarize) ---
         to_enqueue: list[JobStage] = []
         for stage in _PARALLEL_STAGES:
             if stage in completed or stage in in_flight:
@@ -273,26 +293,37 @@ def advance_pipeline(doc_id: uuid.UUID) -> None:
                 continue
             to_enqueue.append(stage)
 
-        if to_enqueue:
+        # Background stages run alongside but never gate finalize. Enqueued
+        # the first time we see chunk done so they aren't repeatedly
+        # re-queued on each advance_pipeline tick.
+        background_to_enqueue: list[JobStage] = []
+        if JobStage.chunk in completed:
+            for stage in _BACKGROUND_STAGES:
+                if stage in completed or stage in in_flight:
+                    continue
+                background_to_enqueue.append(stage)
+
+        all_new = to_enqueue + background_to_enqueue
+        if all_new:
             session.commit()
             session.close()
-            for stage in to_enqueue:
+            for stage in all_new:
                 enqueue_stage(doc_id, stage, priority=priority)
             return
 
-        # --- Phase 3: Fan-in (finalize) ---
+        # --- Phase 3: Fan-in (finalize) — gates only on _PARALLEL_STAGES ---
         if completed >= _PARALLEL_STAGES and JobStage.finalize not in completed and JobStage.finalize not in in_flight:
             session.commit()
             session.close()
             enqueue_stage(doc_id, JobStage.finalize, priority=priority)
             return
 
-        # Only restore to ready if ALL stages are actually done (not just nothing to enqueue).
-        # Phase 2 falls through when something is in_flight but nothing new to enqueue — we
-        # must NOT publish finalize-done in that case, it's still processing.
+        # Only restore to ready if the gating stages are actually done (not
+        # just nothing to enqueue). Background stages (summarize) are NOT
+        # in the gate — a still-pending summary is normal post-finalize.
         all_stages_done = (
             JobStage.finalize in completed
-            and not in_flight
+            and not (in_flight - _BACKGROUND_STAGES)
             and completed >= _PARALLEL_STAGES | {JobStage.extract, JobStage.chunk}
         )
         if all_stages_done and doc.pipeline_status != PipelineStatus.ready:
@@ -372,7 +403,13 @@ def mark_stage_done(
         job.finished_at = datetime.now(UTC)
 
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        doc.pipeline_status = done_status
+        # Background stages (summarize) never touch pipeline_status — that
+        # field reflects the gating-stage progression only. A summarize-
+        # before-finalize finish would otherwise prematurely set
+        # pipeline_status = summarized; a summarize-after-finalize finish
+        # would regress it from ready back to summarized. Either is wrong.
+        if stage not in _BACKGROUND_STAGES:
+            doc.pipeline_status = done_status
         filename = _doc_filename(doc)
 
         session.commit()

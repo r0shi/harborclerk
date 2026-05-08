@@ -336,3 +336,99 @@ async def test_run_finalize_aborts_when_seq_bumped_mid_stage(db_session):
         assert refreshed_job.status == JobStatus.done
     finally:
         sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_summarize_done_after_finalize_does_not_regress_status(db_session):
+    """Background stages (summarize) must not regress pipeline_status from
+    `ready` back to their own done-status. Doc reaches `ready` once finalize
+    fires on the {entities, embed} gate; a later-completing summarize used
+    to flip the user-visible badge from Ready → summarized."""
+    doc = Document(
+        title="Background regress check",
+        canonical_filename="bg.pdf",
+        status="active",
+        sha256=b"b" * 32,
+        needs_ocr=False,
+        pipeline_status=PipelineStatus.ready,  # finalize already ran
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    # Realistic post-finalize state: every gate stage is done, summarize
+    # lingers in queued because it's slow.
+    sync_session = get_sync_session()
+    try:
+        for stage in (
+            JobStage.extract,
+            JobStage.chunk,
+            JobStage.entities,
+            JobStage.embed,
+            JobStage.finalize,
+        ):
+            sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=stage, status=JobStatus.done))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    assert mark_stage_running(doc.doc_id, JobStage.summarize) is True
+    mark_stage_done(doc.doc_id, JobStage.summarize)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        # KEY assertion: still ready, NOT regressed to summarized.
+        assert refreshed.pipeline_status == PipelineStatus.ready
+        # Job row marked done independently of pipeline_status.
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.done
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_summarize_not_in_finalize_gate(db_session):
+    """advance_pipeline must enqueue finalize once {entities, embed} are done,
+    even if summarize is still running. This is the core fan-in change —
+    summarize is a background stage now."""
+    from harbor_clerk.worker.pipeline import advance_pipeline
+
+    doc = Document(
+        title="Fan-in gate",
+        canonical_filename="gate.pdf",
+        status="active",
+        sha256=b"g" * 32,
+        pipeline_status=PipelineStatus.embedded,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        # Sequential prefix done
+        for stage in (JobStage.extract, JobStage.chunk):
+            sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=stage, status=JobStatus.done))
+        # Fan-in trio: entities + embed done, summarize still running
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.entities, status=JobStatus.done))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.embed, status=JobStatus.done))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.running))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    advance_pipeline(doc.doc_id)
+
+    # Finalize should now be queued — gate ignores in-flight summarize.
+    sync_session = get_sync_session()
+    try:
+        finalize_job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.finalize)
+        ).scalar_one()
+        assert finalize_job.status == JobStatus.queued
+    finally:
+        sync_session.close()

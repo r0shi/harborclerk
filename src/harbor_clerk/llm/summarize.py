@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from collections.abc import Callable
 from enum import Enum
 
 import httpx
@@ -488,14 +489,26 @@ def _summarize_medium(chunks: list[str], max_input_chars: int) -> str | None:
     )
 
 
-def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
-    """Long docs: map-reduce — group summaries then final summary."""
+def _summarize_long(
+    chunks: list[str],
+    max_input_chars: int,
+    *,
+    yield_check: Callable[[], None] | None = None,
+) -> str | None:
+    """Long docs: map-reduce — group summaries then final summary.
+
+    `yield_check`, if provided, is called before each LLM sub-call so the
+    summarize worker can yield to interactive chat/research workloads
+    between map iterations and before the reduce step.
+    """
     groups = _group_chunks_for_mapreduce(chunks, max_input_chars)
     logger.info("Map-reduce summarization: %d groups from %d chunks", len(groups), len(chunks))
 
     # Map step: summarize each group (fewer retries to stay within stage timeout)
     section_summaries: list[str] = []
     for idx, group in enumerate(groups):
+        if yield_check is not None:
+            yield_check()
         result = _call_llm(
             _PROMPT_MAP,
             group,
@@ -518,6 +531,8 @@ def _summarize_long(chunks: list[str], max_input_chars: int) -> str | None:
         return None
 
     # Reduce step: combine section summaries into final
+    if yield_check is not None:
+        yield_check()
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(section_summaries))
     reduce_input = numbered[:max_input_chars]
     return _call_llm(
@@ -604,7 +619,12 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
     return _mime_to_doc_type(mime_type)
 
 
-def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[str, str]:
+def generate_summary(
+    chunks: list[str],
+    max_chars: int | None = None,
+    *,
+    yield_check: Callable[[], None] | None = None,
+) -> tuple[str, str]:
     """Generate a summary for a document from its chunks.
 
     Uses an adaptive strategy based on document length:
@@ -614,6 +634,9 @@ def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[s
 
     Falls back to extractive heuristic when no LLM is available.
     Never raises — returns best-effort summary.
+
+    `yield_check`, if provided, is called between map-reduce sub-calls in
+    the long tier so the caller can yield to interactive workloads.
 
     Returns (summary_text, model_used) where model_used is the LLM model id
     or "extractive" for the heuristic fallback.
@@ -660,7 +683,7 @@ def generate_summary(chunks: list[str], max_chars: int | None = None) -> tuple[s
         elif tier == _Tier.MEDIUM:
             result = _summarize_medium(chunks, max_input_chars)
         else:
-            result = _summarize_long(chunks, max_input_chars)
+            result = _summarize_long(chunks, max_input_chars, yield_check=yield_check)
         stage_elapsed = time.perf_counter() - stage_started
 
         # One-line per-doc summary so a `tail -f` of worker-llm.log yields
