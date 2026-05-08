@@ -617,14 +617,41 @@ function EmptyState() {
 
 /* ---- Thinking/reasoning parser ---- */
 
-function parseThinking(content: string): { thinking: string | null; response: string } {
-  // Handle streaming: <think> opened but not closed yet
+// Models whose chat template appends "<think>" to the assistant prompt — the
+// streamed content starts INSIDE the thinking block with no opening tag, just
+// reasoning text, and only emits the closing </think> at the answer boundary.
+// Mid-stream we treat early text as thinking until </think> arrives, instead
+// of leaking chain-of-thought into the visible reply. Update when adding new
+// thinking-by-default models.
+const IMPLICIT_THINKING_MODELS = new Set(['deepseek-r1-0528-8b'])
+
+function parseThinking(
+  content: string,
+  modelId?: string | null,
+  isStreaming?: boolean,
+): { thinking: string | null; response: string } {
+  // Explicit-opening cases: Qwen3 / older patterns that emit <think> inline.
   if (content.startsWith('<think>') && !content.includes('</think>')) {
     return { thinking: content.slice(7), response: '' }
   }
   const match = content.match(/^<think>([\s\S]*?)<\/think>\s*/)
   if (match) {
     return { thinking: match[1].trim(), response: content.slice(match[0].length) }
+  }
+  // Implicit-opening case: closing </think> arrived but no opening tag was
+  // ever emitted. Everything before </think> was reasoning.
+  const closeIdx = content.indexOf('</think>')
+  if (closeIdx >= 0) {
+    return {
+      thinking: content.slice(0, closeIdx).trim(),
+      response: content.slice(closeIdx + '</think>'.length).trim(),
+    }
+  }
+  // Streaming with a known implicit-thinking model: no </think> yet, so we're
+  // still inside the implicit thinking block. Surface the running text in the
+  // reasoning section, leaving response empty until the closing tag arrives.
+  if (isStreaming && modelId && IMPLICIT_THINKING_MODELS.has(modelId) && content) {
+    return { thinking: content, response: '' }
   }
   return { thinking: null, response: content }
 }
@@ -694,7 +721,7 @@ function MessageBubble({ message, modelNames }: { message: ChatMessage; modelNam
 
   const isError = !isUser && message.content.startsWith('Error:')
   const { thinking, response } = !isUser
-    ? parseThinking(message.content)
+    ? parseThinking(message.content, message.model_id, message.isStreaming)
     : { thinking: null, response: message.content }
 
   const modelLabel = !isUser && message.model_id ? modelNames[message.model_id] || message.model_id : null
