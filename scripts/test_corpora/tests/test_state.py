@@ -223,6 +223,42 @@ def test_rerun_combines_status_and_other_selectors(tmp_path: Path):
     assert enron_unit is not None and enron_unit.status == Status.ERROR
 
 
+def test_rerun_substring_selector_matches_error_text(tmp_path: Path):
+    """A `~` prefix turns the selector into a substring-contains match. The
+    original case: retry only the units that aborted with the SSE-silence
+    watchdog message, leaving other failure modes alone."""
+    sf = StateFile(tmp_path / "state.json")
+    sf.register(
+        [
+            Unit(phase=4, corpus="cuad", model="m", question_id="q1", depth="standard"),
+            Unit(phase=4, corpus="cuad", model="m", question_id="q2", depth="standard"),
+            Unit(phase=4, corpus="cuad", model="m", question_id="q3", depth="standard"),
+        ]
+    )
+    sf.set_status(
+        4, "cuad", "m", "q1", "standard", Status.ERROR, error="harness aborted research: no SSE events for 311s"
+    )
+    sf.set_status(
+        4, "cuad", "m", "q2", "standard", Status.ERROR, error="harness aborted research: no SSE events for 240s"
+    )
+    sf.set_status(4, "cuad", "m", "q3", "standard", Status.ERROR, error="HC unreachable after 3 consecutive failures")
+
+    n = sf.rerun({"error": "~no SSE events"})
+    assert n == 2
+    assert sf.get(4, "cuad", "m", "q1", "standard").status == Status.PENDING
+    assert sf.get(4, "cuad", "m", "q2", "standard").status == Status.PENDING
+    assert sf.get(4, "cuad", "m", "q3", "standard").status == Status.ERROR
+
+
+def test_rerun_substring_selector_handles_none_error(tmp_path: Path):
+    """A None error field must not crash substring matching; just doesn't match."""
+    sf = StateFile(tmp_path / "state.json")
+    sf.register([Unit(phase=4, corpus="cuad", model="m", question_id="q1", depth="standard")])
+    # PENDING unit, error is None
+    n = sf.rerun({"error": "~no SSE events"})
+    assert n == 0
+
+
 def test_skip_status_selector_matches_enum_value(tmp_path: Path):
     """Same selector fix applies to --skip; verify it works end-to-end."""
     sf = StateFile(tmp_path / "state.json")
