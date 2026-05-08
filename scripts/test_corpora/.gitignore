@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 .venv*/
 .test_venv/
+# Lockfile is intentionally untracked — `uv run`/`uv sync` regenerates it
+# on demand and the harness doesn't need lockstep version pinning across
+# machines. Letting it stay tracked spammed working-tree dirty status.
+uv.lock
