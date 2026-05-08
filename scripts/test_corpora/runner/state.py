@@ -194,18 +194,29 @@ class StateFile:
         """Compare a unit field's value against a CLI selector value.
 
         Handles three field shapes the CLI plumbs through:
-          - ``str`` fields (``corpus``, ``model``, ``question_id``, ``depth``):
-            direct string compare.
+          - ``str`` fields (``corpus``, ``model``, ``question_id``, ``depth``,
+            ``error``): direct string compare, or substring-contains when the
+            value starts with ``~``.
           - ``int`` fields (``phase``): coerce wanted to int when comparing,
             so ``--rerun 'phase=4'`` matches ``Unit.phase = 4``.
           - ``Status(str, Enum)`` fields (``status``): compare against
             ``.value``. ``str(Status.ERROR)`` returns ``'Status.ERROR'`` (Enum
             default), not ``'error'``, so the previous string compare silently
             failed for every status selector.
+
+        Substring syntax: prefix the value with ``~`` to match if the actual
+        field contains that text. Useful for flipping just the units that
+        failed with a particular error message, e.g.
+        ``--rerun 'status=error,error=~no SSE events'`` to retry only the
+        watchdog-aborted research runs.
         """
         if isinstance(actual, enum.Enum):
-            return str(actual.value) == wanted
-        return str(actual) == wanted
+            actual_str = str(actual.value)
+        else:
+            actual_str = "" if actual is None else str(actual)
+        if wanted.startswith("~"):
+            return wanted[1:] in actual_str
+        return actual_str == wanted
 
     def rerun(self, selectors: dict[str, str]) -> int:
         """Flip units matching all selectors back to PENDING. Returns count."""
