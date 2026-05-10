@@ -2,8 +2,8 @@
 
 import uuid
 
-from harbor_clerk.models import Chunk, Document, Entity
-from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.models import Chunk, Document, Entity, IngestionJob
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from tests.conftest import auth_header
 
 # Minimal required fields for a Document row (sha256 NOT NULL, pipeline_status NOT NULL)
@@ -117,6 +117,36 @@ async def test_list_documents_filter_special_chars(client, admin_user, admin_tok
     data = resp.json()
     assert data["total"] == 1
     assert data["items"][0]["title"] == "100% Complete"
+
+
+async def test_list_docs_includes_summarize_job_status(client, admin_user, admin_token, db_session):
+    """Doc list rows expose the latest summarize-stage job status so the
+    frontend SummaryChip can pick its display state."""
+    doc = Document(
+        title="Status carrier",
+        canonical_filename="status.pdf",
+        status="active",
+        sha256=b"s" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    db_session.add(
+        IngestionJob(
+            doc_id=doc.doc_id,
+            stage=JobStage.summarize,
+            status=JobStatus.running,
+        )
+    )
+    await db_session.commit()
+
+    response = await client.get("/api/docs", headers=auth_header(admin_token))
+    assert response.status_code == 200
+    data = response.json()
+    row = next(r for r in data["items"] if r["doc_id"] == str(doc.doc_id))
+    assert row["summarize_job_status"] == "running"
 
 
 async def test_get_document_not_found(client, admin_user, admin_token):
