@@ -494,21 +494,30 @@ def _summarize_long(
     max_input_chars: int,
     *,
     yield_check: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> str | None:
     """Long docs: map-reduce — group summaries then final summary.
 
     `yield_check`, if provided, is called before each LLM sub-call so the
     summarize worker can yield to interactive chat/research workloads
     between map iterations and before the reduce step.
+
+    `progress_callback`, if provided, is called with (chunks_done,
+    total_chunks) before each LLM sub-call so the worker can update its
+    IngestionJob row's progress counters. total_chunks counts each map
+    call plus the reduce as one chunk each.
     """
     groups = _group_chunks_for_mapreduce(chunks, max_input_chars)
     logger.info("Map-reduce summarization: %d groups from %d chunks", len(groups), len(chunks))
 
+    total_chunks = len(groups) + 1  # +1 for the reduce step
     # Map step: summarize each group (fewer retries to stay within stage timeout)
     section_summaries: list[str] = []
     for idx, group in enumerate(groups):
         if yield_check is not None:
             yield_check()
+        if progress_callback is not None:
+            progress_callback(idx, total_chunks)
         result = _call_llm(
             _PROMPT_MAP,
             group,
@@ -533,6 +542,8 @@ def _summarize_long(
     # Reduce step: combine section summaries into final
     if yield_check is not None:
         yield_check()
+    if progress_callback is not None:
+        progress_callback(len(groups), total_chunks)
     numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(section_summaries))
     reduce_input = numbered[:max_input_chars]
     return _call_llm(
@@ -624,6 +635,7 @@ def generate_summary(
     max_chars: int | None = None,
     *,
     yield_check: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> tuple[str, str]:
     """Generate a summary for a document from its chunks.
 
@@ -637,6 +649,12 @@ def generate_summary(
 
     `yield_check`, if provided, is called between map-reduce sub-calls in
     the long tier so the caller can yield to interactive workloads.
+
+    `progress_callback`, if provided, is called with (chunks_done,
+    total_chunks) between map-reduce sub-calls so the caller can surface
+    mid-flight progress (e.g. write to the IngestionJob row's progress
+    counters). Only the long tier reports progress — short and medium
+    are single-call.
 
     Returns (summary_text, model_used) where model_used is the LLM model id
     or "extractive" for the heuristic fallback.
@@ -683,7 +701,12 @@ def generate_summary(
         elif tier == _Tier.MEDIUM:
             result = _summarize_medium(chunks, max_input_chars)
         else:
-            result = _summarize_long(chunks, max_input_chars, yield_check=yield_check)
+            result = _summarize_long(
+                chunks,
+                max_input_chars,
+                yield_check=yield_check,
+                progress_callback=progress_callback,
+            )
         stage_elapsed = time.perf_counter() - stage_started
 
         # One-line per-doc summary so a `tail -f` of worker-llm.log yields
