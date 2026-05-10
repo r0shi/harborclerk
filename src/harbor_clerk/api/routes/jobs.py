@@ -203,7 +203,15 @@ async def jobs_snapshot(
     # counts — so the queue tray can render per-doc rows with map-reduce progress.
     summarizing_rows = (
         await session.execute(
-            select(IngestionJob, Document)
+            select(
+                IngestionJob.doc_id,
+                IngestionJob.status,
+                IngestionJob.progress_current,
+                IngestionJob.progress_total,
+                IngestionJob.created_at,
+                Document.canonical_filename,
+                Document.title,
+            )
             .join(Document, IngestionJob.doc_id == Document.doc_id)
             .where(IngestionJob.stage == JobStage.summarize)
             .where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running)))
@@ -213,14 +221,22 @@ async def jobs_snapshot(
 
     summarizing = [
         {
-            "doc_id": str(job.doc_id),
-            "filename": doc.canonical_filename or doc.title,
-            "status": job.status.value,
-            "progress_current": job.progress_current or 0,
-            "progress_total": job.progress_total or 0,
-            "created_at": job.created_at.isoformat(),
+            "doc_id": str(doc_id),
+            "filename": canonical_filename or title,
+            "status": status.value,
+            "progress_current": progress_current or 0,
+            "progress_total": progress_total or 0,
+            "created_at": created_at.isoformat(),
         }
-        for job, doc in summarizing_rows
+        for (
+            doc_id,
+            status,
+            progress_current,
+            progress_total,
+            created_at,
+            canonical_filename,
+            title,
+        ) in summarizing_rows
     ]
 
     return {
