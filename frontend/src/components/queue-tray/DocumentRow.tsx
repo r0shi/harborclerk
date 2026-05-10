@@ -144,8 +144,6 @@ function stageName(stage: string): string {
       return 'Entities'
     case 'embed':
       return 'Embed'
-    case 'summarize':
-      return 'Summarize'
     case 'finalize':
       return 'Finalize'
     default:
