@@ -13,14 +13,13 @@ interface PipelineTimingChartProps {
   pipelineTiming: Record<string, StageTiming>
 }
 
-const STAGES = ['extract', 'ocr', 'chunk', 'entities', 'embed', 'summarize', 'finalize'] as const
+const STAGES = ['extract', 'ocr', 'chunk', 'entities', 'embed', 'finalize'] as const
 const STAGE_LABELS: Record<string, string> = {
   extract: 'Extract',
   ocr: 'OCR',
   chunk: 'Chunk',
   entities: 'Entities',
   embed: 'Embed',
-  summarize: 'Summarize',
   finalize: 'Finalize',
 }
 

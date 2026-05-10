@@ -618,3 +618,99 @@ async def list_logs(
         )
 
     return {"mode": "native", "logs_dir": str(logs_dir), "files": files}
+
+
+@router.get("/system/summary-backlog")
+async def get_summary_backlog(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Stats for the Observatory Summary Backlog widget.
+
+    - queue_depth: count of summarize jobs currently queued or running
+    - throughput_per_min: completed summarize jobs / minute over the
+      last 10 minutes
+    - p50_seconds: median wall time of summarize jobs completed in the
+      last 100 jobs
+    - depth_history: [(unix_ts, depth), ...] sampled every 5 minutes
+      over the last hour for the trend sparkline
+    """
+    now = datetime.now(UTC)
+
+    queue_depth = (
+        await session.execute(
+            select(func.count())
+            .select_from(IngestionJob)
+            .where(IngestionJob.stage == JobStage.summarize)
+            .where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running)))
+        )
+    ).scalar() or 0
+
+    ten_min_ago = now - timedelta(minutes=10)
+    completed_in_window = (
+        await session.execute(
+            select(func.count())
+            .select_from(IngestionJob)
+            .where(IngestionJob.stage == JobStage.summarize)
+            .where(IngestionJob.status == JobStatus.done)
+            .where(IngestionJob.finished_at >= ten_min_ago)
+        )
+    ).scalar() or 0
+    throughput_per_min = round(completed_in_window / 10.0, 2)
+
+    # p50 over the last 100 completed summarize jobs
+    durations = (
+        (
+            await session.execute(
+                select(func.extract("epoch", IngestionJob.finished_at - IngestionJob.started_at).label("dur"))
+                .where(IngestionJob.stage == JobStage.summarize)
+                .where(IngestionJob.status == JobStatus.done)
+                .where(IngestionJob.started_at.is_not(None))
+                .where(IngestionJob.finished_at.is_not(None))
+                .order_by(IngestionJob.finished_at.desc())
+                .limit(100)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if durations:
+        sorted_d = sorted(float(d) for d in durations if d is not None)
+        p50 = sorted_d[len(sorted_d) // 2] if sorted_d else 0.0
+    else:
+        p50 = 0.0
+
+    # Depth history: sample every 5 minutes over the last hour, in a
+    # single query using generate_series + LEFT JOIN so the endpoint
+    # stays at one DB roundtrip instead of 13. Use CAST(...) rather
+    # than ::timestamptz because SQLAlchemy's bind-parameter syntax
+    # (`:start_ts`) collides with PostgreSQL's `::` cast operator.
+    hour_ago = now - timedelta(minutes=60)
+    result = await session.execute(
+        text(
+            """
+            SELECT gs.ts AS ts,
+                   COUNT(j.job_id) AS depth
+            FROM generate_series(
+                CAST(:start_ts AS timestamptz),
+                CAST(:end_ts AS timestamptz),
+                interval '5 minutes'
+            ) AS gs(ts)
+            LEFT JOIN ingestion_jobs j
+                ON j.stage = 'summarize'
+               AND j.created_at <= gs.ts
+               AND (j.finished_at IS NULL OR j.finished_at > gs.ts)
+            GROUP BY gs.ts
+            ORDER BY gs.ts
+            """
+        ),
+        {"start_ts": hour_ago, "end_ts": now},
+    )
+    depth_history: list[tuple[float, int]] = [(row.ts.timestamp(), int(row.depth)) for row in result]
+
+    return {
+        "queue_depth": int(queue_depth),
+        "throughput_per_min": float(throughput_per_min),
+        "p50_seconds": float(round(p50, 1)),
+        "depth_history": depth_history,
+    }

@@ -5,12 +5,12 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from harbor_clerk.config import refresh_llm_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.llm.summarize import classify_doc_type, generate_summary
-from harbor_clerk.models import ChatMessage, Chunk, Document
+from harbor_clerk.models import ChatMessage, Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.models.research_state import ResearchState
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
@@ -91,9 +91,44 @@ def run_summarize(doc_id: uuid.UUID) -> None:
         worker_seq = doc.pipeline_seq
 
         if chunks:
+            # Update the IngestionJob row's progress counters between map calls
+            # so the queue tray's progress bar fills as the summary advances.
+            # Per-call session: this fires many times during a long summary;
+            # reusing the outer session would either commit other in-progress
+            # work prematurely or risk race conditions.
+            def _progress(current: int, total: int) -> None:
+                # Per-call session; isolated from the outer worker session so a long
+                # summary's many small UPDATEs don't fight for the same connection.
+                # Errors here are intentionally swallowed: a transient DB hiccup on a
+                # progress write must not invalidate the actual summary the LLM just
+                # produced. Worst case the queue tray shows a stale percentage for a
+                # few seconds.
+                inner_session = get_sync_session()
+                try:
+                    inner_session.execute(
+                        update(IngestionJob)
+                        .where(IngestionJob.doc_id == doc_id)
+                        .where(IngestionJob.stage == JobStage.summarize)
+                        .values(progress_current=current, progress_total=total)
+                    )
+                    inner_session.commit()
+                except Exception:
+                    logger.warning(
+                        "summarize: progress update failed (current=%d, total=%d)",
+                        current,
+                        total,
+                        exc_info=True,
+                    )
+                finally:
+                    inner_session.close()
+
             # Generate summary (compute before race check)
             try:
-                summary, model_used = generate_summary(list(chunks), yield_check=_wait_for_idle_llm)
+                summary, model_used = generate_summary(
+                    list(chunks),
+                    yield_check=_wait_for_idle_llm,
+                    progress_callback=_progress,
+                )
             except Exception:
                 logger.warning("Summary generation failed for %s", doc_id, exc_info=True)
                 summary, model_used = None, None

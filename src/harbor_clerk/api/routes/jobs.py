@@ -16,6 +16,7 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.events import CHANNEL
 from harbor_clerk.models.document import Document
+from harbor_clerk.models.enums import JobStage
 from harbor_clerk.models.ingestion_job import IngestionJob, JobStatus
 from harbor_clerk.worker.pipeline import STAGE_CONFIG, STAGE_ORDER
 
@@ -198,9 +199,50 @@ async def jobs_snapshot(
         if stage_key in by_stage:
             by_stage[stage_key]["recent_completed"] = int(count)
 
+    # Fetch in-flight summarize jobs (queued + running) themselves — not just
+    # counts — so the queue tray can render per-doc rows with map-reduce progress.
+    summarizing_rows = (
+        await session.execute(
+            select(
+                IngestionJob.doc_id,
+                IngestionJob.status,
+                IngestionJob.progress_current,
+                IngestionJob.progress_total,
+                IngestionJob.created_at,
+                Document.canonical_filename,
+                Document.title,
+            )
+            .join(Document, IngestionJob.doc_id == Document.doc_id)
+            .where(IngestionJob.stage == JobStage.summarize)
+            .where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running)))
+            .order_by(IngestionJob.created_at)
+        )
+    ).all()
+
+    summarizing = [
+        {
+            "doc_id": str(doc_id),
+            "filename": canonical_filename or title,
+            "status": status.value,
+            "progress_current": progress_current or 0,
+            "progress_total": progress_total or 0,
+            "created_at": created_at.isoformat(),
+        }
+        for (
+            doc_id,
+            status,
+            progress_current,
+            progress_total,
+            created_at,
+            canonical_filename,
+            title,
+        ) in summarizing_rows
+    ]
+
     return {
         "by_stage": by_stage,
         "queues": queues,
         "stage_order": [s.value for s in STAGE_ORDER],
         "throughput_window_seconds": window_seconds,
+        "summarizing": summarizing,
     }

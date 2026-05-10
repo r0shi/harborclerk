@@ -398,6 +398,45 @@ class TestGenerateSummary:
             mock_call.assert_not_called()
 
 
+def test_summarize_long_calls_progress_callback_per_map_step(monkeypatch):
+    """Map-reduce summarize must report progress between sub-calls so the
+    queue tray's progress bar can fill in chunks."""
+    from harbor_clerk.llm import summarize as sum_mod
+
+    # Stub _call_llm so each map call returns a fixed string and the
+    # reduce returns the joined result. We don't actually hit a model.
+    def fake_call_llm(*args, **kwargs):
+        return "section-summary"
+
+    monkeypatch.setattr(sum_mod, "_call_llm", fake_call_llm)
+
+    # Force long-tier path: > _LONG_THRESHOLD chunks worth of input.
+    chunks = ["x" * 8000 for _ in range(150)]
+
+    progress_calls: list[tuple[int, int]] = []
+
+    def record(current: int, total: int) -> None:
+        progress_calls.append((current, total))
+
+    sum_mod._summarize_long(chunks, max_input_chars=80_000, progress_callback=record)
+
+    # Expect at least one progress update per map call + one before reduce.
+    # Specifically: total should be the same on every call (number of
+    # groups + 1 for reduce); current should monotonically increase.
+    assert len(progress_calls) >= 2
+    totals = {t for _, t in progress_calls}
+    assert len(totals) == 1, f"total varied: {totals}"
+    currents = [c for c, _ in progress_calls]
+    assert currents == sorted(currents), "current must be monotonic"
+    assert currents[-1] == currents[0] + len(progress_calls) - 1
+    # total must equal number of map groups + 1 (the reduce slot). If
+    # _summarize_long ever stopped firing the reduce callback or
+    # miscounted total_chunks, this catches it.
+    n_total = totals.pop()
+    assert n_total == len(progress_calls), f"expected total={len(progress_calls)} (groups+reduce), got {n_total}"
+    assert currents[-1] == n_total - 1, "reduce step must fire as the final progress event"
+
+
 class TestTruncateAtSentence:
     def test_short_text_unchanged(self):
         assert _truncate_at_sentence("Hello world.", 100) == "Hello world."

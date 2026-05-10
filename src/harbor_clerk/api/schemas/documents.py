@@ -33,6 +33,7 @@ class DocumentSummary(BaseModel):
     watch_source_path: str | None = None
     watch_status: str | None = None
     folder_name: str | None = None
+    summarize_job_status: str | None = None
 
 
 class DocumentDetail(BaseModel):

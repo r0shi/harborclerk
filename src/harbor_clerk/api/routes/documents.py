@@ -124,6 +124,19 @@ async def list_documents(
     result = await session.execute(query)
     docs = result.scalars().all()
 
+    # uq_jobs_doc_stage guarantees at most one summarize-stage row per doc,
+    # so a plain filtered fetch is sufficient.
+    sum_job_status_by_doc: dict[str, str] = {}
+    if docs:
+        doc_ids_for_jobs = [d.doc_id for d in docs]
+        rows = await session.execute(
+            select(IngestionJob.doc_id, IngestionJob.status)
+            .where(IngestionJob.doc_id.in_(doc_ids_for_jobs))
+            .where(IngestionJob.stage == JobStage.summarize)
+        )
+        for did, jst in rows.all():
+            sum_job_status_by_doc[str(did)] = jst.value
+
     summaries = []
     for doc in docs:
         summaries.append(
@@ -140,6 +153,7 @@ async def list_documents(
                 doc_type=doc.doc_type,
                 source_path=doc.source_path,
                 topic_id=doc.topic_id,
+                summarize_job_status=sum_job_status_by_doc.get(str(doc.doc_id)),
             )
         )
 

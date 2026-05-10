@@ -4,10 +4,12 @@ import type { DocumentQueueItem, CompletedItem } from '../../hooks/useQueueTray'
 import DocumentRow from './DocumentRow'
 import CompletedRow from './CompletedRow'
 import PipelineTab from './PipelineTab'
+import SummarizingRow, { type SummarizingItem } from './SummarizingRow'
 
 interface QueuePanelProps {
   activeItems: Map<string, DocumentQueueItem>
   completed: CompletedItem[]
+  summarizing: SummarizingItem[]
   onClose: () => void
 }
 
@@ -18,7 +20,7 @@ type TabId = 'active' | 'pipeline'
 // quirks for tiny lists.
 const VIRTUALIZE_THRESHOLD = 30
 
-export default function QueuePanel({ activeItems, completed, onClose }: QueuePanelProps) {
+export default function QueuePanel({ activeItems, completed, summarizing, onClose }: QueuePanelProps) {
   const [exiting, setExiting] = useState(false)
   const [tab, setTab] = useState<TabId>('active')
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -56,6 +58,23 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 76,
     overscan: 4,
+  })
+
+  // Sibling virtualizer for the Summarizing section. SummarizingRow is a
+  // single-line row (~28px) so the estimate is much smaller than the
+  // collapsed DocumentRow. Reuses the same scrollRef.
+  // Mirrors the JSX render condition: only virtualize when the section
+  // crosses the threshold AND Active is not already virtualized (two
+  // virtualizers sharing one scrollRef can't compute independent visible
+  // windows — see the comment on the JSX below). When the flat branch
+  // will render, pass count=0 so the virtualizer doesn't attach a
+  // redundant scroll listener or compute virtual items for nothing.
+  const summarizeShouldVirtualize = summarizing.length > VIRTUALIZE_THRESHOLD && !shouldVirtualize
+  const summarizeVirtualizer = useVirtualizer({
+    count: summarizeShouldVirtualize ? summarizing.length : 0,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 28,
+    overscan: 6,
   })
 
   return (
@@ -144,8 +163,75 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
                 </div>
               )}
 
+              {/* Summarizing section — sits between Active and Completed.
+                  Hidden entirely when summarizing is empty (no header, no
+                  divider). Virtualized at >VIRTUALIZE_THRESHOLD rows (30), same as Active.
+                  Failed-summary jobs land in Errors via the existing
+                  CompletedItem path, not here. */}
+              {summarizing.length > 0 && (
+                <>
+                  {hasActive && <div className="border-b border-(--color-border)" />}
+                  <div className="px-4 py-2">
+                    <div className="text-[11px] font-medium uppercase tracking-wider mb-2" style={{ color: '#c4a4ff' }}>
+                      Summarizing ({summarizing.length})
+                    </div>
+                    {/*
+                      Two virtualizers sharing the same scrollRef can't
+                      compute independent visible windows — they each see
+                      the parent scroll's scrollTop and render items
+                      positioned around it, regardless of which section
+                      is actually in view. To avoid the collision, only
+                      virtualize Summarizing when Active is NOT
+                      virtualized. With both sections >30 items
+                      simultaneously (rare for a single-tenant
+                      deployment), Summarizing renders flat — slower but
+                      visually correct. The proper fix is a single
+                      virtualizer over the merged list or independent
+                      scroll containers, both larger refactors.
+                    */}
+                    {summarizeShouldVirtualize ? (
+                      <div
+                        style={{
+                          height: `${summarizeVirtualizer.getTotalSize()}px`,
+                          position: 'relative',
+                          width: '100%',
+                        }}
+                      >
+                        {summarizeVirtualizer.getVirtualItems().map((vi) => {
+                          const item = summarizing[vi.index]
+                          return (
+                            <div
+                              key={item.doc_id}
+                              ref={summarizeVirtualizer.measureElement}
+                              data-index={vi.index}
+                              style={{
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                width: '100%',
+                                transform: `translateY(${vi.start}px)`,
+                              }}
+                            >
+                              <SummarizingRow item={item} />
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="space-y-0.5">
+                        {summarizing.map((item) => (
+                          <SummarizingRow key={item.doc_id} item={item} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
               {/* Divider */}
-              {hasActive && hasCompleted && <div className="border-b border-(--color-border)" />}
+              {(hasActive || summarizing.length > 0) && hasCompleted && (
+                <div className="border-b border-(--color-border)" />
+              )}
 
               {/* Completed section (done items only) */}
               {hasCompleted && (
@@ -162,7 +248,9 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
               )}
 
               {/* Divider */}
-              {(hasActive || hasCompleted) && hasErrors && <div className="border-b border-(--color-border)" />}
+              {(hasActive || summarizing.length > 0 || hasCompleted) && hasErrors && (
+                <div className="border-b border-(--color-border)" />
+              )}
 
               {/* Errors section */}
               {hasErrors && (
@@ -179,7 +267,7 @@ export default function QueuePanel({ activeItems, completed, onClose }: QueuePan
               )}
 
               {/* Empty state */}
-              {!hasActive && !hasCompleted && !hasErrors && (
+              {!hasActive && summarizing.length === 0 && !hasCompleted && !hasErrors && (
                 <div className="px-4 py-6 text-center text-[13px] text-(--color-text-secondary)">No items in queue</div>
               )}
             </>

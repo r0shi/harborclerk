@@ -7,6 +7,7 @@ import { useSystemConfig } from '../hooks/useSystemConfig'
 import { PageHeader } from '../components/PageHeader'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
+import SummaryChip, { resolveSummaryState } from '../components/SummaryChip'
 import { documentTypeIcon } from '../utils/documentTypeIcon'
 import { entityTypeClass } from '../utils/entityTypeColors'
 
@@ -40,6 +41,7 @@ interface DocSummary {
   updated_at: string
   summary?: string
   summary_model?: string
+  summarize_job_status?: string
   source_path?: string
   doc_type?: string
   topic_id?: number
@@ -840,6 +842,12 @@ export default function DocumentsPage() {
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
                     Status
                   </th>
+                  <th
+                    className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400"
+                    style={{ width: 170 }}
+                  >
+                    Summary
+                  </th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
                     Updated
                   </th>
@@ -982,6 +990,11 @@ export default function DocumentsPage() {
                               </button>
                             )}
                           </div>
+                        </td>
+                        <td className="px-4 py-3" style={{ width: 170 }}>
+                          <SummaryChip
+                            state={resolveSummaryState(doc.summary, doc.summary_model, doc.summarize_job_status)}
+                          />
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
                           {new Date(doc.updated_at).toLocaleDateString()}

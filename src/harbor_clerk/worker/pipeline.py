@@ -137,6 +137,14 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
             existing.progress_total = 0
             existing.started_at = None
             existing.finished_at = None
+            # Re-enqueue is logically a fresh cycle; the depth-history query
+            # in /system/summary-backlog uses created_at <= ts AND
+            # (finished_at IS NULL OR finished_at > ts) to estimate
+            # in-flight-at-time-T. Without this reset, a re-enqueued job
+            # (e.g. via /resummarize) would be counted as in-flight for
+            # the entire span back to its original enqueue, including the
+            # period when it was actually `done`.
+            existing.created_at = datetime.now(UTC)
             existing.priority = priority
         else:
             job = IngestionJob(
