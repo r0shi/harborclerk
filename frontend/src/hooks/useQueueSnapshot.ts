@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth'
+import type { SummarizingItem } from '../components/queue-tray/SummarizingRow'
 
 export type QueueClass = 'io' | 'cpu' | 'llm'
 
@@ -17,6 +18,12 @@ export interface QueueSnapshot {
   stage_order: string[]
   /** Window over which `recent_completed` is computed. */
   throughput_window_seconds: number
+  /**
+   * In-flight summarize jobs (queued + running) with map-reduce progress.
+   * Drives the queue tray's Summarizing section + the QueuePill backlog
+   * count. Always present in the response (may be empty array).
+   */
+  summarizing?: SummarizingItem[]
 }
 
 const POLL_INTERVAL_MS = 3000

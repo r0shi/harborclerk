@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '../auth'
 import { useJobEvents, type JobEvent } from './useJobEvents'
+import { useQueueSnapshot } from './useQueueSnapshot'
+import type { SummarizingItem } from '../components/queue-tray/SummarizingRow'
+
+// Re-exported so the QueueTray, QueuePanel, and QueuePill consumers can
+// import everything they need from one place.
+export type { SummarizingItem }
 
 export type TrayState = 'collapsed' | 'toasting' | 'expanded'
 
@@ -84,6 +90,15 @@ export function useQueueTray() {
   const [trayState, setTrayState] = useState<TrayState>('collapsed')
   const [activeItems, setActiveItems] = useState<Map<string, DocumentQueueItem>>(new Map())
   const [completed, setCompleted] = useState<CompletedItem[]>([])
+
+  // Piggyback on the snapshot poll already used by the Pipeline tab. The
+  // backend includes a `summarizing` array (see GET /api/jobs/snapshot)
+  // with per-doc map-reduce progress for in-flight summarize jobs. No
+  // extra request — useQueueSnapshot's interval is the canonical source.
+  // Derived (not stored in state) so we don't trip
+  // react-hooks/set-state-in-effect by mirroring server data.
+  const { snapshot } = useQueueSnapshot()
+  const summarizing: SummarizingItem[] = snapshot?.summarizing ?? []
 
   const trayStateRef = useRef(trayState)
   const activeItemsRef = useRef(activeItems)
@@ -339,6 +354,8 @@ export function useQueueTray() {
     trayState,
     activeItems,
     completed,
+    summarizing,
+    summarizeBacklog: summarizing.length,
     toggleExpanded,
     collapse,
   }
