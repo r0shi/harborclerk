@@ -59,11 +59,17 @@ async function pollOnce(token: string) {
 
 function startPollingIfNeeded(token: string) {
   if (_intervalId !== null && _currentToken === token) return
-  // Token changed (login/logout/refresh) — reset.
+  // Token changed (login/logout/refresh) — clear stale snapshot so
+  // subscribers don't briefly see the previous token's data while
+  // the first fresh poll is in flight, then push null to anyone
+  // already subscribed so they re-render to a loading state.
   if (_intervalId !== null) {
     clearInterval(_intervalId)
     _intervalId = null
   }
+  _snapshot = null
+  _error = null
+  _subscribers.forEach((cb) => cb(null, null))
   _currentToken = token
   pollOnce(token)
   _intervalId = setInterval(() => pollOnce(token), POLL_INTERVAL_MS)

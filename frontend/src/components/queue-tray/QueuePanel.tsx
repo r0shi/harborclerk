@@ -63,8 +63,15 @@ export default function QueuePanel({ activeItems, completed, summarizing, onClos
   // Sibling virtualizer for the Summarizing section. SummarizingRow is a
   // single-line row (~28px) so the estimate is much smaller than the
   // collapsed DocumentRow. Reuses the same scrollRef.
+  // Mirrors the JSX render condition: only virtualize when the section
+  // crosses the threshold AND Active is not already virtualized (two
+  // virtualizers sharing one scrollRef can't compute independent visible
+  // windows — see the comment on the JSX below). When the flat branch
+  // will render, pass count=0 so the virtualizer doesn't attach a
+  // redundant scroll listener or compute virtual items for nothing.
+  const summarizeShouldVirtualize = summarizing.length > VIRTUALIZE_THRESHOLD && !shouldVirtualize
   const summarizeVirtualizer = useVirtualizer({
-    count: summarizing.length,
+    count: summarizeShouldVirtualize ? summarizing.length : 0,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 28,
     overscan: 6,
@@ -182,7 +189,7 @@ export default function QueuePanel({ activeItems, completed, summarizing, onClos
                       virtualizer over the merged list or independent
                       scroll containers, both larger refactors.
                     */}
-                    {summarizing.length > VIRTUALIZE_THRESHOLD && !shouldVirtualize ? (
+                    {summarizeShouldVirtualize ? (
                       <div
                         style={{
                           height: `${summarizeVirtualizer.getTotalSize()}px`,
