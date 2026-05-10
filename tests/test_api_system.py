@@ -1,5 +1,7 @@
 """Tests for /api/system/* endpoints."""
 
+from tests.conftest import auth_header
+
 
 async def test_setup_status_no_users(client):
     resp = await client.get("/api/system/setup-status")
@@ -47,3 +49,18 @@ async def test_health_check_reflects_allow_source_download_when_set(client):
         assert resp.json()["allow_source_download"] is True
     finally:
         s.allow_source_download = original
+
+
+async def test_summary_backlog_endpoint_returns_all_four_fields(client, admin_user, admin_token):
+    """The Observatory Summary Backlog widget needs depth, throughput,
+    p50, and depth-over-time history. Endpoint must return all four."""
+    response = await client.get("/api/system/summary-backlog", headers=auth_header(admin_token))
+    assert response.status_code == 200
+    data = response.json()
+    assert "queue_depth" in data
+    assert "throughput_per_min" in data
+    assert "p50_seconds" in data
+    assert "depth_history" in data
+    assert isinstance(data["depth_history"], list)
+    if data["depth_history"]:
+        assert len(data["depth_history"][0]) == 2

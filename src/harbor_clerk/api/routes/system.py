@@ -11,7 +11,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_admin
+from harbor_clerk.api.deps import Principal, require_admin, require_user
 from harbor_clerk.api.schemas.system import (
     DeleteAllRequest,
     RetrievalSettingsResponse,
@@ -618,3 +618,88 @@ async def list_logs(
         )
 
     return {"mode": "native", "logs_dir": str(logs_dir), "files": files}
+
+
+@router.get("/system/summary-backlog")
+async def get_summary_backlog(
+    principal: Principal = Depends(require_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Stats for the Observatory Summary Backlog widget.
+
+    - queue_depth: count of summarize jobs currently queued or running
+    - throughput_per_min: completed summarize jobs / minute over the
+      last 10 minutes
+    - p50_seconds: median wall time of summarize jobs completed in the
+      last 100 jobs
+    - depth_history: [(unix_ts, depth), ...] sampled every 5 minutes
+      over the last hour for the trend sparkline
+    """
+    now = datetime.now(UTC)
+
+    queue_depth = (
+        await session.execute(
+            select(func.count())
+            .select_from(IngestionJob)
+            .where(IngestionJob.stage == JobStage.summarize)
+            .where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running)))
+        )
+    ).scalar() or 0
+
+    ten_min_ago = now - timedelta(minutes=10)
+    completed_in_window = (
+        await session.execute(
+            select(func.count())
+            .select_from(IngestionJob)
+            .where(IngestionJob.stage == JobStage.summarize)
+            .where(IngestionJob.status == JobStatus.done)
+            .where(IngestionJob.finished_at >= ten_min_ago)
+        )
+    ).scalar() or 0
+    throughput_per_min = round(completed_in_window / 10.0, 2)
+
+    # p50 over the last 100 completed summarize jobs
+    durations = (
+        (
+            await session.execute(
+                select(func.extract("epoch", IngestionJob.finished_at - IngestionJob.started_at).label("dur"))
+                .where(IngestionJob.stage == JobStage.summarize)
+                .where(IngestionJob.status == JobStatus.done)
+                .where(IngestionJob.started_at.is_not(None))
+                .where(IngestionJob.finished_at.is_not(None))
+                .order_by(IngestionJob.finished_at.desc())
+                .limit(100)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if durations:
+        sorted_d = sorted(float(d) for d in durations if d is not None)
+        p50 = sorted_d[len(sorted_d) // 2] if sorted_d else 0.0
+    else:
+        p50 = 0.0
+
+    # Depth history: sample every 5 minutes over the last hour. We
+    # approximate "depth at time T" as count(jobs created before T and
+    # not finished before T).
+    depth_history: list[tuple[float, int]] = []
+    for offset_min in range(60, -1, -5):
+        ts = now - timedelta(minutes=offset_min)
+        d = (
+            await session.execute(
+                select(func.count())
+                .select_from(IngestionJob)
+                .where(IngestionJob.stage == JobStage.summarize)
+                .where(IngestionJob.created_at <= ts)
+                .where((IngestionJob.finished_at.is_(None)) | (IngestionJob.finished_at > ts))
+            )
+        ).scalar() or 0
+        depth_history.append((ts.timestamp(), int(d)))
+
+    return {
+        "queue_depth": int(queue_depth),
+        "throughput_per_min": float(throughput_per_min),
+        "p50_seconds": float(round(p50, 1)),
+        "depth_history": depth_history,
+    }
