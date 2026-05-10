@@ -84,7 +84,23 @@ export default function SummaryBacklogPanel() {
     }
   }, [token])
 
-  if (!data) return null
+  if (!data) {
+    // Skeleton matches the loaded card's vertical footprint so the
+    // Stats page doesn't jolt when the first poll lands ~1s later.
+    return (
+      <Card className="p-4">
+        <h3 className="text-[13px] mb-3" style={{ color: '#c4a4ff' }}>
+          Summary Backlog
+        </h3>
+        <div
+          className="text-[11px] text-(--color-text-secondary)"
+          style={{ minHeight: 56, display: 'flex', alignItems: 'center' }}
+        >
+          Loading…
+        </div>
+      </Card>
+    )
+  }
 
   return (
     <Card className="p-4">
