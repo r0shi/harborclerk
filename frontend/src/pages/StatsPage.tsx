@@ -10,6 +10,7 @@ import TopicKeywords from '../components/stats/TopicKeywords'
 import PipelineDiagram from '../components/stats/PipelineDiagram'
 import PipelineTimingChart, { type StageTiming } from '../components/stats/PipelineTimingChart'
 import QueueWaitChart from '../components/stats/QueueWaitChart'
+import SummaryBacklogPanel from '../components/stats/SummaryBacklogPanel'
 import { InfoTip } from '../components/InfoTip'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
@@ -251,6 +252,8 @@ function PipelineTab({ pipelineTiming }: { pipelineTiming: CorpusStats['pipeline
         </p>
         <PipelineTimingChart pipelineTiming={pipelineTiming} />
       </Card>
+
+      <SummaryBacklogPanel />
 
       {/* Queue wait vs run time */}
       <Card className="p-4">
