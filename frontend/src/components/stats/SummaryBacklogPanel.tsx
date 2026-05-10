@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../../auth'
+import { Card } from '../Card'
 
 interface BacklogResponse {
   queue_depth: number
@@ -86,7 +87,7 @@ export default function SummaryBacklogPanel() {
   if (!data) return null
 
   return (
-    <div>
+    <Card className="p-4">
       <h3 className="text-[13px] mb-3" style={{ color: '#c4a4ff' }}>
         Summary Backlog
       </h3>
@@ -129,6 +130,6 @@ export default function SummaryBacklogPanel() {
           </div>
         </div>
       </div>
-    </div>
+    </Card>
   )
 }

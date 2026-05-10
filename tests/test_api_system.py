@@ -66,3 +66,10 @@ async def test_summary_backlog_endpoint_returns_all_four_fields(client, admin_us
         assert len(data["depth_history"][0]) == 2
     # 5-minute samples over the last hour = 13 buckets
     assert len(data["depth_history"]) == 13
+    # Type + range checks: regressions like queue_depth=null, p50="N/A",
+    # or throughput as a string would all pass mere presence checks.
+    assert isinstance(data["queue_depth"], int) and data["queue_depth"] >= 0
+    assert isinstance(data["throughput_per_min"], (int, float)) and data["throughput_per_min"] >= 0
+    assert isinstance(data["p50_seconds"], (int, float)) and data["p50_seconds"] >= 0
+    assert all(isinstance(ts, (int, float)) for ts, _ in data["depth_history"])
+    assert all(isinstance(d, int) and d >= 0 for _, d in data["depth_history"])
