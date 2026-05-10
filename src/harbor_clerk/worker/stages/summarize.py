@@ -97,6 +97,12 @@ def run_summarize(doc_id: uuid.UUID) -> None:
             # reusing the outer session would either commit other in-progress
             # work prematurely or risk race conditions.
             def _progress(current: int, total: int) -> None:
+                # Per-call session; isolated from the outer worker session so a long
+                # summary's many small UPDATEs don't fight for the same connection.
+                # Errors here are intentionally swallowed: a transient DB hiccup on a
+                # progress write must not invalidate the actual summary the LLM just
+                # produced. Worst case the queue tray shows a stale percentage for a
+                # few seconds.
                 inner_session = get_sync_session()
                 try:
                     inner_session.execute(
@@ -106,6 +112,13 @@ def run_summarize(doc_id: uuid.UUID) -> None:
                         .values(progress_current=current, progress_total=total)
                     )
                     inner_session.commit()
+                except Exception:
+                    logger.warning(
+                        "summarize: progress update failed (current=%d, total=%d)",
+                        current,
+                        total,
+                        exc_info=True,
+                    )
                 finally:
                     inner_session.close()
 

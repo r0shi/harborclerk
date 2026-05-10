@@ -429,6 +429,12 @@ def test_summarize_long_calls_progress_callback_per_map_step(monkeypatch):
     currents = [c for c, _ in progress_calls]
     assert currents == sorted(currents), "current must be monotonic"
     assert currents[-1] == currents[0] + len(progress_calls) - 1
+    # total must equal number of map groups + 1 (the reduce slot). If
+    # _summarize_long ever stopped firing the reduce callback or
+    # miscounted total_chunks, this catches it.
+    n_total = totals.pop()
+    assert n_total == len(progress_calls), f"expected total={len(progress_calls)} (groups+reduce), got {n_total}"
+    assert currents[-1] == n_total - 1, "reduce step must fire as the final progress event"
 
 
 class TestTruncateAtSentence:
