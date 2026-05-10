@@ -253,7 +253,9 @@ function PipelineTab({ pipelineTiming }: { pipelineTiming: CorpusStats['pipeline
         <PipelineTimingChart pipelineTiming={pipelineTiming} />
       </Card>
 
-      <SummaryBacklogPanel />
+      <Card className="p-4">
+        <SummaryBacklogPanel />
+      </Card>
 
       {/* Queue wait vs run time */}
       <Card className="p-4">

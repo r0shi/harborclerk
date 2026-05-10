@@ -86,10 +86,7 @@ export default function SummaryBacklogPanel() {
   if (!data) return null
 
   return (
-    <div
-      className="rounded-xl p-4 mt-4"
-      style={{ background: 'rgba(38,38,40,0.97)', border: '1px solid rgba(255,255,255,0.1)' }}
-    >
+    <div>
       <h3 className="text-[13px] mb-3" style={{ color: '#c4a4ff' }}>
         Summary Backlog
       </h3>
