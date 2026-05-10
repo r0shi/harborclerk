@@ -64,3 +64,5 @@ async def test_summary_backlog_endpoint_returns_all_four_fields(client, admin_us
     assert isinstance(data["depth_history"], list)
     if data["depth_history"]:
         assert len(data["depth_history"][0]) == 2
+    # 5-minute samples over the last hour = 13 buckets
+    assert len(data["depth_history"]) == 13

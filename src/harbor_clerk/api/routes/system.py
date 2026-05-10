@@ -11,7 +11,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_admin, require_user
+from harbor_clerk.api.deps import Principal, require_admin
 from harbor_clerk.api.schemas.system import (
     DeleteAllRequest,
     RetrievalSettingsResponse,
@@ -622,7 +622,7 @@ async def list_logs(
 
 @router.get("/system/summary-backlog")
 async def get_summary_backlog(
-    principal: Principal = Depends(require_user),
+    admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Stats for the Observatory Summary Backlog widget.
@@ -680,22 +680,33 @@ async def get_summary_backlog(
     else:
         p50 = 0.0
 
-    # Depth history: sample every 5 minutes over the last hour. We
-    # approximate "depth at time T" as count(jobs created before T and
-    # not finished before T).
-    depth_history: list[tuple[float, int]] = []
-    for offset_min in range(60, -1, -5):
-        ts = now - timedelta(minutes=offset_min)
-        d = (
-            await session.execute(
-                select(func.count())
-                .select_from(IngestionJob)
-                .where(IngestionJob.stage == JobStage.summarize)
-                .where(IngestionJob.created_at <= ts)
-                .where((IngestionJob.finished_at.is_(None)) | (IngestionJob.finished_at > ts))
-            )
-        ).scalar() or 0
-        depth_history.append((ts.timestamp(), int(d)))
+    # Depth history: sample every 5 minutes over the last hour, in a
+    # single query using generate_series + LEFT JOIN so the endpoint
+    # stays at one DB roundtrip instead of 13. Use CAST(...) rather
+    # than ::timestamptz because SQLAlchemy's bind-parameter syntax
+    # (`:start_ts`) collides with PostgreSQL's `::` cast operator.
+    hour_ago = now - timedelta(minutes=60)
+    result = await session.execute(
+        text(
+            """
+            SELECT gs.ts AS ts,
+                   COUNT(j.job_id) AS depth
+            FROM generate_series(
+                CAST(:start_ts AS timestamptz),
+                CAST(:end_ts AS timestamptz),
+                interval '5 minutes'
+            ) AS gs(ts)
+            LEFT JOIN ingestion_jobs j
+                ON j.stage = 'summarize'
+               AND j.created_at <= gs.ts
+               AND (j.finished_at IS NULL OR j.finished_at > gs.ts)
+            GROUP BY gs.ts
+            ORDER BY gs.ts
+            """
+        ),
+        {"start_ts": hour_ago, "end_ts": now},
+    )
+    depth_history: list[tuple[float, int]] = [(row.ts.timestamp(), int(row.depth)) for row in result]
 
     return {
         "queue_depth": int(queue_depth),
