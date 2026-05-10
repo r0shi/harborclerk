@@ -35,7 +35,7 @@ const COMPLETED_TTL = 3_600_000 // 60 minutes
 const ERROR_TTL = 10_800_000 // 3 hours
 const TOAST_DURATION = 4_000 // 4s
 const TOAST_DEBOUNCE = 500 // ms
-export const PIPELINE_STAGES = ['extract', 'ocr', 'chunk', 'entities', 'embed', 'summarize', 'finalize']
+export const PIPELINE_STAGES = ['extract', 'ocr', 'chunk', 'entities', 'embed', 'finalize']
 
 function computeOverallProgress(stages: Map<string, StageState>): number {
   // Filter out skipped stages
