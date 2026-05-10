@@ -12,7 +12,7 @@ import QueuePanel from './QueuePanel'
 // live here later; if a second tab/use lands, rename QueueTray /
 // QueuePanel to Drawer / DrawerPanel and update this note.
 export default function QueueTray() {
-  const { trayState, activeItems, completed, toggleExpanded, collapse } = useQueueTray()
+  const { trayState, activeItems, completed, summarizing, toggleExpanded, collapse } = useQueueTray()
 
   const activeCount = activeItems.size
   const completedCount = completed.length
@@ -44,7 +44,9 @@ export default function QueueTray() {
   return (
     <div className="fixed bottom-4 left-4 z-50 flex flex-col items-start">
       {/* Panel (expanded state) */}
-      {trayState === 'expanded' && <QueuePanel activeItems={activeItems} completed={completed} onClose={collapse} />}
+      {trayState === 'expanded' && (
+        <QueuePanel activeItems={activeItems} completed={completed} summarizing={summarizing} onClose={collapse} />
+      )}
 
       {/* Toast (toasting state, hidden when expanded) */}
       {trayState === 'toasting' && <QueueToastPopup items={Array.from(activeItems.values())} onDismiss={collapse} />}
