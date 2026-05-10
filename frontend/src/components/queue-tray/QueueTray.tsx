@@ -12,7 +12,7 @@ import QueuePanel from './QueuePanel'
 // live here later; if a second tab/use lands, rename QueueTray /
 // QueuePanel to Drawer / DrawerPanel and update this note.
 export default function QueueTray() {
-  const { trayState, activeItems, completed, summarizing, toggleExpanded, collapse } = useQueueTray()
+  const { trayState, activeItems, completed, summarizing, summarizeBacklog, toggleExpanded, collapse } = useQueueTray()
 
   const activeCount = activeItems.size
   const completedCount = completed.length
@@ -55,6 +55,7 @@ export default function QueueTray() {
       <QueuePill
         activeCount={activeCount}
         completedCount={completedCount}
+        summarizingCount={summarizeBacklog}
         isPulsing={trayState === 'toasting'}
         onClick={toggleExpanded}
       />

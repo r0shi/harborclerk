@@ -1,27 +1,42 @@
 interface QueuePillProps {
   activeCount: number
   completedCount: number
+  summarizingCount: number
   isPulsing: boolean
   onClick: () => void
 }
 
-// Three rest states, each with its own visual treatment:
+// Four rest states, each with its own visual treatment, in priority order:
 //
-// 1. Active   — amber pulse + "{N} processing"            (work in flight)
-// 2. Recent   — list icon + "{N}"                         (only completed items)
-// 3. Idle     — muted dot + "Queue idle"                  (nothing pending or recent)
+// 1. Active       — amber pulse + "{N} processing"           (work in flight)
+// 2. Summarizing  — purple dot + "Summarizing {N}" + glow   (only background summaries pending)
+// 3. Recent       — list icon + "{N}"                        (only completed items)
+// 4. Idle         — muted dot + "Queue idle"                 (nothing pending or recent)
 //
 // The idle state is intentionally quieter — no pulse, smaller dot, secondary
 // text — so it reads as "ambient indicator" rather than "look at me". Users
 // can still click to open the drawer for the Pipeline tab or to confirm
 // nothing is queued.
-export default function QueuePill({ activeCount, completedCount, isPulsing, onClick }: QueuePillProps) {
-  const idle = activeCount === 0 && completedCount === 0
+export default function QueuePill({
+  activeCount,
+  completedCount,
+  summarizingCount,
+  isPulsing,
+  onClick,
+}: QueuePillProps) {
+  const idle = activeCount === 0 && completedCount === 0 && summarizingCount === 0
+  const summarizingOnly = activeCount === 0 && summarizingCount > 0
 
   return (
     <button
       onClick={onClick}
-      aria-label={idle ? 'Processing queue is idle — open drawer' : 'Open processing queue drawer'}
+      aria-label={
+        idle
+          ? 'Processing queue is idle — open drawer'
+          : summarizingOnly
+            ? `Summarizing ${summarizingCount} documents in background — open drawer`
+            : 'Open processing queue drawer'
+      }
       className={`
         flex items-center space-x-1.5 rounded-full px-3 py-1.5
         bg-(--bg-vibrancy) backdrop-blur-xl shadow-mac-lg
@@ -30,6 +45,7 @@ export default function QueuePill({ activeCount, completedCount, isPulsing, onCl
         transition-all hover:shadow-mac active:scale-95
         ${idle ? 'text-(--color-text-secondary) opacity-80 hover:opacity-100' : 'text-(--color-text-primary)'}
         ${isPulsing ? 'pill-pulse' : ''}
+        ${summarizingOnly ? 'shadow-[0_0_14px_rgba(186,140,255,0.18)]' : ''}
       `}
     >
       {activeCount > 0 && (
@@ -41,7 +57,13 @@ export default function QueuePill({ activeCount, completedCount, isPulsing, onCl
           <span>{activeCount} processing</span>
         </>
       )}
-      {activeCount === 0 && completedCount > 0 && (
+      {activeCount === 0 && summarizingCount > 0 && (
+        <>
+          <span className="relative flex h-2 w-2 rounded-full animate-pulse" style={{ background: '#c4a4ff' }} />
+          <span style={{ color: '#c4a4ff' }}>Summarizing {summarizingCount}</span>
+        </>
+      )}
+      {activeCount === 0 && summarizingCount === 0 && completedCount > 0 && (
         <>
           <svg
             className="h-3.5 w-3.5 text-(--color-text-secondary)"
