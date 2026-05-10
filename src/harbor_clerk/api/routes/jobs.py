@@ -16,6 +16,7 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.events import CHANNEL
 from harbor_clerk.models.document import Document
+from harbor_clerk.models.enums import JobStage
 from harbor_clerk.models.ingestion_job import IngestionJob, JobStatus
 from harbor_clerk.worker.pipeline import STAGE_CONFIG, STAGE_ORDER
 
@@ -198,9 +199,34 @@ async def jobs_snapshot(
         if stage_key in by_stage:
             by_stage[stage_key]["recent_completed"] = int(count)
 
+    # Fetch in-flight summarize jobs (queued + running) themselves — not just
+    # counts — so the queue tray can render per-doc rows with map-reduce progress.
+    summarizing_rows = (
+        await session.execute(
+            select(IngestionJob, Document)
+            .join(Document, IngestionJob.doc_id == Document.doc_id)
+            .where(IngestionJob.stage == JobStage.summarize)
+            .where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running)))
+            .order_by(IngestionJob.created_at)
+        )
+    ).all()
+
+    summarizing = [
+        {
+            "doc_id": str(job.doc_id),
+            "filename": doc.canonical_filename or doc.title,
+            "status": job.status.value,
+            "progress_current": job.progress_current or 0,
+            "progress_total": job.progress_total or 0,
+            "created_at": job.created_at.isoformat(),
+        }
+        for job, doc in summarizing_rows
+    ]
+
     return {
         "by_stage": by_stage,
         "queues": queues,
         "stage_order": [s.value for s in STAGE_ORDER],
         "throughput_window_seconds": window_seconds,
+        "summarizing": summarizing,
     }
