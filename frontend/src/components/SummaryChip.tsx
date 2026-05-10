@@ -24,13 +24,10 @@ const STYLES: Record<Exclude<SummaryState, 'none'>, { bg: string; fg: string }> 
 
 /**
  * Inline chip surfacing the latest summarize-stage state for a document.
- * Used in the DocumentsPage row's fixed 170px chip column. Renders nothing
+ * Used in the DocumentsPage row's fixed-width chip column. Renders nothing
  * for state="none" so callers can pass derived state and let layout
- * collapse naturally.
- *
- * Vertical alignment contract: when used in a fixed-width column with
- * `justify-self: start`, the dot's X position is constant across rows
- * so dots line up vertically. The chip's right edge is variable.
+ * collapse naturally. The chip is left-anchored within its <td>, so the
+ * dot's X position is constant across rows.
  */
 export default function SummaryChip({ state }: SummaryChipProps) {
   if (state === 'none') return null
@@ -40,7 +37,7 @@ export default function SummaryChip({ state }: SummaryChipProps) {
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium whitespace-nowrap"
-      style={{ background: bg, color: fg, justifySelf: 'start' }}
+      style={{ background: bg, color: fg }}
     >
       <span
         className={`h-1.5 w-1.5 rounded-full ${pulseDot ? 'animate-pulse' : ''}`}
