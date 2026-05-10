@@ -158,7 +158,7 @@ export default function QueuePanel({ activeItems, completed, summarizing, onClos
 
               {/* Summarizing section — sits between Active and Completed.
                   Hidden entirely when summarizing is empty (no header, no
-                  divider). Virtualized at 50+ rows like Active.
+                  divider). Virtualized at >VIRTUALIZE_THRESHOLD rows (30), same as Active.
                   Failed-summary jobs land in Errors via the existing
                   CompletedItem path, not here. */}
               {summarizing.length > 0 && (
