@@ -130,8 +130,7 @@ async def test_list_docs_includes_summarize_job_status(client, admin_user, admin
         pipeline_status=PipelineStatus.ready,
     )
     db_session.add(doc)
-    await db_session.commit()
-    await db_session.refresh(doc)
+    await db_session.flush()
 
     db_session.add(
         IngestionJob(
@@ -140,7 +139,7 @@ async def test_list_docs_includes_summarize_job_status(client, admin_user, admin
             status=JobStatus.running,
         )
     )
-    await db_session.commit()
+    await db_session.flush()
 
     response = await client.get("/api/docs", headers=auth_header(admin_token))
     assert response.status_code == 200

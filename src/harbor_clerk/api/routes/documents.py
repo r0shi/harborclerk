@@ -124,8 +124,8 @@ async def list_documents(
     result = await session.execute(query)
     docs = result.scalars().all()
 
-    # Batch-fetch the latest summarize job status for every doc in this page.
-    # DISTINCT ON keeps only the most recent row per doc.
+    # uq_jobs_doc_stage guarantees at most one summarize-stage row per doc,
+    # so a plain filtered fetch is sufficient.
     sum_job_status_by_doc: dict[str, str] = {}
     if docs:
         doc_ids_for_jobs = [d.doc_id for d in docs]
@@ -133,11 +133,9 @@ async def list_documents(
             select(IngestionJob.doc_id, IngestionJob.status)
             .where(IngestionJob.doc_id.in_(doc_ids_for_jobs))
             .where(IngestionJob.stage == JobStage.summarize)
-            .order_by(IngestionJob.doc_id, IngestionJob.created_at.desc())
-            .distinct(IngestionJob.doc_id)
         )
         for did, jst in rows.all():
-            sum_job_status_by_doc[str(did)] = jst.value if hasattr(jst, "value") else str(jst)
+            sum_job_status_by_doc[str(did)] = jst.value
 
     summaries = []
     for doc in docs:
