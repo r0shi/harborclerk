@@ -168,7 +168,21 @@ export default function QueuePanel({ activeItems, completed, summarizing, onClos
                     <div className="text-[11px] font-medium uppercase tracking-wider mb-2" style={{ color: '#c4a4ff' }}>
                       Summarizing ({summarizing.length})
                     </div>
-                    {summarizing.length > VIRTUALIZE_THRESHOLD ? (
+                    {/*
+                      Two virtualizers sharing the same scrollRef can't
+                      compute independent visible windows — they each see
+                      the parent scroll's scrollTop and render items
+                      positioned around it, regardless of which section
+                      is actually in view. To avoid the collision, only
+                      virtualize Summarizing when Active is NOT
+                      virtualized. With both sections >30 items
+                      simultaneously (rare for a single-tenant
+                      deployment), Summarizing renders flat — slower but
+                      visually correct. The proper fix is a single
+                      virtualizer over the merged list or independent
+                      scroll containers, both larger refactors.
+                    */}
+                    {summarizing.length > VIRTUALIZE_THRESHOLD && !shouldVirtualize ? (
                       <div
                         style={{
                           height: `${summarizeVirtualizer.getTotalSize()}px`,
