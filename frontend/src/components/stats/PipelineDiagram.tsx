@@ -42,21 +42,19 @@ const VIEW_HEIGHT = 320
 // the IO-blue / CPU-amber / LLM-purple node palette.
 const EDGE_COLOR = '#30d158'
 
-// Hand-laid-out positions for the 7-stage pipeline.
-// Sequential prefix flows left-to-right at y=150, then chunk fans out
-// to entities/embed/summarize stacked vertically, then re-converges
-// at finalize. The fan-out spacing is 100 px (50 ↔ 150 ↔ 250) rather
-// than the original 80 — with the active node radius cap at 26 plus
-// the count badge above (~14 px) and stage label below (~12 px), 80
-// wasn't enough vertical room and labels collided with neighbours'
-// badges.
+// Hand-laid-out positions for the 6-stage main flow.
+// Sequential prefix flows left-to-right at y=160, then chunk fans out
+// to entities/embed (two lanes at y=100 / y=220), then re-converges at
+// finalize. Summarize runs separately as a BACKGROUND stage rendered
+// in its own panel below the SVG — it is intentionally NOT part of the
+// main flow so the diagram visually communicates "Ready is the
+// terminus of the express line; summarize is independent."
 const NODE_POSITIONS: Record<string, { x: number; y: number }> = {
   extract: { x: 60, y: 160 },
   ocr: { x: 160, y: 160 },
   chunk: { x: 260, y: 160 },
-  entities: { x: 390, y: 60 },
-  embed: { x: 390, y: 160 },
-  summarize: { x: 390, y: 260 },
+  entities: { x: 390, y: 100 },
+  embed: { x: 390, y: 220 },
   finalize: { x: 520, y: 160 },
 }
 
@@ -65,10 +63,8 @@ const EDGES: { from: string; to: string }[] = [
   { from: 'ocr', to: 'chunk' },
   { from: 'chunk', to: 'entities' },
   { from: 'chunk', to: 'embed' },
-  { from: 'chunk', to: 'summarize' },
   { from: 'entities', to: 'finalize' },
   { from: 'embed', to: 'finalize' },
-  { from: 'summarize', to: 'finalize' },
 ]
 
 const STAGE_LABELS: Record<string, string> = {
@@ -77,7 +73,6 @@ const STAGE_LABELS: Record<string, string> = {
   chunk: 'Chunk',
   entities: 'Entities',
   embed: 'Embed',
-  summarize: 'Summarize',
   finalize: 'Finalize',
 }
 
@@ -106,8 +101,8 @@ function nodeRadius(info: StageSnapshot | undefined): number {
   const total = info.queued + info.running
   // sqrt scale so a long queue grows but doesn't overwhelm. Cap is
   // chosen so a busy node + its count badge above and stage label
-  // below still fit cleanly in the 80 px vertical gap between rows
-  // of the fan-out (entities / embed / summarize).
+  // below still fit cleanly in the 120 px vertical gap between the
+  // entities (y=100) and embed (y=220) fan-out lanes.
   return Math.min(26, 14 + Math.sqrt(total) * 2.5)
 }
 
@@ -160,26 +155,32 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
     }
   }, [snapshot])
 
-  return (
-    <svg
-      viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
-      className="w-full"
-      style={{ aspectRatio: `${VIEW_WIDTH} / ${VIEW_HEIGHT}` }}
-    >
-      <defs>
-        {/* Glow filter for active nodes — dialled back to suit the
-            smaller node size; bigger blur made tightly-stacked nodes
-            (entities / embed / summarize) bleed into each other. */}
-        <filter id="pipeline-glow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="2.5" result="blur" />
-          <feMerge>
-            <feMergeNode in="blur" />
-            <feMergeNode in="SourceGraphic" />
-          </feMerge>
-        </filter>
-      </defs>
+  // Summarize is rendered separately as a BACKGROUND stage below the
+  // SVG. Pull its queue depth from the LLM queue totals (summarize is
+  // the sole occupant of the LLM queue today).
+  const summarizeQueued = (snapshot.queues.llm?.queued ?? 0) + (snapshot.queues.llm?.running ?? 0)
 
-      {/* Edges — fixed system green so the connecting "pipes" read as
+  return (
+    <div>
+      <svg
+        viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
+        className="w-full"
+        style={{ aspectRatio: `${VIEW_WIDTH} / ${VIEW_HEIGHT}` }}
+      >
+        <defs>
+          {/* Glow filter for active nodes — dialled back to suit the
+            smaller node size; bigger blur made tightly-stacked nodes
+            (entities / embed) bleed into each other. */}
+          <filter id="pipeline-glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="2.5" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+
+        {/* Edges — fixed system green so the connecting "pipes" read as
           their own visual layer, separate from the nodes' queue-class
           hues. Particles flowing through them still inherit the
           upstream node's colour, which gives the impression of
@@ -187,139 +188,169 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
           Endpoints are trimmed to each node's current perimeter so
           the line stops at the ring rather than passing through the
           disc. */}
-      {EDGES.map((edge) => {
-        const downstream = snapshot.by_stage[edge.to]
-        const throughput = downstream?.recent_completed ?? 0
-        const baseWidth = 1.5
-        const width = Math.min(8, baseWidth + throughput * 0.4)
-        const opacity = throughput > 0 ? 0.55 : 0.2
-        const rFrom = nodeRadius(snapshot.by_stage[edge.from])
-        const rTo = nodeRadius(snapshot.by_stage[edge.to])
-        return (
-          <path
-            key={`${edge.from}-${edge.to}`}
-            id={`edge-${edge.from}-${edge.to}`}
-            d={edgePath(edge.from, edge.to, rFrom, rTo)}
-            fill="none"
-            stroke={EDGE_COLOR}
-            strokeWidth={width}
-            strokeOpacity={opacity}
-            strokeLinecap="round"
-            style={{ transition: 'stroke-width 500ms, stroke-opacity 500ms' }}
-          />
-        )
-      })}
+        {EDGES.map((edge) => {
+          const downstream = snapshot.by_stage[edge.to]
+          const throughput = downstream?.recent_completed ?? 0
+          const baseWidth = 1.5
+          const width = Math.min(8, baseWidth + throughput * 0.4)
+          const opacity = throughput > 0 ? 0.55 : 0.2
+          const rFrom = nodeRadius(snapshot.by_stage[edge.from])
+          const rTo = nodeRadius(snapshot.by_stage[edge.to])
+          return (
+            <path
+              key={`${edge.from}-${edge.to}`}
+              id={`edge-${edge.from}-${edge.to}`}
+              d={edgePath(edge.from, edge.to, rFrom, rTo)}
+              fill="none"
+              stroke={EDGE_COLOR}
+              strokeWidth={width}
+              strokeOpacity={opacity}
+              strokeLinecap="round"
+              style={{ transition: 'stroke-width 500ms, stroke-opacity 500ms' }}
+            />
+          )
+        })}
 
-      {/* Particles flowing along edges */}
-      {particles.map((p) => (
-        <circle key={p.id} r={3.5} fill={p.color}>
-          <animateMotion dur={`${PARTICLE_DURATION_MS}ms`} repeatCount="1" fill="freeze">
-            <mpath href={`#edge-${p.edgeKey}`} />
-          </animateMotion>
-          {/* Fade in then out so spawn / arrival are visually soft */}
-          <animate
-            attributeName="opacity"
-            values="0;1;1;0"
-            keyTimes="0;0.15;0.85;1"
-            dur={`${PARTICLE_DURATION_MS}ms`}
-            repeatCount="1"
-            fill="freeze"
-          />
-        </circle>
-      ))}
+        {/* Particles flowing along edges */}
+        {particles.map((p) => (
+          <circle key={p.id} r={3.5} fill={p.color}>
+            <animateMotion dur={`${PARTICLE_DURATION_MS}ms`} repeatCount="1" fill="freeze">
+              <mpath href={`#edge-${p.edgeKey}`} />
+            </animateMotion>
+            {/* Fade in then out so spawn / arrival are visually soft */}
+            <animate
+              attributeName="opacity"
+              values="0;1;1;0"
+              keyTimes="0;0.15;0.85;1"
+              dur={`${PARTICLE_DURATION_MS}ms`}
+              repeatCount="1"
+              fill="freeze"
+            />
+          </circle>
+        ))}
 
-      {/* Nodes */}
-      {Object.entries(NODE_POSITIONS).map(([stage, pos]) => {
-        const info = snapshot.by_stage[stage]
-        const r = nodeRadius(info)
-        const color = classColor(info?.queue)
-        const total = info ? info.queued + info.running : 0
-        const isBusy = (info?.running ?? 0) > 0
+        {/* Nodes */}
+        {Object.entries(NODE_POSITIONS).map(([stage, pos]) => {
+          const info = snapshot.by_stage[stage]
+          const r = nodeRadius(info)
+          const color = classColor(info?.queue)
+          const total = info ? info.queued + info.running : 0
+          const isBusy = (info?.running ?? 0) > 0
 
-        // Inner "particle" radius — proportional to the outer ring so
-        // both grow together as the queue depth scales the node size.
-        const innerR = r * 0.55
-        // Heartbeat amplitude: small expansion + slight opacity dip,
-        // ~1.6 s cycle for a calm 'breathing' rather than an urgent
-        // alarm.
-        const innerRMin = innerR * 0.86
-        const innerRMax = innerR * 1.04
-        return (
-          <g key={stage}>
-            {/* Outer ring — always rendered, same thin outline whether
+          // Inner "particle" radius — proportional to the outer ring so
+          // both grow together as the queue depth scales the node size.
+          const innerR = r * 0.55
+          // Heartbeat amplitude: small expansion + slight opacity dip,
+          // ~1.6 s cycle for a calm 'breathing' rather than an urgent
+          // alarm.
+          const innerRMin = innerR * 0.86
+          const innerRMax = innerR * 1.04
+          return (
+            <g key={stage}>
+              {/* Outer ring — always rendered, same thin outline whether
                 idle or busy. The activity signal is the inner particle,
                 not a fill colour change. */}
-            <circle
-              cx={pos.x}
-              cy={pos.y}
-              r={r}
-              fill="none"
-              stroke={color}
-              strokeWidth={1.2}
-              strokeOpacity={isBusy ? 0.75 : 0.45}
-              style={{ transition: 'r 400ms ease-out, stroke-opacity 400ms' }}
-            />
-            {/* Inner particle — only when busy. Concentric with the
+              <circle
+                cx={pos.x}
+                cy={pos.y}
+                r={r}
+                fill="none"
+                stroke={color}
+                strokeWidth={1.2}
+                strokeOpacity={isBusy ? 0.75 : 0.45}
+                style={{ transition: 'r 400ms ease-out, stroke-opacity 400ms' }}
+              />
+              {/* Inner particle — only when busy. Concentric with the
                 ring, glow filter applied, and a slow heartbeat
                 (radius + opacity) so the eye reads "this stage is
                 alive" without the diagram feeling frantic. */}
-            {isBusy && (
-              <circle cx={pos.x} cy={pos.y} fill={color} style={{ filter: 'url(#pipeline-glow)' }}>
-                <animate
-                  attributeName="r"
-                  values={`${innerRMin};${innerRMax};${innerRMin}`}
-                  dur="1.6s"
-                  repeatCount="indefinite"
-                  calcMode="spline"
-                  keySplines="0.4 0 0.6 1; 0.4 0 0.6 1"
-                />
-                <animate
-                  attributeName="opacity"
-                  values="0.78;1;0.78"
-                  dur="1.6s"
-                  repeatCount="indefinite"
-                  calcMode="spline"
-                  keySplines="0.4 0 0.6 1; 0.4 0 0.6 1"
-                />
-              </circle>
-            )}
-            {/* Count badge above the node, only when there's activity */}
-            {total > 0 && (
-              <g>
-                <rect x={pos.x - 16} y={pos.y - r - 14} width={32} height={13} rx={6.5} fill="rgba(0,0,0,0.55)" />
-                <text
-                  x={pos.x}
-                  y={pos.y - r - 5}
-                  textAnchor="middle"
-                  fontSize={9}
-                  fontWeight={600}
-                  fill="white"
-                  style={{ pointerEvents: 'none' }}
-                >
-                  {info!.running > 0 && info!.queued > 0
-                    ? `${info!.running} • +${info!.queued}`
-                    : info!.running > 0
-                      ? `${info!.running}`
-                      : `${info!.queued}`}
-                </text>
-              </g>
-            )}
-            {/* Stage label below the node */}
-            <text
-              x={pos.x}
-              y={pos.y + r + 12}
-              textAnchor="middle"
-              fontSize={10}
-              fontWeight={500}
-              className="fill-(--color-text-primary)"
-              style={{ pointerEvents: 'none' }}
-            >
-              {STAGE_LABELS[stage]}
-            </text>
-          </g>
-        )
-      })}
-    </svg>
+              {isBusy && (
+                <circle cx={pos.x} cy={pos.y} fill={color} style={{ filter: 'url(#pipeline-glow)' }}>
+                  <animate
+                    attributeName="r"
+                    values={`${innerRMin};${innerRMax};${innerRMin}`}
+                    dur="1.6s"
+                    repeatCount="indefinite"
+                    calcMode="spline"
+                    keySplines="0.4 0 0.6 1; 0.4 0 0.6 1"
+                  />
+                  <animate
+                    attributeName="opacity"
+                    values="0.78;1;0.78"
+                    dur="1.6s"
+                    repeatCount="indefinite"
+                    calcMode="spline"
+                    keySplines="0.4 0 0.6 1; 0.4 0 0.6 1"
+                  />
+                </circle>
+              )}
+              {/* Count badge above the node, only when there's activity */}
+              {total > 0 && (
+                <g>
+                  <rect x={pos.x - 16} y={pos.y - r - 14} width={32} height={13} rx={6.5} fill="rgba(0,0,0,0.55)" />
+                  <text
+                    x={pos.x}
+                    y={pos.y - r - 5}
+                    textAnchor="middle"
+                    fontSize={9}
+                    fontWeight={600}
+                    fill="white"
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    {info!.running > 0 && info!.queued > 0
+                      ? `${info!.running} • +${info!.queued}`
+                      : info!.running > 0
+                        ? `${info!.running}`
+                        : `${info!.queued}`}
+                  </text>
+                </g>
+              )}
+              {/* Stage label below the node */}
+              <text
+                x={pos.x}
+                y={pos.y + r + 12}
+                textAnchor="middle"
+                fontSize={10}
+                fontWeight={500}
+                className="fill-(--color-text-primary)"
+                style={{ pointerEvents: 'none' }}
+              >
+                {STAGE_LABELS[stage]}
+              </text>
+            </g>
+          )
+        })}
+
+        {/* "Ready" badge above finalize — drives home that finalize is
+          the terminus of the express line. Summarize is rendered below
+          the SVG as its own BACKGROUND stage. */}
+        <text x={520} y={135} textAnchor="middle" fontSize={10} fill="#30d158" fontWeight={600}>
+          Ready
+        </text>
+      </svg>
+
+      {/* Dotted separator + BACKGROUND panel for summarize — spatially
+          and visually divorced from the main flow so the eye reads
+          "finalize is the end of the express line; summarize is its
+          own background lane that runs at its own pace." */}
+      <div className="mt-2 border-t border-dashed border-(--color-border) opacity-60" />
+      <div
+        className="mt-2 flex items-center gap-3 rounded-lg p-3"
+        style={{ background: 'rgba(186,140,255,0.06)', border: '1px solid rgba(186,140,255,0.4)' }}
+      >
+        <span className="text-[9px] font-semibold tracking-wider" style={{ color: '#c4a4ff' }}>
+          BACKGROUND
+        </span>
+        <span
+          className="inline-block h-3.5 w-3.5 rounded-full"
+          style={{ background: 'rgba(186,140,255,0.25)', border: '1.5px solid #c4a4ff' }}
+        />
+        <span className="text-[12px]" style={{ color: '#c4a4ff' }}>
+          Summarize
+        </span>
+        <span className="ml-auto text-[10px] text-(--color-text-secondary)">{summarizeQueued} queued</span>
+      </div>
+    </div>
   )
 }
 
