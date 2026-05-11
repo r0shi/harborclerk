@@ -28,6 +28,7 @@
 		A100000050 /* MasterKeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000050; };
 		A100000060 /* ProcessExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000060; };
 		A100000061 /* LaunchctlClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000061; };
+		A100000062 /* LaunchdPlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000062; };
 		AT10000001 /* WorkerCountsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000001; };
 		AT10000002 /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000002; };
 		AT10000003 /* OverallStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000003; };
@@ -37,6 +38,7 @@
 		AT10000010 /* MasterKeyManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000010; };
 		AT10000011 /* ProcessExtensionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000011; };
 		AT10000012 /* LaunchctlClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000012; };
+		AT10000013 /* LaunchdPlistTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000013; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -72,6 +74,7 @@
 		B100000050 /* MasterKeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterKeyManager.swift; sourceTree = "<group>"; };
 		B100000060 /* ProcessExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessExtensions.swift; sourceTree = "<group>"; };
 		B100000061 /* LaunchctlClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchctlClient.swift; sourceTree = "<group>"; };
+		B100000062 /* LaunchdPlist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdPlist.swift; sourceTree = "<group>"; };
 		D100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D100000002 /* HarborClerkServer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerkServer.entitlements; sourceTree = "<group>"; };
 		CT10000001 /* HarborClerkServerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HarborClerkServerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -84,6 +87,7 @@
 		BT10000010 /* MasterKeyManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterKeyManagerTests.swift; sourceTree = "<group>"; };
 		BT10000011 /* ProcessExtensionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessExtensionsTests.swift; sourceTree = "<group>"; };
 		BT10000012 /* LaunchctlClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchctlClientTests.swift; sourceTree = "<group>"; };
+		BT10000013 /* LaunchdPlistTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdPlistTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -129,6 +133,7 @@
 				B100000050 /* MasterKeyManager.swift */,
 				B100000060 /* ProcessExtensions.swift */,
 				B100000061 /* LaunchctlClient.swift */,
+				B100000062 /* LaunchdPlist.swift */,
 				B100000016 /* Assets.xcassets */,
 				D100000001 /* Info.plist */,
 				D100000002 /* HarborClerkServer.entitlements */,
@@ -172,6 +177,7 @@
 				BT10000010 /* MasterKeyManagerTests.swift */,
 				BT10000011 /* ProcessExtensionsTests.swift */,
 				BT10000012 /* LaunchctlClientTests.swift */,
+				BT10000013 /* LaunchdPlistTests.swift */,
 			);
 			path = HarborClerkServerTests;
 			sourceTree = "<group>";
@@ -308,6 +314,7 @@
 				A100000050 /* MasterKeyManager.swift in Sources */,
 				A100000060 /* ProcessExtensions.swift in Sources */,
 				A100000061 /* LaunchctlClient.swift in Sources */,
+				A100000062 /* LaunchdPlist.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -324,6 +331,7 @@
 				AT10000010 /* MasterKeyManagerTests.swift in Sources */,
 				AT10000011 /* ProcessExtensionsTests.swift in Sources */,
 				AT10000012 /* LaunchctlClientTests.swift in Sources */,
+				AT10000013 /* LaunchdPlistTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
