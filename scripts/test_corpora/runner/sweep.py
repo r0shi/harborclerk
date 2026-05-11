@@ -98,6 +98,35 @@ def _wait_for_hc_reachable(hc: HarborClerkClient, max_wait_seconds: int = HC_REC
     return False
 
 
+def _should_judge(*, phase: int, status: Status, model_answer: str, no_judge: bool) -> bool:
+    """Whether to call the LLM-as-judge for one finished unit.
+
+    Phase 4 (main matrix) and phase 5 (parity heavies) are the phases that
+    produce model answers worth judging — earlier phases either don't run
+    the model (0, 1) or use cached baselines.
+
+    We gate the call on three things beyond phase:
+
+    1. ``--no-judge`` is the opt-out for cheap local runs (no Anthropic spend).
+    2. ``final_status`` must be ``DONE``. Degraded/error units have no
+       meaningful answer to compare against — judging them produces a
+       junk verdict and wastes a Sonnet call.
+    3. The model answer must be non-whitespace. An empty answer is the
+       fingerprint of the dead-LLM cascade (chat returns "completed" with
+       no tokens in ~2s) and is captured by the ``degraded`` status anyway.
+
+    Pulled out as a helper so the gate is unit-testable and so the
+    docstring lives next to the predicate.
+    """
+    if no_judge:
+        return False
+    if phase not in (4, 5):
+        return False
+    if status != Status.DONE:
+        return False
+    return bool(model_answer and model_answer.strip())
+
+
 def _is_retryable_research_failure(out: dict) -> bool:
     """Whether ``out["result"]`` warrants a one-shot retry.
 
@@ -146,6 +175,14 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--time-limit-minutes", type=int, default=30)
     p.add_argument("--insecure", action="store_true", help="disable TLS verify (self-signed)")
     p.add_argument("--dry-run", action="store_true", help="run Phase 0 only, no API calls beyond acquire")
+    p.add_argument(
+        "--no-judge",
+        action="store_true",
+        help=(
+            "skip the LLM-as-judge call in phases 4 and 5. Use for cheap local-only "
+            "runs when you don't want to spend Anthropic credits on Sonnet judgments."
+        ),
+    )
     return p
 
 
@@ -995,22 +1032,45 @@ def main(argv: list[str] | None = None) -> int:
                         ce = citation_extra(baseline.get("cited_doc_ids", []), model_doc_ids)
                         eo = entity_overlap(baseline.get("answer", ""), model_answer, lang="en")
 
-                        if phase == 5:
+                        # Run LLM-as-judge when ``_should_judge`` says so. Phase 4
+                        # (main matrix) and phase 5 (parity heavies) qualify;
+                        # earlier phases don't produce a model answer worth
+                        # comparing against the baseline.
+                        if _should_judge(
+                            phase=phase,
+                            status=final_status,
+                            model_answer=model_answer,
+                            no_judge=args.no_judge,
+                        ):
                             owning_c = (
                                 u.corpus
                                 if u.corpus != "unified"
                                 else _find_owning_corpus(u.question_id, questions_by_corpus)
                             )
                             text_for_judge, _ = _question_text(questions_by_corpus[owning_c], u.question_id)
-                            v = judge.judge(
-                                question=text_for_judge, baseline=baseline.get("answer", ""), model_answer=model_answer
-                            )
-                            (run_dir / "judge" / u.corpus / u.model).mkdir(parents=True, exist_ok=True)
-                            (run_dir / "judge" / u.corpus / u.model / f"{u.question_id}__{u.depth}.json").write_text(
-                                json.dumps(dataclasses.asdict(v), indent=2)
-                            )
-                            judge_verdict = v.verdict
-                            judge_completeness = v.completeness
+                            try:
+                                v = judge.judge(
+                                    question=text_for_judge,
+                                    baseline=baseline.get("answer", ""),
+                                    model_answer=model_answer,
+                                )
+                            except Exception:
+                                # Judge failures must not poison the sweep — log
+                                # and carry on with empty verdict columns.
+                                log.warning(
+                                    "judge call failed for %s/%s/%s; continuing without verdict",
+                                    u.corpus,
+                                    u.model,
+                                    u.question_id,
+                                    exc_info=True,
+                                )
+                            else:
+                                (run_dir / "judge" / u.corpus / u.model).mkdir(parents=True, exist_ok=True)
+                                (
+                                    run_dir / "judge" / u.corpus / u.model / f"{u.question_id}__{u.depth}.json"
+                                ).write_text(json.dumps(dataclasses.asdict(v), indent=2))
+                                judge_verdict = v.verdict
+                                judge_completeness = v.completeness
 
                         sampler.note(
                             CompletionEvent(

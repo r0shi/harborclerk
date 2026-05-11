@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
+from harbor_clerk.llm.citations import dedupe_citations, extract_citations_from_tool_result
 from harbor_clerk.llm.health import report_llm_error, report_llm_success
 from harbor_clerk.llm.models import get_model
 from harbor_clerk.llm.tools import execute_tool, get_chat_tools, summarize_tool_result
@@ -270,6 +271,12 @@ async def chat_stream(
         total_tokens = 0
         budget_exhausted = False
 
+        # Accumulated citations parsed from each tool result. Deduped+attached
+        # to the assistant ChatMessage row (``rag_context`` column) and emitted
+        # on the ``done`` SSE event so the UI and the test harness can surface
+        # what the model cited without re-parsing the prose.
+        citations_accumulated: list[dict] = []
+
         for _round in range(_MAX_TOOL_ROUNDS):
             # Check context budget before each LLM call
             usage_frac = _context_usage(messages, context_tokens)
@@ -359,9 +366,11 @@ async def chat_stream(
                         if detail:
                             error_event["detail"] = detail
                         yield f"data: {json.dumps(error_event)}\n\n"
+                        early_cites = dedupe_citations(citations_accumulated)
                         done_payload: dict = {
                             "type": "done",
                             "context_pct": 100 if is_context_overflow else None,
+                            "rag_context": {"citations": early_cites} if early_cites else None,
                         }
                         if conv and conv.title != "New conversation":
                             done_payload["title"] = conv.title
@@ -438,7 +447,10 @@ async def chat_stream(
                     conv.title = _generate_title(user_message)
                 await session.commit()
                 yield f"data: {json.dumps({'type': 'error', 'message': error_summary})}\n\n"
+                early_cites = dedupe_citations(citations_accumulated)
                 done_payload: dict = {"type": "done"}
+                if early_cites:
+                    done_payload["rag_context"] = {"citations": early_cites}
                 if conv and conv.title != "New conversation":
                     done_payload["title"] = conv.title
                 if active_model_id:
@@ -474,6 +486,12 @@ async def chat_stream(
                     yield f"data: {json.dumps({'type': 'tool_call', 'name': fn_name, 'arguments': fn_args})}\n\n"
 
                     result_str = await execute_tool(fn_name, fn_args, user_id)
+
+                    # Capture citations parsed from this tool result. Best-effort:
+                    # tools that don't return citation-shaped JSON contribute nothing.
+                    # Dedup happens later, after the whole tool loop, so the same
+                    # chunk surfacing in two searches collapses to one cite.
+                    citations_accumulated.extend(extract_citations_from_tool_result(result_str))
 
                     yield f"data: {json.dumps({'type': 'tool_result', 'name': fn_name, 'summary': summarize_tool_result(result_str), 'raw_result': result_str})}\n\n"
 
@@ -554,6 +572,8 @@ async def chat_stream(
         context_pct = round(min(used_tokens / context_tokens, 1.0) * 100) if context_tokens > 0 else 0
 
         # Save assistant response
+        final_citations = dedupe_citations(citations_accumulated)
+        rag_context_payload = {"citations": final_citations} if final_citations else None
         assistant_msg = None
         if assistant_content:
             assistant_msg = ChatMessage(
@@ -561,7 +581,7 @@ async def chat_stream(
                 role="assistant",
                 content=assistant_content,
                 tokens_used=total_tokens or None,
-                rag_context=None,
+                rag_context=rag_context_payload,
                 model_id=active_model_id,
                 context_pct=context_pct,
             )
@@ -578,6 +598,7 @@ async def chat_stream(
             "type": "done",
             "message_id": str(assistant_msg.message_id) if assistant_msg else None,
             "context_pct": context_pct,
+            "rag_context": rag_context_payload,
         }
         if conv and conv.title != "New conversation":
             done_payload["title"] = conv.title
