@@ -112,7 +112,16 @@ extension Process {
             Log.logger("lifecycle").warning(
                 "[\(name, privacy: .public)] Still running after \(Int(grace), privacy: .public)s — sending SIGKILL"
             )
-            kill(proc.processIdentifier, SIGKILL)
+            // killpg targets the entire process group (which the leader's pid
+            // identifies after runAsProcessGroupLeader). Catches grandchildren —
+            // Tika's child JVMs, worker-spawned tesseract/pdftoppm/magick.
+            // Falls back gracefully if the process wasn't launched as a pgid
+            // leader: killpg with a non-leader pid returns -1 ESRCH and we
+            // log it. For belt-and-suspenders we also send a plain kill().
+            if killpg(proc.processIdentifier, SIGKILL) != 0 {
+                // Not a pgid leader (or already dead) — fall back to kill().
+                kill(proc.processIdentifier, SIGKILL)
+            }
         }
 
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in

@@ -233,4 +233,32 @@ final class ProcessExtensionsTests: XCTestCase {
         XCTAssertEqual(kill(grandchildPid, 0), -1, "grandchild must be dead after killpg")
         XCTAssertEqual(errno, ESRCH, "expected kill(pid, 0) errno = ESRCH after grandchild died")
     }
+
+    /// waitForExitWithDeadline's SIGKILL escalation must reach grandchildren
+    /// when the leader was launched as a pgid leader. Otherwise a hung
+    /// service that spawned subprocesses leaks them through the SIGKILL
+    /// fallback.
+    func testWaitForExitWithDeadlineSigkillReachesGrandchildren() async throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // Trap SIGTERM so sh ignores the polite signal. Only SIGKILL kills.
+        proc.arguments = ["-c", "trap '' TERM; sleep 30 & echo $! > /tmp/pg-test-grandchild2.pid; wait"]
+        try proc.runAsProcessGroupLeader()
+
+        defer { try? FileManager.default.removeItem(atPath: "/tmp/pg-test-grandchild2.pid") }
+
+        try await Task.sleep(for: .milliseconds(200))
+        guard let pidStr = try? String(contentsOfFile: "/tmp/pg-test-grandchild2.pid"),
+              let grandchildPid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            XCTFail("grandchild pid file missing")
+            return
+        }
+
+        proc.terminate()  // SIGTERM, which sh has trapped to no-op
+        await proc.waitForExitWithDeadline(graceSeconds: 1.0, serviceName: "pg-test-grandchild2")
+        XCTAssertFalse(proc.isRunning)
+
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(kill(grandchildPid, 0), -1, "grandchild must be dead after deadline-driven SIGKILL")
+    }
 }
