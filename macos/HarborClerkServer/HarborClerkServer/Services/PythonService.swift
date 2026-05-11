@@ -65,7 +65,7 @@ class PythonService: ManagedService {
             }
         }
 
-        try proc.run()
+        try proc.runAsProcessGroupLeader()
         process = proc
     }
 

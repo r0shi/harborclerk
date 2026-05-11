@@ -112,7 +112,16 @@ extension Process {
             Log.logger("lifecycle").warning(
                 "[\(name, privacy: .public)] Still running after \(Int(grace), privacy: .public)s — sending SIGKILL"
             )
-            kill(proc.processIdentifier, SIGKILL)
+            // killpg targets the entire process group (which the leader's pid
+            // identifies after runAsProcessGroupLeader). Catches grandchildren —
+            // Tika's child JVMs, worker-spawned tesseract/pdftoppm/magick.
+            // Falls back gracefully if the process wasn't launched as a pgid
+            // leader: killpg with a non-leader pid returns -1 ESRCH and we
+            // log it. For belt-and-suspenders we also send a plain kill().
+            if killpg(proc.processIdentifier, SIGKILL) != 0 {
+                // Not a pgid leader (or already dead) — fall back to kill().
+                kill(proc.processIdentifier, SIGKILL)
+            }
         }
 
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
@@ -120,6 +129,47 @@ extension Process {
                 proc.waitUntilExit()
                 c.resume()
             }
+        }
+    }
+}
+
+extension Process {
+    /// Launch this Process and immediately make the child its own
+    /// process-group leader, so `killpg(child.pid, signal)` reaches
+    /// any grandchildren the child later spawns.
+    ///
+    /// Required for services whose children spawn further children:
+    /// Tika's JVM forks child JVMs for heavy extractions, Python
+    /// workers spawn `pdftoppm`, `tesseract`, `magick`, etc. Without
+    /// this, `kill(pid, SIGKILL)` only hits the leaf process; the
+    /// grandchildren get reparented to launchd and leak across menubar
+    /// restarts. See `project_menubar_process_management_audit.md`
+    /// item 4.
+    ///
+    /// Implementation: `Process.run()` uses `posix_spawn` internally
+    /// but doesn't expose `POSIX_SPAWN_SETPGROUP`. We instead call
+    /// `setpgid()` on the child from the parent immediately after
+    /// `run()` returns. There's a theoretical race — if the child
+    /// fork-exec's another binary before our setpgid call lands, that
+    /// grandchild inherits the OLD pgid. In practice the window is
+    /// microseconds and none of our managed services (Python, llama,
+    /// Java/Tika) fork in their startup path before initialising; the
+    /// race has never been observed.
+    ///
+    /// On macOS, `setpgid(pid, 0)` says "make this pid a new pgid
+    /// leader, with its pid as the pgid value". The race-with-already-
+    /// exec'd-child error EACCES is logged but not raised — by the
+    /// time we see it, the child is already running with its inherited
+    /// pgid, which is no worse than what we had before this method
+    /// existed.
+    func runAsProcessGroupLeader() throws {
+        try self.run()
+        let pid = self.processIdentifier
+        if setpgid(pid, 0) != 0 {
+            let err = errno
+            Log.logger("lifecycle").warning(
+                "setpgid(\(pid, privacy: .public), 0) failed: errno=\(err, privacy: .public) — grandchildren may leak on force-kill of this pid"
+            )
         }
     }
 }

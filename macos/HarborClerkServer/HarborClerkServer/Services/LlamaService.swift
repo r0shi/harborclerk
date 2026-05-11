@@ -76,7 +76,7 @@ final class LlamaService: ManagedService {
             }
         }
 
-        try proc.run()
+        try proc.runAsProcessGroupLeader()
         process = proc
     }
 

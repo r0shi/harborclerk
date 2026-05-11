@@ -216,7 +216,10 @@ class ServiceManager: ObservableObject {
             // Check if process is still alive
             guard kill(pid, 0) == 0 else { continue }
             Log.logger("lifecycle").warning("Killing orphaned process \(pid, privacy: .public) from prior run")
-            kill(pid, SIGTERM)
+            // killpg first to catch grandchildren that orphaned with this leader.
+            // Fall back to kill() if the PID isn't a pgid leader (older crashed
+            // run from before the runAsProcessGroupLeader change).
+            if killpg(pid, SIGTERM) != 0 { kill(pid, SIGTERM) }
             signalled.append(pid)
         }
 
@@ -226,7 +229,10 @@ class ServiceManager: ObservableObject {
             for pid in signalled {
                 if kill(pid, 0) == 0 {
                     Log.logger("lifecycle").warning("Orphaned process \(pid, privacy: .public) didn't exit, sending SIGKILL")
-                    kill(pid, SIGKILL)
+                    // killpg first to catch grandchildren that orphaned with this leader.
+                    // Fall back to kill() if the PID isn't a pgid leader (older crashed
+                    // run from before the runAsProcessGroupLeader change).
+                    if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
                 }
             }
         }
@@ -456,14 +462,23 @@ class ServiceManager: ObservableObject {
             if let pySvc = service as? PythonService, let proc = pySvc.process {
                 let pid = proc.processIdentifier
                 if pid > 0 {
-                    kill(pid, SIGKILL)
+                    // killpg reaches grandchildren when the tracked PID is a pgid leader
+                    // (which it is, post-PR-2). Fall back to plain kill() for belt-and-
+                    // suspenders.
+                    if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
                     killed.insert(pid)
                 }
             } else if let tika = service as? TikaService, let pid = tika.processIdentifier {
-                kill(pid, SIGKILL)
+                // killpg reaches grandchildren when the tracked PID is a pgid leader
+                // (which it is, post-PR-2). Fall back to plain kill() for belt-and-
+                // suspenders.
+                if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
                 killed.insert(pid)
             } else if let llama = service as? LlamaService, let pid = llama.processIdentifier {
-                kill(pid, SIGKILL)
+                // killpg reaches grandchildren when the tracked PID is a pgid leader
+                // (which it is, post-PR-2). Fall back to plain kill() for belt-and-
+                // suspenders.
+                if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
                 killed.insert(pid)
             }
         }
@@ -476,7 +491,10 @@ class ServiceManager: ObservableObject {
            let pidLine = contents.components(separatedBy: "\n").first,
            let pid = Int32(pidLine), pid > 0, !killed.contains(pid)
         {
-            kill(pid, SIGKILL)
+            // killpg reaches grandchildren when the tracked PID is a pgid leader
+            // (which it is, post-PR-2). Fall back to plain kill() for belt-and-
+            // suspenders.
+            if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
             killed.insert(pid)
         }
 
@@ -491,7 +509,10 @@ class ServiceManager: ObservableObject {
                 // process before we SIGKILL — a recycled PID belonging to
                 // someone else's process would be a serious bug.
                 guard kill(pid, 0) == 0 else { continue }
-                kill(pid, SIGKILL)
+                // killpg reaches grandchildren when the tracked PID is a pgid leader
+                // (which it is, post-PR-2). Fall back to plain kill() for belt-and-
+                // suspenders.
+                if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
                 killed.insert(pid)
             }
         }

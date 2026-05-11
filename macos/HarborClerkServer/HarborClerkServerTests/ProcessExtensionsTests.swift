@@ -174,4 +174,102 @@ final class ProcessExtensionsTests: XCTestCase {
         await proc.waitForExitWithDeadline(graceSeconds: 30.0, serviceName: "test-already-dead")
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
     }
+
+    /// After runAsProcessGroupLeader, getpgid(pid) must equal pid — confirms
+    /// the child is the leader of a new process group rather than inheriting
+    /// the parent's pgid. Without this, killpg(pid) only hits the leaf
+    /// process and grandchildren orphan.
+    func testRunAsProcessGroupLeaderMakesChildItsOwnPgidLeader() throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        proc.arguments = ["3"]
+
+        try proc.runAsProcessGroupLeader()
+        defer {
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+                proc.waitUntilExit()
+            }
+        }
+
+        let pid = proc.processIdentifier
+        let pgid = getpgid(pid)
+        XCTAssertEqual(pgid, pid, "expected child to be its own pgid leader (pgid == pid)")
+    }
+
+    /// The user-visible reason for runAsProcessGroupLeader: killpg reaches
+    /// grandchildren that plain kill(pid) would miss. Verified end-to-end
+    /// by spawning `sh -c 'sleep 30 & wait'`. The sh forks a sleep child;
+    /// without pgid we'd only kill sh and orphan sleep. With pgid we kill both.
+    func testKillpgReachesGrandchildSpawnedViaShell() async throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", "sleep 30 & echo $! > /tmp/pg-test-grandchild.pid; wait"]
+        try proc.runAsProcessGroupLeader()
+        defer {
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+                proc.waitUntilExit()
+            }
+            try? FileManager.default.removeItem(atPath: "/tmp/pg-test-grandchild.pid")
+        }
+
+        // Give sh a moment to write the grandchild PID
+        try await Task.sleep(for: .milliseconds(200))
+
+        guard let pidStr = try? String(contentsOfFile: "/tmp/pg-test-grandchild.pid"),
+              let grandchildPid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            XCTFail("grandchild pid file missing or unparseable")
+            return
+        }
+        XCTAssertEqual(kill(grandchildPid, 0), 0, "grandchild must be alive before killpg")
+
+        // killpg the leader — should hit both sh and the sleep.
+        XCTAssertEqual(killpg(proc.processIdentifier, SIGKILL), 0)
+
+        // Give the kernel a moment to clean up
+        try await Task.sleep(for: .milliseconds(500))
+
+        XCTAssertEqual(kill(grandchildPid, 0), -1, "grandchild must be dead after killpg")
+        XCTAssertEqual(errno, ESRCH, "expected kill(pid, 0) errno = ESRCH after grandchild died")
+    }
+
+    /// waitForExitWithDeadline's SIGKILL escalation must reach grandchildren
+    /// when the leader was launched as a pgid leader. Otherwise a hung
+    /// service that spawned subprocesses leaks them through the SIGKILL
+    /// fallback.
+    func testWaitForExitWithDeadlineSigkillReachesGrandchildren() async throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // Trap SIGTERM so sh ignores the polite signal. Only SIGKILL kills.
+        proc.arguments = ["-c", "trap '' TERM; sleep 30 & echo $! > /tmp/pg-test-grandchild2.pid; wait"]
+        try proc.runAsProcessGroupLeader()
+
+        var grandchildPid: Int32 = 0
+        defer {
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+                proc.waitUntilExit()
+            }
+            if grandchildPid != 0 {
+                kill(grandchildPid, SIGKILL)
+            }
+            try? FileManager.default.removeItem(atPath: "/tmp/pg-test-grandchild2.pid")
+        }
+
+        try await Task.sleep(for: .milliseconds(200))
+        guard let pidStr = try? String(contentsOfFile: "/tmp/pg-test-grandchild2.pid"),
+              let parsedPid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            XCTFail("grandchild pid file missing")
+            return
+        }
+        grandchildPid = parsedPid
+
+        proc.terminate()  // SIGTERM, which sh has trapped to no-op
+        await proc.waitForExitWithDeadline(graceSeconds: 1.0, serviceName: "pg-test-grandchild2")
+        XCTAssertFalse(proc.isRunning)
+
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(kill(grandchildPid, 0), -1, "grandchild must be dead after deadline-driven SIGKILL")
+    }
 }
