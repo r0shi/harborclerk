@@ -1395,6 +1395,12 @@ async def research_stream(
                     logger.info("Research stream disconnected, marking interrupted (conversation=%s)", conversation_id)
                     state.status = "interrupted"
                     state.current_round = step_count
+                    # Default reason so the API surfaces *something* on the
+                    # ``error`` field rather than ``null``. The other two
+                    # interrupt paths (synthesis HTTP error, synthesis
+                    # connect/timeout) already set a specific reason above.
+                    if not state.error:
+                        state.error = "Research stream disconnected before completion"
                     await session.commit()
             except Exception:
                 logger.exception("Failed to mark research as interrupted on disconnect")
