@@ -144,12 +144,21 @@ async def get_research(
 
     # Build tool result lookup for enrichment
     from harbor_clerk.api.routes.chat import _enrich_tool_calls
+    from harbor_clerk.llm.citations import dedupe_citations, extract_citations_from_tool_result
     from harbor_clerk.llm.tools import summarize_tool_result as _summarize_tool_result
 
     tool_results_by_id: dict[str, tuple[str, str]] = {}
+    # Citations derived from every tool result emitted during the research
+    # turn. Computed at read-time so research detail surfaces citations
+    # without needing a new persisted column. ``dedupe_citations`` collapses
+    # the same (doc_id, chunk_id) seen across multiple searches and keeps
+    # the highest score.
+    citations_acc: list[dict] = []
     for m in all_msgs:
         if m.role == "tool" and m.tool_call_id and m.content:
             tool_results_by_id[m.tool_call_id] = (_summarize_tool_result(m.content), m.content)
+            citations_acc.extend(extract_citations_from_tool_result(m.content))
+    citations = dedupe_citations(citations_acc)
 
     # Build message dicts
     messages: list[dict] = []
@@ -186,6 +195,7 @@ async def get_research(
         report=report,
         model_id=report_model_id or (get_settings().llm_model_id or None),
         messages=messages,
+        citations=citations,
         created_at=conv.created_at,
         completed_at=state.completed_at,
     )

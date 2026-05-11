@@ -60,6 +60,12 @@ class ResearchDetail(BaseModel):
     report: str | None = None
     model_id: str | None = None
     messages: list[dict]
+    # Deduped citation records derived from the tool-result messages of the
+    # research turn. Each entry has at minimum ``doc_id`` (when the underlying
+    # tool exposed it); additional fields include ``doc_title``, ``chunk_id``,
+    # ``pages``, ``score``. Computed at read-time from persisted tool messages
+    # so historical research surfaces citations too.
+    citations: list[dict] = []
     created_at: datetime
     completed_at: datetime | None = None
 
