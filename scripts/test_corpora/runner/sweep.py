@@ -787,11 +787,10 @@ def main(argv: list[str] | None = None) -> int:
                 if phase in (2, 3, 4, 5, 6):
                     if breaker.should_skip(u.model):
                         log.warning(
-                            "skipping %s/%s/%s — circuit breaker is open for model=%s (left PENDING for --resume)",
+                            "skipping %s/%s/%s — circuit breaker is open (left PENDING for --resume)",
                             u.corpus,
                             u.model,
                             u.question_id,
-                            u.model,
                         )
                         continue
                     if breaker.should_pause(u.model):
@@ -983,10 +982,12 @@ def main(argv: list[str] | None = None) -> int:
                         if result.get("harness_aborted"):
                             final_status = Status.ERROR
                             error_msg = f"harness aborted research: {result.get('harness_abort_reason', 'unknown')}"
-                        elif result_status == "completed" and result_answer:
+                        elif result_status == "completed":
                             # Tighter DONE predicate: a non-empty answer is not
                             # automatically a real engagement with the corpus.
-                            # ``classify_answer`` separates real answers from
+                            # ``classify_answer`` is the single authority on
+                            # completed-status outcomes — it folds the
+                            # "empty/whitespace answer" case in alongside
                             # refusals ("I don't have the capability...") and
                             # roleplay (small models that emit ``[search_documents:
                             # "..."]`` as text instead of invoking the tool). Both
@@ -999,9 +1000,6 @@ def main(argv: list[str] | None = None) -> int:
                             else:
                                 final_status = Status.DEGRADED
                                 error_msg = reason
-                        elif result_status == "completed" and not result_answer:
-                            final_status = Status.DEGRADED
-                            error_msg = "completed with empty answer"
                         elif result_status == "interrupted":
                             final_status = Status.ERROR
                             error_msg = "research interrupted by Harbor Clerk"
