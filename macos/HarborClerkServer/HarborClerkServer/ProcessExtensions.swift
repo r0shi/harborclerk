@@ -1,0 +1,125 @@
+import Foundation
+import os
+
+/// Shared helpers for the shutdown path.
+///
+/// Two known fragilities of `Foundation.Process` + `Pipe` get addressed
+/// here in one place rather than re-implemented in every service:
+///
+/// 1. **Pipe + `waitUntilExit` deadlock.** Apple's `waitUntilExit`
+///    documents that it waits for *both* process termination *and* all
+///    Pipe references to release. `Log.createPipe()` attaches a
+///    `readabilityHandler` that nils itself on EOF (empty data), which
+///    is the documented cleanly-exiting fix — but a hung child never
+///    sends EOF, so the handler never runs the nil-out branch, so the
+///    pipe stays open, so `waitUntilExit` blocks indefinitely. The
+///    `detachPipesForShutdown()` helper proactively nils the handler,
+///    closes the read end, and replaces `standardOutput`/`standardError`
+///    with `/dev/null` so the wait only blocks on process termination.
+///    See `project_menubar_process_management_audit.md` for the audit
+///    that caught this.
+///
+/// 2. **No bounded wait.** Every service's stop path currently does
+///    `await withCheckedContinuation { proc.waitUntilExit() }` with no
+///    deadline beyond the per-service `DispatchQueue.asyncAfter` SIGKILL
+///    fallback. That fallback works in isolation but `stopAll()` is
+///    sequential; one hung worker stalls the whole shutdown. The
+///    `waitForExitWithDeadline()` helper folds SIGTERM-grace,
+///    SIGKILL-on-deadline, and the actual wait into a single call so
+///    callers can compose timeouts predictably.
+extension Process {
+    /// Defuse this Process's stdout/stderr Pipes so `waitUntilExit()` no
+    /// longer blocks on pipe-close even when the child is hung.
+    ///
+    /// What we do:
+    ///   1. Nil the `readabilityHandler` on each unique attached Pipe's
+    ///      read end. Releases the closure (no more handler invocations).
+    ///   2. Close the read-end FileHandle. This causes the kernel to
+    ///      report EOF on the pipe, and (more importantly) makes any
+    ///      blocked child write return EPIPE / receive SIGPIPE — which
+    ///      unwedges a child that was hung in a `write(2)` because the
+    ///      pipe buffer was full and our readabilityHandler had fallen
+    ///      behind.
+    ///
+    /// What we deliberately don't do:
+    ///   ~~Reassign `self.standardOutput = FileHandle.nullDevice`~~.
+    ///   `Foundation.Process` raises `NSInvalidArgumentException: task
+    ///   already launched` if you set `standardOutput`/`standardError`
+    ///   after `run()`. Closing the read-end fd is sufficient to defuse
+    ///   the wait — we don't need to replace the entire stream.
+    ///
+    /// Safe to call multiple times. Order relative to `terminate()`
+    /// doesn't matter.
+    func detachPipesForShutdown() {
+        let stdoutPipe = self.standardOutput as? Pipe
+        let stderrPipe = self.standardError as? Pipe
+
+        // Many of our services (Log.createPipe in PythonService) attach
+        // the SAME Pipe instance to both stdout and stderr. Identity
+        // check skips a redundant close — closing twice would just throw
+        // on the second call.
+        if let pipe = stdoutPipe {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            try? pipe.fileHandleForReading.close()
+        }
+        if let pipe = stderrPipe, pipe !== stdoutPipe {
+            pipe.fileHandleForReading.readabilityHandler = nil
+            try? pipe.fileHandleForReading.close()
+        }
+    }
+
+    /// Wait for this Process to exit, with a bounded grace period.
+    ///
+    /// Behaviour:
+    ///   1. If the process is not running, returns immediately.
+    ///   2. Otherwise schedules a `SIGKILL` at `now + graceSeconds`. The
+    ///      schedule is fire-and-forget — if the process exits before the
+    ///      deadline, the SIGKILL closure short-circuits via
+    ///      `proc.isRunning` check.
+    ///   3. Blocks (asynchronously) on `waitUntilExit()` until the
+    ///      process actually exits.
+    ///
+    /// This is the standard pattern from `PythonService.stop()` (it had it
+    /// before this audit) lifted out so `stopAll()` can use it too without
+    /// reimplementing — that reimplementation was the bug.
+    ///
+    /// Always detaches Pipes first via `detachPipesForShutdown()`. Without
+    /// that, `waitUntilExit` could still hang waiting for the pipe to
+    /// close even after `SIGKILL` arrives.
+    ///
+    /// - Parameters:
+    ///   - graceSeconds: how long after `terminate()` to wait before
+    ///     escalating to `SIGKILL`. The caller is expected to have
+    ///     already sent `SIGTERM` via `terminate()` before invoking
+    ///     this helper.
+    ///   - serviceName: included in log messages so the "had to SIGKILL
+    ///     foo" line is informative.
+    func waitForExitWithDeadline(
+        graceSeconds: TimeInterval,
+        serviceName: String,
+    ) async {
+        guard self.isRunning else { return }
+
+        detachPipesForShutdown()
+
+        // Schedule SIGKILL escalation. Fire-and-forget; if the process is
+        // already gone by the deadline, kill(0) is harmless.
+        let proc = self
+        let name = serviceName
+        let grace = graceSeconds
+        DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
+            guard proc.isRunning else { return }
+            Log.logger("lifecycle").warning(
+                "[\(name, privacy: .public)] Still running after \(Int(grace), privacy: .public)s — sending SIGKILL"
+            )
+            kill(proc.processIdentifier, SIGKILL)
+        }
+
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async {
+                proc.waitUntilExit()
+                c.resume()
+            }
+        }
+    }
+}

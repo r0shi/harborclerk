@@ -343,27 +343,48 @@ final class ServiceManager: ObservableObject {
         }
         notifyStateChanged()
 
-        // Stop workers in parallel (SIGTERM all, then wait) — same as restartForChangedSettings
+        // Stop workers in parallel: SIGTERM all → wait-with-deadline all
+        // concurrently. Pre-audit (2026-05-11) this loop reimplemented the
+        // wait inline WITHOUT a SIGKILL fallback, so a single Python worker
+        // stuck in a blocking syscall (or behind a Pipe+waitUntilExit
+        // deadlock) would stall the entire shutdown indefinitely. The
+        // rewrite uses the shared `Process.waitForExitWithDeadline` helper,
+        // which detaches pipes and escalates to SIGKILL after the grace
+        // period — bounded at ~12s regardless of how many workers are hung.
         for worker in allWorkers {
             worker.state = .stopping
             worker.process?.terminate()
         }
         notifyStateChanged()
-        for worker in allWorkers {
-            if let proc = worker.process, proc.isRunning {
-                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                    DispatchQueue.global().async {
-                        proc.waitUntilExit()
-                        c.resume()
+
+        await withTaskGroup(of: Void.self) { group in
+            for worker in allWorkers {
+                let proc = worker.process
+                let grace = worker.shutdownGracePeriod
+                let workerName = worker.name
+                group.addTask {
+                    if let proc, proc.isRunning {
+                        await proc.waitForExitWithDeadline(
+                            graceSeconds: grace,
+                            serviceName: workerName,
+                        )
+                    }
+                    await MainActor.run {
+                        worker.process = nil
+                        worker.state = .stopped
+                        self.notifyStateChanged()
                     }
                 }
             }
-            worker.process = nil
-            worker.state = .stopped
         }
-        notifyStateChanged()
 
-        // Stop remaining services in reverse order, notifying after each
+        // Stop remaining services in reverse order, notifying after each.
+        // Sequential here is intentional: shutdown ordering matters
+        // (api → llama → embedder → tika → postgres) because dependents
+        // need their backends alive long enough to close cleanly. Each
+        // service's own stop() uses the shared deadline helper so a hung
+        // service still can't stall the next one for more than its grace
+        // period.
         let nonWorkers = services.filter { svc in
             !allWorkers.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(svc) })
         }.reversed()
@@ -373,6 +394,84 @@ final class ServiceManager: ObservableObject {
         }
 
         // All children stopped — remove PID file
+        removePidFile()
+    }
+
+    /// Send SIGKILL to every child we know about. Used by the
+    /// `applicationShouldTerminate` deadline path — when `stopAll()` has
+    /// failed to complete in time and we'd rather have a noisy unclean
+    /// shutdown than a menubar app the user can't quit without Terminal.
+    ///
+    /// Three sources for child PIDs:
+    ///   1. Every `ManagedService.process` we currently hold a strong
+    ///      reference to.
+    ///   2. The `PostgresService` postmaster PID (read from
+    ///      `postmaster.pid` inside the data dir).
+    ///   3. `child-pids.txt` written by `savePidFile()` — catches any
+    ///      child whose state we may have lost track of mid-shutdown.
+    ///
+    /// Synchronous and best-effort. We do *not* wait for the SIGKILLed
+    /// processes to actually die — the caller (`AppDelegate`) will call
+    /// `exit(0)` immediately after, and at that point the kernel will
+    /// reparent any survivors to launchd.
+    ///
+    /// Note (Tier B follow-up): without process groups (see audit memo),
+    /// this only catches the tracked PIDs, not their descendants. Tika's
+    /// child JVMs and worker-spawned utilities can survive. Adding
+    /// `posix_spawn` + `setpgid` + `killpg` is the durable fix.
+    func forceKillEverything() {
+        let logger = Log.logger("lifecycle")
+        var killed: Set<Int32> = []
+
+        // 1) Every Process we currently hold.
+        for service in services {
+            if let pySvc = service as? PythonService, let proc = pySvc.process {
+                let pid = proc.processIdentifier
+                if pid > 0 {
+                    kill(pid, SIGKILL)
+                    killed.insert(pid)
+                }
+            } else if let tika = service as? TikaService, let pid = tika.processIdentifier {
+                kill(pid, SIGKILL)
+                killed.insert(pid)
+            } else if let llama = service as? LlamaService, let pid = llama.processIdentifier {
+                kill(pid, SIGKILL)
+                killed.insert(pid)
+            }
+        }
+
+        // 2) Postgres — pg_ctl forks a postmaster we don't directly hold;
+        //    read its PID from the data dir so it doesn't survive as an
+        //    orphan still holding port 5433.
+        let pgPidFile = AppSettings.shared.postgresDataDir.appendingPathComponent("postmaster.pid")
+        if let contents = try? String(contentsOf: pgPidFile, encoding: .utf8),
+           let pidLine = contents.components(separatedBy: "\n").first,
+           let pid = Int32(pidLine), pid > 0, !killed.contains(pid)
+        {
+            kill(pid, SIGKILL)
+            killed.insert(pid)
+        }
+
+        // 3) child-pids.txt — anything our in-memory state lost track of
+        //    (e.g. an auto-restart that swapped the Process ref after the
+        //    last savePidFile call).
+        if let contents = try? String(contentsOf: Self.pidFileURL, encoding: .utf8) {
+            for line in contents.components(separatedBy: "\n") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard let pid = Int32(trimmed), pid > 0, !killed.contains(pid) else { continue }
+                // kill(pid, 0) confirms the PID still belongs to a live
+                // process before we SIGKILL — a recycled PID belonging to
+                // someone else's process would be a serious bug.
+                guard kill(pid, 0) == 0 else { continue }
+                kill(pid, SIGKILL)
+                killed.insert(pid)
+            }
+        }
+
+        logger.warning("forceKillEverything sent SIGKILL to \(killed.count, privacy: .public) tracked PIDs")
+
+        // Don't leave the PID file behind — next launch's orphan cleanup
+        // shouldn't re-try to kill processes we already SIGKILLed.
         removePidFile()
     }
 
@@ -608,25 +707,38 @@ final class ServiceManager: ObservableObject {
 
         // 1. Stop python services (dependents first: workers → api/embedder)
         // Send SIGTERM to all workers in parallel, then wait for all to exit.
-        // This reduces total stop time from N×30s to ~30s.
+        // Parallel SIGTERM then parallel wait-with-deadline. Pre-audit
+        // (2026-05-11) this path had the same bug as stopAll()'s worker
+        // block: sequential unbounded waits with no SIGKILL fallback, so
+        // a single hung worker stalled the entire preferences-restart
+        // flow indefinitely. The rewrite uses the same helper, so a
+        // settings change that triggers a worker restart is now bounded
+        // at ~12s regardless of how many are hung.
         for worker in workersToStop {
             worker.state = .stopping
             worker.process?.terminate()
         }
         notifyStateChanged()
-        for worker in workersToStop {
-            if let proc = worker.process, proc.isRunning {
-                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                    DispatchQueue.global().async {
-                        proc.waitUntilExit()
-                        c.resume()
+        await withTaskGroup(of: Void.self) { group in
+            for worker in workersToStop {
+                let proc = worker.process
+                let grace = worker.shutdownGracePeriod
+                let workerName = worker.name
+                group.addTask {
+                    if let proc, proc.isRunning {
+                        await proc.waitForExitWithDeadline(
+                            graceSeconds: grace,
+                            serviceName: workerName,
+                        )
+                    }
+                    await MainActor.run {
+                        worker.process = nil
+                        worker.state = .stopped
+                        self.notifyStateChanged()
                     }
                 }
             }
-            worker.process = nil
-            worker.state = .stopped
         }
-        notifyStateChanged()
         for svc in nonWorkerPython {
             await svc.stop()
         }

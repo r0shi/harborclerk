@@ -85,18 +85,11 @@ final class LlamaService: ManagedService {
 
         if let proc = process, proc.isRunning {
             proc.terminate() // SIGTERM
-            // Model unload can be slow — 10s grace, then SIGKILL
-            DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
-                guard proc.isRunning else { return }
-                Log.logger("lifecycle").warning("LLM still running after 10s, sending SIGKILL")
-                kill(proc.processIdentifier, SIGKILL)
-            }
-            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                DispatchQueue.global().async {
-                    proc.waitUntilExit()
-                    c.resume()
-                }
-            }
+            // Model unload can be slow — 10s grace, then SIGKILL. Uses the
+            // shared helper so the Pipe+waitUntilExit deadlock pattern
+            // (audit memo: project_menubar_process_management_audit.md)
+            // can't make this stall the rest of stopAll().
+            await proc.waitForExitWithDeadline(graceSeconds: 10, serviceName: name)
         }
         process = nil
 

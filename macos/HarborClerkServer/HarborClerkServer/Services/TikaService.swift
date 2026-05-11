@@ -60,18 +60,16 @@ final class TikaService: ManagedService {
             return
         }
         proc.terminate() // SIGTERM
-        // JVM can be slow to unwind — 10s grace, then SIGKILL
-        DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
-            guard proc.isRunning else { return }
-            Log.logger("lifecycle").warning("Tika still running after 10s, sending SIGKILL")
-            kill(proc.processIdentifier, SIGKILL)
-        }
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                c.resume()
-            }
-        }
+        // JVM can be slow to unwind — 10s grace, then SIGKILL. Uses the
+        // shared helper so the Pipe+waitUntilExit deadlock pattern
+        // (audit memo: project_menubar_process_management_audit.md)
+        // can't make this stall the rest of stopAll().
+        //
+        // NOTE: Tika's JVM can fork child JVMs for heavy extractions.
+        // SIGKILL on the tracked PID doesn't catch those grandchildren —
+        // Tier B follow-up is to use posix_spawn + setpgid so killpg can
+        // hit the whole tree.
+        await proc.waitForExitWithDeadline(graceSeconds: 10, serviceName: name)
         process = nil
         state = .stopped
     }
