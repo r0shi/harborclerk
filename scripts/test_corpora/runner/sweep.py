@@ -36,10 +36,16 @@ import yaml
 from scripts.test_corpora import conftest as cfg
 from scripts.test_corpora.corpora import cuad, enron, synthetic
 from scripts.test_corpora.corpora.manifest import CorpusManifest
+from scripts.test_corpora.runner.circuit_breaker import CircuitBreaker, is_operational_failure
 from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
 from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
 from scripts.test_corpora.runner.judge import JudgeClient
 from scripts.test_corpora.runner.metrics import citation_extra, citation_overlap, entity_overlap
+from scripts.test_corpora.runner.quality import (
+    baseline_quality_problem,
+    classify_answer,
+    find_unfilled_placeholder,
+)
 from scripts.test_corpora.runner.sampler import CompletionEvent, Sampler
 from scripts.test_corpora.runner.state import StateFile, Status, Unit
 
@@ -638,6 +644,14 @@ def main(argv: list[str] | None = None) -> int:
         anthro = anthropic.Anthropic()
         judge = JudgeClient(client=anthro, model=cfg.JUDGE_MODEL)
 
+        # Per-model circuit breaker. Caps the damage from a dead-LLM cascade
+        # by sleeping after N consecutive operational failures, and skips
+        # remaining units for a model that's tripped too many times.
+        # State persists across the whole sweep (multiple corpora, multiple
+        # phases) since a model that's broken in one block typically stays
+        # broken until manual intervention.
+        breaker = CircuitBreaker()
+
         # CSV metrics
         metrics_path = run_dir / "metrics.csv"
         new_csv = not metrics_path.exists()
@@ -765,6 +779,24 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("dry-run: skipping %s", u)
                     continue
 
+                # Circuit-breaker gate. Only meaningful for unit phases that
+                # actually run the local model (2-6). Phase 0/1 have their
+                # own failure modes (ingest, baseline-gen) that don't fit
+                # the per-model breaker pattern. Skipped units stay PENDING
+                # so ``--resume`` after manual intervention picks them up.
+                if phase in (2, 3, 4, 5, 6):
+                    if breaker.should_skip(u.model):
+                        log.warning(
+                            "skipping %s/%s/%s — circuit breaker is open for model=%s (left PENDING for --resume)",
+                            u.corpus,
+                            u.model,
+                            u.question_id,
+                            u.model,
+                        )
+                        continue
+                    if breaker.should_pause(u.model):
+                        breaker.pause_and_reset(u.model, log)
+
                 # Ensure correct corpus is in the DB for phases 1/4/5 (unified for 6).
                 # Phase 1 baselines call HC's MCP for KB tools — Sonnet's queries hit
                 # whatever is currently in HC's DB, so a fresh sweep that doesn't
@@ -832,6 +864,30 @@ def main(argv: list[str] | None = None) -> int:
                                 headers=mcp_headers,
                             )
                         text, _lang = _question_text(questions_by_corpus[u.corpus], u.question_id)
+                        placeholder = find_unfilled_placeholder(text)
+                        if placeholder:
+                            # The question template still contains a
+                            # ``{{contract_a}}``-style marker. Sampling should
+                            # have substituted it before the unit was planned;
+                            # sending it verbatim wastes a Claude baseline call
+                            # and produces a "please clarify" answer that taints
+                            # every downstream model run for the same question.
+                            log.error(
+                                "phase 1 baseline aborted for %s/%s: unfilled placeholder %s",
+                                u.corpus,
+                                u.question_id,
+                                placeholder,
+                            )
+                            sf.set_status(
+                                u.phase,
+                                u.corpus,
+                                u.model,
+                                u.question_id,
+                                u.depth,
+                                Status.ERROR,
+                                error=f"unfilled placeholder: {placeholder}",
+                            )
+                            continue
                         out = _phase1_baseline(anthro, mcp_session, u.corpus, u.question_id, text, run_dir)
                     elif phase in (2, 3, 4, 5, 6):
                         owning_corpus = (
@@ -840,6 +896,31 @@ def main(argv: list[str] | None = None) -> int:
                             else _find_owning_corpus(u.question_id, questions_by_corpus)
                         )
                         text, _lang = _question_text(questions_by_corpus[owning_corpus], u.question_id)
+                        placeholder = find_unfilled_placeholder(text)
+                        if placeholder:
+                            # Same reasoning as phase 1: don't ship a question
+                            # with an unfilled template marker. Mark ERROR so
+                            # the unit shows up in the matrix with a clear
+                            # reason rather than a 422 or a "please clarify"
+                            # answer that looks like an LLM failure.
+                            log.error(
+                                "phase %d aborted for %s/%s/%s: unfilled placeholder %s",
+                                phase,
+                                u.corpus,
+                                u.model,
+                                u.question_id,
+                                placeholder,
+                            )
+                            sf.set_status(
+                                u.phase,
+                                u.corpus,
+                                u.model,
+                                u.question_id,
+                                u.depth,
+                                Status.ERROR,
+                                error=f"unfilled placeholder: {placeholder}",
+                            )
+                            continue
                         out = _run_local(
                             hc=hc,
                             corpus=u.corpus,
@@ -903,7 +984,21 @@ def main(argv: list[str] | None = None) -> int:
                             final_status = Status.ERROR
                             error_msg = f"harness aborted research: {result.get('harness_abort_reason', 'unknown')}"
                         elif result_status == "completed" and result_answer:
-                            final_status = Status.DONE
+                            # Tighter DONE predicate: a non-empty answer is not
+                            # automatically a real engagement with the corpus.
+                            # ``classify_answer`` separates real answers from
+                            # refusals ("I don't have the capability...") and
+                            # roleplay (small models that emit ``[search_documents:
+                            # "..."]`` as text instead of invoking the tool). Both
+                            # the chat path and the research path get the same
+                            # treatment so the matrix consistently captures
+                            # "answer said something useful" vs "answer punted."
+                            label, reason = classify_answer(result_answer)
+                            if label == "real":
+                                final_status = Status.DONE
+                            else:
+                                final_status = Status.DEGRADED
+                                error_msg = reason
                         elif result_status == "completed" and not result_answer:
                             final_status = Status.DEGRADED
                             error_msg = "completed with empty answer"
@@ -934,6 +1029,14 @@ def main(argv: list[str] | None = None) -> int:
                             final_status.value,
                             error_msg,
                         )
+
+                    # Feed the circuit breaker. Only model-running phases
+                    # (2-6) count toward the per-model counter; phase 0/1
+                    # failures aren't symptoms of the model under test
+                    # being unhealthy.
+                    if phase in (2, 3, 4, 5, 6):
+                        op_fault = final_status != Status.DONE and is_operational_failure(error_msg)
+                        breaker.note(u.model, operational_failure=op_fault)
                 except httpx.ConnectError as exc:
                     # HC is refusing connections — likely restarting (e.g.
                     # menubar restarts the API process during a model switch).
@@ -1027,50 +1130,71 @@ def main(argv: list[str] | None = None) -> int:
                     if baseline_path.exists():
                         baseline = json.loads(baseline_path.read_text())
                         model_answer = out.get("result", {}).get("answer", "")
-                        model_doc_ids = [c.get("doc_id") for c in out.get("result", {}).get("citations", [])]
-                        co = citation_overlap(baseline.get("cited_doc_ids", []), model_doc_ids)
-                        ce = citation_extra(baseline.get("cited_doc_ids", []), model_doc_ids)
-                        eo = entity_overlap(baseline.get("answer", ""), model_answer, lang="en")
-
-                        # Run LLM-as-judge when ``_should_judge`` says so. Phase 4
-                        # (main matrix) and phase 5 (parity heavies) qualify;
-                        # earlier phases don't produce a model answer worth
-                        # comparing against the baseline.
-                        if _should_judge(
-                            phase=phase,
-                            status=final_status,
-                            model_answer=model_answer,
-                            no_judge=args.no_judge,
-                        ):
-                            owning_c = (
-                                u.corpus
-                                if u.corpus != "unified"
-                                else _find_owning_corpus(u.question_id, questions_by_corpus)
+                        # Refuse to grade against a baseline that's itself
+                        # unusable — Claude saw an empty corpus, an unfilled
+                        # placeholder, or punted with a refusal. Computing
+                        # citation_overlap or entity_overlap against such an
+                        # answer is noise: the row still gets written so the
+                        # operational status is preserved, but the quality
+                        # columns stay at their zero defaults and we don't
+                        # spend Sonnet credits judging it.
+                        baseline_problem = baseline_quality_problem(baseline)
+                        if baseline_problem:
+                            log.warning(
+                                "skipping metrics for %s/%s/%s: %s",
+                                u.corpus,
+                                u.model,
+                                u.question_id,
+                                baseline_problem,
                             )
-                            text_for_judge, _ = _question_text(questions_by_corpus[owning_c], u.question_id)
-                            try:
-                                v = judge.judge(
-                                    question=text_for_judge,
-                                    baseline=baseline.get("answer", ""),
-                                    model_answer=model_answer,
+                        else:
+                            model_doc_ids = [c.get("doc_id") for c in out.get("result", {}).get("citations", [])]
+                            co = citation_overlap(baseline.get("cited_doc_ids", []), model_doc_ids)
+                            ce = citation_extra(baseline.get("cited_doc_ids", []), model_doc_ids)
+                            eo = entity_overlap(baseline.get("answer", ""), model_answer, lang="en")
+
+                            # Run LLM-as-judge when ``_should_judge`` says so. Phase 4
+                            # (main matrix) and phase 5 (parity heavies) qualify;
+                            # earlier phases don't produce a model answer worth
+                            # comparing against the baseline. Nested under the
+                            # ``baseline_problem is None`` branch so we don't burn
+                            # Sonnet credits judging against a baseline we already
+                            # know is corrupt.
+                            if _should_judge(
+                                phase=phase,
+                                status=final_status,
+                                model_answer=model_answer,
+                                no_judge=args.no_judge,
+                            ):
+                                owning_c = (
+                                    u.corpus
+                                    if u.corpus != "unified"
+                                    else _find_owning_corpus(u.question_id, questions_by_corpus)
                                 )
-                            except Exception:
-                                # Judge failures must not poison the sweep — log
-                                # and carry on with empty verdict columns.
-                                log.warning(
-                                    "judge call failed for %s/%s/%s; continuing without verdict",
-                                    u.corpus,
-                                    u.model,
-                                    u.question_id,
-                                    exc_info=True,
-                                )
-                            else:
-                                (run_dir / "judge" / u.corpus / u.model).mkdir(parents=True, exist_ok=True)
-                                (
-                                    run_dir / "judge" / u.corpus / u.model / f"{u.question_id}__{u.depth}.json"
-                                ).write_text(json.dumps(dataclasses.asdict(v), indent=2))
-                                judge_verdict = v.verdict
-                                judge_completeness = v.completeness
+                                text_for_judge, _ = _question_text(questions_by_corpus[owning_c], u.question_id)
+                                try:
+                                    v = judge.judge(
+                                        question=text_for_judge,
+                                        baseline=baseline.get("answer", ""),
+                                        model_answer=model_answer,
+                                    )
+                                except Exception:
+                                    # Judge failures must not poison the sweep — log
+                                    # and carry on with empty verdict columns.
+                                    log.warning(
+                                        "judge call failed for %s/%s/%s; continuing without verdict",
+                                        u.corpus,
+                                        u.model,
+                                        u.question_id,
+                                        exc_info=True,
+                                    )
+                                else:
+                                    (run_dir / "judge" / u.corpus / u.model).mkdir(parents=True, exist_ok=True)
+                                    (
+                                        run_dir / "judge" / u.corpus / u.model / f"{u.question_id}__{u.depth}.json"
+                                    ).write_text(json.dumps(dataclasses.asdict(v), indent=2))
+                                    judge_verdict = v.verdict
+                                    judge_completeness = v.completeness
 
                         sampler.note(
                             CompletionEvent(
