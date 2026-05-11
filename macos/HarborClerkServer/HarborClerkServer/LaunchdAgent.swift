@@ -1,0 +1,125 @@
+import Foundation
+import os
+
+enum LaunchdAgentError: LocalizedError {
+    case plistWriteFailed(URL, Error)
+    case bootstrapFailed(LaunchctlResult)
+    case bootoutFailed(LaunchctlResult)
+    case kickstartFailed(LaunchctlResult)
+
+    var errorDescription: String? {
+        switch self {
+        case .plistWriteFailed(let url, let err): return "failed to write plist at \(url.path): \(err)"
+        case .bootstrapFailed(let r):              return "launchctl bootstrap failed (exit \(r.exitCode)): \(r.stderr)"
+        case .bootoutFailed(let r):                return "launchctl bootout failed (exit \(r.exitCode)): \(r.stderr)"
+        case .kickstartFailed(let r):              return "launchctl kickstart failed (exit \(r.exitCode)): \(r.stderr)"
+        }
+    }
+}
+
+enum LaunchdServiceState: Equatable {
+    case loaded(pid: Int32?)   // pid nil if loaded-but-not-running
+    case notLoaded
+}
+
+/// Wraps the lifecycle of one LaunchAgent: idempotent plist install,
+/// start (kickstart), stop (bootout), status (print + parse), uninstall
+/// (bootout + delete plist).
+final class LaunchdAgent {
+    let label: String
+    let plistURL: URL
+    private let launchctl: LaunchctlClient
+    private let log: Logger
+
+    var domainTarget: String { "gui/\(getuid())" }
+    var serviceTarget: String { "\(domainTarget)/\(label)" }
+
+    init(label: String, plistURL: URL, launchctl: LaunchctlClient = RealLaunchctlClient()) {
+        self.label = label
+        self.plistURL = plistURL
+        self.launchctl = launchctl
+        self.log = Log.logger("launchd-\(label.replacingOccurrences(of: ".", with: "-"))")
+    }
+
+    /// Write the plist to disk if its contents differ from the new
+    /// `content`. If the plist had to be rewritten (or wasn't on disk),
+    /// bootout the existing service (idempotent — bootout of a not-
+    /// loaded service is allowed) and bootstrap the new one.
+    ///
+    /// Called by services during their start() — every menubar launch
+    /// runs this, so plist drift across upgrades / bundle moves is
+    /// self-healing.
+    func ensureInstalled(plistContent: String) async throws {
+        let onDisk = try? String(contentsOf: plistURL, encoding: .utf8)
+        if onDisk == plistContent {
+            log.debug("plist on disk matches; no rewrite needed")
+            return
+        }
+
+        log.info("plist content drift — bootout, rewrite, bootstrap")
+
+        // Bootout if currently loaded. Don't error if it wasn't loaded;
+        // we just want a known-clean state before bootstrap.
+        _ = await launchctl.bootout(serviceTarget: serviceTarget)
+
+        // Make sure the parent directory exists.
+        try FileManager.default.createDirectory(
+            at: plistURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+        )
+
+        do {
+            try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
+        } catch {
+            throw LaunchdAgentError.plistWriteFailed(plistURL, error)
+        }
+
+        let bootstrap = await launchctl.bootstrap(domain: domainTarget, plistPath: plistURL)
+        guard bootstrap.success else { throw LaunchdAgentError.bootstrapFailed(bootstrap) }
+    }
+
+    /// `launchctl kickstart -k` — starts the service, or restarts it
+    /// if already running. After ensureInstalled, this is the verb to
+    /// actually launch the process.
+    func start() async throws {
+        let r = await launchctl.kickstart(serviceTarget: serviceTarget)
+        guard r.success else { throw LaunchdAgentError.kickstartFailed(r) }
+    }
+
+    /// `launchctl bootout` — stops the service. Does NOT uninstall the
+    /// plist or unregister from launchd; that's `uninstall()`.
+    func stop() async throws {
+        let r = await launchctl.bootout(serviceTarget: serviceTarget)
+        // bootout of a not-loaded service may exit non-zero. We treat
+        // any "service not found" outcome as success — the goal is
+        // "service is not running" and that goal is met.
+        if !r.success && !r.stderr.lowercased().contains("could not find service") {
+            throw LaunchdAgentError.bootoutFailed(r)
+        }
+    }
+
+    /// Parse `launchctl print <service-target>` for PID + load state.
+    /// Returns .notLoaded if launchctl reports no such service.
+    func status() async -> LaunchdServiceState {
+        let r = await launchctl.print_(serviceTarget: serviceTarget)
+        if !r.success {
+            // Common failure: "Could not find service ... in domain ..."
+            return .notLoaded
+        }
+        // launchctl print output is human-readable; we look for the
+        // "pid = N" line. Absent → loaded but not running. Present → loaded
+        // and running.
+        if let pidLine = r.stdout.split(separator: "\n").first(where: { $0.contains("pid =") }) {
+            let pidStr = pidLine.split(separator: "=").last?.trimmingCharacters(in: .whitespaces) ?? ""
+            return .loaded(pid: Int32(pidStr))
+        }
+        return .loaded(pid: nil)
+    }
+
+    /// Stop + delete plist + remove launchd registration. Used by
+    /// "Uninstall Services" (future) and at-uninstall scripts.
+    func uninstall() async {
+        try? await stop()
+        try? FileManager.default.removeItem(at: plistURL)
+    }
+}
