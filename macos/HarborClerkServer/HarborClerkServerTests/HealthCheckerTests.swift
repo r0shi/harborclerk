@@ -14,7 +14,7 @@ final class MockService: ManagedService {
     }
 
     func start() async throws {}
-    func stop() {}
+    func stop() async {}
 
     func healthCheck() async -> Bool {
         return healthCheckResult
@@ -33,7 +33,7 @@ final class MockServiceWithFailingHealth: ManagedService {
     }
 
     func start() async throws {}
-    func stop() {}
+    func stop() async {}
 
     func healthCheck() async -> Bool {
         return false
@@ -53,6 +53,10 @@ final class MockServiceManager: ServiceManager {
     var attemptAutoRestartDelay: Duration = .seconds(0)
 
     override func attemptAutoRestart(_ service: any ManagedService) async {
+        // Honor the shutdown guard so tests can exercise the real
+        // early-return path. Mirrors the production guard at the top of
+        // ServiceManager.attemptAutoRestart.
+        guard !isShuttingDown else { return }
         attemptAutoRestartCalled.append(service.name)
         try? await Task.sleep(for: attemptAutoRestartDelay)
     }
@@ -179,5 +183,27 @@ final class HealthCheckerTests: XCTestCase {
             source.contains("await healthChecker?.cancelInFlightRestarts()"),
             "ServiceManager.swift must call healthChecker.cancelInFlightRestarts() (likely in stopAll or restartForChangedSettings)"
         )
+    }
+
+    /// Closes the orphan-restart race that `cancelInFlightRestarts()`
+    /// alone can't fix: onUnexpectedExit-dispatched auto-restart Tasks
+    /// are NOT tracked in HealthChecker.taskHandles, so they bypass
+    /// cancellation. The `isShuttingDown` flag ensures they early-return
+    /// from `attemptAutoRestart` instead of resurrecting a service whose
+    /// state was already advanced past `.shutdownPending` by stopAll.
+    @MainActor
+    func testAttemptAutoRestartIsNoOpWhileShuttingDown() async throws {
+        let mockServices = MockServiceManager()
+        let svc = MockServiceWithFailingHealth(name: "test-svc")
+        svc.state = .running
+        mockServices.services = [svc]
+
+        // Simulate stopAll having set isShuttingDown true:
+        mockServices.isShuttingDown = true
+
+        await mockServices.attemptAutoRestart(svc)
+
+        XCTAssertEqual(mockServices.attemptAutoRestartCalled.count, 0,
+            "attemptAutoRestart must early-return when isShuttingDown == true")
     }
 }
