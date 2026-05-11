@@ -196,4 +196,41 @@ final class ProcessExtensionsTests: XCTestCase {
         let pgid = getpgid(pid)
         XCTAssertEqual(pgid, pid, "expected child to be its own pgid leader (pgid == pid)")
     }
+
+    /// The user-visible reason for runAsProcessGroupLeader: killpg reaches
+    /// grandchildren that plain kill(pid) would miss. Verified end-to-end
+    /// by spawning `sh -c 'sleep 30 & wait'`. The sh forks a sleep child;
+    /// without pgid we'd only kill sh and orphan sleep. With pgid we kill both.
+    func testKillpgReachesGrandchildSpawnedViaShell() async throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", "sleep 30 & echo $! > /tmp/pg-test-grandchild.pid; wait"]
+        try proc.runAsProcessGroupLeader()
+        defer {
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+                proc.waitUntilExit()
+            }
+            try? FileManager.default.removeItem(atPath: "/tmp/pg-test-grandchild.pid")
+        }
+
+        // Give sh a moment to write the grandchild PID
+        try await Task.sleep(for: .milliseconds(200))
+
+        guard let pidStr = try? String(contentsOfFile: "/tmp/pg-test-grandchild.pid"),
+              let grandchildPid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            XCTFail("grandchild pid file missing or unparseable")
+            return
+        }
+        XCTAssertEqual(kill(grandchildPid, 0), 0, "grandchild must be alive before killpg")
+
+        // killpg the leader — should hit both sh and the sleep.
+        XCTAssertEqual(killpg(proc.processIdentifier, SIGKILL), 0)
+
+        // Give the kernel a moment to clean up
+        try await Task.sleep(for: .milliseconds(500))
+
+        XCTAssertEqual(kill(grandchildPid, 0), -1, "grandchild must be dead after killpg")
+        XCTAssertEqual(errno, ESRCH, "expected kill(pid, 0) errno = ESRCH after grandchild died")
+    }
 }
