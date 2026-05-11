@@ -4,7 +4,23 @@ import os
 final class PostgresService: ManagedService {
     let name = "PostgreSQL"
     var state: ServiceState = .stopped
-    private var process: Process?
+    /// True for the launchd-managed services. The HealthChecker uses
+    /// this to skip its own auto-restart path — launchd's KeepAlive
+    /// already handles crash recovery, and double-restarting would be
+    /// a foot-gun.
+    let isLaunchdManaged = true
+
+    private let agent: LaunchdAgent
+
+    init(launchctl: LaunchctlClient = RealLaunchctlClient()) {
+        let plistURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.harborclerk.postgres.plist")
+        self.agent = LaunchdAgent(
+            label: "com.harborclerk.postgres",
+            plistURL: plistURL,
+            launchctl: launchctl,
+        )
+    }
 
     private var pgBinDir: URL {
         Bundle.main.resourceURL!.appendingPathComponent("postgres/bin")
@@ -74,7 +90,9 @@ final class PostgresService: ManagedService {
         // Ensure logging_collector config exists (upgrade from pre-0.4.1)
         try ensureLoggingConfig()
 
-        // Remove stale PID file if no process is actually running
+        // Stale postmaster.pid removal: same logic as before, but now we
+        // don't manually invoke pg_ctl stop — launchctl bootout (inside
+        // agent.ensureInstalled) handles the lingering instance.
         let pidFile = dataDir.appendingPathComponent("postmaster.pid")
         if fm.fileExists(atPath: pidFile.path) {
             let action = Self.stalePidAction(pidFileContents: try? String(contentsOf: pidFile))
@@ -85,92 +103,34 @@ final class PostgresService: ManagedService {
             case .removeUnparseable:
                 try? fm.removeItem(at: pidFile)
             case .keep:
-                // PostgreSQL is still running (possibly shutting down) — stop it first
-                Log.logger("postgresql").warning("Existing PostgreSQL process found, stopping it before start")
-                let stopProc = Process()
-                stopProc.executableURL = pgBinDir.appendingPathComponent("pg_ctl")
-                stopProc.arguments = ["-D", dataDir.path, "stop", "-m", "immediate"]
-                stopProc.environment = pgEnvironment()
-                stopProc.standardOutput = FileHandle.nullDevice
-                stopProc.standardError = FileHandle.nullDevice
-                try? stopProc.run()
-                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                    DispatchQueue.global().async {
-                        stopProc.waitUntilExit()
-                        c.resume()
-                    }
-                }
+                Log.logger("postgresql").warning("Existing PostgreSQL process found; bootout will handle it")
+                // Don't kill manually — let agent.ensureInstalled's bootout
+                // do it cleanly via launchctl.
             }
         }
 
-        // Start PostgreSQL via pg_ctl
-        // Logs are handled by logging_collector (configured in conf.d/harbor_clerk.conf)
-        // Do NOT use Log.createPipe() — pg_ctl can fill the pipe buffer and deadlock
-        // with waitUntilExit() if the readability handler stalls.
-        let pgCtl = pgBinDir.appendingPathComponent("pg_ctl")
-        let proc = Process()
-        proc.executableURL = pgCtl
-        proc.arguments = [
-            "-D", dataDir.path,
-            "-o", "-p \(port) -k /tmp",
-            "start",
-        ]
-        proc.environment = pgEnvironment()
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+        // Install/refresh the plist with current bundle paths.
+        let plist = LaunchdPlist.postgres(
+            bundle: Bundle.main.resourceURL!,
+            dataDir: dataDir,
+            logsDir: AppSettings.shared.logsDir,
+            port: port,
+        )
+        try await agent.ensureInstalled(plistContent: plist)
 
-        try proc.run()
-        let exitCode: Int32 = await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                c.resume(returning: proc.terminationStatus)
-            }
-        }
-
-        if exitCode != 0 {
-            throw ServiceError.startFailed(name, "pg_ctl start exited with \(exitCode)")
-        }
+        // launchctl kickstart -k starts (or restarts) the service.
+        try await agent.start()
     }
 
     func stop() async {
         state = .stopping
-
-        // Phase 1: pg_ctl stop -m fast (SIGINT — orderly shutdown)
-        let pgCtl = pgBinDir.appendingPathComponent("pg_ctl")
-        let fastProc = Process()
-        fastProc.executableURL = pgCtl
-        fastProc.arguments = ["-D", dataDir.path, "stop", "-m", "fast", "-t", "15"]
-        fastProc.environment = pgEnvironment()
-        fastProc.standardOutput = FileHandle.nullDevice
-        fastProc.standardError = FileHandle.nullDevice
-        try? fastProc.run()
-        let fastExited = await Self.awaitExitedCleanly(fastProc)
-
-        if !fastExited {
-            // Phase 2: pg_ctl stop -m immediate (SIGQUIT — skip recovery)
-            Log.logger("lifecycle").warning("PostgreSQL fast shutdown failed, trying immediate mode")
-            let immProc = Process()
-            immProc.executableURL = pgCtl
-            immProc.arguments = ["-D", dataDir.path, "stop", "-m", "immediate"]
-            immProc.environment = pgEnvironment()
-            immProc.standardOutput = FileHandle.nullDevice
-            immProc.standardError = FileHandle.nullDevice
-            try? immProc.run()
-            let immExited = await Self.awaitExitedCleanly(immProc)
-
-            if !immExited {
-                // Phase 3: read postmaster.pid and SIGKILL
-                Log.logger("lifecycle").warning("PostgreSQL immediate shutdown failed, sending SIGKILL")
-                let pidFile = dataDir.appendingPathComponent("postmaster.pid")
-                if let contents = try? String(contentsOf: pidFile),
-                   let pidLine = contents.components(separatedBy: "\n").first,
-                   let pid = Int32(pidLine) {
-                    kill(pid, SIGKILL)
-                    usleep(1_000_000) // 1s for process to die
-                }
-            }
+        do {
+            try await agent.stop()
+        } catch {
+            Log.logger("postgresql").error(
+                "launchctl bootout failed: \(error.localizedDescription, privacy: .public)"
+            )
         }
-
         state = .stopped
     }
 
@@ -316,7 +276,7 @@ final class PostgresService: ManagedService {
             }
         }
 
-        // Stop — will be started properly by ServiceManager
+        // Stop — will be started properly by ServiceManager (via launchd)
         let stopProc = Process()
         stopProc.executableURL = pgCtl
         stopProc.arguments = ["-D", dataDir.path, "stop", "-m", "fast"]
