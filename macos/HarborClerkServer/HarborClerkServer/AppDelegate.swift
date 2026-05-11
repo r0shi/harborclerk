@@ -73,6 +73,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "Shutdown exceeded \(deadlineSeconds, privacy: .public)s deadline — force-killing tracked children and exiting"
             )
             await self.serviceManager.forceKillEverything()
+            // launchd-managed agents — bootout so KeepAlive doesn't
+            // resurrect the postmaster / Tika JVM after our SIGKILL.
+            await self.serviceManager.postgresService.stop()
+            await self.serviceManager.tikaService.stop()
             // exit(0) bypasses any further AppKit teardown. We've signalled
             // every child we know about; the kernel will reparent any
             // survivors to launchd. Reaching this line means stopAll() was
@@ -245,11 +249,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // `launchctl print`. The menubar stays open afterward, and the
             // user's next Start All click lands on a freshly-empty state
             // because removePidFile happens during the kill pass.
-            //
-            // Task 7 (PR-4) adds explicit `agent.stop()` for postgres + tika
-            // here so launchd's KeepAlive doesn't resurrect them after our
-            // SIGKILL.
             await self.serviceManager.forceKillEverything()
+
+            // launchd-managed agents — let launchctl bootout do the right
+            // thing for them rather than relying on just the SIGKILL above.
+            // Without bootout, launchd's KeepAlive would observe the
+            // unexpected exit and auto-restart the postmaster / Tika JVM,
+            // defeating the user's "stop everything" intent.
+            await self.serviceManager.postgresService.stop()
+            await self.serviceManager.tikaService.stop()
+
             self.serviceManager.notifyStateChanged()
         }
     }
