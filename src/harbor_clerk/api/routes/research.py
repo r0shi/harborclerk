@@ -196,6 +196,7 @@ async def get_research(
         model_id=report_model_id or (get_settings().llm_model_id or None),
         messages=messages,
         citations=citations,
+        error=state.error,
         created_at=conv.created_at,
         completed_at=state.completed_at,
     )

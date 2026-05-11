@@ -66,6 +66,14 @@ class ResearchDetail(BaseModel):
     # ``pages``, ``score``. Computed at read-time from persisted tool messages
     # so historical research surfaces citations too.
     citations: list[dict] = []
+    # Free-text reason set when the research moved to ``interrupted`` or
+    # ``failed``. Examples: ``"Synthesis failed: LLM error (502)"``,
+    # ``"Research task stalled — no progress for 5+ minutes"`` (reaper),
+    # ``"Stream disconnected before completion"``. Used by the test harness
+    # to attribute interrupts to a specific cause (synthesis failure vs.
+    # reaper vs. client disconnect) rather than collapsing them all into
+    # the generic ``"research interrupted by Harbor Clerk"`` label.
+    error: str | None = None
     created_at: datetime
     completed_at: datetime | None = None
 

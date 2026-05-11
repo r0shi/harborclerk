@@ -133,6 +133,125 @@ def _should_judge(*, phase: int, status: Status, model_answer: str, no_judge: bo
     return bool(model_answer and model_answer.strip())
 
 
+_CANARY_QUESTION = "List up to three documents you can see in the corpus and tell me their titles."
+
+
+def _capture_hc_logs(run_dir: Path, log: logging.Logger) -> None:
+    """Copy Harbor Clerk's server-side log files into the run directory.
+
+    Without this, when the harness records ``"research interrupted by Harbor
+    Clerk"`` there's no easy way to tell *why* — the only log written into
+    the run directory is the harness side. HC's own log (api.log,
+    worker-*.log, postgres.log, llm.log, etc.) lives in
+    ``~/Library/Application Support/Harbor Clerk/logs/`` on macOS native.
+
+    Honours the ``HC_LOG_DIR`` env var. Best-effort: a missing source
+    directory or unreadable file is logged at warning level and skipped,
+    never raised — the sweep must not fail at finalize because logs
+    couldn't be copied.
+
+    Called once at sweep finalize. Captures a snapshot, not a tail —
+    operators interpret the timeline by cross-referencing with the
+    harness ``log.txt`` and ``metrics.csv`` timestamps.
+    """
+    import shutil
+
+    default_log_dir = Path.home() / "Library" / "Application Support" / "Harbor Clerk" / "logs"
+    src_dir = Path(os.environ.get("HC_LOG_DIR") or default_log_dir)
+    if not src_dir.exists():
+        log.info("HC log capture skipped: source dir %s does not exist", src_dir)
+        return
+
+    dst_dir = run_dir / "hc_logs"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    copied = 0
+    skipped = 0
+    for src in src_dir.glob("*.log"):
+        if not src.is_file():
+            continue
+        try:
+            shutil.copy2(src, dst_dir / src.name)
+            copied += 1
+        except OSError as exc:
+            log.warning("HC log capture: failed to copy %s: %r", src, exc)
+            skipped += 1
+
+    log.info(
+        "HC log capture: copied %d files from %s to %s (skipped %d)",
+        copied,
+        src_dir,
+        dst_dir,
+        skipped,
+    )
+
+
+def _run_canary(hc: HarborClerkClient, corpus: str, log: logging.Logger) -> dict[str, object]:
+    """Send one trivial chat question to verify HC + the active LLM can produce
+    a non-empty, non-refusal response against the just-ingested corpus.
+
+    Used as a pre-flight diagnostic before the per-unit loop chews through
+    20+ units against a structurally broken HC (the synthetic-block 100%
+    failure pattern in 2026-05-05-prod: 280 docs ingested, model_status
+    ready, every chat returns empty in 2s). The canary catches that state
+    in ~3s instead of burning hours of sweep time.
+
+    Returns a result dict with keys:
+      - ``passed`` (bool): True if the answer classified as "real"
+      - ``label`` (str): classify_answer's label (real/refusal/roleplay/empty)
+      - ``elapsed_seconds`` (float): wall clock of the chat call
+      - ``answer_chars`` (int): length of the streamed answer
+      - ``reason`` (str | None): the reason from classify_answer when failed
+
+    This function NEVER raises; on exception the result records ``passed=False``
+    with a stringified error in ``reason``. The canary must not be a source
+    of new failure modes.
+    """
+    t0 = time.time()
+    try:
+        conv_id = hc.create_conversation(title=f"test-corpora/canary/{corpus}")
+        events = list(hc.stream_ask(conv_id, _CANARY_QUESTION))
+    except Exception as exc:
+        log.warning("canary failed for corpus=%s: exception during chat: %r", corpus, exc)
+        return {
+            "passed": False,
+            "label": "exception",
+            "elapsed_seconds": time.time() - t0,
+            "answer_chars": 0,
+            "reason": f"exception: {exc!r}",
+        }
+
+    final_text = "".join(e.get("content", "") for e in events if e.get("type") == "token")
+    elapsed = time.time() - t0
+    label, reason = classify_answer(final_text)
+    passed = label == "real"
+
+    if passed:
+        log.info(
+            "canary OK for corpus=%s: %d chars in %.1fs",
+            corpus,
+            len(final_text),
+            elapsed,
+        )
+    else:
+        log.warning(
+            "canary failed for corpus=%s: label=%s reason=%s (elapsed %.1fs, %d chars)",
+            corpus,
+            label,
+            reason,
+            elapsed,
+            len(final_text),
+        )
+
+    return {
+        "passed": passed,
+        "label": label,
+        "elapsed_seconds": elapsed,
+        "answer_chars": len(final_text),
+        "reason": reason,
+    }
+
+
 def _is_retryable_research_failure(out: dict) -> bool:
     """Whether ``out["result"]`` warrants a one-shot retry.
 
@@ -187,6 +306,28 @@ def make_parser() -> argparse.ArgumentParser:
         help=(
             "skip the LLM-as-judge call in phases 4 and 5. Use for cheap local-only "
             "runs when you don't want to spend Anthropic credits on Sonnet judgments."
+        ),
+    )
+    p.add_argument(
+        "--skip-canary",
+        action="store_true",
+        help=(
+            "skip the per-corpus canary pre-flight chat. The canary catches the "
+            "structurally-broken-corpus pattern (all units degrade in 2s) in ~3s "
+            "instead of letting the circuit breaker chew through 9+ units first. "
+            "Pass this flag to disable on local runs where the diagnostic noise "
+            "isn't worth the extra chat call."
+        ),
+    )
+    p.add_argument(
+        "--no-hc-logs",
+        action="store_true",
+        help=(
+            "skip the HC log capture at sweep finalize. By default the harness "
+            "copies $HC_LOG_DIR (or ~/Library/Application Support/Harbor Clerk/"
+            "logs on macOS) into <run_dir>/hc_logs/ so post-hoc analysis can "
+            "cross-reference HC's own logs against metrics.csv timestamps. "
+            "Pass this flag on machines where the path doesn't apply."
         ),
     )
     return p
@@ -379,7 +520,21 @@ def _run_local(
                 rc = e.get("rag_context") or {}
                 for c in rc.get("citations", []) or e.get("citations", []):
                     citations.append(c if isinstance(c, dict) else {"doc_id": c})
-        result = {"status": "completed", "answer": final_text, "citations": citations, "conversation_id": conv_id}
+        # Preserve the raw SSE event stream so post-hoc analysis can tell
+        # ``model invoked the tool`` from ``model narrated a tool call as
+        # text.`` ``tool_call`` and ``tool_result`` events carry the
+        # function name + arguments + raw result; ``tool_call_count`` is
+        # the cheap summary the matrix can group by.
+        tool_events = [e for e in events if e.get("type") in ("tool_call", "tool_result")]
+        tool_call_count = sum(1 for e in events if e.get("type") == "tool_call")
+        result = {
+            "status": "completed",
+            "answer": final_text,
+            "citations": citations,
+            "conversation_id": conv_id,
+            "tool_events": tool_events,
+            "tool_call_count": tool_call_count,
+        }
 
     out = {
         "corpus": corpus,
@@ -652,6 +807,13 @@ def main(argv: list[str] | None = None) -> int:
         # broken until manual intervention.
         breaker = CircuitBreaker()
 
+        # Per-corpus canary outcomes. Run once per corpus before the first
+        # phase-2-6 unit, write to ``canary.json`` in the run dir for
+        # post-hoc analysis. Advisory only — the circuit breaker handles
+        # cascade prevention; this just gives operators a heads-up when a
+        # whole corpus block is structurally broken.
+        canary_results: dict[str, dict[str, object]] = {}
+
         # CSV metrics
         metrics_path = run_dir / "metrics.csv"
         new_csv = not metrics_path.exists()
@@ -831,6 +993,21 @@ def main(argv: list[str] | None = None) -> int:
                 if phase in (2, 3, 4, 5, 6) and u.model not in (None, "-", "claude-baseline"):
                     current_model = _ensure_model(hc, current_model, u.model)
 
+                # Per-corpus canary. Runs once per corpus the first time we
+                # hit a phase-2-6 unit for it, AFTER both corpus ingest and
+                # model activation — otherwise the canary tests against
+                # whatever HC happened to have loaded (often nothing on a
+                # fresh run), producing a misleading "empty" diagnostic
+                # unrelated to the structurally-broken-corpus pattern the
+                # canary is meant to catch. Advisory only: the circuit
+                # breaker handles cascade prevention; this just gives
+                # operators an early signal. ``--skip-canary`` opts out.
+                if phase in (2, 3, 4, 5, 6) and not args.skip_canary and u.corpus not in canary_results:
+                    canary_results[u.corpus] = _run_canary(hc, u.corpus, log)
+                    # Persist after each canary so a crash mid-sweep doesn't
+                    # lose the diagnostic.
+                    (run_dir / "canary.json").write_text(json.dumps(canary_results, indent=2))
+
                 sf.set_status(u.phase, u.corpus, u.model, u.question_id, u.depth, Status.IN_PROGRESS)
                 sf.save()
 
@@ -1002,10 +1179,26 @@ def main(argv: list[str] | None = None) -> int:
                                 error_msg = reason
                         elif result_status == "interrupted":
                             final_status = Status.ERROR
-                            error_msg = "research interrupted by Harbor Clerk"
+                            # ``result["error"]`` carries the structured reason
+                            # HC set on the ResearchState row (synthesis HTTP
+                            # error, reaper timeout, stream disconnect). Falls
+                            # back to the generic label only when the field is
+                            # absent — older snapshots before the schema field
+                            # was added still parse cleanly.
+                            hc_error = result.get("error")
+                            error_msg = (
+                                f"research interrupted by Harbor Clerk: {hc_error}"
+                                if hc_error
+                                else "research interrupted by Harbor Clerk"
+                            )
                         elif result_status in ("failed", "timeout"):
                             final_status = Status.ERROR
-                            error_msg = f"research finished with status={result_status}"
+                            hc_error = result.get("error")
+                            error_msg = (
+                                f"research finished with status={result_status}: {hc_error}"
+                                if hc_error
+                                else f"research finished with status={result_status}"
+                            )
                         else:
                             final_status = Status.ERROR
                             error_msg = f"unexpected result status: {result_status!r}"
@@ -1232,6 +1425,8 @@ def main(argv: list[str] | None = None) -> int:
             sampler.print_summary_table(phase=phase)
 
         metrics_f.close()
+        if not args.no_hc_logs:
+            _capture_hc_logs(run_dir, log)
         log.info("sweep complete after %.1fs", time.time() - sweep_started)
         return 0
     finally:

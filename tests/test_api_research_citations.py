@@ -22,6 +22,7 @@ async def _seed_research(
     admin_user,
     *,
     status: str = "completed",
+    error: str | None = None,
     tool_messages: list[tuple[str, str]] | None = None,
 ) -> uuid.UUID:
     """Insert a conversation + research_state + (optionally) tool messages.
@@ -43,6 +44,7 @@ async def _seed_research(
         conversation_id=conv_id,
         strategy="search",
         status=status,
+        error=error,
         current_round=2,
         max_rounds=4,
     )
@@ -188,3 +190,40 @@ async def test_research_detail_citations_from_read_passages_keeps_chunk_only(
     assert "doc_id" not in cites[0]
     assert cites[0]["chunk_id"] == "C1"
     assert cites[0]["doc_title"] == "X"
+
+
+# ── error field ──
+
+
+async def test_research_detail_error_field_null_on_success(client, admin_user, admin_token, db_session):
+    conv_id = await _seed_research(db_session, admin_user, status="completed")
+    resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["error"] is None
+
+
+async def test_research_detail_error_field_surfaces_reaper_reason(client, admin_user, admin_token, db_session):
+    # The reaper at app.py:154 sets this exact string when heartbeat goes stale.
+    conv_id = await _seed_research(
+        db_session,
+        admin_user,
+        status="interrupted",
+        error="Research task stalled — no progress for 5+ minutes",
+    )
+    resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["error"] == "Research task stalled — no progress for 5+ minutes"
+
+
+async def test_research_detail_error_field_surfaces_synthesis_failure(client, admin_user, admin_token, db_session):
+    # research.py:1342 sets this when llama-server returns an HTTP error during
+    # the final synthesis pass.
+    conv_id = await _seed_research(
+        db_session,
+        admin_user,
+        status="interrupted",
+        error="Synthesis failed: LLM error (502)",
+    )
+    resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["error"] == "Synthesis failed: LLM error (502)"
