@@ -168,8 +168,13 @@ final class HealthCheckerTests: XCTestCase {
     /// integration test is "run the menubar and click Quit while an
     /// auto-restart is in flight" which we can't drive from XCTest.
     func testStopAllCancelsInFlightRestarts() throws {
-        let url = URL(fileURLWithPath: "/Users/alex/mcp-gateway/macos/HarborClerkServer/HarborClerkServer/ServiceManager.swift")
-        let source = try String(contentsOf: url, encoding: .utf8)
+        let thisFile = URL(fileURLWithPath: #file)
+        let serviceManagerURL = thisFile
+            .deletingLastPathComponent()          // → HarborClerkServerTests/
+            .deletingLastPathComponent()          // → HarborClerkServer/ (project root)
+            .appendingPathComponent("HarborClerkServer")
+            .appendingPathComponent("ServiceManager.swift")
+        let source = try String(contentsOf: serviceManagerURL, encoding: .utf8)
         XCTAssertTrue(
             source.contains("await healthChecker?.cancelInFlightRestarts()"),
             "ServiceManager.swift must call healthChecker.cancelInFlightRestarts() (likely in stopAll or restartForChangedSettings)"
