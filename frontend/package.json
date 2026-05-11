@@ -23,7 +23,7 @@
     "d3-force": "^3.0.0",
     "d3-scale": "^4.0.2",
     "d3-selection": "^3.0.0",
-    "react": "^19.2.5",
+    "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-is": "^19.2.6",
     "react-markdown": "^10.1.0",
