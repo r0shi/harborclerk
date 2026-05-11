@@ -125,6 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopItem.target = self
         menu.addItem(stopItem)
 
+        let forceStopItem = NSMenuItem(title: "Force Stop All", action: #selector(forceStopAllServices), keyEquivalent: "")
+        forceStopItem.target = self
+        menu.addItem(forceStopItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let statusWindowItem = NSMenuItem(title: "Show Status Window...", action: #selector(showStatusWindow), keyEquivalent: "s")
@@ -213,6 +217,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func stopAllServices() {
         Task { await serviceManager.stopAll() }
+    }
+
+    /// Manual escape hatch for users who'd rather not wait the 30s deadline
+    /// in applicationShouldTerminate. SIGKILLs every tracked subprocess and
+    /// leaves the menubar open so the user can re-Start All when ready.
+    /// Destructive operation, gated by an NSAlert confirmation.
+    @objc private func forceStopAllServices() {
+        let alert = NSAlert()
+        alert.messageText = "Force Stop All Services?"
+        alert.informativeText = """
+            This will SIGKILL every Harbor Clerk subprocess.
+
+            In-flight database transactions and document processing will be lost. \
+            The menubar will stay open so you can Start All when ready.
+
+            Use Quit instead if you want a clean shutdown.
+            """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Force Stop")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        Task {
+            // forceKillEverything is synchronous (sends SIGKILL, doesn't
+            // wait for processes to die). The menubar stays open afterward,
+            // and the user's next Start All click lands on a freshly-empty
+            // state because removePidFile happens during the kill pass.
+            //
+            // NOTE for PR-4: once Postgres + Tika move to launchd agents,
+            // this handler also needs to await each agent.stop() to issue
+            // launchctl bootout — otherwise launchd's KeepAlive would
+            // resurrect the postmaster after our SIGKILL.
+            self.serviceManager.forceKillEverything()
+            self.serviceManager.notifyStateChanged()
+        }
     }
 
     @objc private func showStatusWindow() {
