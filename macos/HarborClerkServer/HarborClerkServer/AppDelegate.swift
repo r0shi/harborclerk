@@ -52,8 +52,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isQuitting else { return .terminateNow }
         isQuitting = true
         healthChecker.stopPolling()
+
+        // 30-second hard deadline. The audit memo
+        // (project_menubar_process_management_audit.md) traced multiple
+        // ways the shutdown path can hang indefinitely — workers stuck on
+        // SIGTERM, Pipe+waitUntilExit deadlock, etc. Tier A fixes
+        // (this PR) make the hangs much less likely, but the deadline is
+        // the absolute guarantee: if stopAll() hasn't completed in 30s,
+        // SIGKILL everything we know about and exit. Better an unclean
+        // shutdown than a menubar app the user can't quit without
+        // Terminal — which is exactly the failure mode the user
+        // reported.
+        let deadlineSeconds: UInt64 = 30
+        let deadlineTask: Task<Void, Never> = Task {
+            try? await Task.sleep(for: .seconds(deadlineSeconds))
+            // If we reach here, Task.sleep ran to completion — the
+            // shutdown task hasn't called deadlineTask.cancel() yet, so
+            // stopAll() is still running. Force-kill and exit hard.
+            Log.logger("lifecycle").error(
+                "Shutdown exceeded \(deadlineSeconds, privacy: .public)s deadline — force-killing tracked children and exiting"
+            )
+            await self.serviceManager.forceKillEverything()
+            // exit(0) bypasses any further AppKit teardown. We've signalled
+            // every child we know about; the kernel will reparent any
+            // survivors to launchd. Reaching this line means stopAll() was
+            // wedged anyway — there's no graceful path forward.
+            exit(0)
+        }
+
         Task {
-            await serviceManager.stopAll()
+            await self.serviceManager.stopAll()
+            // stopAll() completed cleanly — cancel the deadline before it
+            // fires, then signal AppKit that termination can proceed.
+            deadlineTask.cancel()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

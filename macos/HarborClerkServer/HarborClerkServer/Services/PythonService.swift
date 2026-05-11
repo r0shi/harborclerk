@@ -81,20 +81,14 @@ class PythonService: ManagedService {
             return
         }
         proc.terminate() // SIGTERM
-        let grace = shutdownGracePeriod
-        let svcName = name
-        DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
-            guard proc.isRunning else { return }
-            Log.logger("lifecycle").warning(
-                "\(svcName, privacy: .public) still running after \(Int(grace), privacy: .public)s, sending SIGKILL")
-            kill(proc.processIdentifier, SIGKILL)
-        }
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                c.resume()
-            }
-        }
+        // Use the shared deadline helper — detaches pipes (defusing the
+        // Pipe+waitUntilExit deadlock described in
+        // project_menubar_process_management_audit.md), schedules SIGKILL
+        // after the grace period, then waits.
+        await proc.waitForExitWithDeadline(
+            graceSeconds: shutdownGracePeriod,
+            serviceName: name,
+        )
         process = nil
         state = .stopped
     }
