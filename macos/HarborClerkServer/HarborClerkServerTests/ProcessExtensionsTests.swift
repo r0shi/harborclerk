@@ -174,4 +174,26 @@ final class ProcessExtensionsTests: XCTestCase {
         await proc.waitForExitWithDeadline(graceSeconds: 30.0, serviceName: "test-already-dead")
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
     }
+
+    /// After runAsProcessGroupLeader, getpgid(pid) must equal pid — confirms
+    /// the child is the leader of a new process group rather than inheriting
+    /// the parent's pgid. Without this, killpg(pid) only hits the leaf
+    /// process and grandchildren orphan.
+    func testRunAsProcessGroupLeaderMakesChildItsOwnPgidLeader() throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        proc.arguments = ["3"]
+
+        try proc.runAsProcessGroupLeader()
+        defer {
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+                proc.waitUntilExit()
+            }
+        }
+
+        let pid = proc.processIdentifier
+        let pgid = getpgid(pid)
+        XCTAssertEqual(pgid, pid, "expected child to be its own pgid leader (pgid == pid)")
+    }
 }
