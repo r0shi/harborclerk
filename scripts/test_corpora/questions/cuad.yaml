@@ -20,14 +20,23 @@ research:
 
 ask:
   - id: cuad-ask-1
-    text: "What is the governing law of the {{contract_a}} agreement?"
-    notes: "fill {{contract_a}} after sampling"
+    text: "What is the governing law of the Staar Surgical Distributor Agreement?"
+    notes: |
+      Was '{{contract_a}}' — substituted with a concrete contract from the
+      CUAD ingest set (StaarSurgicalCompany_20180801_10-Q_EX-10.37_...
+      Distributor Agreement.pdf) so the question is self-contained and
+      the baseline can be regenerated cleanly.
   - id: cuad-ask-2
-    text: "List all parties to the {{contract_b}} agreement."
-    notes: "fill {{contract_b}}"
+    text: "List all parties to the FuelCell Energy Development Agreement."
+    notes: |
+      Was '{{contract_b}}' — substituted with FuelcellEnergyInc_20191106
+      _8-K_EX-10.1_...Development Agreement.pdf from the CUAD ingest set.
   - id: cuad-ask-3
-    text: "What is the term length of the {{contract_c}} agreement?"
-    notes: ""
+    text: "What is the term length of the Papa John's Endorsement Agreement?"
+    notes: |
+      Was '{{contract_c}}' — substituted with PapaJohnsInternationalInc
+      _20190617_8-K_EX-10.1_...Endorsement Agreement.pdf from the CUAD
+      ingest set.
   - id: cuad-ask-4
     text: "Find contracts mentioning California law."
     notes: ""

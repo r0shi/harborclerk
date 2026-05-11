@@ -235,6 +235,32 @@ rm "$WORKDIR/<corpus>/ingest/.acquired"
 # then re-run with --rerun 'phase=0,corpus=<corpus>' and --resume
 ```
 
+### Regenerating corrupt baselines
+
+After PR #338 the harness flags baselines that say *"corpus is empty"*, *"I was unable to find"*, or *"I notice your message contains an unfilled placeholder"* via `quality.baseline_quality_problem` and skips metric computation for those units. Five baselines in `2026-05-05-prod` matched these signatures and are now harmless but useless. To regenerate them:
+
+```bash
+# 1) Delete the corrupt baseline files (host paths — adjust for split topology)
+cd "$WORKDIR/results/$RUN/baselines"
+rm cuad/cuad-ask-1.json cuad/cuad-ask-2.json cuad/cuad-ask-3.json
+rm cuad/cuad-research-1.json
+rm enron/enron-research-1.json
+
+# 2) Ensure each corpus is actually loaded in HC before the regen — the
+#    original cuad-research-1 baseline said "corpus is empty" because phase 1
+#    ran before any docs were ingested. Use `kb_system_health` or check
+#    /api/system/health for doc_count > 0.
+
+# 3) Re-run just phase 1 for the affected questions
+uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
+    --run-id $RUN --workdir "$WORKDIR" \
+    --phases 1 \
+    --rerun 'id=cuad-ask-1,id=cuad-ask-2,id=cuad-ask-3,id=cuad-research-1,id=enron-research-1' \
+    --resume
+```
+
+`cuad-ask-1/2/3` were corrupt because their question text contained literal `{{contract_a}}`-style placeholders. PR #340 substituted these with concrete contract references (Staar Surgical Distributor, FuelCell Energy Development, Papa John's Endorsement) so a re-run produces a usable baseline. The `test_questions_have_no_placeholders.py` regression guard ensures no future PR re-introduces an unfilled marker.
+
 ---
 
 ## Final aggregation
