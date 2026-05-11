@@ -146,6 +146,12 @@ final class HealthCheckerTests: XCTestCase {
             await hc.tickForTesting()
         }
         XCTAssertEqual(hc.inFlightTaskCount, 1)
+
+        // Drain the in-flight Task so it doesn't outlive the test. Cancel
+        // is fast (Task.sleep is cancellation-aware) and cancelInFlightRestarts
+        // awaits completion. Without this XCTest can complain about orphan
+        // Tasks under Xcode 16+ async-teardown.
+        await hc.cancelInFlightRestarts()
     }
 
     @MainActor
