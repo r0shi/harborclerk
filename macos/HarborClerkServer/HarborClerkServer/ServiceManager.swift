@@ -707,25 +707,38 @@ final class ServiceManager: ObservableObject {
 
         // 1. Stop python services (dependents first: workers → api/embedder)
         // Send SIGTERM to all workers in parallel, then wait for all to exit.
-        // This reduces total stop time from N×30s to ~30s.
+        // Parallel SIGTERM then parallel wait-with-deadline. Pre-audit
+        // (2026-05-11) this path had the same bug as stopAll()'s worker
+        // block: sequential unbounded waits with no SIGKILL fallback, so
+        // a single hung worker stalled the entire preferences-restart
+        // flow indefinitely. The rewrite uses the same helper, so a
+        // settings change that triggers a worker restart is now bounded
+        // at ~12s regardless of how many are hung.
         for worker in workersToStop {
             worker.state = .stopping
             worker.process?.terminate()
         }
         notifyStateChanged()
-        for worker in workersToStop {
-            if let proc = worker.process, proc.isRunning {
-                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                    DispatchQueue.global().async {
-                        proc.waitUntilExit()
-                        c.resume()
+        await withTaskGroup(of: Void.self) { group in
+            for worker in workersToStop {
+                let proc = worker.process
+                let grace = worker.shutdownGracePeriod
+                let workerName = worker.name
+                group.addTask {
+                    if let proc, proc.isRunning {
+                        await proc.waitForExitWithDeadline(
+                            graceSeconds: grace,
+                            serviceName: workerName,
+                        )
+                    }
+                    await MainActor.run {
+                        worker.process = nil
+                        worker.state = .stopped
+                        self.notifyStateChanged()
                     }
                 }
             }
-            worker.process = nil
-            worker.state = .stopped
         }
-        notifyStateChanged()
         for svc in nonWorkerPython {
             await svc.stop()
         }
