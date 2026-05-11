@@ -68,7 +68,7 @@ func httpProbeOK(_ url: URL, timeout: TimeInterval = 3) async -> Bool {
 // MARK: - ServiceManager
 
 @MainActor
-final class ServiceManager: ObservableObject {
+class ServiceManager: ObservableObject {
     @Published var services: [any ManagedService] = []
 
     let postgresService: PostgresService
@@ -97,6 +97,13 @@ final class ServiceManager: ObservableObject {
     private var configChangeTask: Task<Void, Never>?
     private var configWatcherActive = false
     private var lastLlmModelId: String = ""
+    /// Set true at the top of `stopAll()` and `restartForChangedSettings()`
+    /// so any in-flight or about-to-fire auto-restart Task (including the
+    /// onUnexpectedExit-dispatched ones that aren't tracked in
+    /// `HealthChecker.taskHandles`) can early-return before mutating
+    /// service state. `private` would shut the test mock out — `internal`
+    /// access lets `@testable import` flip the flag in unit tests.
+    var isShuttingDown = false
     /// 3-second mtime poller for config.json. We previously had a
     /// DispatchSource FSEvents watcher in addition, but it dropped events
     /// in practice (cause never diagnosed), forcing the user to relaunch
@@ -333,6 +340,23 @@ final class ServiceManager: ObservableObject {
     }
 
     func stopAll() async {
+        // Cancel in-flight auto-restart Tasks AND the config-watcher restart
+        // task BEFORE mutating service state. Without this, a HealthChecker-
+        // dispatched restart that passed its .shutdownPending gate could call
+        // start() on a service we're about to tear down, leaving an orphaned
+        // child the menubar's Process ref doesn't track. See
+        // project_menubar_process_management_audit.md item 5.
+        //
+        // `isShuttingDown` is also set here (before any `await`) so the
+        // onUnexpectedExit-dispatched auto-restart path — whose Tasks are
+        // NOT tracked in HealthChecker.taskHandles and therefore can't be
+        // reached by cancelInFlightRestarts() — early-returns in
+        // attemptAutoRestart() instead of resurrecting a service mid-quit.
+        isShuttingDown = true
+        configChangeTask?.cancel()
+        configChangeTask = nil
+        await healthChecker?.cancelInFlightRestarts()
+
         stopConfigWatcher()
 
         // Mark all running/starting services as shutdown pending
@@ -395,6 +419,10 @@ final class ServiceManager: ObservableObject {
 
         // All children stopped — remove PID file
         removePidFile()
+
+        // App typically exit(0)s right after stopAll, so this clear is a
+        // safety net for any non-quit caller (none today). Cheap to keep.
+        isShuttingDown = false
     }
 
     /// Send SIGKILL to every child we know about. Used by the
@@ -502,6 +530,14 @@ final class ServiceManager: ObservableObject {
     /// Auto-restart an errored service with flap detection.
     /// Called from HealthChecker (consecutive failures) and onUnexpectedExit callbacks (crash).
     func attemptAutoRestart(_ service: any ManagedService) async {
+        // Closes the orphan-restart race for crash-recovery Tasks dispatched
+        // from `onUnexpectedExit`. Those Tasks are NOT tracked in
+        // HealthChecker.taskHandles, so cancelInFlightRestarts() can't
+        // reach them — but if stopAll/restartForChangedSettings has set
+        // isShuttingDown true, this guard makes them no-ops regardless of
+        // whether they fire before or after the service's state has been
+        // advanced past `.shutdownPending` by the shutdown sequence.
+        guard !isShuttingDown else { return }
         // Don't auto-restart Postgres (data safety) or during shutdown
         guard !(service is PostgresService) else { return }
         guard service.state != .shutdownPending else { return }
@@ -649,6 +685,23 @@ final class ServiceManager: ObservableObject {
 
     /// Restart only the services affected by the given changed setting keys.
     func restartForChangedSettings(_ changedKeys: Set<String>) async {
+        // Cancel in-flight auto-restart Tasks AND the config-watcher restart
+        // task BEFORE mutating service state. Without this, a HealthChecker-
+        // dispatched restart that passed its .shutdownPending gate could call
+        // start() on a service we're about to tear down, leaving an orphaned
+        // child the menubar's Process ref doesn't track. See
+        // project_menubar_process_management_audit.md item 5.
+        //
+        // Same `isShuttingDown` trick as stopAll(): closes the gap for
+        // onUnexpectedExit-dispatched auto-restart Tasks that aren't
+        // tracked in HealthChecker.taskHandles. Cleared at the bottom so
+        // subsequent runs work normally.
+        isShuttingDown = true
+        defer { isShuttingDown = false }
+        configChangeTask?.cancel()
+        configChangeTask = nil
+        await healthChecker?.cancelInFlightRestarts()
+
         // Determine which infrastructure and python services need restart
         var infraToRestart: [any ManagedService] = []
         var pythonToRestart: Set<ObjectIdentifier> = []

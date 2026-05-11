@@ -18,6 +18,21 @@ final class HealthChecker {
     /// Set to 6 (60s) to avoid false positives when API is busy with research/synthesis.
     private let consecutiveFailuresBeforeError = 6 // 60s at 10s interval
 
+    /// Tasks for auto-restarts dispatched by `checkAll()`. Tracked so
+    /// `ServiceManager.stopAll()` and `restartForChangedSettings()` can
+    /// call `cancelInFlightRestarts()` before they begin mutating
+    /// service state — without this, a restart Task that already
+    /// passed its `.shutdownPending` gate could call `start()` on a
+    /// service the orchestrator already moved on from, leaving an
+    /// orphaned child the menubar's `Process` ref doesn't track.
+    private var taskHandles: [UUID: Task<Void, Never>] = [:]
+
+    /// Test-only: number of in-flight auto-restart Tasks.
+    var inFlightTaskCount: Int { taskHandles.count }
+
+    /// Test-only entry point: synchronously runs one health-check pass.
+    func tickForTesting() async { await checkAll() }
+
     init(serviceManager: ServiceManager) {
         self.serviceManager = serviceManager
     }
@@ -33,6 +48,23 @@ final class HealthChecker {
     func stopPolling() {
         timer?.invalidate()
         timer = nil
+    }
+
+    /// Cancel every in-flight auto-restart Task and wait for them to finish
+    /// (cancellation propagates via Task.sleep + awaits inside
+    /// serviceManager.attemptAutoRestart). Called by stopAll() and
+    /// restartForChangedSettings() before they begin mutating service
+    /// state, so a Task that already passed its .shutdownPending gate
+    /// can't end up calling start() on a service the orchestrator
+    /// already moved on from.
+    func cancelInFlightRestarts() async {
+        // Snapshot before iterating: the deferred cleanup inside each
+        // Task removes its own entry on a separate MainActor hop, which
+        // would mutate `taskHandles` while we iterate.
+        let snapshot = taskHandles
+        for (_, task) in snapshot { task.cancel() }
+        for (_, task) in snapshot { _ = await task.value }
+        taskHandles.removeAll()
     }
 
     private func checkAll() async {
@@ -65,7 +97,20 @@ final class HealthChecker {
                     changed = true
                     Log.logger("health").error(
                         "[\(service.name, privacy: .public)] \(self.consecutiveFailuresBeforeError, privacy: .public) consecutive failures — marked errored")
-                    await serviceManager.attemptAutoRestart(service)
+                    // Dispatch the auto-restart as a tracked Task instead
+                    // of awaiting inline. See `taskHandles` doc for the
+                    // race this closes. `defer` can't directly mutate
+                    // MainActor-isolated state, so the cleanup hop is
+                    // wrapped in a Task — safe even if the parent is
+                    // cancelled, because cancellation propagates inside
+                    // `attemptAutoRestart`'s awaits, not the cleanup hop.
+                    let id = UUID()
+                    let svc = service
+                    let sm = serviceManager
+                    taskHandles[id] = Task { @MainActor in
+                        defer { Task { @MainActor in self.taskHandles[id] = nil } }
+                        await sm.attemptAutoRestart(svc)
+                    }
                 }
             }
         }
