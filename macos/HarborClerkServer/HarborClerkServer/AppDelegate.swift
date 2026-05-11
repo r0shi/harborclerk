@@ -240,16 +240,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         Task {
-            // forceKillEverything is synchronous (sends SIGKILL, doesn't
-            // wait for processes to die). The menubar stays open afterward,
-            // and the user's next Start All click lands on a freshly-empty
-            // state because removePidFile happens during the kill pass.
+            // forceKillEverything sends SIGKILL to every tracked subprocess.
+            // After PR-4 it's async because Tika's PID is queried via
+            // `launchctl print`. The menubar stays open afterward, and the
+            // user's next Start All click lands on a freshly-empty state
+            // because removePidFile happens during the kill pass.
             //
-            // NOTE for PR-4: once Postgres + Tika move to launchd agents,
-            // this handler also needs to await each agent.stop() to issue
-            // launchctl bootout — otherwise launchd's KeepAlive would
-            // resurrect the postmaster after our SIGKILL.
-            self.serviceManager.forceKillEverything()
+            // Task 7 (PR-4) adds explicit `agent.stop()` for postgres + tika
+            // here so launchd's KeepAlive doesn't resurrect them after our
+            // SIGKILL.
+            await self.serviceManager.forceKillEverything()
             self.serviceManager.notifyStateChanged()
         }
     }
