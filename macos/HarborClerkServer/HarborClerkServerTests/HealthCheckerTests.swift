@@ -21,6 +21,43 @@ final class MockService: ManagedService {
     }
 }
 
+/// A mock service whose health check always fails. Used for driving
+/// HealthChecker through the consecutive-failure threshold without
+/// involving real subprocesses.
+final class MockServiceWithFailingHealth: ManagedService {
+    var name: String
+    var state: ServiceState = .stopped
+
+    init(name: String) {
+        self.name = name
+    }
+
+    func start() async throws {}
+    func stop() {}
+
+    func healthCheck() async -> Bool {
+        return false
+    }
+}
+
+/// A ServiceManager subclass whose `attemptAutoRestart` is observable
+/// and long-running on demand. Lets HealthChecker tests inspect the
+/// in-flight task table without spinning up real subprocesses.
+@MainActor
+final class MockServiceManager: ServiceManager {
+    /// Names of services for which `attemptAutoRestart` was invoked, in order.
+    var attemptAutoRestartCalled: [String] = []
+    /// How long `attemptAutoRestart` should sleep before returning. The
+    /// sleep is cancellation-aware (uses `try? await Task.sleep`) so
+    /// callers can observe `cancelInFlightRestarts()` behaviour.
+    var attemptAutoRestartDelay: Duration = .seconds(0)
+
+    override func attemptAutoRestart(_ service: any ManagedService) async {
+        attemptAutoRestartCalled.append(service.name)
+        try? await Task.sleep(for: attemptAutoRestartDelay)
+    }
+}
+
 // Since HealthChecker requires a full ServiceManager, we test the health-check
 // state transition logic directly: if a running service fails its health check,
 // it should transition to errored. This mirrors what HealthChecker.checkAll() does.
@@ -89,5 +126,21 @@ final class HealthCheckerTests: XCTestCase {
         let states = services.map(\.state)
         let overall = ServiceManager.computeOverallState(states)
         XCTAssertEqual(overall, .errored)
+    }
+
+    // MARK: - In-flight restart-task tracking
+
+    @MainActor
+    func testTrackingStoresHandleWhenCheckAllTriggersRestart() async throws {
+        let mockServices = MockServiceManager()
+        mockServices.attemptAutoRestartDelay = .seconds(2)
+        let svc = MockServiceWithFailingHealth(name: "test-svc")
+        mockServices.services = [svc]
+        let hc = HealthChecker(serviceManager: mockServices)
+        svc.state = .running
+        for _ in 0..<6 {
+            await hc.tickForTesting()
+        }
+        XCTAssertEqual(hc.inFlightTaskCount, 1)
     }
 }

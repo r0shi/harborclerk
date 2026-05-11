@@ -68,7 +68,7 @@ func httpProbeOK(_ url: URL, timeout: TimeInterval = 3) async -> Bool {
 // MARK: - ServiceManager
 
 @MainActor
-final class ServiceManager: ObservableObject {
+class ServiceManager: ObservableObject {
     @Published var services: [any ManagedService] = []
 
     let postgresService: PostgresService
