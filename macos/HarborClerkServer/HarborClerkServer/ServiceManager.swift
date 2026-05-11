@@ -333,6 +333,16 @@ class ServiceManager: ObservableObject {
     }
 
     func stopAll() async {
+        // Cancel in-flight auto-restart Tasks AND the config-watcher restart
+        // task BEFORE mutating service state. Without this, a HealthChecker-
+        // dispatched restart that passed its .shutdownPending gate could call
+        // start() on a service we're about to tear down, leaving an orphaned
+        // child the menubar's Process ref doesn't track. See
+        // project_menubar_process_management_audit.md item 5.
+        configChangeTask?.cancel()
+        configChangeTask = nil
+        await healthChecker?.cancelInFlightRestarts()
+
         stopConfigWatcher()
 
         // Mark all running/starting services as shutdown pending
@@ -649,6 +659,16 @@ class ServiceManager: ObservableObject {
 
     /// Restart only the services affected by the given changed setting keys.
     func restartForChangedSettings(_ changedKeys: Set<String>) async {
+        // Cancel in-flight auto-restart Tasks AND the config-watcher restart
+        // task BEFORE mutating service state. Without this, a HealthChecker-
+        // dispatched restart that passed its .shutdownPending gate could call
+        // start() on a service we're about to tear down, leaving an orphaned
+        // child the menubar's Process ref doesn't track. See
+        // project_menubar_process_management_audit.md item 5.
+        configChangeTask?.cancel()
+        configChangeTask = nil
+        await healthChecker?.cancelInFlightRestarts()
+
         // Determine which infrastructure and python services need restart
         var infraToRestart: [any ManagedService] = []
         var pythonToRestart: Set<ObjectIdentifier> = []

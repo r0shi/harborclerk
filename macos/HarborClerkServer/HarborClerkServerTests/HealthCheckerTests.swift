@@ -162,4 +162,17 @@ final class HealthCheckerTests: XCTestCase {
         XCTAssertEqual(hc.inFlightTaskCount, 0)
         XCTAssertLessThan(elapsed, 1.0, "Task.cancel should break the sleep, not wait the full 5s")
     }
+
+    /// Source-text guard: catches regressions where someone accidentally
+    /// removes the cancellation hook from ServiceManager. The real
+    /// integration test is "run the menubar and click Quit while an
+    /// auto-restart is in flight" which we can't drive from XCTest.
+    func testStopAllCancelsInFlightRestarts() throws {
+        let url = URL(fileURLWithPath: "/Users/alex/mcp-gateway/macos/HarborClerkServer/HarborClerkServer/ServiceManager.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(
+            source.contains("await healthChecker?.cancelInFlightRestarts()"),
+            "ServiceManager.swift must call healthChecker.cancelInFlightRestarts() (likely in stopAll or restartForChangedSettings)"
+        )
+    }
 }
