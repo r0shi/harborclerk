@@ -143,4 +143,23 @@ final class HealthCheckerTests: XCTestCase {
         }
         XCTAssertEqual(hc.inFlightTaskCount, 1)
     }
+
+    @MainActor
+    func testCancelInFlightRestartsCancelsAndAwaits() async throws {
+        let mockServices = MockServiceManager()
+        mockServices.attemptAutoRestartDelay = .seconds(5)
+        let svc = MockServiceWithFailingHealth(name: "test-svc")
+        mockServices.services = [svc]
+        let hc = HealthChecker(serviceManager: mockServices)
+        svc.state = .running
+        for _ in 0..<6 { await hc.tickForTesting() }
+        XCTAssertEqual(hc.inFlightTaskCount, 1)
+
+        let start = Date()
+        await hc.cancelInFlightRestarts()
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertEqual(hc.inFlightTaskCount, 0)
+        XCTAssertLessThan(elapsed, 1.0, "Task.cancel should break the sleep, not wait the full 5s")
+    }
 }

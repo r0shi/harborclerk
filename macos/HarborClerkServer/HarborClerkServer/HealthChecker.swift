@@ -50,6 +50,23 @@ final class HealthChecker {
         timer = nil
     }
 
+    /// Cancel every in-flight auto-restart Task and wait for them to finish
+    /// (cancellation propagates via Task.sleep + awaits inside
+    /// serviceManager.attemptAutoRestart). Called by stopAll() and
+    /// restartForChangedSettings() before they begin mutating service
+    /// state, so a Task that already passed its .shutdownPending gate
+    /// can't end up calling start() on a service the orchestrator
+    /// already moved on from.
+    func cancelInFlightRestarts() async {
+        // Snapshot before iterating: the deferred cleanup inside each
+        // Task removes its own entry on a separate MainActor hop, which
+        // would mutate `taskHandles` while we iterate.
+        let snapshot = taskHandles
+        for (_, task) in snapshot { task.cancel() }
+        for (_, task) in snapshot { _ = await task.value }
+        taskHandles.removeAll()
+    }
+
     private func checkAll() async {
         guard !paused else { return }
         var changed = false
