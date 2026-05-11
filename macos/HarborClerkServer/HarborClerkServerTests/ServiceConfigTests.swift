@@ -95,4 +95,26 @@ final class ServiceConfigTests: XCTestCase {
         let body = String(source[forceKillRange.upperBound..<(nextFuncRange?.lowerBound ?? source.endIndex)])
         XCTAssertTrue(body.contains("killpg("), "forceKillEverything must call killpg to reach grandchildren")
     }
+
+    /// AppDelegate.setupMenu must register a "Force Stop All" item and the
+    /// handler must call forceKillEverything(). Source-text guard —
+    /// runtime menu inspection is brittle from a non-UI XCTest. Manual
+    /// smoke testing covers the dialog itself.
+    func testAppDelegateRegistersForceStopAllMenuItem() throws {
+        let thisFile = URL(fileURLWithPath: #file)
+        let appDelegateURL = thisFile
+            .deletingLastPathComponent()  // → HarborClerkServerTests/
+            .deletingLastPathComponent()  // → HarborClerkServer/ project root
+            .appendingPathComponent("HarborClerkServer")
+            .appendingPathComponent("AppDelegate.swift")
+        let source = try String(contentsOf: appDelegateURL, encoding: .utf8)
+        XCTAssertTrue(
+            source.contains("\"Force Stop All\""),
+            "AppDelegate.swift must declare a 'Force Stop All' menu item",
+        )
+        XCTAssertTrue(
+            source.contains("forceKillEverything()"),
+            "AppDelegate.swift must call serviceManager.forceKillEverything() in the Force Stop All handler",
+        )
+    }
 }
