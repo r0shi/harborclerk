@@ -65,10 +65,10 @@ final class TikaService: ManagedService {
         // (audit memo: project_menubar_process_management_audit.md)
         // can't make this stall the rest of stopAll().
         //
-        // NOTE: Tika's JVM can fork child JVMs for heavy extractions.
-        // SIGKILL on the tracked PID doesn't catch those grandchildren —
-        // Tier B follow-up is to use posix_spawn + setpgid so killpg can
-        // hit the whole tree.
+        // Tika's JVM forks child JVMs for heavy extractions. As of PR-2,
+        // TikaService.start() launches the JVM as a process-group leader
+        // and waitForExitWithDeadline's SIGKILL escalation uses killpg —
+        // child JVMs die with the leader on force-kill.
         await proc.waitForExitWithDeadline(graceSeconds: 10, serviceName: name)
         process = nil
         state = .stopped

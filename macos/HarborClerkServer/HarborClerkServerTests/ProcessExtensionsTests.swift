@@ -245,14 +245,25 @@ final class ProcessExtensionsTests: XCTestCase {
         proc.arguments = ["-c", "trap '' TERM; sleep 30 & echo $! > /tmp/pg-test-grandchild2.pid; wait"]
         try proc.runAsProcessGroupLeader()
 
-        defer { try? FileManager.default.removeItem(atPath: "/tmp/pg-test-grandchild2.pid") }
+        var grandchildPid: Int32 = 0
+        defer {
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+                proc.waitUntilExit()
+            }
+            if grandchildPid != 0 {
+                kill(grandchildPid, SIGKILL)
+            }
+            try? FileManager.default.removeItem(atPath: "/tmp/pg-test-grandchild2.pid")
+        }
 
         try await Task.sleep(for: .milliseconds(200))
         guard let pidStr = try? String(contentsOfFile: "/tmp/pg-test-grandchild2.pid"),
-              let grandchildPid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+              let parsedPid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             XCTFail("grandchild pid file missing")
             return
         }
+        grandchildPid = parsedPid
 
         proc.terminate()  // SIGTERM, which sh has trapped to no-op
         await proc.waitForExitWithDeadline(graceSeconds: 1.0, serviceName: "pg-test-grandchild2")
