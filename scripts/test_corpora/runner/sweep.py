@@ -958,17 +958,6 @@ def main(argv: list[str] | None = None) -> int:
                     if breaker.should_pause(u.model):
                         breaker.pause_and_reset(u.model, log)
 
-                # Per-corpus canary. Runs once per corpus the first time we
-                # hit a phase-2-6 unit for it, after the model is set. Advisory
-                # only — purely a diagnostic so operators can tell at a glance
-                # whether a (corpus, configured-model) combo is healthy before
-                # the breaker has to catch up. ``--skip-canary`` opts out.
-                if phase in (2, 3, 4, 5, 6) and not args.skip_canary and u.corpus not in canary_results:
-                    canary_results[u.corpus] = _run_canary(hc, u.corpus, log)
-                    # Persist after each canary so a crash mid-sweep doesn't
-                    # lose the diagnostic.
-                    (run_dir / "canary.json").write_text(json.dumps(canary_results, indent=2))
-
                 # Ensure correct corpus is in the DB for phases 1/4/5 (unified for 6).
                 # Phase 1 baselines call HC's MCP for KB tools — Sonnet's queries hit
                 # whatever is currently in HC's DB, so a fresh sweep that doesn't
@@ -1003,6 +992,21 @@ def main(argv: list[str] | None = None) -> int:
                 # Ensure correct model is active for phases 2-6
                 if phase in (2, 3, 4, 5, 6) and u.model not in (None, "-", "claude-baseline"):
                     current_model = _ensure_model(hc, current_model, u.model)
+
+                # Per-corpus canary. Runs once per corpus the first time we
+                # hit a phase-2-6 unit for it, AFTER both corpus ingest and
+                # model activation — otherwise the canary tests against
+                # whatever HC happened to have loaded (often nothing on a
+                # fresh run), producing a misleading "empty" diagnostic
+                # unrelated to the structurally-broken-corpus pattern the
+                # canary is meant to catch. Advisory only: the circuit
+                # breaker handles cascade prevention; this just gives
+                # operators an early signal. ``--skip-canary`` opts out.
+                if phase in (2, 3, 4, 5, 6) and not args.skip_canary and u.corpus not in canary_results:
+                    canary_results[u.corpus] = _run_canary(hc, u.corpus, log)
+                    # Persist after each canary so a crash mid-sweep doesn't
+                    # lose the diagnostic.
+                    (run_dir / "canary.json").write_text(json.dumps(canary_results, indent=2))
 
                 sf.set_status(u.phase, u.corpus, u.model, u.question_id, u.depth, Status.IN_PROGRESS)
                 sf.save()
