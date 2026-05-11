@@ -6,6 +6,7 @@ final class MockService: ManagedService {
     var name: String
     var state: ServiceState
     var healthCheckResult: Bool
+    var isLaunchdManaged: Bool = false
 
     init(name: String, state: ServiceState, healthCheckResult: Bool = true) {
         self.name = name
@@ -27,6 +28,7 @@ final class MockService: ManagedService {
 final class MockServiceWithFailingHealth: ManagedService {
     var name: String
     var state: ServiceState = .stopped
+    var isLaunchdManaged: Bool = false
 
     init(name: String) {
         self.name = name
@@ -211,5 +213,27 @@ final class HealthCheckerTests: XCTestCase {
 
         XCTAssertEqual(mockServices.attemptAutoRestartCalled.count, 0,
             "attemptAutoRestart must early-return when isShuttingDown == true")
+    }
+
+    /// PR-4: a launchd-managed service whose health check fails should still
+    /// transition to .errored after consecutive failures, but HealthChecker
+    /// must NOT dispatch its own auto-restart Task. launchd's KeepAlive
+    /// handles crash recovery for these services; double-restarting via both
+    /// layers would be a foot-gun.
+    @MainActor
+    func testCheckAllSkipsAutoRestartForLaunchdManagedService() async throws {
+        let mockServices = MockServiceManager()
+        let svc = MockServiceWithFailingHealth(name: "test-launchd-svc")
+        svc.isLaunchdManaged = true
+        mockServices.services = [svc]
+        let hc = HealthChecker(serviceManager: mockServices)
+
+        svc.state = .running
+        for _ in 0..<6 { await hc.tickForTesting() }
+
+        XCTAssertEqual(hc.inFlightTaskCount, 0, "must not dispatch auto-restart Task for launchd-managed service")
+        XCTAssertTrue(mockServices.attemptAutoRestartCalled.isEmpty, "must not call attemptAutoRestart")
+        // Service still moves to .errored — only the restart path is skipped.
+        XCTAssertEqual(svc.state, .errored)
     }
 }

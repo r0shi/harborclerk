@@ -97,6 +97,13 @@ final class HealthChecker {
                     changed = true
                     Log.logger("health").error(
                         "[\(service.name, privacy: .public)] \(self.consecutiveFailuresBeforeError, privacy: .public) consecutive failures — marked errored")
+
+                    // Skip auto-restart for launchd-managed services —
+                    // launchd's KeepAlive handles their crash recovery and
+                    // we'd double-restart otherwise. The menubar's role for
+                    // these is just status display.
+                    guard !service.isLaunchdManaged else { continue }
+
                     // Dispatch the auto-restart as a tracked Task instead
                     // of awaiting inline. See `taskHandles` doc for the
                     // race this closes. `defer` can't directly mutate

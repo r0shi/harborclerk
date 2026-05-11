@@ -14,9 +14,20 @@ extension Notification.Name {
 protocol ManagedService: AnyObject {
     var name: String { get }
     var state: ServiceState { get set }
+    /// True for services whose lifecycle runs under launchd (PostgresService,
+    /// TikaService). HealthChecker uses this to skip its own auto-restart
+    /// path — launchd's KeepAlive already handles crash recovery, and
+    /// double-restarting via both layers would be a foot-gun.
+    var isLaunchdManaged: Bool { get }
     func start() async throws
     func stop() async
     func healthCheck() async -> Bool
+}
+
+/// Default-false `isLaunchdManaged` for services that aren't launchd-managed.
+/// PostgresService and TikaService override with `let isLaunchdManaged = true`.
+extension ManagedService {
+    var isLaunchdManaged: Bool { false }
 }
 
 // MARK: - Health-probe helper
