@@ -49,7 +49,7 @@ final class TikaService: ManagedService {
             }
         }
 
-        try proc.run()
+        try proc.runAsProcessGroupLeader()
         process = proc
     }
 
