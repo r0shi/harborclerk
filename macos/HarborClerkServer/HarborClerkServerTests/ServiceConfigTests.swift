@@ -77,4 +77,22 @@ final class ServiceConfigTests: XCTestCase {
         XCTAssertTrue(formatted.contains("hello world"))
         XCTAssertTrue(formatted.hasPrefix("1970-01-01"))
     }
+
+    // MARK: - Process Group Source-Text Guards
+
+    /// forceKillEverything must use killpg() so grandchildren of tracked
+    /// PIDs are reached. Source-text guard against accidental regression.
+    func testForceKillEverythingUsesKillpg() throws {
+        let thisFile = URL(fileURLWithPath: #file)
+        let serviceManagerURL = thisFile
+            .deletingLastPathComponent()  // → HarborClerkServerTests/
+            .deletingLastPathComponent()  // → HarborClerkServer/ project root
+            .appendingPathComponent("HarborClerkServer")
+            .appendingPathComponent("ServiceManager.swift")
+        let source = try String(contentsOf: serviceManagerURL, encoding: .utf8)
+        let forceKillRange = source.range(of: "func forceKillEverything")!
+        let nextFuncRange = source.range(of: "func ", range: forceKillRange.upperBound..<source.endIndex)
+        let body = String(source[forceKillRange.upperBound..<(nextFuncRange?.lowerBound ?? source.endIndex)])
+        XCTAssertTrue(body.contains("killpg("), "forceKillEverything must call killpg to reach grandchildren")
+    }
 }
