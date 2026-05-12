@@ -41,41 +41,66 @@ final class LaunchdAgent {
         self.log = Log.logger("launchd-\(label.replacingOccurrences(of: ".", with: "-"))")
     }
 
-    /// Write the plist to disk if its contents differ from the new
-    /// `content`. If the plist had to be rewritten (or wasn't on disk),
-    /// bootout the existing service (idempotent — bootout of a not-
-    /// loaded service is allowed) and bootstrap the new one.
+    /// Make the plist match `plistContent` on disk AND ensure the service
+    /// is loaded in launchd. Two independent goals because they're tracked
+    /// in two different places:
+    ///   - plist file on disk (under ~/Library/LaunchAgents/)
+    ///   - service-target loaded in the user's gui/<uid> domain
+    ///
+    /// `stop()` calls `bootout`, which unloads the service from the domain
+    /// but leaves the plist file alone. So a subsequent launch can see a
+    /// matching plist with no loaded service — we must still bootstrap, or
+    /// the next `kickstart` will fail with "Could not find service".
     ///
     /// Called by services during their start() — every menubar launch
     /// runs this, so plist drift across upgrades / bundle moves is
-    /// self-healing.
+    /// self-healing, AND the loaded-state is self-healing across the
+    /// stop→start cycle that happens every menubar quit/relaunch.
     func ensureInstalled(plistContent: String) async throws {
         let onDisk = try? String(contentsOf: plistURL, encoding: .utf8)
-        if onDisk == plistContent {
-            log.debug("plist on disk matches; no rewrite needed")
+        let plistMatches = (onDisk == plistContent)
+
+        if !plistMatches {
+            log.info("plist content drift — bootout, rewrite, bootstrap")
+
+            // Bootout if currently loaded. Don't error if it wasn't loaded;
+            // we just want a known-clean state before the rewrite + bootstrap.
+            _ = await launchctl.bootout(serviceTarget: serviceTarget)
+
+            // Make sure the parent directory exists.
+            try FileManager.default.createDirectory(
+                at: plistURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+            )
+
+            do {
+                try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
+            } catch {
+                throw LaunchdAgentError.plistWriteFailed(plistURL, error)
+            }
+
+            // We just bootout'd; the service is guaranteed not loaded.
+            // Bootstrap unconditionally.
+            let bootstrap = await launchctl.bootstrap(domain: domainTarget, plistPath: plistURL)
+            guard bootstrap.success else { throw LaunchdAgentError.bootstrapFailed(bootstrap) }
             return
         }
 
-        log.info("plist content drift — bootout, rewrite, bootstrap")
-
-        // Bootout if currently loaded. Don't error if it wasn't loaded;
-        // we just want a known-clean state before bootstrap.
-        _ = await launchctl.bootout(serviceTarget: serviceTarget)
-
-        // Make sure the parent directory exists.
-        try FileManager.default.createDirectory(
-            at: plistURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true,
-        )
-
-        do {
-            try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
-        } catch {
-            throw LaunchdAgentError.plistWriteFailed(plistURL, error)
+        // Plist matches on disk, but plist-on-disk and service-loaded are
+        // independent: `stop()` calls bootout, which unloads the service
+        // from the domain but leaves the plist file in place. So the
+        // matching-plist path doesn't guarantee a loaded service. Verify
+        // and re-bootstrap if needed — otherwise the next kickstart fails
+        // with "Could not find service", and the menubar reports the
+        // service as errored on every launch after a clean quit.
+        let currentState = await status()
+        if currentState == .notLoaded {
+            log.info("plist matches but service not loaded — bootstrap")
+            let bootstrap = await launchctl.bootstrap(domain: domainTarget, plistPath: plistURL)
+            guard bootstrap.success else { throw LaunchdAgentError.bootstrapFailed(bootstrap) }
+        } else {
+            log.debug("plist matches and service is loaded — no action needed")
         }
-
-        let bootstrap = await launchctl.bootstrap(domain: domainTarget, plistPath: plistURL)
-        guard bootstrap.success else { throw LaunchdAgentError.bootstrapFailed(bootstrap) }
     }
 
     /// `launchctl kickstart -k` — starts the service, or restarts it

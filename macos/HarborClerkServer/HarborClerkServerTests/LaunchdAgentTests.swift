@@ -11,16 +11,49 @@ final class LaunchdAgentTests: XCTestCase {
         try? FileManager.default.removeItem(at: tempDir)
     }
 
-    func testEnsureInstalledNoOpsWhenPlistMatches() async throws {
+    func testEnsureInstalledSkipsBootstrapWhenPlistMatchesAndServiceLoaded() async throws {
         let plistURL = tempDir.appendingPathComponent("a.plist")
         try "<plist>match</plist>".write(to: plistURL, atomically: true, encoding: .utf8)
         let fake = FakeLaunchctlClient()
+        // FakeLaunchctlClient's default print result is success with empty
+        // stdout, which LaunchdAgent.status() reads as `.loaded(pid: nil)`.
+        // ensureInstalled should call print() to verify, then skip bootstrap.
         let agent = LaunchdAgent(label: "com.test.a", plistURL: plistURL, launchctl: fake)
 
         try await agent.ensureInstalled(plistContent: "<plist>match</plist>")
 
-        // No launchctl invocations because content matched.
-        XCTAssertEqual(fake.invocations, [])
+        // Plist matched + service loaded: one print() invocation, no rewrite, no bootstrap.
+        XCTAssertEqual(fake.invocations, ["print gui/\(getuid())/com.test.a"])
+    }
+
+    /// Regression test for the smoke-test bug: after `stop()` (bootout), the
+    /// plist remains on disk but the service is unloaded. The next launch
+    /// previously returned early because the plist matched — but then
+    /// `kickstart` failed with "Could not find service" and the menubar
+    /// reported postgres/tika as errored on every launch after the first.
+    /// ensureInstalled must check status and re-bootstrap when not loaded.
+    func testEnsureInstalledBootstrapsWhenPlistMatchesButServiceNotLoaded() async throws {
+        let plistURL = tempDir.appendingPathComponent("a.plist")
+        try "<plist>match</plist>".write(to: plistURL, atomically: true, encoding: .utf8)
+        let fake = FakeLaunchctlClient()
+        // Simulate a bootout'd-but-plist-on-disk state — `launchctl print`
+        // returns 113 "Could not find service ...", which status() maps
+        // to `.notLoaded`.
+        fake.nextPrintResult = LaunchctlResult(
+            exitCode: 113,
+            stdout: "",
+            stderr: "Could not find service \"com.test.a\" in domain",
+        )
+        let agent = LaunchdAgent(label: "com.test.a", plistURL: plistURL, launchctl: fake)
+
+        try await agent.ensureInstalled(plistContent: "<plist>match</plist>")
+
+        // Should have checked status, then bootstrapped.
+        XCTAssertEqual(fake.invocations.count, 2)
+        XCTAssertTrue(fake.invocations[0].hasPrefix("print "))
+        XCTAssertTrue(fake.invocations[1].hasPrefix("bootstrap "))
+        // Plist content unchanged on disk (no rewrite needed).
+        XCTAssertEqual(try String(contentsOf: plistURL, encoding: .utf8), "<plist>match</plist>")
     }
 
     func testEnsureInstalledBootoutRewritesBootstrapWhenDrifted() async throws {
