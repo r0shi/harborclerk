@@ -137,6 +137,12 @@ final class RealLaunchctlClient: LaunchctlClient {
 /// writers leave the group before the consumer thread enters `group.wait()`
 /// and reads `.value`. Swift's Sendable checker can't prove this so we
 /// assert it ourselves.
+///
+/// IMPORTANT: never read `.value` before the gating `group.wait()` returns.
+/// The DispatchGroup is what synchronizes the writes, not the class itself.
+/// A future maintainer adding a read on the producer side (before the
+/// consumer's group.wait) would silently introduce a data race that the
+/// @unchecked annotation suppresses.
 private final class MutableBox<T>: @unchecked Sendable {
     var value: T
     init(_ initial: T) { self.value = initial }

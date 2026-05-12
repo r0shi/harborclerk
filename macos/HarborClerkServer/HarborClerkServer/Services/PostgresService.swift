@@ -34,31 +34,6 @@ final class PostgresService: ManagedService {
     private var dataDir: URL { AppSettings.shared.postgresDataDir }
     private var port: Int { AppSettings.shared.postgresPort }
 
-    /// Wait for `proc` to exit, returning whether it terminated cleanly
-    /// (status == 0). Returns `false` (rather than raising) if the
-    /// process was never launched.
-    ///
-    /// Apple's documented behaviour for `terminationStatus` on a
-    /// Process that hasn't run is to raise `NSInvalidArgumentException`.
-    /// Swift can't catch that — it propagates as an unhandled
-    /// exception and aborts the entire app, taking every spawned
-    /// subprocess (including PostgreSQL mid-query) down with it.
-    /// We've actually seen this in the wild during model-switch
-    /// teardown when `try? proc.run()` swallowed a launch failure
-    /// upstream. See `project_menubar_crashes_during_model_switch.md`.
-    ///
-    /// `processIdentifier` is 0 for a never-launched Process, so
-    /// gating on `> 0` skips the throwing read.
-    private static func awaitExitedCleanly(_ proc: Process) async -> Bool {
-        await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                let exited = proc.processIdentifier != 0 && proc.terminationStatus == 0
-                c.resume(returning: exited)
-            }
-        }
-    }
-
     func start() async throws {
         let fm = FileManager.default
         let pgVersionFile = dataDir.appendingPathComponent("PG_VERSION")
@@ -142,8 +117,14 @@ final class PostgresService: ManagedService {
         proc.environment = pgEnvironment()
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
-        try? proc.run()
-        return await Self.awaitExitedCleanly(proc)
+        // `Process.runAndAwait` uses terminationHandler under the hood —
+        // safer than waitUntilExit for very short-lived children like
+        // pg_isready (~10ms). See `ProcessAsync.swift`.
+        do {
+            return try await proc.runAndAwait() == 0
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Logging Config
@@ -194,13 +175,7 @@ final class PostgresService: ManagedService {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 
-        try proc.run()
-        let exitCode: Int32 = await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                c.resume(returning: proc.terminationStatus)
-            }
-        }
+        let exitCode = try await proc.runAndAwait()
 
         if exitCode != 0 {
             throw ServiceError.startFailed(name, "initdb failed with \(exitCode)")
@@ -228,13 +203,10 @@ final class PostgresService: ManagedService {
         startProc.environment = pgEnvironment()
         startProc.standardOutput = FileHandle.nullDevice
         startProc.standardError = FileHandle.nullDevice
-        try startProc.run()
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { startProc.waitUntilExit(); c.resume() }
-        }
+        let startExitCode = try await startProc.runAndAwait()
 
-        guard startProc.terminationStatus == 0 else {
-            throw ServiceError.startFailed(name, "pg_ctl start (setup) exited with \(startProc.terminationStatus)")
+        guard startExitCode == 0 else {
+            throw ServiceError.startFailed(name, "pg_ctl start (setup) exited with \(startExitCode)")
         }
 
         // Wait for ready (pg_ctl -w already waits, but belt-and-suspenders)
@@ -251,10 +223,8 @@ final class PostgresService: ManagedService {
         createProc.environment = pgEnvironment()
         createProc.standardOutput = FileHandle.nullDevice
         createProc.standardError = FileHandle.nullDevice
-        try? createProc.run()
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { createProc.waitUntilExit(); c.resume() }
-        }
+        // Best-effort — db may already exist (idempotent on re-init).
+        _ = try? await createProc.runAndAwait()
 
         // Create extensions
         let psql = pgBinDir.appendingPathComponent("psql")
@@ -270,10 +240,10 @@ final class PostgresService: ManagedService {
             extProc.environment = pgEnvironment()
             extProc.standardOutput = FileHandle.nullDevice
             extProc.standardError = FileHandle.nullDevice
-            try? extProc.run()
-            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                DispatchQueue.global().async { extProc.waitUntilExit(); c.resume() }
-            }
+            // Best-effort — extension may already exist (CREATE EXTENSION
+            // IF NOT EXISTS is idempotent, but psql connect failures
+            // shouldn't block setup).
+            _ = try? await extProc.runAndAwait()
         }
 
         // Stop — will be started properly by ServiceManager (via launchd)
@@ -283,10 +253,9 @@ final class PostgresService: ManagedService {
         stopProc.environment = pgEnvironment()
         stopProc.standardOutput = FileHandle.nullDevice
         stopProc.standardError = FileHandle.nullDevice
-        try? stopProc.run()
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { stopProc.waitUntilExit(); c.resume() }
-        }
+        // Best-effort — if pg_ctl stop fails, the followup launchd
+        // bootstrap will handle the still-running postmaster.
+        _ = try? await stopProc.runAndAwait()
     }
 
     // MARK: - Stale PID Detection
@@ -324,38 +293,36 @@ final class PostgresService: ManagedService {
 
     /// Extract the major version from the bundled postgres binary (e.g. "18").
     ///
-    /// Async because `start()` runs on the MainActor — calling
-    /// `proc.waitUntilExit()` synchronously there blocks the actor and
-    /// stalls every other `@MainActor` task (CLAUDE.md gotcha:
-    /// "never call proc.waitUntilExit() on MainActor — always use the
-    /// async continuation pattern").
+    /// Async because `start()` runs on the MainActor — using
+    /// `Process.runAndAwait` (which uses terminationHandler under the
+    /// hood) keeps the wait off-MainActor and dodges the
+    /// `waitUntilExit`/short-lived-child race that hangs other call
+    /// sites (CLAUDE.md gotcha: "never call proc.waitUntilExit() on
+    /// MainActor — always use the async continuation pattern"; the
+    /// helper is the async continuation pattern).
     private func bundledPgMajorVersion() async -> String {
-        await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                let proc = Process()
-                proc.executableURL = self.pgBinDir.appendingPathComponent("postgres")
-                proc.arguments = ["--version"]
-                proc.environment = self.pgEnvironment()
-                let pipe = Pipe()
-                proc.standardOutput = pipe
-                proc.standardError = FileHandle.nullDevice
-                do {
-                    try proc.run()
-                    proc.waitUntilExit()
-                } catch {
-                    c.resume(returning: "")
-                    return
-                }
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                // Output: "postgres (PostgreSQL) 18.3\n"
-                guard let output = String(data: data, encoding: .utf8),
-                      let versionStr = output.split(separator: " ").last else {
-                    c.resume(returning: "")
-                    return
-                }
-                c.resume(returning: String(versionStr.split(separator: ".").first ?? ""))
-            }
+        let proc = Process()
+        proc.executableURL = pgBinDir.appendingPathComponent("postgres")
+        proc.arguments = ["--version"]
+        proc.environment = pgEnvironment()
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            _ = try await proc.runAndAwait()
+        } catch {
+            return ""
         }
+        // `postgres --version` output is ~27 bytes — well under the
+        // 64KB pipe buffer, so reading after exit is safe (no need
+        // for concurrent drain).
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // Output: "postgres (PostgreSQL) 18.3\n"
+        guard let output = String(data: data, encoding: .utf8),
+              let versionStr = output.split(separator: " ").last else {
+            return ""
+        }
+        return String(versionStr.split(separator: ".").first ?? "")
     }
 }
 

@@ -267,14 +267,12 @@ class ServiceManager: ObservableObject {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        try? proc.run()
-        let data: Data = await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                let d = pipe.fileHandleForReading.readDataToEndOfFile()
-                c.resume(returning: d)
-            }
-        }
+        // `Process.runAndAwait` uses terminationHandler — safer than
+        // `waitUntilExit` for short-lived children like lsof (see
+        // ProcessAsync.swift). On error we still try to read the pipe;
+        // it'll be empty and we fall through to the no-output guard.
+        _ = try? await proc.runAndAwait()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
         guard let output = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
