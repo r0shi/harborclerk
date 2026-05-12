@@ -106,7 +106,25 @@ final class LaunchdAgent {
     /// `launchctl kickstart -k` — starts the service, or restarts it
     /// if already running. After ensureInstalled, this is the verb to
     /// actually launch the process.
+    ///
+    /// Skip-when-already-running: kickstart's `-k` flag means "Kill the
+    /// service instance if it is currently running, then start it again"
+    /// — which would defeat the whole crash-survival selling point of
+    /// PR-4 (postgres+tika kept alive across a menubar crash via
+    /// launchd's KeepAlive should NOT be SIGTERMed by the next menubar
+    /// launch). Check status first: if a live PID is already attached
+    /// to this service-target, leave it alone.
     func start() async throws {
+        if case .loaded(let maybePid) = await status(),
+           let pid = maybePid, pid > 0,
+           kill(pid, 0) == 0 {
+            // Already running with a live PID — skip kickstart. The
+            // existing process continues serving (the whole point of the
+            // crash-survival path). The caller's subsequent health check
+            // will verify the running process is responsive.
+            log.info("service already running (pid \(pid, privacy: .public)) — skip kickstart")
+            return
+        }
         let r = await launchctl.kickstart(serviceTarget: serviceTarget)
         guard r.success else { throw LaunchdAgentError.kickstartFailed(r) }
     }

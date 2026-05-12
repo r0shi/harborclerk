@@ -243,7 +243,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        Task {
+        Task { @MainActor in
+            // Prevent auto-restart of menubar-spawned children — without
+            // this, the SIGKILLs below trigger each PythonService's
+            // terminationHandler restart loop, plus the
+            // onUnexpectedExit -> attemptAutoRestart path on max-restart
+            // exhaustion. Smoke testing PR-4 step 7 showed Embedder,
+            // LLM, API, and Watcher coming back to Running after Force
+            // Stop because of this.
+            //
+            // Two-pronged: (1) set state=.stopping on every service
+            // *before* SIGKILL — PythonService/LlamaService
+            // terminationHandlers guard on `state == .running` and
+            // become no-ops; (2) flip isShuttingDown so any leak-through
+            // auto-restart Task early-returns in attemptAutoRestart.
+            // Same approach as stopAll() but without the orderly
+            // shutdown sequence.
+            self.serviceManager.isShuttingDown = true
+            await self.healthChecker.cancelInFlightRestarts()
+            for service in self.serviceManager.services where service.state != .stopped {
+                service.state = .stopping
+            }
+            self.serviceManager.notifyStateChanged()
+
             // forceKillEverything sends SIGKILL to every tracked subprocess.
             // After PR-4 it's async because Tika's PID is queried via
             // `launchctl print`. The menubar stays open afterward, and the
@@ -259,6 +281,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await self.serviceManager.postgresService.stop()
             await self.serviceManager.tikaService.stop()
 
+            // Mark every service as stopped — the UI was in an
+            // intermediate .stopping state, and the SIGKILL'd processes
+            // can't transition themselves. Workers, embedder, llm, api,
+            // watcher all get nilled here so a subsequent Start All
+            // lands cleanly. (forceKillEverything itself doesn't touch
+            // .state — keeping it that way means it's safe to call
+            // from anywhere, e.g. the 30s deadline path.)
+            for service in self.serviceManager.services {
+                service.state = .stopped
+                if let pySvc = service as? PythonService { pySvc.process = nil }
+            }
+            self.serviceManager.isShuttingDown = false
             self.serviceManager.notifyStateChanged()
         }
     }

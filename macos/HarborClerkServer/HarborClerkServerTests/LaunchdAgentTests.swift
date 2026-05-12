@@ -121,9 +121,57 @@ final class LaunchdAgentTests: XCTestCase {
 
     func testStartCallsKickstart() async throws {
         let fake = FakeLaunchctlClient()
+        // Default print result (success, empty stdout) → status() reports
+        // `.loaded(pid: nil)` → not running → kickstart should fire.
         let agent = LaunchdAgent(label: "com.test.a", plistURL: tempDir.appendingPathComponent("a.plist"), launchctl: fake)
         try await agent.start()
-        XCTAssertEqual(fake.invocations, ["kickstart gui/\(getuid())/com.test.a"])
+        // status() call happens first (skip-when-running check), then kickstart.
+        XCTAssertEqual(fake.invocations, [
+            "print gui/\(getuid())/com.test.a",
+            "kickstart gui/\(getuid())/com.test.a",
+        ])
+    }
+
+    /// Regression test for smoke-test step 4: crash-survival path. When
+    /// the service is already running under launchd's KeepAlive (e.g.
+    /// after a menubar crash), the next menubar launch's start() must
+    /// NOT kickstart-and-restart the running process. `kickstart -k`
+    /// sends SIGTERM to the running instance first; for postgres, that's
+    /// a forced smart-shutdown of every in-flight query.
+    func testStartSkipsKickstartWhenServiceIsAlreadyRunning() async throws {
+        // Use the test runner's own PID — guaranteed alive, so the
+        // `kill(pid, 0) == 0` defensive check inside start() passes.
+        let alivePid = ProcessInfo.processInfo.processIdentifier
+        let fake = FakeLaunchctlClient()
+        fake.nextPrintResult = LaunchctlResult(
+            exitCode: 0,
+            stdout: "com.test.a = {\n\tpid = \(alivePid)\n\tstate = running\n}\n",
+            stderr: "",
+        )
+        let agent = LaunchdAgent(label: "com.test.a", plistURL: tempDir.appendingPathComponent("a.plist"), launchctl: fake)
+        try await agent.start()
+        // status() got called, but kickstart did NOT — service was already running.
+        XCTAssertEqual(fake.invocations, ["print gui/\(getuid())/com.test.a"])
+    }
+
+    /// Defensive companion: if status() reports a PID but `kill(pid, 0)`
+    /// says it's dead (launchctl's view lags exit by a tick),
+    /// kickstart should fire — don't trust the stale PID.
+    func testStartKickstartsWhenStatusPidIsStale() async throws {
+        // PID 99999999 is almost certainly not running on macOS.
+        let deadPid: Int32 = 99999999
+        let fake = FakeLaunchctlClient()
+        fake.nextPrintResult = LaunchctlResult(
+            exitCode: 0,
+            stdout: "com.test.a = {\n\tpid = \(deadPid)\n\tstate = running\n}\n",
+            stderr: "",
+        )
+        let agent = LaunchdAgent(label: "com.test.a", plistURL: tempDir.appendingPathComponent("a.plist"), launchctl: fake)
+        try await agent.start()
+        XCTAssertEqual(fake.invocations, [
+            "print gui/\(getuid())/com.test.a",
+            "kickstart gui/\(getuid())/com.test.a",
+        ])
     }
 
     func testStopCallsBootout() async throws {
