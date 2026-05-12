@@ -85,6 +85,42 @@ final class LaunchdAgentTests: XCTestCase {
         try await agent.stop()
     }
 
+    func testStopTreatsBootOutFailed36AsSuccess() async throws {
+        // Recent macOS phrasing: EBUSY when the service isn't loaded.
+        let fake = FakeLaunchctlClient()
+        fake.nextBootoutResult = LaunchctlResult(
+            exitCode: 36,
+            stdout: "",
+            stderr: "Boot-out failed: 36: Operation now in progress",
+        )
+        let agent = LaunchdAgent(label: "com.test.a", plistURL: tempDir.appendingPathComponent("a.plist"), launchctl: fake)
+        try await agent.stop()
+    }
+
+    func testStopTreatsBootOutFailed3AsSuccess() async throws {
+        // ESRCH phrasing.
+        let fake = FakeLaunchctlClient()
+        fake.nextBootoutResult = LaunchctlResult(
+            exitCode: 3,
+            stdout: "",
+            stderr: "Boot-out failed: 3: No such process",
+        )
+        let agent = LaunchdAgent(label: "com.test.a", plistURL: tempDir.appendingPathComponent("a.plist"), launchctl: fake)
+        try await agent.stop()
+    }
+
+    func testStopTreatsGenericNoSuchProcessAsSuccess() async throws {
+        // Fallback phrasing — bare "no such process".
+        let fake = FakeLaunchctlClient()
+        fake.nextBootoutResult = LaunchctlResult(
+            exitCode: 3,
+            stdout: "",
+            stderr: "no such process",
+        )
+        let agent = LaunchdAgent(label: "com.test.a", plistURL: tempDir.appendingPathComponent("a.plist"), launchctl: fake)
+        try await agent.stop()
+    }
+
     func testStopThrowsOnOtherBootoutErrors() async throws {
         let fake = FakeLaunchctlClient()
         fake.nextBootoutResult = LaunchctlResult(exitCode: 22, stdout: "", stderr: "EINVAL")
@@ -119,6 +155,22 @@ final class LaunchdAgentTests: XCTestCase {
         let agent = LaunchdAgent(label: "com.test.a", plistURL: tempDir.appendingPathComponent("a.plist"), launchctl: fake)
         let state = await agent.status()
         XCTAssertEqual(state, .loaded(pid: nil))
+    }
+
+    func testStatusIgnoresOriginalPidLine() async throws {
+        // "original pid = N" appears for stopped-but-loaded services and
+        // refers to a no-longer-running PID. Returning it as the live pid
+        // could surface a stale (possibly recycled!) PID to
+        // forceKillEverything. Must be parsed as .loaded(pid: nil).
+        let fake = FakeLaunchctlClient()
+        fake.nextPrintResult = LaunchctlResult(
+            exitCode: 0,
+            stdout: "com.test.a = {\n\toriginal pid = 99999\n\tstate = waiting\n}\n",
+            stderr: "",
+        )
+        let agent = LaunchdAgent(label: "com.test.a", plistURL: tempDir.appendingPathComponent("a.plist"), launchctl: fake)
+        let state = await agent.status()
+        XCTAssertEqual(state, .loaded(pid: nil), "original pid line must not be parsed as current pid")
     }
 
     func testStatusReturnsNotLoadedOnPrintFailure() async throws {

@@ -93,9 +93,23 @@ final class LaunchdAgent {
         // bootout of a not-loaded service may exit non-zero. We treat
         // any "service not found" outcome as success — the goal is
         // "service is not running" and that goal is met.
-        if !r.success && !r.stderr.lowercased().contains("could not find service") {
+        if !r.success && !Self.isNotLoadedError(r.stderr) {
             throw LaunchdAgentError.bootoutFailed(r)
         }
+    }
+
+    /// True when the stderr indicates the service was already not loaded.
+    /// Three forms observed across macOS versions:
+    ///   "Could not find service ..." (older / common)
+    ///   "Boot-out failed: 36: Operation now in progress" (EBUSY, recent macOS)
+    ///   "Boot-out failed: 3: No such process" (ESRCH)
+    /// Plus a generic "no such process" fallback.
+    private static func isNotLoadedError(_ stderr: String) -> Bool {
+        let s = stderr.lowercased()
+        return s.contains("could not find service")
+            || s.contains("boot-out failed: 36")
+            || s.contains("boot-out failed: 3")
+            || s.contains("no such process")
     }
 
     /// Parse `launchctl print <service-target>` for PID + load state.
@@ -108,8 +122,12 @@ final class LaunchdAgent {
         }
         // launchctl print output is human-readable; we look for the
         // "pid = N" line. Absent → loaded but not running. Present → loaded
-        // and running.
-        if let pidLine = r.stdout.split(separator: "\n").first(where: { $0.contains("pid =") }) {
+        // and running. Trim leading whitespace/tabs first so we match
+        // "pid =" but NOT "original pid =" (a stopped-but-loaded marker
+        // whose stale value could be SIGKILLed against a recycled PID).
+        if let pidLine = r.stdout.split(separator: "\n").first(where: {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("pid =")
+        }) {
             let pidStr = pidLine.split(separator: "=").last?.trimmingCharacters(in: .whitespaces) ?? ""
             return .loaded(pid: Int32(pidStr))
         }

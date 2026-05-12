@@ -72,9 +72,29 @@ final class RealLaunchctlClient: LaunchctlClient {
 
         return await withCheckedContinuation { c in
             DispatchQueue.global().async {
+                // Drain pipes on background queues so the child can keep
+                // writing without blocking on pipe-buffer-full. Without
+                // this, `launchctl print` output > ~64 KB deadlocks because
+                // waitUntilExit waits for the child but the child is
+                // stuck in write(2). Same pattern PR-1 applied to Python
+                // service pipes.
+                let outQueue = DispatchQueue(label: "launchctl-stdout-drain")
+                let errQueue = DispatchQueue(label: "launchctl-stderr-drain")
+                var outData = Data()
+                var errData = Data()
+                let group = DispatchGroup()
+                group.enter()
+                outQueue.async {
+                    outData = stdout.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
+                group.enter()
+                errQueue.async {
+                    errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
                 proc.waitUntilExit()
-                let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-                let errData = stderr.fileHandleForReading.readDataToEndOfFile()
+                group.wait()
                 c.resume(returning: LaunchctlResult(
                     exitCode: proc.terminationStatus,
                     stdout: String(data: outData, encoding: .utf8) ?? "",
