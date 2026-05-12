@@ -60,49 +60,86 @@ final class RealLaunchctlClient: LaunchctlClient {
         proc.standardOutput = stdout
         proc.standardError = stderr
 
-        do {
-            try proc.run()
-        } catch {
-            return LaunchctlResult(
-                exitCode: -1,
-                stdout: "",
-                stderr: "failed to launch launchctl: \(error)",
-            )
-        }
-
         return await withCheckedContinuation { c in
+            // Three things must complete before we resume:
+            //   1. child exits (terminationHandler fires)
+            //   2. stdout drain hits EOF
+            //   3. stderr drain hits EOF
+            // A DispatchGroup gates the resume on all three.
+            let group = DispatchGroup()
+            let outBox = MutableBox<Data>(.init())
+            let errBox = MutableBox<Data>(.init())
+
+            // Drain stdout/stderr on background queues. Without concurrent
+            // drains, `launchctl print` output > ~64 KB would block in the
+            // child's write(2) (kernel pipe buffer fills).
+            group.enter()
             DispatchQueue.global().async {
-                // Drain pipes on background queues so the child can keep
-                // writing without blocking on pipe-buffer-full. Without
-                // this, `launchctl print` output > ~64 KB deadlocks because
-                // waitUntilExit waits for the child but the child is
-                // stuck in write(2). Same pattern PR-1 applied to Python
-                // service pipes.
-                let outQueue = DispatchQueue(label: "launchctl-stdout-drain")
-                let errQueue = DispatchQueue(label: "launchctl-stderr-drain")
-                var outData = Data()
-                var errData = Data()
-                let group = DispatchGroup()
-                group.enter()
-                outQueue.async {
-                    outData = stdout.fileHandleForReading.readDataToEndOfFile()
-                    group.leave()
-                }
-                group.enter()
-                errQueue.async {
-                    errData = stderr.fileHandleForReading.readDataToEndOfFile()
-                    group.leave()
-                }
-                proc.waitUntilExit()
+                outBox.value = stdout.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+            group.enter()
+            DispatchQueue.global().async {
+                errBox.value = stderr.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+
+            // terminationHandler fires from Foundation's internal queue
+            // when the child exits, regardless of which thread launched
+            // the Process. Replaces `proc.waitUntilExit()` — empirically
+            // unreliable when `proc.run()` is called from one thread
+            // (MainActor here) and the wait is called from another
+            // (DispatchQueue.global()). Witnessed in the wild on first
+            // launch: `sample` of the hung menubar showed a worker thread
+            // spinning `mach_msg2_trap` inside `waitUntilExit` with no
+            // live child process and both pipe drains already finished.
+            // The termination signal reached Foundation but the dispatch
+            // queue's runloop never woke up.
+            group.enter()
+            proc.terminationHandler = { _ in group.leave() }
+
+            do {
+                try proc.run()
+            } catch {
+                // terminationHandler will NOT fire if run() threw —
+                // balance the third group.enter() manually, and close
+                // the read ends so the drains don't block forever.
+                try? stdout.fileHandleForReading.close()
+                try? stderr.fileHandleForReading.close()
+                group.leave()
+                c.resume(returning: LaunchctlResult(
+                    exitCode: -1,
+                    stdout: "",
+                    stderr: "failed to launch launchctl: \(error)",
+                ))
+                return
+            }
+
+            // Wait for all three (term + 2 drains) on a background queue
+            // so we don't block the calling actor.
+            DispatchQueue.global().async {
                 group.wait()
                 c.resume(returning: LaunchctlResult(
                     exitCode: proc.terminationStatus,
-                    stdout: String(data: outData, encoding: .utf8) ?? "",
-                    stderr: String(data: errData, encoding: .utf8) ?? "",
+                    stdout: String(data: outBox.value, encoding: .utf8) ?? "",
+                    stderr: String(data: errBox.value, encoding: .utf8) ?? "",
                 ))
             }
         }
     }
+}
+
+/// Reference wrapper so `let` closures can mutate captured state without
+/// `inout` gymnastics. Used by `RealLaunchctlClient.run` to assemble
+/// stdout/stderr Data across three concurrent dispatch blocks.
+///
+/// `@unchecked Sendable` because access is serialized by a DispatchGroup —
+/// writers leave the group before the consumer thread enters `group.wait()`
+/// and reads `.value`. Swift's Sendable checker can't prove this so we
+/// assert it ourselves.
+private final class MutableBox<T>: @unchecked Sendable {
+    var value: T
+    init(_ initial: T) { self.value = initial }
 }
 
 /// Test implementation that records every invocation and returns
