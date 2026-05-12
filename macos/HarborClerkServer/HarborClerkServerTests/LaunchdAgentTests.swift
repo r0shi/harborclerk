@@ -96,6 +96,29 @@ final class LaunchdAgentTests: XCTestCase {
         }
     }
 
+    /// Companion to the regression test above — exercises bootstrap-failure
+    /// in the NEW "plist matches but service not loaded" branch (separate
+    /// code path from the drift case covered by
+    /// `testEnsureInstalledThrowsOnBootstrapFailure`).
+    func testEnsureInstalledThrowsWhenPlistMatchesNotLoadedAndBootstrapFails() async throws {
+        let plistURL = tempDir.appendingPathComponent("a.plist")
+        try "<plist>match</plist>".write(to: plistURL, atomically: true, encoding: .utf8)
+        let fake = FakeLaunchctlClient()
+        fake.nextPrintResult = LaunchctlResult(
+            exitCode: 113, stdout: "", stderr: "Could not find service")
+        fake.nextBootstrapResult = LaunchctlResult(
+            exitCode: 5, stdout: "", stderr: "bootstrap failed")
+        let agent = LaunchdAgent(label: "com.test.a", plistURL: plistURL, launchctl: fake)
+        do {
+            try await agent.ensureInstalled(plistContent: "<plist>match</plist>")
+            XCTFail("expected bootstrapFailed")
+        } catch let LaunchdAgentError.bootstrapFailed(r) {
+            XCTAssertEqual(r.exitCode, 5)
+        }
+        // Plist must be untouched — no rewrite in this branch.
+        XCTAssertEqual(try String(contentsOf: plistURL, encoding: .utf8), "<plist>match</plist>")
+    }
+
     func testStartCallsKickstart() async throws {
         let fake = FakeLaunchctlClient()
         let agent = LaunchdAgent(label: "com.test.a", plistURL: tempDir.appendingPathComponent("a.plist"), launchctl: fake)
