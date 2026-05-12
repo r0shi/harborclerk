@@ -290,7 +290,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // from anywhere, e.g. the 30s deadline path.)
             for service in self.serviceManager.services {
                 service.state = .stopped
+                // Clear stale Process refs so processIdentifier doesn't
+                // surface a dead PID before Foundation's kqueue catches
+                // up. Both python services and the llama server hold a
+                // Process — handle both. Postgres/Tika are launchd-managed
+                // and don't have a menubar-side Process to clear.
                 if let pySvc = service as? PythonService { pySvc.process = nil }
+                if let llama = service as? LlamaService { llama.process = nil }
             }
             self.serviceManager.isShuttingDown = false
             self.serviceManager.notifyStateChanged()
