@@ -316,6 +316,14 @@ final class PostgresService: ManagedService {
         // `postgres --version` output is ~27 bytes — well under the
         // 64KB pipe buffer, so reading after exit is safe (no need
         // for concurrent drain).
+        //
+        // Explicitly close the parent's copy of the write end before
+        // reading. The child's copy is already closed (process exited),
+        // and Foundation usually closes the parent's copy too — but
+        // that's undocumented. Without our own close, an unlucky
+        // Foundation regression would leave `readDataToEndOfFile`
+        // waiting for EOF forever, on MainActor.
+        try? pipe.fileHandleForWriting.close()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         // Output: "postgres (PostgreSQL) 18.3\n"
         guard let output = String(data: data, encoding: .utf8),

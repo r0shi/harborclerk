@@ -272,6 +272,12 @@ class ServiceManager: ObservableObject {
         // ProcessAsync.swift). On error we still try to read the pipe;
         // it'll be empty and we fall through to the no-output guard.
         _ = try? await proc.runAndAwait()
+        // Explicitly close the parent's write-end copy before the read.
+        // Foundation usually closes it on its own when the child exits,
+        // but that's undocumented — without our own close, an unlucky
+        // future regression would leave readDataToEndOfFile blocked on
+        // MainActor.
+        try? pipe.fileHandleForWriting.close()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
         guard let output = String(data: data, encoding: .utf8)?
