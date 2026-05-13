@@ -1,7 +1,7 @@
 """Authentication endpoints: login, refresh, logout, me."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select, update
@@ -130,6 +130,20 @@ async def refresh(
             detail="User not found or disabled",
         )
 
+    # Password-change revocation: refuse to mint a new access token from
+    # a refresh token issued before the user's most recent password change.
+    # Same rationale as the iat check in api/deps.py — closes the gap
+    # where an exfiltrated refresh-token cookie outlives the password
+    # rotation done to revoke it.
+    iat_value = payload.get("iat")
+    if iat_value is None or datetime.fromtimestamp(iat_value, tz=UTC) < user.password_changed_at - timedelta(seconds=1):
+        # 1s grace: see api/deps.py for rationale (iat is int seconds vs
+        # microsecond-precision password_changed_at).
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token revoked by password change",
+        )
+
     access_token = create_access_token(user.user_id, user.role.value)
     new_refresh = create_refresh_token(user.user_id)
 
@@ -253,10 +267,12 @@ async def change_password(
 
     Requires the current password to be supplied. The new password is
     validated by `password_validation.validate_password` and stored as a
-    fresh bcrypt hash. The existing access token remains valid until
-    expiry; the refresh-token cookie is unchanged. Other sessions for
-    this user are NOT invalidated by this endpoint — that's a follow-up
-    when there's a session-revocation surface to plumb into.
+    fresh bcrypt hash. `password_changed_at` is bumped in the same UPDATE
+    so token verification can reject access/refresh tokens issued before
+    the rotation (closes the gap where an exfiltrated token survived the
+    very password change done to recover from the exfiltration). The
+    caller's current access token will be invalidated on its next request
+    — they'll need to log in again.
     """
     if principal.type != "user":
         raise HTTPException(
@@ -295,8 +311,9 @@ async def change_password(
         )
 
     new_hash = hash_password(body.new_password)
+    now = datetime.now(UTC)
     await session.execute(
-        update(User).where(User.user_id == principal.id).values(password_hash=new_hash),
+        update(User).where(User.user_id == principal.id).values(password_hash=new_hash, password_changed_at=now),
     )
     await log_audit(
         session,

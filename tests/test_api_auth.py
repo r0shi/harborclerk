@@ -57,6 +57,88 @@ async def test_logout(client):
     assert resp.status_code == 200
 
 
+async def test_password_change_revokes_existing_access_token(client, admin_user, admin_token):
+    """Regression: an access token issued before a password change must
+    be rejected after the change. Closes the security gap where an
+    exfiltrated token survived a rotation done to revoke it.
+
+    The implementation compares JWT `iat` to `users.password_changed_at`
+    in the deps layer. To avoid a wall-clock race in tests (we'd need
+    the password change to happen at least 1s after `admin_token` is
+    minted to clear the 1s clock-skew grace), explicitly backdate the
+    admin_token by minting it ourselves with an earlier `iat`.
+    """
+    import time
+
+    from harbor_clerk.auth import create_access_token
+
+    # Mint an access token, then sleep past the 1s grace window before
+    # changing the password so the grace can't mask a real bug.
+    old_token = create_access_token(admin_user.user_id, admin_user.role.value)
+
+    # Confirm the old token works pre-change.
+    resp = await client.get("/api/me", headers=auth_header(old_token))
+    assert resp.status_code == 200
+
+    time.sleep(1.2)
+
+    # Change password (uses the still-valid token).
+    resp = await client.post(
+        "/api/me/password",
+        headers=auth_header(old_token),
+        json={"current_password": "TestPassword123", "new_password": "NewPassword456!"},
+    )
+    assert resp.status_code == 204, resp.text
+
+    # Old token now rejected.
+    resp = await client.get("/api/me", headers=auth_header(old_token))
+    assert resp.status_code == 401
+    assert "revoked" in resp.json()["detail"].lower()
+
+    # Logging in with the new password yields a fresh token that works.
+    resp = await client.post(
+        "/api/auth/login",
+        json={"email": "admin@test.com", "password": "NewPassword456!"},
+    )
+    assert resp.status_code == 200
+    fresh_token = resp.json()["access_token"]
+    resp = await client.get("/api/me", headers=auth_header(fresh_token))
+    assert resp.status_code == 200
+
+
+async def test_password_change_revokes_existing_refresh_token(client, admin_user):
+    """Regression: a refresh token cookie issued before a password change
+    must fail to mint a new access token after the change."""
+    import time
+
+    # Login to get a refresh cookie + access token.
+    resp = await client.post(
+        "/api/auth/login",
+        json={"email": "admin@test.com", "password": "TestPassword123"},
+    )
+    assert resp.status_code == 200
+    access_token = resp.json()["access_token"]
+    # httpx test client stores cookies on the client itself; the refresh
+    # cookie is now in client.cookies and will be auto-sent on subsequent
+    # requests to /api/auth/refresh.
+
+    # Sleep past the 1s clock-skew grace.
+    time.sleep(1.2)
+
+    # Change password using the still-valid access token.
+    resp = await client.post(
+        "/api/me/password",
+        headers=auth_header(access_token),
+        json={"current_password": "TestPassword123", "new_password": "NewPassword456!"},
+    )
+    assert resp.status_code == 204, resp.text
+
+    # Old refresh cookie should now be rejected.
+    resp = await client.post("/api/auth/refresh")
+    assert resp.status_code == 401
+    assert "revoked" in resp.json()["detail"].lower()
+
+
 async def test_update_preferences_persists_onboarding_complete(client, admin_user, admin_token):
     """PATCH /api/me/preferences must store onboardingComplete in JSONB.
 

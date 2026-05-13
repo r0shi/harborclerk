@@ -2,7 +2,7 @@
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.api.scope import KeyScope
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.db import get_session
-from harbor_clerk.models import ApiKey
+from harbor_clerk.models import ApiKey, User
 
 
 @dataclass
@@ -53,10 +53,54 @@ async def get_current_principal(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid token type",
                 )
+            user_id = uuid.UUID(payload["sub"])
+            # Password-change revocation: tokens issued before the user's
+            # password_changed_at are rejected. Closes the gap where an
+            # exfiltrated access token survived a password rotation done
+            # to recover from the exfiltration. Pre-fix migration sets
+            # password_changed_at = now() on existing rows, so no
+            # currently-valid token gets retroactively killed.
+            #
+            # jwt.decode returns `iat` as a Unix timestamp (int). Tokens
+            # minted before 0021 don't have an `iat` claim — for safety,
+            # treat the absence as "older than any password_changed_at"
+            # and reject. The legacy access token's max lifetime is the
+            # configured `jwt_access_token_expire_minutes`, so this drift
+            # heals on its own within that window.
+            iat_value = payload.get("iat")
+            if iat_value is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token missing iat claim — re-authenticate",
+                )
+            token_iat = datetime.fromtimestamp(iat_value, tz=UTC)
+            user_row = (
+                await session.execute(select(User.password_changed_at, User.role).where(User.user_id == user_id))
+            ).one_or_none()
+            if user_row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found",
+                )
+            password_changed_at, db_role = user_row
+            # 1s grace: JWT `iat` is encoded as int seconds, while
+            # password_changed_at is microsecond-precision. A token minted
+            # in the same wall-clock second as a password change has
+            # iat=floor(T) < T+microseconds, which would falsely revoke
+            # it. 1s tolerance also matches the standard clock-skew
+            # allowance JWT libraries use for `exp`/`nbf`.
+            if token_iat < password_changed_at - timedelta(seconds=1):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token revoked by password change",
+                )
+            # Trust DB role over JWT — a role change is also a revocation
+            # event in spirit. JWT-embedded role would otherwise let a
+            # demoted admin keep admin until token expiry.
             return Principal(
                 type="user",
-                id=uuid.UUID(payload["sub"]),
-                role=payload["role"],
+                id=user_id,
+                role=db_role.value if hasattr(db_role, "value") else db_role,
             )
         except jwt.ExpiredSignatureError:
             raise HTTPException(

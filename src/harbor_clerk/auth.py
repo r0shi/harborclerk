@@ -34,11 +34,13 @@ API_KEY_PREFIXES = ("hc_", "lka_")
 
 def create_access_token(user_id: uuid.UUID, role: str) -> str:
     settings = get_settings()
-    expire = datetime.now(UTC) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
+    now = datetime.now(UTC)
+    expire = now + timedelta(minutes=settings.jwt_access_token_expire_minutes)
     payload = {
         "sub": str(user_id),
         "role": role,
         "type": "access",
+        "iat": now,  # used by verification to reject tokens older than password_changed_at
         "exp": expire,
     }
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
@@ -46,10 +48,12 @@ def create_access_token(user_id: uuid.UUID, role: str) -> str:
 
 def create_refresh_token(user_id: uuid.UUID) -> str:
     settings = get_settings()
-    expire = datetime.now(UTC) + timedelta(days=settings.jwt_refresh_token_expire_days)
+    now = datetime.now(UTC)
+    expire = now + timedelta(days=settings.jwt_refresh_token_expire_days)
     payload = {
         "sub": str(user_id),
         "type": "refresh",
+        "iat": now,  # used by verification to reject tokens older than password_changed_at
         "exp": expire,
     }
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
