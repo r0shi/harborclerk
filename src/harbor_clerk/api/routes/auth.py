@@ -1,7 +1,7 @@
 """Authentication endpoints: login, refresh, logout, me."""
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select, update
@@ -136,9 +136,10 @@ async def refresh(
     # where an exfiltrated refresh-token cookie outlives the password
     # rotation done to revoke it.
     iat_value = payload.get("iat")
-    if iat_value is None or datetime.fromtimestamp(iat_value, tz=UTC) < user.password_changed_at - timedelta(seconds=1):
-        # 1s grace: see api/deps.py for rationale (iat is int seconds vs
-        # microsecond-precision password_changed_at).
+    # Floor-then-compare — see api/deps.py for rationale (closes the
+    # attacker window that a `- timedelta(seconds=1)` grace would leave).
+    pwd_changed_floor = user.password_changed_at.replace(microsecond=0)
+    if iat_value is None or datetime.fromtimestamp(iat_value, tz=UTC) < pwd_changed_floor:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token revoked by password change",

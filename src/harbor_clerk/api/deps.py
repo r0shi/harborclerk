@@ -2,7 +2,7 @@
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
@@ -83,24 +83,30 @@ async def get_current_principal(
                     detail="User not found",
                 )
             password_changed_at, db_role = user_row
-            # 1s grace: JWT `iat` is encoded as int seconds, while
-            # password_changed_at is microsecond-precision. A token minted
-            # in the same wall-clock second as a password change has
-            # iat=floor(T) < T+microseconds, which would falsely revoke
-            # it. 1s tolerance also matches the standard clock-skew
-            # allowance JWT libraries use for `exp`/`nbf`.
-            if token_iat < password_changed_at - timedelta(seconds=1):
+            # Truncate password_changed_at to whole seconds before
+            # comparing. JWT's `iat` is int seconds (no sub-second
+            # precision), while password_changed_at is microsecond-
+            # precision. Subtracting a 1s grace would compare at the right
+            # resolution but also leave a real 1s attacker window after a
+            # password change. Floor-then-compare gives the same false-
+            # positive protection AND closes the window: a token with
+            # iat=floor(T) is rejected if the password changed at any
+            # time during second T (inclusive).
+            password_changed_at_floor = password_changed_at.replace(microsecond=0)
+            if token_iat < password_changed_at_floor:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Token revoked by password change",
                 )
             # Trust DB role over JWT — a role change is also a revocation
             # event in spirit. JWT-embedded role would otherwise let a
-            # demoted admin keep admin until token expiry.
+            # demoted admin keep admin until token expiry. `db_role` is
+            # always a UserRole enum here (str + enum.Enum) via the
+            # typed Mapped[UserRole] column.
             return Principal(
                 type="user",
                 id=user_id,
-                role=db_role.value if hasattr(db_role, "value") else db_role,
+                role=db_role.value,
             )
         except jwt.ExpiredSignatureError:
             raise HTTPException(
