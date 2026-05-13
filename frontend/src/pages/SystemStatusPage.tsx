@@ -82,9 +82,12 @@ export default function SystemStatusPage() {
     run()
   }, [])
 
+  const [refreshKey, setRefreshKey] = useState(0)
+
   function handleRefresh() {
     loadHealth()
     loadStats()
+    setRefreshKey((k) => k + 1)
   }
 
   if (loading) return <div className="text-gray-500 dark:text-gray-400">Loading...</div>
@@ -136,7 +139,7 @@ export default function SystemStatusPage() {
         </div>
       )}
 
-      <MailAccountsStatus />
+      <MailAccountsStatus refreshKey={refreshKey} />
     </div>
   )
 }
@@ -187,7 +190,7 @@ function statusBadgeClass(status: MailAccountResponse['status']): string {
   }
 }
 
-function MailAccountsStatus() {
+function MailAccountsStatus({ refreshKey }: { refreshKey: number }) {
   const [accounts, setAccounts] = useState<MailAccountResponse[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -207,7 +210,7 @@ function MailAccountsStatus() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [refreshKey])
 
   if (loading) {
     return (
