@@ -298,6 +298,84 @@ async def test_ingest_dedupes_across_labels_via_sha(db_session, mail_account, mo
     assert msg_b.eml_sha256 == real_sha
 
 
+async def test_ingest_rolls_back_email_doc_when_attachment_creation_fails(
+    db_session, watched_label, mock_aioimap, monkeypatch
+):
+    """Regression: a mid-batch failure in create_attachment_documents must
+    NOT leave a permanent orphan email Document.
+
+    Pre-fix flow: session.flush() wrote the email Document; then
+    create_attachment_documents raised (e.g. storage failure); the except
+    set msg.email_doc_id=None but the email Document row stayed in the
+    outer transaction. mail_observer.on_tick's outer commit persisted it.
+    Subsequent ticks couldn't dedup against it (cross-label dedup filters
+    on email_doc_id IS NOT NULL), so they re-created the same Document
+    on retry, accumulating one ghost per failure.
+
+    Fix: per-message session.begin_nested() savepoint scopes rollback to
+    this iteration. When create_attachment_documents raises, both the
+    email Document and any partial attachments roll back together.
+    """
+    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", lambda *a, **kw: None)
+
+    # Patch create_attachment_documents to always raise — simulates a
+    # storage backend failure after the email .eml was successfully put.
+    async def boom(*args, **kwargs):
+        raise RuntimeError("simulated storage failure mid-batch")
+
+    monkeypatch.setattr("harbor_clerk.mail.ingest.create_attachment_documents", boom)
+
+    eml = build_email_with_attachments(
+        message_id="<rollback@example.com>",
+        subject="Rollback test",
+        body_text="Body.",
+        attachments=[("doomed.pdf", "application/pdf", b"%PDF-1.4 fake")],
+    )
+    placeholder_sha = hashlib.sha256(b"placeholder").digest()
+    msg = WatchedMessage(
+        label_id=watched_label.label_id,
+        message_id="<rollback@example.com>",
+        imap_uid=99,
+        eml_sha256=placeholder_sha,
+        status="active",
+        email_doc_id=None,
+    )
+    db_session.add(msg)
+    await db_session.flush()
+
+    mock_aioimap.set_login_response("OK", b"OK")
+    mock_aioimap.set_uid_fetch_response(
+        "OK",
+        [
+            b"99 (UID 99 BODY[] {%d}" % len(eml),
+            eml,
+            b")",
+            b"OK FETCH completed",
+        ],
+    )
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    summary = await ingest_pending_messages(db_session, conn, watched_label)
+    await conn.logout()
+    await db_session.commit()
+
+    # No Documents survived for this message.
+    assert summary.new_email_doc_count == 0
+    assert summary.new_attachment_doc_count == 0
+    docs = (await db_session.execute(select(Document))).scalars().all()
+    assert len(docs) == 0, f"orphan Document(s) survived rollback: {[d.title for d in docs]}"
+
+    # msg.email_doc_id is still None — next tick will re-pick it via the
+    # `email_doc_id IS NULL` SELECT in ingest_pending_messages.
+    await db_session.refresh(msg)
+    assert msg.email_doc_id is None
+    # msg.eml_sha256 was updated OUTSIDE the savepoint, so the real SHA
+    # persists across the failed iteration. Next tick reuses it.
+    assert msg.eml_sha256 == hashlib.sha256(eml).digest()
+
+
 async def test_ingest_enqueues_extract_for_each_new_doc(db_session, watched_label, mock_aioimap, monkeypatch):
     """ingest_pending_messages should call enqueue_stage(extract) for the
     email Document and each attachment Document."""

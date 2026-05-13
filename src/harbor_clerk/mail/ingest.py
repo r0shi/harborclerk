@@ -276,26 +276,40 @@ async def ingest_pending_messages(
             deduped_count += 1
             continue
 
+        # Per-message savepoint so a failure inside create_attachment_documents
+        # (or anywhere else in this try) rolls back BOTH the email Document
+        # and any attachment Documents already flushed within this iteration.
+        # The previous version manually nilled msg.email_doc_id on exception,
+        # but the email Document row from the first session.flush() had
+        # already been written to the outer transaction — when the outer
+        # commit ran in mail_observer.on_tick, the row persisted as a
+        # permanent orphan that the cross-label dedup query (which filters
+        # on `email_doc_id IS NOT NULL`) skipped on retry, leaving exactly
+        # one ghost Document per failed message. The savepoint scopes
+        # rollback to this iteration only; msg.eml_sha256 (set above,
+        # outside the savepoint) survives so the next tick's retry can
+        # short-circuit on dedup if appropriate.
         try:
-            parsed = parse_eml(eml_bytes)
-            email_doc = await create_email_document(
-                session,
-                parsed=parsed,
-                eml_bytes=eml_bytes,
-                eml_sha256=real_sha,
-                label=label,
-            )
-            await session.flush()
+            async with session.begin_nested():
+                parsed = parse_eml(eml_bytes)
+                email_doc = await create_email_document(
+                    session,
+                    parsed=parsed,
+                    eml_bytes=eml_bytes,
+                    eml_sha256=real_sha,
+                    label=label,
+                )
+                await session.flush()
 
-            attachment_docs = await create_attachment_documents(
-                session,
-                parsed=parsed,
-                parent_doc=email_doc,
-                label=label,
-            )
-            await session.flush()
+                attachment_docs = await create_attachment_documents(
+                    session,
+                    parsed=parsed,
+                    parent_doc=email_doc,
+                    label=label,
+                )
+                await session.flush()
 
-            msg.email_doc_id = email_doc.doc_id
+                msg.email_doc_id = email_doc.doc_id
 
             # enqueue_stage is sync (uses psycopg2). Run in the default thread executor
             # so the event loop stays responsive — the mail observer's per-label tasks
@@ -314,11 +328,9 @@ async def ingest_pending_messages(
                 msg.imap_uid,
                 exc,
             )
-            # Roll back this savepoint so other messages in the batch still commit.
-            # Without per-message savepoints we'd need session.rollback() which
-            # would discard the eml_sha256 update too. Instead: reset email_doc_id
-            # and continue. Next tick will re-pick this message via email_doc_id IS NULL.
-            msg.email_doc_id = None
+            # The savepoint already rolled back the email_doc/attachment_doc
+            # rows + msg.email_doc_id link. Nothing further to undo. The
+            # next tick will re-pick this message via email_doc_id IS NULL.
             continue
 
     return IngestSummary(
