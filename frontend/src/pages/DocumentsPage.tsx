@@ -3,8 +3,8 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { get, post, del, downloadBlob } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents } from '../hooks/useJobEvents'
-import { useLLMStatus } from '../hooks/useLLMStatus'
 import { useSystemConfig } from '../hooks/useSystemConfig'
+import { useLLMStatusContext } from '../components/LLMStatusBanner'
 import { PageHeader } from '../components/PageHeader'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
@@ -151,7 +151,11 @@ function Pagination({
 export default function DocumentsPage() {
   const { user, isAdmin, updatePreferences } = useAuth()
   const sysConfig = useSystemConfig()
-  const { status: llmStatus } = useLLMStatus()
+  // Use the shared context (provided by Layout via LLMStatusProvider)
+  // rather than calling useLLMStatus() directly — that would spawn a
+  // second independent polling loop alongside the one LLMStatusBanner
+  // already drives.
+  const { status: llmStatus } = useLLMStatusContext()
   // Mirror DocumentDetailPage's SourceFileSection: only show download UI when
   // the deployment has enabled `allow_source_download`. Default off everywhere
   // (the API returns 403); on macOS the user-facing escape hatch is Reveal in
