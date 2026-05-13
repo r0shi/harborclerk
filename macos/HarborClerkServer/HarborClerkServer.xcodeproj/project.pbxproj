@@ -27,6 +27,10 @@
 		A100000028 /* WatcherService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000028; };
 		A100000050 /* MasterKeyManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000050; };
 		A100000060 /* ProcessExtensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000060; };
+		A100000061 /* LaunchctlClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000061; };
+		A100000062 /* LaunchdPlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000062; };
+		A100000063 /* LaunchdAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000063; };
+		A100000064 /* ProcessAsync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000064; };
 		AT10000001 /* WorkerCountsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000001; };
 		AT10000002 /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000002; };
 		AT10000003 /* OverallStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000003; };
@@ -35,6 +39,9 @@
 		AT10000007 /* BundleResourceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000007; };
 		AT10000010 /* MasterKeyManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000010; };
 		AT10000011 /* ProcessExtensionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000011; };
+		AT10000012 /* LaunchctlClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000012; };
+		AT10000013 /* LaunchdPlistTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000013; };
+		AT10000014 /* LaunchdAgentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000014; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -69,6 +76,10 @@
 		B100000028 /* WatcherService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatcherService.swift; sourceTree = "<group>"; };
 		B100000050 /* MasterKeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterKeyManager.swift; sourceTree = "<group>"; };
 		B100000060 /* ProcessExtensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessExtensions.swift; sourceTree = "<group>"; };
+		B100000061 /* LaunchctlClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchctlClient.swift; sourceTree = "<group>"; };
+		B100000062 /* LaunchdPlist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdPlist.swift; sourceTree = "<group>"; };
+		B100000063 /* LaunchdAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdAgent.swift; sourceTree = "<group>"; };
+		B100000064 /* ProcessAsync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessAsync.swift; sourceTree = "<group>"; };
 		D100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D100000002 /* HarborClerkServer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerkServer.entitlements; sourceTree = "<group>"; };
 		CT10000001 /* HarborClerkServerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HarborClerkServerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -80,6 +91,9 @@
 		BT10000007 /* BundleResourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundleResourceTests.swift; sourceTree = "<group>"; };
 		BT10000010 /* MasterKeyManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterKeyManagerTests.swift; sourceTree = "<group>"; };
 		BT10000011 /* ProcessExtensionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessExtensionsTests.swift; sourceTree = "<group>"; };
+		BT10000012 /* LaunchctlClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchctlClientTests.swift; sourceTree = "<group>"; };
+		BT10000013 /* LaunchdPlistTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdPlistTests.swift; sourceTree = "<group>"; };
+		BT10000014 /* LaunchdAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdAgentTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -124,6 +138,10 @@
 				B100000015 /* PreferencesWindow.swift */,
 				B100000050 /* MasterKeyManager.swift */,
 				B100000060 /* ProcessExtensions.swift */,
+				B100000061 /* LaunchctlClient.swift */,
+				B100000062 /* LaunchdPlist.swift */,
+				B100000063 /* LaunchdAgent.swift */,
+				B100000064 /* ProcessAsync.swift */,
 				B100000016 /* Assets.xcassets */,
 				D100000001 /* Info.plist */,
 				D100000002 /* HarborClerkServer.entitlements */,
@@ -166,6 +184,9 @@
 				BT10000007 /* BundleResourceTests.swift */,
 				BT10000010 /* MasterKeyManagerTests.swift */,
 				BT10000011 /* ProcessExtensionsTests.swift */,
+				BT10000012 /* LaunchctlClientTests.swift */,
+				BT10000013 /* LaunchdPlistTests.swift */,
+				BT10000014 /* LaunchdAgentTests.swift */,
 			);
 			path = HarborClerkServerTests;
 			sourceTree = "<group>";
@@ -301,6 +322,10 @@
 				A100000028 /* WatcherService.swift in Sources */,
 				A100000050 /* MasterKeyManager.swift in Sources */,
 				A100000060 /* ProcessExtensions.swift in Sources */,
+				A100000061 /* LaunchctlClient.swift in Sources */,
+				A100000062 /* LaunchdPlist.swift in Sources */,
+				A100000063 /* LaunchdAgent.swift in Sources */,
+				A100000064 /* ProcessAsync.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -316,6 +341,9 @@
 				AT10000007 /* BundleResourceTests.swift in Sources */,
 				AT10000010 /* MasterKeyManagerTests.swift in Sources */,
 				AT10000011 /* ProcessExtensionsTests.swift in Sources */,
+				AT10000012 /* LaunchctlClientTests.swift in Sources */,
+				AT10000013 /* LaunchdPlistTests.swift in Sources */,
+				AT10000014 /* LaunchdAgentTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

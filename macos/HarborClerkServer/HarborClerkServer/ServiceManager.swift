@@ -14,9 +14,20 @@ extension Notification.Name {
 protocol ManagedService: AnyObject {
     var name: String { get }
     var state: ServiceState { get set }
+    /// True for services whose lifecycle runs under launchd (PostgresService,
+    /// TikaService). HealthChecker uses this to skip its own auto-restart
+    /// path — launchd's KeepAlive already handles crash recovery, and
+    /// double-restarting via both layers would be a foot-gun.
+    var isLaunchdManaged: Bool { get }
     func start() async throws
     func stop() async
     func healthCheck() async -> Bool
+}
+
+/// Default-false `isLaunchdManaged` for services that aren't launchd-managed.
+/// PostgresService and TikaService override with `let isLaunchdManaged = true`.
+extension ManagedService {
+    var isLaunchdManaged: Bool { false }
 }
 
 // MARK: - Health-probe helper
@@ -187,10 +198,15 @@ class ServiceManager: ObservableObject {
     private func savePidFile() {
         var pids: [String] = []
         for service in services {
+            // Skip launchd-managed services — launchd tracks their PIDs
+            // and they're not orphans-from-our-perspective (a menubar
+            // crash leaves them running, and the next launch will
+            // re-attach via launchctl).
+            if let lm = service as? PostgresService, lm.isLaunchdManaged { continue }
+            if let lm = service as? TikaService, lm.isLaunchdManaged { continue }
+
             if let pySvc = service as? PythonService, let proc = pySvc.process, proc.isRunning {
                 pids.append(String(proc.processIdentifier))
-            } else if let tika = service as? TikaService, let pid = tika.processIdentifier {
-                pids.append(String(pid))
             } else if let llama = service as? LlamaService, let pid = llama.processIdentifier {
                 pids.append(String(pid))
             }
@@ -251,14 +267,18 @@ class ServiceManager: ObservableObject {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        try? proc.run()
-        let data: Data = await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                let d = pipe.fileHandleForReading.readDataToEndOfFile()
-                c.resume(returning: d)
-            }
-        }
+        // `Process.runAndAwait` uses terminationHandler — safer than
+        // `waitUntilExit` for short-lived children like lsof (see
+        // ProcessAsync.swift). On error we still try to read the pipe;
+        // it'll be empty and we fall through to the no-output guard.
+        _ = try? await proc.runAndAwait()
+        // Explicitly close the parent's write-end copy before the read.
+        // Foundation usually closes it on its own when the child exits,
+        // but that's undocumented — without our own close, an unlucky
+        // future regression would leave readDataToEndOfFile blocked on
+        // MainActor.
+        try? pipe.fileHandleForWriting.close()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
 
         guard let output = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -453,12 +473,41 @@ class ServiceManager: ObservableObject {
     /// this only catches the tracked PIDs, not their descendants. Tika's
     /// child JVMs and worker-spawned utilities can survive. Adding
     /// `posix_spawn` + `setpgid` + `killpg` is the durable fix.
-    func forceKillEverything() {
+    ///
+    /// Now `async` because launchd-managed services expose their PID via
+    /// `launchctl print` (queried inside `TikaService.processIdentifier`).
+    /// Postgres still uses postmaster.pid (same as the pre-launchd path —
+    /// the file is on-disk regardless of who's managing the postmaster).
+    func forceKillEverything() async {
         let logger = Log.logger("lifecycle")
         var killed: Set<Int32> = []
 
-        // 1) Every Process we currently hold.
         for service in services {
+            // launchd-managed services: query launchctl for pid, then SIGKILL.
+            // Tika's pid comes from `launchctl print`; Postgres uses postmaster.pid
+            // below (no async needed there).
+            if let tika = service as? TikaService, tika.isLaunchdManaged {
+                if let pid = await tika.processIdentifier, pid > 0 {
+                    // killpg reaches grandchildren when the tracked PID is a pgid leader.
+                    // launchd runs each agent in its own process group, so this catches
+                    // Tika's child JVMs.
+                    if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
+                    killed.insert(pid)
+                }
+                continue
+            }
+            if let postgres = service as? PostgresService, postgres.isLaunchdManaged {
+                // Use postmaster.pid (same as pre-launchd path).
+                let pgPidFile = AppSettings.shared.postgresDataDir.appendingPathComponent("postmaster.pid")
+                if let contents = try? String(contentsOf: pgPidFile, encoding: .utf8),
+                   let pidLine = contents.components(separatedBy: "\n").first,
+                   let pid = Int32(pidLine), pid > 0 {
+                    if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
+                    killed.insert(pid)
+                }
+                continue
+            }
+            // Non-launchd menubar children — same as before (post-PR-2).
             if let pySvc = service as? PythonService, let proc = pySvc.process {
                 let pid = proc.processIdentifier
                 if pid > 0 {
@@ -468,12 +517,6 @@ class ServiceManager: ObservableObject {
                     if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
                     killed.insert(pid)
                 }
-            } else if let tika = service as? TikaService, let pid = tika.processIdentifier {
-                // killpg reaches grandchildren when the tracked PID is a pgid leader
-                // (which it is, post-PR-2). Fall back to plain kill() for belt-and-
-                // suspenders.
-                if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
-                killed.insert(pid)
             } else if let llama = service as? LlamaService, let pid = llama.processIdentifier {
                 // killpg reaches grandchildren when the tracked PID is a pgid leader
                 // (which it is, post-PR-2). Fall back to plain kill() for belt-and-
@@ -483,24 +526,9 @@ class ServiceManager: ObservableObject {
             }
         }
 
-        // 2) Postgres — pg_ctl forks a postmaster we don't directly hold;
-        //    read its PID from the data dir so it doesn't survive as an
-        //    orphan still holding port 5433.
-        let pgPidFile = AppSettings.shared.postgresDataDir.appendingPathComponent("postmaster.pid")
-        if let contents = try? String(contentsOf: pgPidFile, encoding: .utf8),
-           let pidLine = contents.components(separatedBy: "\n").first,
-           let pid = Int32(pidLine), pid > 0, !killed.contains(pid)
-        {
-            // killpg reaches grandchildren when the tracked PID is a pgid leader
-            // (which it is, post-PR-2). Fall back to plain kill() for belt-and-
-            // suspenders.
-            if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
-            killed.insert(pid)
-        }
-
-        // 3) child-pids.txt — anything our in-memory state lost track of
-        //    (e.g. an auto-restart that swapped the Process ref after the
-        //    last savePidFile call).
+        // child-pids.txt — anything our in-memory state lost track of
+        // (e.g. an auto-restart that swapped the Process ref after the
+        // last savePidFile call).
         if let contents = try? String(contentsOf: Self.pidFileURL, encoding: .utf8) {
             for line in contents.components(separatedBy: "\n") {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -614,13 +642,10 @@ class ServiceManager: ObservableObject {
         service.state = .starting
         notifyStateChanged()
 
-        // Wire up auto-restart callback for crash recovery
-        if let tika = service as? TikaService {
-            tika.onUnexpectedExit = { [weak self, weak tika] in
-                guard let self, let svc = tika else { return }
-                Task { @MainActor in await self.attemptAutoRestart(svc) }
-            }
-        } else if let llama = service as? LlamaService {
+        // Wire up auto-restart callback for crash recovery.
+        // Tika is launchd-managed (PR-4) — KeepAlive handles its crash
+        // recovery, no `onUnexpectedExit` to wire up here.
+        if let llama = service as? LlamaService {
             llama.onUnexpectedExit = { [weak self, weak llama] in
                 guard let self, let svc = llama else { return }
                 Task { @MainActor in await self.attemptAutoRestart(svc) }

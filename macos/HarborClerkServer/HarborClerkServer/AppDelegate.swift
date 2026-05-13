@@ -73,6 +73,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "Shutdown exceeded \(deadlineSeconds, privacy: .public)s deadline — force-killing tracked children and exiting"
             )
             await self.serviceManager.forceKillEverything()
+            // launchd-managed agents — bootout so KeepAlive doesn't
+            // resurrect the postmaster / Tika JVM after our SIGKILL.
+            await self.serviceManager.postgresService.stop()
+            await self.serviceManager.tikaService.stop()
             // exit(0) bypasses any further AppKit teardown. We've signalled
             // every child we know about; the kernel will reparent any
             // survivors to launchd. Reaching this line means stopAll() was
@@ -239,17 +243,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        Task {
-            // forceKillEverything is synchronous (sends SIGKILL, doesn't
-            // wait for processes to die). The menubar stays open afterward,
-            // and the user's next Start All click lands on a freshly-empty
-            // state because removePidFile happens during the kill pass.
+        Task { @MainActor in
+            // Prevent auto-restart of menubar-spawned children — without
+            // this, the SIGKILLs below trigger each PythonService's
+            // terminationHandler restart loop, plus the
+            // onUnexpectedExit -> attemptAutoRestart path on max-restart
+            // exhaustion. Smoke testing PR-4 step 7 showed Embedder,
+            // LLM, API, and Watcher coming back to Running after Force
+            // Stop because of this.
             //
-            // NOTE for PR-4: once Postgres + Tika move to launchd agents,
-            // this handler also needs to await each agent.stop() to issue
-            // launchctl bootout — otherwise launchd's KeepAlive would
-            // resurrect the postmaster after our SIGKILL.
-            self.serviceManager.forceKillEverything()
+            // Two-pronged: (1) set state=.stopping on every service
+            // *before* SIGKILL — PythonService/LlamaService
+            // terminationHandlers guard on `state == .running` and
+            // become no-ops; (2) flip isShuttingDown so any leak-through
+            // auto-restart Task early-returns in attemptAutoRestart.
+            // Same approach as stopAll() but without the orderly
+            // shutdown sequence.
+            self.serviceManager.isShuttingDown = true
+            await self.healthChecker.cancelInFlightRestarts()
+            for service in self.serviceManager.services where service.state != .stopped {
+                service.state = .stopping
+            }
+            self.serviceManager.notifyStateChanged()
+
+            // forceKillEverything sends SIGKILL to every tracked subprocess.
+            // After PR-4 it's async because Tika's PID is queried via
+            // `launchctl print`. The menubar stays open afterward, and the
+            // user's next Start All click lands on a freshly-empty state
+            // because removePidFile happens during the kill pass.
+            await self.serviceManager.forceKillEverything()
+
+            // launchd-managed agents — let launchctl bootout do the right
+            // thing for them rather than relying on just the SIGKILL above.
+            // Without bootout, launchd's KeepAlive would observe the
+            // unexpected exit and auto-restart the postmaster / Tika JVM,
+            // defeating the user's "stop everything" intent.
+            await self.serviceManager.postgresService.stop()
+            await self.serviceManager.tikaService.stop()
+
+            // Mark every service as stopped — the UI was in an
+            // intermediate .stopping state, and the SIGKILL'd processes
+            // can't transition themselves. Workers, embedder, llm, api,
+            // watcher all get nilled here so a subsequent Start All
+            // lands cleanly. (forceKillEverything itself doesn't touch
+            // .state — keeping it that way means it's safe to call
+            // from anywhere, e.g. the 30s deadline path.)
+            for service in self.serviceManager.services {
+                service.state = .stopped
+                // Clear stale Process refs so processIdentifier doesn't
+                // surface a dead PID before Foundation's kqueue catches
+                // up. Both python services and the llama server hold a
+                // Process — handle both. Postgres/Tika are launchd-managed
+                // and don't have a menubar-side Process to clear.
+                if let pySvc = service as? PythonService { pySvc.process = nil }
+                if let llama = service as? LlamaService { llama.process = nil }
+            }
+            self.serviceManager.isShuttingDown = false
             self.serviceManager.notifyStateChanged()
         }
     }

@@ -4,7 +4,23 @@ import os
 final class PostgresService: ManagedService {
     let name = "PostgreSQL"
     var state: ServiceState = .stopped
-    private var process: Process?
+    /// True for the launchd-managed services. The HealthChecker uses
+    /// this to skip its own auto-restart path — launchd's KeepAlive
+    /// already handles crash recovery, and double-restarting would be
+    /// a foot-gun.
+    let isLaunchdManaged = true
+
+    private let agent: LaunchdAgent
+
+    init(launchctl: LaunchctlClient = RealLaunchctlClient()) {
+        let plistURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.harborclerk.postgres.plist")
+        self.agent = LaunchdAgent(
+            label: "com.harborclerk.postgres",
+            plistURL: plistURL,
+            launchctl: launchctl,
+        )
+    }
 
     private var pgBinDir: URL {
         Bundle.main.resourceURL!.appendingPathComponent("postgres/bin")
@@ -18,37 +34,12 @@ final class PostgresService: ManagedService {
     private var dataDir: URL { AppSettings.shared.postgresDataDir }
     private var port: Int { AppSettings.shared.postgresPort }
 
-    /// Wait for `proc` to exit, returning whether it terminated cleanly
-    /// (status == 0). Returns `false` (rather than raising) if the
-    /// process was never launched.
-    ///
-    /// Apple's documented behaviour for `terminationStatus` on a
-    /// Process that hasn't run is to raise `NSInvalidArgumentException`.
-    /// Swift can't catch that — it propagates as an unhandled
-    /// exception and aborts the entire app, taking every spawned
-    /// subprocess (including PostgreSQL mid-query) down with it.
-    /// We've actually seen this in the wild during model-switch
-    /// teardown when `try? proc.run()` swallowed a launch failure
-    /// upstream. See `project_menubar_crashes_during_model_switch.md`.
-    ///
-    /// `processIdentifier` is 0 for a never-launched Process, so
-    /// gating on `> 0` skips the throwing read.
-    private static func awaitExitedCleanly(_ proc: Process) async -> Bool {
-        await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                let exited = proc.processIdentifier != 0 && proc.terminationStatus == 0
-                c.resume(returning: exited)
-            }
-        }
-    }
-
     func start() async throws {
         let fm = FileManager.default
         let pgVersionFile = dataDir.appendingPathComponent("PG_VERSION")
 
         // Determine bundled PG major version (e.g. "18" from "postgres (PostgreSQL) 18.3")
-        let expectedMajor = bundledPgMajorVersion()
+        let expectedMajor = await bundledPgMajorVersion()
 
         // Check if data directory needs (re-)initialization
         var needsInit = false
@@ -74,7 +65,9 @@ final class PostgresService: ManagedService {
         // Ensure logging_collector config exists (upgrade from pre-0.4.1)
         try ensureLoggingConfig()
 
-        // Remove stale PID file if no process is actually running
+        // Stale postmaster.pid removal: same logic as before, but now we
+        // don't manually invoke pg_ctl stop — launchctl bootout (inside
+        // agent.ensureInstalled) handles the lingering instance.
         let pidFile = dataDir.appendingPathComponent("postmaster.pid")
         if fm.fileExists(atPath: pidFile.path) {
             let action = Self.stalePidAction(pidFileContents: try? String(contentsOf: pidFile))
@@ -85,92 +78,34 @@ final class PostgresService: ManagedService {
             case .removeUnparseable:
                 try? fm.removeItem(at: pidFile)
             case .keep:
-                // PostgreSQL is still running (possibly shutting down) — stop it first
-                Log.logger("postgresql").warning("Existing PostgreSQL process found, stopping it before start")
-                let stopProc = Process()
-                stopProc.executableURL = pgBinDir.appendingPathComponent("pg_ctl")
-                stopProc.arguments = ["-D", dataDir.path, "stop", "-m", "immediate"]
-                stopProc.environment = pgEnvironment()
-                stopProc.standardOutput = FileHandle.nullDevice
-                stopProc.standardError = FileHandle.nullDevice
-                try? stopProc.run()
-                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                    DispatchQueue.global().async {
-                        stopProc.waitUntilExit()
-                        c.resume()
-                    }
-                }
+                Log.logger("postgresql").warning("Existing PostgreSQL process found; bootout will handle it")
+                // Don't kill manually — let agent.ensureInstalled's bootout
+                // do it cleanly via launchctl.
             }
         }
 
-        // Start PostgreSQL via pg_ctl
-        // Logs are handled by logging_collector (configured in conf.d/harbor_clerk.conf)
-        // Do NOT use Log.createPipe() — pg_ctl can fill the pipe buffer and deadlock
-        // with waitUntilExit() if the readability handler stalls.
-        let pgCtl = pgBinDir.appendingPathComponent("pg_ctl")
-        let proc = Process()
-        proc.executableURL = pgCtl
-        proc.arguments = [
-            "-D", dataDir.path,
-            "-o", "-p \(port) -k /tmp",
-            "start",
-        ]
-        proc.environment = pgEnvironment()
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+        // Install/refresh the plist with current bundle paths.
+        let plist = LaunchdPlist.postgres(
+            bundle: Bundle.main.resourceURL!,
+            dataDir: dataDir,
+            logsDir: AppSettings.shared.logsDir,
+            port: port,
+        )
+        try await agent.ensureInstalled(plistContent: plist)
 
-        try proc.run()
-        let exitCode: Int32 = await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                c.resume(returning: proc.terminationStatus)
-            }
-        }
-
-        if exitCode != 0 {
-            throw ServiceError.startFailed(name, "pg_ctl start exited with \(exitCode)")
-        }
+        // launchctl kickstart -k starts (or restarts) the service.
+        try await agent.start()
     }
 
     func stop() async {
         state = .stopping
-
-        // Phase 1: pg_ctl stop -m fast (SIGINT — orderly shutdown)
-        let pgCtl = pgBinDir.appendingPathComponent("pg_ctl")
-        let fastProc = Process()
-        fastProc.executableURL = pgCtl
-        fastProc.arguments = ["-D", dataDir.path, "stop", "-m", "fast", "-t", "15"]
-        fastProc.environment = pgEnvironment()
-        fastProc.standardOutput = FileHandle.nullDevice
-        fastProc.standardError = FileHandle.nullDevice
-        try? fastProc.run()
-        let fastExited = await Self.awaitExitedCleanly(fastProc)
-
-        if !fastExited {
-            // Phase 2: pg_ctl stop -m immediate (SIGQUIT — skip recovery)
-            Log.logger("lifecycle").warning("PostgreSQL fast shutdown failed, trying immediate mode")
-            let immProc = Process()
-            immProc.executableURL = pgCtl
-            immProc.arguments = ["-D", dataDir.path, "stop", "-m", "immediate"]
-            immProc.environment = pgEnvironment()
-            immProc.standardOutput = FileHandle.nullDevice
-            immProc.standardError = FileHandle.nullDevice
-            try? immProc.run()
-            let immExited = await Self.awaitExitedCleanly(immProc)
-
-            if !immExited {
-                // Phase 3: read postmaster.pid and SIGKILL
-                Log.logger("lifecycle").warning("PostgreSQL immediate shutdown failed, sending SIGKILL")
-                let pidFile = dataDir.appendingPathComponent("postmaster.pid")
-                if let contents = try? String(contentsOf: pidFile),
-                   let pidLine = contents.components(separatedBy: "\n").first,
-                   let pid = Int32(pidLine) {
-                    kill(pid, SIGKILL)
-                    usleep(1_000_000) // 1s for process to die
-                }
-            }
+        do {
+            try await agent.stop()
+        } catch {
+            Log.logger("postgresql").error(
+                "launchctl bootout failed: \(error.localizedDescription, privacy: .public)"
+            )
         }
-
         state = .stopped
     }
 
@@ -182,8 +117,14 @@ final class PostgresService: ManagedService {
         proc.environment = pgEnvironment()
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
-        try? proc.run()
-        return await Self.awaitExitedCleanly(proc)
+        // `Process.runAndAwait` uses terminationHandler under the hood —
+        // safer than waitUntilExit for very short-lived children like
+        // pg_isready (~10ms). See `ProcessAsync.swift`.
+        do {
+            return try await proc.runAndAwait() == 0
+        } catch {
+            return false
+        }
     }
 
     // MARK: - Logging Config
@@ -234,13 +175,7 @@ final class PostgresService: ManagedService {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 
-        try proc.run()
-        let exitCode: Int32 = await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                c.resume(returning: proc.terminationStatus)
-            }
-        }
+        let exitCode = try await proc.runAndAwait()
 
         if exitCode != 0 {
             throw ServiceError.startFailed(name, "initdb failed with \(exitCode)")
@@ -268,13 +203,10 @@ final class PostgresService: ManagedService {
         startProc.environment = pgEnvironment()
         startProc.standardOutput = FileHandle.nullDevice
         startProc.standardError = FileHandle.nullDevice
-        try startProc.run()
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { startProc.waitUntilExit(); c.resume() }
-        }
+        let startExitCode = try await startProc.runAndAwait()
 
-        guard startProc.terminationStatus == 0 else {
-            throw ServiceError.startFailed(name, "pg_ctl start (setup) exited with \(startProc.terminationStatus)")
+        guard startExitCode == 0 else {
+            throw ServiceError.startFailed(name, "pg_ctl start (setup) exited with \(startExitCode)")
         }
 
         // Wait for ready (pg_ctl -w already waits, but belt-and-suspenders)
@@ -291,10 +223,8 @@ final class PostgresService: ManagedService {
         createProc.environment = pgEnvironment()
         createProc.standardOutput = FileHandle.nullDevice
         createProc.standardError = FileHandle.nullDevice
-        try? createProc.run()
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { createProc.waitUntilExit(); c.resume() }
-        }
+        // Best-effort — db may already exist (idempotent on re-init).
+        _ = try? await createProc.runAndAwait()
 
         // Create extensions
         let psql = pgBinDir.appendingPathComponent("psql")
@@ -310,23 +240,22 @@ final class PostgresService: ManagedService {
             extProc.environment = pgEnvironment()
             extProc.standardOutput = FileHandle.nullDevice
             extProc.standardError = FileHandle.nullDevice
-            try? extProc.run()
-            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                DispatchQueue.global().async { extProc.waitUntilExit(); c.resume() }
-            }
+            // Best-effort — extension may already exist (CREATE EXTENSION
+            // IF NOT EXISTS is idempotent, but psql connect failures
+            // shouldn't block setup).
+            _ = try? await extProc.runAndAwait()
         }
 
-        // Stop — will be started properly by ServiceManager
+        // Stop — will be started properly by ServiceManager (via launchd)
         let stopProc = Process()
         stopProc.executableURL = pgCtl
         stopProc.arguments = ["-D", dataDir.path, "stop", "-m", "fast"]
         stopProc.environment = pgEnvironment()
         stopProc.standardOutput = FileHandle.nullDevice
         stopProc.standardError = FileHandle.nullDevice
-        try? stopProc.run()
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { stopProc.waitUntilExit(); c.resume() }
-        }
+        // Best-effort — if pg_ctl stop fails, the followup launchd
+        // bootstrap will handle the still-running postmaster.
+        _ = try? await stopProc.runAndAwait()
     }
 
     // MARK: - Stale PID Detection
@@ -363,7 +292,15 @@ final class PostgresService: ManagedService {
     }
 
     /// Extract the major version from the bundled postgres binary (e.g. "18").
-    private func bundledPgMajorVersion() -> String {
+    ///
+    /// Async because `start()` runs on the MainActor — using
+    /// `Process.runAndAwait` (which uses terminationHandler under the
+    /// hood) keeps the wait off-MainActor and dodges the
+    /// `waitUntilExit`/short-lived-child race that hangs other call
+    /// sites (CLAUDE.md gotcha: "never call proc.waitUntilExit() on
+    /// MainActor — always use the async continuation pattern"; the
+    /// helper is the async continuation pattern).
+    private func bundledPgMajorVersion() async -> String {
         let proc = Process()
         proc.executableURL = pgBinDir.appendingPathComponent("postgres")
         proc.arguments = ["--version"]
@@ -372,15 +309,27 @@ final class PostgresService: ManagedService {
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
         do {
-            try proc.run()
-            proc.waitUntilExit()
+            _ = try await proc.runAndAwait()
         } catch {
             return ""
         }
+        // `postgres --version` output is ~27 bytes — well under the
+        // 64KB pipe buffer, so reading after exit is safe (no need
+        // for concurrent drain).
+        //
+        // Explicitly close the parent's copy of the write end before
+        // reading. The child's copy is already closed (process exited),
+        // and Foundation usually closes the parent's copy too — but
+        // that's undocumented. Without our own close, an unlucky
+        // Foundation regression would leave `readDataToEndOfFile`
+        // waiting for EOF forever, on MainActor.
+        try? pipe.fileHandleForWriting.close()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         // Output: "postgres (PostgreSQL) 18.3\n"
-        guard let output = String(data: data, encoding: .utf8) else { return "" }
-        guard let versionStr = output.split(separator: " ").last else { return "" }
+        guard let output = String(data: data, encoding: .utf8),
+              let versionStr = output.split(separator: " ").last else {
+            return ""
+        }
         return String(versionStr.split(separator: ".").first ?? "")
     }
 }

@@ -50,13 +50,12 @@ struct MigrationRunner {
         proc.standardOutput = pipe
         proc.standardError = pipe
 
-        try proc.run()
-        let exitCode: Int32 = await withCheckedContinuation { c in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                c.resume(returning: proc.terminationStatus)
-            }
-        }
+        // `Process.runAndAwait` uses terminationHandler — safer than
+        // `waitUntilExit` (see ProcessAsync.swift). Alembic typically
+        // runs for seconds, so the short-lived-child race that hung
+        // launchctl in the wild doesn't apply here, but use the same
+        // helper everywhere so we have one wait pattern to reason about.
+        let exitCode = try await proc.runAndAwait()
 
         if exitCode != 0 {
             throw ServiceError.startFailed("Alembic", "exit code \(exitCode)")

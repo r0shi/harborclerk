@@ -4,7 +4,11 @@ import os
 final class LlamaService: ManagedService {
     let name = "LLM"
     var state: ServiceState = .stopped
-    private var process: Process?
+    /// Internal so `AppDelegate.forceStopAllServices` can nil this after a
+    /// SIGKILL pass — matches the access level of `PythonService.process`.
+    /// Without the nil, `processIdentifier` could surface a stale dead-PID
+    /// until Foundation's kqueue catches up.
+    var process: Process?
     /// Called after process exits unexpectedly and state is set to .errored.
     var onUnexpectedExit: (@MainActor () -> Void)?
 
