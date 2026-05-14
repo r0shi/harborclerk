@@ -30,7 +30,7 @@ async def poll_or_idle_loop(
     """Run forever, calling on_tick on each IDLE EXISTS or poll timeout.
 
     Strategy:
-      - Probe CAPABILITY for IDLE.
+      - Check cached CAPABILITY (populated at connect/login) for IDLE support.
       - If supported: open IDLE, race wait_server_push against asyncio
         timeout=idle_timeout. On either, exit IDLE, call on_tick, restart.
       - If not supported: sleep poll_interval, call on_tick, loop.
