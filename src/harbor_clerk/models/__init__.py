@@ -20,6 +20,7 @@ from harbor_clerk.models.enums import (
     UserRole,
     VersionStatus,
 )
+from harbor_clerk.models.imap_command_log import ImapCommandLog
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.mail_account import MailAccount
 from harbor_clerk.models.model_settings import ModelSettings
@@ -52,6 +53,7 @@ __all__ = [
     "DocumentHeading",
     "Chunk",
     "IngestionJob",
+    "ImapCommandLog",
     "AuditLog",
     "Conversation",
     "ChatMessage",
