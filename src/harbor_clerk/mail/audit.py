@@ -71,6 +71,29 @@ async def log_imap_command(
     )
 
 
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+
+@asynccontextmanager
+async def audit_session_scope() -> AsyncIterator[AsyncSession]:
+    """Short-lived session for IMAP audit writes. Commits on exit.
+
+    Use one of these per per-label sync task so audit writes commit
+    independently of the sync engine's transactional session. If the
+    sync rolls back, the log of what was attempted is preserved.
+    """
+    from harbor_clerk.db import async_session_factory  # lazy import avoids circular deps
+
+    async with async_session_factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
 async def reap_old_imap_command_logs(session: AsyncSession, *, retention_days: int = RETENTION_DAYS) -> int:
     """Delete rows older than retention_days. Returns the number of
     rows deleted (for logging / metrics)."""

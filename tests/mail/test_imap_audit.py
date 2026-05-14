@@ -146,3 +146,37 @@ async def test_reap_old_imap_command_logs(db_session, mail_account):
 
     assert deleted == 1
     assert {r.log_id for r in remaining} == {young.log_id}
+
+
+async def test_examine_records_audit_row(db_session, mail_account, monkeypatch):
+    """Calling IMAPConnection.examine() must persist one ImapCommandLog row."""
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from harbor_clerk.models import ImapCommandLog
+    from sqlalchemy import select
+    from tests.mail.conftest import FakeIMAP
+
+    monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
+
+    async def _examine(self, mailbox):
+        return "OK", [b"* OK [READ-ONLY]"]
+
+    monkeypatch.setattr(FakeIMAP, "examine", _examine, raising=False)
+
+    conn = IMAPConnection(
+        host="h",
+        port=993,
+        username="u",
+        password="p",
+        audit_session=db_session,
+        account_id=mail_account.account_id,
+    )
+    await conn.connect()
+    await conn.login()
+    await conn.examine("INBOX")
+    await db_session.flush()
+
+    rows = (await db_session.execute(select(ImapCommandLog).order_by(ImapCommandLog.created_at))).scalars().all()
+    assert [r.command for r in rows] == ["LOGIN", "EXAMINE"]
+    # login args are redacted; examine args are not
+    assert "[redacted]" in (rows[0].args_redacted or "")
+    assert rows[1].args_redacted == "INBOX"
