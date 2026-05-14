@@ -174,7 +174,7 @@ async def test_initial_sync_uses_examine_not_select(mock_aioimap, watched_label,
     """The initial sync must open the mailbox read-only."""
     from tests.mail.conftest import FakeIMAP
 
-    seen: list[str] = []
+    seen: list[tuple[str, str]] = []
 
     async def _examine(self, mailbox):
         seen.append(("examine", mailbox))

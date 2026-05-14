@@ -40,7 +40,7 @@ _MESSAGE_ID_RE = re.compile(rb"Message-I[Dd]:\s*(<[^>]+>)", re.IGNORECASE)
 
 
 def _parse_uidvalidity(select_lines: list[bytes]) -> int | None:
-    """Extract UIDVALIDITY from a SELECT response. Format:
+    """Extract UIDVALIDITY from an EXAMINE response. Format:
     `* OK [UIDVALIDITY 12345] UIDs valid`."""
     for line in select_lines:
         m = re.search(rb"UIDVALIDITY\s+(\d+)", line)
@@ -104,7 +104,7 @@ async def sync_label_initial(
     """
     select_result, select_lines = await conn.examine(label.label_path)
     if select_result != "OK":
-        logger.warning("SELECT %r failed: %r", label.label_path, select_lines)
+        logger.warning("EXAMINE %r failed: %r", label.label_path, select_lines)
         return SyncSummary(fetched_count=0, new_count=0, duplicate_count=0)
 
     uidvalidity = _parse_uidvalidity(select_lines)
