@@ -16,9 +16,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aioimaplib
-
 from harbor_clerk.mail.exceptions import AuthError, ReadOnlyViolation
+from harbor_clerk.mail.readonly_imap import ReadOnlyIMAP4_SSL
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ class IMAPConnection:
 
     async def connect(self) -> None:
         """Open TCP connection and complete the IMAP server greeting."""
-        self._client = aioimaplib.IMAP4_SSL(host=self.host, port=self.port)
+        self._client = ReadOnlyIMAP4_SSL(host=self.host, port=self.port)
         await self._client.wait_hello_from_server()
 
     async def login(self) -> None:

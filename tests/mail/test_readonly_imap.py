@@ -43,6 +43,34 @@ async def test_uid_blocks_mutating_verbs(verb):
         await client.uid(verb, "1:*")
 
 
+async def test_imap_connection_uses_readonly_subclass(monkeypatch):
+    """IMAPConnection.connect() must instantiate ReadOnlyIMAP4_SSL.
+
+    If a future refactor drops back to bare aioimaplib.IMAP4_SSL the
+    layer-2 defense disappears silently — this test pins it.
+    """
+    from harbor_clerk.mail import imap_client
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from harbor_clerk.mail.readonly_imap import ReadOnlyIMAP4_SSL
+
+    captured: list[type] = []
+    original = imap_client.ReadOnlyIMAP4_SSL
+
+    class _Probe(original):
+        def __init__(self, *a, **kw):
+            captured.append(type(self))
+
+        async def wait_hello_from_server(self):
+            pass
+
+    monkeypatch.setattr(imap_client, "ReadOnlyIMAP4_SSL", _Probe)
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+
+    assert captured, "ReadOnlyIMAP4_SSL was not instantiated"
+    assert issubclass(captured[0], ReadOnlyIMAP4_SSL)
+
+
 def test_block_list_matches_aioimaplib_surface():
     """Catches the case where aioimaplib adds a new mutating method.
 

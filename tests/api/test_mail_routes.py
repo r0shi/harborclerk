@@ -132,7 +132,7 @@ async def test_test_connection_endpoint(client, admin_user, admin_token, monkeyp
             b"OK LIST completed",
         ],
     )
-    monkeypatch.setattr("harbor_clerk.mail.imap_client.aioimaplib.IMAP4_SSL", FakeIMAP)
+    monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
 
     body = {
         "display_name": "test-conn",
@@ -162,7 +162,7 @@ async def test_test_connection_auth_error(client, admin_user, admin_token, monke
 
     FakeIMAP.reset()
     FakeIMAP.set_login_response("NO", b"AUTHENTICATIONFAILED Invalid credentials")
-    monkeypatch.setattr("harbor_clerk.mail.imap_client.aioimaplib.IMAP4_SSL", FakeIMAP)
+    monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
 
     body = {
         "display_name": "auth-fail",
