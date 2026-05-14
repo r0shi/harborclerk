@@ -133,6 +133,21 @@ async def test_has_capability_delegates_to_underlying_client(_patch_aioimaplib, 
     assert calls == ["IDLE", "STARTTLS"]
 
 
+async def test_client_property_is_not_exposed(_patch_aioimaplib):
+    """IMAPConnection must not expose its underlying aioimaplib client.
+
+    The wrapper is the only sanctioned IMAP surface — exposing .client
+    would re-open the bypass route this hardening closes.
+    """
+    from harbor_clerk.mail.imap_client import IMAPConnection
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    assert not hasattr(conn, "client"), (
+        "IMAPConnection.client is a known escape hatch; do not re-add it. "
+        "Expose read-only operations as explicit methods on the wrapper instead."
+    )
+
+
 @pytest.mark.parametrize("verb", ["FETCH", "fetch", "SEARCH"])
 async def test_uid_allows_read_subcommands(_patch_aioimaplib, verb, monkeypatch):
     from harbor_clerk.mail.imap_client import IMAPConnection

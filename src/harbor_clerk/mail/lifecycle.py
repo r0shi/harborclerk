@@ -43,7 +43,7 @@ async def detect_unlabeled_messages(
     if select_result != "OK":
         logger.warning("EXAMINE %r failed in lifecycle scan", label.label_path)
         return 0
-    search_result, search_lines = await conn.client.uid_search("ALL")
+    search_result, search_lines = await conn.uid_search("ALL")
     if search_result != "OK":
         return 0
 

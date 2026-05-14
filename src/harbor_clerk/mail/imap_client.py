@@ -137,11 +137,3 @@ class IMAPConnection:
     def _require_logged_in(self, op: str) -> None:
         if self._client is None or not self._logged_in:
             raise RuntimeError(f"{op}() called before login()")
-
-    @property
-    def client(self) -> Any:
-        """The underlying aioimaplib client. For internal use by the
-        sync engine only — exposed so callers can issue UID FETCH etc."""
-        if self._client is None:
-            raise RuntimeError("connection not established")
-        return self._client

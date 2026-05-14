@@ -84,7 +84,7 @@ async def discover_folders(conn: IMAPConnection) -> list[Folder]:
 
     Caller must have already called `conn.connect()` and `conn.login()`.
     """
-    result, lines = await conn.client.list('""', '"*"')
+    result, lines = await conn.list_mailboxes('""', '"*"')
     if result != "OK":
         return []
     folders: list[Folder] = []

@@ -101,7 +101,8 @@ class FakeIMAP:
         resp = self._select_response or _Response("OK", [])
         return resp.result, resp.lines
 
-    async def uid_search(self, criteria: str):
+    async def uid_search(self, *criteria: str, charset: str | None = None):
+        # Task 7 TODO: tighten FakeIMAP uid_search to assert read-only criteria shapes.
         resp = self._uid_search_response or _Response("OK", [b""])
         return resp.result, resp.lines
 
@@ -115,10 +116,23 @@ class FakeIMAP:
         resp = self._capability_response or _Response("OK", [b"CAPABILITY IMAP4rev1 IDLE"])
         return resp.result, resp.lines
 
+    def has_capability(self, name: str) -> bool:
+        """Task 7 TODO: replace with a proper capability-set stub.
+
+        Parses the staged _capability_response lines to answer the query,
+        matching the real aioimaplib behaviour of checking capabilities
+        populated at connect time. This passthrough is the minimal-disruption
+        fix to keep tests green after the conn.client.capability() latent-bug
+        removal in Task 4.
+        """
+        resp = self._capability_response or _Response("OK", [b"CAPABILITY IMAP4rev1 IDLE"])
+        blob = b" ".join(resp.lines).upper()
+        return name.upper().encode() in blob.split()
+
     async def idle_start(self, timeout: float = 0):
         return "OK", []
 
-    async def idle_done(self):
+    def idle_done(self):
         return "OK", []
 
     async def wait_server_push(self, timeout: float | None = None) -> list[bytes]:

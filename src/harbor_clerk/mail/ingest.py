@@ -55,7 +55,7 @@ async def fetch_eml_bytes(conn: IMAPConnection, uid: int) -> bytes:
     BODY.PEEK[] is BODY[] without setting the \\Seen flag — important for
     a read-only sync engine that shouldn't mutate the user's mailbox.
     """
-    result, lines = await conn.client.uid("FETCH", str(uid), "BODY.PEEK[]")
+    result, lines = await conn.uid("FETCH", str(uid), "BODY.PEEK[]")
     if result != "OK":
         raise RuntimeError(f"FETCH UID {uid} failed: {result}")
     return _extract_literal(lines)

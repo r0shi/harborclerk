@@ -110,7 +110,7 @@ async def sync_label_initial(
     uidvalidity = _parse_uidvalidity(select_lines)
 
     # Find all UIDs in the label
-    search_result, search_lines = await conn.client.uid_search("ALL")
+    search_result, search_lines = await conn.uid_search("ALL")
     if search_result != "OK":
         return SyncSummary(0, 0, 0)
     uids = _parse_uid_list(search_lines)
@@ -120,7 +120,7 @@ async def sync_label_initial(
 
     # Fetch Message-ID for each
     uid_set = ",".join(str(u) for u in uids)
-    fetch_result, fetch_lines = await conn.client.uid("FETCH", uid_set, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    fetch_result, fetch_lines = await conn.uid("FETCH", uid_set, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
     if fetch_result != "OK":
         return SyncSummary(0, 0, 0)
     uid_to_mid = _parse_fetch_response(fetch_lines)
@@ -197,7 +197,7 @@ async def sync_label_incremental(
     # Search for UIDs strictly greater than last_uid_seen.
     next_uid = label.last_uid_seen + 1
     search_query = f"UID {next_uid}:*"
-    search_result, search_lines = await conn.client.uid_search(search_query)
+    search_result, search_lines = await conn.uid_search(search_query)
     if search_result != "OK":
         return SyncSummary(0, 0, 0)
 
@@ -209,7 +209,7 @@ async def sync_label_incremental(
         return SyncSummary(0, 0, 0)
 
     uid_set = ",".join(str(u) for u in uids)
-    fetch_result, fetch_lines = await conn.client.uid("FETCH", uid_set, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    fetch_result, fetch_lines = await conn.uid("FETCH", uid_set, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
     if fetch_result != "OK":
         return SyncSummary(0, 0, 0)
     uid_to_mid = _parse_fetch_response(fetch_lines)
