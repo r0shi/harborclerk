@@ -167,3 +167,35 @@ async def test_incremental_sync_no_new_messages(db_session, watched_label, mock_
 
     await db_session.refresh(watched_label)
     assert watched_label.last_uid_seen == 100  # unchanged
+
+
+async def test_incremental_sync_uses_examine_not_select(mock_aioimap, watched_label, db_session, monkeypatch):
+    """The incremental sync must open the mailbox read-only via EXAMINE, never SELECT."""
+    from tests.mail.conftest import FakeIMAP
+
+    seen: list[tuple[str, str]] = []
+
+    async def _examine(self, mailbox):
+        seen.append(("examine", mailbox))
+        return "OK", [b"* OK [UIDVALIDITY 12345]"]
+
+    async def _select(self, mailbox):
+        seen.append(("select", mailbox))
+        return "OK", [b"* OK [UIDVALIDITY 12345]"]
+
+    monkeypatch.setattr(FakeIMAP, "examine", _examine, raising=False)
+    monkeypatch.setattr(FakeIMAP, "select", _select, raising=False)
+    FakeIMAP.set_uid_search_response("OK", [b"* SEARCH"])
+
+    # Set up a prior cursor so the incremental path is exercised.
+    watched_label.last_uid_seen = 5
+    watched_label.uidvalidity = 12345
+    await db_session.flush()
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    await sync_label_incremental(db_session, conn, watched_label)
+
+    assert any(call[0] == "examine" for call in seen), f"examine was never called: {seen}"
+    assert not any(call[0] == "select" for call in seen), f"select must never be called: {seen}"

@@ -104,3 +104,30 @@ async def test_detect_unlabeled_idempotent(db_session, watched_label, mock_aioim
     assert unlabeled_count == 0  # nothing newly unlabeled
     refetched = (await db_session.execute(select(WatchedMessage))).scalars().first()
     assert refetched.unlabeled_at == datetime(2026, 1, 1, tzinfo=UTC)  # unchanged
+
+
+async def test_detect_unlabeled_uses_examine_not_select(mock_aioimap, watched_label, db_session, monkeypatch):
+    """The lifecycle delete-detection must open the mailbox read-only via EXAMINE, never SELECT."""
+    from tests.mail.conftest import FakeIMAP
+
+    seen: list[tuple[str, str]] = []
+
+    async def _examine(self, mailbox):
+        seen.append(("examine", mailbox))
+        return "OK", [b"* OK [UIDVALIDITY 12345]"]
+
+    async def _select(self, mailbox):
+        seen.append(("select", mailbox))
+        return "OK", [b"* OK [UIDVALIDITY 12345]"]
+
+    monkeypatch.setattr(FakeIMAP, "examine", _examine, raising=False)
+    monkeypatch.setattr(FakeIMAP, "select", _select, raising=False)
+    FakeIMAP.set_uid_search_response("OK", [b""])
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    await detect_unlabeled_messages(db_session, conn, watched_label)
+
+    assert any(call[0] == "examine" for call in seen), f"examine was never called: {seen}"
+    assert not any(call[0] == "select" for call in seen), f"select must never be called: {seen}"
