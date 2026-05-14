@@ -141,6 +141,15 @@ async def sync_label_initial(
             )
         ).scalar_one_or_none()
         if existing is not None:
+            # Relabel: user removed then re-applied the label. The row sat
+            # at status='unlabeled' (set by detect_unlabeled_messages); flip
+            # it back to 'active' so Stage 3's restore_documents_for_relabeled
+            # can revive the associated Documents. Without this flip, those
+            # Documents stay in status='deleted' forever — re-labeling never
+            # restores them.
+            if existing.status == "unlabeled":
+                existing.status = "active"
+                existing.unlabeled_at = None
             duplicate_count += 1
             continue
         # Placeholder eml_sha256 — Stage 3 fills with the actual SHA when fetching the .eml.
@@ -218,6 +227,12 @@ async def sync_label_incremental(
             )
         ).scalar_one_or_none()
         if existing is not None:
+            # Relabel: see sync_label_initial for the rationale. Flip
+            # status='unlabeled' rows back to 'active' so Stage 3's
+            # restore_documents_for_relabeled can revive their Documents.
+            if existing.status == "unlabeled":
+                existing.status = "active"
+                existing.unlabeled_at = None
             duplicate_count += 1
             continue
         placeholder_sha = hashlib.sha256(f"placeholder:{label.label_id}:{uid}".encode()).digest()
