@@ -4,6 +4,7 @@ import { get, post, del, downloadBlob } from '../api'
 import { useAuth } from '../auth'
 import { useJobEvents } from '../hooks/useJobEvents'
 import { useSystemConfig } from '../hooks/useSystemConfig'
+import { useLLMStatusContext } from '../components/LLMStatusBanner'
 import { PageHeader } from '../components/PageHeader'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { IconTile } from '../components/IconTile'
@@ -150,6 +151,11 @@ function Pagination({
 export default function DocumentsPage() {
   const { user, isAdmin, updatePreferences } = useAuth()
   const sysConfig = useSystemConfig()
+  // Use the shared context (provided by Layout via LLMStatusProvider)
+  // rather than calling useLLMStatus() directly — that would spawn a
+  // second independent polling loop alongside the one LLMStatusBanner
+  // already drives.
+  const { status: llmStatus } = useLLMStatusContext()
   // Mirror DocumentDetailPage's SourceFileSection: only show download UI when
   // the deployment has enabled `allow_source_download`. Default off everywhere
   // (the API returns 403); on macOS the user-facing escape hatch is Reveal in
@@ -622,6 +628,25 @@ export default function DocumentsPage() {
           </>
         }
       />
+      {/* "No LLM model" banner — surfaces the actionable fix for users who'd
+          otherwise just see "Extractive Only" pills without knowing what to
+          do about them. Only shown to admins (only they can change the
+          model). `unknown` is the pre-first-tick state — don't flash the
+          banner during it. */}
+      {isAdmin && llmStatus.state === 'deactivated' && (
+        <div className="mb-3 flex items-center justify-between rounded-md border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm">
+          <span className="text-amber-900 dark:text-amber-200">
+            No language model is active. Document summaries fall back to an extractive heuristic — for higher-quality
+            summaries, activate a model.
+          </span>
+          <Link
+            to="/admin/models"
+            className="ml-3 shrink-0 rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700"
+          >
+            System Settings → Models
+          </Link>
+        </div>
+      )}
       {/* Filter bar */}
       {(filterOptions.mime_types.length > 0 ||
         filterOptions.doc_types.length > 0 ||
