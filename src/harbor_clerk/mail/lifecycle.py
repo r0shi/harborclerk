@@ -39,7 +39,7 @@ async def detect_unlabeled_messages(
     Caller must have already authenticated. Caller commits.
     """
     # Get current server-side UID set
-    select_result, _select_lines = await conn.client.select(label.label_path)
+    select_result, _select_lines = await conn.examine(label.label_path)
     if select_result != "OK":
         logger.warning("SELECT %r failed in lifecycle scan", label.label_path)
         return 0

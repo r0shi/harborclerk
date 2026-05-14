@@ -168,3 +168,30 @@ async def test_initial_sync_idempotent_on_re_run(db_session, watched_label, mock
         .all()
     )
     assert len(rows) == 1
+
+
+async def test_initial_sync_uses_examine_not_select(mock_aioimap, watched_label, db_session, monkeypatch):
+    """The initial sync must open the mailbox read-only."""
+    from tests.mail.conftest import FakeIMAP
+
+    seen: list[str] = []
+
+    async def _examine(self, mailbox):
+        seen.append(("examine", mailbox))
+        return "OK", [b"* OK [UIDVALIDITY 12345]"]
+
+    async def _select(self, mailbox):
+        seen.append(("select", mailbox))
+        return "OK", [b"* OK [UIDVALIDITY 12345]"]
+
+    monkeypatch.setattr(FakeIMAP, "examine", _examine, raising=False)
+    monkeypatch.setattr(FakeIMAP, "select", _select, raising=False)
+    FakeIMAP.set_uid_search_response("OK", [b"* SEARCH"])
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    await sync_label_initial(db_session, conn, watched_label)
+
+    assert any(call[0] == "examine" for call in seen), f"examine was never called: {seen}"
+    assert not any(call[0] == "select" for call in seen), f"select must never be called: {seen}"

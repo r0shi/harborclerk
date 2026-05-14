@@ -93,6 +93,10 @@ class FakeIMAP:
         resp = self._list_response or _Response("OK", [])
         return resp.result, resp.lines
 
+    async def examine(self, mailbox: str):
+        resp = self._select_response or _Response("OK", [])
+        return resp.result, resp.lines
+
     async def select(self, mailbox: str):
         resp = self._select_response or _Response("OK", [])
         return resp.result, resp.lines

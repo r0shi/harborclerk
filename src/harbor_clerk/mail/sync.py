@@ -102,7 +102,7 @@ async def sync_label_initial(
     Caller must have already opened and authenticated `conn`. This function
     only reads from IMAP and writes to Postgres — no commit. Caller commits.
     """
-    select_result, select_lines = await conn.client.select(label.label_path)
+    select_result, select_lines = await conn.examine(label.label_path)
     if select_result != "OK":
         logger.warning("SELECT %r failed: %r", label.label_path, select_lines)
         return SyncSummary(fetched_count=0, new_count=0, duplicate_count=0)
@@ -182,7 +182,7 @@ async def sync_label_incremental(
 
     Caller must have already authenticated. Caller commits.
     """
-    select_result, select_lines = await conn.client.select(label.label_path)
+    select_result, select_lines = await conn.examine(label.label_path)
     if select_result != "OK":
         return SyncSummary(0, 0, 0)
 
