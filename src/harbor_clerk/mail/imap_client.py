@@ -83,8 +83,18 @@ class IMAPConnection:
                 duration_ms=duration_ms,
                 error=error,
             )
+            # Commit per-command so the audit trail is durable even if the
+            # surrounding label task is later killed by SIGKILL / OOM /
+            # supervisor cancel before audit_session_scope.__aexit__ runs.
+            # The audit session is dedicated to writes — short transactions
+            # are cheap and bound the loss window to the in-flight call.
+            await self._audit_session.commit()
         except Exception as exc:  # never let audit break the IMAP op
             logger.warning("audit log failed for %s: %s", command, exc)
+            try:
+                await self._audit_session.rollback()
+            except Exception:
+                pass
 
     async def connect(self) -> None:
         """Open TCP connection and complete the IMAP server greeting."""
