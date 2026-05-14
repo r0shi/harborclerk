@@ -250,7 +250,7 @@ class IMAPConnection:
         start = time.perf_counter()
         err: str | None = None
         try:
-            result = await self._client.idle_start(timeout=timeout)
+            await self._client.idle_start(timeout=timeout)
         except Exception as exc:
             err = repr(exc)
             duration_ms = int((time.perf_counter() - start) * 1000)

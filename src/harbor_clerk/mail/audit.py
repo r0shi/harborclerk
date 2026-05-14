@@ -11,6 +11,8 @@ A periodic reaper drops rows older than 30 days.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -69,10 +71,6 @@ async def log_imap_command(
             error=error,
         )
     )
-
-
-from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 
 @asynccontextmanager

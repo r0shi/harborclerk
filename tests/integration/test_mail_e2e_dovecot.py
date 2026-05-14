@@ -125,7 +125,7 @@ async def test_no_mutation_invariant_against_dovecot():
     await conn.idle_start(timeout=3)
     try:
         await asyncio.wait_for(conn.wait_server_push(), timeout=3)
-    except (TimeoutError, asyncio.TimeoutError):
+    except TimeoutError:
         pass
     conn.idle_done()  # sync — no await
     await conn.logout()

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 async def test_imap_command_log_round_trips(db_session, mail_account):
     """Insert a row and read it back."""
@@ -64,9 +62,10 @@ def test_redact_passthrough_for_safe_commands():
 
 
 async def test_log_imap_command_writes_row(db_session, mail_account):
+    from sqlalchemy import select
+
     from harbor_clerk.mail.audit import log_imap_command
     from harbor_clerk.models import ImapCommandLog
-    from sqlalchemy import select
 
     await log_imap_command(
         db_session,
@@ -88,9 +87,10 @@ async def test_log_imap_command_writes_row(db_session, mail_account):
 
 
 async def test_log_imap_command_redacts_login(db_session, mail_account):
+    from sqlalchemy import select
+
     from harbor_clerk.mail.audit import log_imap_command
     from harbor_clerk.models import ImapCommandLog
-    from sqlalchemy import select
 
     await log_imap_command(
         db_session,
@@ -112,9 +112,10 @@ async def test_reap_old_imap_command_logs(db_session, mail_account):
     """Rows older than retention_days are deleted; younger rows survive."""
     from datetime import UTC, datetime, timedelta
 
+    from sqlalchemy import select
+
     from harbor_clerk.mail.audit import reap_old_imap_command_logs
     from harbor_clerk.models import ImapCommandLog
-    from sqlalchemy import select
 
     now = datetime.now(UTC)
     old = ImapCommandLog(
@@ -150,9 +151,10 @@ async def test_reap_old_imap_command_logs(db_session, mail_account):
 
 async def test_examine_records_audit_row(db_session, mail_account, monkeypatch):
     """Calling IMAPConnection.examine() must persist one ImapCommandLog row."""
+    from sqlalchemy import select
+
     from harbor_clerk.mail.imap_client import IMAPConnection
     from harbor_clerk.models import ImapCommandLog
-    from sqlalchemy import select
     from tests.mail.conftest import FakeIMAP
 
     monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
