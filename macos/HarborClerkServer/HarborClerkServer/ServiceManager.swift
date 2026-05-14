@@ -260,7 +260,14 @@ class ServiceManager: ObservableObject {
 
     /// Kill any process listening on the given port (leftover from a prior run).
     /// PostgreSQL handles stale PIDs via pg_ctl / postmaster.pid, so skip it.
-    private func killStaleProcess(onPort port: Int) async {
+    ///
+    /// `static nonisolated` so services (e.g. `LlamaService.start()`) can
+    /// call it directly at the top of their own start path, without
+    /// depending on `ServiceManager.startAll()` having claimed the port
+    /// first. This closes the auto-restart / model-switch / manual-restart
+    /// gap where a prior llama-server outlived the menubar and held the
+    /// port through the next start attempt.
+    static func killStaleProcess(onPort port: Int) async {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         proc.arguments = ["-ti", "tcp:\(port)"]
@@ -331,19 +338,19 @@ class ServiceManager: ObservableObject {
         guard await runMigrations() else { return }
 
         // 3. Tika (JVM startup can take ~30-60s)
-        await killStaleProcess(onPort: settings.tikaPort)
+        await Self.killStaleProcess(onPort: settings.tikaPort)
         await startService(tikaService)
 
         // 4. Embedder (can take a while for model load)
-        await killStaleProcess(onPort: settings.embedderPort)
+        await Self.killStaleProcess(onPort: settings.embedderPort)
         await startService(embedderService)
 
         // 5. LLM server (skip silently if no model selected)
-        await killStaleProcess(onPort: settings.llamaPort)
+        await Self.killStaleProcess(onPort: settings.llamaPort)
         await startService(llamaService)
 
         // 6. API server
-        await killStaleProcess(onPort: settings.apiPort)
+        await Self.killStaleProcess(onPort: settings.apiPort)
         await startService(apiService)
 
         // 7. Workers

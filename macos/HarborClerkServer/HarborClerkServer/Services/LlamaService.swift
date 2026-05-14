@@ -35,6 +35,16 @@ final class LlamaService: ManagedService {
             return
         }
 
+        // Defensive port probe. `ServiceManager.startAll()` already calls
+        // this for the llama port, but `start()` is also invoked from
+        // auto-restart, model switch, and manual-restart paths that
+        // bypass startAll. If the previous llama-server (or anything
+        // else) is still holding port 8102, the new process exits
+        // immediately with "couldn't bind HTTP server socket" and the
+        // service goes to errored — fixable only by manual intervention
+        // until now.
+        await ServiceManager.killStaleProcess(onPort: settings.llamaPort)
+
         let yarnEnabled = settings.llmYarnEnabled
         let yarnConfig = settings.activeModelYarn
         let useYarn = yarnEnabled && yarnConfig != nil
