@@ -7,6 +7,8 @@ calls and lets tests stage canned responses.
 
 from __future__ import annotations
 
+from harbor_clerk.mail.exceptions import ReadOnlyViolation
+
 
 class _Response:
     """Mimic aioimaplib's response tuple shape: (result, lines)."""
@@ -94,23 +96,63 @@ class FakeIMAP:
         return resp.result, resp.lines
 
     async def examine(self, mailbox: str):
+        # Reads from _select_response intentionally. Production code only ever
+        # opens mailboxes via examine() (select() is forbidden — see select()
+        # below); reusing the single response-staging slot keeps the test API
+        # simple without forcing a parallel set_examine_response API on top.
         resp = self._select_response or _Response("OK", [])
         return resp.result, resp.lines
 
-    async def select(self, mailbox: str):
-        resp = self._select_response or _Response("OK", [])
-        return resp.result, resp.lines
+    async def select(self, *_args, **_kwargs):
+        raise ReadOnlyViolation(
+            "FakeIMAP: select() is forbidden — use examine() instead. "
+            "Production code goes through IMAPConnection.examine(), so this "
+            "fake must mirror that contract or unit tests can pass against "
+            "code paths production would reject."
+        )
 
     async def uid_search(self, *criteria: str, charset: str | None = None):
         # Task 7 TODO: tighten FakeIMAP uid_search to assert read-only criteria shapes.
         resp = self._uid_search_response or _Response("OK", [b""])
         return resp.result, resp.lines
 
-    async def uid(self, command: str, *args):
-        if command == "FETCH":
+    async def uid(self, command: str, *args, charset=None):
+        if command.upper() in {"STORE", "COPY", "MOVE", "EXPUNGE"}:
+            raise ReadOnlyViolation(f"FakeIMAP: uid({command.upper()!r}) is forbidden")
+        if command.upper() == "FETCH":
             resp = self._uid_fetch_response or _Response("OK", [])
             return resp.result, resp.lines
         return "OK", []
+
+    async def store(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: store() is forbidden")
+
+    async def copy(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: copy() is forbidden")
+
+    async def move(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: move() is forbidden")
+
+    async def expunge(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: expunge() is forbidden")
+
+    async def append(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: append() is forbidden")
+
+    async def create(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: create() is forbidden")
+
+    async def delete(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: delete() is forbidden")
+
+    async def rename(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: rename() is forbidden")
+
+    async def subscribe(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: subscribe() is forbidden")
+
+    async def unsubscribe(self, *_args, **_kwargs):
+        raise ReadOnlyViolation("FakeIMAP: unsubscribe() is forbidden")
 
     async def capability(self):
         resp = self._capability_response or _Response("OK", [b"CAPABILITY IMAP4rev1 IDLE"])
