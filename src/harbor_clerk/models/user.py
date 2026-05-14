@@ -29,6 +29,15 @@ class User(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # Bumped on every password change. JWT verification rejects access /
+    # refresh tokens whose `iat` is older than this — closes the gap where
+    # an exfiltrated token survived a password rotation done specifically
+    # to recover from the exfiltration.
+    password_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+    )
     preferences: Mapped[dict] = mapped_column(
         JSONB,
         nullable=False,
