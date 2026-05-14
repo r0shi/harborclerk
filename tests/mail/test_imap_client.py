@@ -112,6 +112,27 @@ async def test_uid_blocks_mutating_subcommands(_patch_aioimaplib, verb):
         await conn.uid(verb, "1:*", r"+FLAGS (\Seen)")
 
 
+async def test_has_capability_delegates_to_underlying_client(_patch_aioimaplib, monkeypatch):
+    """has_capability() should query the underlying client's has_capability."""
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from tests.mail.conftest import FakeIMAP
+
+    calls: list[str] = []
+
+    def _fake_has_capability(self, name: str) -> bool:
+        calls.append(name)
+        return name == "IDLE"
+
+    monkeypatch.setattr(FakeIMAP, "has_capability", _fake_has_capability, raising=False)
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+
+    assert conn.has_capability("IDLE") is True
+    assert conn.has_capability("STARTTLS") is False
+    assert calls == ["IDLE", "STARTTLS"]
+
+
 @pytest.mark.parametrize("verb", ["FETCH", "fetch", "SEARCH"])
 async def test_uid_allows_read_subcommands(_patch_aioimaplib, verb, monkeypatch):
     from harbor_clerk.mail.imap_client import IMAPConnection

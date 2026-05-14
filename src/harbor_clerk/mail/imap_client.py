@@ -99,26 +99,36 @@ class IMAPConnection:
             raise ReadOnlyViolation(f"uid({command.upper()!r}) is a mutating IMAP command and is blocked")
         return await self._client.uid(command, *args)
 
-    async def uid_search(self, criteria: str) -> tuple[str, list[bytes]]:
+    async def uid_search(self, *criteria: str, charset: str | None = "utf-8") -> tuple[str, list[bytes]]:
+        """IMAP UID SEARCH. Accepts variadic criteria (e.g., uid_search('SINCE', '1-Jan-2024'))."""
         self._require_logged_in("uid_search")
-        return await self._client.uid_search(criteria)
+        return await self._client.uid_search(*criteria, charset=charset)
 
     async def list_mailboxes(self, reference: str, mailbox: str) -> tuple[str, list[bytes]]:
         """IMAP LIST. Renamed from `list` to avoid shadowing the builtin."""
         self._require_logged_in("list_mailboxes")
         return await self._client.list(reference, mailbox)
 
-    async def capability(self) -> tuple[str, list[bytes]]:
-        self._require_logged_in("capability")
-        return await self._client.capability()
+    def has_capability(self, name: str) -> bool:
+        """Check whether the server announced a capability during the
+        initial CAPABILITY response (aioimaplib caches this at connect time).
+        Use this instead of issuing a separate CAPABILITY command."""
+        self._require_logged_in("has_capability")
+        return self._client.has_capability(name)
 
-    async def idle_start(self, timeout: float = 0) -> tuple[str, list[bytes]]:
+    async def idle_start(self, timeout: float = 0) -> None:
+        """Send IDLE and return when the server has accepted it. The
+        underlying aioimaplib method returns an asyncio.Future tracking the
+        completion of IDLE; we don't expose it — callers should treat IDLE
+        as a fire-and-await operation paired with idle_done()."""
         self._require_logged_in("idle_start")
-        return await self._client.idle_start(timeout=timeout)
+        await self._client.idle_start(timeout=timeout)
 
-    async def idle_done(self) -> tuple[str, list[bytes]]:
+    def idle_done(self) -> None:
+        """Stop an in-progress IDLE. aioimaplib's idle_done is synchronous and
+        cancels the internal IDLE waiter; it has no async result."""
         self._require_logged_in("idle_done")
-        return await self._client.idle_done()
+        self._client.idle_done()
 
     async def wait_server_push(self, timeout: float | None = None) -> list[bytes]:
         self._require_logged_in("wait_server_push")
