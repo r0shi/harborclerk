@@ -25,3 +25,9 @@ class IdleNotSupported(MailError):
 class UidValidityChanged(MailError):
     """Server-side UIDVALIDITY changed since the last sync. Cursor is
     invalid; trigger a full rescan of the label."""
+
+
+class ReadOnlyViolation(RuntimeError):
+    """Raised when code attempts an IMAP command that could mutate
+    server state. Harbor Clerk's IMAP access is strictly read-only —
+    no flag changes, no folder mutations, no APPEND, no STORE."""

@@ -73,6 +73,17 @@ class IMAPConnection:
             self._logged_in = False
             self._client = None
 
+    async def examine(self, mailbox: str) -> tuple[str, list[bytes]]:
+        """Open `mailbox` in read-only mode (IMAP EXAMINE command).
+
+        Server-enforced: STORE/EXPUNGE/COPY/MOVE/APPEND on the selection
+        will be rejected by the server. Callers should always prefer this
+        over `select()` — `select()` is intentionally not exposed.
+        """
+        if self._client is None or not self._logged_in:
+            raise RuntimeError("examine() called before login()")
+        return await self._client.examine(mailbox)
+
     @property
     def client(self) -> Any:
         """The underlying aioimaplib client. For internal use by the
