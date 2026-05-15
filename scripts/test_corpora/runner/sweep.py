@@ -333,10 +333,25 @@ def make_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _parse_selectors(s: str) -> dict[str, str]:
+def _parse_selectors(s: str) -> dict[str, list[str]]:
+    """Parse the CLI selector string into a multimap.
+
+    ``id=A,id=B,phase=4`` → ``{"id": ["A", "B"], "phase": ["4"]}``.
+
+    Repeated keys accumulate into a list (OR within key). Different keys are
+    AND'd downstream in ``StateFile.rerun`` / ``skip``. The previous
+    ``dict(...)`` implementation silently collapsed repeated keys to the last
+    value, so ``--rerun 'id=A,id=B,id=C'`` matched only ``C``.
+    """
     if not s:
         return {}
-    return dict(part.split("=", 1) for part in s.split(",") if "=" in part)
+    result: dict[str, list[str]] = {}
+    for part in s.split(","):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        result.setdefault(k, []).append(v)
+    return result
 
 
 def _phase_range(s: str) -> set[int]:
