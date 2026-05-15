@@ -2,7 +2,7 @@
 
 import pytest
 
-from harbor_clerk.mail.exceptions import AuthError
+from harbor_clerk.mail.exceptions import AuthError, ReadOnlyViolation
 from harbor_clerk.mail.imap_client import IMAPConnection
 
 
@@ -30,7 +30,7 @@ def mock_aioimap(monkeypatch):
     """
     from tests.mail.conftest import FakeIMAP
 
-    monkeypatch.setattr("harbor_clerk.mail.imap_client.aioimaplib.IMAP4_SSL", FakeIMAP)
+    monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
     return FakeIMAP
 
 
@@ -59,3 +59,110 @@ async def test_logout_is_idempotent(mock_aioimap):
     await conn.login()
     await conn.logout()
     await conn.logout()  # already logged out — should be no-op
+
+
+@pytest.fixture
+def _patch_aioimaplib(monkeypatch):
+    """Patch aioimaplib.IMAP4_SSL with FakeIMAP (same as mock_aioimap, named
+    for tests that do their own per-method monkeypatching on FakeIMAP)."""
+    from tests.mail.conftest import FakeIMAP
+
+    monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
+
+
+async def test_examine_uses_examine_not_select(_patch_aioimaplib, monkeypatch):
+    """examine() must call the underlying client's examine(), never select().
+
+    Rationale: select() opens the mailbox read-write; examine() opens it
+    read-only and the IMAP server itself rejects mutations on the selection.
+    """
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from tests.mail.conftest import FakeIMAP
+
+    calls: list[str] = []
+
+    async def _fake_examine(self, mailbox):
+        calls.append(f"examine:{mailbox}")
+        return "OK", [b"OK [READ-ONLY]"]
+
+    async def _fake_select(self, mailbox):  # should never be called
+        calls.append(f"select:{mailbox}")
+        return "OK", [b"OK [READ-WRITE]"]
+
+    monkeypatch.setattr(FakeIMAP, "examine", _fake_examine, raising=False)
+    monkeypatch.setattr(FakeIMAP, "select", _fake_select, raising=False)
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    result, _lines = await conn.examine("INBOX")
+
+    assert result == "OK"
+    assert calls == ["examine:INBOX"]
+
+
+@pytest.mark.parametrize("verb", ["STORE", "store", "COPY", "MOVE", "EXPUNGE"])
+async def test_uid_blocks_mutating_subcommands(_patch_aioimaplib, verb):
+    from harbor_clerk.mail.imap_client import IMAPConnection
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    with pytest.raises(ReadOnlyViolation, match=verb.upper()):
+        await conn.uid(verb, "1:*", r"+FLAGS (\Seen)")
+
+
+async def test_has_capability_delegates_to_underlying_client(_patch_aioimaplib, monkeypatch):
+    """has_capability() should query the underlying client's has_capability."""
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from tests.mail.conftest import FakeIMAP
+
+    calls: list[str] = []
+
+    def _fake_has_capability(self, name: str) -> bool:
+        calls.append(name)
+        return name == "IDLE"
+
+    monkeypatch.setattr(FakeIMAP, "has_capability", _fake_has_capability, raising=False)
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+
+    assert conn.has_capability("IDLE") is True
+    assert conn.has_capability("STARTTLS") is False
+    assert calls == ["IDLE", "STARTTLS"]
+
+
+async def test_client_property_is_not_exposed(_patch_aioimaplib):
+    """IMAPConnection must not expose its underlying aioimaplib client.
+
+    The wrapper is the only sanctioned IMAP surface — exposing .client
+    would re-open the bypass route this hardening closes.
+    """
+    from harbor_clerk.mail.imap_client import IMAPConnection
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    assert not hasattr(conn, "client"), (
+        "IMAPConnection.client is a known escape hatch; do not re-add it. "
+        "Expose read-only operations as explicit methods on the wrapper instead."
+    )
+
+
+@pytest.mark.parametrize("verb", ["FETCH", "fetch", "SEARCH"])
+async def test_uid_allows_read_subcommands(_patch_aioimaplib, verb, monkeypatch):
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from tests.mail.conftest import FakeIMAP
+
+    captured: list[tuple] = []
+
+    async def _uid(self, command, *args):
+        captured.append((command, args))
+        return "OK", []
+
+    monkeypatch.setattr(FakeIMAP, "uid", _uid)
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    await conn.connect()
+    await conn.login()
+    result, _lines = await conn.uid(verb, "1:*")
+    assert result == "OK"
+    assert captured == [(verb, ("1:*",))]

@@ -40,7 +40,7 @@ _MESSAGE_ID_RE = re.compile(rb"Message-I[Dd]:\s*(<[^>]+>)", re.IGNORECASE)
 
 
 def _parse_uidvalidity(select_lines: list[bytes]) -> int | None:
-    """Extract UIDVALIDITY from a SELECT response. Format:
+    """Extract UIDVALIDITY from an EXAMINE response. Format:
     `* OK [UIDVALIDITY 12345] UIDs valid`."""
     for line in select_lines:
         m = re.search(rb"UIDVALIDITY\s+(\d+)", line)
@@ -102,15 +102,15 @@ async def sync_label_initial(
     Caller must have already opened and authenticated `conn`. This function
     only reads from IMAP and writes to Postgres — no commit. Caller commits.
     """
-    select_result, select_lines = await conn.client.select(label.label_path)
+    select_result, select_lines = await conn.examine(label.label_path)
     if select_result != "OK":
-        logger.warning("SELECT %r failed: %r", label.label_path, select_lines)
+        logger.warning("EXAMINE %r failed: %r", label.label_path, select_lines)
         return SyncSummary(fetched_count=0, new_count=0, duplicate_count=0)
 
     uidvalidity = _parse_uidvalidity(select_lines)
 
     # Find all UIDs in the label
-    search_result, search_lines = await conn.client.uid_search("ALL")
+    search_result, search_lines = await conn.uid_search("ALL")
     if search_result != "OK":
         return SyncSummary(0, 0, 0)
     uids = _parse_uid_list(search_lines)
@@ -120,7 +120,7 @@ async def sync_label_initial(
 
     # Fetch Message-ID for each
     uid_set = ",".join(str(u) for u in uids)
-    fetch_result, fetch_lines = await conn.client.uid("FETCH", uid_set, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    fetch_result, fetch_lines = await conn.uid("FETCH", uid_set, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
     if fetch_result != "OK":
         return SyncSummary(0, 0, 0)
     uid_to_mid = _parse_fetch_response(fetch_lines)
@@ -182,7 +182,7 @@ async def sync_label_incremental(
 
     Caller must have already authenticated. Caller commits.
     """
-    select_result, select_lines = await conn.client.select(label.label_path)
+    select_result, select_lines = await conn.examine(label.label_path)
     if select_result != "OK":
         return SyncSummary(0, 0, 0)
 
@@ -197,7 +197,7 @@ async def sync_label_incremental(
     # Search for UIDs strictly greater than last_uid_seen.
     next_uid = label.last_uid_seen + 1
     search_query = f"UID {next_uid}:*"
-    search_result, search_lines = await conn.client.uid_search(search_query)
+    search_result, search_lines = await conn.uid_search(search_query)
     if search_result != "OK":
         return SyncSummary(0, 0, 0)
 
@@ -209,7 +209,7 @@ async def sync_label_incremental(
         return SyncSummary(0, 0, 0)
 
     uid_set = ",".join(str(u) for u in uids)
-    fetch_result, fetch_lines = await conn.client.uid("FETCH", uid_set, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    fetch_result, fetch_lines = await conn.uid("FETCH", uid_set, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
     if fetch_result != "OK":
         return SyncSummary(0, 0, 0)
     uid_to_mid = _parse_fetch_response(fetch_lines)

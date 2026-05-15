@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from harbor_clerk.mail.audit import audit_session_scope
 from harbor_clerk.mail.document_lifecycle import (
     restore_documents_for_relabeled,
     soft_delete_documents_for_unlabeled,
@@ -141,11 +142,19 @@ class MailObserver:
                 await session.commit()
                 return
 
+            # Audit session outlives each per-tick sync session so that IMAP
+            # command records are committed independently — if a sync tick rolls
+            # back, the audit trail of what was attempted is preserved.
+            audit_ctx = audit_session_scope()
+            audit_session = await audit_ctx.__aenter__()
+
             conn = IMAPConnection(
                 host=account.imap_host,
                 port=account.imap_port,
                 username=account.imap_username,
                 password=password,
+                audit_session=audit_session,
+                account_id=account.account_id,
             )
 
         try:
@@ -159,9 +168,11 @@ class MailObserver:
                 acc.status = "auth_error"
                 acc.last_error = str(exc)
                 await session.commit()
+            await audit_ctx.__aexit__(None, None, None)
             return
         except Exception as exc:
             logger.warning("connect/login failed for label %s: %s", label_id, exc)
+            await audit_ctx.__aexit__(None, None, None)
             return
 
         async def on_tick(c: IMAPConnection) -> None:
@@ -198,3 +209,4 @@ class MailObserver:
             pass
         finally:
             await conn.logout()
+            await audit_ctx.__aexit__(None, None, None)

@@ -240,6 +240,21 @@ async def _session_reaper_loop() -> None:
             logger.exception("Session reaper error")
 
 
+async def _imap_audit_reaper_loop() -> None:
+    """Reap imap_command_log rows older than 30 days, hourly."""
+    while True:
+        try:
+            from harbor_clerk.mail.audit import audit_session_scope, reap_old_imap_command_logs
+
+            async with audit_session_scope() as session:
+                deleted = await reap_old_imap_command_logs(session)
+                if deleted:
+                    logger.info("imap_command_log reaper: deleted %d rows", deleted)
+        except Exception:
+            logger.exception("imap_command_log reaper failed")
+        await asyncio.sleep(3600)  # hourly
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -319,6 +334,9 @@ async def lifespan(app: FastAPI):
     # Start session reaper background task
     reaper_task = asyncio.create_task(_session_reaper_loop())
 
+    # Start IMAP audit log reaper background task (hourly, 30-day retention)
+    imap_audit_reaper_task = asyncio.create_task(_imap_audit_reaper_loop())
+
     try:
         # Start MCP session manager (required for Streamable HTTP transport)
         if _mcp_session_manager is not None:
@@ -328,9 +346,14 @@ async def lifespan(app: FastAPI):
             yield
     finally:
         reaper_task.cancel()
+        imap_audit_reaper_task.cancel()
         warmup_task.cancel()
         try:
             await reaper_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await imap_audit_reaper_task
         except asyncio.CancelledError:
             pass
 

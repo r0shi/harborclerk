@@ -15,6 +15,7 @@ from harbor_clerk.mail.document_lifecycle import (
 from harbor_clerk.mail.exceptions import (
     AuthError,
     IdleNotSupported,
+    ReadOnlyViolation,
     UidValidityChanged,
 )
 from harbor_clerk.mail.idle import poll_or_idle_loop, server_supports_idle
@@ -43,6 +44,7 @@ __all__ = [
     "IMAPConnection",
     "IdleNotSupported",
     "IngestSummary",
+    "ReadOnlyViolation",
     "SyncSummary",
     "UidValidityChanged",
     "detect_unlabeled_messages",

@@ -63,3 +63,73 @@ async def test_e2e_connect_login_list_folders():
 # integration suite and is deferred — the unit tests cover the sync
 # logic; this file just verifies aioimaplib + our wrapper actually talk
 # to a real server.
+
+
+@pytestmark_skip
+async def test_no_mutation_invariant_against_dovecot():
+    """End-to-end invariant: a full mail-ingest cycle must not mutate
+    server state.
+
+    Strategy:
+      1. Snapshot the mailbox via an INDEPENDENT raw IMAP client (NOT
+         our wrapper) — capture: message count, per-UID flags, folder
+         list, UIDVALIDITY, UIDNEXT.
+      2. Run Harbor Clerk's full ingestion path: connect → examine →
+         uid_search → uid("FETCH", ...) → idle for 3s → logout.
+      3. Snapshot again the same way.
+      4. Diff: assert equality on every snapshotted field.
+
+    If anything differs, the suite has detected a mutation that
+    layers 1–3 missed.
+    """
+    import asyncio
+
+    import aioimaplib
+
+    from harbor_clerk.mail.imap_client import IMAPConnection
+
+    async def snapshot() -> dict:
+        raw = aioimaplib.IMAP4_SSL(host=DOVECOT_HOST, port=DOVECOT_PORT)
+        await raw.wait_hello_from_server()
+        await raw.login(DOVECOT_USER, DOVECOT_PASSWORD)
+        _list_status, list_lines = await raw.list("", "*")
+        _exam_status, exam_lines = await raw.examine("INBOX")
+        uidvalidity = next((line for line in exam_lines if b"UIDVALIDITY" in line), None)
+        uidnext = next((line for line in exam_lines if b"UIDNEXT" in line), None)
+        _search_status, search_lines = await raw.uid_search("ALL")
+        _fetch_status, fetch_lines = await raw.uid("FETCH", "1:*", "(FLAGS)")
+        await raw.logout()
+        return {
+            "list": list_lines,
+            "uidvalidity": uidvalidity,
+            "uidnext": uidnext,
+            "search": search_lines,
+            "fetch_flags": fetch_lines,
+        }
+
+    before = await snapshot()
+
+    # Run the full ingestion path under test.
+    conn = IMAPConnection(
+        host=DOVECOT_HOST,
+        port=DOVECOT_PORT,
+        username=DOVECOT_USER,
+        password=DOVECOT_PASSWORD,
+    )
+    await conn.connect()
+    await conn.login()
+    await conn.examine("INBOX")
+    await conn.uid_search("ALL")
+    await conn.uid("FETCH", "1:*", "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+    # Brief IDLE to exercise the push path.
+    await conn.idle_start(timeout=3)
+    try:
+        await asyncio.wait_for(conn.wait_server_push(), timeout=3)
+    except TimeoutError:
+        pass
+    conn.idle_done()  # sync — no await
+    await conn.logout()
+
+    after = await snapshot()
+
+    assert before == after, f"IMAP server state changed during ingestion:\n  before: {before}\n  after:  {after}"

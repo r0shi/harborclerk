@@ -23,7 +23,7 @@ from tests.mail.fixtures.build_eml import build_email_with_attachments
 def mock_aioimap(monkeypatch):
     from tests.mail.conftest import FakeIMAP
 
-    monkeypatch.setattr("harbor_clerk.mail.imap_client.aioimaplib.IMAP4_SSL", FakeIMAP)
+    monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
     return FakeIMAP
 
 

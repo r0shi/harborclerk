@@ -17,12 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 async def server_supports_idle(conn: IMAPConnection) -> bool:
-    """Issue CAPABILITY and check for IDLE."""
-    result, lines = await conn.client.capability()
-    if result != "OK":
-        return False
-    blob = b" ".join(lines).upper()
-    return b"IDLE" in blob.split()
+    """Check the cached capabilities (populated at login) for IDLE support."""
+    return conn.has_capability("IDLE")
 
 
 async def poll_or_idle_loop(
@@ -34,7 +30,7 @@ async def poll_or_idle_loop(
     """Run forever, calling on_tick on each IDLE EXISTS or poll timeout.
 
     Strategy:
-      - Probe CAPABILITY for IDLE.
+      - Check cached CAPABILITY (populated at connect/login) for IDLE support.
       - If supported: open IDLE, race wait_server_push against asyncio
         timeout=idle_timeout. On either, exit IDLE, call on_tick, restart.
       - If not supported: sleep poll_interval, call on_tick, loop.
@@ -45,11 +41,11 @@ async def poll_or_idle_loop(
         logger.info("conn %s: using IDLE (timeout=%.0fs)", conn.host, idle_timeout)
         while True:
             try:
-                await conn.client.idle_start(timeout=idle_timeout)
+                await conn.idle_start(timeout=idle_timeout)
                 try:
                     while True:
                         try:
-                            event = await asyncio.wait_for(conn.client.wait_server_push(), timeout=idle_timeout)
+                            event = await asyncio.wait_for(conn.wait_server_push(), timeout=idle_timeout)
                         except TimeoutError:
                             break  # IDLE refresh; no events
                         # `event` is a list[bytes] from aioimaplib's IdleCommand.queue:
@@ -64,7 +60,7 @@ async def poll_or_idle_loop(
                         ):
                             break
                 finally:
-                    await conn.client.idle_done()
+                    conn.idle_done()
                 await on_tick(conn)
             except asyncio.CancelledError:
                 # Inner `finally` already called idle_done(); calling it twice would
