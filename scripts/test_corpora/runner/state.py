@@ -189,9 +189,30 @@ class StateFile:
 
     # ── selectors ──
 
+    # User-facing selector keys that don't match the Unit attribute name.
+    # ``id`` → ``question_id`` because the documented runbook (and the natural
+    # operator shorthand) is ``--rerun 'id=cuad-ask-1'``; previously this
+    # silently matched zero because ``getattr(u, "id", "")`` returned "".
+    _FIELD_ALIASES = {"id": "question_id"}
+
+    @classmethod
+    def _resolve_field(cls, name: str) -> str:
+        return cls._FIELD_ALIASES.get(name, name)
+
+    @staticmethod
+    def _normalize_selectors(selectors: dict[str, str | list[str]]) -> dict[str, list[str]]:
+        """Accept either single-value or multi-value selectors and return the
+        multi-value shape. Lets existing in-process callers keep passing
+        ``{"corpus": "cuad"}`` while the CLI passes ``{"id": ["a","b","c"]}``.
+        """
+        norm: dict[str, list[str]] = {}
+        for k, v in selectors.items():
+            norm[k] = list(v) if isinstance(v, list) else [v]
+        return norm
+
     @staticmethod
     def _selector_matches(actual: object, wanted: str) -> bool:
-        """Compare a unit field's value against a CLI selector value.
+        """Compare a unit field's value against a single CLI selector value.
 
         Handles three field shapes the CLI plumbs through:
           - ``str`` fields (``corpus``, ``model``, ``question_id``, ``depth``,
@@ -218,11 +239,29 @@ class StateFile:
             return wanted[1:] in actual_str
         return actual_str == wanted
 
-    def rerun(self, selectors: dict[str, str]) -> int:
-        """Flip units matching all selectors back to PENDING. Returns count."""
+    def _unit_matches_selectors(self, u: Unit, selectors: dict[str, list[str]]) -> bool:
+        """A unit matches if, for each selector key, ANY listed value matches
+        the unit's field (OR within key), and EVERY selector key matches
+        (AND across keys). Repeated keys in the CLI string become a single
+        list entry here — ``--rerun 'id=A,id=B'`` matches units whose
+        ``question_id`` is A or B.
+        """
+        return all(
+            any(self._selector_matches(getattr(u, self._resolve_field(k), ""), v) for v in values)
+            for k, values in selectors.items()
+        )
+
+    def rerun(self, selectors: dict[str, str | list[str]]) -> int:
+        """Flip units matching all selectors back to PENDING. Returns count.
+
+        Selector semantics: AND across keys, OR within a key. ``--rerun
+        'id=A,id=B,phase=4'`` matches units whose phase is 4 AND whose
+        question_id is A or B.
+        """
+        norm = self._normalize_selectors(selectors)
         n = 0
         for u in self._units.values():
-            if all(self._selector_matches(getattr(u, k, ""), v) for k, v in selectors.items()):
+            if self._unit_matches_selectors(u, norm):
                 u.status = Status.PENDING
                 u.heartbeat = None
                 u.started_at = None
@@ -230,10 +269,11 @@ class StateFile:
                 n += 1
         return n
 
-    def skip(self, selectors: dict[str, str]) -> int:
+    def skip(self, selectors: dict[str, str | list[str]]) -> int:
+        norm = self._normalize_selectors(selectors)
         n = 0
         for u in self._units.values():
-            if all(self._selector_matches(getattr(u, k, ""), v) for k, v in selectors.items()):
+            if self._unit_matches_selectors(u, norm):
                 u.status = Status.SKIPPED
                 n += 1
         return n
