@@ -432,3 +432,123 @@ async def test_summarize_not_in_finalize_gate(db_session):
         assert finalize_job.status == JobStatus.queued
     finally:
         sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_advance_pipeline_does_not_re_enqueue_errored_background_stage(db_session):
+    """Regression: previously advance_pipeline would re-enqueue an errored
+    summarize on every tick because the check was 'not in (done, queued,
+    running)'. Re-enqueue caused two bad effects: (1) infinite-ish retry of
+    a broken summary, and (2) returning before the phase-3 finalize gate,
+    so finalize never fired for any doc whose summarize errored. Bug
+    visible in production as 10,576 docs stuck with summarize=error,
+    finalize=missing, pipeline_status=error.
+
+    Now: an errored background stage stays errored. Admin endpoints
+    (/system/resummarize-all, /docs/X/resummarize) handle explicit retry.
+    """
+    from harbor_clerk.worker.pipeline import advance_pipeline
+
+    doc = Document(
+        title="Errored background no-retry",
+        canonical_filename="err.pdf",
+        status="active",
+        sha256=b"e" * 32,
+        pipeline_status=PipelineStatus.embedded,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        for stage in (JobStage.extract, JobStage.chunk, JobStage.entities, JobStage.embed):
+            sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=stage, status=JobStatus.done))
+        # Summarize errored on its first attempt.
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.error,
+                error="AttributeError: type object 'ChatMessage' has no attribute 'id'",
+            )
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    advance_pipeline(doc.doc_id)
+
+    sync_session = get_sync_session()
+    try:
+        # Summarize stays errored — NOT auto-retried back to queued.
+        summarize_job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert summarize_job.status == JobStatus.error
+
+        # Finalize fires — gate is {entities, embed}, both done.
+        finalize_job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.finalize)
+        ).scalar_one()
+        assert finalize_job.status == JobStatus.queued
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_background_stage_error_does_not_poison_pipeline_status(db_session, monkeypatch):
+    """Regression: the worker error handler in entry.py used to set
+    doc.pipeline_status = error on any stage failure, including background
+    stages. PR #327 designed background stages NOT to touch pipeline_status
+    (both enqueue_stage and mark_stage_done guard against it) but the error
+    path was missed. Effect: a doc fully ingested through finalize would
+    flip from Ready → error when its (optional) summary errored later.
+    """
+    from harbor_clerk.worker.entry import execute_job
+
+    doc = Document(
+        title="Background error no-poison",
+        canonical_filename="poison.pdf",
+        status="active",
+        sha256=b"p" * 32,
+        # Doc has already finalized — pipeline_status should stay here.
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    # Make the summarize stage raise so we exercise the error branch.
+    def _boom(_doc_id):
+        raise AttributeError("type object 'ChatMessage' has no attribute 'id'")
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    monkeypatch.setitem(entry_mod.STAGE_FUNCTIONS, JobStage.summarize, _boom)
+
+    execute_job(doc.doc_id, JobStage.summarize)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        # KEY assertion: pipeline_status stays ready, NOT regressed to error.
+        assert refreshed.pipeline_status == PipelineStatus.ready
+        assert refreshed.error is None
+
+        # The job itself records the error (so the UI's summary-state chip
+        # can show "Failed") — that's separate from doc.pipeline_status.
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.error
+        assert "ChatMessage" in (job.error or "")
+    finally:
+        sync_session.close()

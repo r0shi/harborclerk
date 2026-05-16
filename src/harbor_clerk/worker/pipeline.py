@@ -301,13 +301,21 @@ def advance_pipeline(doc_id: uuid.UUID) -> None:
                 continue
             to_enqueue.append(stage)
 
-        # Background stages run alongside but never gate finalize. Enqueued
-        # the first time we see chunk done so they aren't repeatedly
-        # re-queued on each advance_pipeline tick.
+        # Background stages: enqueued the first time we see chunk done, then
+        # left alone. The check is "any existing job row for this stage" —
+        # not just queued/running/done — otherwise an errored summarize gets
+        # re-enqueued on every advance_pipeline tick. That has two bad
+        # effects: (1) it loops indefinitely, retrying the same broken
+        # summary, and (2) when the re-enqueue happens we'd return below
+        # before reaching the phase-3 finalize gate, so finalize would
+        # never fire for any doc whose summarize errored. Admin endpoints
+        # (/system/resummarize-all, /docs/X/resummarize) still re-enqueue
+        # explicitly via enqueue_stage(), which handles its own upsert.
+        existing_stages = {j.stage for j in all_jobs}
         background_to_enqueue: list[JobStage] = []
         if JobStage.chunk in completed:
             for stage in _BACKGROUND_STAGES:
-                if stage in completed or stage in in_flight:
+                if stage in existing_stages:
                     continue
                 background_to_enqueue.append(stage)
 
