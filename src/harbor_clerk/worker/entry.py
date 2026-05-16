@@ -23,7 +23,7 @@ from harbor_clerk.db_sync import _make_sync_url, get_sync_session
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
-from harbor_clerk.worker.pipeline import STAGE_CONFIG
+from harbor_clerk.worker.pipeline import _BACKGROUND_STAGES, STAGE_CONFIG
 from harbor_clerk.worker.stages import STAGE_FUNCTIONS
 
 logger = logging.getLogger(__name__)
@@ -243,8 +243,16 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
                 job.error = error_msg
                 job.finished_at = datetime.now(UTC)
 
+            # Background stages (summarize) must not touch pipeline_status —
+            # it reflects the gating-stage progression only. The doc may
+            # already be `ready` when summarize errors; flipping it to
+            # `error` would regress a successfully-ingested doc into a
+            # failed-looking state in the UI just because the optional
+            # summary couldn't be produced. enqueue_stage + mark_stage_done
+            # already enforce this for the success path; the error path
+            # missed the memo when PR #327 moved summarize to background.
             doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
-            if doc:
+            if doc and stage not in _BACKGROUND_STAGES:
                 doc.pipeline_status = PipelineStatus.error
                 doc.error = error_msg
 

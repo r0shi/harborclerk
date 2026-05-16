@@ -41,7 +41,10 @@ def _user_llm_active() -> bool:
     session = get_sync_session()
     try:
         recent_chat = session.execute(
-            select(ChatMessage.id).where(ChatMessage.role == "user").where(ChatMessage.created_at > cutoff).limit(1)
+            select(ChatMessage.message_id)
+            .where(ChatMessage.role == "user")
+            .where(ChatMessage.created_at > cutoff)
+            .limit(1)
         ).first()
         if recent_chat:
             return True

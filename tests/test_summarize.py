@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 from harbor_clerk.llm.summarize import (
     _compute_max_input_chars,
@@ -516,3 +517,24 @@ class TestClassifyDocType:
             mock_settings.return_value.llm_model_id = ""
             result = classify_doc_type(["Some text content"], mime_type="application/pdf")
             assert result == "PDF Document"
+
+
+class TestUserLLMActiveQueriesChatMessage:
+    """Regression: PR #327's _user_llm_active() used ChatMessage.id, but the
+    model defines message_id (not id). Every summarize call crashed
+    immediately with AttributeError: type object 'ChatMessage' has no
+    attribute 'id', failing the yield-to-interactive guard before the
+    stage did any work. Visible in production as 100% summarize failure
+    on a fresh corpus ingest.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_chat_messages_returns_false_without_attribute_error(self, db_session):
+        """The query must execute against the real ChatMessage model without
+        crashing. Empty table → False (no recent user activity).
+        The db_session fixture exists purely to ensure Alembic has run and
+        the chat_messages table is present before _user_llm_active opens
+        its own sync session."""
+        from harbor_clerk.worker.stages.summarize import _user_llm_active
+
+        assert _user_llm_active() is False
