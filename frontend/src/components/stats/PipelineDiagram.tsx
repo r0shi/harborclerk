@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueueSnapshot, type QueueSnapshot, type StageSnapshot } from '../../hooks/useQueueSnapshot'
 import { classColor } from '../../utils/queueColors'
+import { useLLMStatusContext } from '../LLMStatusBanner'
+import { type LLMState } from '../../hooks/useLLMStatus'
+import SummarizingRow from '../queue-tray/SummarizingRow'
 
 /**
  * Pipeline Overview — animated DAG showing live activity in the
@@ -114,6 +117,151 @@ interface Particle {
 
 const PARTICLE_DURATION_MS = 1100
 
+const SUMMARIZE_COLOR = '#c4a4ff'
+
+interface SummarizeCardProps {
+  queued: number
+  running: number
+  summarizing: NonNullable<QueueSnapshot['summarizing']>
+}
+
+function modelLabel(
+  state: LLMState,
+  modelName: string | null,
+  modelId: string | null,
+): { text: string; muted: boolean; italic: boolean } {
+  if (state === 'ready' && modelName) return { text: `Model · ${modelName}`, muted: false, italic: false }
+  if (state === 'loading') {
+    const label = modelName ?? modelId ?? 'loading…'
+    return { text: `Model · ${label} (loading…)`, muted: true, italic: false }
+  }
+  if (state === 'deactivated') return { text: 'Model · not loaded', muted: true, italic: true }
+  return { text: 'Model · …', muted: true, italic: false }
+}
+
+function SummarizeCircle({ queued, running }: { queued: number; running: number }) {
+  // Same sqrt scale + heartbeat treatment as the main-flow nodes, in its
+  // own 80×80 viewBox so the coordinate system stays decoupled.
+  const total = queued + running
+  const r = Math.min(26, 14 + Math.sqrt(total) * 2.5)
+  const isBusy = running > 0
+  const innerR = r * 0.55
+  const innerRMin = innerR * 0.86
+  const innerRMax = innerR * 1.04
+  return (
+    <svg viewBox="0 0 80 80" width={64} height={64} aria-hidden>
+      <defs>
+        <filter id="summarize-glow" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="2.5" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+      <circle
+        cx={40}
+        cy={40}
+        r={r}
+        fill="none"
+        stroke={SUMMARIZE_COLOR}
+        strokeWidth={1.2}
+        strokeOpacity={isBusy ? 0.75 : 0.45}
+        style={{ transition: 'r 400ms ease-out, stroke-opacity 400ms' }}
+      />
+      {isBusy && (
+        <circle cx={40} cy={40} fill={SUMMARIZE_COLOR} style={{ filter: 'url(#summarize-glow)' }}>
+          <animate
+            attributeName="r"
+            values={`${innerRMin};${innerRMax};${innerRMin}`}
+            dur="1.6s"
+            repeatCount="indefinite"
+            calcMode="spline"
+            keySplines="0.4 0 0.6 1; 0.4 0 0.6 1"
+          />
+          <animate
+            attributeName="opacity"
+            values="0.78;1;0.78"
+            dur="1.6s"
+            repeatCount="indefinite"
+            calcMode="spline"
+            keySplines="0.4 0 0.6 1; 0.4 0 0.6 1"
+          />
+        </circle>
+      )}
+    </svg>
+  )
+}
+
+function SummarizeCard({ queued, running, summarizing }: SummarizeCardProps) {
+  const { status } = useLLMStatusContext()
+  const model = modelLabel(status.state, status.model_name, status.model_id)
+
+  // Running first (most-advanced map step on top), then queued in FIFO.
+  // Backend already orders by created_at; we resort here just for the
+  // running-first split.
+  const sortedItems = [...summarizing].sort((a, b) => {
+    if (a.status !== b.status) return a.status === 'running' ? -1 : 1
+    if (a.status === 'running') return b.progress_current - a.progress_current
+    return 0
+  })
+  const visible = sortedItems.slice(0, 4)
+  const overflow = sortedItems.length - visible.length
+  const hasItems = sortedItems.length > 0
+
+  return (
+    <div
+      className="absolute bottom-0 left-0 w-[48%] rounded-xl p-3"
+      style={{
+        background: 'rgba(186,140,255,0.06)',
+        border: '1px solid rgba(186,140,255,0.4)',
+      }}
+    >
+      <div className="text-[9px] font-semibold tracking-wider" style={{ color: SUMMARIZE_COLOR }}>
+        BACKGROUND
+      </div>
+      <div className="mt-1 flex gap-3">
+        <div className="flex flex-col items-center" style={{ flex: '0 0 72px' }}>
+          <SummarizeCircle queued={queued} running={running} />
+          <div className="mt-1 text-[10px] font-medium" style={{ color: SUMMARIZE_COLOR }}>
+            Summarize
+          </div>
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between gap-2 text-[11px]">
+            <span
+              className="truncate"
+              style={{
+                color: SUMMARIZE_COLOR,
+                opacity: model.muted ? 0.7 : 1,
+                fontStyle: model.italic ? 'italic' : 'normal',
+              }}
+            >
+              {model.text}
+            </span>
+            <span className="tabular-nums text-[10px] text-(--color-text-secondary)" style={{ flex: '0 0 auto' }}>
+              {queued} queued · {running} running
+            </span>
+          </div>
+          {hasItems && (
+            <>
+              <div className="mt-1.5 mb-1 border-t" style={{ borderColor: 'rgba(186,140,255,0.25)' }} />
+              <div className="space-y-0">
+                {visible.map((item) => (
+                  <SummarizingRow key={item.doc_id} item={item} />
+                ))}
+                {overflow > 0 && (
+                  <div className="pt-0.5 text-[10px] text-(--color-text-secondary)">+ {overflow} more</div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
   const [particles, setParticles] = useState<Particle[]>([])
   const idCounterRef = useRef(0)
@@ -155,13 +303,8 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
     }
   }, [snapshot])
 
-  // Summarize is rendered separately as a BACKGROUND stage below the
-  // SVG. Pull its queue depth from the LLM queue totals (summarize is
-  // the sole occupant of the LLM queue today).
-  const summarizeQueued = (snapshot.queues.llm?.queued ?? 0) + (snapshot.queues.llm?.running ?? 0)
-
   return (
-    <div>
+    <div className="relative">
       <svg
         viewBox={`0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`}
         className="w-full"
@@ -328,28 +471,11 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
           Ready
         </text>
       </svg>
-
-      {/* Dotted separator + BACKGROUND panel for summarize — spatially
-          and visually divorced from the main flow so the eye reads
-          "finalize is the end of the express line; summarize is its
-          own background lane that runs at its own pace." */}
-      <div className="mt-2 border-t border-dashed border-(--color-border) opacity-60" />
-      <div
-        className="mt-2 flex items-center gap-3 rounded-lg p-3"
-        style={{ background: 'rgba(186,140,255,0.06)', border: '1px solid rgba(186,140,255,0.4)' }}
-      >
-        <span className="text-[9px] font-semibold tracking-wider" style={{ color: '#c4a4ff' }}>
-          BACKGROUND
-        </span>
-        <span
-          className="inline-block h-3.5 w-3.5 rounded-full"
-          style={{ background: 'rgba(186,140,255,0.25)', border: '1.5px solid #c4a4ff' }}
-        />
-        <span className="text-[12px]" style={{ color: '#c4a4ff' }}>
-          Summarize
-        </span>
-        <span className="ml-auto text-[10px] text-(--color-text-secondary)">{summarizeQueued} queued</span>
-      </div>
+      <SummarizeCard
+        queued={snapshot.queues.llm?.queued ?? 0}
+        running={snapshot.queues.llm?.running ?? 0}
+        summarizing={snapshot.summarizing ?? []}
+      />
     </div>
   )
 }
