@@ -284,6 +284,19 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--workdir", default=str(cfg.WORKDIR_DEFAULT))
     p.add_argument("--api-base", default=cfg.API_BASE)
     p.add_argument(
+        "--mode",
+        choices=["retrieval-eval"],
+        default=None,
+        help=(
+            "alternate fast-path mode. With --mode retrieval-eval, the 6-phase "
+            "sweep is bypassed and a retrieval-only evaluation is run against "
+            "existing baselines (recall@K, MRR, nDCG@10). No LLM is invoked. "
+            "Use to gate retrieval-pipeline changes between phases without "
+            "rerunning the full Enron sweep. Requires --label; see "
+            "`retrieval_eval.py` for the full flag list."
+        ),
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
         help="acknowledge that state.json already exists and continue from it. "
@@ -330,6 +343,12 @@ def make_parser() -> argparse.ArgumentParser:
             "Pass this flag on machines where the path doesn't apply."
         ),
     )
+    # Attach retrieval-eval flags. They're only meaningful when --mode
+    # retrieval-eval is set, but registering them on the main parser keeps
+    # --help discoverable.
+    from scripts.test_corpora.runner import retrieval_eval
+
+    retrieval_eval.add_cli_args(p)
     return p
 
 
@@ -693,6 +712,14 @@ def main(argv: list[str] | None = None) -> int:
             logging.StreamHandler(sys.stdout),
         ],
     )
+
+    # --mode retrieval-eval is a separate fast path: no state.json, no per-phase
+    # planning, no model switching, no LLM. Dispatch and return before the
+    # main sweep loop spins up clients or touches state.
+    if args.mode == "retrieval-eval":
+        from scripts.test_corpora.runner import retrieval_eval
+
+        return retrieval_eval.main_from_args(args)
 
     state_path = run_dir / "state.json"
     sf = StateFile(state_path)
