@@ -130,7 +130,13 @@ function modelLabel(
   modelName: string | null,
   modelId: string | null,
 ): { text: string; muted: boolean; italic: boolean } {
-  if (state === 'ready' && modelName) return { text: `Model · ${modelName}`, muted: false, italic: false }
+  if (state === 'ready' && (modelName || modelId)) {
+    return {
+      text: `Model · ${modelName ?? modelId}`,
+      muted: !modelName,
+      italic: false,
+    }
+  }
   if (state === 'loading') {
     const label = modelName ?? modelId ?? 'loading…'
     return { text: `Model · ${label} (loading…)`, muted: true, italic: false }
@@ -199,7 +205,8 @@ function SummarizeCard({ queued, running, summarizing }: SummarizeCardProps) {
 
   // Running first (most-advanced map step on top), then queued in FIFO.
   // Backend already orders by created_at; we resort here just for the
-  // running-first split.
+  // running-first split. Relies on ES2019+ stable sort so the backend's
+  // FIFO order is preserved within the queued group.
   const sortedItems = [...summarizing].sort((a, b) => {
     if (a.status !== b.status) return a.status === 'running' ? -1 : 1
     if (a.status === 'running') return b.progress_current - a.progress_current
