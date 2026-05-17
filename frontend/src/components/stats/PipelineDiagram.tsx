@@ -102,7 +102,7 @@ function nodeRadius(info: StageSnapshot | undefined): number {
   // sqrt scale so a long queue grows but doesn't overwhelm. Cap is
   // chosen so a busy node + its count badge above and stage label
   // below still fit cleanly in the 120 px vertical gap between the
-  // entities (y=100) and embed (y=220) fan-out lanes.
+  // entities (y=70) and embed (y=190) fan-out lanes.
   return Math.min(26, 14 + Math.sqrt(total) * 2.5)
 }
 
