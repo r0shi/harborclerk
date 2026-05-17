@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     embed_dim: int = Field(default=768)
     embed_needs_prefix: bool = Field(default=False)  # Granite uses CLS pooling; e5 needed query:/passage:
 
+    # Reranker (bge-reranker-v2-m3 cross-encoder, separate service)
+    reranker_enabled: bool = Field(default=True)
+    reranker_url: str = Field(default="http://reranker:8001")
+    reranker_top_k_pad: int = Field(default=40)
+    reranker_pool_size: int = Field(default=50)
+    reranker_strict: bool = Field(default=False)
+    reranker_timeout_seconds: float = Field(default=30.0)
+
     # Tika (required for PDF/DOCX/RTF extraction)
     tika_url: str = Field(default="http://tika:9998")
 
