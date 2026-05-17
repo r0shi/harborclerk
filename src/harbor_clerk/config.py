@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     # Reranker (bge-reranker-v2-m3 cross-encoder, separate service)
     reranker_enabled: bool = Field(default=True)
     reranker_url: str = Field(default="http://reranker:8001")
-    reranker_top_k_pad: int = Field(default=40)
-    reranker_pool_size: int = Field(default=50)
+    reranker_top_k_pad: int = Field(default=40, ge=0)
+    reranker_pool_size: int = Field(default=50, ge=1)
     reranker_strict: bool = Field(default=False)
     reranker_timeout_seconds: float = Field(default=30.0)
 
