@@ -409,22 +409,36 @@ async def llm_status(
     refresh_llm_settings()
     settings = get_settings()
     model_id = settings.llm_model_id or None
+    info = get_model(model_id) if model_id else None
+    model_name = info.name if info else None
 
     if not model_id:
-        return {"state": "deactivated", "model_id": None}
+        return {"state": "deactivated", "model_id": None, "model_name": None}
 
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.get(f"{settings.llama_server_url}/health")
             if r.status_code == 200:
-                return {"state": "ready", "model_id": model_id}
+                return {
+                    "state": "ready",
+                    "model_id": model_id,
+                    "model_name": model_name,
+                }
             # Non-200 — model still coming up (llama-server returns
             # 503 during model load) or in some other transient state.
-            return {"state": "loading", "model_id": model_id}
+            return {
+                "state": "loading",
+                "model_id": model_id,
+                "model_name": model_name,
+            }
     except (httpx.ConnectError, httpx.TimeoutException):
         # Connection refused (server stopped or restarting) or didn't
         # answer within 2s (loading weights, mmap'ing the gguf, etc.).
-        return {"state": "loading", "model_id": model_id}
+        return {
+            "state": "loading",
+            "model_id": model_id,
+            "model_name": model_name,
+        }
 
 
 @router.put("/chat/models/yarn", status_code=200)
