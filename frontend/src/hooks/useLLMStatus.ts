@@ -6,6 +6,7 @@ export type LLMState = 'deactivated' | 'loading' | 'ready' | 'unknown'
 export interface LLMStatus {
   state: LLMState
   model_id: string | null
+  model_name: string | null
 }
 
 const IDLE_INTERVAL_MS = 8000 // poll every 8s when nothing seems to be transitioning
@@ -25,7 +26,11 @@ const ACTIVE_INTERVAL_MS = 1500 // poll every 1.5s when a transition is in progr
  */
 export function useLLMStatus() {
   const { token } = useAuth()
-  const [status, setStatus] = useState<LLMStatus>({ state: 'unknown', model_id: null })
+  const [status, setStatus] = useState<LLMStatus>({
+    state: 'unknown',
+    model_id: null,
+    model_name: null,
+  })
   const lastModelIdRef = useRef<string | null>(null)
   const transitionUntilRef = useRef<number>(0)
 
