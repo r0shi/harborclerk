@@ -43,19 +43,19 @@ const VIEW_HEIGHT = 320
 const EDGE_COLOR = '#30d158'
 
 // Hand-laid-out positions for the 6-stage main flow.
-// Sequential prefix flows left-to-right at y=160, then chunk fans out
-// to entities/embed (two lanes at y=100 / y=220), then re-converges at
+// Sequential prefix flows left-to-right at y=130, then chunk fans out
+// to entities/embed (two lanes at y=70 / y=190), then re-converges at
 // finalize. Summarize runs separately as a BACKGROUND stage rendered
-// in its own panel below the SVG — it is intentionally NOT part of the
-// main flow so the diagram visually communicates "Ready is the
-// terminus of the express line; summarize is independent."
+// in a card overlaying the lower-left empty quadrant — it is intentionally
+// NOT part of the main flow so the diagram visually communicates "Ready
+// is the terminus of the express line; summarize is independent."
 const NODE_POSITIONS: Record<string, { x: number; y: number }> = {
-  extract: { x: 60, y: 160 },
-  ocr: { x: 160, y: 160 },
-  chunk: { x: 260, y: 160 },
-  entities: { x: 390, y: 100 },
-  embed: { x: 390, y: 220 },
-  finalize: { x: 520, y: 160 },
+  extract: { x: 60, y: 130 },
+  ocr: { x: 160, y: 130 },
+  chunk: { x: 260, y: 130 },
+  entities: { x: 390, y: 70 },
+  embed: { x: 390, y: 190 },
+  finalize: { x: 520, y: 130 },
 }
 
 const EDGES: { from: string; to: string }[] = [
@@ -324,7 +324,7 @@ function PipelineGraph({ snapshot }: { snapshot: QueueSnapshot }) {
         {/* "Ready" badge above finalize — drives home that finalize is
           the terminus of the express line. Summarize is rendered below
           the SVG as its own BACKGROUND stage. */}
-        <text x={520} y={135} textAnchor="middle" fontSize={10} fill="#30d158" fontWeight={600}>
+        <text x={520} y={105} textAnchor="middle" fontSize={10} fill="#30d158" fontWeight={600}>
           Ready
         </text>
       </svg>
