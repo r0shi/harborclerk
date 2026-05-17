@@ -38,6 +38,9 @@ class Settings(BaseSettings):
 
     # Embedder
     embedder_url: str = Field(default="http://embedder:8000")
+    embed_model: str = Field(default="ibm-granite/granite-embedding-311m-multilingual-r2")
+    embed_dim: int = Field(default=768)
+    embed_needs_prefix: bool = Field(default=False)  # Granite uses CLS pooling; e5 needed query:/passage:
 
     # Tika (required for PDF/DOCX/RTF extraction)
     tika_url: str = Field(default="http://tika:9998")
