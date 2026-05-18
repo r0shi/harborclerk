@@ -1,6 +1,7 @@
 """Search and passage-reading schemas."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -29,6 +30,13 @@ class ConflictSourceOut(BaseModel):
     title: str
 
 
+class ScoreBreakdown(BaseModel):
+    fts: float
+    vector: float
+    hybrid: float
+    reranker: float | None = None
+
+
 class SearchHitOut(BaseModel):
     chunk_id: str
     doc_id: str
@@ -41,6 +49,7 @@ class SearchHitOut(BaseModel):
     ocr_confidence: float | None = None
     score: float
     doc_title: str | None = None
+    score_breakdown: ScoreBreakdown | None = None
 
 
 class SearchResponse(BaseModel):
@@ -49,6 +58,7 @@ class SearchResponse(BaseModel):
     has_more: bool = False
     possible_conflict: bool = False
     conflict_sources: list[ConflictSourceOut] = []
+    reranker_status: Literal["ok", "disabled", "failed"] = "disabled"
 
 
 class FacetedDocGroup(BaseModel):
