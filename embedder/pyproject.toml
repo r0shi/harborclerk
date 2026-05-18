@@ -26,3 +26,4 @@ packages = ["src/embedder"]
 
 [project.scripts]
 harbor-clerk-embedder = "embedder.app:main"
+harbor-clerk-reranker = "embedder.reranker:main"
