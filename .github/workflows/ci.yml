@@ -37,7 +37,7 @@ jobs:
           STORAGE_BACKEND: filesystem
           STORAGE_PATH: /tmp/hc-test-storage
           TIKA_URL: "http://localhost:9998"
-        run: uv run pytest tests/ -v --tb=short
+        run: uv run pytest tests/ -v --tb=short -m "not requires_models"
 
   frontend:
     runs-on: ubuntu-latest

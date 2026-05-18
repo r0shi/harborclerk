@@ -39,6 +39,7 @@ test = [
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
     "pytest-httpserver>=1.1",
+    "pytest-httpx>=0.32",
     "ruff>=0.11",
     "pip-audit>=2.7",
 ]
@@ -62,6 +63,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "integration: end-to-end tests requiring external services (Dovecot, etc.). Run with `uv run pytest -m integration`.",
+    "requires_models: tests that load embedding/reranker model weights (~2 GB). Run with `uv run pytest -m requires_models`. Skipped in default CI.",
 ]
 
 [tool.ruff]
