@@ -201,6 +201,17 @@ export function useQueueTray() {
         return
       }
 
+      // Summarize is a background stage (PR #327 decoupled it from
+      // finalize) and renders exclusively in the Summarizing section,
+      // fed by the snapshot poll's `summarizing` array. Ignoring its
+      // queued/running events here keeps them out of activeItems —
+      // otherwise summarize-only docs land in Active with garbage
+      // stage state, because PIPELINE_STAGES doesn't include
+      // 'summarize', so the pre-fill loop is a no-op and
+      // computeCurrentStage falls through to 'extract'. Errors still
+      // surface — the status === 'error' branch above ran first.
+      if (stage === 'summarize') return
+
       // If this doc is in the completed list, remove it (re-queued)
       setCompleted((prev) => {
         if (!prev.some((c) => c.doc_id === did)) return prev
@@ -220,7 +231,8 @@ export function useQueueTray() {
         const filename = event.filename || existing?.filename || did
 
         // If this is a new item and the event is for a stage beyond extract,
-        // pre-fill earlier stages as done (e.g. resummarize only re-runs summarize)
+        // pre-fill earlier stages as done (e.g. backfill returns embed-running
+        // for a doc whose extract/ocr/chunk events fired before the page loaded).
         if (!existing && stage !== 'extract') {
           const stageIdx = PIPELINE_STAGES.indexOf(stage)
           for (let i = 0; i < stageIdx; i++) {
@@ -303,8 +315,12 @@ export function useQueueTray() {
 
         // Ghost-removal: anything in activeItems that's not in the
         // backfill response has finished (or errored) and we missed the
-        // notification. Drop it silently.
-        const liveVids = new Set(events.map((e) => e.doc_id))
+        // notification. Drop it silently. Summarize events are excluded
+        // from `liveVids` because they belong in the Summarizing section
+        // (see the summarize guard in onEvent above) — including them
+        // would keep summarize-only docs alive in Active with stale
+        // pre-summarize stage state from before fan-out.
+        const liveVids = new Set(events.filter((e) => e.stage !== 'summarize').map((e) => e.doc_id))
         setActiveItems((prev) => {
           let changed = false
           const next = new Map(prev)
