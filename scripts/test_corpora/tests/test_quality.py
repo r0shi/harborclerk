@@ -187,3 +187,113 @@ def test_baseline_real_answer_passes() -> None:
         )
     }
     assert baseline_quality_problem(baseline) is None
+
+
+# ── 2026-05-18 follow-ups: phrasings the original detector missed ──
+#
+# Each test below uses a verbatim prefix from one of the 30 corrupt baselines
+# in 2026-05-05-prod that the detector originally let through, producing
+# noise inline metrics + wasted Sonnet judge calls in phase 4. Diagnosed
+# while running step 2 of the corrupt-baseline repair.
+
+
+def test_baseline_says_knowledge_base_is_currently_empty() -> None:
+    # Verbatim from synthetic-research-3 and 16 others.
+    baseline = {
+        "answer": (
+            "It appears that the **knowledge base is currently empty** — there are "
+            "no documents, chunks, or pages ingested into the corpus at this time."
+        )
+    }
+    assert baseline_quality_problem(baseline) == "baseline says corpus is empty"
+
+
+def test_baseline_says_currently_empty_with_inline_bold_on_just_the_adjective() -> None:
+    # Verbatim from cuad-ask-4..10 — Sonnet bolds just the word "empty"
+    # mid-sentence ("currently **empty** — ..."), so a substring match
+    # against "knowledge base is currently empty" would fail without
+    # markdown normalization.
+    baseline = {
+        "answer": (
+            "It appears that the knowledge base is currently **empty** — there are "
+            "no documents, chunks, or pages ingested into the corpus."
+        )
+    }
+    assert baseline_quality_problem(baseline) == "baseline says corpus is empty"
+
+
+def test_baseline_says_completely_empty() -> None:
+    # Verbatim from synthetic-research-1.
+    baseline = {
+        "answer": (
+            "The knowledge base appears to be **completely empty** — it contains "
+            "no documents, chunks, or other indexed content."
+        )
+    }
+    assert baseline_quality_problem(baseline) == "baseline says corpus is empty"
+
+
+def test_baseline_says_appears_to_be_empty() -> None:
+    # Verbatim from synthetic-research-4.
+    baseline = {
+        "answer": ("The knowledge base appears to be empty — there are no documents currently ingested in the corpus.")
+    }
+    assert baseline_quality_problem(baseline) == "baseline says corpus is empty"
+
+
+def test_baseline_says_currently_contains_no_documents() -> None:
+    # Verbatim from synthetic-ask-2.
+    baseline = {
+        "answer": (
+            "The knowledge base currently contains **no documents** — it is "
+            "completely empty. There are no chunks, pages, or entities indexed."
+        )
+    }
+    assert baseline_quality_problem(baseline) == "baseline says corpus is empty"
+
+
+def test_baseline_says_document_corpus_is_currently_empty() -> None:
+    # Verbatim from synthetic-ask-4, synthetic-research-2.
+    baseline = {
+        "answer": (
+            "It appears that the document corpus is currently **empty** — there "
+            "are no documents, pages, or chunks indexed."
+        )
+    }
+    assert baseline_quality_problem(baseline) == "baseline says corpus is empty"
+
+
+def test_baseline_says_corpus_empty_in_french() -> None:
+    # Verbatim from synthetic-ask-7 (synthetic has French question variants).
+    baseline = {
+        "answer": (
+            "Il semble que la base de connaissances soit actuellement **vide** — aucun document n'y a été ingéré."
+        )
+    }
+    assert baseline_quality_problem(baseline) == "baseline says corpus is empty"
+
+
+def test_baseline_real_answer_with_word_empty_still_passes() -> None:
+    """Real answers that incidentally mention emptiness — e.g. citing a
+    contract clause about empty containers — must not be flagged. The
+    markers added in 2026-05-18 are specific enough ("currently empty",
+    "appears to be empty", etc.) that a sentence like "the warehouse is
+    empty on weekends" shouldn't trip them."""
+    baseline = {
+        "answer": (
+            "Section 4.2 of the agreement states that if the warehouse is empty "
+            "at the time of inspection, the inspection is rescheduled. This "
+            "clause applies to the South Bay facility specifically."
+        )
+    }
+    assert baseline_quality_problem(baseline) is None
+
+
+def test_normalize_for_match_strips_asterisks_and_lowercases() -> None:
+    """Direct unit test for the normalization helper — covers the cases
+    that bit us before normalization (bold-only-around-keyword)."""
+    from scripts.test_corpora.runner.quality import _normalize_for_match
+
+    assert _normalize_for_match("**KnowLedge BASE is currently EMPTY**") == "knowledge base is currently empty"
+    assert _normalize_for_match("currently **empty** — no docs") == "currently empty — no docs"
+    assert _normalize_for_match("plain lowercase passes through") == "plain lowercase passes through"
