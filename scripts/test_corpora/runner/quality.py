@@ -161,6 +161,28 @@ _BASELINE_EMPTY_CORPUS_SIGNATURES = (
     "no documents have been uploaded",
     "no documents have been ingested",
     "knowledge base is empty",
+    # Added 2026-05-18: phrasings Sonnet emitted in 2026-05-05-prod when the
+    # corpus was empty at baseline-gen time that the original list missed.
+    # 30 baselines (12 cuad, 18 synthetic) sailed through the old detector
+    # because their wording happened to differ by a word ("is currently empty"
+    # vs "is empty", "currently contains no documents" vs "no documents",
+    # etc.). After bolding normalization below, these substrings catch them.
+    "knowledge base is currently empty",
+    "knowledge base is currently completely empty",
+    "knowledge base currently contains no documents",
+    "knowledge base appears to be empty",
+    "knowledge base appears to be completely empty",
+    "knowledge base appears empty",
+    "document corpus is currently empty",
+    "document corpus is currently completely empty",
+    "corpus is currently empty",
+    "no documents currently ingested",
+    "no documents ingested in the",
+    # French — the synthetic corpus has French questions, and Sonnet answers
+    # in French when asked in French. "actuellement vide" is the French
+    # equivalent of "currently empty" and is specific enough to the
+    # empty-corpus signal that it's safe even without a cited-count check.
+    "actuellement vide",
 )
 _BASELINE_NOTHING_FOUND_SIGNATURES = (
     "i was unable to find",
@@ -177,6 +199,15 @@ _BASELINE_REFUSAL_SIGNATURES = (
     "i don't have the capability to search",
     "i don't have access to external databases",
 )
+
+
+def _normalize_for_match(text: str) -> str:
+    """Lowercase + strip markdown bold/italic asterisks. Sonnet wraps
+    individual words like ``**empty**`` mid-sentence, which would otherwise
+    prevent a substring match against "is currently empty". The asterisks
+    carry no semantic load — they're a presentation artifact — so removing
+    them before matching is safe and makes the marker list short."""
+    return text.lower().replace("*", "")
 
 
 def baseline_quality_problem(baseline: dict) -> str | None:
@@ -196,7 +227,7 @@ def baseline_quality_problem(baseline: dict) -> str | None:
     if not answer:
         return "baseline answer is empty"
 
-    low = answer.lower()
+    low = _normalize_for_match(answer)
 
     for sig in _BASELINE_EMPTY_CORPUS_SIGNATURES:
         if sig in low:
