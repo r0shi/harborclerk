@@ -840,6 +840,40 @@ async def _extract_notes(
     )
 
 
+async def _extract_notes_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    user_question: str,
+    passages_text: str,
+    coverage: dict[str, dict],
+) -> str:
+    """Extract notes, but don't let a weak model's 'no relevant findings'
+    verdict be terminal when retrieval clearly succeeded.
+
+    If extraction returns the sentinel AND the top coverage score clears
+    _RETRIEVAL_RELEVANCE_FLOOR, retry once with the forceful prompt; if the
+    retry also bails, fall back to handing the raw passages to synthesis.
+    Below the floor the sentinel is trusted — the corpus genuinely lacks
+    the information.
+    """
+    notes_text = await _extract_notes(client, url, user_question, passages_text)
+    if not _is_no_findings_sentinel(notes_text):
+        return notes_text
+
+    top_score = max((c.get("score", 0) for c in coverage.values()), default=0)
+    if top_score < _RETRIEVAL_RELEVANCE_FLOOR:
+        logger.info("Note extraction returned no-findings; top score %.2f below floor — trusting it", top_score)
+        return notes_text
+
+    logger.info("Note extraction bailed despite top score %.2f — retrying forcefully", top_score)
+    notes_text = await _extract_notes(client, url, user_question, passages_text, forceful=True)
+    if not _is_no_findings_sentinel(notes_text):
+        return notes_text
+
+    logger.warning("Forceful note extraction also bailed — passing raw passages to synthesis")
+    return f"## Raw passages\n{passages_text[:_NOTE_PROMPT_CHAR_CAP]}"
+
+
 async def _check_gaps(
     client: httpx.AsyncClient,
     url: str,
@@ -1143,7 +1177,9 @@ async def research_stream(
                         )
                     else:
                         try:
-                            notes_text = await _extract_notes(client, llm_url, user_question, passages_text)
+                            notes_text = await _extract_notes_with_retry(
+                                client, llm_url, user_question, passages_text, coverage
+                            )
                         except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
                             logger.error("LLM error during note extraction: %s", exc)
                             # Fallback: use raw passages as notes

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from harbor_clerk.llm.research import _is_no_findings_sentinel, _plan_queries
+from harbor_clerk.llm.research import _extract_notes_with_retry, _is_no_findings_sentinel, _plan_queries
 
 _DEPTH = {"max_queries": 15, "k_per_query": 20, "max_passages": 60, "gap_round": True, "paginate": True}
 
@@ -72,3 +72,58 @@ def test_is_no_findings_sentinel_rejects_real_notes_and_empty_corpus_string():
     # not match — that case is truly empty and should not trigger a retry.
     assert not _is_no_findings_sentinel("No relevant passages were found in the corpus.")
     assert not _is_no_findings_sentinel("")
+
+
+_SENTINEL = "No relevant findings in this passage set."
+_PASSAGES = "\n---\n**[0265_quarterly_report, page 1]**\nQ1 consulting revenue up 14%.\n"
+
+
+def _coverage(top_score: float) -> dict:
+    return {"c1": {"doc_id": "d1", "doc_title": "0265_quarterly_report", "page": 1, "score": top_score}}
+
+
+@pytest.mark.asyncio
+async def test_retry_not_triggered_when_extraction_succeeds():
+    """A normal (non-sentinel) extraction result passes straight through."""
+    real_notes = "- Q1 consulting revenue up 14% [0265_quarterly_report, page 1]"
+    with patch("harbor_clerk.llm.research._extract_notes", new=AsyncMock(return_value=real_notes)) as m:
+        out = await _extract_notes_with_retry(None, "http://x", "q", _PASSAGES, _coverage(1.7))
+    assert out == real_notes
+    assert m.await_count == 1  # no retry
+
+
+@pytest.mark.asyncio
+async def test_retry_recovers_when_forceful_extraction_succeeds():
+    """Sentinel + high retrieval score → forceful retry; if the retry yields
+    real notes, those are used."""
+    real_notes = "- Q1 consulting revenue up 14% [0265_quarterly_report, page 1]"
+    with patch(
+        "harbor_clerk.llm.research._extract_notes",
+        new=AsyncMock(side_effect=[_SENTINEL, real_notes]),
+    ) as m:
+        out = await _extract_notes_with_retry(None, "http://x", "q", _PASSAGES, _coverage(1.7))
+    assert out == real_notes
+    assert m.await_count == 2
+    assert m.await_args_list[1].kwargs.get("forceful") is True
+
+
+@pytest.mark.asyncio
+async def test_retry_falls_back_to_raw_passages_when_retry_also_bails():
+    """Sentinel twice → raw passages become the notes."""
+    with patch(
+        "harbor_clerk.llm.research._extract_notes",
+        new=AsyncMock(side_effect=[_SENTINEL, _SENTINEL]),
+    ):
+        out = await _extract_notes_with_retry(None, "http://x", "q", _PASSAGES, _coverage(1.7))
+    assert out.startswith("## Raw passages")
+    assert "0265_quarterly_report" in out
+
+
+@pytest.mark.asyncio
+async def test_low_score_sentinel_is_trusted_no_retry():
+    """Sentinel + low retrieval score → the sentinel is kept; the corpus
+    genuinely lacks the information. No retry."""
+    with patch("harbor_clerk.llm.research._extract_notes", new=AsyncMock(return_value=_SENTINEL)) as m:
+        out = await _extract_notes_with_retry(None, "http://x", "q", _PASSAGES, _coverage(0.3))
+    assert _is_no_findings_sentinel(out)
+    assert m.await_count == 1  # no retry below the relevance floor
