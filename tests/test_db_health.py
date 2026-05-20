@@ -6,6 +6,37 @@ from sqlalchemy import text
 from harbor_clerk.db_health import SchemaSentinelMismatch, verify_schema_sentinel
 
 
+@pytest.fixture(autouse=True)
+async def ensure_schema_metadata(db_session):
+    """Ensure the schema_metadata table and sentinel rows exist before each test.
+
+    The rebased 0001_initial migration creates this table, but the test DB may
+    have been migrated with an older copy of 0001_initial (before the
+    embedding-v2 rebase). This fixture idempotently creates the table and rows
+    so the tests are self-contained regardless of DB history.
+    """
+    await db_session.execute(
+        text("""
+            CREATE TABLE IF NOT EXISTS schema_metadata (
+                key VARCHAR NOT NULL,
+                value VARCHAR NOT NULL,
+                set_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (key)
+            )
+        """)
+    )
+    await db_session.execute(
+        text("""
+            INSERT INTO schema_metadata (key, value) VALUES
+                ('embed_model', 'granite-embedding-311m-multilingual-r2'),
+                ('embed_dim', '768'),
+                ('reranker', 'bge-reranker-v2-m3')
+            ON CONFLICT (key) DO NOTHING
+        """)
+    )
+    await db_session.commit()
+
+
 @pytest.mark.asyncio
 async def test_verify_sentinel_passes_on_match(db_session, monkeypatch):
     """Sentinel rows match the settings — no exception."""
