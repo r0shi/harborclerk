@@ -5,6 +5,7 @@ private let defaultPorts: [String: Int] = [
     "postgres": 5433,
     "tika": 9998,
     "embedder": 8101,
+    "reranker": 8201,
     "llama": 8102,
 ]
 
@@ -28,6 +29,8 @@ struct PreferencesWindow: View {
     @State private var postgresPortText = String(AppSettings.shared.postgresPort)
     @State private var tikaPortText = String(AppSettings.shared.tikaPort)
     @State private var embedderPortText = String(AppSettings.shared.embedderPort)
+    @State private var rerankerPortText = String(AppSettings.shared.rerankerPort)
+    @State private var rerankerEnabled = AppSettings.shared.rerankerEnabled
     @State private var llamaPortText = String(AppSettings.shared.llamaPort)
     @State private var llmModelId = AppSettings.shared.llmModelId
     @State private var logLevel = AppSettings.shared.logLevel
@@ -44,6 +47,8 @@ struct PreferencesWindow: View {
         var postgresPort = String(AppSettings.shared.postgresPort)
         var tikaPort = String(AppSettings.shared.tikaPort)
         var embedderPort = String(AppSettings.shared.embedderPort)
+        var rerankerPort = String(AppSettings.shared.rerankerPort)
+        var rerankerEnabled = AppSettings.shared.rerankerEnabled
         var llamaPort = String(AppSettings.shared.llamaPort)
         var llmModelId = AppSettings.shared.llmModelId
         var logLevel = AppSettings.shared.logLevel
@@ -124,6 +129,9 @@ struct PreferencesWindow: View {
                     portRow(label: "PostgreSQL port", text: $postgresPortText, key: "postgres")
                     portRow(label: "Tika port", text: $tikaPortText, key: "tika")
                     portRow(label: "Embedder port", text: $embedderPortText, key: "embedder")
+                    portRow(label: "Reranker port", text: $rerankerPortText, key: "reranker")
+                    Toggle("Enable reranker", isOn: $rerankerEnabled)
+                        .onChange(of: rerankerEnabled) { _, _ in markDirty() }
                     portRow(label: "LLM port", text: $llamaPortText, key: "llama")
                     Picker("Log level", selection: $logLevel) {
                         Text("DEBUG").tag("DEBUG")
@@ -257,6 +265,8 @@ struct PreferencesWindow: View {
             || postgresPortText != initial.postgresPort
             || tikaPortText != initial.tikaPort
             || embedderPortText != initial.embedderPort
+            || rerankerPortText != initial.rerankerPort
+            || rerankerEnabled != initial.rerankerEnabled
             || llamaPortText != initial.llamaPort
             || llmModelId != initial.llmModelId
             || logLevel != initial.logLevel
@@ -272,6 +282,8 @@ struct PreferencesWindow: View {
         if let p = Int(postgresPortText), p > 0, p <= 65535 { settings.postgresPort = p }
         if let p = Int(tikaPortText), p > 0, p <= 65535 { settings.tikaPort = p }
         if let p = Int(embedderPortText), p > 0, p <= 65535 { settings.embedderPort = p }
+        if let p = Int(rerankerPortText), p > 0, p <= 65535 { settings.rerankerPort = p }
+        settings.rerankerEnabled = rerankerEnabled
         if let p = Int(llamaPortText), p > 0, p <= 65535 { settings.llamaPort = p }
         settings.llmModelId = llmModelId
         settings.logLevel = logLevel
@@ -286,6 +298,8 @@ struct PreferencesWindow: View {
             postgresPort: postgresPortText,
             tikaPort: tikaPortText,
             embedderPort: embedderPortText,
+            rerankerPort: rerankerPortText,
+            rerankerEnabled: rerankerEnabled,
             llamaPort: llamaPortText,
             llmModelId: llmModelId,
             logLevel: logLevel
@@ -300,6 +314,8 @@ struct PreferencesWindow: View {
         postgresPortText = initial.postgresPort
         tikaPortText = initial.tikaPort
         embedderPortText = initial.embedderPort
+        rerankerPortText = initial.rerankerPort
+        rerankerEnabled = initial.rerankerEnabled
         llamaPortText = initial.llamaPort
         llmModelId = initial.llmModelId
         logLevel = initial.logLevel
@@ -315,6 +331,8 @@ struct PreferencesWindow: View {
         if postgresPortText != initial.postgresPort { keys.insert("postgres_port") }
         if tikaPortText != initial.tikaPort { keys.insert("tika_port") }
         if embedderPortText != initial.embedderPort { keys.insert("embedder_port") }
+        if rerankerPortText != initial.rerankerPort { keys.insert("reranker_port") }
+        if rerankerEnabled != initial.rerankerEnabled { keys.insert("reranker_enabled") }
         if llamaPortText != initial.llamaPort { keys.insert("llama_port") }
         if llmModelId != initial.llmModelId { keys.insert("llm_model_id") }
         if logLevel != initial.logLevel { keys.insert("log_level") }

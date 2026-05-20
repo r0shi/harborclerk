@@ -78,6 +78,16 @@ async def health_check(
         logger.error("Tika health check failed: %s", e)
         checks["tika"] = f"error: {e}"
 
+    # Reranker
+    try:
+        settings = get_settings()
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{settings.reranker_url}/health", timeout=5)
+            checks["reranker"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
+    except Exception as e:
+        logger.error("Reranker health check failed: %s", e)
+        checks["reranker"] = f"error: {e}"
+
     from harbor_clerk.api.app import BUILD_HASH
 
     overall = all(v == "ok" for v in checks.values())
@@ -592,6 +602,7 @@ async def list_logs(
         "api": "API Server",
         "worker": "Worker",
         "embedder": "Embedder",
+        "reranker": "Reranker",
         "postgres": "PostgreSQL",
     }
 
