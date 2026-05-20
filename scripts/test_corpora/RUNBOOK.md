@@ -33,7 +33,6 @@ The sweep can be run on one machine or split across two. The shape of the deploy
 | --- | --- | --- | --- |
 | **Single machine** | One reasonably-spec'd Mac (≥ 32 GB) with patience. | 60-80 h | [`runbooks/single.md`](runbooks/single.md) |
 | **Two similar machines** | Two Macs of comparable spec (e.g. both M2/M3/M4 with ≥ 32 GB) and **both** able to host Gemma 26B / Qwen 35B. Splits Phases 4 and 5. | 35-45 h | [`runbooks/parallel-twins.md`](runbooks/parallel-twins.md) |
-| **One big + one small** | A larger Mac (≥ 36 GB headroom for Gemma 26B / Qwen 35B) plus a smaller one that runs only the lighter models. Big runs the heavy models; small runs the rest in parallel. | 45-55 h | [`runbooks/heterogeneous.md`](runbooks/heterogeneous.md) |
 
 Each topology runbook has its own diagram and phase-by-phase commands, but inherits the pre-flight, recovery, and aggregation sections below.
 
