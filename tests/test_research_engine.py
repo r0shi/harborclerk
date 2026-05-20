@@ -1,9 +1,11 @@
 """Unit tests for research engine internals (harbor_clerk.llm.research)."""
 
 import json
+import uuid as _uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from harbor_clerk.llm.research import _extract_notes_with_retry, _is_no_findings_sentinel, _plan_queries, _read_evidence
 
@@ -183,3 +185,29 @@ async def test_read_evidence_excludes_budget_truncated_passages_from_evidence_do
     assert big in passages_text
     assert "beta body" not in passages_text
     assert {d["doc_id"] for d in evidence_docs} == {"d1"}
+
+
+@pytest.mark.asyncio
+async def test_research_state_citations_column_roundtrips(db_session, admin_user):
+    """ResearchState persists a citations JSON list."""
+    from harbor_clerk.models import Conversation
+    from harbor_clerk.models.research_state import ResearchState
+
+    conv = Conversation(title="t", user_id=admin_user.user_id)
+    db_session.add(conv)
+    await db_session.flush()
+
+    cites = [{"doc_id": str(_uuid.uuid4()), "doc_title": "alpha", "page": 1}]
+    db_session.add(
+        ResearchState(
+            conversation_id=conv.conversation_id,
+            strategy="search",
+            status="completed",
+            max_rounds=500,
+            citations=cites,
+        )
+    )
+    await db_session.commit()
+
+    row = (await db_session.execute(select(ResearchState))).scalar_one()
+    assert row.citations == cites
