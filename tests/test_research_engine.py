@@ -33,7 +33,6 @@ async def test_plan_queries_returns_only_llm_queries_no_seeded_garbage():
             topic_hint=None,
             depth_config=_DEPTH,
             doc_list=None,
-            user_id=None,
         )
     assert queries == ["governing law clauses", "termination notice periods"]
 
@@ -50,7 +49,6 @@ async def test_plan_queries_keyword_fallback_when_llm_yields_nothing():
             topic_hint=None,
             depth_config=_DEPTH,
             doc_list=None,
-            user_id=None,
         )
     assert queries[0] == "What are the major vendor relationships over time"
     assert "What are the major" in queries

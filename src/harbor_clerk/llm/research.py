@@ -482,7 +482,6 @@ async def _plan_queries(
     topic_hint: str | None,
     depth_config: dict,
     doc_list: list[dict] | None,
-    user_id: uuid.UUID | None,
 ) -> list[str]:
     """Phase 1: LLM generates diverse search queries for the research run."""
     # LLM-planned queries
@@ -1023,7 +1022,6 @@ async def research_stream(
                             topic_hint,
                             depth_config,
                             doc_list,
-                            user_id,
                         )
                     except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
                         logger.error("LLM error during query planning: %s", exc)
