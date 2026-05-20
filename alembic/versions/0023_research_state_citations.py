@@ -26,7 +26,7 @@ depends_on = None
 def upgrade() -> None:
     op.add_column(
         "research_state",
-        sa.Column("citations", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("citations", postgresql.JSONB(), nullable=True),
     )
 
 

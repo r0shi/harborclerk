@@ -209,5 +209,7 @@ async def test_research_state_citations_column_roundtrips(db_session, admin_user
     )
     await db_session.commit()
 
-    row = (await db_session.execute(select(ResearchState))).scalar_one()
+    row = (
+        await db_session.execute(select(ResearchState).where(ResearchState.conversation_id == conv.conversation_id))
+    ).scalar_one()
     assert row.citations == cites
