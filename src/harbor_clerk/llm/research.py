@@ -56,12 +56,6 @@ _MAX_TOKENS_NOTES = 8000
 _MAX_TOKENS_GAP = 5000
 _MAX_TOKENS_SYNTHESIS = 10000
 
-# spaCy entity types that are useless as search seeds. CARDINAL/ORDINAL
-# dominate the corpus's top-entity list ("one", "first", "two", "1", "2") and
-# polluted seeded queries with garbage like "1 Please compare different wine".
-# DATE/TIME/MONEY/PERCENT/QUANTITY similarly don't represent topical content.
-_SEED_QUERY_BLOCKED_ENTITY_TYPES = frozenset({"CARDINAL", "ORDINAL", "DATE", "TIME", "MONEY", "PERCENT", "QUANTITY"})
-
 # Cap the prefill-heavy note-extraction prompt. 30K chars ≈ 8.5K tokens — keeps
 # Gemma-26B-class prefill under ~45 s. Was 80K (≈22K tokens, ~110 s prefill).
 _NOTE_PROMPT_CHAR_CAP = 30_000
@@ -98,7 +92,7 @@ _QUERY_PLANNING_SYSTEM = (
     "Given a research question, generate diverse search queries that together "
     "cover all angles of the topic.\n\n"
     "Rules:\n"
-    "- Generate 5-15 queries depending on question complexity\n"
+    "- Generate the number of queries requested, covering the question from multiple angles\n"
     "- Vary phrasing: use synonyms, related terms, specific entities\n"
     "- Include both broad and narrow queries\n"
     "- For comparative questions, generate queries for each side\n"
@@ -125,6 +119,25 @@ _NOTE_EXTRACTION_SYSTEM = (
     "general knowledge."
 )
 
+# Rules below are intentionally duplicated from _NOTE_EXTRACTION_SYSTEM — keep in sync.
+_NOTE_EXTRACTION_SYSTEM_FORCEFUL = (
+    "You are extracting research notes from search results. These passages "
+    "are the TOP-RANKED retrieval matches for the research question and are "
+    "very likely relevant — a prior extraction attempt wrongly dismissed "
+    "them.\n\n"
+    "Rules:\n"
+    "- Cite every finding as [Document Title, page X] — exactly as shown in the passages\n"
+    "- Write one note per distinct finding\n"
+    "- Skip irrelevant or redundant passages\n"
+    "- Preserve factual details — names, numbers, dates\n"
+    "- If a passage contradicts another, note both with their citations\n"
+    "- Write in plain text with citations, not JSON\n"
+    "- Extract the relevant findings. Return `No relevant findings in this "
+    "passage set.` ONLY if the passages genuinely contain nothing on-topic "
+    "— do not use it as a shortcut. Do not invent content from titles or "
+    "general knowledge."
+)
+
 _GAP_ANALYSIS_SYSTEM = (
     "You are checking research coverage. Given the original question and notes "
     "gathered so far, identify any obvious gaps.\n\n"
@@ -142,6 +155,14 @@ _DEPTH_CONFIG = {
     "standard": {"max_queries": 15, "k_per_query": 20, "max_passages": 60, "gap_round": True, "paginate": True},
     "thorough": {"max_queries": 25, "k_per_query": 30, "max_passages": 100, "gap_round": True, "paginate": True},
 }
+
+# When note extraction returns the "no relevant findings" sentinel, retry it
+# forcefully only if retrieval actually found strong matches — i.e. the top
+# coverage score clears this floor. Below it, the corpus genuinely lacks the
+# information and the honest "no findings" answer is correct. Hybrid-retrieval
+# scores in observed research runs ranged ~0.5-1.7; 1.0 separates a solid
+# match from weak noise. Tunable.
+_RETRIEVAL_RELEVANCE_FLOOR = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -454,60 +475,6 @@ def _build_synthesis_messages(user_question: str, notes: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-async def _seed_queries_from_corpus(
-    user_question: str,
-    user_id: uuid.UUID | None,
-    topic_hint: str | None,
-) -> list[str]:
-    """Generate model-independent queries from corpus metadata.
-
-    Pulls top entities and topic keywords, combines them with question
-    keywords to produce queries that don't depend on LLM quality.
-    """
-    seeded: list[str] = []
-
-    # Extract a few keywords from the question for cross-referencing
-    q_words = [w for w in user_question.split() if len(w) > 3]
-    q_short = " ".join(q_words[:4]) if q_words else user_question
-
-    # Seed from entities — skip useless types (CARDINAL/ORDINAL/DATE/etc.)
-    # which dominate the top-entity list with values like "one", "first", "1"
-    # that produce nonsense queries when concatenated with the question.
-    try:
-        entity_json = await execute_tool("entity_overview", {}, user_id, mode="research")
-        entity_data = json.loads(entity_json)
-        kept = 0
-        for ent in entity_data.get("top_entities", []):
-            if kept >= 10:
-                break
-            etype = (ent.get("entity_type") or "").upper()
-            if etype in _SEED_QUERY_BLOCKED_ENTITY_TYPES:
-                continue
-            name = (ent.get("entity_text") or "").strip()
-            # Defense-in-depth: also drop pure-numeric / single-letter / very short tokens
-            if not name or len(name) < 3 or name.replace(".", "").replace(",", "").isdigit():
-                continue
-            if name.lower() in user_question.lower():
-                continue
-            seeded.append(f"{name} {q_short}")
-            kept += 1
-    except Exception:
-        logger.debug("entity_overview failed for seed queries", exc_info=True)
-
-    # Seed from topic keywords
-    if topic_hint:
-        for line in topic_hint.split("\n"):
-            # Topic lines look like "- Topic Name: keyword1, keyword2, ..."
-            if ":" in line:
-                keywords_part = line.split(":", 1)[1].strip()
-                keywords = [kw.strip() for kw in keywords_part.split(",") if kw.strip()]
-                for kw in keywords[:2]:
-                    if kw.lower() not in user_question.lower():
-                        seeded.append(f"{kw} {q_short}")
-
-    return seeded
-
-
 async def _plan_queries(
     client: httpx.AsyncClient,
     url: str,
@@ -515,9 +482,8 @@ async def _plan_queries(
     topic_hint: str | None,
     depth_config: dict,
     doc_list: list[dict] | None,
-    user_id: uuid.UUID | None,
 ) -> list[str]:
-    """Phase 1: LLM generates diverse search queries, supplemented by corpus-seeded queries."""
+    """Phase 1: LLM generates diverse search queries for the research run."""
     # LLM-planned queries
     user_content = f"Research question: {user_question}"
     if topic_hint:
@@ -525,7 +491,10 @@ async def _plan_queries(
     if doc_list:
         doc_text = "\n".join(f"- {d['title']}" for d in doc_list[:50])
         user_content += f"\n\nDocuments in corpus:\n{doc_text}"
-    llm_target = max(5, depth_config["max_queries"] // 2)
+    # The LLM is the sole query source now (corpus seeding removed); ask it
+    # for the full budget — it is a far better generator than the deleted
+    # entity-concatenation, and _is_plausible_query still filters junk.
+    llm_target = depth_config["max_queries"]
     user_content += f"\n\nGenerate {llm_target} search queries."
 
     messages = [
@@ -552,13 +521,10 @@ async def _plan_queries(
             llm_queries.append(" ".join(words[: len(words) // 2]))
             llm_queries.append(" ".join(words[len(words) // 2 :]))
 
-    # Corpus-seeded queries (model-independent)
-    seeded = await _seed_queries_from_corpus(user_question, user_id, topic_hint)
-
-    # Merge: LLM queries first (higher intent), then seeded (breadth), dedupe
+    # Dedupe (case-insensitive), preserving order.
     seen_lower: set[str] = set()
     merged: list[str] = []
-    for q in llm_queries + seeded:
+    for q in llm_queries:
         q = q.strip()
         if q and q.lower() not in seen_lower:
             seen_lower.add(q.lower())
@@ -716,10 +682,13 @@ async def _read_evidence(
     user_id: uuid.UUID | None,
     max_passages: int,
     context_budget_chars: int,
-) -> str:
+) -> tuple[str, list[dict]]:
     """Phase 3: Read full passages for top-scoring chunks.
 
-    Returns formatted passage text for note extraction, bounded by context budget.
+    Returns (passages_text, evidence_docs) where passages_text is the
+    formatted passage text for note extraction (bounded by context budget)
+    and evidence_docs is the list of distinct docs whose passages were
+    read into passages_text (used to populate result.citations — Fix 3).
     """
     # Sort by score descending, pick diverse docs
     sorted_chunks_all = sorted(coverage.items(), key=lambda x: x[1]["score"], reverse=True)
@@ -754,11 +723,13 @@ async def _read_evidence(
     selected = selected[:max_passages]
 
     if not selected:
-        return ""
+        return "", []
 
     # Read in batches of 20
     passages_text = ""
     total_chars = 0
+    evidence_docs: list[dict] = []
+    seen_evidence_docs: set[str] = set()
 
     for i in range(0, len(selected), 20):
         batch_ids = selected[i : i + 20]
@@ -797,6 +768,14 @@ async def _read_evidence(
                     break
                 passages_text += entry
                 total_chars += len(entry)
+                # Record the doc behind this passage — the "informed the
+                # answer" set used to populate result.citations (Fix 3).
+                info = coverage.get(cid) if cid else None
+                if info and info.get("doc_id") and info["doc_id"] not in seen_evidence_docs:
+                    seen_evidence_docs.add(info["doc_id"])
+                    evidence_docs.append(
+                        {"doc_id": info["doc_id"], "doc_title": info.get("doc_title", ""), "page": passage.get("page")}
+                    )
 
         except Exception:
             logger.exception("read_passages failed for batch starting at %d", i)
@@ -804,7 +783,23 @@ async def _read_evidence(
         if total_chars >= context_budget_chars:
             break
 
-    return passages_text
+    return passages_text, evidence_docs
+
+
+# The exact sentinel _NOTE_EXTRACTION_SYSTEM tells the model to return when a
+# passage set is off-topic. Distinct from _extract_notes's genuinely-empty
+# return ("No relevant passages were found in the corpus.").
+_NO_FINDINGS_SENTINEL_PREFIX = "no relevant findings"
+
+
+def _is_no_findings_sentinel(notes_text: str) -> bool:
+    """True if note extraction bailed with the 'no relevant findings'
+    sentinel. Tolerant of case, surrounding whitespace, and a leading
+    markdown bullet ('- ', '* ', '#') a weak model may prepend.
+
+    The genuinely-empty return ("No relevant passages were found in the
+    corpus.") deliberately does NOT match — 'passages' != 'findings'."""
+    return notes_text.strip().lstrip("-*•# ").lower().startswith(_NO_FINDINGS_SENTINEL_PREFIX)
 
 
 async def _extract_notes(
@@ -812,6 +807,8 @@ async def _extract_notes(
     url: str,
     user_question: str,
     passages_text: str,
+    *,
+    forceful: bool = False,
 ) -> str:
     """Phase 4: LLM extracts cited notes from retrieved passages."""
     if not passages_text.strip():
@@ -834,7 +831,7 @@ async def _extract_notes(
         passages_text = truncated
 
     messages = [
-        {"role": "system", "content": _NOTE_EXTRACTION_SYSTEM},
+        {"role": "system", "content": _NOTE_EXTRACTION_SYSTEM_FORCEFUL if forceful else _NOTE_EXTRACTION_SYSTEM},
         {
             "role": "user",
             "content": (
@@ -853,6 +850,40 @@ async def _extract_notes(
         max_tokens=_MAX_TOKENS_NOTES,
         phase="notes",
     )
+
+
+async def _extract_notes_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    user_question: str,
+    passages_text: str,
+    coverage: dict[str, dict],
+) -> str:
+    """Extract notes, but don't let a weak model's 'no relevant findings'
+    verdict be terminal when retrieval clearly succeeded.
+
+    If extraction returns the sentinel AND the top coverage score clears
+    _RETRIEVAL_RELEVANCE_FLOOR, retry once with the forceful prompt; if the
+    retry also bails, fall back to handing the raw passages to synthesis.
+    Below the floor the sentinel is trusted — the corpus genuinely lacks
+    the information.
+    """
+    notes_text = await _extract_notes(client, url, user_question, passages_text)
+    if not _is_no_findings_sentinel(notes_text):
+        return notes_text
+
+    top_score = max((c.get("score", 0) for c in coverage.values()), default=0)
+    if top_score < _RETRIEVAL_RELEVANCE_FLOOR:
+        logger.info("Note extraction returned no-findings; top score %.2f below floor — trusting it", top_score)
+        return notes_text
+
+    logger.info("Note extraction bailed despite top score %.2f — retrying forcefully", top_score)
+    notes_text = await _extract_notes(client, url, user_question, passages_text, forceful=True)
+    if not _is_no_findings_sentinel(notes_text):
+        return notes_text
+
+    logger.warning("Forceful note extraction also bailed — passing raw passages to synthesis")
+    return f"## Raw passages\n{passages_text[:_NOTE_PROMPT_CHAR_CAP]}"
 
 
 async def _check_gaps(
@@ -950,9 +981,12 @@ async def research_stream(
         start_time = datetime.now(UTC)
         step_count = 0
         collected_notes: list[str] = []
+        research_citations: list[dict] = []
 
         try:
             if resume_from_synthesis:
+                # Preserve citations the interrupted run already persisted.
+                research_citations = list(state.citations or [])
                 logger.info(
                     "Resuming research %s from synthesis (notes len=%d)",
                     conversation_id,
@@ -988,17 +1022,15 @@ async def research_stream(
                             topic_hint,
                             depth_config,
                             doc_list,
-                            user_id,
                         )
                     except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
                         logger.error("LLM error during query planning: %s", exc)
-                        # Fallback: seeded queries only (no LLM)
+                        # Fallback: use question and keyword splits when the LLM is unreachable.
                         queries = [user_question]
-                        try:
-                            seeded = await _seed_queries_from_corpus(user_question, user_id, topic_hint)
-                            queries.extend(seeded)
-                        except Exception:
-                            pass
+                        words = user_question.split()
+                        if len(words) > 3:
+                            queries.append(" ".join(words[: len(words) // 2]))
+                            queries.append(" ".join(words[len(words) // 2 :]))
 
                     step_count = 1
                     state.current_round = step_count
@@ -1102,12 +1134,13 @@ async def research_stream(
                         }
                     )
 
-                    passages_text = await _read_evidence(
+                    passages_text, evidence_docs = await _read_evidence(
                         coverage,
                         user_id,
                         depth_config["max_passages"],
                         passage_budget_chars,
                     )
+                    research_citations = list(evidence_docs)
 
                     yield _sse(
                         {
@@ -1159,7 +1192,9 @@ async def research_stream(
                         )
                     else:
                         try:
-                            notes_text = await _extract_notes(client, llm_url, user_question, passages_text)
+                            notes_text = await _extract_notes_with_retry(
+                                client, llm_url, user_question, passages_text, coverage
+                            )
                         except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
                             logger.error("LLM error during note extraction: %s", exc)
                             # Fallback: use raw passages as notes
@@ -1263,12 +1298,14 @@ async def research_stream(
                         # doesn't re-discover the same chunks.
                         coverage.update(new_chunks)
 
-                        gap_passages = await _read_evidence(
+                        gap_passages, gap_evidence_docs = await _read_evidence(
                             new_chunks,
                             user_id,
                             20,
                             passage_budget_chars // 3,
                         )
+                        seen_cite_ids = {c["doc_id"] for c in research_citations}
+                        research_citations.extend(d for d in gap_evidence_docs if d["doc_id"] not in seen_cite_ids)
                         if gap_passages.strip():
                             try:
                                 gap_notes = await _extract_notes(
@@ -1367,6 +1404,7 @@ async def research_stream(
 
             state.status = "completed"
             state.notes = notes
+            state.citations = research_citations
             state.current_round = step_count
             state.completed_at = datetime.now(UTC)
             state.progress = {"step": step_count}

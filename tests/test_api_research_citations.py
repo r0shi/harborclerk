@@ -1,15 +1,13 @@
 """Tests for ResearchDetail.citations on GET /api/research/{conv_id}.
 
-The research route computes citations at read-time from the persisted
-``ChatMessage(role='tool')`` rows of the turn — the same data the
-``citations_extract`` module knows how to parse. These tests verify the
-wire-up: seed a finished research with tool messages, fetch detail, expect
-deduped citations on the response.
+Citations are persisted on ``research_state.citations`` by the research engine
+and surfaced verbatim (after dedupe_citations) by the detail endpoint. These
+tests verify that wire-up: seed a ResearchState with citations, fetch detail,
+expect those citations on the response.
 """
 
 from __future__ import annotations
 
-import json
 import uuid
 
 from harbor_clerk.models import ChatMessage, Conversation
@@ -23,13 +21,12 @@ async def _seed_research(
     *,
     status: str = "completed",
     error: str | None = None,
-    tool_messages: list[tuple[str, str]] | None = None,
+    citations: list[dict] | None = None,
 ) -> uuid.UUID:
-    """Insert a conversation + research_state + (optionally) tool messages.
+    """Insert a conversation + research_state + optional persisted citations.
 
-    ``tool_messages`` is a list of (tool_call_id, raw_result_json_str). The
-    helper creates one assistant message with matching tool_calls plus one
-    tool result message per entry.
+    ``citations`` is stored directly on ``research_state.citations`` — matching
+    what the research engine writes at completion time.
     """
     conv_id = uuid.uuid4()
     conv = Conversation(
@@ -47,6 +44,7 @@ async def _seed_research(
         error=error,
         current_round=2,
         max_rounds=4,
+        citations=citations,
     )
     db_session.add(state)
 
@@ -58,17 +56,6 @@ async def _seed_research(
             content="What's in the corpus?",
         )
     )
-
-    if tool_messages:
-        for tc_id, raw in tool_messages:
-            db_session.add(
-                ChatMessage(
-                    conversation_id=conv_id,
-                    role="tool",
-                    tool_call_id=tc_id,
-                    content=raw,
-                )
-            )
 
     if status == "completed":
         db_session.add(
@@ -84,112 +71,78 @@ async def _seed_research(
     return conv_id
 
 
-async def test_research_detail_citations_empty_when_no_tools(client, admin_user, admin_token, db_session):
-    conv_id = await _seed_research(db_session, admin_user, tool_messages=None)
+async def test_research_detail_citations_empty_when_no_citations(client, admin_user, admin_token, db_session):
+    # No citations persisted on state → empty list on the wire.
+    conv_id = await _seed_research(db_session, admin_user, citations=None)
     resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
     assert resp.status_code == 200
     assert resp.json()["citations"] == []
 
 
-async def test_research_detail_citations_from_kb_search(client, admin_user, admin_token, db_session):
-    raw = json.dumps(
+async def test_research_detail_citations_multiple_docs(client, admin_user, admin_token, db_session):
+    # Multiple docs persisted by the engine are all surfaced.
+    cites = [
         {
-            "hits": [
-                {
-                    "doc_id": "11111111-1111-1111-1111-111111111111",
-                    "chunk_id": "aaa",
-                    "doc_title": "Doc A",
-                    "score": 0.9,
-                    "pages": "1-2",
-                },
-                {
-                    "doc_id": "22222222-2222-2222-2222-222222222222",
-                    "chunk_id": "bbb",
-                    "doc_title": "Doc B",
-                    "score": 0.7,
-                },
-            ]
-        }
-    )
-    conv_id = await _seed_research(db_session, admin_user, tool_messages=[("call_1", raw)])
+            "doc_id": "11111111-1111-1111-1111-111111111111",
+            "doc_title": "Doc A",
+            "page": 1,
+        },
+        {
+            "doc_id": "22222222-2222-2222-2222-222222222222",
+            "doc_title": "Doc B",
+            "page": 3,
+        },
+    ]
+    conv_id = await _seed_research(db_session, admin_user, citations=cites)
     resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
     assert resp.status_code == 200
-    cites = resp.json()["citations"]
-    assert {c["doc_id"] for c in cites} == {
+    returned = resp.json()["citations"]
+    assert {c["doc_id"] for c in returned} == {
         "11111111-1111-1111-1111-111111111111",
         "22222222-2222-2222-2222-222222222222",
     }
-    a = next(c for c in cites if c["doc_id"] == "11111111-1111-1111-1111-111111111111")
-    assert a["chunk_id"] == "aaa"
+    a = next(c for c in returned if c["doc_id"] == "11111111-1111-1111-1111-111111111111")
     assert a["doc_title"] == "Doc A"
-    assert a["score"] == 0.9
-    assert a["pages"] == "1-2"
+    assert a["page"] == 1
 
 
-async def test_research_detail_citations_deduped_across_tool_results(client, admin_user, admin_token, db_session):
-    # Same chunk surfaces in two searches → dedupe to one entry, with the
-    # higher score winning (matches the dedupe_citations contract).
-    r1 = json.dumps({"hits": [{"doc_id": "D1", "chunk_id": "C1", "score": 0.5}]})
-    r2 = json.dumps(
-        {
-            "hits": [
-                {"doc_id": "D1", "chunk_id": "C1", "score": 0.85},
-                {"doc_id": "D2", "chunk_id": "C2", "score": 0.6},
-            ]
-        }
-    )
-    conv_id = await _seed_research(
-        db_session,
-        admin_user,
-        tool_messages=[("call_1", r1), ("call_2", r2)],
-    )
+async def test_research_detail_citations_deduped_by_doc_id(client, admin_user, admin_token, db_session):
+    # dedupe_citations collapses duplicate doc_id entries (same doc, different
+    # pages) — the route passes state.citations through dedupe_citations.
+    cites = [
+        {"doc_id": "D1", "doc_title": "Doc 1", "page": 1},
+        {"doc_id": "D1", "doc_title": "Doc 1", "page": 2},
+        {"doc_id": "D2", "doc_title": "Doc 2", "page": 5},
+    ]
+    conv_id = await _seed_research(db_session, admin_user, citations=cites)
     resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
     assert resp.status_code == 200
-    cites = resp.json()["citations"]
-    assert len(cites) == 2
-    by_chunk = {c["chunk_id"]: c for c in cites}
-    assert by_chunk["C1"]["score"] == 0.85
-    assert by_chunk["C2"]["score"] == 0.6
+    returned = resp.json()["citations"]
+    # After dedupe: D1 appears once, D2 once
+    doc_ids = [c["doc_id"] for c in returned]
+    assert doc_ids.count("D1") == 1
+    assert doc_ids.count("D2") == 1
 
 
-async def test_research_detail_citations_skips_error_payloads(client, admin_user, admin_token, db_session):
-    # A failed tool call returns {"error": ...}. Those must not produce
-    # citations — the extractor is best-effort and treats errors as no-ops.
-    err = json.dumps({"error": "no such doc_id"})
-    ok = json.dumps({"hits": [{"doc_id": "D1", "chunk_id": "C1"}]})
-    conv_id = await _seed_research(
-        db_session,
-        admin_user,
-        tool_messages=[("call_err", err), ("call_ok", ok)],
-    )
+async def test_research_detail_citations_single_doc(client, admin_user, admin_token, db_session):
+    # Single citation roundtrips cleanly.
+    cites = [{"doc_id": "D1", "doc_title": "Solo Doc", "page": 7}]
+    conv_id = await _seed_research(db_session, admin_user, citations=cites)
     resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
     assert resp.status_code == 200
-    cites = resp.json()["citations"]
-    assert len(cites) == 1
-    assert cites[0]["doc_id"] == "D1"
+    returned = resp.json()["citations"]
+    assert len(returned) == 1
+    assert returned[0]["doc_id"] == "D1"
+    assert returned[0]["doc_title"] == "Solo Doc"
+    assert returned[0]["page"] == 7
 
 
-async def test_research_detail_citations_from_read_passages_keeps_chunk_only(
-    client, admin_user, admin_token, db_session
-):
-    # kb_read_passages doesn't include doc_id. Those chunk-only entries still
-    # appear in citations so the UI can show them; the test harness ignores
-    # entries without doc_id for citation_overlap.
-    raw = json.dumps(
-        {
-            "passages": [
-                {"chunk_id": "C1", "doc_title": "X", "pages": "5", "text": "..."},
-            ]
-        }
-    )
-    conv_id = await _seed_research(db_session, admin_user, tool_messages=[("call_1", raw)])
+async def test_research_detail_citations_empty_list_in_state(client, admin_user, admin_token, db_session):
+    # Explicit empty list on state → empty list on the wire (not None).
+    conv_id = await _seed_research(db_session, admin_user, citations=[])
     resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
     assert resp.status_code == 200
-    cites = resp.json()["citations"]
-    assert len(cites) == 1
-    assert "doc_id" not in cites[0]
-    assert cites[0]["chunk_id"] == "C1"
-    assert cites[0]["doc_title"] == "X"
+    assert resp.json()["citations"] == []
 
 
 # ── error field ──
@@ -227,3 +180,41 @@ async def test_research_detail_error_field_surfaces_synthesis_failure(client, ad
     resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
     assert resp.status_code == 200
     assert resp.json()["error"] == "Synthesis failed: LLM error (502)"
+
+
+async def test_research_detail_surfaces_state_citations(db_session, client, admin_user, admin_token):
+    """result.citations is populated from research_state.citations."""
+    import uuid as _uuid
+
+    conv_id = _uuid.uuid4()
+    conv = Conversation(
+        conversation_id=conv_id,
+        user_id=admin_user.user_id,
+        title="cites",
+        mode="research",
+    )
+    db_session.add(conv)
+    await db_session.flush()
+    cites = [{"doc_id": "d-1", "doc_title": "alpha", "page": 2}]
+    db_session.add(
+        ResearchState(
+            conversation_id=conv_id,
+            strategy="search",
+            status="completed",
+            max_rounds=500,
+            citations=cites,
+        )
+    )
+    # Add user message so the route can find `question`
+    db_session.add(
+        ChatMessage(
+            conversation_id=conv_id,
+            role="user",
+            content="What is in the corpus?",
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.get(f"/api/research/{conv_id}", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["citations"] == cites

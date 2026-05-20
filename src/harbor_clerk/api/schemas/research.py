@@ -60,11 +60,9 @@ class ResearchDetail(BaseModel):
     report: str | None = None
     model_id: str | None = None
     messages: list[dict]
-    # Deduped citation records derived from the tool-result messages of the
-    # research turn. Each entry has at minimum ``doc_id`` (when the underlying
-    # tool exposed it); additional fields include ``doc_title``, ``chunk_id``,
-    # ``pages``, ``score``. Computed at read-time from persisted tool messages
-    # so historical research surfaces citations too.
+    # Deduped citation records — the documents whose passages informed the
+    # synthesized report, persisted on research_state.citations by the
+    # research engine.
     citations: list[dict] = []
     # Free-text reason set when the research moved to ``interrupted`` or
     # ``failed``. Examples: ``"Synthesis failed: LLM error (502)"``,
