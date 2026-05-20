@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from harbor_clerk.llm.research import _extract_notes_with_retry, _is_no_findings_sentinel, _plan_queries
+from harbor_clerk.llm.research import _extract_notes_with_retry, _is_no_findings_sentinel, _plan_queries, _read_evidence
 
 _DEPTH = {"max_queries": 15, "k_per_query": 20, "max_passages": 60, "gap_round": True, "paginate": True}
 
@@ -127,3 +127,29 @@ async def test_low_score_sentinel_is_trusted_no_retry():
         out = await _extract_notes_with_retry(None, "http://x", "q", _PASSAGES, _coverage(0.3))
     assert _is_no_findings_sentinel(out)
     assert m.await_count == 1  # no retry below the relevance floor
+
+
+@pytest.mark.asyncio
+async def test_read_evidence_returns_passages_and_evidence_docs():
+    """_read_evidence returns (passages_text, evidence_docs); evidence_docs
+    lists the distinct docs whose passages were read into passages_text."""
+    coverage = {
+        "c1": {"doc_id": "d1", "doc_title": "alpha", "page": 1, "score": 2.0, "snippet": "alpha text"},
+        "c2": {"doc_id": "d2", "doc_title": "beta", "page": 3, "score": 1.5, "snippet": "beta text"},
+    }
+    read_result = json.dumps(
+        {
+            "passages": [
+                {"chunk_id": "c1", "text": "alpha body", "doc_title": "alpha", "page": 1},
+                {"chunk_id": "c2", "text": "beta body", "doc_title": "beta", "page": 3},
+            ]
+        }
+    )
+    with patch("harbor_clerk.llm.research.execute_tool", new=AsyncMock(return_value=read_result)):
+        passages_text, evidence_docs = await _read_evidence(
+            coverage, user_id=None, max_passages=10, context_budget_chars=100_000
+        )
+    assert "alpha body" in passages_text and "beta body" in passages_text
+    by_id = {d["doc_id"]: d for d in evidence_docs}
+    assert set(by_id) == {"d1", "d2"}
+    assert by_id["d1"]["doc_title"] == "alpha"

@@ -683,10 +683,13 @@ async def _read_evidence(
     user_id: uuid.UUID | None,
     max_passages: int,
     context_budget_chars: int,
-) -> str:
+) -> tuple[str, list[dict]]:
     """Phase 3: Read full passages for top-scoring chunks.
 
-    Returns formatted passage text for note extraction, bounded by context budget.
+    Returns (passages_text, evidence_docs) where passages_text is the
+    formatted passage text for note extraction (bounded by context budget)
+    and evidence_docs is the list of distinct docs whose passages were
+    read into passages_text (used to populate result.citations — Fix 3).
     """
     # Sort by score descending, pick diverse docs
     sorted_chunks_all = sorted(coverage.items(), key=lambda x: x[1]["score"], reverse=True)
@@ -721,11 +724,13 @@ async def _read_evidence(
     selected = selected[:max_passages]
 
     if not selected:
-        return ""
+        return "", []
 
     # Read in batches of 20
     passages_text = ""
     total_chars = 0
+    evidence_docs: list[dict] = []
+    seen_evidence_docs: set[str] = set()
 
     for i in range(0, len(selected), 20):
         batch_ids = selected[i : i + 20]
@@ -764,6 +769,14 @@ async def _read_evidence(
                     break
                 passages_text += entry
                 total_chars += len(entry)
+                # Record the doc behind this passage — the "informed the
+                # answer" set used to populate result.citations (Fix 3).
+                info = coverage.get(cid) if cid else None
+                if info and info.get("doc_id") and info["doc_id"] not in seen_evidence_docs:
+                    seen_evidence_docs.add(info["doc_id"])
+                    evidence_docs.append(
+                        {"doc_id": info["doc_id"], "doc_title": info.get("doc_title", ""), "page": passage.get("page")}
+                    )
 
         except Exception:
             logger.exception("read_passages failed for batch starting at %d", i)
@@ -771,7 +784,7 @@ async def _read_evidence(
         if total_chars >= context_budget_chars:
             break
 
-    return passages_text
+    return passages_text, evidence_docs
 
 
 # The exact sentinel _NOTE_EXTRACTION_SYSTEM tells the model to return when a
@@ -1120,7 +1133,7 @@ async def research_stream(
                         }
                     )
 
-                    passages_text = await _read_evidence(
+                    passages_text, evidence_docs = await _read_evidence(
                         coverage,
                         user_id,
                         depth_config["max_passages"],
@@ -1283,7 +1296,7 @@ async def research_stream(
                         # doesn't re-discover the same chunks.
                         coverage.update(new_chunks)
 
-                        gap_passages = await _read_evidence(
+                        gap_passages, gap_evidence_docs = await _read_evidence(
                             new_chunks,
                             user_id,
                             20,
