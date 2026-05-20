@@ -85,6 +85,7 @@ class ServiceManager: ObservableObject {
     let postgresService: PostgresService
     let tikaService: TikaService
     let embedderService: EmbedderService
+    let rerankerService: RerankerService
     let llamaService: LlamaService
     let apiService: APIService
     let watcherService: WatcherService
@@ -154,6 +155,7 @@ class ServiceManager: ObservableObject {
         postgresService = PostgresService()
         tikaService = TikaService()
         embedderService = EmbedderService()
+        rerankerService = RerankerService()
         llamaService = LlamaService()
         apiService = APIService()
         watcherService = WatcherService()
@@ -172,7 +174,7 @@ class ServiceManager: ObservableObject {
             llmWorkers.append(WorkerService(queue: "llm", index: i))
         }
 
-        services = [postgresService, tikaService, embedderService, llamaService, apiService, watcherService]
+        services = [postgresService, tikaService, embedderService, rerankerService, llamaService, apiService, watcherService]
             + ioWorkers + cpuWorkers + llmWorkers
     }
 
@@ -345,28 +347,32 @@ class ServiceManager: ObservableObject {
         await Self.killStaleProcess(onPort: settings.embedderPort)
         await startService(embedderService)
 
-        // 5. LLM server (skip silently if no model selected)
+        // 5. Reranker (cross-encoder companion to embedder)
+        await Self.killStaleProcess(onPort: settings.rerankerPort)
+        await startService(rerankerService)
+
+        // 6. LLM server (skip silently if no model selected)
         await Self.killStaleProcess(onPort: settings.llamaPort)
         await startService(llamaService)
 
-        // 6. API server
+        // 7. API server
         await Self.killStaleProcess(onPort: settings.apiPort)
         await startService(apiService)
 
-        // 7. Workers
+        // 8. Workers
         for worker in allWorkers {
             await startService(worker)
         }
 
-        // 8. Start the watcher daemon (talks to postgres directly; doesn't need API).
+        // 9. Start the watcher daemon (talks to postgres directly; doesn't need API).
         //    Replaced the old Swift FSEvents WatchedFolderManager with a managed
         //    Python subprocess (`harbor-clerk-watcher`); see WatcherService.swift.
         await startService(watcherService)
 
-        // 9. Watch config.json for model changes from the web UI
+        // 10. Watch config.json for model changes from the web UI
         startConfigWatcher()
 
-        // 10. Persist child PIDs for orphan cleanup on next launch
+        // 11. Persist child PIDs for orphan cleanup on next launch
         savePidFile()
 
         notifyStateChanged()
@@ -674,7 +680,7 @@ class ServiceManager: ObservableObject {
             }
 
             // Wait for health check with timeout
-            let timeout: TimeInterval = (service is EmbedderService || service is LlamaService) ? 120 : (service is TikaService) ? 60 : 30
+            let timeout: TimeInterval = (service is EmbedderService || service is RerankerService || service is LlamaService) ? 120 : (service is TikaService) ? 60 : 30
             let deadline = Date().addingTimeInterval(timeout)
             while Date() < deadline {
                 // Bail early if the process died — no point waiting for the full timeout
@@ -779,6 +785,11 @@ class ServiceManager: ObservableObject {
                 pythonToRestart.insert(ObjectIdentifier(apiService))
                 for w in allWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
 
+            case "reranker_port":
+                infraToRestart.append(rerankerService)
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+                for w in allWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+
             case "llama_port":
                 infraToRestart.append(llamaService)
                 pythonToRestart.insert(ObjectIdentifier(apiService))
@@ -795,6 +806,7 @@ class ServiceManager: ObservableObject {
             case "log_level":
                 pythonToRestart.insert(ObjectIdentifier(apiService))
                 pythonToRestart.insert(ObjectIdentifier(embedderService))
+                pythonToRestart.insert(ObjectIdentifier(rerankerService))
                 for w in allWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
 
             default:
@@ -808,8 +820,8 @@ class ServiceManager: ObservableObject {
 
         // Collect python services to restart (excluding workers if we're recreating them)
         let workersToStop: [WorkerService] = needsWorkerRecreate ? allWorkers : allWorkers.filter { pythonToRestart.contains(ObjectIdentifier($0)) }
-        // Embedder before API to match startAll() ordering
-        let nonWorkerPython: [any ManagedService] = [embedderService, apiService].filter { pythonToRestart.contains(ObjectIdentifier($0)) }
+        // Embedder and Reranker before API to match startAll() ordering
+        let nonWorkerPython: [any ManagedService] = [embedderService, rerankerService, apiService].filter { pythonToRestart.contains(ObjectIdentifier($0)) }
 
         // 1. Stop python services (dependents first: workers → api/embedder)
         // Send SIGTERM to all workers in parallel, then wait for all to exit.
@@ -862,7 +874,7 @@ class ServiceManager: ObservableObject {
         notifyStateChanged()
 
         // 3. Start infrastructure services (startup order)
-        let infraOrder: [any ManagedService] = [postgresService, tikaService, embedderService, llamaService]
+        let infraOrder: [any ManagedService] = [postgresService, tikaService, embedderService, rerankerService, llamaService]
         for svc in infraOrder where infraToRestart.contains(where: { ObjectIdentifier($0) == ObjectIdentifier(svc) }) {
             await startService(svc)
         }
@@ -1091,6 +1103,7 @@ class ServiceManager: ObservableObject {
             "STORAGE_BACKEND": "filesystem",
             "STORAGE_PATH": settings.originalsDir.path,
             "EMBEDDER_URL": "http://localhost:\(settings.embedderPort)",
+            "RERANKER_URL": "http://localhost:\(settings.rerankerPort)",
             "TIKA_URL": "http://localhost:\(settings.tikaPort)",
             "SECRET_KEY": settings.secretKey,
             "LOG_LEVEL": settings.logLevel,
