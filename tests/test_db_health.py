@@ -6,15 +6,8 @@ from sqlalchemy import text
 from harbor_clerk.db_health import SchemaSentinelMismatch, verify_schema_sentinel
 
 
-@pytest.fixture(autouse=True)
-async def ensure_schema_metadata(db_session):
-    """Ensure the schema_metadata table and sentinel rows exist before each test.
-
-    The rebased 0001_initial migration creates this table, but the test DB may
-    have been migrated with an older copy of 0001_initial (before the
-    embedding-v2 rebase). This fixture idempotently creates the table and rows
-    so the tests are self-contained regardless of DB history.
-    """
+async def _recreate_schema_metadata(db_session) -> None:
+    """(Re)create the schema_metadata table and its three sentinel rows."""
     await db_session.execute(
         text("""
             CREATE TABLE IF NOT EXISTS schema_metadata (
@@ -35,6 +28,28 @@ async def ensure_schema_metadata(db_session):
         """)
     )
     await db_session.commit()
+
+
+@pytest.fixture(autouse=True)
+async def ensure_schema_metadata(db_session):
+    """Ensure the schema_metadata table and sentinel rows exist before each test.
+
+    The rebased 0001_initial migration creates this table, but the test DB may
+    have been migrated with an older copy of 0001_initial (before the
+    embedding-v2 rebase). This fixture idempotently creates the table and rows
+    so the tests are self-contained regardless of DB history.
+
+    Also recreates on teardown — test_verify_sentinel_raises_on_missing_table
+    issues a committed DROP TABLE, which would poison subsequent test files.
+    The rollback before teardown recreate is necessary because
+    verify_schema_sentinel raises ProgrammingError when the table is missing,
+    which leaves the session in an aborted-transaction state.
+    """
+    await _recreate_schema_metadata(db_session)
+    yield
+    # Rollback any aborted transaction before attempting DDL on teardown.
+    await db_session.rollback()
+    await _recreate_schema_metadata(db_session)
 
 
 @pytest.mark.asyncio

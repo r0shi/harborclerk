@@ -31,4 +31,6 @@ def sync_session(_sync_engine):
         # Cleanup all tables (sync) — mirrors db_session's async cleanup
         with _sync_engine.begin() as conn:
             for table in reversed(Base.metadata.sorted_tables):
+                if table.name == "schema_metadata":
+                    continue
                 conn.execute(table.delete())
