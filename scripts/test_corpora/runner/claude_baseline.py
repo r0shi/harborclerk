@@ -35,6 +35,15 @@ class BaselineResult:
     question: str
     answer: str
     cited_doc_ids: list[str]
+    # Stable, ingest-independent identifiers for the cited docs, parallel to
+    # cited_doc_ids (same order). doc_id is a random per-ingest UUID, so a
+    # baseline's cited_doc_ids never intersect a phase-4 response's doc_ids
+    # unless both ran against the exact same ingest. doc_title (the filename
+    # stem) is stable across re-ingests, so citation_overlap computed on
+    # titles stays correct even when baseline and response come from
+    # different ingests. Empty string for any cited doc whose tool result
+    # carried no title.
+    cited_doc_titles: list[str]
     tool_call_count: int
     elapsed_seconds: float
     model: str
@@ -60,9 +69,10 @@ class BaselineGenerator:
         self._client = client
         self._mcp = mcp_session
         self._model = model
-        # For tests: pre-seed the doc_ids_seen list so we can verify capture
-        # without mocking the entire tool-use loop.
-        self._doc_ids_seen: list[str] = list(doc_ids_seen) if doc_ids_seen else []
+        # Ordered map doc_id -> doc_title, in first-seen order. dict preserves
+        # insertion order (3.7+), so cited_doc_ids and cited_doc_titles stay
+        # parallel. For tests: pre-seed via doc_ids_seen (titles default to "").
+        self._cited: dict[str, str] = {did: "" for did in doc_ids_seen} if doc_ids_seen else {}
 
     def _list_tools(self) -> list[dict]:
         """Discover MCP tools and convert to Anthropic's tool schema."""
@@ -91,8 +101,16 @@ class BaselineGenerator:
 
     def _collect_doc_ids(self, obj: Any) -> None:
         if isinstance(obj, dict):
-            if "doc_id" in obj and isinstance(obj["doc_id"], str) and obj["doc_id"] not in self._doc_ids_seen:
-                self._doc_ids_seen.append(obj["doc_id"])
+            doc_id = obj.get("doc_id")
+            if isinstance(doc_id, str):
+                # Pair the doc_id with its title from the SAME dict. MCP tool
+                # results (kb_search etc.) emit doc_id + doc_title together;
+                # fall back to "title" then "". First-seen title wins — if a
+                # later result re-mentions the doc with a title where the
+                # first had none, upgrade the stored value.
+                title = obj.get("doc_title") or obj.get("title") or ""
+                if doc_id not in self._cited or (title and not self._cited[doc_id]):
+                    self._cited[doc_id] = title
             for v in obj.values():
                 self._collect_doc_ids(v)
         elif isinstance(obj, list):
@@ -145,7 +163,8 @@ class BaselineGenerator:
             question_id=question_id,
             question=question,
             answer=final,
-            cited_doc_ids=list(self._doc_ids_seen),
+            cited_doc_ids=list(self._cited.keys()),
+            cited_doc_titles=list(self._cited.values()),
             tool_call_count=tool_call_count,
             elapsed_seconds=time.time() - started,
             model=self._model,

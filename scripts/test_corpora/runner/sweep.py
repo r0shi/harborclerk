@@ -1026,6 +1026,20 @@ def main(argv: list[str] | None = None) -> int:
                 sf.set_status(u.phase, u.corpus, u.model, u.question_id, u.depth, Status.IN_PROGRESS)
                 sf.save()
 
+                # Per-unit progress marker. The harness can sit quiet for
+                # minutes between MCP/auth pings while a research task runs,
+                # making it hard to tell from the log what's actually in
+                # flight. This line (paired with the "Finished" line at the
+                # end of the loop body) brackets each unit explicitly.
+                log.info(
+                    "Starting %s/%s [%s] (phase %d, depth %s)",
+                    u.corpus,
+                    u.question_id,
+                    u.model,
+                    u.phase,
+                    u.depth,
+                )
+
                 t0 = time.time()
                 out: dict = {}
                 try:
@@ -1436,6 +1450,18 @@ def main(argv: list[str] | None = None) -> int:
                     ]
                 )
                 metrics_f.flush()
+
+                # Closing marker for this unit — pairs with the "Starting"
+                # line above so each unit is a clearly delimited block in
+                # the log.
+                log.info(
+                    "Finished %s/%s [%s] — %s in %.1fs",
+                    u.corpus,
+                    u.question_id,
+                    u.model,
+                    row_unit.status.value if row_unit else "unknown",
+                    latency,
+                )
 
             sampler.print_summary_table(phase=phase)
 
