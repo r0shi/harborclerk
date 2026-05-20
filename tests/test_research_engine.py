@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from harbor_clerk.llm.research import _plan_queries
+from harbor_clerk.llm.research import _is_no_findings_sentinel, _plan_queries
 
 _DEPTH = {"max_queries": 15, "k_per_query": 20, "max_passages": 60, "gap_round": True, "paginate": True}
 
@@ -53,3 +53,19 @@ async def test_plan_queries_keyword_fallback_when_llm_yields_nothing():
     assert queries[0] == "What are the major vendor relationships over time"
     assert "What are the major" in queries
     assert "vendor relationships over time" in queries
+
+
+def test_is_no_findings_sentinel_matches_the_sentinel():
+    assert _is_no_findings_sentinel("No relevant findings in this passage set.")
+    # Tolerant of trailing whitespace / case / wrapping the engine may add.
+    assert _is_no_findings_sentinel("  no relevant findings in this passage set  ")
+    assert _is_no_findings_sentinel("No relevant findings in this passage set")
+
+
+def test_is_no_findings_sentinel_rejects_real_notes_and_empty_corpus_string():
+    # A real note must not be treated as the bail sentinel.
+    assert not _is_no_findings_sentinel("- Acme signed a 30-day termination clause [Doc, page 2]")
+    # _extract_notes's genuinely-empty return is a DIFFERENT string and must
+    # not match — that case is truly empty and should not trigger a retry.
+    assert not _is_no_findings_sentinel("No relevant passages were found in the corpus.")
+    assert not _is_no_findings_sentinel("")

@@ -119,6 +119,24 @@ _NOTE_EXTRACTION_SYSTEM = (
     "general knowledge."
 )
 
+_NOTE_EXTRACTION_SYSTEM_FORCEFUL = (
+    "You are extracting research notes from search results. These passages "
+    "are the TOP-RANKED retrieval matches for the research question and are "
+    "very likely relevant — a prior extraction attempt wrongly dismissed "
+    "them.\n\n"
+    "Rules:\n"
+    "- Cite every finding as [Document Title, page X] — exactly as shown in the passages\n"
+    "- Write one note per distinct finding\n"
+    "- Skip irrelevant or redundant passages\n"
+    "- Preserve factual details — names, numbers, dates\n"
+    "- If a passage contradicts another, note both with their citations\n"
+    "- Write in plain text with citations, not JSON\n"
+    "- Extract the relevant findings. Return `No relevant findings in this "
+    "passage set.` ONLY if the passages genuinely contain nothing on-topic "
+    "— do not use it as a shortcut. Do not invent content from titles or "
+    "general knowledge."
+)
+
 _GAP_ANALYSIS_SYSTEM = (
     "You are checking research coverage. Given the original question and notes "
     "gathered so far, identify any obvious gaps.\n\n"
@@ -136,6 +154,14 @@ _DEPTH_CONFIG = {
     "standard": {"max_queries": 15, "k_per_query": 20, "max_passages": 60, "gap_round": True, "paginate": True},
     "thorough": {"max_queries": 25, "k_per_query": 30, "max_passages": 100, "gap_round": True, "paginate": True},
 }
+
+# When note extraction returns the "no relevant findings" sentinel, retry it
+# forcefully only if retrieval actually found strong matches — i.e. the top
+# coverage score clears this floor. Below it, the corpus genuinely lacks the
+# information and the honest "no findings" answer is correct. Hybrid-retrieval
+# scores in observed research runs ranged ~0.5-1.7; 1.0 separates a solid
+# match from weak noise. Tunable.
+_RETRIEVAL_RELEVANCE_FLOOR = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -747,11 +773,25 @@ async def _read_evidence(
     return passages_text
 
 
+# The exact sentinel _NOTE_EXTRACTION_SYSTEM tells the model to return when a
+# passage set is off-topic. Distinct from _extract_notes's genuinely-empty
+# return ("No relevant passages were found in the corpus.").
+_NO_FINDINGS_SENTINEL_PREFIX = "no relevant findings in this passage set"
+
+
+def _is_no_findings_sentinel(notes_text: str) -> bool:
+    """True if note extraction bailed with the 'no relevant findings'
+    sentinel. Tolerant of case and surrounding whitespace."""
+    return notes_text.strip().lower().startswith(_NO_FINDINGS_SENTINEL_PREFIX)
+
+
 async def _extract_notes(
     client: httpx.AsyncClient,
     url: str,
     user_question: str,
     passages_text: str,
+    *,
+    forceful: bool = False,
 ) -> str:
     """Phase 4: LLM extracts cited notes from retrieved passages."""
     if not passages_text.strip():
@@ -774,7 +814,7 @@ async def _extract_notes(
         passages_text = truncated
 
     messages = [
-        {"role": "system", "content": _NOTE_EXTRACTION_SYSTEM},
+        {"role": "system", "content": _NOTE_EXTRACTION_SYSTEM_FORCEFUL if forceful else _NOTE_EXTRACTION_SYSTEM},
         {
             "role": "user",
             "content": (
