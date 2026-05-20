@@ -19,10 +19,26 @@ jobs:
       - name: Upgrade pip in venv (CVE-2026-3219 fix in 26.1)
         run: .venv/bin/python -m pip install --upgrade 'pip>=26.1'
 
-      - uses: pypa/gh-action-pip-audit@v1.1.0
-        with:
-          virtual-environment: .venv
-          severity: HIGH
+      - name: pip-audit (fail only on advisories with a fix available)
+        run: |
+          # pip-audit has no severity or ignore-unfixed filter, and the
+          # pypa/gh-action-pip-audit action has no "only fixable" mode, so we
+          # run pip-audit directly and gate on whether a fix exists. This is
+          # the same --ignore-unfixed policy the Trivy scans below already
+          # apply: advisories with no upstream fix (e.g. the torch/transformers
+          # malicious-checkpoint RCEs) are reported but do not fail the build;
+          # an advisory that has a fix available does fail it.
+          .venv/bin/python -m pip freeze --exclude-editable > /tmp/frozen.txt
+          uvx pip-audit -r /tmp/frozen.txt --no-deps --format json --progress-spinner off --output /tmp/pip-audit.json || true
+          if [ ! -s /tmp/pip-audit.json ]; then echo "::error::pip-audit produced no report"; exit 1; fi
+          jq -r '.dependencies[] as $d | $d.vulns[] | "  [\(if (.fix_versions|length>0) then "FIX AVAILABLE" else "no fix" end)] \($d.name) \($d.version) \(.id)"' /tmp/pip-audit.json
+          total=$(jq '[.dependencies[].vulns[]] | length' /tmp/pip-audit.json)
+          fixable=$(jq '[.dependencies[].vulns[] | select(.fix_versions|length>0)] | length' /tmp/pip-audit.json)
+          echo "pip-audit: $total advisory(ies) total, $fixable with a fix available"
+          if [ "$fixable" -ne 0 ]; then
+            echo "::error::pip-audit found $fixable advisory(ies) with a fix available; upgrade the affected package(s)"
+            exit 1
+          fi
 
       - name: npm audit (high/critical)
         run: cd frontend && npm ci && npm audit --audit-level=high
