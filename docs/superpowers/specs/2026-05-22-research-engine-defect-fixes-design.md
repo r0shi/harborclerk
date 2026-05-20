@@ -120,18 +120,25 @@ distinct docs whose passages `_read_evidence` selected into `passages_text`.
   the gap-round read at research.py ~1266).
 - `research_stream`: accumulate `evidence_docs` across the round-1 read and
   any gap-round reads; dedupe by `doc_id`.
-- When `research_stream` saves the assistant `ChatMessage` (research.py:1359),
-  set `rag_context` to `{"citations": [{doc_id, doc_title, page}, ...]}`.
-  `ChatMessage.rag_context` is an existing JSONB column — **no migration**.
-- `routes/research.py`: for the research turn, read citations from the
-  assistant message's `rag_context["citations"]` instead of
-  `extract_citations_from_tool_result`. Keep the `dedupe_citations` pass.
+- Add a `citations` JSONB column to the `research_state` table (the
+  `ResearchState` model), nullable. New Alembic migration
+  `0023_research_state_citations.py` (`revision = "0023"`,
+  `down_revision = "0022"`).
+- `research_stream` sets `state.citations` to the deduped citation list
+  `[{doc_id, doc_title, page}, ...]` on the final commit (alongside
+  `state.status = "completed"`).
+- `routes/research.py`: for the research turn, read citations from
+  `state.citations` instead of `extract_citations_from_tool_result`. Keep the
+  `dedupe_citations` pass as a safety net.
 - `schemas/research.py:63-67`: update the now-stale comment ("derived from the
   tool-result messages").
 
 ### Files
 
-`src/harbor_clerk/llm/research.py`, `src/harbor_clerk/api/routes/research.py`,
+`src/harbor_clerk/llm/research.py`,
+`src/harbor_clerk/models/research_state.py`,
+`alembic/versions/0023_research_state_citations.py` (new),
+`src/harbor_clerk/api/routes/research.py`,
 `src/harbor_clerk/api/schemas/research.py` (comment only)
 
 ## Testing
@@ -142,8 +149,8 @@ distinct docs whose passages `_read_evidence` selected into `passages_text`.
   twice → notes become the raw-passage block; sentinel + low top-score →
   sentinel kept, no retry. Mock `_extract_notes` / `_llm_complete`.
 - **Fix 3:** `_read_evidence` returns the selected-doc set; `research_stream`
-  writes it into `rag_context`; `routes/research.py` surfaces it on
-  `result.citations`.
+  writes it to `state.citations`; `routes/research.py` surfaces it on
+  `result.citations`. Migration `0023` applies and reverts cleanly.
 - The existing research test suite stays green.
 
 ## Packaging
