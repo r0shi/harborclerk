@@ -153,3 +153,33 @@ async def test_read_evidence_returns_passages_and_evidence_docs():
     by_id = {d["doc_id"]: d for d in evidence_docs}
     assert set(by_id) == {"d1", "d2"}
     assert by_id["d1"]["doc_title"] == "alpha"
+    assert by_id["d1"]["page"] == 1
+    assert by_id["d2"]["page"] == 3
+
+
+@pytest.mark.asyncio
+async def test_read_evidence_excludes_budget_truncated_passages_from_evidence_docs():
+    """A passage skipped because it would exceed context_budget_chars must
+    NOT appear in evidence_docs — evidence_docs tracks only the passages
+    that actually made it into passages_text."""
+    coverage = {
+        "c1": {"doc_id": "d1", "doc_title": "alpha", "page": 1, "score": 2.0, "snippet": "a"},
+        "c2": {"doc_id": "d2", "doc_title": "beta", "page": 2, "score": 1.5, "snippet": "b"},
+    }
+    big = "x" * 400
+    read_result = json.dumps(
+        {
+            "passages": [
+                {"chunk_id": "c1", "text": big, "doc_title": "alpha", "page": 1},
+                {"chunk_id": "c2", "text": "beta body", "doc_title": "beta", "page": 2},
+            ]
+        }
+    )
+    with patch("harbor_clerk.llm.research.execute_tool", new=AsyncMock(return_value=read_result)):
+        passages_text, evidence_docs = await _read_evidence(
+            coverage, user_id=None, max_passages=10, context_budget_chars=450
+        )
+    # The big first passage fits; the second is over budget and skipped.
+    assert big in passages_text
+    assert "beta body" not in passages_text
+    assert {d["doc_id"] for d in evidence_docs} == {"d1"}
