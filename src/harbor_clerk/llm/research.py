@@ -982,6 +982,7 @@ async def research_stream(
         start_time = datetime.now(UTC)
         step_count = 0
         collected_notes: list[str] = []
+        research_citations: list[dict] = []
 
         try:
             if resume_from_synthesis:
@@ -1139,6 +1140,7 @@ async def research_stream(
                         depth_config["max_passages"],
                         passage_budget_chars,
                     )
+                    research_citations = list(evidence_docs)
 
                     yield _sse(
                         {
@@ -1302,6 +1304,8 @@ async def research_stream(
                             20,
                             passage_budget_chars // 3,
                         )
+                        seen_cite_ids = {c["doc_id"] for c in research_citations}
+                        research_citations.extend(d for d in gap_evidence_docs if d["doc_id"] not in seen_cite_ids)
                         if gap_passages.strip():
                             try:
                                 gap_notes = await _extract_notes(
@@ -1400,6 +1404,7 @@ async def research_stream(
 
             state.status = "completed"
             state.notes = notes
+            state.citations = research_citations
             state.current_round = step_count
             state.completed_at = datetime.now(UTC)
             state.progress = {"step": step_count}
