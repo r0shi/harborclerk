@@ -42,8 +42,14 @@ def test_embed_settings_override_via_env(monkeypatch):
 
 
 def test_reranker_settings_have_defaults(monkeypatch):
-    for var in ("RERANKER_ENABLED", "RERANKER_URL", "RERANKER_TOP_K_PAD",
-                "RERANKER_POOL_SIZE", "RERANKER_STRICT", "RERANKER_TIMEOUT_SECONDS"):
+    for var in (
+        "RERANKER_ENABLED",
+        "RERANKER_URL",
+        "RERANKER_TOP_K_PAD",
+        "RERANKER_POOL_SIZE",
+        "RERANKER_STRICT",
+        "RERANKER_TIMEOUT_SECONDS",
+    ):
         monkeypatch.delenv(var, raising=False)
 
     from harbor_clerk.config import Settings

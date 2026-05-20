@@ -2,6 +2,7 @@
 
 import json
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
@@ -82,7 +83,7 @@ async def test_rerank_hits_strict_mode_raises_on_failure(httpx_mock: HTTPXMock, 
         )(),
     )
     httpx_mock.add_response(url="http://reranker:8001/rerank", status_code=500)
-    with pytest.raises(Exception):
+    with pytest.raises(httpx.HTTPError):
         await rerank_hits("q", [_hit("a", "A", "x", 0.5)], top_k=1)
 
 
