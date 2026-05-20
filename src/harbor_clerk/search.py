@@ -2,7 +2,6 @@
 
 import logging
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime
 
 import httpx
@@ -11,37 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.models import Chunk, Document
+from harbor_clerk.search_rerank import rerank_hits
+from harbor_clerk.search_types import ConflictSource, SearchHit, SearchResult
+
+# Re-export for backward compatibility — callers that do
+# `from harbor_clerk.search import SearchHit` continue to work.
+__all__ = ["ConflictSource", "SearchHit", "SearchResult", "hybrid_search"]
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ConflictSource:
-    doc_id: str
-    title: str
-
-
-@dataclass
-class SearchHit:
-    chunk_id: str
-    doc_id: str
-    chunk_num: int
-    chunk_text: str
-    page_start: int | None
-    page_end: int | None
-    language: str
-    ocr_used: bool
-    ocr_confidence: float | None
-    score: float
-    doc_title: str | None = None
-
-
-@dataclass
-class SearchResult:
-    hits: list[SearchHit]
-    total_candidates: int = 0
-    possible_conflict: bool = False
-    conflict_sources: list[ConflictSource] = field(default_factory=list)
 
 
 async def _embed_query(query: str) -> list[float]:
@@ -176,32 +152,49 @@ async def hybrid_search(
             score += 0.05 * (chunk.ocr_confidence / 100.0)
         combined[cid] = score
 
-    # --- 5. Top K with offset ---
+    # --- 5. Rank, optionally rerank, take the requested page ---
     total_candidates = len(combined)
     sorted_ids = sorted(combined, key=lambda cid: combined[cid], reverse=True)
-    sorted_ids = sorted_ids[offset : offset + k]
 
-    hits: list[SearchHit] = []
-    for cid in sorted_ids:
+    def _build_hit(cid):
         chunk = chunks_by_id.get(cid)
         if chunk is None:
-            continue
+            return None
         doc = docs_by_id.get(chunk.doc_id)
-        hits.append(
-            SearchHit(
-                chunk_id=str(cid),
-                doc_id=str(chunk.doc_id),
-                chunk_num=chunk.chunk_num,
-                chunk_text=chunk.chunk_text,
-                page_start=chunk.page_start,
-                page_end=chunk.page_end,
-                language=chunk.language,
-                ocr_used=chunk.ocr_used,
-                ocr_confidence=chunk.ocr_confidence,
-                score=round(combined[cid], 4),
-                doc_title=doc.title if doc else None,
-            )
+        return SearchHit(
+            chunk_id=str(cid),
+            doc_id=str(chunk.doc_id),
+            chunk_num=chunk.chunk_num,
+            chunk_text=chunk.chunk_text,
+            page_start=chunk.page_start,
+            page_end=chunk.page_end,
+            language=chunk.language,
+            ocr_used=chunk.ocr_used,
+            ocr_confidence=chunk.ocr_confidence,
+            score=round(combined[cid], 4),
+            doc_title=doc.title if doc else None,
         )
+
+    settings = get_settings()
+    reranker_status: str = "disabled"
+
+    if settings.reranker_enabled:
+        # Rerank a candidate pool spanning the requested page (offset + k),
+        # padded for rerank headroom and capped by reranker_pool_size, then
+        # slice the page out of the reranked order.
+        want = offset + k
+        pool_size = min(want + settings.reranker_top_k_pad, settings.reranker_pool_size)
+        pool_hits = [h for h in (_build_hit(cid) for cid in sorted_ids[:pool_size]) if h is not None]
+        if pool_hits:
+            reranked, reranker_status = await rerank_hits(query, pool_hits, top_k=want, return_status=True)
+            # On reranker failure rerank_hits returns status "failed"; fall back
+            # to the hybrid-sorted pool so search still works.
+            ranked = reranked if reranker_status == "ok" else pool_hits
+            hits = ranked[offset : offset + k]
+        else:
+            hits = []
+    else:
+        hits = [h for h in (_build_hit(cid) for cid in sorted_ids[offset : offset + k]) if h is not None]
 
     # --- 6. Conflict detection ---
     possible_conflict = False
@@ -228,4 +221,5 @@ async def hybrid_search(
         total_candidates=total_candidates,
         possible_conflict=possible_conflict,
         conflict_sources=conflict_sources,
+        reranker_status=reranker_status,
     )

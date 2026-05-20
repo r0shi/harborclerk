@@ -9,7 +9,7 @@ from typing import Literal
 import httpx
 
 from harbor_clerk.config import get_settings as _settings
-from harbor_clerk.search import SearchHit
+from harbor_clerk.search_types import SearchHit
 
 logger = logging.getLogger(__name__)
 
