@@ -56,12 +56,6 @@ _MAX_TOKENS_NOTES = 8000
 _MAX_TOKENS_GAP = 5000
 _MAX_TOKENS_SYNTHESIS = 10000
 
-# spaCy entity types that are useless as search seeds. CARDINAL/ORDINAL
-# dominate the corpus's top-entity list ("one", "first", "two", "1", "2") and
-# polluted seeded queries with garbage like "1 Please compare different wine".
-# DATE/TIME/MONEY/PERCENT/QUANTITY similarly don't represent topical content.
-_SEED_QUERY_BLOCKED_ENTITY_TYPES = frozenset({"CARDINAL", "ORDINAL", "DATE", "TIME", "MONEY", "PERCENT", "QUANTITY"})
-
 # Cap the prefill-heavy note-extraction prompt. 30K chars ≈ 8.5K tokens — keeps
 # Gemma-26B-class prefill under ~45 s. Was 80K (≈22K tokens, ~110 s prefill).
 _NOTE_PROMPT_CHAR_CAP = 30_000
@@ -454,60 +448,6 @@ def _build_synthesis_messages(user_question: str, notes: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-async def _seed_queries_from_corpus(
-    user_question: str,
-    user_id: uuid.UUID | None,
-    topic_hint: str | None,
-) -> list[str]:
-    """Generate model-independent queries from corpus metadata.
-
-    Pulls top entities and topic keywords, combines them with question
-    keywords to produce queries that don't depend on LLM quality.
-    """
-    seeded: list[str] = []
-
-    # Extract a few keywords from the question for cross-referencing
-    q_words = [w for w in user_question.split() if len(w) > 3]
-    q_short = " ".join(q_words[:4]) if q_words else user_question
-
-    # Seed from entities — skip useless types (CARDINAL/ORDINAL/DATE/etc.)
-    # which dominate the top-entity list with values like "one", "first", "1"
-    # that produce nonsense queries when concatenated with the question.
-    try:
-        entity_json = await execute_tool("entity_overview", {}, user_id, mode="research")
-        entity_data = json.loads(entity_json)
-        kept = 0
-        for ent in entity_data.get("top_entities", []):
-            if kept >= 10:
-                break
-            etype = (ent.get("entity_type") or "").upper()
-            if etype in _SEED_QUERY_BLOCKED_ENTITY_TYPES:
-                continue
-            name = (ent.get("entity_text") or "").strip()
-            # Defense-in-depth: also drop pure-numeric / single-letter / very short tokens
-            if not name or len(name) < 3 or name.replace(".", "").replace(",", "").isdigit():
-                continue
-            if name.lower() in user_question.lower():
-                continue
-            seeded.append(f"{name} {q_short}")
-            kept += 1
-    except Exception:
-        logger.debug("entity_overview failed for seed queries", exc_info=True)
-
-    # Seed from topic keywords
-    if topic_hint:
-        for line in topic_hint.split("\n"):
-            # Topic lines look like "- Topic Name: keyword1, keyword2, ..."
-            if ":" in line:
-                keywords_part = line.split(":", 1)[1].strip()
-                keywords = [kw.strip() for kw in keywords_part.split(",") if kw.strip()]
-                for kw in keywords[:2]:
-                    if kw.lower() not in user_question.lower():
-                        seeded.append(f"{kw} {q_short}")
-
-    return seeded
-
-
 async def _plan_queries(
     client: httpx.AsyncClient,
     url: str,
@@ -525,7 +465,10 @@ async def _plan_queries(
     if doc_list:
         doc_text = "\n".join(f"- {d['title']}" for d in doc_list[:50])
         user_content += f"\n\nDocuments in corpus:\n{doc_text}"
-    llm_target = max(5, depth_config["max_queries"] // 2)
+    # The LLM is the sole query source now (corpus seeding removed); ask it
+    # for the full budget — it is a far better generator than the deleted
+    # entity-concatenation, and _is_plausible_query still filters junk.
+    llm_target = depth_config["max_queries"]
     user_content += f"\n\nGenerate {llm_target} search queries."
 
     messages = [
@@ -552,13 +495,10 @@ async def _plan_queries(
             llm_queries.append(" ".join(words[: len(words) // 2]))
             llm_queries.append(" ".join(words[len(words) // 2 :]))
 
-    # Corpus-seeded queries (model-independent)
-    seeded = await _seed_queries_from_corpus(user_question, user_id, topic_hint)
-
-    # Merge: LLM queries first (higher intent), then seeded (breadth), dedupe
+    # Dedupe (case-insensitive), preserving order.
     seen_lower: set[str] = set()
     merged: list[str] = []
-    for q in llm_queries + seeded:
+    for q in llm_queries:
         q = q.strip()
         if q and q.lower() not in seen_lower:
             seen_lower.add(q.lower())
@@ -992,13 +932,12 @@ async def research_stream(
                         )
                     except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
                         logger.error("LLM error during query planning: %s", exc)
-                        # Fallback: seeded queries only (no LLM)
+                        # Fallback: use question and keyword splits when the LLM is unreachable.
                         queries = [user_question]
-                        try:
-                            seeded = await _seed_queries_from_corpus(user_question, user_id, topic_hint)
-                            queries.extend(seeded)
-                        except Exception:
-                            pass
+                        words = user_question.split()
+                        if len(words) > 3:
+                            queries.append(" ".join(words[: len(words) // 2]))
+                            queries.append(" ".join(words[len(words) // 2 :]))
 
                     step_count = 1
                     state.current_round = step_count
