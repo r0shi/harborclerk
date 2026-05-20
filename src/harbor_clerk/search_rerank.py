@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def _format_passage(hit: SearchHit) -> str:
     """Reranker input: include doc title for cross-encoder context."""
-    return f"Title: {hit.doc_title}\n\nChunk: {hit.chunk_text}"
+    return f"Title: {hit.doc_title or ''}\n\nChunk: {hit.chunk_text}"
 
 
 async def rerank_hits(

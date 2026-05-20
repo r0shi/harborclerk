@@ -593,7 +593,7 @@ def upgrade() -> None:
     op.execute(
         """
         INSERT INTO schema_metadata (key, value) VALUES
-            ('embed_model', 'granite-embedding-311m-multilingual-r2'),
+            ('embed_model', 'ibm-granite/granite-embedding-311m-multilingual-r2'),
             ('embed_dim', '768'),
             ('reranker', 'bge-reranker-v2-m3')
         """

@@ -186,12 +186,16 @@ async def hybrid_search(
         pool_size = min(want + settings.reranker_top_k_pad, settings.reranker_pool_size)
         pool_hits = [h for h in (_build_hit(cid) for cid in sorted_ids[:pool_size]) if h is not None]
         if pool_hits:
+            # Cap reported total to the servable depth — we cannot page past the
+            # pool, so has_more must not signal pages that will always be empty.
+            total_candidates = len(pool_hits)
             reranked, reranker_status = await rerank_hits(query, pool_hits, top_k=want, return_status=True)
             # On reranker failure rerank_hits returns status "failed"; fall back
             # to the hybrid-sorted pool so search still works.
             ranked = reranked if reranker_status == "ok" else pool_hits
             hits = ranked[offset : offset + k]
         else:
+            total_candidates = 0
             hits = []
     else:
         hits = [h for h in (_build_hit(cid) for cid in sorted_ids[offset : offset + k]) if h is not None]

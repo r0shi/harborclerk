@@ -21,10 +21,10 @@ async def _recreate_schema_metadata(db_session) -> None:
     await db_session.execute(
         text("""
             INSERT INTO schema_metadata (key, value) VALUES
-                ('embed_model', 'granite-embedding-311m-multilingual-r2'),
+                ('embed_model', 'ibm-granite/granite-embedding-311m-multilingual-r2'),
                 ('embed_dim', '768'),
                 ('reranker', 'bge-reranker-v2-m3')
-            ON CONFLICT (key) DO NOTHING
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
         """)
     )
     await db_session.commit()
@@ -61,7 +61,7 @@ async def test_verify_sentinel_passes_on_match(db_session, monkeypatch):
             "S",
             (),
             {
-                "embed_model": "granite-embedding-311m-multilingual-r2",
+                "embed_model": "ibm-granite/granite-embedding-311m-multilingual-r2",
                 "embed_dim": 768,
             },
         )(),
@@ -86,7 +86,7 @@ async def test_verify_sentinel_raises_on_model_mismatch(db_session, monkeypatch)
         await verify_schema_sentinel(db_session)
     msg = str(exc_info.value)
     assert "embed_model" in msg
-    assert "granite-embedding-311m-multilingual-r2" in msg
+    assert "ibm-granite/granite-embedding-311m-multilingual-r2" in msg
     assert "multilingual-e5-small" in msg
 
 
@@ -101,7 +101,7 @@ async def test_verify_sentinel_raises_on_missing_table(db_session, monkeypatch):
             "S",
             (),
             {
-                "embed_model": "granite-embedding-311m-multilingual-r2",
+                "embed_model": "ibm-granite/granite-embedding-311m-multilingual-r2",
                 "embed_dim": 768,
             },
         )(),

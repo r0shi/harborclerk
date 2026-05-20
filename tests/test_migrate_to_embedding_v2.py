@@ -9,6 +9,7 @@ Postgres access: localhost:5433, user lka (the macOS app's bundled PG).
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -21,7 +22,20 @@ FIXTURE_SQL = Path(__file__).parent / "fixtures" / "pre_embedding_v2_schema.sql"
 PG_HOST = "localhost"
 PG_PORT = 5433
 PG_USER = "lka"
-PSQL = Path("/Users/alex/mcp-gateway/macos/build/output/HarborClerkServer.app/Contents/Resources/postgres/bin/psql")
+
+# Resolve psql: prefer PATH, fall back to bundled macOS app binary.
+_BUNDLED_PSQL = Path(
+    "/Users/alex/mcp-gateway/macos/build/output/HarborClerkServer.app/Contents/Resources/postgres/bin/psql"
+)
+_psql_which = shutil.which("psql")
+if _psql_which:
+    PSQL: Path | None = Path(_psql_which)
+elif _BUNDLED_PSQL.exists():
+    PSQL = _BUNDLED_PSQL
+else:
+    PSQL = None
+
+pytestmark = pytest.mark.skipif(PSQL is None, reason="psql not found on PATH or bundled macOS path")
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
@@ -113,7 +127,7 @@ def test_script_refuses_when_sentinel_already_set(scratch_db):
             "CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL, set_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"
         )
         cur.execute(
-            "INSERT INTO schema_metadata (key, value) VALUES ('embed_model', 'granite-embedding-311m-multilingual-r2')"
+            "INSERT INTO schema_metadata (key, value) VALUES ('embed_model', 'ibm-granite/granite-embedding-311m-multilingual-r2')"
         )
     conn.close()
 
@@ -176,7 +190,7 @@ def test_script_happy_path_against_pre_rebase_db(scratch_db):
         cur.execute("SELECT value FROM schema_metadata WHERE key='embed_model'")
         row = cur.fetchone()
         assert row is not None, "schema_metadata.embed_model row missing after migration"
-        assert row[0] == "granite-embedding-311m-multilingual-r2"
+        assert row[0] == "ibm-granite/granite-embedding-311m-multilingual-r2"
 
         # embed_dim sentinel
         cur.execute("SELECT value FROM schema_metadata WHERE key='embed_dim'")

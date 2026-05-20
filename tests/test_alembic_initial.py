@@ -30,7 +30,7 @@ async def test_schema_metadata_sentinel_rows(db_session):
     result = await db_session.execute(text("SELECT key, value FROM schema_metadata ORDER BY key"))
     rows = dict(result.all())
     assert rows == {
-        "embed_model": "granite-embedding-311m-multilingual-r2",
+        "embed_model": "ibm-granite/granite-embedding-311m-multilingual-r2",
         "embed_dim": "768",
         "reranker": "bge-reranker-v2-m3",
     }
