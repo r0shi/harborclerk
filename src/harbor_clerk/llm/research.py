@@ -986,6 +986,8 @@ async def research_stream(
 
         try:
             if resume_from_synthesis:
+                # Preserve citations the interrupted run already persisted.
+                research_citations = list(state.citations or [])
                 logger.info(
                     "Resuming research %s from synthesis (notes len=%d)",
                     conversation_id,

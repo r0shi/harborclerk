@@ -154,7 +154,9 @@ async def get_research(
     # Citations are persisted on research_state by the research engine — the
     # docs whose passages informed the synthesized report. (The engine does
     # retrieval internally and emits no tool-result messages, so the old
-    # read-time extraction always produced an empty list.)
+    # read-time extraction always produced an empty list.) Records are
+    # doc-granularity {doc_id, doc_title, page} with no chunk_id, so
+    # dedupe_citations effectively collapses duplicates by doc_id.
     citations = dedupe_citations(state.citations or [])
 
     # Build message dicts
