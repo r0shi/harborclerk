@@ -119,6 +119,7 @@ _NOTE_EXTRACTION_SYSTEM = (
     "general knowledge."
 )
 
+# Rules below are intentionally duplicated from _NOTE_EXTRACTION_SYSTEM — keep in sync.
 _NOTE_EXTRACTION_SYSTEM_FORCEFUL = (
     "You are extracting research notes from search results. These passages "
     "are the TOP-RANKED retrieval matches for the research question and are "
@@ -776,13 +777,17 @@ async def _read_evidence(
 # The exact sentinel _NOTE_EXTRACTION_SYSTEM tells the model to return when a
 # passage set is off-topic. Distinct from _extract_notes's genuinely-empty
 # return ("No relevant passages were found in the corpus.").
-_NO_FINDINGS_SENTINEL_PREFIX = "no relevant findings in this passage set"
+_NO_FINDINGS_SENTINEL_PREFIX = "no relevant findings"
 
 
 def _is_no_findings_sentinel(notes_text: str) -> bool:
     """True if note extraction bailed with the 'no relevant findings'
-    sentinel. Tolerant of case and surrounding whitespace."""
-    return notes_text.strip().lower().startswith(_NO_FINDINGS_SENTINEL_PREFIX)
+    sentinel. Tolerant of case, surrounding whitespace, and a leading
+    markdown bullet ('- ', '* ', '#') a weak model may prepend.
+
+    The genuinely-empty return ("No relevant passages were found in the
+    corpus.") deliberately does NOT match — 'passages' != 'findings'."""
+    return notes_text.strip().lstrip("-*•# ").lower().startswith(_NO_FINDINGS_SENTINEL_PREFIX)
 
 
 async def _extract_notes(

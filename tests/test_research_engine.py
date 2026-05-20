@@ -60,6 +60,9 @@ def test_is_no_findings_sentinel_matches_the_sentinel():
     # Tolerant of trailing whitespace / case / wrapping the engine may add.
     assert _is_no_findings_sentinel("  no relevant findings in this passage set  ")
     assert _is_no_findings_sentinel("No relevant findings in this passage set")
+    # Weak models often prepend a markdown bullet to the sentinel line.
+    assert _is_no_findings_sentinel("- No relevant findings in this passage set.")
+    assert _is_no_findings_sentinel("* no relevant findings in this passage set")
 
 
 def test_is_no_findings_sentinel_rejects_real_notes_and_empty_corpus_string():
