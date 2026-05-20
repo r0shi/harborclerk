@@ -92,7 +92,7 @@ _QUERY_PLANNING_SYSTEM = (
     "Given a research question, generate diverse search queries that together "
     "cover all angles of the topic.\n\n"
     "Rules:\n"
-    "- Generate 5-15 queries depending on question complexity\n"
+    "- Generate the number of queries requested, covering the question from multiple angles\n"
     "- Vary phrasing: use synonyms, related terms, specific entities\n"
     "- Include both broad and narrow queries\n"
     "- For comparative questions, generate queries for each side\n"
@@ -457,7 +457,7 @@ async def _plan_queries(
     doc_list: list[dict] | None,
     user_id: uuid.UUID | None,
 ) -> list[str]:
-    """Phase 1: LLM generates diverse search queries, supplemented by corpus-seeded queries."""
+    """Phase 1: LLM generates diverse search queries for the research run."""
     # LLM-planned queries
     user_content = f"Research question: {user_question}"
     if topic_hint:

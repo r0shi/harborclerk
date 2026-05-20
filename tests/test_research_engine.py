@@ -34,3 +34,22 @@ async def test_plan_queries_returns_only_llm_queries_no_seeded_garbage():
             user_id=None,
         )
     assert queries == ["governing law clauses", "termination notice periods"]
+
+
+@pytest.mark.asyncio
+async def test_plan_queries_keyword_fallback_when_llm_yields_nothing():
+    """When the LLM returns no plausible queries, _plan_queries falls back to
+    the question itself plus two keyword-split halves."""
+    with patch("harbor_clerk.llm.research._llm_complete", new=AsyncMock(return_value='{"queries": []}')):
+        queries = await _plan_queries(
+            client=None,
+            url="http://llm.test",
+            user_question="What are the major vendor relationships over time",
+            topic_hint=None,
+            depth_config=_DEPTH,
+            doc_list=None,
+            user_id=None,
+        )
+    assert queries[0] == "What are the major vendor relationships over time"
+    assert "What are the major" in queries
+    assert "vendor relationships over time" in queries
