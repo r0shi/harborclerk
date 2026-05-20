@@ -217,7 +217,7 @@ async def test_find_related_happy(client, admin_user, admin_token, db_session):
     db_session.add_all([doc1, doc2])
     await db_session.flush()
 
-    emb = [0.9, 0.1] + [0.0] * 382
+    emb = [0.9, 0.1] + [0.0] * 766
     for doc in [doc1, doc2]:
         db_session.add(
             Chunk(
