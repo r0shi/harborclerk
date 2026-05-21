@@ -790,6 +790,10 @@ class ServiceManager: ObservableObject {
                 pythonToRestart.insert(ObjectIdentifier(apiService))
                 for w in allWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
 
+            case "reranker_enabled":
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+                for w in allWorkers { pythonToRestart.insert(ObjectIdentifier(w)) }
+
             case "llama_port":
                 infraToRestart.append(llamaService)
                 pythonToRestart.insert(ObjectIdentifier(apiService))
@@ -1104,6 +1108,7 @@ class ServiceManager: ObservableObject {
             "STORAGE_PATH": settings.originalsDir.path,
             "EMBEDDER_URL": "http://localhost:\(settings.embedderPort)",
             "RERANKER_URL": "http://localhost:\(settings.rerankerPort)",
+            "RERANKER_ENABLED": settings.rerankerEnabled ? "true" : "false",
             "TIKA_URL": "http://localhost:\(settings.tikaPort)",
             "SECRET_KEY": settings.secretKey,
             "LOG_LEVEL": settings.logLevel,
