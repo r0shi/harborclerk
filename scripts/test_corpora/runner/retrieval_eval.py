@@ -6,10 +6,16 @@ across every corpus. This mode bypasses all of that to answer one question:
     "Did my retrieval-pipeline change move recall vs the existing baselines?"
 
 For each baseline JSON written by Phase 1, it POSTs the question text to
-HC's ``/api/search``, dedupes the doc_ids by best score, and computes
+HC's ``/api/search``, dedupes the doc_titles by best score, and computes
 ``recall@k`` / ``MRR`` / ``nDCG@10`` against the baseline's
-``cited_doc_ids``. No LLM is invoked. No model switch. No re-ingest. No
+``cited_doc_titles``. No LLM is invoked. No model switch. No re-ingest. No
 ``state.json``.
+
+Matching is title-based (not UUID-based) because doc UUIDs are minted fresh
+on every ingest; titles (filename stems) are stable across re-ingestion.
+Legacy baselines that pre-date ``cited_doc_titles`` capture (before PR #367)
+are skipped with a warning — UUID-only baselines can't be reliably evaluated
+after any re-ingest.
 
 CLI surface (dispatched from sweep.py when ``--mode retrieval-eval`` is set):
 
@@ -61,7 +67,7 @@ class BaselineRecord:
     corpus: str
     question_id: str
     question_text: str
-    cited_doc_ids: list[str]
+    cited_doc_titles: list[str]
 
 
 @dataclasses.dataclass
@@ -72,9 +78,9 @@ class EvalRow:
     recall_at_k: dict[int, float]
     reciprocal_rank: float
     ndcg_at_10: float
-    top_doc_id: str | None
-    baseline_cited_doc_ids: list[str]
-    returned_doc_ids: list[str]
+    top_doc_title: str | None
+    baseline_cited_titles: list[str]
+    returned_titles: list[str]
 
 
 # ── pure functions ──
@@ -87,9 +93,13 @@ def load_baselines(
 ) -> list[BaselineRecord]:
     """Walk ``baselines/<corpus>/*.json``, drop unusable rows, return records.
 
-    Unusable means ``cited_doc_ids`` is empty (the baseline can't grade
-    retrieval) or any of the existing ``baseline_quality_problem`` checks
-    flag the baseline as corrupt/refusal/placeholder.
+    Unusable means:
+    - ``cited_doc_titles`` is absent — legacy baseline generated before PR #367
+      that only has ``cited_doc_ids`` (per-ingest UUIDs). These can't be
+      evaluated after any re-ingest because the UUID sets are disjoint. Skipped
+      with a clear warning. Do NOT fall back to UUID matching.
+    - ``cited_doc_titles`` is present but empty — baseline can't grade retrieval.
+    - Any of the existing ``baseline_quality_problem`` checks flag the record.
     """
     if not baselines_dir.exists():
         return []
@@ -103,8 +113,18 @@ def load_baselines(
             continue
         for path in sorted(corpus_dir.glob("*.json")):
             data = json.loads(path.read_text())
-            cited = data.get("cited_doc_ids") or []
-            if not cited:
+            # Legacy baselines (pre-PR-#367) have no cited_doc_titles. Using
+            # their cited_doc_ids would compare per-ingest UUIDs across
+            # different ingests — always zero recall. Skip them explicitly.
+            if "cited_doc_titles" not in data:
+                log.warning(
+                    "skipping %s — no cited_doc_titles field (UUID-only baseline, "
+                    "generated before PR #367); regenerate baselines with a post-#367 harness",
+                    path,
+                )
+                continue
+            titles = data.get("cited_doc_titles") or []
+            if not titles:
                 continue
             if baseline_quality_problem(data):
                 continue
@@ -115,7 +135,7 @@ def load_baselines(
                     corpus=corpus,
                     question_id=data["question_id"],
                     question_text=data["question"],
-                    cited_doc_ids=list(cited),
+                    cited_doc_titles=list(titles),
                 )
             )
             per_corpus_count[corpus] = per_corpus_count.get(corpus, 0) + 1
@@ -123,18 +143,37 @@ def load_baselines(
     return records
 
 
-def score_one(baseline: BaselineRecord, ranked_doc_ids: list[str], ks: list[int]) -> EvalRow:
-    """Compute the per-question retrieval metrics."""
+def _normalize_titles(titles: list[str]) -> list[str]:
+    """Strip whitespace and casefold titles; deduplicate while preserving order."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for t in titles:
+        n = t.strip().casefold()
+        if n and n not in seen:
+            seen.add(n)
+            result.append(n)
+    return result
+
+
+def score_one(baseline: BaselineRecord, ranked_doc_titles: list[str], ks: list[int]) -> EvalRow:
+    """Compute the per-question retrieval metrics.
+
+    Both baseline titles and returned titles are normalized (strip + casefold +
+    dedup) before comparison so trivial whitespace/case differences don't cause
+    false misses.
+    """
+    norm_baseline = _normalize_titles(list(baseline.cited_doc_titles))
+    norm_ranked = _normalize_titles(ranked_doc_titles)
     return EvalRow(
         corpus=baseline.corpus,
         question_id=baseline.question_id,
         question_text=baseline.question_text,
-        recall_at_k={k: recall_at_k(baseline.cited_doc_ids, ranked_doc_ids, k) for k in ks},
-        reciprocal_rank=reciprocal_rank(baseline.cited_doc_ids, ranked_doc_ids),
-        ndcg_at_10=ndcg_at_k(baseline.cited_doc_ids, ranked_doc_ids, 10),
-        top_doc_id=ranked_doc_ids[0] if ranked_doc_ids else None,
-        baseline_cited_doc_ids=list(baseline.cited_doc_ids),
-        returned_doc_ids=list(ranked_doc_ids),
+        recall_at_k={k: recall_at_k(norm_baseline, norm_ranked, k) for k in ks},
+        reciprocal_rank=reciprocal_rank(norm_baseline, norm_ranked),
+        ndcg_at_10=ndcg_at_k(norm_baseline, norm_ranked, 10),
+        top_doc_title=ranked_doc_titles[0] if ranked_doc_titles else None,
+        baseline_cited_titles=list(baseline.cited_doc_titles),
+        returned_titles=list(ranked_doc_titles),
     )
 
 
@@ -230,14 +269,17 @@ def compute_diff(
 # ── HTTP-calling pieces (thin wrappers, so the driver stays mockable) ──
 
 
-def search_doc_ids(client: HarborClerkClient, query: str, k: int) -> list[str]:
-    """POST ``/api/search`` with ``faceted=true`` and return doc_ids ordered
+def search_doc_titles(client: HarborClerkClient, query: str, k: int) -> list[str]:
+    """POST ``/api/search`` with ``faceted=true`` and return doc_titles ordered
     by best chunk score within each doc.
 
     ``faceted=true`` groups hits by doc and sorts by top_score, which is
-    exactly the ranked list we want — one entry per doc_id, descending by
+    exactly the ranked list we want — one entry per doc, descending by
     relevance. Falls back to per-chunk dedup if the server returns the
     non-faceted shape for any reason.
+
+    Returns titles, not UUIDs, because UUIDs are minted fresh on every ingest
+    and don't survive corpus re-ingestion between baseline and eval phases.
     """
     r = client._client.post(
         "/api/search",
@@ -247,15 +289,15 @@ def search_doc_ids(client: HarborClerkClient, query: str, k: int) -> list[str]:
     r.raise_for_status()
     body = r.json()
     if "documents" in body:
-        return [d["doc_id"] for d in body["documents"]]
+        return [d["doc_title"] for d in body["documents"] if d.get("doc_title")]
     # Non-faceted fallback — dedup by first appearance.
     seen: list[str] = []
     seen_set: set[str] = set()
     for hit in body.get("hits", []):
-        did = hit.get("doc_id")
-        if did and did not in seen_set:
-            seen.append(did)
-            seen_set.add(did)
+        title = hit.get("doc_title")
+        if title and title not in seen_set:
+            seen.append(title)
+            seen_set.add(title)
     return seen
 
 
@@ -269,7 +311,7 @@ def _write_csv(rows: list[EvalRow], path: Path, ks: list[int]) -> None:
         header = (
             ["corpus", "question_id"]
             + [f"recall_at_{k}" for k in ks]
-            + ["mrr", "ndcg_at_10", "top_doc_id", "n_baseline_cites", "n_returned"]
+            + ["mrr", "ndcg_at_10", "top_doc_title", "n_baseline_cites", "n_returned"]
         )
         w.writerow(header)
         for r in rows:
@@ -279,9 +321,9 @@ def _write_csv(rows: list[EvalRow], path: Path, ks: list[int]) -> None:
                 + [
                     f"{r.reciprocal_rank:.3f}",
                     f"{r.ndcg_at_10:.3f}",
-                    r.top_doc_id or "",
-                    len(r.baseline_cited_doc_ids),
-                    len(r.returned_doc_ids),
+                    r.top_doc_title or "",
+                    len(r.baseline_cited_titles),
+                    len(r.returned_titles),
                 ]
             )
 
@@ -290,7 +332,7 @@ def _load_prior_label(eval_dir: Path, prior_label: str) -> list[EvalRow]:
     """Reconstruct EvalRows from a prior label's metrics.csv.
 
     We persist enough in the CSV to reconstruct the metric values; baseline
-    doc_ids and returned doc_ids aren't needed for diff math, so we leave
+    titles and returned titles aren't needed for diff math, so we leave
     them empty in the reconstructed row.
     """
     path = eval_dir / prior_label / "metrics.csv"
@@ -301,6 +343,8 @@ def _load_prior_label(eval_dir: Path, prior_label: str) -> list[EvalRow]:
         reader = csv.DictReader(f)
         ks = sorted(int(c.split("_")[-1]) for c in reader.fieldnames or [] if c.startswith("recall_at_"))
         for row in reader:
+            # Support both old CSVs (top_doc_id) and new CSVs (top_doc_title).
+            top = row.get("top_doc_title") or row.get("top_doc_id") or None
             rows.append(
                 EvalRow(
                     corpus=row["corpus"],
@@ -309,9 +353,9 @@ def _load_prior_label(eval_dir: Path, prior_label: str) -> list[EvalRow]:
                     recall_at_k={k: float(row[f"recall_at_{k}"]) for k in ks},
                     reciprocal_rank=float(row["mrr"]),
                     ndcg_at_10=float(row["ndcg_at_10"]),
-                    top_doc_id=row["top_doc_id"] or None,
-                    baseline_cited_doc_ids=[],
-                    returned_doc_ids=[],
+                    top_doc_title=top or None,
+                    baseline_cited_titles=[],
+                    returned_titles=[],
                 )
             )
     return rows
@@ -332,7 +376,11 @@ def run(
     regression_threshold: float = 0.05,
     search_fn: Callable[[HarborClerkClient, str, int], list[str]] | None = None,
 ) -> int:
-    """Main entry point. Returns process exit code."""
+    """Main entry point. Returns process exit code.
+
+    ``search_fn`` receives (client, query, k) and returns a ranked list of
+    doc_titles (not UUIDs). Defaults to ``search_doc_titles``.
+    """
     run_dir = workdir / cfg.RESULTS_DIR_NAME / run_id
     baselines_dir = run_dir / "baselines"
     eval_dir = run_dir / "retrieval-eval"
@@ -364,7 +412,7 @@ def run(
     else:
         log.warning("no HC_USERNAME / HC_PASSWORD set — /api/search requires auth")
 
-    do_search = search_fn or search_doc_ids
+    do_search = search_fn or search_doc_titles
 
     rows: list[EvalRow] = []
     for i, rec in enumerate(records, start=1):
