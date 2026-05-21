@@ -39,7 +39,7 @@ The key discipline this buys: **between establishing the fixture and finishing t
 
 Reuse the existing `scripts/test_corpora` corpora — CUAD (legal/contract PDFs, some OCR), an Enron email subset, and the synthetic bilingual EN/FR corpus — because the question banks in `scripts/test_corpora/questions/*.yaml` are already written against them. The corpus and its questions are coupled; don't decouple them.
 
-Size: the Enron subset should be bounded (hundreds, not the full 10k+) — large enough that recall@10 is statistically meaningful, small enough that one ingest and one baseline-capture pass are cheap. The existing corpora manifests already define bounded sets; use them as-is unless a sweep has inflated the Enron count.
+Size: the Enron subset is **capped at 500 documents** (decided 2026-05-21) — large enough that recall@10 is statistically meaningful, small enough that one ingest and one baseline-capture pass are cheap. CUAD and synthetic stay at their existing manifest sizes. If the box's Enron corpus currently exceeds 500 (it holds 10k+ as a sweep artifact), the eval-corpus ingest must use a 500-doc manifest, not the inflated set.
 
 ### 3. Baseline capture
 
@@ -89,17 +89,22 @@ Caveat: with `lka` currently holding only the Enron corpus (a sweep artifact), t
 
 ## Setup tasks
 
-1. **Establish the eval corpus.** Ingest the full CUAD + Enron-subset + synthetic corpora into `lka` (via watched folders or the sweep's phase-0/ingest path). This becomes the frozen fixture. Record the doc count.
+1. **Establish the eval corpus.** Ingest CUAD + the 500-doc Enron subset + synthetic into `lka`. This becomes the frozen fixture; record the doc count.
+   - **⚠️ Destructive.** The ingest path (`_ingest_corpus`) calls `watch_folder_delete` on every existing folder and `delete_all_documents(confirm=True)` — it drops the box's current watched folders and all existing documents. Snapshot `lka` first: `pg_dump -h localhost -p 5433 -U lka -Fc lka -f ~/lka-snapshot-<date>.dump`.
 2. **Capture `eval-fixture-v1` baselines.** Sweep phase 1, post-#367 harness, dedicated run-id. Freeze.
 3. **Run the embedding-v2 reference eval.** Per "Immediate recovery" above. Record the absolute recall@10.
 4. **Document the per-phase gate runbook** — the three commands in §5 — in the master plan, replacing its current hand-wave at "the sweep baselines."
 5. **Guard rail:** add a note to the master plan that the model-comparison sweep must not run on the eval box during the upgrade (it re-ingests and would force a re-baseline).
 
+## Resolved decisions (2026-05-21)
+
+- **Enron subset size — 500 documents.** CUAD and synthetic at their existing manifest sizes.
+- **Where the eval HC runs — the local HC on the upgrade box** (Option A). Establishing the fixture is destructive (see Setup task 1); the box's `lka` must be snapshotted via `pg_dump -Fc` before the eval-corpus ingest.
+- **Baseline judge model — Sonnet,** for now. **Revisit** the judge choice as the test harness approaches real usability — once the harness + research-loop bugs are settled and the gate is producing reliable numbers, re-evaluate whether a different/newer frontier model is a materially better gold-citation generator. Whatever is chosen must then stay fixed across all remaining upgrade phases so baselines stay comparable.
+
 ## Open questions
 
-- **Enron subset size** — if the existing manifest's Enron count is large (the box currently has 10k+), bound it to a few hundred for cheaper ingest + baseline capture. Decide the cap.
-- **Where the eval HC runs** — Option A assumes the upgrade box. If the model-comparison sweep needs to run in parallel, revisit Option B (dedicated DB + second HC config).
-- **Baseline judge model** — phase 1 uses Sonnet. If a newer frontier model is materially better at the gold-citation task, consider it — but keep the judge fixed across all 6 phases so the baselines stay comparable.
+- None currently — the three above are resolved. Re-open the judge-model question per the revisit trigger.
 
 ## Cross-references
 
