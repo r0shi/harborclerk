@@ -5,6 +5,7 @@ HC already has the right corpus loaded."""
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import httpx
 
@@ -15,6 +16,7 @@ from scripts.test_corpora.runner.sweep import (
     _hc_corpus_matches,
     _is_retryable_research_failure,
     _wait_for_hc_reachable,
+    main,
 )
 
 
@@ -249,3 +251,63 @@ def test_wait_for_hc_reachable_returns_false_on_persistent_outage():
     # max_wait_seconds=0 means the deadline is already past — we exit
     # the polling loop immediately without sleeping.
     assert _wait_for_hc_reachable(c, max_wait_seconds=0) is False
+
+
+# ── --no-ingest flag ──
+
+
+def test_no_ingest_flag_never_calls_ingest_corpus(tmp_path: Path) -> None:
+    """Phase-1 plan spanning cuad + enron: with --no-ingest, _ingest_corpus
+    must never be called regardless of how many corpus transitions occur."""
+
+    # Pre-populate a minimal workdir so main() doesn't need network access
+    # for Phase 0 acquisition. The questions YAML files live in the real repo
+    # and are loaded from disk by main() — we don't need to stub them.
+    run_dir = tmp_path / "results" / "test-no-ingest"
+    run_dir.mkdir(parents=True)
+
+    # Fake HC client: health check succeeds, login is a no-op, MCP bearer
+    # returns a token. All other calls (pipeline_quiet, document_count, etc.)
+    # are silenced by MagicMock defaults.
+    fake_hc = MagicMock()
+    fake_hc.get_bearer_token.return_value = "fake-token"
+
+    # Fake MCP session so Phase 1's SyncMcpSession construction is bypassed.
+    fake_mcp = MagicMock()
+
+    # Fake baseline result so _phase1_baseline returns without hitting Anthropic.
+    fake_baseline_result = {
+        "question_id": "cuad-research-1",
+        "answer": "test answer",
+        "cited_doc_ids": [],
+        "named_entities": [],
+        "elapsed_seconds": 1.0,
+    }
+
+    with (
+        patch("scripts.test_corpora.runner.sweep.HarborClerkClient", return_value=fake_hc),
+        patch("scripts.test_corpora.runner.sweep.anthropic.Anthropic"),
+        patch("scripts.test_corpora.runner.sweep.JudgeClient"),
+        patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=fake_mcp),
+        patch("scripts.test_corpora.runner.sweep._phase1_baseline", return_value=fake_baseline_result),
+        patch("scripts.test_corpora.runner.sweep._ingest_corpus") as mock_ingest,
+    ):
+        rc = main(
+            [
+                "--run-id",
+                "test-no-ingest",
+                "--workdir",
+                str(tmp_path),
+                "--phases",
+                "1",
+                "--corpora",
+                "cuad,enron",
+                "--no-ingest",
+                "--no-hc-logs",
+                "--skip-canary",
+                "--no-judge",
+            ]
+        )
+
+    assert rc == 0, "main() should exit 0 with --no-ingest"
+    mock_ingest.assert_not_called(), "_ingest_corpus must never be called with --no-ingest"
