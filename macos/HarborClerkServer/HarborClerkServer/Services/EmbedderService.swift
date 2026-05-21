@@ -9,7 +9,7 @@ final class EmbedderService: PythonService {
 
     override var extraEnvironment: [String: String] {
         let modelPath = Bundle.main.resourceURL!
-            .appendingPathComponent("model/multilingual-e5-small").path
+            .appendingPathComponent("model/granite-embedding-311m-multilingual-r2").path
         return [
             "EMBED_MODEL": modelPath,
             "HOST": "127.0.0.1",
