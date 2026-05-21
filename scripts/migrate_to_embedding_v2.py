@@ -144,6 +144,11 @@ def run_migration(conn) -> None:
         )
 
         logger.info("Enqueueing embed-stage jobs for all ready docs (most-recent-first)")
+        # DO UPDATE, not DO NOTHING: every ready doc already has a completed
+        # (doc_id, 'embed') row from its original ingestion, so DO NOTHING would
+        # skip all of them and re-embed nothing. Reset the existing rows to
+        # 'queued' so workers re-run the stage against the now-empty 768-dim
+        # column.
         cur.execute(
             """
             INSERT INTO ingestion_jobs (doc_id, stage, status, created_at)
@@ -151,7 +156,13 @@ def run_migration(conn) -> None:
             FROM documents
             WHERE pipeline_status = 'ready'
             ORDER BY updated_at DESC
-            ON CONFLICT (doc_id, stage) DO NOTHING
+            ON CONFLICT (doc_id, stage) DO UPDATE SET
+                status = 'queued',
+                error = NULL,
+                started_at = NULL,
+                finished_at = NULL,
+                heartbeat_at = NULL,
+                progress_current = 0
             """
         )
         enqueued = cur.rowcount

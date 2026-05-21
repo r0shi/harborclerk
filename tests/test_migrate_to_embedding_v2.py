@@ -224,3 +224,52 @@ def test_script_happy_path_against_pre_rebase_db(scratch_db):
         job_count = cur.fetchone()[0]
         assert job_count == 1, f"Expected 1 embed job, got {job_count}"
     conn2.close()
+
+
+def test_script_requeues_existing_done_embed_jobs(scratch_db):
+    """A ready doc whose original ingestion already left a completed
+    (doc_id, 'embed') job must have that job RESET to 'queued', not skipped.
+
+    This is the real-world case — every ready doc has a done embed job — so an
+    `ON CONFLICT DO NOTHING` upsert would re-embed nothing. Regression test for
+    the bug where the script enqueued 0 jobs against a populated corpus.
+    """
+    conn = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, dbname=scratch_db)
+    conn.autocommit = True
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO documents (title, sha256, mime_type, pipeline_status, created_at, updated_at)
+            VALUES ('done-doc', decode('deadbeef', 'hex'), 'text/plain', 'ready', NOW(), NOW())
+            RETURNING doc_id
+            """
+        )
+        doc_id = cur.fetchone()[0]
+        # Simulate the completed embed job left by the doc's original ingestion.
+        cur.execute(
+            "INSERT INTO ingestion_jobs (doc_id, stage, status, finished_at) VALUES (%s, 'embed', 'done', NOW())",
+            (doc_id,),
+        )
+    conn.close()
+
+    r = _run("--db-url", _pg_url(scratch_db), "--confirm")
+    assert r.returncode == 0, f"stdout={r.stdout}\nstderr={r.stderr}"
+
+    conn2 = psycopg2.connect(host=PG_HOST, port=PG_PORT, user=PG_USER, dbname=scratch_db)
+    conn2.autocommit = True
+    with conn2.cursor() as cur:
+        cur.execute(
+            "SELECT status, finished_at FROM ingestion_jobs WHERE doc_id=%s AND stage='embed'",
+            (doc_id,),
+        )
+        row = cur.fetchone()
+        assert row is not None, "embed job row vanished after migration"
+        assert row[0] == "queued", f"existing done embed job not reset to queued (got {row[0]})"
+        assert row[1] is None, "finished_at not cleared on re-queue"
+        # upsert must not duplicate — still exactly one embed row for the doc
+        cur.execute(
+            "SELECT COUNT(*) FROM ingestion_jobs WHERE doc_id=%s AND stage='embed'",
+            (doc_id,),
+        )
+        assert cur.fetchone()[0] == 1, "re-enqueue duplicated the embed job row"
+    conn2.close()
