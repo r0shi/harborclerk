@@ -44,12 +44,13 @@ async def rerank_hits(
 
     pool = hits[: settings.reranker_pool_size]
     passages = [_format_passage(h) for h in pool]
+    effective_top_k = min(top_k, len(pool))
 
     try:
         async with httpx.AsyncClient(timeout=settings.reranker_timeout_seconds) as client:
             r = await client.post(
                 f"{settings.reranker_url}/rerank",
-                json={"query": query, "passages": passages, "top_k": top_k},
+                json={"query": query, "passages": passages, "top_k": effective_top_k},
             )
             r.raise_for_status()
     except (httpx.HTTPError, httpx.TimeoutException) as exc:

@@ -32,6 +32,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      embedder:
+        condition: service_healthy
       reranker:
         condition: service_healthy
     healthcheck:
@@ -56,8 +58,6 @@ services:
     depends_on:
       app:
         condition: service_healthy
-      reranker:
-        condition: service_healthy
     networks:
       - harbor-clerk
 
@@ -74,7 +74,7 @@ services:
     depends_on:
       app:
         condition: service_healthy
-      reranker:
+      embedder:
         condition: service_healthy
     networks:
       - harbor-clerk

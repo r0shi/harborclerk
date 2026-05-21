@@ -5,6 +5,7 @@ exposes ``POST /rerank`` accepting ``{query, passages, top_k}`` and returning
 ``{scores: [{index, score}], model}`` sorted descending by score.
 """
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -66,7 +67,7 @@ async def rerank(req: RerankRequest):
         return RerankResponse(scores=[], model=MODEL_NAME)
 
     pairs = [[req.query, p] for p in req.passages]
-    raw_scores = _model.predict(pairs)
+    raw_scores = await asyncio.get_event_loop().run_in_executor(None, _model.predict, pairs)
     indexed = sorted(
         ((i, float(s)) for i, s in enumerate(raw_scores)),
         key=lambda x: x[1],
