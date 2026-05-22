@@ -11,11 +11,12 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.file_types import PLAIN_TEXT_EXTENSIONS
+from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS
 from harbor_clerk.models import Document, DocumentHeading, DocumentPage
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
 from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
+from harbor_clerk.worker.markdown_extract import MarkdownExtractResult, extract_markdown
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,9 @@ IMAGE_MIMES = {"image/jpeg", "image/png", "image/tiff"}
 # Filename suffixes extracted as plain UTF-8 text. A tuple because str.endswith
 # requires one; sorted for deterministic ordering.
 _PLAIN_TEXT_SUFFIXES = tuple(sorted(PLAIN_TEXT_EXTENSIONS))
+
+# Filename suffixes routed through the Markdown extraction pipeline.
+_MARKDOWN_SUFFIXES = tuple(sorted(MARKDOWN_EXTENSIONS))
 
 
 def is_plain_text_source(mime: str, obj_key: str) -> bool:
@@ -291,12 +295,23 @@ def run_extract(doc_id: uuid.UUID) -> None:
         if not is_image and obj_key.endswith((".png", ".tif", ".tiff")):
             is_image = True
 
+        # Sentinel that downstream code (heading-writing) checks to decide
+        # whether to use Markdown-derived headings or fall back to Tika XHTML.
+        markdown_result: MarkdownExtractResult | None = None
+
         if is_image:
             # Image — create empty page, OCR will fill it
             pages = [(1, "")]
         elif is_plain_text_source(mime, obj_key):
-            # Plain-text formats — no Tika needed
-            pages = _extract_txt(data)
+            if obj_key.endswith(_MARKDOWN_SUFFIXES):
+                # Markdown — frontmatter + headings + normalization
+                markdown_result = extract_markdown(data)
+                pages = markdown_result.pages
+                if markdown_result.title:
+                    doc.title = markdown_result.title
+            else:
+                # Other plain-text formats — direct UTF-8 decode
+                pages = _extract_txt(data)
         elif is_rtf or mime == "text/rtf" or obj_key.endswith(".rtf"):
             pages = _extract_via_tika(data, "text/rtf")
         elif is_pdf:
@@ -337,13 +352,22 @@ def run_extract(doc_id: uuid.UUID) -> None:
             )
             session.add(page)
 
-        # Extract headings from Tika XHTML (skip images and plain text)
-        skip_headings = (
-            is_image
-            or mime in _SKIP_HEADINGS_MIMES
-            or obj_key.endswith(_SKIP_HEADINGS_EXTS)
-            or is_plain_text_source(mime, obj_key)
-        )
+        # Heading source: Markdown's own parser when we ran the Markdown
+        # extractor, otherwise Tika XHTML (skipped entirely for non-Markdown
+        # plain text via the same predicate used for dispatch).
+        if markdown_result is not None:
+            headings = markdown_result.headings
+        else:
+            skip_headings = (
+                is_image
+                or mime in _SKIP_HEADINGS_MIMES
+                or obj_key.endswith(_SKIP_HEADINGS_EXTS)
+                or is_plain_text_source(mime, obj_key)
+            )
+            headings = (
+                [] if skip_headings else _extract_headings_via_tika(data, mime or "application/octet-stream", pages)
+            )
+
         # Delete existing headings (idempotency)
         existing_headings = (
             session.execute(select(DocumentHeading).where(DocumentHeading.doc_id == doc_id)).scalars().all()
@@ -352,24 +376,19 @@ def run_extract(doc_id: uuid.UUID) -> None:
             session.delete(h)
         session.flush()
 
-        if not skip_headings:
-            headings = _extract_headings_via_tika(data, mime or "application/octet-stream", pages)
-            for hd in headings:
-                session.add(
-                    DocumentHeading(
-                        doc_id=doc_id,
-                        level=hd["level"],
-                        title=hd["title"],
-                        page_num=hd["page_num"],
-                        position=hd["position"],
-                    )
+        # Write headings (unified for Markdown and Tika sources).
+        for hd in headings:
+            session.add(
+                DocumentHeading(
+                    doc_id=doc_id,
+                    level=hd["level"],
+                    title=hd["title"],
+                    page_num=hd["page_num"],
+                    position=hd["position"],
                 )
-            if headings:
-                logger.info(
-                    "Extracted %d headings for doc %s",
-                    len(headings),
-                    doc_id,
-                )
+            )
+        if headings:
+            logger.info("Extracted %d headings for doc %s", len(headings), doc_id)
 
         # Determine if OCR is needed
         _NEVER_OCR_MIMES = {
