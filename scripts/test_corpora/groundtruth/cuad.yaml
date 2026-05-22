@@ -1,0 +1,101 @@
+# CUAD answer-eval ground-truth set -- frozen, version-controlled.
+#
+# Curated 2026-05-22 from CUAD master_clauses.csv (Atticus Project expert
+# annotations) via groundtruth/generate_cuad.py. 15 items across 7 contracts:
+# value-category lookups (Governing Law, Parties, Agreement/Expiration Date)
+# carry the verbatim CUAD span; clause-presence categories are phrased as
+# yes/no questions, with negatives drawn from CUAD's explicit "No" labels.
+# Regenerate only by explicitly re-running the generator and re-curating --
+# never as a side effect of an eval run.
+corpus: cuad
+items:
+- id: cuad-gt-gl-arca
+  question: What is the governing law of the ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development Agreement agreement?
+  clause_category: Governing Law
+  gold_doc: ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development Agreement
+  answer_key: New York
+  type: lookup
+- id: cuad-gt-gl-berkshire
+  question: What is the governing law of the BerkshireHillsBancorpInc_20120809_10-Q_EX-10.16_7708169_EX-10.16_Endorsement Agreement agreement?
+  clause_category: Governing Law
+  gold_doc: BerkshireHillsBancorpInc_20120809_10-Q_EX-10.16_7708169_EX-10.16_Endorsement Agreement
+  answer_key: Connecticut
+  type: lookup
+- id: cuad-gt-gl-clickstream
+  question: What is the governing law of the ClickstreamCorp_20200330_1-A_EX1A-6 MAT CTRCT_12089935_EX1A-6 MAT CTRCT_Development Agreement agreement?
+  clause_category: Governing Law
+  gold_doc: ClickstreamCorp_20200330_1-A_EX1A-6 MAT CTRCT_12089935_EX1A-6 MAT CTRCT_Development Agreement
+  answer_key: Florida
+  type: lookup
+- id: cuad-gt-gl-cns
+  question: What is the governing law of the CnsPharmaceuticalsInc_20200326_8-K_EX-10.1_12079626_EX-10.1_Development Agreement agreement?
+  clause_category: Governing Law
+  gold_doc: CnsPharmaceuticalsInc_20200326_8-K_EX-10.1_12079626_EX-10.1_Development Agreement
+  answer_key: Texas
+  type: lookup
+- id: cuad-gt-parties-2themart
+  question: Who are the parties to the 2ThemartComInc_19990826_10-12G_EX-10.10_6700288_EX-10.10_Co-Branding Agreement_ Agency Agreement agreement?
+  clause_category: Parties
+  gold_doc: 2ThemartComInc_19990826_10-12G_EX-10.10_6700288_EX-10.10_Co-Branding Agreement_ Agency Agreement
+  answer_key: I-ESCROW, INC.  ("i-Escrow" ); 2THEMART.COM, INC. ("2TheMart")
+  type: lookup
+- id: cuad-gt-parties-berkshire
+  question: Who are the parties to the BerkshireHillsBancorpInc_20120809_10-Q_EX-10.16_7708169_EX-10.16_Endorsement Agreement agreement?
+  clause_category: Parties
+  gold_doc: BerkshireHillsBancorpInc_20120809_10-Q_EX-10.16_7708169_EX-10.16_Endorsement Agreement
+  answer_key: Geno Auriemma (Auriemma); Berkshire Bank (Berkshire)("Party" or "Parties")
+  type: lookup
+- id: cuad-gt-parties-bizzingo
+  question: Who are the parties to the BizzingoInc_20120322_8-K_EX-10.17_7504499_EX-10.17_Endorsement Agreement agreement?
+  clause_category: Parties
+  gold_doc: BizzingoInc_20120322_8-K_EX-10.17_7504499_EX-10.17_Endorsement Agreement
+  answer_key: Bizzingo, Inc ("Bizzingo"); Joseph Theismann ("Theismann")
+  type: lookup
+- id: cuad-gt-agreementdate-2themart
+  question: What is the agreement date of the 2ThemartComInc_19990826_10-12G_EX-10.10_6700288_EX-10.10_Co-Branding Agreement_ Agency Agreement agreement?
+  clause_category: Agreement Date
+  gold_doc: 2ThemartComInc_19990826_10-12G_EX-10.10_6700288_EX-10.10_Co-Branding Agreement_ Agency Agreement
+  answer_key: 6/21/99
+  type: lookup
+- id: cuad-gt-agreementdate-clickstream
+  question: What is the agreement date of the ClickstreamCorp_20200330_1-A_EX1A-6 MAT CTRCT_12089935_EX1A-6 MAT CTRCT_Development Agreement agreement?
+  clause_category: Agreement Date
+  gold_doc: ClickstreamCorp_20200330_1-A_EX1A-6 MAT CTRCT_12089935_EX1A-6 MAT CTRCT_Development Agreement
+  answer_key: 3/20/20
+  type: lookup
+- id: cuad-gt-expirationdate-berkshire
+  question: What is the expiration date of the BerkshireHillsBancorpInc_20120809_10-Q_EX-10.16_7708169_EX-10.16_Endorsement Agreement agreement?
+  clause_category: Expiration Date
+  gold_doc: BerkshireHillsBancorpInc_20120809_10-Q_EX-10.16_7708169_EX-10.16_Endorsement Agreement
+  answer_key: 5/31/16
+  type: lookup
+- id: cuad-gt-expirationdate-bizzingo
+  question: What is the expiration date of the BizzingoInc_20120322_8-K_EX-10.17_7504499_EX-10.17_Endorsement Agreement agreement?
+  clause_category: Expiration Date
+  gold_doc: BizzingoInc_20120322_8-K_EX-10.17_7504499_EX-10.17_Endorsement Agreement
+  answer_key: 3/1/13
+  type: lookup
+- id: cuad-gt-noncompete-aimmune
+  question: Does the AimmuneTherapeuticsInc_20200205_8-K_EX-10.3_11967170_EX-10.3_Development Agreement agreement contain a non-compete clause?
+  clause_category: Non-Compete
+  gold_doc: AimmuneTherapeuticsInc_20200205_8-K_EX-10.3_11967170_EX-10.3_Development Agreement
+  answer_key: 'Yes'
+  type: lookup
+- id: cuad-gt-mfn-neg-arca
+  question: Does the ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development Agreement agreement contain a most-favored-nation clause?
+  clause_category: Most Favored Nation
+  gold_doc: ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development Agreement
+  answer_key: null
+  type: negative
+- id: cuad-gt-cap-neg-bizzingo
+  question: Does the BizzingoInc_20120322_8-K_EX-10.17_7504499_EX-10.17_Endorsement Agreement agreement contain a clause that limits or caps liability?
+  clause_category: Cap On Liability
+  gold_doc: BizzingoInc_20120322_8-K_EX-10.17_7504499_EX-10.17_Endorsement Agreement
+  answer_key: null
+  type: negative
+- id: cuad-gt-exclusivity-neg-2themart
+  question: Does the 2ThemartComInc_19990826_10-12G_EX-10.10_6700288_EX-10.10_Co-Branding Agreement_ Agency Agreement agreement contain an exclusivity clause?
+  clause_category: Exclusivity
+  gold_doc: 2ThemartComInc_19990826_10-12G_EX-10.10_6700288_EX-10.10_Co-Branding Agreement_ Agency Agreement
+  answer_key: null
+  type: negative
