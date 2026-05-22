@@ -55,3 +55,30 @@ def test_collect_doc_ids_upgrades_empty_title_on_later_mention():
     gen._collect_doc_ids({"doc_id": "uuid-x"})  # titleless first
     gen._collect_doc_ids({"doc_id": "uuid-x", "doc_title": "real title"})  # titled later
     assert gen._cited == {"uuid-x": "real title"}
+
+
+def test_run_question_records_tool_transcript():
+    """Each tool call is recorded in BaselineResult.tool_transcript."""
+    from unittest.mock import MagicMock
+
+    from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
+
+    fake = MagicMock()
+    tool_block = MagicMock(type="tool_use", id="t1", input={"query": "x"})
+    tool_block.name = "kb_search"  # MagicMock(name=...) sets display name, not .name attr
+    fake.messages.create.side_effect = [
+        MagicMock(content=[tool_block], stop_reason="tool_use"),
+        MagicMock(content=[MagicMock(text="final answer", type="text")], stop_reason="end_turn"),
+    ]
+    mcp = MagicMock()
+    mcp.list_tools.return_value = []
+    mcp.call_tool.return_value = MagicMock(content=[MagicMock(text='{"doc_id": "d1"}')])
+
+    gen = BaselineGenerator(client=fake, mcp_session=mcp)
+    res = gen.run_question(question="q", question_id="q1", corpus="cuad")
+
+    assert len(res.tool_transcript) == 1
+    call = res.tool_transcript[0]
+    assert call["tool"] == "kb_search"
+    assert call["args"] == {"query": "x"}
+    assert "doc_id" in call["result_summary"]
