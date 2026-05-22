@@ -48,8 +48,9 @@ spacy-models: venv
 
 # ── Models ──
 # MODEL_DIR must match paths in EmbedderService.swift and RerankerService.swift ("model/<name>")
+# Depends on venv: download-model.sh runs huggingface_hub from the venv's Python.
 
-model:
+model: venv
 	@echo "==> Downloading embedding + reranker models"
 	MODEL_DIR=$(BUILD)/model VENV_DIR=$(BUILD)/venv BUILD_DIR=$(BUILD) bash $(SCRIPTS)/download-model.sh
 

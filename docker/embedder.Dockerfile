@@ -20,7 +20,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN /app/.venv/bin/python -c "from huggingface_hub import snapshot_download; \
   snapshot_download(repo_id='ibm-granite/granite-embedding-311m-multilingual-r2', \
                     local_dir='/models/granite-embedding-311m-multilingual-r2', \
-                    local_dir_use_symlinks=False)"
+                    local_dir_use_symlinks=False, \
+                    ignore_patterns=['onnx/*', 'openvino/*', 'openvino_model.*'])"
 
 # ── Runtime ──
 FROM python:3.12-slim
