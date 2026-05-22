@@ -59,7 +59,8 @@ def generate(master_csv: Path, ingest_dir: Path, out_path: Path, per_category: i
     HC actually holds) are skipped. Deterministic by sorted filename.
     """
     sampled = {p.stem for p in sorted(ingest_dir.glob("*.pdf"))}
-    rows = sorted(csv.DictReader(master_csv.open()), key=lambda r: r.get("Filename", ""))
+    with master_csv.open(newline="") as fh:
+        rows = sorted(csv.DictReader(fh), key=lambda r: r.get("Filename", ""))
 
     items: list[dict] = []
     for category, template in CATEGORIES.items():
