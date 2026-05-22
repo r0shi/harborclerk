@@ -56,8 +56,12 @@ class AnswerVerdict:
 
 def _extract_json(text: str) -> dict:
     fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
-    raw = fence.group(1) if fence else text[text.find("{") : text.rfind("}") + 1]
-    return json.loads(raw)
+    if fence:
+        return json.loads(fence.group(1))
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError("no JSON object in judge response")
+    return json.loads(text[start : end + 1])
 
 
 class AnswerJudge:

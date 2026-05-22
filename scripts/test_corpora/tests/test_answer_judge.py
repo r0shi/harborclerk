@@ -2,7 +2,9 @@
 import json
 from unittest.mock import MagicMock
 
-from scripts.test_corpora.runner.answer_judge import AnswerJudge, AnswerVerdict
+import pytest
+
+from scripts.test_corpora.runner.answer_judge import AnswerJudge, AnswerVerdict, _extract_json
 
 
 def _fake_client(payload: dict) -> MagicMock:
@@ -55,3 +57,9 @@ def test_judge_tolerates_fenced_json():
     )
     v = AnswerJudge(client=c).judge_answer(question="q", model_answer="a", cited="", answer_key="k", qtype="lookup")
     assert v.correctness == 0
+
+
+def test_extract_json_rejects_response_without_json():
+    """A judge reply with no JSON object raises a clear error, not a JSONDecodeError."""
+    with pytest.raises(ValueError, match="no JSON object"):
+        _extract_json("the model refused and returned only prose")
