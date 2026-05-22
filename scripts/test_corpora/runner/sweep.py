@@ -343,6 +343,14 @@ def make_parser() -> argparse.ArgumentParser:
             "Pass this flag on machines where the path doesn't apply."
         ),
     )
+    p.add_argument(
+        "--no-ingest",
+        action="store_true",
+        help=(
+            "skip all corpus ingest; baseline/run against whatever is already loaded in HC. "
+            "For eval-fixture baseline capture against a pre-loaded unified corpus."
+        ),
+    )
     # Attach retrieval-eval flags. They're only meaningful when --mode
     # retrieval-eval is set, but registering them on the main parser keeps
     # --help discoverable.
@@ -946,7 +954,7 @@ def main(argv: list[str] | None = None) -> int:
             # dir from cuad+enron+synthetic, then ingest. The non-unified
             # ingest gate inside the per-unit body wouldn't trigger because
             # phase 6 isn't in (1, 4, 5).
-            if corpus == "unified" and not args.dry_run:
+            if corpus == "unified" and not args.dry_run and not args.no_ingest:
                 unified_dir = workdir / "unified" / "ingest"
                 unified_dir.mkdir(parents=True, exist_ok=True)
                 for c in ("cuad", "enron", "synthetic"):
@@ -970,6 +978,8 @@ def main(argv: list[str] | None = None) -> int:
                 elif current_corpus_in_db != "unified":
                     _ingest_corpus(hc, unified_manifest)
                     current_corpus_in_db = "unified"
+            elif corpus == "unified" and args.no_ingest:
+                current_corpus_in_db = "unified"
 
             last_phase_logged: int | None = None
             for u in corpus_units:
@@ -1008,7 +1018,7 @@ def main(argv: list[str] | None = None) -> int:
                 # we first ask HC whether it already has u.corpus loaded AND its
                 # queue has drained — if so, skip the wipe so `--resume` after a
                 # mid-corpus crash doesn't lose the existing ingest.
-                if phase in (1, 4, 5) and u.corpus != current_corpus_in_db:
+                if phase in (1, 4, 5) and u.corpus != current_corpus_in_db and not args.no_ingest:
                     if u.corpus not in manifests:
                         manifests[u.corpus] = _phase0_acquire(u.corpus, workdir)
                     # Belt-and-suspenders: if Phase 0's ingest dir got cleaned up
@@ -1030,6 +1040,8 @@ def main(argv: list[str] | None = None) -> int:
                     elif u.corpus != current_corpus_in_db:
                         _ingest_corpus(hc, manifests[u.corpus])
                         current_corpus_in_db = u.corpus
+                elif phase in (1, 4, 5) and u.corpus != current_corpus_in_db and args.no_ingest:
+                    current_corpus_in_db = u.corpus
 
                 # Ensure correct model is active for phases 2-6
                 if phase in (2, 3, 4, 5, 6) and u.model not in (None, "-", "claude-baseline"):

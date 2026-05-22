@@ -2,7 +2,7 @@
 
 > **For agentic workers:** This is a STAGING plan, not an implementation plan. It maps out 6 independent phases. Each phase needs its own detailed implementation plan written via `superpowers:brainstorming` → `superpowers:writing-plans` before execution. Do NOT attempt to implement any phase directly from this document.
 
-**Goal:** Take Harbor Clerk's retrieval pipeline from `multilingual-e5-small` + hybrid FTS/cosine to a SOTA stack optimized for frontier-LLM MCP consumption, with a queryable knowledge graph, layered preprocessing, and visual exploration — all gated by per-phase retrieval-eval against the sweep baselines.
+**Goal:** Take Harbor Clerk's retrieval pipeline from `multilingual-e5-small` + hybrid FTS/cosine to a SOTA stack optimized for frontier-LLM MCP consumption, with a queryable knowledge graph, layered preprocessing, and visual exploration — all gated by per-phase retrieval-eval against a frozen eval fixture.
 
 **Architecture:** Six independent phases, each shipping behind retrieval-eval gates. Phase 0 is the foundation (embedding/reranker swap + schema break). Phases 1-2 are "free wins" (no new infrastructure). Phases 3-4 add the graph and propositions layers. Phase 5 is UI. Each phase is isolated on its own branch, merges after passing retrieval-eval against the prior phase's label, and bumps the schema sentinel where applicable.
 
@@ -68,21 +68,26 @@ On API + worker boot (before opening the pool), query the sentinel rows; if `(em
 Each subsequent phase that adds schema bumps `upgrade_phase` (e.g. Phase 1 sets it to `'1'`). The fail-stop accepts only the current and prior phase numbers, so a Phase-1 binary refuses to open a Phase-0 DB unless explicitly migrated. This protects against deploying a new binary against a stale DB.
 
 ### Retrieval-Eval Gates
-Use the `--mode retrieval-eval` harness that shipped this session. Per-phase gate:
-1. Before merging phase N, run: `sweep --mode retrieval-eval --run-id 2026-05-05-prod --label phase-N-<short-name> [--prior-label phase-(N-1)-<short-name>]`
-2. Acceptable outcomes:
+Use the `--mode retrieval-eval` harness against the **frozen `eval-fixture-v1` corpus + baselines** — see `docs/superpowers/specs/2026-05-21-retrieval-eval-corpus-design.md` and its setup plan `docs/superpowers/plans/2026-05-21-eval-fixture-setup.md`. The fixture (unified CUAD + Enron-500 + synthetic, ingested once, never re-ingested) and its title-bearing baselines must exist before any phase gate can run. Per-phase gate:
+1. Before merging phase N, run: `sweep --mode retrieval-eval --run-id eval-fixture-v1 --workdir "$HOME/Library/Application Support/Harbor Clerk/test-corpora" --api-base http://localhost:8100 --label phase-N --prior-label phase-(N-1)`
+2. Read `results/eval-fixture-v1/retrieval-eval/phase-N/vs_phase-(N-1).json` for per-question deltas + `summary.json` for the overall recall@10.
+3. Acceptable outcomes:
    - **Phase 0**: recall@10 improvement ≥+0.08 overall; no per-corpus regression more than -0.05 (CUAD/Enron/synthetic).
    - **Phase 1**: recall@10 improvement ≥+0.03 overall; no regression worse than -0.03 per corpus.
    - **Phase 2**: recall@10 may stay flat or improve; precision on filtered queries should improve (separate eval — see Phase 2 detail).
    - **Phase 3-4**: recall@10 improvement ≥+0.03; multi-hop subset shows much larger gains (separate eval slice).
    - **Phase 5**: not retrieval-gated.
-3. If a phase fails its gate, do NOT advance. Either revise the phase or roll back parts and re-eval.
+4. If a phase fails its gate, do NOT advance. Either revise the phase or roll back parts and re-eval.
 
 ### Re-Embed Cost
 Phases 0, 1, 4 require re-embedding all chunks (or building new embedding tables). For a 10K-doc corpus with ~500K chunks at ~50ms/chunk (Granite-R2 on M-series silicon), that's ~7 hours single-threaded. Plan re-embed as an explicit task with progress monitoring. The `embed` stage already has heartbeats; reuse the pipeline.
 
-### Sweep Baseline Source
-The `2026-05-05-prod` sweep is now running again (resumed 2026-05-17). It produces `cited_doc_ids` baselines for CUAD / Enron / synthetic. **Wait for the sweep to finish before Phase 0 retrieval-eval gate.** If iteration starts before then, use `--questions-per-corpus 5 --corpora cuad,synthetic` for fast spot-checks during dev, but the gate-passing eval uses the full baseline set.
+### Eval Fixture (supersedes the original "use the sweep baselines" assumption)
+The original plan assumed the `2026-05-05-prod` sweep baselines could gate retrieval directly. **They can't** — the sweep re-ingests between phases (doc UUIDs churn) and HC holds one corpus at a time, so UUID-matched baselines always score 0 against a re-ingested corpus. The 2026-05-21 embedding-v2 gate run hit exactly this (all-zero) and the failure is written up in `docs/superpowers/specs/2026-05-21-retrieval-eval-corpus-design.md`.
+
+The gate instead uses a dedicated **`eval-fixture-v1`**: a unified CUAD + Enron-500 + synthetic corpus ingested **once** into the eval box's `lka` and never re-ingested, plus baselines captured once (with `cited_doc_titles` — matching is now title-based, commit `58b5c04`). Build it via `docs/superpowers/plans/2026-05-21-eval-fixture-setup.md`.
+
+**Guard rail:** the model-comparison sweep (the 8-local-model matrix, which re-ingests corpora per phase) must NOT run on the eval box during the upgrade — it would destroy the frozen fixture and force a full re-baseline. Run that sweep on a different box or a different time.
 
 ### Memory & Followups
 - Every phase that defers out-of-scope work → one entry in `pr_followups.md` AND one entry in the PR description.
@@ -135,7 +140,7 @@ Single migration `0023_schema_sentinel_and_granite_embed_dim.py`:
 
 ### Retrieval-Eval Gate
 ```bash
-sweep --mode retrieval-eval --run-id 2026-05-05-prod \
+sweep --mode retrieval-eval --run-id eval-fixture-v1 \
   --api-base http://localhost:8100 \
   --label phase-0-granite-r2
 ```
@@ -186,7 +191,7 @@ sweep --mode retrieval-eval --run-id 2026-05-05-prod \
 
 ### Retrieval-Eval Gate
 ```bash
-sweep --mode retrieval-eval --run-id 2026-05-05-prod \
+sweep --mode retrieval-eval --run-id eval-fixture-v1 \
   --label phase-1-late-chunking --prior-label phase-0-granite-r2
 ```
 **Pass criteria**: overall recall@10 improvement ≥ +0.03; no per-corpus regression > -0.03; LongEmbed-style queries (multi-paragraph, cross-reference) should show ≥+0.05.
@@ -409,7 +414,7 @@ Between each phase:
 After Phase 5 merges:
 
 1. **Full sweep re-run** with the upgraded pipeline (all 8 local models × all 3 corpora × phase-5 retrieval stack). This is the "definitive evaluation" the user has been planning for.
-2. **Cumulative retrieval-eval**: `--label final --prior-label baseline-e5-small`. Expected overall recall@10 delta: +0.20 to +0.35 vs baseline.
+2. **Cumulative retrieval-eval**: `--label final --prior-label embedding-v2`. NOTE: there is no e5-small reference run — the box was cut over before retrieval-eval existed (see the eval-corpus spec §6), so the cumulative delta is measured against the `embedding-v2` reference, not e5-small. The "+0.20–0.35 vs the original baseline" target is therefore not directly measurable; judge the absolute final recall@10 and the sum of per-phase deltas instead.
 3. **Filter-precision eval**: re-run the Phase 2 fixture to confirm filters still work end-to-end.
 4. **Multi-hop fixture**: re-run the Phase 3 fixture through `kb_multihop_search` (Phase 4 endpoint). Confirm the multi-hop gains held.
 5. **LLM-as-judge pairwise eval**: pick 50-100 representative questions from the baseline; have a frontier LLM (a DIFFERENT one from the baseline generator, to avoid self-preference) compare baseline-pipeline answers vs upgrade-pipeline answers; report win-rate.
@@ -468,7 +473,7 @@ Before starting Phase 0:
 
 1. **Create a tracking memory file**: `project_retrieval_mcp_upgrade.md` with a status checklist (one row per phase, status pending/in-progress/done with PR link).
 2. **Create the worktree**: `cd ~/mcp-gateway && git worktree add .claude/worktrees/retrieval-upgrade-phase-0 -b feat/retrieval-phase-0-granite main`.
-3. **Verify the 2026-05-05-prod sweep has finished** before running any retrieval-eval gates. If still running, continue dev but defer the gate.
+3. **Build the `eval-fixture-v1` corpus + baselines** before running any retrieval-eval gate — see `docs/superpowers/plans/2026-05-21-eval-fixture-setup.md`. Do NOT run the model-comparison sweep on the eval box (it re-ingests and destroys the fixture).
 4. **Verify the master plan is committed**: this document should be on `main` (via its own PR) before phase 0 starts, so the per-phase plans can link back to it.
 
 ---
@@ -479,7 +484,7 @@ This master plan deliberately omits bite-sized step-by-step instructions because
 
 **Cross-references:**
 - The `--mode retrieval-eval` harness this plan depends on shipped in this session under `scripts/test_corpora/runner/retrieval_eval.py`.
-- The 2026-05-05-prod sweep providing baselines is documented in [project_sweep_2026_05_05_prod_resume.md](https://github.com/alex/mcp-gateway/blob/main/memory/project_sweep_2026_05_05_prod_resume.md).
+- The eval fixture (corpus + baselines) the gate runs against is specified in `docs/superpowers/specs/2026-05-21-retrieval-eval-corpus-design.md` and built via `docs/superpowers/plans/2026-05-21-eval-fixture-setup.md`. (The `2026-05-05-prod` sweep — see `memory/project_sweep_2026_05_05_prod_resume.md` — is a separate model-comparison effort; its baselines are NOT used by the gate.)
 - The research grounding for each phase is in this session's transcript.
 
 **Things explicitly NOT in this plan (descoped):**

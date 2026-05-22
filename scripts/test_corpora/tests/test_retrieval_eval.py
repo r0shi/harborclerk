@@ -32,6 +32,7 @@ def _write_baseline(baselines_dir: Path, corpus: str, question_id: str, **fields
         "question": f"What about {question_id}?",
         "answer": "an answer",
         "cited_doc_ids": ["doc-a", "doc-b"],
+        "cited_doc_titles": ["title-a", "title-b"],
         "tool_call_count": 3,
         "elapsed_seconds": 1.0,
         "model": "claude-sonnet-4-6",
@@ -83,7 +84,7 @@ def test_load_baselines_returns_baseline_record_with_question_text(tmp_path):
         "cuad",
         "cuad-1",
         question="Specific question text here.",
-        cited_doc_ids=["x", "y"],
+        cited_doc_titles=["contract-alpha", "contract-beta"],
     )
 
     [rec] = load_baselines(baselines, corpora=None, limit_per_corpus=None)
@@ -92,17 +93,16 @@ def test_load_baselines_returns_baseline_record_with_question_text(tmp_path):
     assert rec.corpus == "cuad"
     assert rec.question_id == "cuad-1"
     assert rec.question_text == "Specific question text here."
-    assert rec.cited_doc_ids == ["x", "y"]
+    assert rec.cited_doc_titles == ["contract-alpha", "contract-beta"]
 
 
 def test_load_baselines_skips_baselines_with_no_citations(tmp_path):
-    """An empty cited_doc_ids list means the baseline can't grade retrieval.
-    These are surfaced by the existing baseline_quality_problem check; the
-    eval should skip them so the metrics aren't polluted with 0.0 rows that
+    """An empty cited_doc_titles list means the baseline can't grade retrieval.
+    These should be skipped so the metrics aren't polluted with 0.0 rows that
     look like regressions."""
     baselines = tmp_path / "baselines"
-    _write_baseline(baselines, "cuad", "cuad-1", cited_doc_ids=["a"])
-    _write_baseline(baselines, "cuad", "cuad-empty", cited_doc_ids=[])
+    _write_baseline(baselines, "cuad", "cuad-1", cited_doc_titles=["a"])
+    _write_baseline(baselines, "cuad", "cuad-empty", cited_doc_titles=[])
 
     records = load_baselines(baselines, corpora=None, limit_per_corpus=None)
 
@@ -119,6 +119,34 @@ def test_load_baselines_handles_missing_baselines_dir(tmp_path):
     assert records == []
 
 
+def test_load_baselines_skips_legacy_uuid_only_baselines(tmp_path):
+    """Baselines without cited_doc_titles (pre-PR-#367) must be skipped, not
+    silently matched on UUIDs. UUID matching across different ingests always
+    yields recall=0 — falling back would re-introduce the bug we're fixing."""
+    baselines = tmp_path / "baselines"
+    corpus_dir = baselines / "cuad"
+    corpus_dir.mkdir(parents=True)
+    # Write a legacy baseline: has cited_doc_ids but NO cited_doc_titles.
+    legacy = {
+        "question_id": "cuad-legacy",
+        "question": "A legacy question?",
+        "answer": "an answer",
+        "cited_doc_ids": ["uuid-1234", "uuid-5678"],
+        "tool_call_count": 2,
+        "elapsed_seconds": 1.0,
+        "model": "claude-sonnet-4-6",
+        "timestamp": "2026-04-01T00:00:00Z",
+    }
+    (corpus_dir / "cuad-legacy.json").write_text(json.dumps(legacy))
+    # Also write a good baseline (has cited_doc_titles) to confirm it still loads.
+    _write_baseline(baselines, "cuad", "cuad-good", cited_doc_titles=["title-x"])
+
+    records = load_baselines(baselines, corpora=None, limit_per_corpus=None)
+
+    assert len(records) == 1
+    assert records[0].question_id == "cuad-good"
+
+
 # ── score_one ──
 
 
@@ -127,14 +155,14 @@ def test_score_one_perfect_retrieval():
         corpus="cuad",
         question_id="q1",
         question_text="?",
-        cited_doc_ids=["a", "b"],
+        cited_doc_titles=["doc-a", "doc-b"],
     )
-    ranked = ["a", "b", "x", "y", "z"]
+    ranked = ["doc-a", "doc-b", "doc-x", "doc-y", "doc-z"]
     row = score_one(baseline, ranked, ks=[5, 10])
     assert row.recall_at_k == {5: 1.0, 10: 1.0}
     assert row.reciprocal_rank == 1.0
     assert row.ndcg_at_10 == 1.0
-    assert row.top_doc_id == "a"
+    assert row.top_doc_title == "doc-a"
 
 
 def test_score_one_no_hits_zero_metrics():
@@ -142,31 +170,61 @@ def test_score_one_no_hits_zero_metrics():
         corpus="cuad",
         question_id="q1",
         question_text="?",
-        cited_doc_ids=["a"],
+        cited_doc_titles=["doc-a"],
     )
-    row = score_one(baseline, ["x", "y", "z"], ks=[5, 10])
+    row = score_one(baseline, ["doc-x", "doc-y", "doc-z"], ks=[5, 10])
     assert row.recall_at_k == {5: 0.0, 10: 0.0}
     assert row.reciprocal_rank == 0.0
     assert row.ndcg_at_10 == 0.0
-    assert row.top_doc_id == "x"
+    assert row.top_doc_title == "doc-x"
 
 
 def test_score_one_records_returned_ranked_and_baseline_cites():
     """For the per-question CSV. Lets the operator inspect WHICH docs the
     new pipeline surfaced vs what the baseline expected, without re-running."""
-    baseline = BaselineRecord(corpus="cuad", question_id="q1", question_text="?", cited_doc_ids=["a", "b"])
-    row = score_one(baseline, ["x", "a", "y"], ks=[5])
-    assert row.baseline_cited_doc_ids == ["a", "b"]
-    assert row.returned_doc_ids == ["x", "a", "y"]
+    baseline = BaselineRecord(corpus="cuad", question_id="q1", question_text="?", cited_doc_titles=["doc-a", "doc-b"])
+    row = score_one(baseline, ["doc-x", "doc-a", "doc-y"], ks=[5])
+    assert row.baseline_cited_titles == ["doc-a", "doc-b"]
+    assert row.returned_titles == ["doc-x", "doc-a", "doc-y"]
 
 
 def test_score_one_empty_ranked_zero_metrics_no_top_doc():
-    baseline = BaselineRecord(corpus="cuad", question_id="q1", question_text="?", cited_doc_ids=["a"])
+    baseline = BaselineRecord(corpus="cuad", question_id="q1", question_text="?", cited_doc_titles=["doc-a"])
     row = score_one(baseline, [], ks=[5, 10])
     assert row.recall_at_k == {5: 0.0, 10: 0.0}
     assert row.reciprocal_rank == 0.0
     assert row.ndcg_at_10 == 0.0
-    assert row.top_doc_id is None
+    assert row.top_doc_title is None
+
+
+def test_score_one_normalizes_case_and_whitespace():
+    """Titles differing only by case or surrounding whitespace count as matching."""
+    baseline = BaselineRecord(
+        corpus="cuad",
+        question_id="q1",
+        question_text="?",
+        cited_doc_titles=["Contract Alpha", "  BETA AGREEMENT  "],
+    )
+    # Returned titles have different casing / trailing spaces.
+    ranked = ["contract alpha", "Beta Agreement", "unrelated-doc"]
+    row = score_one(baseline, ranked, ks=[5, 10])
+    assert row.recall_at_k[5] == pytest.approx(1.0)
+    assert row.reciprocal_rank == pytest.approx(1.0)
+
+
+def test_score_one_deduplicates_returned_titles():
+    """Duplicate titles in the returned list count once (avoids inflating recall)."""
+    baseline = BaselineRecord(
+        corpus="cuad",
+        question_id="q1",
+        question_text="?",
+        cited_doc_titles=["doc-a", "doc-b"],
+    )
+    # doc-a appears twice; after dedup it's only one hit in top-2.
+    ranked = ["doc-a", "doc-a", "doc-b"]
+    row = score_one(baseline, ranked, ks=[2])
+    # After dedup: ["doc-a", "doc-b"] — both baseline titles in top-2.
+    assert row.recall_at_k[2] == pytest.approx(1.0)
 
 
 # ── aggregate ──
@@ -180,9 +238,9 @@ def _row(corpus, q, recall, rr, ndcg):
         recall_at_k={5: recall, 10: recall, 20: recall},
         reciprocal_rank=rr,
         ndcg_at_10=ndcg,
-        top_doc_id="x",
-        baseline_cited_doc_ids=["a"],
-        returned_doc_ids=["x"],
+        top_doc_title="some-doc",
+        baseline_cited_titles=["a"],
+        returned_titles=["some-doc"],
     )
 
 
