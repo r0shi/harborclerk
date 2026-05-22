@@ -9,6 +9,7 @@ Each helper is a pure function so it can be tested without database state.
 import re
 
 import yaml
+from markdown_it import MarkdownIt
 
 # Frontmatter must be at the very top of the document. It opens on a `---` line
 # and closes on the next `---` line. Captures the YAML block in group 1 and the
@@ -79,3 +80,65 @@ def flatten_frontmatter(fm: dict) -> str:
         label = key[:1].upper() + key[1:]
         parts.append(f"{label}: {rendered}.")
     return " ".join(parts)
+
+
+def _line_start_offsets(text: str) -> list[int]:
+    """Char offset where each line begins. ``offsets[i]`` is the start of
+    line ``i`` (0-indexed); ``offsets[-1]`` equals ``len(text)``.
+    """
+    offsets = [0]
+    pos = 0
+    for line in text.splitlines(keepends=True):
+        pos += len(line)
+        offsets.append(pos)
+    return offsets
+
+
+def parse_markdown_structure(text: str) -> tuple[list[dict], list[tuple[int, int]]]:
+    """Parse Markdown once and return ``(headings, fence_line_ranges)``.
+
+    ``headings`` is a list of dicts ``{"level": int, "title": str, "position": int}``
+    where ``position`` is the character offset of the heading's first character in
+    ``text`` (the same shape ``_extract_headings_via_tika`` produces, minus the
+    page_num field which the orchestrator fills in later).
+
+    ``fence_line_ranges`` is a list of inclusive ``(start_line, end_line)`` tuples
+    (0-indexed) covering each fenced code block's opening fence, content, and
+    closing fence.
+    """
+    if not text:
+        return [], []
+
+    md = MarkdownIt()
+    tokens = md.parse(text)
+    line_starts = _line_start_offsets(text)
+
+    headings: list[dict] = []
+    fences: list[tuple[int, int]] = []
+
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.type == "heading_open" and tok.tag and tok.tag[0] == "h":
+            level = int(tok.tag[1:])
+            start_line = tok.map[0] if tok.map else 0
+            position = line_starts[start_line] if start_line < len(line_starts) else 0
+            title = ""
+            if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
+                inline = tokens[i + 1]
+                if inline.children:
+                    # Concatenate only text-node children, so e.g. `# **Bold** Title`
+                    # produces "Bold Title" (formatting markers are stripped).
+                    title = "".join(c.content for c in inline.children if c.type == "text").strip()
+                else:
+                    title = inline.content.strip()
+            if title:
+                headings.append({"level": level, "title": title, "position": position})
+        elif tok.type == "fence" and tok.map:
+            # markdown-it's token.map = [start_line, end_line_exclusive].
+            # Convert to inclusive end line.
+            start_line, end_line_excl = tok.map
+            fences.append((start_line, end_line_excl - 1))
+        i += 1
+
+    return headings, fences

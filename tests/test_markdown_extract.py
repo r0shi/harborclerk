@@ -1,6 +1,6 @@
 """Tests for the Markdown extraction helpers in worker/markdown_extract.py."""
 
-from harbor_clerk.worker.markdown_extract import extract_frontmatter, flatten_frontmatter
+from harbor_clerk.worker.markdown_extract import extract_frontmatter, flatten_frontmatter, parse_markdown_structure
 
 # --- extract_frontmatter ---
 
@@ -92,3 +92,58 @@ def test_flatten_combines_multiple_fields():
     out = flatten_frontmatter({"tags": ["a", "b"], "author": "X"})
     assert "Tags: a, b." in out
     assert "Author: X." in out
+
+
+# --- parse_markdown_structure ---
+
+
+def test_parse_structure_empty():
+    headings, fences = parse_markdown_structure("")
+    assert headings == []
+    assert fences == []
+
+
+def test_parse_structure_atx_headings():
+    text = "# Heading One\n\nSome body.\n\n## Heading Two\n"
+    headings, fences = parse_markdown_structure(text)
+    assert fences == []
+    assert len(headings) == 2
+    assert headings[0]["level"] == 1
+    assert headings[0]["title"] == "Heading One"
+    assert headings[1]["level"] == 2
+    assert headings[1]["title"] == "Heading Two"
+    assert headings[0]["position"] < headings[1]["position"]
+    assert headings[0]["position"] == 0
+
+
+def test_parse_structure_setext_headings():
+    """Setext (underline-style) headings are parsed."""
+    text = "Heading One\n===========\n\nBody.\n\nHeading Two\n-----------\n"
+    headings, fences = parse_markdown_structure(text)
+    assert [h["level"] for h in headings] == [1, 2]
+    assert [h["title"] for h in headings] == ["Heading One", "Heading Two"]
+
+
+def test_parse_structure_code_fence_excluded_from_headings():
+    """A `#`-prefixed line inside a fenced code block must NOT be parsed as a heading."""
+    text = "Intro.\n\n```python\n# This is a Python comment, not a heading\n```\n\n# Real heading after the fence\n"
+    headings, fences = parse_markdown_structure(text)
+    titles = [h["title"] for h in headings]
+    assert "Real heading after the fence" in titles
+    assert "This is a Python comment, not a heading" not in titles
+    assert len(fences) == 1
+
+
+def test_parse_structure_fence_line_ranges():
+    """Code-fence spans are inclusive line ranges (0-indexed)."""
+    text = "Intro.\n\n```\nline1\nline2\n```\n\nOutro.\n"
+    _, fences = parse_markdown_structure(text)
+    assert fences == [(2, 5)]
+
+
+def test_parse_structure_heading_position_in_chars():
+    """Position is a character offset in the original text, not a line number."""
+    text = "Line one.\nLine two.\n# Heading on line 3\n"
+    headings, _ = parse_markdown_structure(text)
+    assert len(headings) == 1
+    assert headings[0]["position"] == 20
