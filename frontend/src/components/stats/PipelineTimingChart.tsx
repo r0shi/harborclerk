@@ -1,5 +1,3 @@
-import { classColor, classColorAlpha, queueForStage } from '../../utils/queueColors'
-
 export interface StageTiming {
   avg_run_secs: number
   p50_run_secs: number
@@ -23,6 +21,17 @@ const STAGE_LABELS: Record<string, string> = {
   finalize: 'Finalize',
 }
 
+/**
+ * Distribution-zone colours, fixed and identical on every stage so the
+ * colour reads the metric (p50 / p95 / max) rather than the stage.
+ * Traffic-light progression: green = typical, red = worst case.
+ */
+const METRIC_COLORS = {
+  p50: '#34c759', // system green — median
+  p95: '#ff9500', // system orange — 95th percentile
+  max: '#ff3b30', // system red — slowest single run
+}
+
 function fmtSecs(secs: number): string {
   if (secs < 1) return `${Math.round(secs * 1000)}ms`
   if (secs < 60) return `${secs.toFixed(1)}s`
@@ -33,22 +42,22 @@ function fmtSecs(secs: number): string {
 
 /**
  * Per-stage processing time as a horizontal bar chart that breaks the
- * distribution into median / typical / outlier zones. Reading guide:
+ * distribution into median / typical / outlier zones. Each zone has a
+ * fixed colour (see METRIC_COLORS), the same on every stage, so the
+ * colour reads the metric — not the stage. Reading guide:
  *
- *   ▰▰▰  saturated  : median (p50) — half of jobs finished in this much time
- *   ▰░░  faded ext. : 95th percentile — almost everyone is in by here
- *   ┊    tick mark  : maximum — the slowest single run we've seen
+ *   green   : p50 (median) — half of jobs finished in this much time
+ *   orange  : p95 — almost everyone is in by here
+ *   red ┊   : max (tick mark) — the slowest single run we've seen
  *
- * When the saturated p50 fills most of the bar, the stage is tightly
- * clustered. When the saturated portion is short and the faded
- * extension is long, the stage is bimodal — typical case is fast,
- * but with a heavy tail (this is what map-reduce summarize does on
- * long docs: each call is normal, but the *job* multiplies that by
- * however many groups were needed). The max tick gives you the
- * actual worst-case wall time so you can spot pathological outliers
- * even when p95 looks reasonable.
- *
- * Colour matches the queue class on the Observatory diagram.
+ * When the green p50 zone fills most of the bar, the stage is tightly
+ * clustered. When the green zone is short and the orange p95 extension
+ * is long, the stage is bimodal — typical case is fast, but with a
+ * heavy tail (this is what map-reduce summarize does on long docs:
+ * each call is normal, but the *job* multiplies that by however many
+ * groups were needed). The max tick gives you the actual worst-case
+ * wall time so you can spot pathological outliers even when p95 looks
+ * reasonable.
  */
 export default function PipelineTimingChart({ pipelineTiming }: PipelineTimingChartProps) {
   const visibleStages = STAGES.filter((s) => pipelineTiming[s]?.count)
@@ -69,7 +78,6 @@ export default function PipelineTimingChart({ pipelineTiming }: PipelineTimingCh
     <div className="space-y-1.5">
       {visibleStages.map((stage) => {
         const t = pipelineTiming[stage]
-        const queue = queueForStage(stage)
         const p50Width = Math.min(100, (t.p50_run_secs / axisMax) * 100)
         const p95Width = Math.min(100, (t.p95_run_secs / axisMax) * 100)
         const maxLeft = Math.min(100, (t.max_run_secs / axisMax) * 100)
@@ -86,15 +94,17 @@ export default function PipelineTimingChart({ pipelineTiming }: PipelineTimingCh
               style={{ background: 'rgba(128,128,128,0.12)' }}
               title={`${STAGE_LABELS[stage]} — p50 ${fmtSecs(t.p50_run_secs)}, p95 ${fmtSecs(t.p95_run_secs)}, max ${fmtSecs(t.max_run_secs)}, avg ${fmtSecs(t.avg_run_secs)}, n=${t.count}`}
             >
-              {/* p95 (faded outer reach) */}
+              {/* p95 zone — orange. Runs the full length up to p95; the
+                  p50 layer below paints over its left portion, so what
+                  stays visible is the p50→p95 band. */}
               <div
                 className="absolute left-0 top-0 h-full rounded-sm"
-                style={{ width: `${p95Width}%`, background: classColorAlpha(queue, 0.3) }}
+                style={{ width: `${p95Width}%`, background: METRIC_COLORS.p95 }}
               />
-              {/* p50 (saturated up to median) */}
+              {/* p50 zone — green, 0→median */}
               <div
                 className="absolute left-0 top-0 h-full rounded-sm"
-                style={{ width: `${p50Width}%`, background: classColor(queue) }}
+                style={{ width: `${p50Width}%`, background: METRIC_COLORS.p50 }}
               />
               {/* max tick — vertical line at the longest single-run
                   position. Positioned on the centre of the line so a
@@ -104,7 +114,7 @@ export default function PipelineTimingChart({ pipelineTiming }: PipelineTimingCh
                 style={{
                   left: `calc(${maxLeft}% - 1px)`,
                   width: '2px',
-                  background: classColor(queue),
+                  background: METRIC_COLORS.max,
                 }}
               />
             </div>
@@ -119,8 +129,20 @@ export default function PipelineTimingChart({ pipelineTiming }: PipelineTimingCh
           </div>
         )
       })}
-      <div className="pt-1 text-[10px] text-(--color-text-secondary)">
-        Saturated bar = p50 (median) · faded extension = p95 · vertical tick = max single run · max bolded when ≥ 5× p50
+      <div className="pt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-(--color-text-secondary)">
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-sm" style={{ background: METRIC_COLORS.p50 }} />
+          p50 (median)
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-sm" style={{ background: METRIC_COLORS.p95 }} />
+          p95
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-3 w-[2px]" style={{ background: METRIC_COLORS.max }} />
+          max single run
+        </span>
+        <span>max bolded when ≥ 5× p50</span>
       </div>
     </div>
   )
