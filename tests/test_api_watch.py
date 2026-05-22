@@ -379,3 +379,25 @@ async def test_folder_progress_stream_emits_initial_snapshot(_engine, db_session
 async def test_folder_progress_stream_requires_auth(client):
     resp = await client.get("/api/watch/folders/stream")
     assert resp.status_code == 401
+
+
+async def test_ingest_rejects_excalidraw_md(client, admin_token, db_session, tmp_path):
+    """*.excalidraw.md carries a JSON blob, not prose — /ingest must reject it."""
+    folder = WatchedFolder(path=str(tmp_path), display_name="vault", bookmark_data=None)
+    db_session.add(folder)
+    await db_session.flush()
+
+    resp = await client.post(
+        "/api/watch/ingest",
+        headers=auth_header(admin_token),
+        json={
+            "folder_id": str(folder.folder_id),
+            "relative_path": "Diagram.excalidraw.md",
+            "sha256": "00" * 32,
+            "bookmark_data": "",
+            "source_path": str(tmp_path / "Diagram.excalidraw.md"),
+            "mime_type": "text/markdown",
+        },
+    )
+    assert resp.status_code == 400
+    assert "excalidraw" in resp.json()["detail"].lower()

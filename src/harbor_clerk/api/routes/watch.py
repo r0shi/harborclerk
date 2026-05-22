@@ -16,9 +16,9 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import get_session, require_human_user, require_user
-from harbor_clerk.api.routes.uploads import ALLOWED_EXTENSIONS
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
+from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus, UploadSource
 from harbor_clerk.models.ingestion_job import IngestionJob
@@ -482,6 +482,8 @@ async def ingest_file(
     _validate_source_path(body.source_path, folder.path)
 
     # Validate extension
+    if is_excalidraw(body.relative_path):
+        raise HTTPException(status_code=400, detail="Excalidraw drawings are not ingested")
     ext = PurePosixPath(body.relative_path).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file extension: {ext}")
