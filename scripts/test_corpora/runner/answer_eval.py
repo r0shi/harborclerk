@@ -118,15 +118,17 @@ def run(
     items = load_groundtruth(gt_path)
     log.info("loaded %d ground-truth items from %s", len(items), gt_path)
 
-    cap_dir = workdir / "answer-eval" / "captures" / corpus / model
-    ver_dir = workdir / "answer-eval" / "verdicts" / corpus / model
-    cap_dir.mkdir(parents=True, exist_ok=True)
-    ver_dir.mkdir(parents=True, exist_ok=True)
-
+    # Build the model/judge clients before creating any output directories, so
+    # a missing credential fails fast without leaving empty dirs behind.
     if capture_fn is None:
         capture_fn = _live_capture_fn(api_base=api_base, corpus=corpus, model=model, insecure=insecure)
     if judge is None:
         judge = AnswerJudge()
+
+    cap_dir = workdir / "answer-eval" / "captures" / corpus / model
+    ver_dir = workdir / "answer-eval" / "verdicts" / corpus / model
+    cap_dir.mkdir(parents=True, exist_ok=True)
+    ver_dir.mkdir(parents=True, exist_ok=True)
 
     rows: list[tuple[str, str, AnswerVerdict]] = []
     for item in items:
@@ -244,14 +246,15 @@ def main_from_args(args: argparse.Namespace) -> int:
             corpus,
             model,
         )
-    if not args.label:
+    label = getattr(args, "label", None)
+    if not label:
         log.error("--label is required for --mode answer-eval")
         return 2
     return run(
         workdir=Path(args.workdir),
         corpus=corpus,
         model=model,
-        label=args.label,
+        label=label,
         api_base=args.api_base,
         refresh=args.refresh,
         rejudge=args.rejudge,

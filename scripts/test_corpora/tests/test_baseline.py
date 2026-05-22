@@ -82,3 +82,22 @@ def test_run_question_records_tool_transcript():
     assert call["tool"] == "kb_search"
     assert call["args"] == {"query": "x"}
     assert "doc_id" in call["result_summary"]
+
+
+def test_run_question_extracts_last_text_block_not_first():
+    """The final answer is the last text block of the assistant turn, even when
+    the turn's first content block is a non-text block."""
+    from unittest.mock import MagicMock
+
+    from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
+
+    non_text = MagicMock(spec=["type", "id"])  # spec'd: has no .text attribute
+    non_text.type = "tool_use"
+    text_block = MagicMock(text="the real answer")
+    fake = MagicMock()
+    fake.messages.create.return_value = MagicMock(content=[non_text, text_block], stop_reason="end_turn")
+
+    gen = BaselineGenerator(client=fake, mcp_session=None)
+    res = gen.run_question(question="q", question_id="q1", corpus="cuad")
+
+    assert res.answer == "the real answer"

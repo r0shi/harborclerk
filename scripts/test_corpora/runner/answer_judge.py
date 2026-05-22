@@ -55,13 +55,16 @@ class AnswerVerdict:
 
 
 def _extract_json(text: str) -> dict:
+    """Pull the score JSON object out of the judge reply, tolerating a ```json
+    fence and any prose after the object's closing brace."""
     fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
     if fence:
-        return json.loads(fence.group(1))
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
+        text = fence.group(1)
+    start = text.find("{")
+    if start == -1:
         raise ValueError("no JSON object in judge response")
-    return json.loads(text[start : end + 1])
+    obj, _ = json.JSONDecoder().raw_decode(text, start)
+    return obj
 
 
 class AnswerJudge:

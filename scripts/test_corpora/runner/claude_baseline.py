@@ -165,10 +165,14 @@ class BaselineGenerator:
                     )
             messages.append({"role": "user", "content": tool_results})
 
-        # Final answer is the last text block in the assistant turn
+        # Final answer is the last text block in the assistant turn — scan from
+        # the end so a leading non-text block (e.g. tool_use) is skipped.
         final = ""
-        if resp and resp.content and hasattr(resp.content[0], "text"):
-            final = resp.content[0].text
+        if resp and resp.content:
+            for block in reversed(resp.content):
+                if hasattr(block, "text"):
+                    final = block.text
+                    break
 
         return BaselineResult(
             question_id=question_id,

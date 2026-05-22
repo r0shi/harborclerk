@@ -63,3 +63,10 @@ def test_extract_json_rejects_response_without_json():
     """A judge reply with no JSON object raises a clear error, not a JSONDecodeError."""
     with pytest.raises(ValueError, match="no JSON object"):
         _extract_json("the model refused and returned only prose")
+
+
+def test_extract_json_ignores_trailing_prose():
+    """raw_decode stops at the JSON object's closing brace, ignoring trailing
+    commentary even when that commentary itself contains braces."""
+    txt = '{"correctness": 5, "groundedness": 5, "completeness": 5, "rationale": "ok"}\n\nNote: see {4.2}.'
+    assert _extract_json(txt)["correctness"] == 5
