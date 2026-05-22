@@ -46,3 +46,36 @@ def extract_frontmatter(text: str) -> tuple[dict, str]:
     if not isinstance(parsed, dict):
         return {}, text  # arrays-at-top etc. are not Obsidian frontmatter
     return parsed, body
+
+
+def _is_scalar(value) -> bool:
+    return isinstance(value, (str, int, float, bool))
+
+
+def flatten_frontmatter(fm: dict) -> str:
+    """Render frontmatter fields as a readable single-paragraph preamble.
+
+    Scalar values become ``Key: value.`` Lists of scalars become
+    ``Key: v1, v2, v3.`` Nested structures, ``None``, and empty lists are
+    skipped. The ``title`` key is skipped (the orchestrator uses it to
+    override ``documents.title``).
+
+    Returns an empty string when nothing emits.
+    """
+    parts: list[str] = []
+    for key, value in fm.items():
+        if key == "title":
+            continue
+        if value is None:
+            continue
+        if isinstance(value, list):
+            if not value or not all(_is_scalar(v) for v in value):
+                continue
+            rendered = ", ".join(str(v) for v in value)
+        elif _is_scalar(value):
+            rendered = str(value)
+        else:
+            continue  # nested dict / other non-flat structure
+        label = key[:1].upper() + key[1:]
+        parts.append(f"{label}: {rendered}.")
+    return " ".join(parts)
