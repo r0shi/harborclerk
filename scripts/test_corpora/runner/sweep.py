@@ -32,7 +32,7 @@ from pathlib import Path
 import anthropic
 import httpx
 import yaml
-from anthropic._exceptions import OverloadedError
+from anthropic._exceptions import OverloadedError, RateLimitError
 
 from scripts.test_corpora import conftest as cfg
 from scripts.test_corpora.corpora import cuad, enron, synthetic
@@ -84,27 +84,30 @@ HC_RECOVERY_WAIT_SECONDS = 120
 HC_UNREACHABLE_CONSECUTIVE_LIMIT = 3
 
 
-# Anthropic 529 (Overloaded) retry budget for Phase 1 baselines. The SDK's
-# built-in retries cover only ~5s, but a real overload can persist for many
-# minutes; once that window is exhausted the SDK raises OverloadedError and,
-# uncaught, it kills the whole multi-hour sweep. We retry the baseline with
-# exponential backoff, capping each sleep below the supervisor's 30-minute
-# "stuck" threshold so a long backoff is never mistaken for a hang.
-OVERLOAD_RETRY_BASE_SECONDS = 60
-OVERLOAD_RETRY_MAX_DELAY_SECONDS = 600
-OVERLOAD_RETRY_BUDGET_SECONDS = 3600
+# Anthropic 429 (rate-limited) / 529 (overloaded) retry budget for Phase 1
+# baselines. The SDK's built-in retries cover only ~5s, but a real rate-limit
+# window or Anthropic overload can persist for many minutes; once that window
+# is exhausted the SDK raises RateLimitError / OverloadedError and, uncaught,
+# it kills the whole multi-hour sweep. We retry the baseline with exponential
+# backoff, capping each sleep below the supervisor's 30-minute "stuck"
+# threshold so a long backoff is never mistaken for a hang.
+ANTHROPIC_RETRY_BASE_SECONDS = 60
+ANTHROPIC_RETRY_MAX_DELAY_SECONDS = 600
+ANTHROPIC_RETRY_BUDGET_SECONDS = 3600
 
 
-def _with_overload_retry(fn, *args, sleep=time.sleep, max_total_seconds: int = OVERLOAD_RETRY_BUDGET_SECONDS):
-    """Call ``fn(*args)``, retrying on Anthropic ``OverloadedError`` (HTTP 529).
+def _with_anthropic_retry(fn, *args, sleep=time.sleep, max_total_seconds: int = ANTHROPIC_RETRY_BUDGET_SECONDS):
+    """Call ``fn(*args)``, retrying on transient Anthropic API errors —
+    ``RateLimitError`` (HTTP 429) and ``OverloadedError`` (HTTP 529).
 
-    An Anthropic overload routinely lasts longer than the SDK's built-in
-    ~5s retry window. Rather than let an uncaught ``OverloadedError`` abort
-    a multi-hour sweep, retry with exponential backoff (60s, 120s, 240s,
-    ... capped at 600s per attempt) until ``fn`` succeeds or the cumulative
-    backoff reaches ``max_total_seconds`` (~1 hr). On budget exhaustion the
-    ``OverloadedError`` is re-raised so the caller can leave the unit
-    PENDING for a later ``--resume``.
+    A rate-limit window or Anthropic overload routinely lasts longer than the
+    SDK's built-in ~5s retry window. Rather than let an uncaught
+    ``RateLimitError`` / ``OverloadedError`` abort a multi-hour sweep, retry
+    with exponential backoff (60s, 120s, 240s, ... capped at 600s per attempt)
+    until ``fn`` succeeds or the cumulative backoff reaches
+    ``max_total_seconds`` (~1 hr). On budget exhaustion the original error is
+    re-raised so the caller can leave the unit PENDING for a later
+    ``--resume``.
 
     ``sleep`` is injectable so tests need not wait in real time.
     """
@@ -113,13 +116,15 @@ def _with_overload_retry(fn, *args, sleep=time.sleep, max_total_seconds: int = O
     while True:
         try:
             return fn(*args)
-        except OverloadedError:
+        except (OverloadedError, RateLimitError) as exc:
             if waited >= max_total_seconds:
                 raise
-            delay = min(OVERLOAD_RETRY_BASE_SECONDS * 2**attempt, OVERLOAD_RETRY_MAX_DELAY_SECONDS)
+            delay = min(ANTHROPIC_RETRY_BASE_SECONDS * 2**attempt, ANTHROPIC_RETRY_MAX_DELAY_SECONDS)
             delay = min(delay, max_total_seconds - waited)
             log.warning(
-                "Anthropic 529 Overloaded — backing off %.0fs before retry (attempt %d, %.0fs of %ds budget used)",
+                "Anthropic API returned HTTP %s — backing off %.0fs before retry "
+                "(attempt %d, %.0fs of %ds budget used)",
+                exc.status_code,
                 delay,
                 attempt + 1,
                 waited,
@@ -1179,7 +1184,7 @@ def main(argv: list[str] | None = None) -> int:
                                 error=f"unfilled placeholder: {placeholder}",
                             )
                             continue
-                        out = _with_overload_retry(
+                        out = _with_anthropic_retry(
                             _phase1_baseline, anthro, mcp_session, u.corpus, u.question_id, text, run_dir
                         )
                     elif phase in (2, 3, 4, 5, 6):
@@ -1394,18 +1399,19 @@ def main(argv: list[str] | None = None) -> int:
                                 f"({HC_RECOVERY_WAIT_SECONDS}s each); exiting cleanly so "
                                 "--resume picks up where we left off."
                             ) from exc
-                except OverloadedError:
-                    # Anthropic stayed overloaded (529) past the ~1 hr retry
-                    # budget. Not a unit-level failure — leave it PENDING (not
-                    # ERROR) so `--resume` re-runs it once Anthropic recovers,
-                    # and continue so the rest of the corpus still finishes.
+                except (OverloadedError, RateLimitError):
+                    # Anthropic stayed rate-limited (429) or overloaded (529)
+                    # past the ~1 hr retry budget. Not a unit-level failure —
+                    # leave it PENDING (not ERROR) so `--resume` re-runs it
+                    # once Anthropic recovers, and continue so the rest of the
+                    # corpus still finishes.
                     log.warning(
-                        "unit %s/%s/%s: Anthropic overloaded past the %ds retry budget; "
+                        "unit %s/%s/%s: Anthropic rate-limited/overloaded past the %ds retry budget; "
                         "leaving PENDING for --resume and continuing",
                         u.corpus,
                         u.model,
                         u.question_id,
-                        OVERLOAD_RETRY_BUDGET_SECONDS,
+                        ANTHROPIC_RETRY_BUDGET_SECONDS,
                     )
                     cur = sf.get(u.phase, u.corpus, u.model, u.question_id, u.depth)
                     if cur is not None:
