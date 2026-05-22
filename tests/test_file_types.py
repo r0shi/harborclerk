@@ -70,7 +70,7 @@ def test_plain_text_is_subset_of_allowed():
 
 
 def test_markdown_set_is_exact():
-    assert MARKDOWN_EXTENSIONS == {".md", ".markdown"}
+    assert {".md", ".markdown"} == MARKDOWN_EXTENSIONS
     assert MARKDOWN_EXTENSIONS <= PLAIN_TEXT_EXTENSIONS
 
 
