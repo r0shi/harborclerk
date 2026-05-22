@@ -32,6 +32,7 @@ from pathlib import Path
 import anthropic
 import httpx
 import yaml
+from anthropic._exceptions import OverloadedError
 
 from scripts.test_corpora import conftest as cfg
 from scripts.test_corpora.corpora import cuad, enron, synthetic
@@ -81,6 +82,52 @@ HC_RECOVERY_WAIT_SECONDS = 120
 # of total wait before exit — well-suited to multi-hour runs where a
 # clean exit + --resume costs less than re-running cells.
 HC_UNREACHABLE_CONSECUTIVE_LIMIT = 3
+
+
+# Anthropic 529 (Overloaded) retry budget for Phase 1 baselines. The SDK's
+# built-in retries cover only ~5s, but a real overload can persist for many
+# minutes; once that window is exhausted the SDK raises OverloadedError and,
+# uncaught, it kills the whole multi-hour sweep. We retry the baseline with
+# exponential backoff, capping each sleep below the supervisor's 30-minute
+# "stuck" threshold so a long backoff is never mistaken for a hang.
+OVERLOAD_RETRY_BASE_SECONDS = 60
+OVERLOAD_RETRY_MAX_DELAY_SECONDS = 600
+OVERLOAD_RETRY_BUDGET_SECONDS = 3600
+
+
+def _with_overload_retry(fn, *args, sleep=time.sleep, max_total_seconds: int = OVERLOAD_RETRY_BUDGET_SECONDS):
+    """Call ``fn(*args)``, retrying on Anthropic ``OverloadedError`` (HTTP 529).
+
+    An Anthropic overload routinely lasts longer than the SDK's built-in
+    ~5s retry window. Rather than let an uncaught ``OverloadedError`` abort
+    a multi-hour sweep, retry with exponential backoff (60s, 120s, 240s,
+    ... capped at 600s per attempt) until ``fn`` succeeds or the cumulative
+    backoff reaches ``max_total_seconds`` (~1 hr). On budget exhaustion the
+    ``OverloadedError`` is re-raised so the caller can leave the unit
+    PENDING for a later ``--resume``.
+
+    ``sleep`` is injectable so tests need not wait in real time.
+    """
+    attempt = 0
+    waited = 0.0
+    while True:
+        try:
+            return fn(*args)
+        except OverloadedError:
+            if waited >= max_total_seconds:
+                raise
+            delay = min(OVERLOAD_RETRY_BASE_SECONDS * 2**attempt, OVERLOAD_RETRY_MAX_DELAY_SECONDS)
+            delay = min(delay, max_total_seconds - waited)
+            log.warning(
+                "Anthropic 529 Overloaded — backing off %.0fs before retry (attempt %d, %.0fs of %ds budget used)",
+                delay,
+                attempt + 1,
+                waited,
+                max_total_seconds,
+            )
+            sleep(delay)
+            waited += delay
+            attempt += 1
 
 
 def _wait_for_hc_reachable(hc: HarborClerkClient, max_wait_seconds: int = HC_RECOVERY_WAIT_SECONDS) -> bool:
@@ -1132,7 +1179,9 @@ def main(argv: list[str] | None = None) -> int:
                                 error=f"unfilled placeholder: {placeholder}",
                             )
                             continue
-                        out = _phase1_baseline(anthro, mcp_session, u.corpus, u.question_id, text, run_dir)
+                        out = _with_overload_retry(
+                            _phase1_baseline, anthro, mcp_session, u.corpus, u.question_id, text, run_dir
+                        )
                     elif phase in (2, 3, 4, 5, 6):
                         owning_corpus = (
                             u.corpus
@@ -1345,6 +1394,26 @@ def main(argv: list[str] | None = None) -> int:
                                 f"({HC_RECOVERY_WAIT_SECONDS}s each); exiting cleanly so "
                                 "--resume picks up where we left off."
                             ) from exc
+                except OverloadedError:
+                    # Anthropic stayed overloaded (529) past the ~1 hr retry
+                    # budget. Not a unit-level failure — leave it PENDING (not
+                    # ERROR) so `--resume` re-runs it once Anthropic recovers,
+                    # and continue so the rest of the corpus still finishes.
+                    log.warning(
+                        "unit %s/%s/%s: Anthropic overloaded past the %ds retry budget; "
+                        "leaving PENDING for --resume and continuing",
+                        u.corpus,
+                        u.model,
+                        u.question_id,
+                        OVERLOAD_RETRY_BUDGET_SECONDS,
+                    )
+                    cur = sf.get(u.phase, u.corpus, u.model, u.question_id, u.depth)
+                    if cur is not None:
+                        cur.status = Status.PENDING
+                        cur.heartbeat = None
+                        cur.started_at = None
+                        cur.error = None
+                    sf.save()
                 except (httpx.HTTPError, RuntimeError, KeyError) as exc:
                     log.exception("unit failed: %s", u)
                     sf.set_status(u.phase, u.corpus, u.model, u.question_id, u.depth, Status.ERROR, error=str(exc))
