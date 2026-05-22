@@ -11,6 +11,7 @@ from harbor_clerk.worker.stages.extract import (
     _extract_via_tika,
     _paginate_text,
     _sanitize_external_string,
+    is_plain_text_source,
 )
 
 # --- _paginate_text ---
@@ -262,3 +263,25 @@ def test_sanitize_external_string_caps_length():
 
 def test_sanitize_external_string_handles_empty():
     assert _sanitize_external_string("") == ""
+
+
+# --- is_plain_text_source ---
+
+
+def test_is_plain_text_source_by_mime():
+    assert is_plain_text_source("text/plain", "") is True
+
+
+def test_is_plain_text_source_new_extensions():
+    for key in ("notes.rst", "data.json", "script.py", "subs.srt", "graph.canvas", "doc.markdown"):
+        assert is_plain_text_source("", key) is True, key
+
+
+def test_is_plain_text_source_legacy_plain_text():
+    for key in ("readme.txt", "notes.md", "table.csv"):
+        assert is_plain_text_source("", key) is True, key
+
+
+def test_is_plain_text_source_tika_formats_excluded():
+    for key in ("report.pdf", "memo.docx", "sheet.xlsx", "page.html", "book.epub"):
+        assert is_plain_text_source("", key) is False, key
