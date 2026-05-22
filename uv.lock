@@ -157,18 +157,6 @@ wheels = [
 ]
 
 [[package]]
-name = "authlib"
-version = "1.6.12"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cryptography" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/d3/30/6691fdc63b35f54a5a65e04fa1e59d827f4d4e8f4a39678ba7d3088ce0c8/authlib-1.6.12.tar.gz", hash = "sha256:0656d8482f28fc8221929d5f35b2bde5d13e10555ebc06b4561b0d622e83b1bd", size = 165368, upload-time = "2026-05-04T08:11:31.826Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cd/51/9b0b5cd4cf683a02db937a6f9bbebcdc9c56558a7bb3763ce7d3512103c3/authlib-1.6.12-py2.py3-none-any.whl", hash = "sha256:e9229ad7fde610b139dd12f5edbe97eab9ee78bfb85691247e767727850b99ab", size = 244473, upload-time = "2026-05-04T08:11:30.354Z" },
-]
-
-[[package]]
 name = "bcrypt"
 version = "5.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -731,7 +719,6 @@ dependencies = [
     { name = "aioimaplib" },
     { name = "alembic" },
     { name = "asyncpg" },
-    { name = "authlib" },
     { name = "bcrypt" },
     { name = "bertopic" },
     { name = "cryptography" },
@@ -740,6 +727,7 @@ dependencies = [
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "langdetect" },
+    { name = "markdown-it-py" },
     { name = "mcp" },
     { name = "minio" },
     { name = "numpy" },
@@ -751,6 +739,7 @@ dependencies = [
     { name = "pypdfium2" },
     { name = "pytesseract" },
     { name = "python-multipart" },
+    { name = "pyyaml" },
     { name = "spacy" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "umap-learn" },
@@ -773,7 +762,6 @@ requires-dist = [
     { name = "aioimaplib", specifier = ">=1.1.0" },
     { name = "alembic", specifier = ">=1.14.0" },
     { name = "asyncpg", specifier = ">=0.30.0" },
-    { name = "authlib", specifier = ">=1.6.12" },
     { name = "bcrypt", specifier = ">=4.2.0" },
     { name = "bertopic", specifier = ">=0.16" },
     { name = "cryptography", specifier = ">=44.0.0" },
@@ -782,6 +770,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "huggingface-hub", specifier = ">=0.25.0" },
     { name = "langdetect", specifier = ">=1.0.9" },
+    { name = "markdown-it-py", specifier = ">=3.0.0" },
     { name = "mcp", specifier = ">=1.9.0" },
     { name = "minio", specifier = ">=7.2.0" },
     { name = "numpy", specifier = ">=2.4.4" },
@@ -798,6 +787,7 @@ requires-dist = [
     { name = "pytest-httpserver", marker = "extra == 'test'", specifier = ">=1.1" },
     { name = "pytest-httpx", marker = "extra == 'test'", specifier = ">=0.32" },
     { name = "python-multipart", specifier = ">=0.0.27" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "ruff", marker = "extra == 'test'", specifier = ">=0.11" },
     { name = "spacy", specifier = ">=3.7.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.49" },
