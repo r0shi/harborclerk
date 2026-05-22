@@ -1,7 +1,9 @@
 """Tests for the Markdown extraction helpers in worker/markdown_extract.py."""
 
 from harbor_clerk.worker.markdown_extract import (
+    MarkdownExtractResult,
     extract_frontmatter,
+    extract_markdown,
     flatten_frontmatter,
     normalize_markdown,
     parse_markdown_structure,
@@ -217,3 +219,86 @@ def test_normalize_preserves_code_fence_content():
 def test_normalize_idempotent_on_clean_prose():
     text = "Just plain prose with no markup.\n"
     assert normalize_markdown(text, []) == text
+
+
+# --- extract_markdown orchestrator ---
+
+
+def test_extract_markdown_minimal():
+    """A plain Markdown doc with one heading."""
+    data = b"# Hello\n\nWorld.\n"
+    result = extract_markdown(data)
+    assert isinstance(result, MarkdownExtractResult)
+    assert result.title is None
+    assert len(result.pages) == 1
+    page_num, page_text = result.pages[0]
+    assert page_num == 1
+    assert "Hello" in page_text
+    assert "World." in page_text
+    assert len(result.headings) == 1
+    assert result.headings[0]["level"] == 1
+    assert result.headings[0]["title"] == "Hello"
+
+
+def test_extract_markdown_frontmatter_title_returned():
+    """Frontmatter `title` is returned so the caller can apply it to doc.title."""
+    data = b"---\ntitle: Project Plan\n---\n\nBody.\n"
+    result = extract_markdown(data)
+    assert result.title == "Project Plan"
+
+
+def test_extract_markdown_frontmatter_preamble_prepended():
+    """Non-title frontmatter fields become a searchable preamble in the page text."""
+    data = b"---\ntitle: X\ntags: [finance, draft]\n---\n# Body Heading\n\nBody text.\n"
+    result = extract_markdown(data)
+    page_text = result.pages[0][1]
+    assert "Tags: finance, draft." in page_text
+    assert "---" not in page_text
+
+
+def test_extract_markdown_normalises_body():
+    """Markdown syntax is stripped from the body before pagination."""
+    data = b"# Heading\n\nThis is **bold** with [a link](https://example.com).\n"
+    result = extract_markdown(data)
+    page_text = result.pages[0][1]
+    assert "**bold**" not in page_text
+    assert "bold" in page_text
+    assert "https://example.com" not in page_text
+    assert "a link" in page_text
+
+
+def test_extract_markdown_heading_positions_match_normalised_text():
+    """Heading positions are character offsets into the page text."""
+    data = b"# Section A\n\nProse.\n\n## Section B\n\nMore prose.\n"
+    result = extract_markdown(data)
+    page_text = result.pages[0][1]
+    for h in result.headings:
+        assert page_text[h["position"] :].startswith(h["title"])
+
+
+def test_extract_markdown_invalid_utf8_replaced():
+    """Invalid UTF-8 bytes are replaced rather than raising."""
+    data = b"# Heading\n\nBad byte: \xff bytes.\n"
+    result = extract_markdown(data)
+    assert "Heading" in result.pages[0][1]
+
+
+def test_extract_markdown_code_fence_survives():
+    data = b"# Heading\n\n```python\nx = '**not bold**'\n```\n\nAfter.\n"
+    result = extract_markdown(data)
+    page_text = result.pages[0][1]
+    assert "x = '**not bold**'" in page_text
+
+
+def test_extract_markdown_no_frontmatter_no_title():
+    data = b"# Body Heading\n\nProse.\n"
+    result = extract_markdown(data)
+    assert result.title is None
+
+
+def test_extract_markdown_frontmatter_only_title_no_preamble():
+    data = b"---\ntitle: Just A Title\n---\n# Body.\n\nText.\n"
+    result = extract_markdown(data)
+    assert result.title == "Just A Title"
+    page_text = result.pages[0][1]
+    assert page_text.startswith("Body.") or page_text.startswith("Body")

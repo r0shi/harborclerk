@@ -7,9 +7,12 @@ Each helper is a pure function so it can be tested without database state.
 """
 
 import re
+from dataclasses import dataclass
 
 import yaml
 from markdown_it import MarkdownIt
+
+from harbor_clerk.config import get_settings
 
 # Frontmatter must be at the very top of the document. It opens on a `---` line
 # and closes on the next `---` line. Captures the YAML block in group 1 and the
@@ -210,3 +213,87 @@ def normalize_markdown(text: str, code_fence_line_ranges: list[tuple[int, int]])
             body = body[:-1]
         out.append(_normalize_line(body) + newline)
     return "".join(out)
+
+
+@dataclass
+class MarkdownExtractResult:
+    """Output of :func:`extract_markdown` — what ``run_extract`` consumes.
+
+    - ``title``: the frontmatter ``title`` field, if present and a non-empty
+      string. The caller updates ``documents.title`` from this.
+    - ``pages``: ``[(page_num, text)]`` in the same shape as ``_extract_txt`` /
+      ``_extract_via_tika`` return.
+    - ``headings``: a list of dicts ``{"level", "title", "position", "page_num"}``
+      in the same shape as the Tika heading flow's output.
+    """
+
+    title: str | None
+    pages: list[tuple[int, str]]
+    headings: list[dict]
+
+
+def extract_markdown(data: bytes) -> MarkdownExtractResult:
+    """Decode and structure-parse Markdown bytes for ingestion.
+
+    Pipeline: decode → frontmatter (with title override) → preamble →
+    parse structure on body → normalize body → relocate heading positions →
+    compose preamble + body → paginate → map heading positions to pages.
+    """
+    # Lazy import — avoids a circular dependency with worker.stages.extract,
+    # which imports from this module.
+    from harbor_clerk.worker.stages.extract import _paginate_text
+
+    text = data.decode("utf-8", errors="replace")
+
+    frontmatter, body = extract_frontmatter(text)
+    title = frontmatter.get("title")
+    if not isinstance(title, str) or not title.strip():
+        title = None
+
+    preamble = flatten_frontmatter(frontmatter)
+    raw_headings, fence_ranges = parse_markdown_structure(body)
+    normalized_body = normalize_markdown(body, fence_ranges)
+
+    # Compose the final text the rest of the pipeline will see.
+    if preamble:
+        full_text = preamble + "\n\n" + normalized_body
+        body_offset_in_full = len(preamble) + 2
+    else:
+        full_text = normalized_body
+        body_offset_in_full = 0
+
+    # Relocate each heading title in the normalized body via string search.
+    # ``low_water`` keeps order monotonic when multiple headings share a title.
+    headings: list[dict] = []
+    low_water = 0
+    for h in raw_headings:
+        pos_in_body = normalized_body.find(h["title"], low_water)
+        if pos_in_body < 0:
+            continue  # title not located after normalization — skip
+        low_water = pos_in_body + len(h["title"])
+        headings.append(
+            {
+                "level": h["level"],
+                "title": h["title"],
+                "position": pos_in_body + body_offset_in_full,
+                "page_num": None,  # filled in below
+            }
+        )
+
+    settings = get_settings()
+    pages = _paginate_text(full_text, settings.synthetic_page_chars)
+
+    # Map each heading's position to a page number.
+    cum_offsets: list[tuple[int, int, int]] = []  # (start, end, page_num)
+    offset = 0
+    for page_num, page_text in pages:
+        end = offset + len(page_text)
+        cum_offsets.append((offset, end, page_num))
+        offset = end
+    for h in headings:
+        for _start, end, pnum in cum_offsets:
+            if h["position"] < end:
+                h["page_num"] = pnum
+                break
+
+    return MarkdownExtractResult(title=title, pages=pages, headings=headings)
