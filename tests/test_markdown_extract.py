@@ -1,6 +1,11 @@
 """Tests for the Markdown extraction helpers in worker/markdown_extract.py."""
 
-from harbor_clerk.worker.markdown_extract import extract_frontmatter, flatten_frontmatter, parse_markdown_structure
+from harbor_clerk.worker.markdown_extract import (
+    extract_frontmatter,
+    flatten_frontmatter,
+    normalize_markdown,
+    parse_markdown_structure,
+)
 
 # --- extract_frontmatter ---
 
@@ -147,3 +152,68 @@ def test_parse_structure_heading_position_in_chars():
     headings, _ = parse_markdown_structure(text)
     assert len(headings) == 1
     assert headings[0]["position"] == 20
+
+
+# --- normalize_markdown ---
+
+
+def test_normalize_strips_atx_heading_marker():
+    assert normalize_markdown("# Heading One\n", []) == "Heading One\n"
+
+
+def test_normalize_strips_multi_level_atx():
+    assert normalize_markdown("### Sub-section\n", []) == "Sub-section\n"
+
+
+def test_normalize_strips_bold_emphasis():
+    out = normalize_markdown("This is **bold** text.\n", [])
+    assert out == "This is bold text.\n"
+
+
+def test_normalize_strips_italic_emphasis():
+    out = normalize_markdown("This is *italic* text.\n", [])
+    assert out == "This is italic text.\n"
+
+
+def test_normalize_strips_underscore_emphasis():
+    out = normalize_markdown("__bold__ and _italic_ work too.\n", [])
+    assert out == "bold and italic work too.\n"
+
+
+def test_normalize_unwraps_inline_link():
+    out = normalize_markdown("See [the report](https://example.com/r.pdf) here.\n", [])
+    assert out == "See the report here.\n"
+
+
+def test_normalize_unwraps_wikilink_plain():
+    out = normalize_markdown("Refers to [[Project Plan]] for details.\n", [])
+    assert out == "Refers to Project Plan for details.\n"
+
+
+def test_normalize_unwraps_wikilink_with_alias():
+    out = normalize_markdown("See [[ProjectPlan|the plan]] for details.\n", [])
+    assert out == "See the plan for details.\n"
+
+
+def test_normalize_unwraps_wikilink_with_heading_anchor():
+    out = normalize_markdown("See [[ProjectPlan#Budget]].\n", [])
+    assert out == "See ProjectPlan.\n"
+
+
+def test_normalize_inline_tag_loses_hash():
+    out = normalize_markdown("Logged with #project-q3 today.\n", [])
+    assert out == "Logged with project-q3 today.\n"
+
+
+def test_normalize_preserves_code_fence_content():
+    """Text inside a fenced code block is left verbatim, including # and ** syntax."""
+    text = "Intro.\n\n```python\n# This **stays** bold-looking\nprint('[x](y)')\n```\n\nOutro **bold**.\n"
+    out = normalize_markdown(text, [(2, 5)])
+    assert "# This **stays** bold-looking" in out
+    assert "print('[x](y)')" in out
+    assert "Outro bold." in out
+
+
+def test_normalize_idempotent_on_clean_prose():
+    text = "Just plain prose with no markup.\n"
+    assert normalize_markdown(text, []) == text

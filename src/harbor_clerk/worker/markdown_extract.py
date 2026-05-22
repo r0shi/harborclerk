@@ -142,3 +142,71 @@ def parse_markdown_structure(text: str) -> tuple[list[dict], list[tuple[int, int
         i += 1
 
     return headings, fences
+
+
+# Wikilink: [[Target]], [[Target#Anchor]], [[Target|Alias]], [[Target#Anchor|Alias]].
+# Group 1 = target, Group 2 = alias (optional).
+_WIKILINK_RE = re.compile(r"\[\[([^\[\]|#]+?)(?:#[^\[\]|]+)?(?:\|([^\[\]]+))?\]\]")
+# Inline link: [text](url). Group 1 = text. URLs without spaces.
+_INLINE_LINK_RE = re.compile(r"\[([^\[\]]+?)\]\(([^()\s]+)\)")
+# ATX heading at line start: 1-6 `#` then a space then the title.
+_ATX_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+# Bold (**...** or __...__). Run BEFORE italic so longer markers go first.
+_BOLD_RE = re.compile(r"(\*\*|__)(.+?)\1")
+# Italic (*...* or _..._). Lookarounds keep us from biting into adjacent words
+# or leftover bold markers.
+_ITALIC_RE = re.compile(r"(?<![\w*_])([*_])(?!\s)(.+?)(?<!\s)\1(?![\w*_])")
+# Inline tag: `#word` not preceded by a word char, `/`, or another `#`.
+# Captures the word; the leading `#` is dropped.
+_INLINE_TAG_RE = re.compile(r"(?<![\w/#])#([A-Za-z][\w\-/]+)")
+
+
+def _normalize_line(line: str) -> str:
+    """Apply per-line normalization to a single (non-code-fence) line."""
+    # Wikilinks first (they use `[[ ]]` which would otherwise interact with
+    # inline-link / emphasis matching).
+    line = _WIKILINK_RE.sub(lambda m: m.group(2) if m.group(2) else m.group(1), line)
+    # Inline links: keep the link text, drop the URL.
+    line = _INLINE_LINK_RE.sub(lambda m: m.group(1), line)
+    # ATX heading: strip leading `#` markers, keep the title text.
+    m = _ATX_HEADING_RE.match(line)
+    if m:
+        line = m.group(2)
+    # Emphasis: bold first (longer markers), then italic.
+    line = _BOLD_RE.sub(lambda m: m.group(2), line)
+    line = _ITALIC_RE.sub(lambda m: m.group(2), line)
+    # Inline #tag → tag.
+    line = _INLINE_TAG_RE.sub(lambda m: m.group(1), line)
+    return line
+
+
+def normalize_markdown(text: str, code_fence_line_ranges: list[tuple[int, int]]) -> str:
+    """Strip Markdown syntax in place. Code-fence content is left verbatim.
+
+    ``code_fence_line_ranges`` are inclusive 0-indexed line spans (the second
+    element of :func:`parse_markdown_structure`'s return). Any line whose index
+    falls inside one of these ranges is emitted unchanged.
+    """
+    if not text:
+        return text
+
+    def in_fence(line_idx: int) -> bool:
+        return any(start <= line_idx <= end for start, end in code_fence_line_ranges)
+
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    for i, raw_line in enumerate(lines):
+        if in_fence(i):
+            out.append(raw_line)
+            continue
+        # Preserve any trailing newline through the transform.
+        newline = ""
+        body = raw_line
+        if body.endswith("\r\n"):
+            newline = "\r\n"
+            body = body[:-2]
+        elif body.endswith("\n"):
+            newline = "\n"
+            body = body[:-1]
+        out.append(_normalize_line(body) + newline)
+    return "".join(out)
