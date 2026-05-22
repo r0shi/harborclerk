@@ -57,12 +57,15 @@ silently drops. Delivered in five sequential phases on one branch.
 documents, persist the graph in a new table, and feed it into `kb_find_related`.
 Surfacing backlinks in MCP/UI is deferred.
 
-**Markdown normalization: in-place, at extract time, no dual column.** `chunks` has one
-text column; a raw-vs-indexed split would require a migration plus reworking two
-generated FTS columns. Instead the extract stage produces lightly-normalized text that
-feeds chunks/FTS/embedding/display alike. The untouched source file remains the true
-raw (referenced in place; reachable via `revealInFinder`). Stripped Markdown is still
-readable in citation snippets.
+**Markdown normalization: in-place, at extract time, no dual column.** A raw-vs-indexed
+split means a second `chunks` text column and two character-offset coordinate systems —
+entity offsets and chunk char-spans would index into one representation but not the
+other. Instead the extract stage produces lightly-normalized text that feeds
+chunks/FTS/embedding/display alike. The untouched source file remains the true raw
+(referenced in place; reachable via `revealInFinder`), and the pipeline is idempotent,
+so reprocessing re-derives chunk text if the normalizer changes. Stripped Markdown is
+still readable in citation snippets. (Normalization is deliberately light, and code
+fences are preserved verbatim, which keeps the risk of a user-visible normalizer bug low.)
 
 **Markdown parsing: `markdown-it-py`.** A CommonMark-compliant parser handles headings,
 code-fence spans, and plain-text extraction with correct edge cases (e.g. a `#` inside a
