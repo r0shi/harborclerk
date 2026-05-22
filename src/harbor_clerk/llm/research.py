@@ -606,7 +606,7 @@ def _ingest_hits(coverage: dict[str, dict], hits: list[dict], query_text: str) -
             coverage[cid] = {
                 "doc_id": hit.get("doc_id", ""),
                 "doc_title": hit.get("doc_title", ""),
-                "page": hit.get("page"),
+                "page": hit.get("pages"),
                 "score": hit.get("score", 0),
                 "snippet": hit.get("text", hit.get("snippet", ""))[:500],
                 "section": hit.get("section", ""),
@@ -745,11 +745,11 @@ async def _read_evidence(
             for passage in result.get("passages", []):
                 text = passage.get("text", "")
                 doc_title = passage.get("doc_title", "Unknown")
-                page = passage.get("page", "?")
+                pages = passage.get("pages", "?")
                 section = passage.get("section", "")
                 cid = passage.get("chunk_id")
 
-                entry = f"\n---\n**[{doc_title}, page {page}]**"
+                entry = f"\n---\n**[{doc_title}, page {pages}]**"
                 if section:
                     entry += f" — {section}"
                 # Note other drafts that were merged into this representative
@@ -774,7 +774,7 @@ async def _read_evidence(
                 if info and info.get("doc_id") and info["doc_id"] not in seen_evidence_docs:
                     seen_evidence_docs.add(info["doc_id"])
                     evidence_docs.append(
-                        {"doc_id": info["doc_id"], "doc_title": info.get("doc_title", ""), "page": passage.get("page")}
+                        {"doc_id": info["doc_id"], "doc_title": info.get("doc_title", ""), "page": passage.get("pages")}
                     )
 
         except Exception:

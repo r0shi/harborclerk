@@ -137,11 +137,12 @@ async def test_read_evidence_returns_passages_and_evidence_docs():
         "c1": {"doc_id": "d1", "doc_title": "alpha", "page": 1, "score": 2.0, "snippet": "alpha text"},
         "c2": {"doc_id": "d2", "doc_title": "beta", "page": 3, "score": 1.5, "snippet": "beta text"},
     }
+    # read_passages emits the page span as ``pages`` (a string), not ``page``.
     read_result = json.dumps(
         {
             "passages": [
-                {"chunk_id": "c1", "text": "alpha body", "doc_title": "alpha", "page": 1},
-                {"chunk_id": "c2", "text": "beta body", "doc_title": "beta", "page": 3},
+                {"chunk_id": "c1", "text": "alpha body", "doc_title": "alpha", "pages": "1"},
+                {"chunk_id": "c2", "text": "beta body", "doc_title": "beta", "pages": "3-5"},
             ]
         }
     )
@@ -153,8 +154,8 @@ async def test_read_evidence_returns_passages_and_evidence_docs():
     by_id = {d["doc_id"]: d for d in evidence_docs}
     assert set(by_id) == {"d1", "d2"}
     assert by_id["d1"]["doc_title"] == "alpha"
-    assert by_id["d1"]["page"] == 1
-    assert by_id["d2"]["page"] == 3
+    assert by_id["d1"]["page"] == "1"
+    assert by_id["d2"]["page"] == "3-5"
 
 
 @pytest.mark.asyncio
@@ -170,8 +171,8 @@ async def test_read_evidence_excludes_budget_truncated_passages_from_evidence_do
     read_result = json.dumps(
         {
             "passages": [
-                {"chunk_id": "c1", "text": big, "doc_title": "alpha", "page": 1},
-                {"chunk_id": "c2", "text": "beta body", "doc_title": "beta", "page": 2},
+                {"chunk_id": "c1", "text": big, "doc_title": "alpha", "pages": "1"},
+                {"chunk_id": "c2", "text": "beta body", "doc_title": "beta", "pages": "2"},
             ]
         }
     )
@@ -183,6 +184,24 @@ async def test_read_evidence_excludes_budget_truncated_passages_from_evidence_do
     assert big in passages_text
     assert "beta body" not in passages_text
     assert {d["doc_id"] for d in evidence_docs} == {"d1"}
+
+
+@pytest.mark.asyncio
+async def test_read_evidence_renders_real_page_in_passage_headers():
+    """The MCP read_passages tool emits the page span as ``pages`` (a string
+    like "3-5"). _read_evidence must surface it in the passage header that
+    feeds note extraction — a header reading "page ?" poisons every citation
+    the model is instructed to copy verbatim."""
+    coverage = {
+        "c1": {"doc_id": "d1", "doc_title": "alpha", "page": "3-5", "score": 2.0, "snippet": "a"},
+    }
+    read_result = json.dumps(
+        {"passages": [{"chunk_id": "c1", "text": "alpha body", "doc_title": "alpha", "pages": "3-5"}]}
+    )
+    with patch("harbor_clerk.llm.research.execute_tool", new=AsyncMock(return_value=read_result)):
+        passages_text, _ = await _read_evidence(coverage, user_id=None, max_passages=10, context_budget_chars=100_000)
+    assert "**[alpha, page 3-5]**" in passages_text
+    assert "page ?" not in passages_text
 
 
 @pytest.mark.asyncio
