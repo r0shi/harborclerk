@@ -109,3 +109,93 @@ def test_run_reuses_captures_and_verdicts_by_default(tmp_path: Path):
 
     summary = json.loads((tmp_path / "answer-eval" / "reports" / "r4" / "summary.json").read_text())
     assert summary["overall"]["n"] == 1
+
+
+def test_run_handles_empty_groundtruth(tmp_path: Path):
+    """An empty ground-truth set yields a zeroed report, not a KeyError crash."""
+    gt = tmp_path / "cuad.yaml"
+    gt.write_text(yaml.safe_dump({"corpus": "cuad", "items": []}))
+
+    def no_capture(item):
+        raise AssertionError("capture_fn must not be called for an empty ground-truth set")
+
+    class FakeJudge:
+        def judge_answer(self, **kw):
+            raise AssertionError("judge must not be called for an empty ground-truth set")
+
+    rc = run(
+        workdir=tmp_path,
+        corpus="cuad",
+        model="m1",
+        label="empty",
+        api_base="http://x",
+        refresh=False,
+        rejudge=False,
+        insecure=True,
+        groundtruth_path=gt,
+        capture_fn=no_capture,
+        judge=FakeJudge(),
+    )
+    assert rc == 0
+    summary = json.loads((tmp_path / "answer-eval" / "reports" / "empty" / "summary.json").read_text())
+    assert summary["overall"] == {"n": 0, "correctness": 0.0, "groundedness": 0.0, "completeness": 0.0}
+
+
+def test_run_rejudges_when_verdict_file_is_corrupt(tmp_path: Path):
+    """A good capture plus a corrupt verdict file: the capture is reused, but the
+    unreadable verdict is discarded and re-judged rather than crashing."""
+    gt = tmp_path / "cuad.yaml"
+    gt.write_text(
+        yaml.safe_dump(
+            {
+                "corpus": "cuad",
+                "items": [
+                    {
+                        "id": "g1",
+                        "question": "q1",
+                        "clause_category": "Governing Law",
+                        "gold_doc": "DocA",
+                        "answer_key": "Delaware",
+                        "type": "lookup",
+                    }
+                ],
+            }
+        )
+    )
+    cap_dir = tmp_path / "answer-eval" / "captures" / "cuad" / "m1"
+    ver_dir = tmp_path / "answer-eval" / "verdicts" / "cuad" / "m1"
+    cap_dir.mkdir(parents=True)
+    ver_dir.mkdir(parents=True)
+    (cap_dir / "g1.json").write_text(json.dumps({"answer": "Delaware.", "cited_doc_titles": [], "tool_transcript": []}))
+    (ver_dir / "g1.json").write_text("{ this is not valid json")
+
+    captures = {"n": 0}
+
+    def counting_capture(item):
+        captures["n"] += 1
+        return {"answer": "x", "cited_doc_titles": [], "tool_transcript": []}
+
+    judged = {"n": 0}
+
+    class FakeJudge:
+        def judge_answer(self, **kw):
+            judged["n"] += 1
+            return AnswerVerdict(4, 4, 4, "re-judged")
+
+    rc = run(
+        workdir=tmp_path,
+        corpus="cuad",
+        model="m1",
+        label="rj",
+        api_base="http://x",
+        refresh=False,
+        rejudge=False,
+        insecure=True,
+        groundtruth_path=gt,
+        capture_fn=counting_capture,
+        judge=FakeJudge(),
+    )
+    assert rc == 0
+    assert captures["n"] == 0  # the good capture was reused
+    assert judged["n"] == 1  # the corrupt verdict was discarded and re-judged
+    assert json.loads((ver_dir / "g1.json").read_text())["correctness"] == 4

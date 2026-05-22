@@ -65,14 +65,14 @@ def aggregate(rows: list[tuple[str, str, AnswerVerdict]]) -> dict:
     """rows = [(item_id, type, verdict)]. Means overall and by type."""
 
     def _means(group: list[AnswerVerdict]) -> dict:
+        # Always returns the full four-key shape (zeros when the group is empty)
+        # so callers — including the OVERALL log line — can index every key.
         n = len(group)
-        if n == 0:
-            return {"n": 0}
         return {
             "n": n,
-            "correctness": sum(v.correctness for v in group) / n,
-            "groundedness": sum(v.groundedness for v in group) / n,
-            "completeness": sum(v.completeness for v in group) / n,
+            "correctness": sum(v.correctness for v in group) / n if n else 0.0,
+            "groundedness": sum(v.groundedness for v in group) / n if n else 0.0,
+            "completeness": sum(v.completeness for v in group) / n if n else 0.0,
         }
 
     by_type: dict[str, list[AnswerVerdict]] = {}
@@ -131,17 +131,25 @@ def run(
     rows: list[tuple[str, str, AnswerVerdict]] = []
     for item in items:
         cap_path = cap_dir / f"{item.id}.json"
+        capture: dict | None = None
         if cap_path.exists() and not refresh:
-            capture = json.loads(cap_path.read_text())
-        else:
+            try:
+                capture = json.loads(cap_path.read_text())
+            except json.JSONDecodeError as e:
+                log.warning("  %s: unreadable capture %s (%s) — re-running", item.id, cap_path, e)
+        if capture is None:
             log.info("capturing %s via model+MCP", item.id)
             capture = capture_fn(item)
             cap_path.write_text(json.dumps(capture, indent=2))
 
         ver_path = ver_dir / f"{item.id}.json"
+        verdict: AnswerVerdict | None = None
         if ver_path.exists() and not rejudge and not refresh:
-            verdict = AnswerVerdict(**json.loads(ver_path.read_text()))
-        else:
+            try:
+                verdict = AnswerVerdict(**json.loads(ver_path.read_text()))
+            except (json.JSONDecodeError, TypeError) as e:
+                log.warning("  %s: unreadable verdict %s (%s) — re-judging", item.id, ver_path, e)
+        if verdict is None:
             verdict = judge.judge_answer(
                 question=item.question,
                 model_answer=capture.get("answer", ""),
@@ -202,6 +210,8 @@ def _live_capture_fn(*, api_base: str, corpus: str, model: str, insecure: bool) 
         hc = HarborClerkClient(api_base, verify=not insecure)
         hc.login(user, password)
         token = hc.get_bearer_token()
+        if not token:
+            raise RuntimeError("HC login did not yield a bearer token — check HC_USERNAME / HC_PASSWORD")
         log.warning("HC_API_KEY unset — using an unscoped login; search is NOT corpus-restricted")
 
     mcp_url = os.environ.get("HC_MCP_URL") or f"{api_base}/mcp/mcp"
@@ -228,6 +238,12 @@ def add_cli_args(p: argparse.ArgumentParser) -> None:
 def main_from_args(args: argparse.Namespace) -> int:
     corpus = args.corpora.split(",")[0].strip() if args.corpora else "cuad"
     model = args.models.split(",")[0].strip() if args.models else "claude-sonnet-4-6"
+    if (args.corpora and "," in args.corpora) or (args.models and "," in args.models):
+        log.warning(
+            "answer-eval is single-corpus/single-model in phase 1; using corpus=%s model=%s, ignoring the rest",
+            corpus,
+            model,
+        )
     if not args.label:
         log.error("--label is required for --mode answer-eval")
         return 2
