@@ -183,6 +183,8 @@ def _alpha_ratio(text: str) -> float:
 
 # MIME types where heading extraction from Tika XHTML makes no sense
 _SKIP_HEADINGS_MIMES = IMAGE_MIMES | {"text/plain", "text/csv", "text/markdown"}
+# Partial/legacy extension list. For plain-text formats the authoritative gate
+# is is_plain_text_source() — see the skip_headings / is_never_ocr expressions.
 _SKIP_HEADINGS_EXTS = (".txt", ".md", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff")
 
 
@@ -388,6 +390,8 @@ def run_extract(doc_id: uuid.UUID) -> None:
             "application/epub+zip",
             "message/rfc822",
         }
+        # Partial/legacy extension list. For plain-text formats the authoritative gate
+        # is is_plain_text_source() — see the skip_headings / is_never_ocr expressions.
         _NEVER_OCR_EXTS = (
             ".docx",
             ".doc",

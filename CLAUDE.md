@@ -42,7 +42,7 @@ Configurable via `STORAGE_BACKEND` env var:
 
 ### Text Extraction
 
-All non-TXT/MD/CSV/image formats (PDF, DOCX, DOC, ODT, XLSX, PPTX, RTF, EPUB, HTML, EML, etc.) are extracted via Apache Tika. TXT/MD/CSV use direct UTF-8 decode. Tika is required.
+Plain-text formats (the set in `harbor_clerk.file_types.PLAIN_TEXT_EXTENSIONS`) use direct UTF-8 decode. All other non-image formats (PDF, DOCX, DOC, ODT, XLSX, PPTX, RTF, EPUB, HTML, EML, etc.) are extracted via Apache Tika. Tika is required.
 
 **No multi-tenancy.** Single-tenant appliance — no `tenant_id` anywhere in schema or API.
 
@@ -62,7 +62,7 @@ Entry points:
 
 Seven idempotent stages, each guarded by row-level lock on `(doc_id, stage)` in `ingestion_jobs`:
 
-1. **extract** (io, 600s) — Apache Tika for PDF/Office/eBook/HTML/email, plain text fallback for TXT/MD/CSV
+1. **extract** (io, 600s) — Apache Tika for PDF/Office/eBook/HTML/email, direct UTF-8 decode for plain-text formats (see `file_types.PLAIN_TEXT_EXTENSIONS`)
 2. **ocr** (cpu, 7200s) — conditional: always for images (JPEG/PNG/TIFF); PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for text-native formats. Uses pypdfium2 + Tesseract (eng+fra). Skipped if not needed.
 3. **chunk** (io, 1200s) — ~1000 char target, 150 char overlap, preserves page ranges + char offsets. Detects language per chunk
 4. **entities** (io, 900s) — spaCy NER (en_core_web_sm / fr_core_news_sm). Skipped if spaCy unavailable.
