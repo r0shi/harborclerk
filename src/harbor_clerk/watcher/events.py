@@ -16,6 +16,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_heading import DocumentHeading
@@ -26,44 +27,6 @@ from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
 
 logger = logging.getLogger(__name__)
-
-# Kept in sync with ALLOWED_EXTENSIONS in harbor_clerk/api/routes/uploads.py.
-# Duplicated here to avoid a transitive import chain through the API layer.
-_ALLOWED_EXTENSIONS = {
-    # Documents
-    ".pdf",
-    ".docx",
-    ".doc",
-    ".rtf",
-    ".txt",
-    ".md",
-    ".odt",
-    ".pages",
-    # Spreadsheets
-    ".xlsx",
-    ".xls",
-    ".ods",
-    ".numbers",
-    ".csv",
-    # Presentations
-    ".pptx",
-    ".ppt",
-    ".odp",
-    ".key",
-    # Images (OCR)
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".tiff",
-    ".tif",
-    # eBooks
-    ".epub",
-    # Web
-    ".html",
-    ".htm",
-    # Email
-    ".eml",
-}
 
 # SHA-256 of empty content. Every 0-byte file produces this digest,
 # so it's NOT a unique fingerprint and must never be used as a dedup
@@ -115,9 +78,12 @@ def _should_ignore(relative_path: str) -> bool:
     # at any depth.
     if any(p.startswith(".") and p not in ("", ".", "..") for p in parts):
         return True
+    # Excalidraw notes (*.excalidraw.md) carry a JSON blob, not prose — skip.
+    if is_excalidraw(relative_path):
+        return True
     # Extension allowlist (lowercase comparison).
     suffix = Path(relative_path).suffix.lower()
-    return suffix not in _ALLOWED_EXTENSIONS
+    return suffix not in ALLOWED_EXTENSIONS
 
 
 def _sha256_of(path: str) -> bytes:

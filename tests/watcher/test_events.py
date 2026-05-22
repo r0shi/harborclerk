@@ -334,6 +334,16 @@ class TestShouldIgnore:
         assert _should_ignore("subdir/photo.jpg") is False
         assert _should_ignore("Spreadsheet.XLSX") is False  # case insensitive
 
+    def test_newly_allowed_extensions_pass(self):
+        """Phase 1 broadened the allowlist — these text formats now ingest."""
+        for name in ("notes.rst", "script.py", "config.toml", "data.json", "subs.srt", "doc.markdown"):
+            assert _should_ignore(name) is False, name
+
+    def test_excalidraw_md_ignored(self):
+        """*.excalidraw.md carries a JSON blob, not prose — must be skipped."""
+        assert _should_ignore("Diagram.excalidraw.md") is True
+        assert _should_ignore("vault/sub/Sketch.excalidraw.md") is True
+
 
 def test_handle_event_ignores_apple_double(sync_session, folder, tmp_path):
     """._foo.pdf events MUST NOT create a WatchedFile or IngestionJob."""
