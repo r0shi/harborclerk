@@ -311,3 +311,36 @@ def test_no_ingest_flag_never_calls_ingest_corpus(tmp_path: Path) -> None:
 
     assert rc == 0, "main() should exit 0 with --no-ingest"
     mock_ingest.assert_not_called(), "_ingest_corpus must never be called with --no-ingest"
+
+
+def test_mode_answer_eval_is_accepted_and_dispatches(monkeypatch, tmp_path):
+    """--mode answer-eval parses on the sweep parser and dispatches to
+    answer_eval.main_from_args before the main sweep loop spins up."""
+    from scripts.test_corpora.runner import answer_eval, sweep
+
+    called = {}
+
+    def fake_main_from_args(args):
+        called["args"] = args
+        return 0
+
+    monkeypatch.setattr(answer_eval, "main_from_args", fake_main_from_args)
+    rc = sweep.main(
+        [
+            "--run-id",
+            "test-answer-eval",
+            "--workdir",
+            str(tmp_path),
+            "--mode",
+            "answer-eval",
+            "--label",
+            "lbl",
+            "--corpora",
+            "cuad",
+            "--models",
+            "claude-sonnet-4-6",
+        ]
+    )
+    assert rc == 0
+    assert called["args"].mode == "answer-eval"
+    assert called["args"].label == "lbl"

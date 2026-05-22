@@ -337,15 +337,17 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--api-base", default=cfg.API_BASE)
     p.add_argument(
         "--mode",
-        choices=["retrieval-eval"],
+        choices=["retrieval-eval", "answer-eval"],
         default=None,
         help=(
             "alternate fast-path mode. With --mode retrieval-eval, the 6-phase "
             "sweep is bypassed and a retrieval-only evaluation is run against "
             "existing baselines (recall@K, MRR, nDCG@10). No LLM is invoked. "
-            "Use to gate retrieval-pipeline changes between phases without "
-            "rerunning the full Enron sweep. Requires --label; see "
-            "`retrieval_eval.py` for the full flag list."
+            "With --mode answer-eval, a model is run through HC's MCP over a "
+            "ground-truth set and its answers are scored for correctness, "
+            "groundedness, and completeness against expert labels. Both modes "
+            "require --label; see `retrieval_eval.py` / `answer_eval.py` for "
+            "the full flag list."
         ),
     )
     p.add_argument(
@@ -406,9 +408,10 @@ def make_parser() -> argparse.ArgumentParser:
     # Attach retrieval-eval flags. They're only meaningful when --mode
     # retrieval-eval is set, but registering them on the main parser keeps
     # --help discoverable.
-    from scripts.test_corpora.runner import retrieval_eval
+    from scripts.test_corpora.runner import answer_eval, retrieval_eval
 
     retrieval_eval.add_cli_args(p)
+    answer_eval.add_cli_args(p)
     return p
 
 
@@ -780,6 +783,11 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.test_corpora.runner import retrieval_eval
 
         return retrieval_eval.main_from_args(args)
+
+    if args.mode == "answer-eval":
+        from scripts.test_corpora.runner import answer_eval
+
+        return answer_eval.main_from_args(args)
 
     state_path = run_dir / "state.json"
     sf = StateFile(state_path)
