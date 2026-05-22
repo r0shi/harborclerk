@@ -7,7 +7,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
-from harbor_clerk.llm.research import _extract_notes_with_retry, _is_no_findings_sentinel, _plan_queries, _read_evidence
+from harbor_clerk.llm.research import (
+    _extract_notes_with_retry,
+    _fit_notes_to_budget,
+    _is_no_findings_sentinel,
+    _parse_json_from_llm,
+    _plan_queries,
+    _read_evidence,
+)
 
 _DEPTH = {"max_queries": 15, "k_per_query": 20, "max_passages": 60, "gap_round": True, "paginate": True}
 
@@ -230,3 +237,55 @@ async def test_research_state_citations_column_roundtrips(db_session, admin_user
         await db_session.execute(select(ResearchState).where(ResearchState.conversation_id == conv.conversation_id))
     ).scalar_one()
     assert row.citations == cites
+
+
+def test_parse_json_from_llm_handles_nested_object_in_fenced_block():
+    """A fenced ```json block whose object contains a nested object must
+    parse fully. The fence regex was non-greedy and captured only up to
+    the first inner brace, so valid nested JSON yielded an empty dict."""
+    raw = '```json\n{"queries": ["a", "b"], "meta": {"depth": "thorough"}}\n```'
+    assert _parse_json_from_llm(raw) == {"queries": ["a", "b"], "meta": {"depth": "thorough"}}
+
+
+def test_parse_json_from_llm_handles_plain_fenced_object():
+    """A plain (non-nested) fenced object still parses — regression guard
+    for the greedy-fence change."""
+    raw = '```json\n{"queries": ["governing law"]}\n```'
+    assert _parse_json_from_llm(raw) == {"queries": ["governing law"]}
+
+
+def test_fit_notes_to_budget_returns_notes_unchanged_when_within_budget():
+    """Within budget, notes pass through untouched."""
+    notes = "## Research notes (round 1)\nA finding."
+    assert _fit_notes_to_budget(notes, [notes], len(notes) + 100) == notes
+
+
+def test_fit_notes_to_budget_drops_diagnostics_before_truncating_evidence():
+    """Over budget: the diagnostic sections (planned queries, search
+    coverage) are dropped so the research notes — especially the newest
+    gap-round findings — survive instead of being head-truncated away."""
+    planned = "## Planned queries\n" + "q " * 200
+    coverage = "## Search coverage\n" + "c " * 200
+    round1 = "## Research notes (round 1)\nEarly finding."
+    gap = "## Research notes (gap round 1)\nCrucial late finding."
+    collected = [planned, coverage, round1, gap]
+    notes = "\n\n".join(collected)
+    budget = len(round1) + len(gap) + 10
+    fitted = _fit_notes_to_budget(notes, collected, budget)
+    assert "Crucial late finding." in fitted
+    assert "Early finding." in fitted
+    assert "## Planned queries" not in fitted
+    assert "## Search coverage" not in fitted
+
+
+def test_fit_notes_to_budget_head_truncates_when_evidence_alone_exceeds_budget():
+    """If the research notes alone still exceed budget after diagnostics
+    are dropped, the result is head-truncated and carries the marker."""
+    planned = "## Planned queries\n" + "q " * 100
+    evidence = "## Research notes (round 1)\n" + "finding. " * 500
+    collected = [planned, evidence]
+    notes = "\n\n".join(collected)
+    fitted = _fit_notes_to_budget(notes, collected, 600)
+    assert "## Planned queries" not in fitted
+    assert len(fitted) < len(notes)
+    assert "truncated" in fitted
