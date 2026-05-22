@@ -239,8 +239,9 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
     parse structure on body → normalize body → relocate heading positions →
     compose preamble + body → paginate → map heading positions to pages.
     """
-    # Lazy import — avoids a circular dependency with worker.stages.extract,
-    # which imports from this module.
+    # Lazy import — Task 7 will add `from harbor_clerk.worker.markdown_extract
+    # import ...` to worker.stages.extract, creating a circular dependency
+    # at module-load time unless this import stays inside the function body.
     from harbor_clerk.worker.stages.extract import _paginate_text
 
     text = data.decode("utf-8", errors="replace")
@@ -262,20 +263,29 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
         full_text = normalized_body
         body_offset_in_full = 0
 
-    # Relocate each heading title in the normalized body via string search.
-    # ``low_water`` keeps order monotonic when multiple headings share a title.
+    # Relocate each heading by line index. ``normalize_markdown`` preserves
+    # line count (one input line → one output line), so the heading on line N
+    # of the body is on line N of the normalized body. This avoids latching
+    # onto a prose occurrence of the title that precedes the heading.
+    body_line_starts = _line_start_offsets(body)
+    norm_line_starts = _line_start_offsets(normalized_body)
     headings: list[dict] = []
-    low_water = 0
     for h in raw_headings:
-        pos_in_body = normalized_body.find(h["title"], low_water)
-        if pos_in_body < 0:
-            continue  # title not located after normalization — skip
-        low_water = pos_in_body + len(h["title"])
+        # parse_markdown_structure returns positions that are always at a
+        # line start. Find which line.
+        raw_pos = h["position"]
+        try:
+            line_idx = body_line_starts.index(raw_pos)
+        except ValueError:
+            continue  # position did not align with a line start (shouldn't happen)
+        if line_idx >= len(norm_line_starts):
+            continue
+        pos_in_normalized = norm_line_starts[line_idx]
         headings.append(
             {
                 "level": h["level"],
                 "title": h["title"],
-                "position": pos_in_body + body_offset_in_full,
+                "position": pos_in_normalized + body_offset_in_full,
                 "page_num": None,  # filled in below
             }
         )

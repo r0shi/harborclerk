@@ -302,3 +302,24 @@ def test_extract_markdown_frontmatter_only_title_no_preamble():
     assert result.title == "Just A Title"
     page_text = result.pages[0][1]
     assert page_text.startswith("Body.") or page_text.startswith("Body")
+
+
+def test_extract_markdown_heading_title_appearing_earlier_in_prose():
+    """Regression: a heading whose title text appears verbatim earlier in
+    prose must NOT have its position bind to the prose occurrence — the
+    position must point at the actual heading line."""
+    data = b"See the Budget section for details.\n\n## Budget\n\nActual budget info.\n"
+    result = extract_markdown(data)
+    assert len(result.headings) == 1
+    h = result.headings[0]
+    assert h["title"] == "Budget"
+    page_text = result.pages[0][1]
+    # The character before the heading position must be a newline (or it must
+    # be the very start of the page text). Otherwise the position is pointing
+    # inside a prose line, not at a heading line.
+    if h["position"] > 0:
+        assert page_text[h["position"] - 1] == "\n", (
+            f"Heading position {h['position']} points inside a line; "
+            f"char before is {page_text[h['position'] - 1]!r}, expected '\\n'. "
+            f"Page text: {page_text!r}"
+        )
