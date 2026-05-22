@@ -446,6 +446,31 @@ def _is_comparative_question(question: str) -> bool:
     return bool(_COMPARATIVE_QUESTION_RE.search(question))
 
 
+# Sections of the collected research notes that aid debugging but are not
+# evidence — dropped first when the notes overflow the synthesis budget so
+# the actual findings (especially the newest gap-round notes) survive.
+_DIAGNOSTIC_NOTE_PREFIXES = ("## Planned queries", "## Search coverage")
+
+
+def _fit_notes_to_budget(notes: str, collected_notes: list[str], max_notes_chars: int) -> str:
+    """Fit the research notes within the synthesis context budget.
+
+    Plain head-truncation cuts the tail first — which is where the newest,
+    most-targeted gap-round findings live. So when over budget, first drop
+    the diagnostic sections (planned queries, search coverage); only
+    head-truncate if the evidence alone still overflows.
+    """
+    if len(notes) <= max_notes_chars:
+        return notes
+    if collected_notes:
+        evidence = "\n\n".join(n for n in collected_notes if not n.startswith(_DIAGNOSTIC_NOTE_PREFIXES))
+        if evidence:
+            notes = evidence
+    if len(notes) > max_notes_chars:
+        notes = notes[:max_notes_chars] + f"\n... [truncated — {len(notes)} chars total]"
+    return notes
+
+
 def _build_synthesis_messages(user_question: str, notes: str) -> list[dict]:
     user_content = f"## Original question\n{user_question}\n\n"
     user_content += f"## Research notes\n<notes>\n{notes}\n</notes>\n\n"
@@ -1348,12 +1373,11 @@ async def research_stream(
             max_notes_chars = int(max(4000, max_notes_tokens * _CHARS_PER_TOKEN))
             if len(notes) > max_notes_chars:
                 logger.info(
-                    "Truncating synthesis notes from %d to %d chars (model context %d tokens)",
+                    "Synthesis notes over budget (%d > %d chars) — trimming to fit",
                     len(notes),
                     max_notes_chars,
-                    ctx_tokens,
                 )
-                notes = notes[:max_notes_chars] + f"\n... [truncated — {len(notes)} chars total]"
+            notes = _fit_notes_to_budget(notes, collected_notes, max_notes_chars)
 
             yield _sse({"type": "synthesis", "status": "started"})
 
