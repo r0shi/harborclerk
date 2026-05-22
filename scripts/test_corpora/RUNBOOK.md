@@ -206,9 +206,11 @@ curl -X PUT "$HC_API_BASE/api/chat/models/<model_id>/activate"
 
 Then re-run the sweep with `--resume`. The harness's per-unit ConnectError handling waits up to 120s for HC to come back before incrementing the outage counter, so a brief restart usually doesn't cause unit losses.
 
-### Anthropic rate-limit storm
+### Anthropic rate-limit or overload storm
 
-Phase 1 baselines are sequential and Sonnet's rate limit allows them. If you hit 429s repeatedly, either:
+On an HTTP 429 (Anthropic rate-limited) or 529 (Anthropic overloaded), the harness retries the affected Phase 1 baseline itself with exponential backoff — 60s, 120s, 240s, … capped at 10 min/attempt — for up to ~1 hr, so a transient rate-limit or overload needs no action. If it outlasts that budget the baseline is left PENDING and the sweep continues to the next unit; re-run with `--resume` once Anthropic recovers to fill in the missing baselines.
+
+Phase 1 baselines are sequential and Sonnet's rate limit normally allows them. If 429s still persist across `--resume` attempts, either:
 
 - Wait an hour and resume, or
 - Add `--rerun "phase=1,corpus=<one>"` to scope the retry
