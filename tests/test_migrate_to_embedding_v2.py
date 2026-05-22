@@ -4,24 +4,39 @@ Uses scratch databases loaded from tests/fixtures/pre_embedding_v2_schema.sql
 rather than the shared harbor_clerk_test DB. Each test creates and drops its
 own scratch DB so they're fully isolated and never touch the live DB.
 
-Postgres access: localhost:5433, user lka (the macOS app's bundled PG).
+Postgres access: derived from DATABASE_URL env var (set by conftest.py); falls
+back to localhost:5433, user lka (the macOS app's bundled PG) if DATABASE_URL
+is not set.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import psycopg2
 import pytest
 
 SCRIPT = Path(__file__).parent.parent / "scripts" / "migrate_to_embedding_v2.py"
 FIXTURE_SQL = Path(__file__).parent / "fixtures" / "pre_embedding_v2_schema.sql"
-PG_HOST = "localhost"
-PG_PORT = 5433
-PG_USER = "lka"
+
+# Derive Postgres connection details from DATABASE_URL when available (CI, Docker)
+# so tests connect to the same server the rest of the suite uses.
+# Falls back to the macOS app's bundled Postgres when DATABASE_URL is absent.
+_db_url = os.environ.get("DATABASE_URL", "")
+if _db_url:
+    _parsed = urlsplit(_db_url)
+    PG_HOST: str = _parsed.hostname or "localhost"
+    PG_PORT: int = _parsed.port or 5433
+    PG_USER: str = _parsed.username or "lka"
+else:
+    PG_HOST = "localhost"
+    PG_PORT = 5433
+    PG_USER = "lka"
 
 # Resolve psql: prefer PATH, fall back to bundled macOS app binary.
 _BUNDLED_PSQL = Path(
