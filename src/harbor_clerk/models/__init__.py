@@ -28,6 +28,7 @@ from harbor_clerk.models.oauth_client import OAuthClient
 from harbor_clerk.models.oauth_code import OAuthCode
 from harbor_clerk.models.oauth_token import OAuthToken
 from harbor_clerk.models.research_state import ResearchState
+from harbor_clerk.models.schema_metadata import SchemaMetadata
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.upload_session import UploadSession
 from harbor_clerk.models.user import User
@@ -65,6 +66,7 @@ __all__ = [
     "OAuthCode",
     "OAuthToken",
     "ResearchState",
+    "SchemaMetadata",
     "WatchedFolder",
     "WatchedFile",
     "WatchedFileStatus",

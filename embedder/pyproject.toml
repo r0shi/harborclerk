@@ -10,6 +10,13 @@ dependencies = [
     "numpy>=1.26.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=9",
+    "fastapi>=0.115",
+    "numpy>=1.26",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -19,3 +26,4 @@ packages = ["src/embedder"]
 
 [project.scripts]
 harbor-clerk-embedder = "embedder.app:main"
+harbor-clerk-reranker = "embedder.reranker:main"

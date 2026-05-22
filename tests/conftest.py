@@ -164,9 +164,14 @@ async def db_session(
     async with factory() as session:
         yield session
 
-    # Clean up all test data after each test
+    # Clean up all test data after each test. schema_metadata is skipped —
+    # its rows are migration-seeded sentinel data (embed_model/embed_dim/
+    # reranker), not per-test data, and verify_schema_sentinel() relies on
+    # them surviving across tests.
     async with _engine.begin() as conn:
         for table in reversed(Base.metadata.sorted_tables):
+            if table.name == "schema_metadata":
+                continue
             await conn.execute(table.delete())
 
 

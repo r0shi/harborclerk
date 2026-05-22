@@ -63,7 +63,8 @@ STAGE_CONFIG: dict[JobStage, tuple[str, int, PipelineStatus]] = {
     JobStage.ocr: ("cpu", 7200, PipelineStatus.ocr_running),
     JobStage.chunk: ("io", 1200, PipelineStatus.chunking),
     JobStage.entities: ("io", 900, PipelineStatus.extracting_entities),
-    JobStage.embed: ("cpu", 1800, PipelineStatus.embedding),
+    # Granite-R2 is ~5× slower per chunk than e5-small; bumped from 1800s for embedding-v2.
+    JobStage.embed: ("cpu", 3600, PipelineStatus.embedding),
     JobStage.summarize: ("llm", 900, PipelineStatus.summarizing),
     JobStage.finalize: ("io", 600, PipelineStatus.finalizing),
 }

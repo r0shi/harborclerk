@@ -441,9 +441,9 @@ async def test_find_related_happy(
     await db_session.flush()
 
     # Embeddings: doc1 and doc2 are similar, doc3 is different
-    # 384-dim vectors (matching multilingual-e5-small dimension) with signal in first 4 dims
-    similar_emb = [0.9, 0.1, 0.0, 0.0] + [0.0] * 380
-    different_emb = [0.0, 0.0, 0.9, 0.1] + [0.0] * 380
+    # 768-dim vectors (matching granite-embedding-311m-multilingual-r2 dimension) with signal in first 4 dims
+    similar_emb = [0.9, 0.1, 0.0, 0.0] + [0.0] * 764
+    different_emb = [0.0, 0.0, 0.9, 0.1] + [0.0] * 764
 
     for doc in [doc1, doc2, doc3]:
         emb = similar_emb if doc in (doc1, doc2) else different_emb

@@ -24,12 +24,17 @@ services:
       LLAMA_SERVER_URL: http://llama-server:8080
       MODELS_DIR: /models
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
+      RERANKER_URL: http://reranker:8001
     volumes:
       - llama_models:/models
     depends_on:
       postgres:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      embedder:
+        condition: service_healthy
+      reranker:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; r = httpx.get('http://localhost:8000/api/system/health'); r.raise_for_status()"]
@@ -49,6 +54,7 @@ services:
     env_file: .env
     environment:
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
+      RERANKER_URL: http://reranker:8001
     depends_on:
       app:
         condition: service_healthy
@@ -64,8 +70,11 @@ services:
     env_file: .env
     environment:
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
+      RERANKER_URL: http://reranker:8001
     depends_on:
       app:
+        condition: service_healthy
+      embedder:
         condition: service_healthy
     networks:
       - harbor-clerk
@@ -95,6 +104,20 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - harbor-clerk
+
+  reranker:
+    build:
+      context: .
+      dockerfile: docker/reranker.Dockerfile
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8001/health').raise_for_status()"]
       interval: 10s
       timeout: 5s
       retries: 5

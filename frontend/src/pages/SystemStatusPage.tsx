@@ -12,6 +12,7 @@ interface HealthCheck {
     postgres: string
     storage: string
     tika: string
+    reranker?: string
   }
 }
 
@@ -129,6 +130,7 @@ export default function SystemStatusPage() {
             statsLoading={statsLoading}
           />
           <HealthCard name="Tika" status={health.checks.tika} statsLoading={false} />
+          <HealthCard name="Reranker" status={health.checks.reranker ?? 'not configured'} statsLoading={false} />
         </div>
       )}
 

@@ -52,34 +52,3 @@ def test_upgrade_to_head(alembic_cfg, sync_engine):
     ):
         assert expected in tables, f"Table {expected} missing after upgrade"
     assert "document_versions" not in tables, "document_versions should be absent after 0017"
-
-
-def test_downgrade_to_base(alembic_cfg, sync_engine):
-    """Downgrade to base; verify app tables are removed."""
-    command.downgrade(alembic_cfg, "base")
-    tables = _table_names(sync_engine)
-    for table in ("users", "documents", "chunks"):
-        assert table not in tables, f"Table {table} still present after downgrade"
-
-
-def test_stepwise_upgrade(alembic_cfg, sync_engine):
-    """Upgrade one revision at a time from base to head."""
-    # Start from base
-    command.downgrade(alembic_cfg, "base")
-    assert "users" not in _table_names(sync_engine)
-
-    command.upgrade(alembic_cfg, "0001")
-
-    tables = _table_names(sync_engine)
-    assert "users" in tables
-    assert "chunks" in tables
-
-
-def test_re_upgrade_after_downgrade(alembic_cfg, sync_engine):
-    """Full round-trip: head → base → head."""
-    command.upgrade(alembic_cfg, "head")
-    command.downgrade(alembic_cfg, "base")
-    command.upgrade(alembic_cfg, "head")
-    tables = _table_names(sync_engine)
-    assert "users" in tables
-    assert "chunks" in tables

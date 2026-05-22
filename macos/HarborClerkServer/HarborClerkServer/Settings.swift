@@ -30,6 +30,16 @@ final class AppSettings: @unchecked Sendable {
         set { lock.withLock { data["embedder_port"] = newValue }; save() }
     }
 
+    var rerankerPort: Int {
+        get { lock.withLock { data["reranker_port"] as? Int ?? 8201 } }
+        set { lock.withLock { data["reranker_port"] = newValue }; save() }
+    }
+
+    var rerankerEnabled: Bool {
+        get { lock.withLock { data["reranker_enabled"] as? Bool ?? true } }
+        set { lock.withLock { data["reranker_enabled"] = newValue }; save() }
+    }
+
     var workerPreset: String {
         get { lock.withLock { data["worker_preset"] as? String ?? "balanced" } }
         set { lock.withLock { data["worker_preset"] = newValue }; save() }

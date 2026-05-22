@@ -1,39 +1,57 @@
 #!/usr/bin/env bash
-# Download the embedding model for Harbor Clerk.
-# MODEL_REPO must be a full HuggingFace repo ID (e.g. nomic-ai/nomic-embed-text-v1.5).
+# Download the embedding and reranker models for Harbor Clerk.
 set -euo pipefail
 
-MODEL_REPO="${MODEL_REPO:-intfloat/multilingual-e5-small}"
-MODEL_SHORT="${MODEL_REPO##*/}"
-DEST_DIR="${DEST_DIR:-$(pwd)/build/model/${MODEL_SHORT}}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MACOS_DIR="$(dirname "$SCRIPT_DIR")"
+BUILD_DIR="${BUILD_DIR:-$MACOS_DIR/build}"
+MODEL_DIR="${MODEL_DIR:-$BUILD_DIR/model}"
 
-echo "==> Downloading embedding model: ${MODEL_REPO}"
-
-mkdir -p "$DEST_DIR"
-
-# Use Python to download via sentence_transformers (or huggingface_hub)
-VENV_DIR="${VENV_DIR:-$(pwd)/build/venv}"
+VENV_DIR="${VENV_DIR:-$BUILD_DIR/venv}"
 if [ -d "$VENV_DIR" ]; then
     PYTHON="$VENV_DIR/bin/python"
 else
     PYTHON="python3"
 fi
 
+mkdir -p "$MODEL_DIR"
+
+# ── Granite-R2 embedder (~700 MB) ──────────────────────────────────────────
+GRANITE_DEST="$MODEL_DIR/granite-embedding-311m-multilingual-r2"
+echo "==> Downloading Granite-R2 embedder model"
 "$PYTHON" -c "
 from sentence_transformers import SentenceTransformer
-import shutil, os
+import os
 
-model_name = '${MODEL_REPO}'
-dest = '${DEST_DIR}'
+model_name = 'ibm-granite/granite-embedding-311m-multilingual-r2'
+dest = '${GRANITE_DEST}'
 
 print(f'Loading model {model_name}...')
 model = SentenceTransformer(model_name)
-
-# Save to destination
 print(f'Saving to {dest}...')
 model.save(dest)
 print('Done.')
 "
+echo "==> Granite-R2 saved to ${GRANITE_DEST}"
+echo "==> Size: $(du -sh "$GRANITE_DEST" | cut -f1)"
 
-echo "==> Model saved to ${DEST_DIR}"
-echo "==> Size: $(du -sh "$DEST_DIR" | cut -f1)"
+# ── bge-reranker-v2-m3 cross-encoder (~1.2 GB) ────────────────────────────
+BGE_DEST="$MODEL_DIR/bge-reranker-v2-m3"
+echo "==> Downloading bge-reranker-v2-m3 reranker model"
+"$PYTHON" -c "
+from sentence_transformers import CrossEncoder
+import os
+
+model_name = 'BAAI/bge-reranker-v2-m3'
+dest = '${BGE_DEST}'
+
+print(f'Loading model {model_name}...')
+model = CrossEncoder(model_name)
+# Save underlying HuggingFace model + tokenizer
+model.model.save_pretrained(dest)
+model.tokenizer.save_pretrained(dest)
+print(f'Saved to {dest}')
+print('Done.')
+"
+echo "==> bge-reranker-v2-m3 saved to ${BGE_DEST}"
+echo "==> Size: $(du -sh "$BGE_DEST" | cut -f1)"

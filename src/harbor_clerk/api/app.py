@@ -27,6 +27,7 @@ from harbor_clerk.api.routes.uploads import router as uploads_router
 from harbor_clerk.api.routes.users import router as users_router
 from harbor_clerk.api.routes.watch import router as watch_router
 from harbor_clerk.config import get_settings
+from harbor_clerk.db_health import panic_on_sentinel_mismatch
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -294,6 +295,11 @@ async def lifespan(app: FastAPI):
                 logger.info("Database schema version: %s (current)", row[0])
     except Exception:
         logger.exception("Failed to check database schema version")
+
+    from harbor_clerk.db import async_session_factory
+
+    async with async_session_factory() as db:
+        await panic_on_sentinel_mismatch(db)
 
     if settings.secret_key == "change-me-in-production":
         logger.warning("SECRET_KEY is set to the default value. Change it to a random string for production use.")

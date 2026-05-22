@@ -16,6 +16,7 @@
 		A100000007 /* APIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000007; };
 		A100000008 /* WorkerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000008; };
 		A100000009 /* EmbedderService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000009; };
+		A100000070 /* RerankerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000070; };
 		A100000010 /* MigrationRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000010; };
 		A100000011 /* HealthChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000011; };
 		A100000012 /* LogManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000012; };
@@ -64,6 +65,7 @@
 		B100000007 /* APIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIService.swift; sourceTree = "<group>"; };
 		B100000008 /* WorkerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkerService.swift; sourceTree = "<group>"; };
 		B100000009 /* EmbedderService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbedderService.swift; sourceTree = "<group>"; };
+		B100000070 /* RerankerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RerankerService.swift; sourceTree = "<group>"; };
 		B100000010 /* MigrationRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MigrationRunner.swift; sourceTree = "<group>"; };
 		B100000011 /* HealthChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthChecker.swift; sourceTree = "<group>"; };
 		B100000012 /* LogManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogManager.swift; sourceTree = "<group>"; };
@@ -159,6 +161,7 @@
 				B100000008 /* WorkerService.swift */,
 				B100000028 /* WatcherService.swift */,
 				B100000009 /* EmbedderService.swift */,
+				B100000070 /* RerankerService.swift */,
 				B100000017 /* LlamaService.swift */,
 			);
 			path = Services;
@@ -312,6 +315,7 @@
 				A100000007 /* APIService.swift in Sources */,
 				A100000008 /* WorkerService.swift in Sources */,
 				A100000009 /* EmbedderService.swift in Sources */,
+				A100000070 /* RerankerService.swift in Sources */,
 				A100000010 /* MigrationRunner.swift in Sources */,
 				A100000011 /* HealthChecker.swift in Sources */,
 				A100000012 /* LogManager.swift in Sources */,

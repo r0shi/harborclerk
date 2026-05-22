@@ -19,6 +19,8 @@ import psycopg2.extensions
 from sqlalchemy import case, select, update
 
 from harbor_clerk.config import get_settings
+from harbor_clerk.db import async_session_factory
+from harbor_clerk.db_health import panic_on_sentinel_mismatch
 from harbor_clerk.db_sync import _make_sync_url, get_sync_session
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import Document, IngestionJob
@@ -268,6 +270,23 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
         hb_thread.join(timeout=5)
 
 
+def _check_sentinel() -> None:
+    """Run verify_schema_sentinel synchronously; on mismatch log CRITICAL and exit(2).
+
+    This is a thin sync wrapper around ``panic_on_sentinel_mismatch`` so that
+    the synchronous ``main()`` entry point can call it without requiring a
+    pre-existing event loop.  Having it as a named module-level function also
+    makes it easily patchable in tests.
+    """
+    import asyncio
+
+    async def _inner() -> None:
+        async with async_session_factory() as db:
+            await panic_on_sentinel_mismatch(db)
+
+    asyncio.run(_inner())
+
+
 def main():
     settings = get_settings()
 
@@ -307,6 +326,9 @@ def main():
         stages.extend(QUEUE_STAGES[q])
 
     logger.info("Worker starting, listening for stages: %s", [s.value for s in stages])
+
+    # Refuse to start if the DB schema doesn't match this binary's embedding config.
+    _check_sentinel()
 
     # Set up graceful shutdown
     signal.signal(signal.SIGTERM, _handle_signal)

@@ -78,9 +78,22 @@ async def health_check(
         logger.error("Tika health check failed: %s", e)
         checks["tika"] = f"error: {e}"
 
+    # Reranker — only probed when enabled; disabled is not a degraded state
+    settings = get_settings()
+    if settings.reranker_enabled:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(f"{settings.reranker_url}/health", timeout=5)
+                checks["reranker"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
+        except Exception as e:
+            logger.error("Reranker health check failed: %s", e)
+            checks["reranker"] = f"error: {e}"
+    else:
+        checks["reranker"] = "disabled"
+
     from harbor_clerk.api.app import BUILD_HASH
 
-    overall = all(v == "ok" for v in checks.values())
+    overall = all(v in ("ok", "disabled") for v in checks.values())
     return {
         "status": "healthy" if overall else "degraded",
         "build": BUILD_HASH,
@@ -592,6 +605,7 @@ async def list_logs(
         "api": "API Server",
         "worker": "Worker",
         "embedder": "Embedder",
+        "reranker": "Reranker",
         "postgres": "PostgreSQL",
     }
 

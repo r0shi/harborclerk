@@ -14,8 +14,12 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = os.environ.get("EMBED_MODEL", "intfloat/multilingual-e5-small")
+MODEL_NAME = os.environ.get("EMBED_MODEL", "ibm-granite/granite-embedding-311m-multilingual-r2")
 
+# Whether the model needs e5-style "query: " / "passage: " prefixes.
+# Granite-R2 uses CLS pooling and needs NO prefix. e5 family needs it.
+# Configured via env var so the e5 rollback path keeps working.
+NEEDS_PREFIX = os.environ.get("EMBED_NEEDS_PREFIX", "false").lower() in ("true", "1", "yes")
 TASK_PREFIXES = {"query": "query: ", "passage": "passage: "}
 
 _model: SentenceTransformer | None = None
@@ -60,7 +64,7 @@ async def embed(request: EmbedRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     texts = request.texts
-    if request.task:
+    if NEEDS_PREFIX and request.task:
         prefix = TASK_PREFIXES[request.task]
         texts = [prefix + t for t in texts]
     embeddings = _model.encode(texts, normalize_embeddings=True)

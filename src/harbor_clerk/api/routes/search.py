@@ -137,6 +137,7 @@ async def search(
             )
             for cs in result.conflict_sources
         ],
+        reranker_status=result.reranker_status,
     )
 
 

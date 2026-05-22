@@ -54,6 +54,9 @@ jobs:
       - name: Build embedder image
         run: docker build -f docker/embedder.Dockerfile -t harborclerk-embedder:ci .
 
+      - name: Build reranker image
+        run: docker build -f docker/reranker.Dockerfile -t harborclerk-reranker:ci .
+
       - name: Install Trivy
         run: |
           sudo apt-get update && sudo apt-get install -y wget apt-transport-https gnupg
@@ -66,3 +69,6 @@ jobs:
 
       - name: Trivy scan embedder
         run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 harborclerk-embedder:ci
+
+      - name: Trivy scan reranker
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 harborclerk-reranker:ci

@@ -55,7 +55,7 @@ class Chunk(Base):
     )
 
     # pgvector embedding
-    embedding = mapped_column(Vector(384), nullable=True)
+    embedding = mapped_column(Vector(768), nullable=True)
 
     created_at: Mapped[created_at]
 

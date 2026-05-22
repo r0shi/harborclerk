@@ -46,12 +46,12 @@ spacy-models: venv
 	@echo "==> Downloading spaCy NER models"
 	VENV_DIR=$(BUILD)/venv bash $(SCRIPTS)/download-spacy-models.sh
 
-# ── Model ──
-# DEST_DIR must match the path in EmbedderService.swift ("model/<name>")
+# ── Models ──
+# MODEL_DIR must match paths in EmbedderService.swift and RerankerService.swift ("model/<name>")
 
 model:
-	@echo "==> Downloading embedder model"
-	DEST_DIR=$(BUILD)/model/multilingual-e5-small VENV_DIR=$(BUILD)/venv bash $(SCRIPTS)/download-model.sh
+	@echo "==> Downloading embedding + reranker models"
+	MODEL_DIR=$(BUILD)/model VENV_DIR=$(BUILD)/venv BUILD_DIR=$(BUILD) bash $(SCRIPTS)/download-model.sh
 
 # ── LLM server ──
 

@@ -38,6 +38,17 @@ class Settings(BaseSettings):
 
     # Embedder
     embedder_url: str = Field(default="http://embedder:8000")
+    embed_model: str = Field(default="ibm-granite/granite-embedding-311m-multilingual-r2")
+    embed_dim: int = Field(default=768)
+    embed_needs_prefix: bool = Field(default=False)  # Granite uses CLS pooling; e5 needed query:/passage:
+
+    # Reranker (bge-reranker-v2-m3 cross-encoder, separate service)
+    reranker_enabled: bool = Field(default=True)
+    reranker_url: str = Field(default="http://reranker:8001")
+    reranker_top_k_pad: int = Field(default=40, ge=0)
+    reranker_pool_size: int = Field(default=50, ge=1)
+    reranker_strict: bool = Field(default=False)
+    reranker_timeout_seconds: float = Field(default=30.0)
 
     # Tika (required for PDF/DOCX/RTF extraction)
     tika_url: str = Field(default="http://tika:9998")
