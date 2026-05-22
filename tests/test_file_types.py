@@ -94,3 +94,10 @@ def test_is_excalidraw_false():
     assert is_excalidraw("notes.md") is False
     assert is_excalidraw("report.pdf") is False
     assert is_excalidraw("my.excalidraw.txt") is False
+
+
+def test_uploads_route_uses_shared_allowlist():
+    """uploads.py must reference the shared set, not re-declare its own copy."""
+    from harbor_clerk.api.routes import uploads
+
+    assert uploads.ALLOWED_EXTENSIONS is ALLOWED_EXTENSIONS
