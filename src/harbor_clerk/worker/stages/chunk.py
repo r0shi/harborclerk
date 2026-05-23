@@ -148,11 +148,13 @@ def _split_text(
                         if space > start + target // 2:
                             end = space + 1
 
-            # Code-fence protection: never end inside a fence. The loop runs
-            # to completion (no break) so that overlapping or unsorted ranges
-            # are all handled — pushing `end` past one fence can land it
-            # inside another, and a later iteration of the loop will push
-            # it past that one too.
+            # Code-fence protection: never end inside a fence. The loop runs to
+            # completion (no break) so that pushing `end` past one fence can land
+            # it inside an adjacent fence — a later iteration catches that too.
+            # Requires `code_fence_ranges` to be sorted by start offset, which
+            # `_find_code_fence_ranges` always ensures (it iterates lines in
+            # document order). For reversed/unsorted input, a single forward pass
+            # is not sufficient — callers must pre-sort.
             for fstart, fend in code_fence_ranges:
                 if fstart < end < fend:
                     # Deliberate oversized-chunk: extending past the fence is
