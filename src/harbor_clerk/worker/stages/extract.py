@@ -12,7 +12,7 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS
-from harbor_clerk.models import Document, DocumentHeading, DocumentPage
+from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
 from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
@@ -393,6 +393,33 @@ def run_extract(doc_id: uuid.UUID) -> None:
             )
         if headings:
             logger.info("Extracted %d headings for doc %s", len(headings), doc_id)
+
+        # Wikilinks: only Markdown extraction produces these. Delete existing
+        # rows for the doc (idempotent on reprocess), then write one
+        # unresolved row per captured link. Resolution runs in finalize.
+        if markdown_result is not None:
+            existing_links = (
+                session.execute(select(DocumentLink).where(DocumentLink.src_doc_id == doc_id)).scalars().all()
+            )
+            for link in existing_links:
+                session.delete(link)
+            session.flush()
+            for w in markdown_result.wikilinks:
+                session.add(
+                    DocumentLink(
+                        src_doc_id=doc_id,
+                        link_text=w["link_text"],
+                        target_title=w["target_title"],
+                        anchor=w["anchor"],
+                        alias=w["alias"],
+                    )
+                )
+            if markdown_result.wikilinks:
+                logger.info(
+                    "Captured %d wikilinks for doc %s",
+                    len(markdown_result.wikilinks),
+                    doc_id,
+                )
 
         # Determine if OCR is needed
         _NEVER_OCR_MIMES = {
