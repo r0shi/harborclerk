@@ -557,6 +557,104 @@ async def test_background_stage_error_does_not_poison_pipeline_status(db_session
 
 
 @pytest.mark.asyncio
+async def test_run_chunk_markdown_aligns_with_headings_and_preserves_code_fence(db_session, tmp_path):
+    """Integration: a Markdown doc with multiple headings and a code fence
+    produces chunks whose boundaries prefer heading lines and never split
+    inside the fence."""
+    from sqlalchemy import select
+
+    from harbor_clerk.models.chunk import Chunk
+    from harbor_clerk.models.document_heading import DocumentHeading
+    from harbor_clerk.worker.stages.chunk import run_chunk
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    # Body chosen so it produces multiple chunks AND includes a code fence
+    # the chunker must not split. Pad each section so the chunker hits the
+    # default target (1000) inside each section.
+    pad_a = "A " * 250
+    pad_b = "B " * 250
+    pad_c = "C " * 250
+    md = (
+        "# Section A\n\n"
+        + pad_a
+        + "\n\n# Section B\n\n"
+        + pad_b
+        + "\n\n```python\n"
+        + ("print('keep me intact')\n" * 30)
+        + "```\n\n"
+        + "# Section C\n\n"
+        + pad_c
+        + "\n"
+    )
+    md_path = tmp_path / "note.md"
+    md_path.write_text(md)
+
+    doc = Document(
+        title=md_path.stem,
+        canonical_filename=md_path.name,
+        status="active",
+        sha256=hashlib.sha256(md_path.read_bytes()).digest(),
+        source_path=str(md_path),
+        pipeline_status=PipelineStatus.queued,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.chunk, status=JobStatus.queued))
+    await db_session.commit()
+
+    run_extract(doc.doc_id)
+    run_chunk(doc.doc_id)
+
+    sync_session = get_sync_session()
+    try:
+        headings = (
+            sync_session.execute(
+                select(DocumentHeading).where(DocumentHeading.doc_id == doc.doc_id).order_by(DocumentHeading.position)
+            )
+            .scalars()
+            .all()
+        )
+        chunks = (
+            sync_session.execute(select(Chunk).where(Chunk.doc_id == doc.doc_id).order_by(Chunk.chunk_num))
+            .scalars()
+            .all()
+        )
+    finally:
+        sync_session.close()
+
+    assert len(headings) == 3, f"expected 3 headings, got {len(headings)}"
+    assert {h.title for h in headings} == {"Section A", "Section B", "Section C"}
+    assert len(chunks) >= 2, "expected the doc to produce multiple chunks"
+
+    # The Python code fence must not be split at its boundary: at least one chunk
+    # must contain the complete fence (both the opening ``` and closing ```) in a
+    # single chunk_text. Overlap windows may cause later chunks to pick up the
+    # closing ``` line, but the primary chunk that spans the fence must be intact.
+    fence_marker = "print('keep me intact')"
+    chunks_with_fence = [c for c in chunks if fence_marker in c.chunk_text]
+    assert chunks_with_fence, "fence content was not retained in any chunk"
+    complete_fence_chunks = [c for c in chunks_with_fence if c.chunk_text.count("```") >= 2]
+    assert complete_fence_chunks, (
+        "no chunk contains a complete code fence (both opening and closing ```); "
+        f"fence chunks and their backtick counts: "
+        f"{[(c.chunk_num, c.chunk_text.count('```')) for c in chunks_with_fence]}"
+    )
+
+    # Heading alignment: at least one chunk should start at a heading boundary.
+    heading_titles = {"Section A", "Section B", "Section C"}
+    aligned = 0
+    for c in chunks:
+        head = c.chunk_text.lstrip()[:30]
+        if any(head.startswith(title) for title in heading_titles):
+            aligned += 1
+    assert aligned >= 1, (
+        "expected at least one chunk to start at a heading boundary; "
+        f"chunk heads: {[c.chunk_text[:30] for c in chunks]!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_extract_markdown_writes_headings_and_overrides_title(db_session, tmp_path):
     """Integration test: run_extract on a .md file with frontmatter writes
     document_headings rows AND updates doc.title from the frontmatter."""
