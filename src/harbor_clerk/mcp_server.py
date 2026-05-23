@@ -1437,49 +1437,10 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
-        # Get all embeddings for this document's chunks
-        rows = (
-            await session.execute(
-                select(Chunk.embedding).where(
-                    Chunk.doc_id == target_id,
-                    Chunk.embedding.isnot(None),
-                )
-            )
-        ).all()
-
-        if not rows:
-            return json.dumps({"doc_id": doc_id, "related": [], "note": "No embeddings available"})
-
-        # Compute average embedding in Python
-        dim = len(rows[0][0])
-        avg = [0.0] * dim
-        for (emb,) in rows:
-            for i, v in enumerate(emb):
-                avg[i] += v
-        n = len(rows)
-        avg = [v / n for v in avg]
-
-        # Find nearest chunks from OTHER active documents
-        distance = Chunk.embedding.cosine_distance(avg)
-        nearest_q = (
-            select(
-                Chunk.doc_id,
-                func.min(distance).label("min_distance"),
-            )
-            .join(Document, Document.doc_id == Chunk.doc_id)
-            .where(
-                Document.status == "active",
-                Chunk.embedding.isnot(None),
-                Chunk.doc_id != target_id,
-            )
-        )
-        if visible_ids is not None:
-            nearest_q = nearest_q.where(Chunk.doc_id.in_(visible_ids))
-        nearest = (await session.execute(nearest_q.group_by(Chunk.doc_id).order_by(func.min(distance)).limit(k))).all()
-
         # Explicit wikilink graph: docs this doc links to OR docs that link
-        # to this doc, both via resolved DocumentLink rows. Linked docs are
-        # prepended to the result with similarity=1.0 (max signal).
+        # to this doc, both via resolved DocumentLink rows. Computed up front
+        # so linked docs can be returned even when the source doc has no
+        # embeddings yet (e.g. while the embed stage is still pending).
         link_rows = (
             await session.execute(
                 select(DocumentLink.src_doc_id, DocumentLink.target_doc_id).where(
@@ -1502,14 +1463,59 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
             seen_linked.add(other)
             linked_ids.append(other)
 
+        # Get all embeddings for this document's chunks
+        rows = (
+            await session.execute(
+                select(Chunk.embedding).where(
+                    Chunk.doc_id == target_id,
+                    Chunk.embedding.isnot(None),
+                )
+            )
+        ).all()
+
+        nearest: list = []
+        distances: dict[uuid.UUID, float] = {}
+        if rows:
+            # Compute average embedding in Python
+            dim = len(rows[0][0])
+            avg = [0.0] * dim
+            for (emb,) in rows:
+                for i, v in enumerate(emb):
+                    avg[i] += v
+            n = len(rows)
+            avg = [v / n for v in avg]
+
+            # Find nearest chunks from OTHER active documents
+            distance = Chunk.embedding.cosine_distance(avg)
+            nearest_q = (
+                select(
+                    Chunk.doc_id,
+                    func.min(distance).label("min_distance"),
+                )
+                .join(Document, Document.doc_id == Chunk.doc_id)
+                .where(
+                    Document.status == "active",
+                    Chunk.embedding.isnot(None),
+                    Chunk.doc_id != target_id,
+                )
+            )
+            if visible_ids is not None:
+                nearest_q = nearest_q.where(Chunk.doc_id.in_(visible_ids))
+            nearest = (
+                await session.execute(nearest_q.group_by(Chunk.doc_id).order_by(func.min(distance)).limit(k))
+            ).all()
+            distances = {row[0]: float(row[1]) for row in nearest}
+
         # Embedding-nearest results (deduplicated against linked).
         nearest_ids = [row[0] for row in nearest if row[0] not in seen_linked]
-        distances = {row[0]: float(row[1]) for row in nearest}
 
         # Merge — linked first, then embedding-nearest — capped at k.
         merged_ids: list[uuid.UUID] = (linked_ids + nearest_ids)[:k]
         if not merged_ids:
-            return json.dumps({"doc_id": doc_id, "related": []})
+            payload: dict = {"doc_id": doc_id, "related": []}
+            if not rows:
+                payload["note"] = "No embeddings available"
+            return json.dumps(payload)
 
         docs_result = await session.execute(
             select(Document).where(Document.doc_id.in_(merged_ids), Document.status == "active")

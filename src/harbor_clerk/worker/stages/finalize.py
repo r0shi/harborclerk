@@ -70,20 +70,30 @@ def run_finalize(doc_id: uuid.UUID) -> None:
 
         # --- Wikilink resolution ---
         # Build a name→doc_ids map across all active docs (this doc included,
-        # because incoming links from this doc to itself are valid).
+        # because incoming links from this doc to itself are valid). When a
+        # doc's stem and title normalize to the same string (e.g. "Note A.md"
+        # with title "Note A"), only add the doc_id once for that name —
+        # otherwise _resolve_link sees a duplicated list of length >1 and
+        # mis-classifies a unique match as ambiguous.
         all_active = session.execute(
             select(Document.doc_id, Document.canonical_filename, Document.title).where(Document.status == "active")
         ).all()
         candidates_by_name: dict[str, list[uuid.UUID]] = {}
+
+        def _add_candidate(name: str, did: uuid.UUID) -> None:
+            bucket = candidates_by_name.setdefault(name, [])
+            if did not in bucket:
+                bucket.append(did)
+
         for did, fname, title in all_active:
             if fname:
                 stem = fname.rsplit(".", 1)[0].strip().lower()
                 if stem:
-                    candidates_by_name.setdefault(stem, []).append(did)
+                    _add_candidate(stem, did)
             if title:
                 t = title.strip().lower()
                 if t:
-                    candidates_by_name.setdefault(t, []).append(did)
+                    _add_candidate(t, did)
 
         # Resolve this doc's outgoing unresolved links.
         outgoing = (
