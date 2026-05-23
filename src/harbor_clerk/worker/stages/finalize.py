@@ -14,6 +14,32 @@ from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, ma
 logger = logging.getLogger(__name__)
 
 
+def _resolve_link(target_title: str, candidates_by_name: dict[str, list[uuid.UUID]]) -> uuid.UUID | None:
+    """Match a parsed wikilink target against the active corpus.
+
+    ``target_title`` is the parsed name from a ``[[…]]`` capture (already
+    lowercased + stripped by ``parse_wikilinks``, but we re-normalize
+    defensively).
+
+    ``candidates_by_name`` maps lowercase-stripped names to a list of doc_ids
+    that match that name. A name is either a document's ``canonical_filename``
+    stem (lowercased) or its ``title`` (lowercased). The caller builds this
+    map from the active corpus.
+
+    Returns the unique matching ``doc_id``, or ``None`` if no match or the
+    name is ambiguous (two or more docs share it).
+    """
+    if not target_title:
+        return None
+    key = target_title.strip().lower()
+    if not key:
+        return None
+    matches = candidates_by_name.get(key, [])
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def run_finalize(doc_id: uuid.UUID) -> None:
     """Complete ingestion: set doc ready, mark upload done."""
     if not mark_stage_running(doc_id, JobStage.finalize):
