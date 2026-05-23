@@ -194,7 +194,7 @@ scripts/test_corpora/runner/
   "openai"]` parameter; dispatches the exception classes accordingly. Existing
   call sites stay the same (the kind is derived from the model name).
 
-- **`scripts/test_corpora/tests/test_claude_baseline.py`** — tests stay; they
+- **`scripts/test_corpora/tests/test_baseline.py`** — tests stay; they
   exercise the shim's re-exports, which in turn exercise `AnthropicProvider`.
   Imports remain `from scripts.test_corpora.runner.claude_baseline import ...`.
 
@@ -260,7 +260,7 @@ based on judge's `_score()` precedent from PR-B's post-eval hardening.)
 | `test_openai_provider.py` | `test_openai_provider_transcript_records_each_call` | tool_transcript has one entry per tool_call with `tool`, `args`, `result_summary` |
 | `test_openai_provider.py` | `test_openai_provider_treats_length_finish_as_end_turn` | `finish_reason == "length"` returns the partial answer without crashing |
 | `test_openai_provider.py` | `test_openai_provider_falls_back_when_mcp_returns_no_content` | empty tool result → `(empty)` literal |
-| `test_claude_baseline.py` | (existing tests, unchanged) | shim re-exports work; `BaselineGenerator` is still importable from old path |
+| `test_baseline.py` | (existing tests, unchanged) | shim re-exports work; `BaselineGenerator` is still importable from old path |
 
 Live validation: one end-to-end run against `synthetic` with `gpt-4o`,
 re-using PR-B's frozen `synthetic.yaml`, expected to complete 29 items.
