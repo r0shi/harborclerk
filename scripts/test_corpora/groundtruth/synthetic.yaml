@@ -74,16 +74,18 @@ items:
     \ of Human Resources"
   type: lookup
 - id: synth-qreport-revenue-0261_quarterly_report
-  question: What was the revenue reported in the Q4 2025 quarterly report?
+  question: What was the revenue reported in the Q4 2025 quarterly report (the one
+    reporting approximately $47M)?
   clause_category: quarterly_report
   gold_doc: 0261_quarterly_report
   answer_key: $47,300,000.00
   type: lookup
-- id: synth-qreport-revenue-0262_quarterly_report
-  question: What was the revenue reported in the Q4 2025 quarterly report?
+- id: synth-qreport-revenue-0265_quarterly_report
+  question: What was the revenue reported in the Q3 2025 quarterly report (the one
+    reporting approximately $48M)?
   clause_category: quarterly_report
-  gold_doc: 0262_quarterly_report
-  answer_key: $47,300,000.00
+  gold_doc: 0265_quarterly_report
+  answer_key: $48,700,000.00
   type: lookup
 - id: synth-vcontract-law-0131_vendor_contract
   question: What is the governing law of the vendor contract with Pinnacle Tech Solutions,
@@ -128,29 +130,29 @@ items:
   answer_key: Eleanor Whitford, Managing Partner, Marbledock & Associates
   type: lookup
 - id: synth-policy-effective-0191_policy_doc
-  question: When does the "Information Security and Human Resources Acceptable Use
-    Policy" policy take effect?
+  question: When does version 3.1 of the "Information Security and Human Resources
+    Acceptable Use Policy" policy take effect?
   clause_category: policy_doc
   gold_doc: 0191_policy_doc
   answer_key: '2025-12-23'
   type: lookup
 - id: synth-policy-version-0191_policy_doc
-  question: What is the version number of the "Information Security and Human Resources
-    Acceptable Use Policy" policy?
+  question: What version of the "Information Security and Human Resources Acceptable
+    Use Policy" policy takes effect on 2025-12-23?
   clause_category: policy_doc
   gold_doc: 0191_policy_doc
   answer_key: '3.1'
   type: lookup
 - id: synth-policy-effective-0192_policy_doc
-  question: When does the "Information Security and Human Resources Acceptable Use
-    Policy" policy take effect?
+  question: When does version 2.4.1 of the "Information Security and Human Resources
+    Acceptable Use Policy" policy take effect?
   clause_category: policy_doc
   gold_doc: 0192_policy_doc
   answer_key: '2025-08-13'
   type: lookup
 - id: synth-policy-version-0192_policy_doc
-  question: What is the version number of the "Information Security and Human Resources
-    Acceptable Use Policy" policy?
+  question: What version of the "Information Security and Human Resources Acceptable
+    Use Policy" policy takes effect on 2025-08-13?
   clause_category: policy_doc
   gold_doc: 0192_policy_doc
   answer_key: 2.4.1
@@ -173,12 +175,6 @@ items:
   clause_category: employee_handbook
   gold_doc: 0241_employee_handbook
   answer_key: '4'
-  type: lookup
-- id: synth-handbook-sections-0242_employee_handbook
-  question: How many top-level sections are in the 2025 Marbledock employee handbook?
-  clause_category: employee_handbook
-  gold_doc: 0242_employee_handbook
-  answer_key: '3'
   type: lookup
 - id: synth-find-invoices-over-5000
   question: Find all invoices with a total amount over $5,000 USD.

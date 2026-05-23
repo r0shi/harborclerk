@@ -297,6 +297,47 @@ def test_generate_raises_when_negative_vendor_unexpectedly_matches(tmp_path: Pat
         generate(ingest_dir=ingest, out_path=out)
 
 
+def test_generate_silently_skips_items_with_duplicate_questions(tmp_path: Path, capsys):
+    """When two sidecars yield identical question text, the orchestrator keeps
+    the first and drops the rest — the model can't disambiguate by anything
+    other than question text, so a dup is an eval-validity bug; silent skip
+    + a stderr warning is the right default since some corpus quirks (e.g.,
+    all employee_handbook sidecars share `year: 2025`) make dup-emission
+    unavoidable without per-recipe hand-curation.
+
+    Reproducer: overwrite 0002_invoice to share 0001_invoice's invoice_number,
+    so the lookup-by-number recipe emits the same question text for both
+    sidecars. The 0001 item survives; the 0002 item is dropped."""
+    ingest = _make_full_fixture(tmp_path)
+    (ingest / "0002_invoice.json").write_text(
+        json.dumps(
+            {
+                "vendor": "Other Vendor",
+                "invoice_number": "ACM-001",  # collides with 0001_invoice's number
+                "date": "2025-02-20",
+                "total_usd": 100.0,
+                "line_items": [],
+            }
+        )
+    )
+    out = tmp_path / "synthetic.yaml"
+    generate(ingest_dir=ingest, out_path=out)
+    data = yaml.safe_load(out.read_text())
+
+    # Both invoice recipes key their question on invoice_number, so when 0002
+    # collides with 0001's number, BOTH 0002 items get dropped — only the
+    # 0001 lookups survive. (Filter by type to exclude the negative item,
+    # which also has clause_category="invoice".)
+    invoice_lookups = [i for i in data["items"] if i["clause_category"] == "invoice" and i["type"] == "lookup"]
+    assert len(invoice_lookups) == 2
+    assert all(i["gold_doc"] == "0001_invoice" for i in invoice_lookups)
+
+    # A stderr warning records how many items got skipped — at least 2 (the
+    # 0002 total + vendor recipes that both collided on invoice number).
+    err = capsys.readouterr().err
+    assert "skipped" in err and "duplicated" in err
+
+
 def test_generate_raises_when_negative_invoice_number_unexpectedly_matches(tmp_path: Path):
     """If a doc in the corpus actually uses invoice_number INV-99999, generate refuses."""
     ingest = _make_full_fixture(tmp_path)

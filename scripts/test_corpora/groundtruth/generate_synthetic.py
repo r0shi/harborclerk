@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import yaml
@@ -136,11 +136,15 @@ def _recipe_onboarding_letter(stem: str, sc: dict) -> list[dict]:
 
 
 def _recipe_quarterly_report(stem: str, sc: dict) -> list[dict]:
-    q, y = sc["quarter"], sc["year"]
+    # Disambiguate (q, y) with revenue magnitude so questions are unique even
+    # when the corpus has multiple qreports for the same quarter — the
+    # orchestrator further dedups by (q, y) to avoid emitting identical
+    # question/answer pairs for repeated qreports.
+    q, y, rev = sc["quarter"], sc["year"], int(sc["revenue_usd"])
     return [
         _lookup_item(
             id_=f"synth-qreport-revenue-{stem}",
-            question=f"What was the revenue reported in the {q} {y} quarterly report?",
+            question=f"What was the revenue reported in the {q} {y} quarterly report (the one reporting approximately ${rev // 1_000_000}M)?",
             gold_doc=stem,
             answer_key=f"${sc['revenue_usd']:,.2f}",
             clause_category="quarterly_report",
@@ -182,20 +186,26 @@ def _recipe_internal_memo(stem: str, sc: dict) -> list[dict]:
 
 
 def _recipe_policy_doc(stem: str, sc: dict) -> list[dict]:
+    # Include version and effective_date as cross-discriminators in the
+    # question text — the corpus has multiple versions of the same policy
+    # (e.g., two "Information Security..." policies with different dates),
+    # and questions need to pin down ONE doc unambiguously.
     name = sc["policy_name"]
+    version = str(sc["version"])
+    effective = sc["effective_date"]
     return [
         _lookup_item(
             id_=f"synth-policy-effective-{stem}",
-            question=f'When does the "{name}" policy take effect?',
+            question=f'When does version {version} of the "{name}" policy take effect?',
             gold_doc=stem,
-            answer_key=sc["effective_date"],
+            answer_key=effective,
             clause_category="policy_doc",
         ),
         _lookup_item(
             id_=f"synth-policy-version-{stem}",
-            question=f'What is the version number of the "{name}" policy?',
+            question=f'What version of the "{name}" policy takes effect on {effective}?',
             gold_doc=stem,
-            answer_key=str(sc["version"]),
+            answer_key=version,
             clause_category="policy_doc",
         ),
     ]
@@ -227,7 +237,7 @@ def _recipe_employee_handbook(stem: str, sc: dict) -> list[dict]:
     ]
 
 
-RECIPES: dict[str, callable] = {
+RECIPES: dict[str, Callable[[str, dict], list[dict]]] = {
     "invoice": _recipe_invoice,
     "board_minutes": _recipe_board_minutes,
     "onboarding_letter": _recipe_onboarding_letter,
@@ -352,11 +362,46 @@ def generate(ingest_dir: Path, out_path: Path, *, per_type: int = 2) -> int:
     against the corpus), and up to 2 French-language items.
     """
     items: list[dict] = []
+    seen_questions: set[str] = set()
+    dup_skipped = 0
 
-    # Per-doc-type lookups.
+    # Per-doc-type lookups. Two layers of dedup:
+    #  (a) Quarterly reports get an extra pass by (quarter, year) — the corpus
+    #      has multiple qreports for the same quarter/year, all with the same
+    #      effective metadata; skip past the dup before invoking the recipe.
+    #  (b) After each item is built, drop it if its question text already
+    #      appears in `seen_questions`. The model has no way to disambiguate
+    #      identical questions (gold_doc is internal to the runner), so a dup
+    #      is an eval-validity bug. Some corpus quirks (e.g., every
+    #      employee_handbook has `year: 2025` so the recipe template produces
+    #      the same question for all of them) make this unavoidable without
+    #      hand-curating per-recipe — silent skip is the right default. The
+    #      `dup_skipped` count is reported to stderr so a curator can spot a
+    #      doc-type that's contributing fewer items than expected.
     for doctype, recipe in RECIPES.items():
-        for stem, sc in list(_iter_sidecars(ingest_dir, doctype))[:per_type]:
-            items.extend(recipe(stem, sc))
+        sidecars = _iter_sidecars(ingest_dir, doctype)
+        if doctype == "quarterly_report":
+            seen_qy: set[tuple] = set()
+            deduped: list[tuple[str, dict]] = []
+            for stem, sc in sidecars:
+                key = (sc.get("quarter"), sc.get("year"))
+                if key in seen_qy:
+                    continue
+                seen_qy.add(key)
+                deduped.append((stem, sc))
+            sidecars = iter(deduped)
+        for stem, sc in list(sidecars)[:per_type]:
+            for item in recipe(stem, sc):
+                if item["question"] in seen_questions:
+                    dup_skipped += 1
+                    continue
+                seen_questions.add(item["question"])
+                items.append(item)
+    if dup_skipped:
+        print(
+            f"warning: skipped {dup_skipped} item(s) whose question text duplicated an earlier item — corpus quirk",
+            file=sys.stderr,
+        )
 
     # Cross-doc finds.
     items.append(_find_invoices_over_5000(ingest_dir))
