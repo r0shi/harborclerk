@@ -63,6 +63,18 @@ def test_parse_email_date_handles_missing_or_malformed(tmp_path: Path):
     assert _parse_email_date(p) is None
 
 
+def test_parse_email_date_falls_back_to_iso8601(tmp_path: Path):
+    """The Enron HuggingFace .eml conversion uses ISO-8601 Date headers
+    ('2001-04-26 08:34:00+00:00'), not RFC 2822. _parse_email_date falls back
+    to ISO parsing when RFC 2822 fails."""
+    p = tmp_path / "iso.eml"
+    p.write_text("From: x@y\nSubject: test\nDate: 2001-04-26 08:34:00+00:00\n\nbody")
+    dt = _parse_email_date(p)
+    assert dt is not None
+    assert dt.year == 2001 and dt.month == 4 and dt.day == 26
+    assert dt.tzinfo is not None  # UTC-aware
+
+
 def test_find_item_builds_count_all_sample_shape():
     item = _find_item("enron-find-x", "Find x.", all_matches=["b.eml", "a.eml", "c.eml"])
     assert item["type"] == "find"

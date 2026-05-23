@@ -61,8 +61,13 @@ def _grep(ingest_dir: Path, pattern: str) -> list[str]:
 
 
 def _parse_email_date(path: Path) -> datetime | None:
-    """Parse an .eml file's Date header; return None if missing, malformed, or
-    a pre-1995 sentinel (PST extractions stub Dates as 1980-01-01 etc.).
+    """Parse an .eml file's Date header; return None if missing, unparseable,
+    or a pre-1995 sentinel (PST extractions stub Dates as 1980-01-01 etc.).
+
+    Tries RFC 2822 first (the email standard), then falls back to ISO-8601:
+    the Enron HuggingFace dataset's PST-to-eml conversion writes Dates in ISO
+    format (``2001-04-26 08:34:00+00:00``) rather than RFC 2822
+    (``Wed, 26 Apr 2001 ...``), which Python's ``parsedate_to_datetime`` rejects.
 
     Always returns a UTC-aware datetime — callers can compare directly without
     repeating the tz-info dance.
@@ -74,12 +79,16 @@ def _parse_email_date(path: Path) -> datetime | None:
     raw = msg.get("Date")
     if not raw:
         return None
+    dt: datetime | None = None
     try:
         dt = email.utils.parsedate_to_datetime(raw)
     except (TypeError, ValueError):
-        return None
+        dt = None
     if dt is None:
-        return None
+        try:
+            dt = datetime.fromisoformat(raw.strip())
+        except (TypeError, ValueError):
+            return None
     dt_utc = dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
     if dt_utc < SENTINEL_DATE_CUTOFF:
         return None
