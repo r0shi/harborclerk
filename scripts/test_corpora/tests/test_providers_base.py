@@ -55,3 +55,18 @@ def test_provider_is_a_protocol_with_run_question():
 
     # @runtime_checkable Protocol allows isinstance() against duck-typed classes
     assert isinstance(_FakeProvider(), Provider)
+
+
+def test_anthropic_provider_class_is_importable_from_new_path():
+    """AnthropicProvider lives at providers.anthropic_provider — this is the
+    canonical path; claude_baseline.py becomes a shim in Task 3."""
+    from scripts.test_corpora.runner.providers.anthropic_provider import AnthropicProvider
+
+    assert AnthropicProvider.__name__ == "AnthropicProvider"
+    # AnthropicProvider needs a real client+mcp_session to instantiate, so we
+    # use a structural check via hasattr rather than isinstance against an
+    # instance. Provider is @runtime_checkable, but structural duck-typing
+    # against the class itself reads more clearly.
+    assert hasattr(AnthropicProvider, "run_question")
+    assert callable(AnthropicProvider.run_question)
+    _ = Provider  # silence unused-import warning
