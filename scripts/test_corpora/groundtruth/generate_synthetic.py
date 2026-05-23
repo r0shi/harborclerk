@@ -87,14 +87,14 @@ def _recipe_invoice(stem: str, sc: dict) -> list[dict]:
     inv = sc["invoice_number"]
     return [
         _lookup_item(
-            id_=f"synth-invoice-total-{inv}",
+            id_=f"synth-invoice-total-{stem}",
             question=f"What is the total amount in USD of invoice {inv}?",
             gold_doc=stem,
             answer_key=f"${sc['total_usd']:,.2f}",
             clause_category="invoice",
         ),
         _lookup_item(
-            id_=f"synth-invoice-vendor-{inv}",
+            id_=f"synth-invoice-vendor-{stem}",
             question=f"Who is the vendor on invoice {inv}?",
             gold_doc=stem,
             answer_key=sc["vendor"],
@@ -106,7 +106,7 @@ def _recipe_invoice(stem: str, sc: dict) -> list[dict]:
 def _recipe_board_minutes(stem: str, sc: dict) -> list[dict]:
     return [
         _lookup_item(
-            id_=f"synth-board-attendees-{sc['date']}",
+            id_=f"synth-board-attendees-{stem}",
             question=f"Who attended the Marbledock & Associates board meeting on {sc['date']}?",
             gold_doc=stem,
             answer_key="; ".join(sc["attendees"]),
@@ -139,7 +139,7 @@ def _recipe_quarterly_report(stem: str, sc: dict) -> list[dict]:
     q, y = sc["quarter"], sc["year"]
     return [
         _lookup_item(
-            id_=f"synth-qreport-revenue-{q}-{y}",
+            id_=f"synth-qreport-revenue-{stem}",
             question=f"What was the revenue reported in the {q} {y} quarterly report?",
             gold_doc=stem,
             answer_key=f"${sc['revenue_usd']:,.2f}",
@@ -319,7 +319,7 @@ def _emit_fr_items(ingest_dir: Path) -> list[dict]:
             if doctype == "board_minutes":
                 items.append(
                     _lookup_item(
-                        id_=f"synth-fr-board-attendees-{sc['date']}",
+                        id_=f"synth-fr-board-attendees-{stem}",
                         question=f"Qui a assisté à la réunion du conseil de Marbledock & Associates le {sc['date']}?",
                         gold_doc=stem,
                         answer_key="; ".join(sc["attendees"]),

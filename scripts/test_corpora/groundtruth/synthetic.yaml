@@ -1,0 +1,294 @@
+corpus: synthetic
+items:
+- id: synth-invoice-total-0001_invoice
+  question: What is the total amount in USD of invoice SBA-20251104-087342?
+  clause_category: invoice
+  gold_doc: 0001_invoice
+  answer_key: $6,326.60
+  type: lookup
+- id: synth-invoice-vendor-0001_invoice
+  question: Who is the vendor on invoice SBA-20251104-087342?
+  clause_category: invoice
+  gold_doc: 0001_invoice
+  answer_key: Staples Business Advantage
+  type: lookup
+- id: synth-invoice-total-0002_invoice
+  question: What is the total amount in USD of invoice SC-2025-084471?
+  clause_category: invoice
+  gold_doc: 0002_invoice
+  answer_key: $30,163.80
+  type: lookup
+- id: synth-invoice-vendor-0002_invoice
+  question: Who is the vendor on invoice SC-2025-084471?
+  clause_category: invoice
+  gold_doc: 0002_invoice
+  answer_key: Steelcase Inc.
+  type: lookup
+- id: synth-board-attendees-0101_board_minutes
+  question: Who attended the Marbledock & Associates board meeting on 2025-03-07?
+  clause_category: board_minutes
+  gold_doc: 0101_board_minutes
+  answer_key: "Eleanor Voss \u2013 Chairwoman & Chief Executive Officer; Raymond Holt\
+    \ \u2013 Chief Financial Officer; Sandra Kimura \u2013 Chief Operating Officer;\
+    \ Frederick Osei \u2013 Chief Legal Officer; Diana Marchetti \u2013 Chief Marketing\
+    \ Officer; Thomas Blaine \u2013 Head of Corporate Strategy; Priya Nandakumar \u2013\
+    \ Non-Executive Director; Gerald Whitmore \u2013 Non-Executive Director"
+  type: lookup
+- id: synth-board-attendees-0102_board_minutes
+  question: Who attended the Marbledock & Associates board meeting on 2025-04-02?
+  clause_category: board_minutes
+  gold_doc: 0102_board_minutes
+  answer_key: "Eleanor Voss \u2013 Chief Executive Officer; Raymond Holt \u2013 Chief\
+    \ Financial Officer; Priya Sundaram \u2013 Chief Operating Officer; Marcus Bellfield\
+    \ \u2013 General Counsel; Theodora Wainwright \u2013 Head of Business Development;\
+    \ Simon Crake \u2013 Chief Technology Officer"
+  type: lookup
+- id: synth-onboarding-start-0061_onboarding_letter
+  question: What is the start date listed on the Senior Project Coordinator onboarding
+    letter?
+  clause_category: onboarding_letter
+  gold_doc: 0061_onboarding_letter
+  answer_key: '2025-04-19'
+  type: lookup
+- id: synth-onboarding-mgr-0061_onboarding_letter
+  question: Who is the signing manager on the Senior Project Coordinator onboarding
+    letter?
+  clause_category: onboarding_letter
+  gold_doc: 0061_onboarding_letter
+  answer_key: Isabelle Tremblay-Fontaine, Directrice des ressources humaines / Director
+    of Human Resources
+  type: lookup
+- id: synth-onboarding-start-0062_onboarding_letter
+  question: What is the start date listed on the Senior Bilingual Project Coordinator
+    onboarding letter?
+  clause_category: onboarding_letter
+  gold_doc: 0062_onboarding_letter
+  answer_key: '2025-02-24'
+  type: lookup
+- id: synth-onboarding-mgr-0062_onboarding_letter
+  question: Who is the signing manager on the Senior Bilingual Project Coordinator
+    onboarding letter?
+  clause_category: onboarding_letter
+  gold_doc: 0062_onboarding_letter
+  answer_key: "Sophie Tr\xE9panier, Directrice des Ressources Humaines / Director\
+    \ of Human Resources"
+  type: lookup
+- id: synth-qreport-revenue-0261_quarterly_report
+  question: What was the revenue reported in the Q4 2025 quarterly report?
+  clause_category: quarterly_report
+  gold_doc: 0261_quarterly_report
+  answer_key: $47,300,000.00
+  type: lookup
+- id: synth-qreport-revenue-0262_quarterly_report
+  question: What was the revenue reported in the Q4 2025 quarterly report?
+  clause_category: quarterly_report
+  gold_doc: 0262_quarterly_report
+  answer_key: $47,300,000.00
+  type: lookup
+- id: synth-vcontract-law-0131_vendor_contract
+  question: What is the governing law of the vendor contract with Pinnacle Tech Solutions,
+    LLC?
+  clause_category: vendor_contract
+  gold_doc: 0131_vendor_contract
+  answer_key: State of South Carolina
+  type: lookup
+- id: synth-vcontract-fee-0131_vendor_contract
+  question: What is the monthly fee in USD on the vendor contract with Pinnacle Tech
+    Solutions, LLC?
+  clause_category: vendor_contract
+  gold_doc: 0131_vendor_contract
+  answer_key: $8,500.00
+  type: lookup
+- id: synth-vcontract-law-0132_vendor_contract
+  question: What is the governing law of the vendor contract with Pinnacle Technology
+    Solutions, LLC?
+  clause_category: vendor_contract
+  gold_doc: 0132_vendor_contract
+  answer_key: State of Illinois
+  type: lookup
+- id: synth-vcontract-fee-0132_vendor_contract
+  question: What is the monthly fee in USD on the vendor contract with Pinnacle Technology
+    Solutions, LLC?
+  clause_category: vendor_contract
+  gold_doc: 0132_vendor_contract
+  answer_key: $8,500.00
+  type: lookup
+- id: synth-memo-sender-0161_internal_memo
+  question: "Who is the sender of the internal memo with subject \"Updated Remote\
+    \ Work and Hybrid Scheduling Policy \u2013 Effective April 1, 2025\"?"
+  clause_category: internal_memo
+  gold_doc: 0161_internal_memo
+  answer_key: Helena Voss, Chief Operations Officer, Marbledock & Associates
+  type: lookup
+- id: synth-memo-sender-0162_internal_memo
+  question: "Who is the sender of the internal memo with subject \"Updated Remote\
+    \ Work and Hybrid Office Attendance Policy \u2013 Effective Immediately\"?"
+  clause_category: internal_memo
+  gold_doc: 0162_internal_memo
+  answer_key: Eleanor Whitford, Managing Partner, Marbledock & Associates
+  type: lookup
+- id: synth-policy-effective-0191_policy_doc
+  question: When does the "Information Security and Human Resources Acceptable Use
+    Policy" policy take effect?
+  clause_category: policy_doc
+  gold_doc: 0191_policy_doc
+  answer_key: '2025-12-23'
+  type: lookup
+- id: synth-policy-version-0191_policy_doc
+  question: What is the version number of the "Information Security and Human Resources
+    Acceptable Use Policy" policy?
+  clause_category: policy_doc
+  gold_doc: 0191_policy_doc
+  answer_key: '3.1'
+  type: lookup
+- id: synth-policy-effective-0192_policy_doc
+  question: When does the "Information Security and Human Resources Acceptable Use
+    Policy" policy take effect?
+  clause_category: policy_doc
+  gold_doc: 0192_policy_doc
+  answer_key: '2025-08-13'
+  type: lookup
+- id: synth-policy-version-0192_policy_doc
+  question: What is the version number of the "Information Security and Human Resources
+    Acceptable Use Policy" policy?
+  clause_category: policy_doc
+  gold_doc: 0192_policy_doc
+  answer_key: 2.4.1
+  type: lookup
+- id: synth-mkt-budget-0221_marketing_brief
+  question: What is the budget in USD for the "Marbledock Elevate 2025" marketing
+    campaign?
+  clause_category: marketing_brief
+  gold_doc: 0221_marketing_brief
+  answer_key: $120,000.00
+  type: lookup
+- id: synth-mkt-budget-0222_marketing_brief
+  question: What is the budget in USD for the "Elevate Forward" marketing campaign?
+  clause_category: marketing_brief
+  gold_doc: 0222_marketing_brief
+  answer_key: $250,000.00
+  type: lookup
+- id: synth-handbook-sections-0241_employee_handbook
+  question: How many top-level sections are in the 2025 Marbledock employee handbook?
+  clause_category: employee_handbook
+  gold_doc: 0241_employee_handbook
+  answer_key: '4'
+  type: lookup
+- id: synth-handbook-sections-0242_employee_handbook
+  question: How many top-level sections are in the 2025 Marbledock employee handbook?
+  clause_category: employee_handbook
+  gold_doc: 0242_employee_handbook
+  answer_key: '3'
+  type: lookup
+- id: synth-find-invoices-over-5000
+  question: Find all invoices with a total amount over $5,000 USD.
+  clause_category: cross-doc
+  gold_doc: (see answer_key.all)
+  answer_key:
+    count: 56
+    all:
+    - 0001_invoice
+    - 0002_invoice
+    - 0003_invoice
+    - 0004_invoice
+    - 0005_invoice
+    - 0006_invoice
+    - 0007_invoice
+    - 0008_invoice
+    - 0009_invoice
+    - 0010_invoice
+    - 0011_invoice
+    - 0012_invoice
+    - 0013_invoice
+    - 0014_invoice
+    - 0015_invoice
+    - 0016_invoice
+    - 0017_invoice
+    - 0018_invoice
+    - 0019_invoice
+    - 0020_invoice
+    - 0021_invoice
+    - 0022_invoice
+    - 0023_invoice
+    - 0024_invoice
+    - 0025_invoice
+    - 0026_invoice
+    - 0027_invoice
+    - 0028_invoice
+    - 0029_invoice
+    - 0030_invoice
+    - 0031_invoice
+    - 0032_invoice
+    - 0033_invoice
+    - 0034_invoice
+    - 0035_invoice
+    - 0036_invoice
+    - 0037_invoice
+    - 0038_invoice
+    - 0040_invoice
+    - 0042_invoice
+    - 0043_invoice
+    - 0044_invoice
+    - 0045_invoice
+    - 0046_invoice
+    - 0047_invoice
+    - 0048_invoice
+    - 0049_invoice
+    - 0051_invoice
+    - 0052_invoice
+    - 0053_invoice
+    - 0054_invoice
+    - 0055_invoice
+    - 0056_invoice
+    - 0058_invoice
+    - 0059_invoice
+    - 0060_invoice
+    sample:
+    - 0001_invoice
+    - 0002_invoice
+    - 0003_invoice
+    - 0004_invoice
+    - 0005_invoice
+    - 0006_invoice
+    - 0007_invoice
+    - 0008_invoice
+    - 0009_invoice
+    - 0010_invoice
+  type: find
+- id: synth-find-policies-q4-2025
+  question: Find Marbledock policies that take effect in Q4 2025 (October, November,
+    or December 2025).
+  clause_category: cross-doc
+  gold_doc: (see answer_key.all)
+  answer_key:
+    count: 6
+    all:
+    - 0191_policy_doc
+    - 0201_policy_doc
+    - 0203_policy_doc
+    - 0204_policy_doc
+    - 0210_policy_doc
+    - 0215_policy_doc
+    sample:
+    - 0191_policy_doc
+    - 0201_policy_doc
+    - 0203_policy_doc
+    - 0204_policy_doc
+    - 0210_policy_doc
+    - 0215_policy_doc
+  type: find
+- id: synth-neg-invoice-99999
+  question: What is the total amount of invoice INV-99999?
+  clause_category: invoice
+  gold_doc: (none expected)
+  answer_key: null
+  type: negative
+- id: synth-find-neg-vendor-globex-aerospace
+  question: Find vendor contracts where the vendor is Globex Aerospace.
+  clause_category: cross-doc
+  gold_doc: (see answer_key.all)
+  answer_key:
+    count: 0
+    all: []
+    sample: []
+  type: find
