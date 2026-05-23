@@ -150,3 +150,17 @@ def test_generate_raises_when_negative_term_has_hits(tmp_path: Path):
     out = tmp_path / "enron.yaml"
     with pytest.raises(RuntimeError, match="negative term .* unexpectedly has"):
         generate(ingest_dir=ingest, out_path=out)
+
+
+def test_grep_does_not_recurse_into_subdirectories(tmp_path: Path):
+    """_grep is flat — files in subdirectories are NOT searched. The Enron
+    corpus uses one-level filenames-encode-folder names (e.g.
+    `lay-k_inbox_42_.eml`); a recursive sweep returning only basenames would
+    silently collide on identical filenames in different subdirs."""
+    ingest = tmp_path / "ingest"
+    ingest.mkdir()
+    sub = ingest / "nested"
+    sub.mkdir()
+    _write_eml(ingest / "top.eml", body="raptor at top")
+    _write_eml(sub / "nested.eml", body="raptor in nested dir, should not be found")
+    assert _grep(ingest, "raptor") == ["top.eml"]

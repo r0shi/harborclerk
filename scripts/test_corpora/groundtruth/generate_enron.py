@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import email
 import email.utils
-import subprocess
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,20 +42,31 @@ NEGATIVE_TERMS: list[tuple[str, str]] = [
 
 def _grep(ingest_dir: Path, pattern: str) -> list[str]:
     """Return sorted list of .eml filenames matching `pattern` (case-insensitive,
-    extended-regex). Uses GNU/BSD `grep -lirE` — list filenames, recursive."""
-    result = subprocess.run(
-        ["grep", "-l", "-i", "-r", "-E", pattern, str(ingest_dir)],
-        capture_output=True,
-        text=True,
-        check=False,  # grep exits 1 on no matches, which is fine
-    )
-    files = [Path(p).name for p in result.stdout.strip().splitlines() if p]
-    return sorted(files)
+    extended-regex).
+
+    Flat-corpus assumption — does NOT recurse into subdirectories. The Enron
+    corpus uses a one-level filenames-encode-folder convention
+    (``lay-k_inbox_42_.eml`` etc.), so a flat search avoids the basename
+    collision that a recursive sweep would silently produce.
+    """
+    rx = re.compile(pattern, re.IGNORECASE)
+    matches: list[str] = []
+    for p in ingest_dir.glob("*.eml"):
+        try:
+            if rx.search(p.read_text(errors="replace")):
+                matches.append(p.name)
+        except OSError:
+            continue
+    return sorted(matches)
 
 
 def _parse_email_date(path: Path) -> datetime | None:
     """Parse an .eml file's Date header; return None if missing, malformed, or
-    a pre-1995 sentinel (PST extractions stub Dates as 1980-01-01 etc.)."""
+    a pre-1995 sentinel (PST extractions stub Dates as 1980-01-01 etc.).
+
+    Always returns a UTC-aware datetime — callers can compare directly without
+    repeating the tz-info dance.
+    """
     try:
         msg = email.message_from_string(path.read_text(errors="replace"))
     except Exception:
@@ -69,11 +80,10 @@ def _parse_email_date(path: Path) -> datetime | None:
         return None
     if dt is None:
         return None
-    # Compare in UTC to avoid tzinfo mismatches.
     dt_utc = dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
     if dt_utc < SENTINEL_DATE_CUTOFF:
         return None
-    return dt
+    return dt_utc
 
 
 def _find_item(id_: str, question: str, *, all_matches: list[str]) -> dict:
@@ -125,7 +135,7 @@ def _recipe_ferc(ingest: Path) -> dict:
 
 def _recipe_lay_forwarded_2001(ingest: Path) -> dict:
     """List emails forwarded by Lay during 2001 — heuristic over the lay-k
-    folder: 2001 in Date header + Fw/Fwd in Subject."""
+    folder: a parsed Date with ``year == 2001`` + Fw/Fwd in Subject."""
     matches: list[str] = []
     for p in sorted(ingest.glob("lay-k*.eml")):
         try:
@@ -133,8 +143,8 @@ def _recipe_lay_forwarded_2001(ingest: Path) -> dict:
         except Exception:
             continue
         subj = (msg.get("Subject") or "").lower()
-        date = msg.get("Date") or ""
-        if "2001" not in date:
+        dt = _parse_email_date(p)
+        if dt is None or dt.year != 2001:
             continue
         if not any(tag in subj for tag in ("fw:", "fwd:", "fw ", "fwd ")):
             continue
@@ -179,13 +189,10 @@ def _recipe_skilling_last(ingest: Path) -> dict:
         sender = (msg.get("From") or "").lower()
         if not any(a in sender for a in SKILLING_ADDRS):
             continue
-        dt = _parse_email_date(p)
-        if dt is None:
+        dt = _parse_email_date(p)  # UTC-aware
+        if dt is None or dt >= SKILLING_RESIGN_DATE:
             continue
-        dt_utc = dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=UTC)
-        if dt_utc >= SKILLING_RESIGN_DATE:
-            continue
-        candidates.append((dt_utc, p.name, msg.get("Subject") or ""))
+        candidates.append((dt, p.name, msg.get("Subject") or ""))
     if not candidates:
         raise RuntimeError("no pre-resignation Skilling emails found")
     candidates.sort()
