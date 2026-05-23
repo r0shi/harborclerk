@@ -75,15 +75,17 @@ def test_parse_email_date_falls_back_to_iso8601(tmp_path: Path):
     assert dt.tzinfo is not None  # UTC-aware
 
 
-def test_find_item_builds_count_all_sample_shape():
+def test_find_item_builds_count_all_sample_shape_with_stems():
+    """Stores stems (without .eml) so values match HC's doc_title format."""
     item = _find_item("enron-find-x", "Find x.", all_matches=["b.eml", "a.eml", "c.eml"])
     assert item["type"] == "find"
     assert item["id"] == "enron-find-x"
     assert item["question"] == "Find x."
     assert item["answer_key"]["count"] == 3
-    # `all` is preserved in the order passed in (the caller sorts); sample takes first K
-    assert item["answer_key"]["all"] == ["b.eml", "a.eml", "c.eml"]
-    assert item["answer_key"]["sample"] == ["b.eml", "a.eml", "c.eml"]
+    # `all` is preserved in the input order (the caller sorts); .eml is stripped
+    # to match HC's doc_title shape; sample takes first K stems.
+    assert item["answer_key"]["all"] == ["b", "a", "c"]
+    assert item["answer_key"]["sample"] == ["b", "a", "c"]
 
 
 def test_generate_end_to_end_with_minimal_fixture(tmp_path: Path):
@@ -140,13 +142,15 @@ def test_generate_end_to_end_with_minimal_fixture(tmp_path: Path):
         ak = by_id[fid]["answer_key"]
         assert set(ak) == {"count", "all", "sample"}
 
-    # Raptor item picked up the right file
+    # Raptor item picked up the right file (stored as stem)
     assert by_id["enron-find-raptor"]["answer_key"]["count"] == 1
-    assert by_id["enron-find-raptor"]["answer_key"]["all"] == ["skilling-j_doc_1.eml"]
+    assert by_id["enron-find-raptor"]["answer_key"]["all"] == ["skilling-j_doc_1"]
 
     # Lookup items
     assert by_id["enron-lookup-earliest-california"]["answer_key"] == "2001-08-01"
+    assert by_id["enron-lookup-earliest-california"]["gold_doc"] == "skilling-j_doc_1"
     assert by_id["enron-lookup-skilling-last-pre-resign"]["answer_key"] == "Pre-resignation note about CA"
+    assert by_id["enron-lookup-skilling-last-pre-resign"]["gold_doc"] == "skilling-j_doc_1"
 
     # Negatives: count=0, all=[], sample=[]
     for nid in ["enron-find-neg-cryptocurrency", "enron-find-neg-bitcoin", "enron-find-neg-spacex"]:

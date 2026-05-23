@@ -95,17 +95,27 @@ def _parse_email_date(path: Path) -> datetime | None:
     return dt_utc
 
 
+def _to_title(basename: str) -> str:
+    """Strip the .eml extension so the value matches HC's doc_title format.
+    HC's search results return titles like ``lay-k_inbox_268_`` (the filename
+    stem); coverage scoring is a set-overlap between the model's cited titles
+    and answer_key.all, so both sides must use the same shape."""
+    return basename.removesuffix(".eml")
+
+
 def _find_item(id_: str, question: str, *, all_matches: list[str]) -> dict:
-    """Build a `find`-typed item with the {count, all, sample} answer_key shape."""
+    """Build a `find`-typed item with the {count, all, sample} answer_key shape.
+    Input is a list of .eml basenames; stored as stems (HC titles)."""
+    stems = [_to_title(m) for m in all_matches]
     return {
         "id": id_,
         "question": question,
         "clause_category": "n/a",
         "gold_doc": "(see answer_key.all)",
         "answer_key": {
-            "count": len(all_matches),
-            "all": all_matches,
-            "sample": all_matches[:SAMPLE_K],
+            "count": len(stems),
+            "all": stems,
+            "sample": stems[:SAMPLE_K],
         },
         "type": "find",
     }
@@ -181,7 +191,7 @@ def _recipe_earliest_california(ingest: Path) -> dict:
         "id": "enron-lookup-earliest-california",
         "question": "What was the date of the earliest email about California in the corpus?",
         "clause_category": "n/a",
-        "gold_doc": earliest_name,
+        "gold_doc": _to_title(earliest_name),
         "answer_key": earliest_dt.date().isoformat(),
         "type": "lookup",
     }
@@ -210,7 +220,7 @@ def _recipe_skilling_last(ingest: Path) -> dict:
         "id": "enron-lookup-skilling-last-pre-resign",
         "question": "What was the subject of the last email Skilling sent before his resignation?",
         "clause_category": "n/a",
-        "gold_doc": latest_name,
+        "gold_doc": _to_title(latest_name),
         "answer_key": subject.strip(),
         "type": "lookup",
     }
