@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -20,6 +20,7 @@ from harbor_clerk.models import (
     Chunk,
     Document,
     DocumentHeading,
+    DocumentLink,
     DocumentPage,
     Entity,
     IngestionJob,
@@ -1476,27 +1477,63 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
             nearest_q = nearest_q.where(Chunk.doc_id.in_(visible_ids))
         nearest = (await session.execute(nearest_q.group_by(Chunk.doc_id).order_by(func.min(distance)).limit(k))).all()
 
-        if not nearest:
-            return json.dumps({"doc_id": doc_id, "related": []})
+        # Explicit wikilink graph: docs this doc links to OR docs that link
+        # to this doc, both via resolved DocumentLink rows. Linked docs are
+        # prepended to the result with similarity=1.0 (max signal).
+        link_rows = (
+            await session.execute(
+                select(DocumentLink.src_doc_id, DocumentLink.target_doc_id).where(
+                    DocumentLink.resolved.is_(True),
+                    or_(
+                        DocumentLink.src_doc_id == target_id,
+                        DocumentLink.target_doc_id == target_id,
+                    ),
+                )
+            )
+        ).all()
+        linked_ids: list[uuid.UUID] = []
+        seen_linked: set[uuid.UUID] = set()
+        for src, tgt in link_rows:
+            other = tgt if src == target_id else src
+            if other is None or other == target_id or other in seen_linked:
+                continue
+            if visible_ids is not None and other not in visible_ids:
+                continue
+            seen_linked.add(other)
+            linked_ids.append(other)
 
-        # Fetch document metadata for results
-        related_ids = [row[0] for row in nearest]
+        # Embedding-nearest results (deduplicated against linked).
+        nearest_ids = [row[0] for row in nearest if row[0] not in seen_linked]
         distances = {row[0]: float(row[1]) for row in nearest}
 
-        docs_result = await session.execute(select(Document).where(Document.doc_id.in_(related_ids)))
+        # Merge — linked first, then embedding-nearest — capped at k.
+        merged_ids: list[uuid.UUID] = (linked_ids + nearest_ids)[:k]
+        if not merged_ids:
+            return json.dumps({"doc_id": doc_id, "related": []})
+
+        docs_result = await session.execute(
+            select(Document).where(Document.doc_id.in_(merged_ids), Document.status == "active")
+        )
         related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
 
     items = []
-    for rid in related_ids:
+    for rid in merged_ids:
         rdoc = related_docs.get(rid)
         if not rdoc:
             continue
+        if rid in seen_linked:
+            similarity = 1.0
+            source = "linked"
+        else:
+            similarity = round(1.0 - distances[rid], 4)
+            source = "embedding"
         items.append(
             {
                 "doc_id": str(rid),
                 "title": rdoc.title,
                 "summary": rdoc.summary,
-                "similarity": round(1.0 - distances[rid], 4),
+                "similarity": similarity,
+                "source": source,
                 "doc_type": rdoc.doc_type,
                 "mime_type": rdoc.mime_type,
                 "canonical_filename": rdoc.canonical_filename,
