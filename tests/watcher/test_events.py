@@ -380,3 +380,49 @@ def test_handle_event_ignores_macosx_archive_metadata(sync_session, folder, tmp_
     )
     sync_session.commit()
     assert sync_session.query(WatchedFile).count() == 0
+
+
+# --- classify_skip tests ---
+
+
+from harbor_clerk.watcher.events import SkipReason, classify_skip  # noqa: E402
+
+
+class TestClassifySkip:
+    def test_returns_none_for_allowed_file(self):
+        assert classify_skip("contract.pdf") is None
+        assert classify_skip("notes.md") is None
+        assert classify_skip("subdir/photo.jpg") is None
+        assert classify_skip("Spreadsheet.XLSX") is None  # case insensitive
+
+    def test_noise_dotfile(self):
+        assert classify_skip(".gitignore") is SkipReason.NOISE
+        assert classify_skip(".git/HEAD") is SkipReason.NOISE
+        assert classify_skip(".DS_Store") is SkipReason.NOISE
+        assert classify_skip("subdir/.DS_Store") is SkipReason.NOISE
+
+    def test_noise_apple_double(self):
+        assert classify_skip("._Document.pdf") is SkipReason.NOISE
+        assert classify_skip("subfolder/._Document.pdf") is SkipReason.NOISE
+
+    def test_noise_macosx_dir(self):
+        assert classify_skip("__MACOSX/foo.pdf") is SkipReason.NOISE
+
+    def test_noise_excalidraw(self):
+        assert classify_skip("diagram.excalidraw.md") is SkipReason.NOISE
+        assert classify_skip("subdir/whiteboard.excalidraw.md") is SkipReason.NOISE
+
+    def test_unsupported_extension(self):
+        assert classify_skip("malware.exe") is SkipReason.UNSUPPORTED_EXTENSION
+        assert classify_skip("library.dll") is SkipReason.UNSUPPORTED_EXTENSION
+        assert classify_skip("vimswap.swp") is SkipReason.UNSUPPORTED_EXTENSION
+        # NB: the plan suggested ``.canvas`` here, but Phase 1 added that to
+        # the plain-text allowlist. Use a truly non-allowlisted extension.
+        assert classify_skip("blueprint.dwg") is SkipReason.UNSUPPORTED_EXTENSION
+
+    def test_no_extension_is_unsupported(self):
+        """README, LICENSE — these are files the user might reasonably expect
+        ingested. Counting them as unsupported (not noise) gives a more useful
+        UX prompt than silently filtering."""
+        assert classify_skip("README") is SkipReason.UNSUPPORTED_EXTENSION
+        assert classify_skip("LICENSE") is SkipReason.UNSUPPORTED_EXTENSION
