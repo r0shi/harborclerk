@@ -100,3 +100,51 @@ def test_answer_verdict_deserializes_legacy_payload_without_source():
     legacy = {"correctness": 5, "groundedness": 4, "completeness": 5, "rationale": "ok"}
     v = AnswerVerdict(**legacy)
     assert v.source == {}
+
+
+def test_judge_find_type_renders_count_and_sample_in_prompt():
+    """For find items the prompt includes count and the rendered sample."""
+    c = MagicMock()
+    c.messages.create.return_value = MagicMock(
+        content=[
+            MagicMock(text='{"correctness": 4, "groundedness": 3, "completeness": 0, "rationale": "covered most"}')
+        ]
+    )
+    j = AnswerJudge(client=c)
+    v = j.judge_answer(
+        question="Find emails about Raptor.",
+        model_answer="Four emails mention Raptor.",
+        cited="cited docs: skilling-j_inbox_1109_.eml, lay-k_inbox_268_.eml",
+        answer_key={"count": 4, "all": ["a.eml", "b.eml", "c.eml", "d.eml"], "sample": ["a.eml", "b.eml"]},
+        qtype="find",
+    )
+    call_args = c.messages.create.call_args
+    prompt_sent = call_args.kwargs["messages"][0]["content"]
+    assert "QUESTION TYPE: find" in prompt_sent
+    assert "count: 4" in prompt_sent
+    assert "a.eml" in prompt_sent
+    assert "b.eml" in prompt_sent
+    # Judge response parses through; completeness=0 stays for the runner to override.
+    assert (v.correctness, v.groundedness, v.completeness) == (4, 3, 0)
+
+
+def test_judge_find_type_with_empty_sample_renders_cleanly():
+    """find-negative (sample=[]) prompts with '(empty)' rather than crashing."""
+    c = MagicMock()
+    c.messages.create.return_value = MagicMock(
+        content=[
+            MagicMock(text='{"correctness": 5, "groundedness": 5, "completeness": 0, "rationale": "clean decline"}')
+        ]
+    )
+    j = AnswerJudge(client=c)
+    v = j.judge_answer(
+        question="Find emails about cryptocurrency.",
+        model_answer="No emails mention cryptocurrency.",
+        cited="",
+        answer_key={"count": 0, "all": [], "sample": []},
+        qtype="find",
+    )
+    prompt_sent = c.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "count: 0" in prompt_sent
+    assert "(empty)" in prompt_sent
+    assert v.correctness == 5

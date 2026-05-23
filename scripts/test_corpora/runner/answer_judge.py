@@ -46,6 +46,41 @@ Reply with ONLY a JSON object:
 """
 
 
+_PROMPT_FIND = """You are scoring an answer produced by a document-search assistant.
+
+QUESTION:
+{question}
+
+QUESTION TYPE: find
+The ground-truth answer key is the exhaustive list of relevant documents
+(count: {count}). A representative sample is shown below. The eval runner
+computes coverage (recall) separately and overrides completeness, so SET
+completeness=0 and let the runner override it.
+
+GROUND-TRUTH SAMPLE ({sample_size} of {count} relevant docs):
+{rendered_sample}
+
+THE ASSISTANT'S ANSWER:
+{model_answer}
+
+THE PASSAGES THE ASSISTANT CITED:
+{cited}
+
+Score two dimensions plus completeness=0, each an integer 0-5:
+- correctness: does the assistant's narrative reflect the right documents?
+  For a negative (count=0), full marks only if the assistant correctly says no
+  relevant emails were found.
+- groundedness: do the cited documents support the answer? Cited titles that
+  are absent from (and not consistent with) the ground-truth set are
+  fabrications and score low.
+- completeness: SET TO 0. The runner overrides this with a deterministic
+  coverage score; do not guess it.
+
+Reply with ONLY a JSON object:
+{{"correctness": <0-5>, "groundedness": <0-5>, "completeness": 0, "rationale": "<one sentence>"}}
+"""
+
+
 @dataclasses.dataclass
 class AnswerVerdict:
     correctness: int
@@ -78,15 +113,28 @@ class AnswerJudge:
         self._model = model
 
     def judge_answer(
-        self, *, question: str, model_answer: str, cited: str, answer_key: str | None, qtype: str
+        self, *, question: str, model_answer: str, cited: str, answer_key: str | dict | None, qtype: str
     ) -> AnswerVerdict:
-        prompt = _PROMPT.format(
-            question=question,
-            answer_key="NONE" if answer_key is None else answer_key,
-            qtype=qtype,
-            model_answer=model_answer or "(empty)",
-            cited=cited or "(no passages cited)",
-        )
+        if qtype == "find":
+            ak = answer_key if isinstance(answer_key, dict) else {"count": 0, "all": [], "sample": []}
+            sample = ak.get("sample") or []
+            rendered_sample = "\n".join(f"- {s}" for s in sample) or "(empty)"
+            prompt = _PROMPT_FIND.format(
+                question=question,
+                count=ak.get("count", 0),
+                sample_size=len(sample),
+                rendered_sample=rendered_sample,
+                model_answer=model_answer or "(empty)",
+                cited=cited or "(no passages cited)",
+            )
+        else:
+            prompt = _PROMPT.format(
+                question=question,
+                answer_key="NONE" if answer_key is None else answer_key,
+                qtype=qtype,
+                model_answer=model_answer or "(empty)",
+                cited=cited or "(no passages cited)",
+            )
         msg = self._client.messages.create(
             model=self._model,
             max_tokens=600,
