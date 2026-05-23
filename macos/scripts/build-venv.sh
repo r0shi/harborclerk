@@ -78,11 +78,19 @@ echo "==> Removing plotly (unused transitive dep)"
 "$VENV_PYTHON" -m pip uninstall -y --disable-pip-version-check plotly || true
 
 # Strip bundled test suites from every installed package. Never imported at
-# runtime. Saves ~160 MB across pandas/tests, numba/tests, scipy submodule
-# tests, spaCy/tests, etc.
+# runtime. Saves ~150 MB across pandas/tests, numba/tests, scipy submodule
+# tests, networkx/<sub>/tests, sympy submodule tests, etc.
+#
+# Restricted to `-name tests` (plural) on purpose. Many packages have a
+# `testing` submodule that is real public API our dependencies use
+# transitively -- torch.testing (imported by torch.autograd.gradcheck),
+# numpy.testing, sympy.testing, sqlalchemy.testing, alembic.testing, etc.
+# Likewise `test` (singular) appears in torch/include/c10/test and similar
+# header-tree paths that aren't test SUITES. The earlier pattern that also
+# matched `test` and `testing` broke `import torch` at runtime.
 echo "==> Stripping bundled test suites from site-packages"
 find "$VENV_DIR/lib/python${PYTHON_VERSION}/site-packages" \
-    -type d \( -name tests -o -name test -o -name testing \) \
+    -type d -name tests \
     -prune -exec rm -rf {} +
 
 # Remove pip from the runtime venv: this is a frozen appliance, not a
