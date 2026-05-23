@@ -187,6 +187,14 @@ def run(
                 answer_key=item.answer_key,
                 qtype=item.type,
             )
+            if item.type == "find":
+                truth_all = item.answer_key.get("all", []) if isinstance(item.answer_key, dict) else []
+                coverage = compute_coverage(capture.get("cited_doc_titles", []) or [], truth_all)
+                verdict = dataclasses.replace(
+                    verdict,
+                    completeness=coverage,
+                    source={**verdict.source, "completeness": "deterministic"},
+                )
             ver_path.write_text(json.dumps(dataclasses.asdict(verdict), indent=2))
         log.info(
             "  %s correctness=%d grounded=%d complete=%d",

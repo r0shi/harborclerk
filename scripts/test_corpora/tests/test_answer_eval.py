@@ -307,3 +307,65 @@ def test_load_groundtruth_accepts_well_formed_find_item(tmp_path: Path):
     items = load_groundtruth(gt)
     assert items[0].answer_key == {"count": 2, "all": ["a.eml", "b.eml"], "sample": ["a.eml"]}
     assert items[0].type == "find"
+
+
+def test_run_overrides_completeness_for_find_items_with_compute_coverage(tmp_path: Path):
+    """For find items, run() ignores the judge's completeness and uses the
+    deterministic set-overlap score instead. source['completeness'] is set."""
+    gt = tmp_path / "enron.yaml"
+    gt.write_text(
+        yaml.safe_dump(
+            {
+                "corpus": "enron",
+                "items": [
+                    {
+                        "id": "find-x",
+                        "question": "Find x.",
+                        "clause_category": "n/a",
+                        "gold_doc": "(see answer_key.all)",
+                        "answer_key": {
+                            "count": 4,
+                            "all": ["a.eml", "b.eml", "c.eml", "d.eml"],
+                            "sample": ["a.eml", "b.eml"],
+                        },
+                        "type": "find",
+                    },
+                ],
+            }
+        )
+    )
+
+    def capture_two_of_four(item):
+        # Model cited 2 of 4 truth docs -> coverage = round(2/4 * 5) = round(2.5) = 2
+        return {"answer": "Two relevant", "cited_doc_titles": ["a.eml", "c.eml"], "tool_transcript": []}
+
+    class FakeJudge:
+        def judge_answer(self, **kw):
+            # Judge would say 5 — but for find items the runner must override.
+            return AnswerVerdict(correctness=5, groundedness=5, completeness=5, rationale="judge-said-5")
+
+    rc = run(
+        workdir=tmp_path,
+        corpus="enron",
+        model="m1",
+        label="ov",
+        api_base="http://x",
+        refresh=False,
+        rejudge=False,
+        insecure=True,
+        groundtruth_path=gt,
+        capture_fn=capture_two_of_four,
+        judge=FakeJudge(),
+    )
+    assert rc == 0
+
+    persisted = json.loads((tmp_path / "answer-eval" / "verdicts" / "enron" / "m1" / "find-x.json").read_text())
+    assert persisted["correctness"] == 5  # judge's value carried through
+    assert persisted["groundedness"] == 5  # ditto
+    assert persisted["completeness"] == 2  # overridden by compute_coverage
+    assert persisted["source"]["completeness"] == "deterministic"
+
+    summary = json.loads((tmp_path / "answer-eval" / "reports" / "ov" / "summary.json").read_text())
+    # by_type now has a "find" bucket
+    assert "find" in summary["by_type"]
+    assert summary["by_type"]["find"]["completeness"] == 2.0
