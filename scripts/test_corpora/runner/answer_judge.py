@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import re
 
 import anthropic
+
+log = logging.getLogger("answer_judge")
 
 JUDGE_MODEL = "claude-sonnet-4-6"
 
@@ -142,8 +145,25 @@ class AnswerJudge:
         )
         data = _extract_json(msg.content[0].text)
         return AnswerVerdict(
-            correctness=int(data["correctness"]),
-            groundedness=int(data["groundedness"]),
-            completeness=int(data["completeness"]),
+            correctness=_score(data, "correctness"),
+            groundedness=_score(data, "groundedness"),
+            completeness=_score(data, "completeness"),
             rationale=str(data.get("rationale", "")),
         )
+
+
+def _score(data: dict, key: str) -> int:
+    """Pull a 0–5 score from the judge's parsed JSON, defaulting to 0 with a
+    warning if the key is missing. Sonnet occasionally omits a score key when
+    the prompt says \"SET TO 0; do not guess it\" (as the find-type prompt does
+    for completeness) — interpreting \"don't guess\" as \"don't include.\"
+    Failing the whole run on one omission is too harsh; default + warn keeps
+    the eval progressing and surfaces the issue in logs."""
+    if key not in data:
+        log.warning("judge response missing %r — defaulting to 0", key)
+        return 0
+    try:
+        return int(data[key])
+    except (TypeError, ValueError):
+        log.warning("judge response %r=%r not coercible to int — defaulting to 0", key, data[key])
+        return 0

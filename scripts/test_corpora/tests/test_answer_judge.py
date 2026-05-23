@@ -72,6 +72,44 @@ def test_extract_json_ignores_trailing_prose():
     assert _extract_json(txt)["correctness"] == 5
 
 
+def test_judge_defaults_missing_score_keys_to_zero():
+    """If the judge omits a score key (Sonnet sometimes drops 'completeness'
+    for find items when told 'SET TO 0; do not guess'), default to 0 rather
+    than crash with a KeyError mid-eval."""
+    c = MagicMock()
+    c.messages.create.return_value = MagicMock(
+        content=[MagicMock(text='{"correctness": 5, "groundedness": 4, "rationale": "no completeness key"}')]
+    )
+    v = AnswerJudge(client=c).judge_answer(
+        question="q",
+        model_answer="a",
+        cited="",
+        answer_key="k",
+        qtype="lookup",
+    )
+    assert v.correctness == 5
+    assert v.groundedness == 4
+    assert v.completeness == 0  # defaulted
+
+
+def test_judge_defaults_non_int_score_to_zero():
+    """If the judge returns a non-integer score (e.g., 'N/A'), default to 0."""
+    c = MagicMock()
+    c.messages.create.return_value = MagicMock(
+        content=[MagicMock(text='{"correctness": "N/A", "groundedness": 4, "completeness": 5, "rationale": "x"}')]
+    )
+    v = AnswerJudge(client=c).judge_answer(
+        question="q",
+        model_answer="a",
+        cited="",
+        answer_key="k",
+        qtype="lookup",
+    )
+    assert v.correctness == 0  # defaulted
+    assert v.groundedness == 4
+    assert v.completeness == 5
+
+
 def test_answer_verdict_source_defaults_to_empty_dict():
     """AnswerVerdict has an optional `source` field defaulting to {}."""
     v = AnswerVerdict(correctness=5, groundedness=5, completeness=5, rationale="ok")
