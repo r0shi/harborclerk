@@ -108,6 +108,51 @@ def test_openai_provider_treats_length_finish_as_end_turn():
     assert res.tool_call_count == 0
 
 
+def test_openai_provider_handles_multiple_parallel_tool_calls_in_one_turn():
+    """GPT-4o sometimes emits multiple tool_calls in a single assistant turn.
+    Each call MUST get a matching role='tool' message keyed by tool_call_id —
+    OpenAI rejects the next request with invalid_request_error otherwise.
+    Also: tool_call_count and tool_transcript should reflect ALL the calls."""
+    mcp = MagicMock()
+    mcp.list_tools.return_value = [SimpleNamespace(name="kb_search", description="", inputSchema={"type": "object"})]
+    # Each tool call returns a different doc
+    mcp.call_tool.side_effect = [
+        SimpleNamespace(content=[SimpleNamespace(text='{"doc_id": "doc-a", "doc_title": "Alpha"}')]),
+        SimpleNamespace(content=[SimpleNamespace(text='{"doc_id": "doc-b", "doc_title": "Beta"}')]),
+        SimpleNamespace(content=[SimpleNamespace(text='{"doc_id": "doc-c", "doc_title": "Gamma"}')]),
+    ]
+    client = MagicMock()
+    client.chat.completions.create.side_effect = [
+        _mk_resp(
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mk_tool_call(id="call-1", name="kb_search", args={"query": "alpha"}),
+                _mk_tool_call(id="call-2", name="kb_search", args={"query": "beta"}),
+                _mk_tool_call(id="call-3", name="kb_search", args={"query": "gamma"}),
+            ],
+        ),
+        _mk_resp(finish_reason="stop", text="See doc-a, doc-b, doc-c."),
+    ]
+    p = OpenAIProvider(mcp_session=mcp, model="gpt-4o", client=client)
+    res = p.run_question(question="q", question_id="qpar", corpus="cuad")
+
+    # All three tools executed
+    assert res.tool_call_count == 3
+    assert len(res.tool_transcript) == 3
+    assert [e["tool"] for e in res.tool_transcript] == ["kb_search", "kb_search", "kb_search"]
+    assert [e["args"]["query"] for e in res.tool_transcript] == ["alpha", "beta", "gamma"]
+
+    # All three doc_ids harvested
+    assert set(res.cited_doc_ids) == {"doc-a", "doc-b", "doc-c"}
+
+    # Second request's messages MUST contain a `tool` message per tool_call_id;
+    # OpenAI's API enforces this — missing any tool_call_id raises
+    # invalid_request_error mid-eval.
+    second_call_messages = client.chat.completions.create.call_args_list[1].kwargs["messages"]
+    tool_msgs = [m for m in second_call_messages if m.get("role") == "tool"]
+    assert {m["tool_call_id"] for m in tool_msgs} == {"call-1", "call-2", "call-3"}
+
+
 def test_openai_provider_falls_back_when_mcp_returns_empty_content():
     """When a tool result has no text content, the loop sends '(empty)' so the
     model doesn't choke on a literal empty string in the tool response."""

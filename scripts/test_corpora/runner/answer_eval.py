@@ -262,8 +262,18 @@ def _live_capture_fn(*, api_base: str, corpus: str, model: str, insecure: bool) 
     mcp_url = os.environ.get("HC_MCP_URL") or f"{api_base}/mcp/mcp"
     mcp = SyncMcpSession(url=mcp_url, headers={"Authorization": f"Bearer {token}"})
 
+    # Build a single shared provider for the whole run — each call to
+    # make_provider() would otherwise construct a fresh openai.OpenAI() (and
+    # its httpx connection pool) per item; 29 leaked pools over a run.
+    # Cited-doc bookkeeping is per-question, so we wipe `_cited` between
+    # items to keep results comparable to the pre-refactor per-item model.
+    provider = make_provider(model, mcp_session=mcp)
+
     def capture(item: GTItem) -> dict:
-        provider = make_provider(model, mcp_session=mcp)
+        # Per-question reset: AnthropicProvider/OpenAIProvider both store
+        # cited docs in `_cited`. A fresh dict per item keeps each
+        # BaselineResult's cited_doc_ids scoped to that question's tool calls.
+        provider._cited = {}
         res = provider.run_question(question=item.question, question_id=item.id, corpus=corpus)
         return dataclasses.asdict(res)
 

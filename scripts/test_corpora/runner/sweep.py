@@ -107,11 +107,13 @@ def _retryable_exceptions(client_kind: str) -> tuple[type[BaseException], ...]:
     if client_kind == "openai":
         import openai
 
-        # openai.RateLimitError covers 429; openai.APIStatusError covers other
-        # transient statuses (502/503/504). We narrow inside the retry loop
-        # to "truly transient" based on .status_code so a 400 bad-request
-        # never gets retried.
-        return (openai.RateLimitError, openai.APIStatusError)
+        # openai.RateLimitError is a SUBCLASS of openai.APIStatusError, so
+        # catching APIStatusError alone covers both. We narrow inside the
+        # retry loop to "truly transient" based on .status_code so a 400
+        # bad-request never gets retried — RateLimitError (429) is always in
+        # the allowlist, but to make the intent explicit and survive future
+        # filter tightening, the retry loop checks isinstance() first.
+        return (openai.APIStatusError,)
     raise ValueError(f"unknown client_kind {client_kind!r}; supported: anthropic, openai")
 
 
@@ -140,10 +142,17 @@ def _with_provider_retry(
             return fn(*args)
         except transient as exc:
             # For openai.APIStatusError, narrow to truly transient statuses;
-            # a 400 bad-request shouldn't be retried.
+            # a 400 bad-request shouldn't be retried. RateLimitError is a
+            # subclass of APIStatusError — always retry it regardless of the
+            # status-code filter (defensive against the filter shifting).
             status = getattr(exc, "status_code", None)
-            if client_kind == "openai" and status is not None and status not in (429, 500, 502, 503, 504):
-                raise
+            if client_kind == "openai":
+                import openai as _openai_for_isinstance
+
+                if not isinstance(exc, _openai_for_isinstance.RateLimitError) and (
+                    status is not None and status not in (500, 502, 503, 504)
+                ):
+                    raise
             if waited >= max_total_seconds:
                 raise
             delay = min(ANTHROPIC_RETRY_BASE_SECONDS * 2**attempt, ANTHROPIC_RETRY_MAX_DELAY_SECONDS)
