@@ -2,8 +2,8 @@ import uuid
 from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, LargeBinary, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, LargeBinary, Text, text
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from harbor_clerk.models.base import Base, created_at, updated_at, uuid_pk
@@ -27,6 +27,16 @@ class WatchedFolder(Base):
     unavailable_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     auto_discovered: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    # Phase 5: skipped-file hygiene. Updated by the watcher's initial scan.
+    # ``skipped_count`` is the number of files in the folder whose extension
+    # was unsupported (dotfiles / AppleDouble / __MACOSX / Excalidraw are
+    # excluded — they're noise, not "files the user might expect ingested").
+    # ``skipped_extensions`` is the sorted distinct list of those extensions
+    # (lowercase, with leading dot, e.g. ``[".canvas", ".excalidraw"]``).
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    skipped_extensions: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")
+    )
     created_at: Mapped[created_at]
 
     files: Mapped[list["WatchedFile"]] = relationship(back_populates="folder", cascade="all, delete-orphan")
