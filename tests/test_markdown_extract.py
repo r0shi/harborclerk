@@ -444,3 +444,32 @@ def test_parse_wikilinks_skips_brokens():
     assert parse_wikilinks("[[]]") == []
     assert parse_wikilinks("[[ | only alias ]]") == []
     assert parse_wikilinks("text [[broken") == []
+
+
+def test_extract_markdown_captures_wikilinks():
+    """The orchestrator returns parsed wikilinks from the body."""
+    data = b"---\ntitle: X\n---\nSee [[Note A]] and [[Note B|alt]].\n"
+    result = extract_markdown(data)
+    assert len(result.wikilinks) == 2
+    assert {w["target_title"] for w in result.wikilinks} == {"note a", "note b"}
+
+
+def test_extract_markdown_wikilinks_empty_when_none():
+    data = b"# Heading\n\nNo links here.\n"
+    result = extract_markdown(data)
+    assert result.wikilinks == []
+
+
+def test_extract_markdown_wikilinks_preserved_through_normalization():
+    """Wikilinks are captured BEFORE normalization unwraps them, so the
+    parsed list still has them even though the page text doesn't show [[…]]."""
+    data = b"See [[Target Note|alias text]] in the body.\n"
+    result = extract_markdown(data)
+    page_text = result.pages[0][1]
+    # The normalized body has the alias text, not the [[…]] markup.
+    assert "alias text" in page_text
+    assert "[[" not in page_text
+    # The wikilink is still captured.
+    assert len(result.wikilinks) == 1
+    assert result.wikilinks[0]["target_title"] == "target note"
+    assert result.wikilinks[0]["alias"] == "alias text"

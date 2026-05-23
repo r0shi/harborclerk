@@ -311,11 +311,14 @@ class MarkdownExtractResult:
       ``_extract_via_tika`` return.
     - ``headings``: a list of dicts ``{"level", "title", "position", "page_num"}``
       in the same shape as the Tika heading flow's output.
+    - ``wikilinks``: a list of dicts ``{"link_text", "target_title", "anchor",
+      "alias"}`` for each ``[[…]]`` found in the BODY (before normalization).
     """
 
     title: str | None
     pages: list[tuple[int, str]]
     headings: list[dict]
+    wikilinks: list[dict]
 
 
 def extract_markdown(data: bytes) -> MarkdownExtractResult:
@@ -341,6 +344,7 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
 
     preamble = flatten_frontmatter(frontmatter)
     raw_headings, fence_ranges = parse_markdown_structure(body)
+    wikilinks = parse_wikilinks(body)
     normalized_body = normalize_markdown(body, fence_ranges)
 
     # Compose the final text the rest of the pipeline will see.
@@ -394,4 +398,4 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
                 h["page_num"] = pnum
                 break
 
-    return MarkdownExtractResult(title=title, pages=pages, headings=headings)
+    return MarkdownExtractResult(title=title, pages=pages, headings=headings, wikilinks=wikilinks)
