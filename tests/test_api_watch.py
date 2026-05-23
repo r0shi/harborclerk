@@ -401,3 +401,50 @@ async def test_ingest_rejects_excalidraw_md(client, admin_token, db_session, tmp
     )
     assert resp.status_code == 400
     assert "excalidraw" in resp.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/watch/folders — serializer returns skip-tracking fields (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+async def test_folder_serializer_returns_skip_fields(client, admin_token, db_session):
+    """GET /api/watch/folders returns skipped_count + skipped_extensions per folder."""
+    folder = WatchedFolder(
+        path="/tmp/test-skip-serializer",
+        display_name="skip-serializer",
+        bookmark_data=None,
+        skipped_count=4,
+        skipped_extensions=[".canvas", ".exe", ".tmp"],
+    )
+    db_session.add(folder)
+    await db_session.flush()
+
+    resp = await client.get("/api/watch/folders", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    rows = resp.json()
+    by_path = {r["path"]: r for r in rows}
+    assert "/tmp/test-skip-serializer" in by_path
+    row = by_path["/tmp/test-skip-serializer"]
+    assert row["skipped_count"] == 4
+    assert row["skipped_extensions"] == [".canvas", ".exe", ".tmp"]
+
+
+async def test_folder_serializer_skip_fields_defaults(client, admin_token, db_session):
+    """A freshly-created folder (no skips tracked yet) returns 0 + []."""
+    folder = WatchedFolder(
+        path="/tmp/test-skip-defaults-api",
+        display_name="skip-defaults",
+        bookmark_data=None,
+    )
+    db_session.add(folder)
+    await db_session.flush()
+
+    resp = await client.get("/api/watch/folders", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    rows = resp.json()
+    by_path = {r["path"]: r for r in rows}
+    assert "/tmp/test-skip-defaults-api" in by_path
+    row = by_path["/tmp/test-skip-defaults-api"]
+    assert row["skipped_count"] == 0
+    assert row["skipped_extensions"] == []

@@ -87,6 +87,8 @@ def _folder_to_dict(f: WatchedFolder, file_count: int) -> dict:
         "display_name": f.display_name,
         "auto_discovered": f.auto_discovered,
         "unavailable_reason": f.unavailable_reason,
+        "skipped_count": f.skipped_count,
+        "skipped_extensions": list(f.skipped_extensions or []),
     }
 
 
