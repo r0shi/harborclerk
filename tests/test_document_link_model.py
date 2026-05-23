@@ -160,3 +160,4 @@ def test_document_link_target_set_null_on_target_delete(sync_session):
     assert row.target_doc_id is None
     # `resolved` stays True historically — the resolver doesn't undo itself.
     # Re-resolution happens only when a new doc finalizes that matches.
+    assert row.resolved is True  # SET NULL nulls only the FK, not the flag
