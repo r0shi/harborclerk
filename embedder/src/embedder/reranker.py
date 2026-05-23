@@ -43,6 +43,12 @@ async def lifespan(app: FastAPI):
     global _model
     logger.info("Loading reranker model: %s", MODEL_NAME)
     _model = CrossEncoder(MODEL_NAME)
+    # Ensure fp32 compute even when the bundled checkpoint ships as fp16.
+    # The released fp32 weights are exactly fp16-representable (verified by
+    # round-trip on all 568M weights), so the bundle halves the model file
+    # by storing fp16 on disk; upcasting at load keeps arithmetic precision
+    # identical to the original fp32 path.
+    _model.model.float()
     logger.info("Reranker model loaded")
     yield
     _model = None

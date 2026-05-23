@@ -70,6 +70,35 @@ else
     echo "==> striprtf already installed, skipping"
 fi
 
+# ── Slim the venv ──
+# Remove plotly: pulled in transitively by bertopic, but bertopic guards with
+# `find_spec("plotly")` and falls back to MockPlotlyModule. Nothing in this app
+# calls bertopic's plotting methods. Saves ~64 MB.
+echo "==> Removing plotly (unused transitive dep)"
+"$VENV_PYTHON" -m pip uninstall -y --disable-pip-version-check plotly || true
+
+# Strip bundled test suites from every installed package. Never imported at
+# runtime. Saves ~150 MB across pandas/tests, numba/tests, scipy submodule
+# tests, networkx/<sub>/tests, sympy submodule tests, etc.
+#
+# Restricted to `-name tests` (plural) on purpose. Many packages have a
+# `testing` submodule that is real public API our dependencies use
+# transitively -- torch.testing (imported by torch.autograd.gradcheck),
+# numpy.testing, sympy.testing, sqlalchemy.testing, alembic.testing, etc.
+# Likewise `test` (singular) appears in torch/include/c10/test and similar
+# header-tree paths that aren't test SUITES. The earlier pattern that also
+# matched `test` and `testing` broke `import torch` at runtime.
+echo "==> Stripping bundled test suites from site-packages"
+find "$VENV_DIR/lib/python${PYTHON_VERSION}/site-packages" \
+    -type d -name tests \
+    -prune -exec rm -rf {} +
+
+# Remove pip from the runtime venv: this is a frozen appliance, not a
+# pip-managed environment. The pip-wrapper block further down silently skips
+# when bin/pip* no longer exists.
+echo "==> Removing pip from runtime venv"
+"$VENV_PYTHON" -m pip uninstall -y --disable-pip-version-check pip || true
+
 # Make the venv relocatable
 echo "==> Making venv relocatable"
 
