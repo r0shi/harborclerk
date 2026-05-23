@@ -40,13 +40,22 @@ class AnthropicProvider:
         client: anthropic.Anthropic | None = None,
         doc_ids_seen: list[str] | None = None,
     ):
-        self._client = client if client is not None else anthropic.Anthropic()
+        # Lazy client construction (symmetric with OpenAIProvider). Defer
+        # anthropic.Anthropic() until first API call so factory dispatch
+        # tests don't need ANTHROPIC_API_KEY set.
+        self._explicit_client = client
         self._mcp = mcp_session
         self._model = model
         # Ordered map doc_id -> doc_title, in first-seen order. dict preserves
         # insertion order (3.7+), so cited_doc_ids and cited_doc_titles stay
         # parallel. For tests: pre-seed via doc_ids_seen (titles default to "").
         self._cited: dict[str, str] = {did: "" for did in doc_ids_seen} if doc_ids_seen else {}
+
+    @property
+    def _client(self) -> anthropic.Anthropic:
+        if self._explicit_client is None:
+            self._explicit_client = anthropic.Anthropic()
+        return self._explicit_client
 
     def _list_tools(self) -> list[dict]:
         """Discover MCP tools and convert to Anthropic's tool schema."""
