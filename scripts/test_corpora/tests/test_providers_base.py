@@ -70,3 +70,15 @@ def test_anthropic_provider_class_is_importable_from_new_path():
     assert hasattr(AnthropicProvider, "run_question")
     assert callable(AnthropicProvider.run_question)
     _ = Provider  # silence unused-import warning
+
+
+def test_providers_package_exports_canonical_api():
+    """The providers package re-exports the canonical API for callers."""
+    from scripts.test_corpora.runner import providers
+
+    assert providers.BaselineResult.__name__ == "BaselineResult"
+    assert providers.DEFAULT_SYSTEM_PROMPT  # non-empty string
+    assert callable(providers.make_provider)
+    assert providers.Provider.__name__ == "Provider"
+    assert providers.AnthropicProvider.__name__ == "AnthropicProvider"
+    assert providers.OpenAIProvider.__name__ == "OpenAIProvider"
