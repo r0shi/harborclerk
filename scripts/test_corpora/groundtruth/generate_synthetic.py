@@ -90,7 +90,7 @@ def _recipe_invoice(stem: str, sc: dict) -> list[dict]:
             id_=f"synth-invoice-total-{inv}",
             question=f"What is the total amount in USD of invoice {inv}?",
             gold_doc=stem,
-            answer_key=f"${sc['total_usd']:.2f}",
+            answer_key=f"${sc['total_usd']:,.2f}",
             clause_category="invoice",
         ),
         _lookup_item(
@@ -142,7 +142,7 @@ def _recipe_quarterly_report(stem: str, sc: dict) -> list[dict]:
             id_=f"synth-qreport-revenue-{q}-{y}",
             question=f"What was the revenue reported in the {q} {y} quarterly report?",
             gold_doc=stem,
-            answer_key=f"${sc['revenue_usd']:,}",
+            answer_key=f"${sc['revenue_usd']:,.2f}",
             clause_category="quarterly_report",
         ),
     ]
@@ -162,7 +162,7 @@ def _recipe_vendor_contract(stem: str, sc: dict) -> list[dict]:
             id_=f"synth-vcontract-fee-{stem}",
             question=f"What is the monthly fee in USD on the vendor contract with {vendor}?",
             gold_doc=stem,
-            answer_key=f"${sc['monthly_fee_usd']:.2f}",
+            answer_key=f"${sc['monthly_fee_usd']:,.2f}",
             clause_category="vendor_contract",
         ),
     ]
@@ -208,7 +208,7 @@ def _recipe_marketing_brief(stem: str, sc: dict) -> list[dict]:
             id_=f"synth-mkt-budget-{stem}",
             question=f'What is the budget in USD for the "{camp}" marketing campaign?',
             gold_doc=stem,
-            answer_key=f"${sc['budget_usd']:,}",
+            answer_key=f"${sc['budget_usd']:,.2f}",
             clause_category="marketing_brief",
         ),
     ]
@@ -304,8 +304,12 @@ def _find_neg_vendor(ingest_dir: Path) -> dict:
 
 def _emit_fr_items(ingest_dir: Path) -> list[dict]:
     """Emit ≤2 French-language items derived from sidecars tagged ``lang: "fr"``.
-    Scans board_minutes and internal_memo (the types that carry an explicit
-    ``lang`` field in the corpus); falls back silently if none are present.
+
+    Scans board_minutes first, then internal_memo (the types that carry an
+    explicit ``lang`` field in the corpus); board_minutes items are
+    prioritised — internal_memo items are only emitted if fewer than 2
+    board_minutes FR items exist. Falls back silently if no FR sidecars are
+    present at all.
     """
     items: list[dict] = []
     for doctype in ("board_minutes", "internal_memo"):
@@ -364,6 +368,17 @@ def generate(ingest_dir: Path, out_path: Path, *, per_type: int = 2) -> int:
 
     # French-language items.
     items.extend(_emit_fr_items(ingest_dir))
+
+    # Guard against silent duplicate ids — recipe ids are derived from sidecar
+    # fields (invoice_number, date, role, etc.), so two sidecars sharing such a
+    # value would collide. YAML allows duplicate keys at sequence-of-mappings
+    # level; downstream loaders may or may not dedup. Fail loud at generation.
+    ids = [i["id"] for i in items]
+    if len(ids) != len(set(ids)):
+        from collections import Counter
+
+        dups = sorted(k for k, v in Counter(ids).items() if v > 1)
+        raise RuntimeError(f"duplicate item ids in generated set: {dups}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(yaml.safe_dump({"corpus": "synthetic", "items": items}, sort_keys=False))

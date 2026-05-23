@@ -243,6 +243,12 @@ def test_generate_emits_items_across_all_doc_types(tmp_path: Path):
     assert inv_find["answer_key"]["all"] == ["0002_invoice"]
     assert inv_find["answer_key"]["count"] == 1
 
+    # Cross-doc find: Q4 2025 policies — only 0060_policy_doc (effective 2025-12-23) qualifies
+    q4_find = next(i for i in items if i["id"] == "synth-find-policies-q4-2025")
+    assert q4_find["type"] == "find"
+    assert q4_find["answer_key"]["all"] == ["0060_policy_doc"]
+    assert q4_find["answer_key"]["count"] == 1
+
     # Lookup-negative: a non-existent invoice number
     neg = next(i for i in items if i["id"] == "synth-neg-invoice-99999")
     assert neg["type"] == "negative"
