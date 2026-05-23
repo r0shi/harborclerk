@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.test_corpora.runner.answer_eval import aggregate, compute_coverage, load_groundtruth, run
@@ -233,3 +234,76 @@ def test_compute_coverage_over_cite_does_not_penalize():
     """find: extras in cited beyond truth don't reduce coverage — coverage is
     recall (|overlap| / |truth|), not precision."""
     assert compute_coverage(["a", "b", "x", "y"], ["a", "b"]) == 5
+
+
+def test_load_groundtruth_validates_find_answer_key_is_a_dict(tmp_path: Path):
+    """find items must carry a dict answer_key, not a string."""
+    gt = tmp_path / "enron.yaml"
+    gt.write_text(
+        yaml.safe_dump(
+            {
+                "corpus": "enron",
+                "items": [
+                    {
+                        "id": "find-bad",
+                        "question": "Find x.",
+                        "clause_category": "n/a",
+                        "gold_doc": "(see answer_key.all)",
+                        "answer_key": "wrong shape — should be a dict",
+                        "type": "find",
+                    },
+                ],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="find item .* answer_key must be a dict"):
+        load_groundtruth(gt)
+
+
+def test_load_groundtruth_validates_find_answer_key_required_keys(tmp_path: Path):
+    """find item's answer_key must include count, all, and sample."""
+    gt = tmp_path / "enron.yaml"
+    gt.write_text(
+        yaml.safe_dump(
+            {
+                "corpus": "enron",
+                "items": [
+                    {
+                        "id": "find-incomplete",
+                        "question": "Find x.",
+                        "clause_category": "n/a",
+                        "gold_doc": "(see answer_key.all)",
+                        "answer_key": {"count": 5},
+                        "type": "find",
+                    },
+                ],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="find item .* missing required answer_key keys"):
+        load_groundtruth(gt)
+
+
+def test_load_groundtruth_accepts_well_formed_find_item(tmp_path: Path):
+    """A valid find item with the {count, all, sample} answer_key loads cleanly."""
+    gt = tmp_path / "enron.yaml"
+    gt.write_text(
+        yaml.safe_dump(
+            {
+                "corpus": "enron",
+                "items": [
+                    {
+                        "id": "find-x",
+                        "question": "Find x.",
+                        "clause_category": "n/a",
+                        "gold_doc": "(see answer_key.all)",
+                        "answer_key": {"count": 2, "all": ["a.eml", "b.eml"], "sample": ["a.eml"]},
+                        "type": "find",
+                    },
+                ],
+            }
+        )
+    )
+    items = load_groundtruth(gt)
+    assert items[0].answer_key == {"count": 2, "all": ["a.eml", "b.eml"], "sample": ["a.eml"]}
+    assert items[0].type == "find"

@@ -42,23 +42,35 @@ class GTItem:
     question: str
     clause_category: str
     gold_doc: str
-    answer_key: str | None
+    answer_key: str | dict | None
     type: str
 
 
 def load_groundtruth(path: Path) -> list[GTItem]:
     data = yaml.safe_load(path.read_text())
-    return [
-        GTItem(
-            id=i["id"],
-            question=i["question"],
-            clause_category=i["clause_category"],
-            gold_doc=i["gold_doc"],
-            answer_key=i.get("answer_key"),
-            type=i["type"],
+    items: list[GTItem] = []
+    for i in data["items"]:
+        ak = i.get("answer_key")
+        qtype = i["type"]
+        if qtype == "find":
+            if not isinstance(ak, dict):
+                raise ValueError(
+                    f"find item {i['id']!r} answer_key must be a dict with count/all/sample, got {type(ak).__name__}"
+                )
+            missing = {"count", "all", "sample"} - set(ak)
+            if missing:
+                raise ValueError(f"find item {i['id']!r} missing required answer_key keys: {sorted(missing)}")
+        items.append(
+            GTItem(
+                id=i["id"],
+                question=i["question"],
+                clause_category=i["clause_category"],
+                gold_doc=i["gold_doc"],
+                answer_key=ak,
+                type=qtype,
+            )
         )
-        for i in data["items"]
-    ]
+    return items
 
 
 def aggregate(rows: list[tuple[str, str, AnswerVerdict]]) -> dict:
