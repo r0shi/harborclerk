@@ -207,12 +207,14 @@ def test_compute_coverage_negative_clean_decline():
     assert compute_coverage([], []) == 5
 
 
-def test_compute_coverage_negative_penalizes_false_positives():
-    """find-negative: each cited doc costs a point, floor 0."""
+def test_compute_coverage_negative_penalizes_unique_false_positives():
+    """find-negative: each UNIQUE cited doc costs a point, floor 0. Duplicates
+    don't compound — repeating the same wrong claim is still one wrong claim."""
     assert compute_coverage(["x"], []) == 4
     assert compute_coverage(["x", "y", "z"], []) == 2
     assert compute_coverage(["a", "b", "c", "d", "e"], []) == 0
-    assert compute_coverage(["a"] * 10, []) == 0  # floor
+    assert compute_coverage(["a"] * 10, []) == 4  # 10 copies of 'a' → 1 unique → 5-1=4
+    assert compute_coverage(["a", "b", "a", "b"], []) == 3  # 2 unique → 5-2=3
 
 
 def test_compute_coverage_exact_match():

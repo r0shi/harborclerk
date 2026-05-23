@@ -109,16 +109,21 @@ def _cited_text(capture: dict) -> str:
 def compute_coverage(cited: list[str], truth_all: list[str]) -> int:
     """Deterministic coverage score for `find` items, mapped to the 0–5 scale.
 
+    `cited` is deduplicated on both branches so a verbose model that repeats
+    the same citation in multiple sentences isn't penalized (or rewarded) more
+    than a concise one for the same set of distinct claims.
+
     For `find`-negatives (``truth_all == []``): citing nothing is correct (5);
-    each false-positive citation costs 1 point, floor 0.
+    each unique false-positive citation costs 1 point, floor 0.
     For `find` items with a non-empty truth: ``|cited ∩ truth| / |truth| * 5``,
     banker's-rounded to an int. Used by ``run()`` to override the judge's
     ``completeness`` for ``find`` items — see the answer-eval phase-2a design
     (Enron).
     """
+    cited_unique = set(cited)
     if not truth_all:
-        return max(0, 5 - len(cited))
-    overlap = len(set(cited) & set(truth_all))
+        return max(0, 5 - len(cited_unique))
+    overlap = len(cited_unique & set(truth_all))
     return round(overlap / len(truth_all) * 5)
 
 

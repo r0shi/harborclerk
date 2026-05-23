@@ -133,10 +133,13 @@ def _recipe_ljm(ingest: Path) -> dict:
 
 
 def _recipe_offbalance(ingest: Path) -> dict:
+    # Match the hyphenated and space-separated forms ("off-balance-sheet",
+    # "off balance sheet") — both common in financial English — but not the
+    # any-character wildcard that an unescaped "off.balance.sheet" would allow.
     return _find_item(
         "enron-find-offbalancesheet",
         "Find emails containing 'off-balance-sheet'.",
-        all_matches=_grep(ingest, "off.balance.sheet"),
+        all_matches=_grep(ingest, r"off[\s-]balance[\s-]sheet"),
     )
 
 
