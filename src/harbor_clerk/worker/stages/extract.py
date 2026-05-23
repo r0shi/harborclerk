@@ -186,6 +186,10 @@ def _alpha_ratio(text: str) -> float:
 
 
 # MIME types where heading extraction from Tika XHTML makes no sense
+# Note: `.md` / `text/markdown` appear here for completeness but are never
+# reached for those files — the `markdown_result is not None` sentinel in
+# `run_extract` short-circuits to the Markdown heading path before this
+# gate runs. They remain to document the historical contract.
 _SKIP_HEADINGS_MIMES = IMAGE_MIMES | {"text/plain", "text/csv", "text/markdown"}
 # Partial/legacy extension list. For plain-text formats the authoritative gate
 # is is_plain_text_source() — see the skip_headings / is_never_ocr expressions.

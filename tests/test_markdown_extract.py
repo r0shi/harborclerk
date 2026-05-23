@@ -323,3 +323,62 @@ def test_extract_markdown_heading_title_appearing_earlier_in_prose():
             f"char before is {page_text[h['position'] - 1]!r}, expected '\\n'. "
             f"Page text: {page_text!r}"
         )
+
+
+# --- setext underline stripping ---
+
+
+def test_normalize_strips_setext_h1_underline():
+    """Setext h1: title line preserved; the `=====` underline becomes an empty line."""
+    out = normalize_markdown("Heading One\n===========\nBody.\n", [])
+    assert out == "Heading One\n\nBody.\n"
+
+
+def test_normalize_strips_setext_h2_underline():
+    out = normalize_markdown("Heading Two\n-----------\nBody.\n", [])
+    assert out == "Heading Two\n\nBody.\n"
+
+
+def test_normalize_thematic_break_after_blank_is_preserved():
+    """An `---` line preceded by a blank line is a thematic break, not a setext underline.
+    Leave it alone (setext requires a non-blank line above)."""
+    text = "Some prose.\n\n---\nMore prose.\n"
+    out = normalize_markdown(text, [])
+    # The `---` should still be in the output (it's a thematic break, not setext).
+    assert "---\n" in out
+
+
+def test_normalize_setext_inside_code_fence_is_preserved():
+    """A `=====` line inside a fenced code block must NOT be treated as setext."""
+    text = "Intro.\n\n```\nHeading\n=======\n```\n\nAfter.\n"
+    # Fence on lines 2..5 inclusive (0-indexed):
+    #   0 Intro.
+    #   1 (blank)
+    #   2 ```
+    #   3 Heading
+    #   4 =======
+    #   5 ```
+    out = normalize_markdown(text, [(2, 5)])
+    assert "Heading\n=======\n" in out
+
+
+def test_normalize_setext_preserves_line_count():
+    """Replacing the underline (not removing it) keeps the line count constant,
+    which the orchestrator's heading-position relocation depends on."""
+    text = "Heading One\n===========\nBody.\nMore body.\n"
+    out = normalize_markdown(text, [])
+    assert out.count("\n") == text.count("\n")
+
+
+def test_extract_markdown_setext_heading_clean_output():
+    """End-to-end: a setext heading's title is in document_headings; the `===`
+    underline does not appear in the page text."""
+    data = b"Heading One\n===========\n\nBody text.\n"
+    result = extract_markdown(data)
+    assert len(result.headings) == 1
+    assert result.headings[0]["level"] == 1
+    assert result.headings[0]["title"] == "Heading One"
+    page_text = result.pages[0][1]
+    assert "===" not in page_text
+    assert "Heading One" in page_text
+    assert "Body text." in page_text

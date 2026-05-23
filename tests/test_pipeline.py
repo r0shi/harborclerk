@@ -1,5 +1,7 @@
 """Tests for the worker pipeline orchestrator + pipeline_seq race protection."""
 
+import hashlib
+
 import pytest
 from sqlalchemy import select
 
@@ -550,5 +552,62 @@ async def test_background_stage_error_does_not_poison_pipeline_status(db_session
         ).scalar_one()
         assert job.status == JobStatus.error
         assert "ChatMessage" in (job.error or "")
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_run_extract_markdown_writes_headings_and_overrides_title(db_session, tmp_path):
+    """Integration test: run_extract on a .md file with frontmatter writes
+    document_headings rows AND updates doc.title from the frontmatter."""
+    from harbor_clerk.models.document_heading import DocumentHeading
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    # Write a markdown file with frontmatter + two headings.
+    md_path = tmp_path / "note.md"
+    md_path.write_text(
+        "---\ntitle: Real Title\ntags: [x, y]\n---\n# Section A\n\nProse.\n\n## Section B\n\nMore prose.\n"
+    )
+
+    doc = Document(
+        title=md_path.stem,
+        canonical_filename=md_path.name,
+        status="active",
+        sha256=hashlib.sha256(md_path.read_bytes()).digest(),
+        source_path=str(md_path),
+        pipeline_status=PipelineStatus.queued,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+
+    db_session.add(
+        IngestionJob(
+            doc_id=doc.doc_id,
+            stage=JobStage.extract,
+            status=JobStatus.queued,
+        )
+    )
+    await db_session.commit()
+
+    # run_extract is sync; call it directly.
+    run_extract(doc.doc_id)
+
+    # Re-fetch and verify via a fresh sync session (run_extract commits its own session).
+    sync_session = get_sync_session()
+    try:
+        refreshed_doc = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        headings = (
+            sync_session.execute(
+                select(DocumentHeading).where(DocumentHeading.doc_id == doc.doc_id).order_by(DocumentHeading.position)
+            )
+            .scalars()
+            .all()
+        )
+
+        assert refreshed_doc.title == "Real Title"  # frontmatter override applied
+        assert len(headings) == 2
+        titles = [h.title for h in headings]
+        assert "Section A" in titles
+        assert "Section B" in titles
     finally:
         sync_session.close()

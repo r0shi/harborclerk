@@ -156,6 +156,10 @@ _INLINE_LINK_RE = re.compile(r"\[([^\[\]]+?)\]\(([^()\s]+)\)")
 _ATX_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 # Bold (**...** or __...__). Run BEFORE italic so longer markers go first.
 _BOLD_RE = re.compile(r"(\*\*|__)(.+?)\1")
+# Setext-style heading underline: a line of all `=` or all `-` (optional
+# leading/trailing whitespace). Only treated as a setext underline when the
+# previous line is non-blank and non-code-fence — see normalize_markdown.
+_SETEXT_UNDERLINE_RE = re.compile(r"^\s{0,3}(=+|-+)\s*$")
 # Italic (*...* or _..._). Lookarounds keep us from biting into adjacent words
 # or leftover bold markers.
 _ITALIC_RE = re.compile(r"(?<![\w*_])([*_])(?!\s)(.+?)(?<!\s)\1(?![\w*_])")
@@ -186,9 +190,13 @@ def _normalize_line(line: str) -> str:
 def normalize_markdown(text: str, code_fence_line_ranges: list[tuple[int, int]]) -> str:
     """Strip Markdown syntax in place. Code-fence content is left verbatim.
 
-    ``code_fence_line_ranges`` are inclusive 0-indexed line spans (the second
-    element of :func:`parse_markdown_structure`'s return). Any line whose index
-    falls inside one of these ranges is emitted unchanged.
+    Setext heading underlines (``=====`` / ``-----``) are replaced with an
+    empty line — preserving line count (the orchestrator's heading-position
+    relocation depends on input/output line-count parity) while removing the
+    underline content from the indexed text.
+
+    ``code_fence_line_ranges`` are inclusive 0-indexed line spans. Any line
+    whose index falls inside one of these ranges is emitted unchanged.
     """
     if not text:
         return text
@@ -197,8 +205,31 @@ def normalize_markdown(text: str, code_fence_line_ranges: list[tuple[int, int]])
         return any(start <= line_idx <= end for start, end in code_fence_line_ranges)
 
     lines = text.splitlines(keepends=True)
+
+    # Identify setext underline lines (must follow a non-blank, non-fence line
+    # and not themselves be in a fence).
+    setext_indices: set[int] = set()
+    for i in range(1, len(lines)):
+        if in_fence(i) or in_fence(i - 1):
+            continue
+        cur_no_nl = lines[i].rstrip("\r\n")
+        prev_no_nl_stripped = lines[i - 1].rstrip("\r\n").strip()
+        if not prev_no_nl_stripped:
+            continue
+        if _SETEXT_UNDERLINE_RE.match(cur_no_nl):
+            setext_indices.add(i)
+
     out: list[str] = []
     for i, raw_line in enumerate(lines):
+        if i in setext_indices:
+            # Replace with an empty line (preserve line count + line ending).
+            if raw_line.endswith("\r\n"):
+                out.append("\r\n")
+            elif raw_line.endswith("\n"):
+                out.append("\n")
+            else:
+                out.append("")
+            continue
         if in_fence(i):
             out.append(raw_line)
             continue
@@ -239,9 +270,11 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
     parse structure on body → normalize body → relocate heading positions →
     compose preamble + body → paginate → map heading positions to pages.
     """
-    # Lazy import — Task 7 will add `from harbor_clerk.worker.markdown_extract
-    # import ...` to worker.stages.extract, creating a circular dependency
-    # at module-load time unless this import stays inside the function body.
+    # Lazy import: stages/extract.py imports this module at module-load time
+    # (for the MarkdownExtractResult type and extract_markdown callable).
+    # Importing _paginate_text from stages/extract here at module top-level
+    # would create a circular dependency. Deferring to call time is safe
+    # because by then stages/extract is already fully loaded.
     from harbor_clerk.worker.stages.extract import _paginate_text
 
     text = data.decode("utf-8", errors="replace")
