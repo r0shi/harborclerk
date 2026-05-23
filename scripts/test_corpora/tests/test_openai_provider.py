@@ -108,6 +108,41 @@ def test_openai_provider_treats_length_finish_as_end_turn():
     assert res.tool_call_count == 0
 
 
+def test_openai_provider_retries_on_429_rate_limit(monkeypatch):
+    """openai.RateLimitError (429) inside run_question is absorbed with
+    exponential backoff — the SDK's own retry budget is too short for TPM
+    limit windows (60s) and would otherwise propagate up and kill the eval."""
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(429, request=request)
+    rate_limit_err = openai.RateLimitError("rate limited", response=response, body=None)
+
+    client = MagicMock()
+    # Throw 429 twice, then succeed
+    client.chat.completions.create.side_effect = [
+        rate_limit_err,
+        rate_limit_err,
+        _mk_resp(finish_reason="stop", text="finally got through"),
+    ]
+
+    # Patch the provider module's time.sleep so the test runs in ms not minutes
+    sleeps: list[float] = []
+    import scripts.test_corpora.runner.providers.openai_provider as openai_mod
+
+    monkeypatch.setattr(openai_mod.time, "sleep", sleeps.append)
+
+    p = OpenAIProvider(mcp_session=None, model="gpt-4o", client=client)
+    res = p.run_question(question="q", question_id="q-rl", corpus="cuad")
+
+    assert res.answer == "finally got through"
+    assert client.chat.completions.create.call_count == 3
+    # First two attempts hit 429; backoff schedule is 30s, 60s, 120s, 240s,
+    # so we should see exactly [30.0, 60.0] sleeps.
+    assert sleeps == [30.0, 60.0]
+
+
 def test_openai_provider_handles_multiple_parallel_tool_calls_in_one_turn():
     """GPT-4o sometimes emits multiple tool_calls in a single assistant turn.
     Each call MUST get a matching role='tool' message keyed by tool_call_id —

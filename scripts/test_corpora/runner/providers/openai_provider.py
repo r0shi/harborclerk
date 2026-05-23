@@ -31,6 +31,15 @@ from scripts.test_corpora.runner.providers.base import (
 log = logging.getLogger("openai_provider")
 
 
+# Retry budget for openai.RateLimitError (429) inside run_question. The SDK
+# does its own short retries (~5s) but a TPM-window reset takes up to 60s,
+# so the SDK gives up before the window clears on low-tier keys. We retry
+# with explicit exponential backoff (30s, 60s, 120s, 240s — capped) and
+# give up after the budget is exhausted, in which case the error propagates
+# and the eval runner can leave the unit PENDING for --rejudge later.
+_OPENAI_RATE_LIMIT_RETRY_DELAYS = (30.0, 60.0, 120.0, 240.0)
+
+
 class OpenAIProvider:
     """Runs a gpt-* (or o1-*/o3-*) model + Harbor Clerk MCP for one question."""
 
@@ -107,6 +116,33 @@ class OpenAIProvider:
             for v in obj:
                 self._collect_doc_ids(v)
 
+    def _create_with_rate_limit_retry(self, kwargs: dict):
+        """Retry openai.RateLimitError (429) with exponential backoff.
+
+        The OpenAI SDK's built-in retry obeys the API's Retry-After hint
+        (often "28ms" for TPM limits even though the window is actually 60s).
+        The SDK exhausts its short retry budget and propagates the 429
+        before the TPM window clears. We absorb that by retrying with a
+        30s/60s/120s/240s schedule on top of the SDK's own retries.
+
+        Looks up ``time.sleep`` at call time (not via default-arg binding)
+        so tests can patch ``time.sleep`` without monkey-patching the
+        provider's __init__ signature.
+        """
+        for attempt, delay in enumerate(_OPENAI_RATE_LIMIT_RETRY_DELAYS, start=1):
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except openai.RateLimitError:
+                log.warning(
+                    "openai 429 (rate limit) — backing off %.0fs before retry (attempt %d/%d)",
+                    delay,
+                    attempt,
+                    len(_OPENAI_RATE_LIMIT_RETRY_DELAYS),
+                )
+                time.sleep(delay)
+        # Final attempt — let any further error propagate
+        return self._client.chat.completions.create(**kwargs)
+
     def run_question(self, question: str, question_id: str, corpus: str) -> BaselineResult:
         started = time.time()
         tools = self._list_tools()
@@ -127,7 +163,7 @@ class OpenAIProvider:
             if tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
-            resp = self._client.chat.completions.create(**kwargs)
+            resp = self._create_with_rate_limit_retry(kwargs)
             choice = resp.choices[0]
             msg = choice.message
             finish = choice.finish_reason
