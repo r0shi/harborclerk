@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import Chunk, Document, DocumentPage
+from harbor_clerk.models import Chunk, Document, DocumentHeading, DocumentPage
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
@@ -246,9 +246,28 @@ def run_chunk(doc_id: uuid.UUID) -> None:
         # Remove trailing newline
         full_text = full_text.rstrip()
 
+        # Look up headings for break-preference. Ordered by position so the
+        # search in `_find_heading_positions_in_text` advances monotonically.
+        heading_rows = (
+            session.execute(
+                select(DocumentHeading).where(DocumentHeading.doc_id == doc_id).order_by(DocumentHeading.position)
+            )
+            .scalars()
+            .all()
+        )
+        heading_dicts = [{"title": h.title} for h in heading_rows]
+        heading_positions = _find_heading_positions_in_text(full_text, heading_dicts)
+        code_fence_ranges = _find_code_fence_ranges(full_text)
+
         # Split into chunks (compute before race check)
         settings = get_settings()
-        chunk_ranges = _split_text(full_text, target=settings.chunk_target_size, overlap=settings.chunk_overlap)
+        chunk_ranges = _split_text(
+            full_text,
+            target=settings.chunk_target_size,
+            overlap=settings.chunk_overlap,
+            heading_positions=heading_positions,
+            code_fence_ranges=code_fence_ranges,
+        )
 
         # Race check before writing results
         if not check_pipeline_seq(session, doc_id, worker_seq):
