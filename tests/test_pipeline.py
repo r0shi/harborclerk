@@ -709,3 +709,83 @@ async def test_run_extract_markdown_writes_headings_and_overrides_title(db_sessi
         assert "Section B" in titles
     finally:
         sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_wikilink_graph_resolves_and_kb_find_related_returns_linked(db_session, tmp_path):
+    """Integration: doc A and doc B link to each other via [[…]]. After
+    extract + finalize, the document_links rows resolve in both directions.
+    kb_find_related on either doc returns the other with source='linked'."""
+    import json
+    import uuid
+
+    from harbor_clerk.api.deps import Principal
+    from harbor_clerk.mcp_server import _mcp_principal, kb_find_related
+    from harbor_clerk.models.document_link import DocumentLink
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    async def _ingest(md_text: str, name: str) -> uuid.UUID:
+        md_path = tmp_path / name
+        md_path.write_text(md_text)
+        doc = Document(
+            title=md_path.stem,
+            canonical_filename=md_path.name,
+            status="active",
+            sha256=hashlib.sha256(md_path.read_bytes()).digest(),
+            source_path=str(md_path),
+            pipeline_status=PipelineStatus.queued,
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
+        db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.queued))
+        await db_session.commit()
+        return doc.doc_id
+
+    # Doc A links to "Note B"; Doc B links to "Note A".
+    a_id = await _ingest("# Note A\n\nSee [[Note B]] for details.\n", "Note A.md")
+    b_id = await _ingest("# Note B\n\nBack to [[Note A]].\n", "Note B.md")
+
+    # Extract both.
+    run_extract(a_id)
+    run_extract(b_id)
+    # Finalize in order — A first, then B. After B finalizes the dangling
+    # link from A to B should be resolved by the dangling-resolve pass.
+    run_finalize(a_id)
+    run_finalize(b_id)
+
+    # Re-read links via a fresh sync session (stages committed on their own).
+    sync_session = get_sync_session()
+    try:
+        links = sync_session.execute(select(DocumentLink).order_by(DocumentLink.src_doc_id)).scalars().all()
+        assert len(links) == 2, (
+            f"expected 2 links total, got {len(links)}: "
+            f"{[(link.src_doc_id, link.target_title, link.resolved) for link in links]}"
+        )
+        # Both must be resolved after finalize finishes for both docs.
+        assert all(link.resolved for link in links), (
+            f"links unresolved: {[(link.target_title, link.resolved) for link in links]}"
+        )
+        # A→B and B→A both present.
+        pairs = {(link.src_doc_id, link.target_doc_id) for link in links}
+        assert (a_id, b_id) in pairs
+        assert (b_id, a_id) in pairs
+    finally:
+        sync_session.close()
+
+    # kb_find_related on A returns B as a 'linked' result. The MCP function is
+    # registered via @mcp.tool() but FastMCP returns the underlying function
+    # unchanged, so we await it directly. A principal must be set first because
+    # _get_principal() raises PermissionError without one.
+    principal_token = _mcp_principal.set(Principal(type="user", id=uuid.uuid4(), role="admin"))
+    try:
+        result_str = await kb_find_related(doc_id=str(a_id), k=5)
+    finally:
+        _mcp_principal.reset(principal_token)
+
+    result = json.loads(result_str)
+    related = result.get("related", [])
+    by_id = {r["doc_id"]: r for r in related}
+    assert str(b_id) in by_id, f"B not in kb_find_related(A): {related!r}"
+    assert by_id[str(b_id)]["source"] == "linked"
+    assert by_id[str(b_id)]["similarity"] == 1.0
