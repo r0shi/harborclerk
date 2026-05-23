@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from scripts.test_corpora.runner.answer_eval import aggregate, load_groundtruth, run
+from scripts.test_corpora.runner.answer_eval import aggregate, compute_coverage, load_groundtruth, run
 from scripts.test_corpora.runner.answer_judge import AnswerVerdict
 
 
@@ -199,3 +199,37 @@ def test_run_rejudges_when_verdict_file_is_corrupt(tmp_path: Path):
     assert captures["n"] == 0  # the good capture was reused
     assert judged["n"] == 1  # the corrupt verdict was discarded and re-judged
     assert json.loads((ver_dir / "g1.json").read_text())["correctness"] == 4
+
+
+def test_compute_coverage_negative_clean_decline():
+    """find-negative: truth=[], cited=[] — citing nothing is correct (5)."""
+    assert compute_coverage([], []) == 5
+
+
+def test_compute_coverage_negative_penalizes_false_positives():
+    """find-negative: each cited doc costs a point, floor 0."""
+    assert compute_coverage(["x"], []) == 4
+    assert compute_coverage(["x", "y", "z"], []) == 2
+    assert compute_coverage(["a", "b", "c", "d", "e"], []) == 0
+    assert compute_coverage(["a"] * 10, []) == 0  # floor
+
+
+def test_compute_coverage_exact_match():
+    """find: cited == truth -> 5."""
+    assert compute_coverage(["a", "b", "c"], ["a", "b", "c"]) == 5
+
+
+def test_compute_coverage_partial_overlap_uses_banker_rounding():
+    """find: round(overlap / len(truth) * 5). Python 3's round is banker's."""
+    # 1/2 = 0.5 -> 2.5 -> 2 (banker's: rounds to even)
+    assert compute_coverage(["a"], ["a", "b"]) == 2
+    # 2/4 = 0.5 -> 2.5 -> 2
+    assert compute_coverage(["a", "b"], ["a", "b", "c", "d"]) == 2
+    # 3/4 = 0.75 -> 3.75 -> 4
+    assert compute_coverage(["a", "b", "c"], ["a", "b", "c", "d"]) == 4
+
+
+def test_compute_coverage_over_cite_does_not_penalize():
+    """find: extras in cited beyond truth don't reduce coverage — coverage is
+    recall (|overlap| / |truth|), not precision."""
+    assert compute_coverage(["a", "b", "x", "y"], ["a", "b"]) == 5
