@@ -66,6 +66,13 @@ _IMAGE_EXTENSIONS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png", ".tiff",
 ALLOWED_EXTENSIONS: frozenset[str] = PLAIN_TEXT_EXTENSIONS | _TIKA_EXTENSIONS | _IMAGE_EXTENSIONS
 
 
+# Public surface of this module. ``ALLOWED_EXTENSIONS`` is the union, never
+# referenced inside this file but consumed by uploads / watcher / extract;
+# ``__all__`` makes that intent explicit and silences CodeQL's
+# ``py/unused-global-variable`` query for the union sentinel.
+__all__ = ["PLAIN_TEXT_EXTENSIONS", "MARKDOWN_EXTENSIONS", "ALLOWED_EXTENSIONS", "is_excalidraw"]
+
+
 def is_excalidraw(path: str) -> bool:
     """True for Obsidian Excalidraw notes (``*.excalidraw.md``).
 

@@ -13,6 +13,7 @@ import yaml
 from markdown_it import MarkdownIt
 
 from harbor_clerk.config import get_settings
+from harbor_clerk.worker.text_pagination import paginate_text
 
 # Frontmatter must be at the very top of the document. It opens on a `---` line
 # and closes on the next `---` line. Captures the YAML block in group 1 and the
@@ -328,13 +329,6 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
     parse structure on body → normalize body → relocate heading positions →
     compose preamble + body → paginate → map heading positions to pages.
     """
-    # Lazy import: stages/extract.py imports this module at module-load time
-    # (for the MarkdownExtractResult type and extract_markdown callable).
-    # Importing _paginate_text from stages/extract here at module top-level
-    # would create a circular dependency. Deferring to call time is safe
-    # because by then stages/extract is already fully loaded.
-    from harbor_clerk.worker.stages.extract import _paginate_text
-
     text = data.decode("utf-8", errors="replace")
 
     frontmatter, body = extract_frontmatter(text)
@@ -383,7 +377,7 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
         )
 
     settings = get_settings()
-    pages = _paginate_text(full_text, settings.synthetic_page_chars)
+    pages = paginate_text(full_text, settings.synthetic_page_chars)
 
     # Map each heading's position to a page number.
     cum_offsets: list[tuple[int, int, int]] = []  # (start, end, page_num)

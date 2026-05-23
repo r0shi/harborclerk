@@ -18,6 +18,7 @@ from harbor_clerk.storage import get_storage
 from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
 from harbor_clerk.worker.markdown_extract import MarkdownExtractResult, extract_markdown
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.text_pagination import paginate_text
 
 logger = logging.getLogger(__name__)
 
@@ -62,48 +63,11 @@ def _sanitize_external_string(s: str, max_chars: int = 300) -> str:
     return cleaned[:max_chars]
 
 
-def _paginate_text(text: str, target: int) -> list[tuple[int, str]]:
-    """Split a long text into synthetic pages at paragraph boundaries.
-
-    Returns [(page_num, text)] with 1-based page numbers.
-    """
-    if not text or target <= 0:
-        return [(1, text)]
-
-    if len(text) <= target:
-        return [(1, text)]
-
-    pages: list[tuple[int, str]] = []
-    start = 0
-    page_num = 1
-    text_len = len(text)
-
-    while start < text_len:
-        end = min(start + target, text_len)
-
-        if end < text_len:
-            # Try to break at a paragraph boundary (double newline)
-            para = text.rfind("\n\n", start, end)
-            if para > start + target // 2:
-                end = para + 2  # include the double newline
-            else:
-                # Fall back to single newline
-                nl = text.rfind("\n", start, end)
-                if nl > start + target // 2:
-                    end = nl + 1
-
-        pages.append((page_num, text[start:end]))
-        page_num += 1
-        start = end
-
-    return pages
-
-
 def _extract_txt(data: bytes) -> list[tuple[int, str]]:
     """Plain text, split into synthetic pages."""
     settings = get_settings()
     text = data.decode("utf-8", errors="replace")
-    return _paginate_text(text, settings.synthetic_page_chars)
+    return paginate_text(text, settings.synthetic_page_chars)
 
 
 def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list[tuple[int, str]]:
@@ -136,7 +100,7 @@ def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list
         raw_pages = text.split("\f")
         return [(i + 1, p.strip()) for i, p in enumerate(raw_pages) if p.strip()]
 
-    return _paginate_text(text, settings.synthetic_page_chars)
+    return paginate_text(text, settings.synthetic_page_chars)
 
 
 def _fetch_tika_exception_detail(data: bytes, mime_type: str) -> str:
