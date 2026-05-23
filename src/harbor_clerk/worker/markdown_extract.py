@@ -246,6 +246,61 @@ def normalize_markdown(text: str, code_fence_line_ranges: list[tuple[int, int]])
     return "".join(out)
 
 
+# Wikilink capture pattern: matches [[Target]], [[Target#Anchor]],
+# [[Target|Alias]], and [[Target#Anchor|Alias]].
+# Group 1 = target (before # or |), Group 2 = anchor (optional),
+# Group 3 = alias (optional).
+_WIKILINK_CAPTURE_RE = re.compile(
+    r"\[\["
+    r"([^\[\]|#]+?)"  # group 1: target
+    r"(?:#([^\[\]|]+))?"  # group 2: anchor (optional)
+    r"(?:\|([^\[\]]+))?"  # group 3: alias (optional)
+    r"\]\]"
+)
+
+
+def parse_wikilinks(text: str) -> list[dict]:
+    """Extract all ``[[…]]`` wikilinks from ``text``.
+
+    Returns a list of dicts with these keys (one per match):
+
+    - ``link_text``: the raw inner text exactly as it appeared (preserves
+      whitespace, original casing, anchor + alias separators).
+    - ``target_title``: the parsed target name (text before ``#`` or ``|``),
+      lowercased and stripped, for case-insensitive matching at resolve time.
+    - ``anchor``: the ``#Anchor`` portion as it appeared, or ``None``.
+    - ``alias``: the ``|Alias`` portion as it appeared, or ``None``.
+
+    Wikilinks with empty or whitespace-only targets are skipped.
+    """
+    if not text:
+        return []
+
+    results: list[dict] = []
+    for match in _WIKILINK_CAPTURE_RE.finditer(text):
+        target_raw = match.group(1)
+        target_title = target_raw.strip().lower()
+        if not target_title:
+            continue
+        # Reconstruct link_text from the raw groups (matches what was between [[ and ]])
+        anchor = match.group(2)
+        alias = match.group(3)
+        link_text = target_raw
+        if anchor is not None:
+            link_text += "#" + anchor
+        if alias is not None:
+            link_text += "|" + alias
+        results.append(
+            {
+                "link_text": link_text,
+                "target_title": target_title,
+                "anchor": anchor,
+                "alias": alias,
+            }
+        )
+    return results
+
+
 @dataclass
 class MarkdownExtractResult:
     """Output of :func:`extract_markdown` — what ``run_extract`` consumes.

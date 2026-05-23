@@ -7,6 +7,7 @@ from harbor_clerk.worker.markdown_extract import (
     flatten_frontmatter,
     normalize_markdown,
     parse_markdown_structure,
+    parse_wikilinks,
 )
 
 # --- extract_frontmatter ---
@@ -382,3 +383,64 @@ def test_extract_markdown_setext_heading_clean_output():
     assert "===" not in page_text
     assert "Heading One" in page_text
     assert "Body text." in page_text
+
+
+# --- parse_wikilinks ---
+
+
+def test_parse_wikilinks_empty():
+    assert parse_wikilinks("") == []
+    assert parse_wikilinks("No wikilinks here.") == []
+
+
+def test_parse_wikilinks_plain():
+    out = parse_wikilinks("See [[Note Name]] for details.")
+    assert len(out) == 1
+    assert out[0]["link_text"] == "Note Name"
+    assert out[0]["target_title"] == "note name"  # lowercased, stripped
+    assert out[0]["anchor"] is None
+    assert out[0]["alias"] is None
+
+
+def test_parse_wikilinks_with_anchor():
+    out = parse_wikilinks("See [[Note#Section]].")
+    assert len(out) == 1
+    assert out[0]["target_title"] == "note"
+    assert out[0]["anchor"] == "Section"
+    assert out[0]["alias"] is None
+
+
+def test_parse_wikilinks_with_alias():
+    out = parse_wikilinks("See [[Note|the note]].")
+    assert len(out) == 1
+    assert out[0]["target_title"] == "note"
+    assert out[0]["alias"] == "the note"
+    assert out[0]["anchor"] is None
+
+
+def test_parse_wikilinks_anchor_and_alias():
+    out = parse_wikilinks("See [[Note#Section|Alias]].")
+    assert len(out) == 1
+    assert out[0]["target_title"] == "note"
+    assert out[0]["anchor"] == "Section"
+    assert out[0]["alias"] == "Alias"
+
+
+def test_parse_wikilinks_multiple():
+    text = "See [[A]] and [[B|alt]] and [[C#anchor]]."
+    out = parse_wikilinks(text)
+    assert len(out) == 3
+    assert [w["target_title"] for w in out] == ["a", "b", "c"]
+
+
+def test_parse_wikilinks_target_title_trims_whitespace():
+    out = parse_wikilinks("[[  Note Name  ]]")
+    assert out[0]["target_title"] == "note name"
+    assert out[0]["link_text"] == "  Note Name  "  # link_text preserves the raw inner text
+
+
+def test_parse_wikilinks_skips_brokens():
+    """Unbalanced brackets or empty targets are not matched."""
+    assert parse_wikilinks("[[]]") == []
+    assert parse_wikilinks("[[ | only alias ]]") == []
+    assert parse_wikilinks("text [[broken") == []
