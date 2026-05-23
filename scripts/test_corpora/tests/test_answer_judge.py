@@ -70,3 +70,33 @@ def test_extract_json_ignores_trailing_prose():
     commentary even when that commentary itself contains braces."""
     txt = '{"correctness": 5, "groundedness": 5, "completeness": 5, "rationale": "ok"}\n\nNote: see {4.2}.'
     assert _extract_json(txt)["correctness"] == 5
+
+
+def test_answer_verdict_source_defaults_to_empty_dict():
+    """AnswerVerdict has an optional `source` field defaulting to {}."""
+    v = AnswerVerdict(correctness=5, groundedness=5, completeness=5, rationale="ok")
+    assert v.source == {}
+
+
+def test_answer_verdict_source_round_trips_via_json():
+    """AnswerVerdict(...) -> asdict -> json -> dict -> AnswerVerdict(**dict) cleanly."""
+    import dataclasses
+    import json
+
+    original = AnswerVerdict(
+        correctness=4,
+        groundedness=3,
+        completeness=5,
+        rationale="x",
+        source={"completeness": "deterministic"},
+    )
+    serialized = json.dumps(dataclasses.asdict(original))
+    round_tripped = AnswerVerdict(**json.loads(serialized))
+    assert round_tripped == original
+
+
+def test_answer_verdict_deserializes_legacy_payload_without_source():
+    """Existing verdict files (no `source` key) deserialize cleanly with source={}."""
+    legacy = {"correctness": 5, "groundedness": 4, "completeness": 5, "rationale": "ok"}
+    v = AnswerVerdict(**legacy)
+    assert v.source == {}

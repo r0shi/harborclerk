@@ -52,6 +52,11 @@ class AnswerVerdict:
     groundedness: int
     completeness: int
     rationale: str
+    # Per-dimension scorer source ("deterministic" for runner-overridden find
+    # completeness; absent/empty for default judge-scored values). Lets reports
+    # show which numbers came from which scorer. Back-compat: legacy verdict
+    # JSONs without this key deserialize with source={}.
+    source: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def _extract_json(text: str) -> dict:
