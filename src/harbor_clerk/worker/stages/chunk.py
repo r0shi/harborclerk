@@ -55,6 +55,40 @@ def _find_code_fence_ranges(text: str) -> list[tuple[int, int]]:
     return ranges
 
 
+def _find_heading_positions_in_text(text: str, headings: list[dict]) -> list[int]:
+    """Locate each heading's ``title`` at a line start in ``text``.
+
+    Returns a list of char offsets (one per heading whose title is found),
+    in the order the headings were given. A low-water mark advances after
+    each match so repeated titles match in document order.
+
+    Headings with empty titles or titles that don't appear at a line start
+    in ``text`` are silently skipped.
+    """
+    if not text or not headings:
+        return []
+
+    positions: list[int] = []
+    low_water = 0
+    for h in headings:
+        title = h.get("title") or ""
+        if not title:
+            continue
+        # Find the title at a line start (preceded by '\n' or at text start).
+        search_from = low_water
+        while search_from < len(text):
+            idx = text.find(title, search_from)
+            if idx < 0:
+                break
+            if idx == 0 or text[idx - 1] == "\n":
+                positions.append(idx)
+                low_water = idx + len(title)
+                break
+            search_from = idx + 1
+
+    return positions
+
+
 def _split_text(text: str, target: int = 1000, overlap: int = 150) -> list[tuple[int, int]]:
     """Return list of (char_start, char_end) for chunks.
 

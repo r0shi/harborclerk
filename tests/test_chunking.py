@@ -5,6 +5,7 @@ from unittest.mock import patch
 from harbor_clerk.worker.stages.chunk import (
     _detect_language,
     _find_code_fence_ranges,
+    _find_heading_positions_in_text,
     _find_page_range,
     _split_text,
 )
@@ -153,3 +154,68 @@ def test_fence_ranges_unterminated():
     assert len(ranges) == 1
     start, end = ranges[0]
     assert end == len(text)
+
+
+# --- _find_heading_positions_in_text ---
+
+
+def test_heading_positions_empty():
+    assert _find_heading_positions_in_text("", []) == []
+    assert _find_heading_positions_in_text("text", []) == []
+    assert _find_heading_positions_in_text("", [{"title": "X"}]) == []
+
+
+def test_heading_positions_at_start():
+    text = "Heading One\n\nBody text.\n"
+    headings = [{"title": "Heading One"}]
+    assert _find_heading_positions_in_text(text, headings) == [0]
+
+
+def test_heading_positions_multiple_in_order():
+    text = "Section A\n\nProse here.\n\nSection B\n\nMore prose.\n"
+    headings = [{"title": "Section A"}, {"title": "Section B"}]
+    out = _find_heading_positions_in_text(text, headings)
+    assert len(out) == 2
+    assert out[0] < out[1]
+    assert text[out[0] :].startswith("Section A")
+    assert text[out[1] :].startswith("Section B")
+
+
+def test_heading_positions_skips_prose_occurrence():
+    """Title appearing in prose (not at line start) is NOT matched."""
+    text = "Refers to the Budget section.\n\nBudget\n\nActual content.\n"
+    headings = [{"title": "Budget"}]
+    out = _find_heading_positions_in_text(text, headings)
+    assert len(out) == 1
+    # Position must be at the line-start occurrence (after the first \n\n),
+    # not the prose occurrence at offset 14.
+    assert text[out[0] :].startswith("Budget")
+    if out[0] > 0:
+        assert text[out[0] - 1] == "\n"
+
+
+def test_heading_positions_low_water_keeps_order():
+    """Repeated titles are matched in document order via low-water mark."""
+    text = "Notes\n\nDetail.\n\nNotes\n\nMore.\n"
+    headings = [{"title": "Notes"}, {"title": "Notes"}]
+    out = _find_heading_positions_in_text(text, headings)
+    assert len(out) == 2
+    assert out[0] < out[1]
+
+
+def test_heading_positions_skips_missing_title():
+    """A heading whose title can't be located is skipped (not in output)."""
+    text = "Real Heading\n\nBody.\n"
+    headings = [{"title": "Real Heading"}, {"title": "Not Present"}]
+    out = _find_heading_positions_in_text(text, headings)
+    assert len(out) == 1
+    assert text[out[0] :].startswith("Real Heading")
+
+
+def test_heading_positions_skips_empty_title():
+    """A heading with an empty title is skipped without error."""
+    text = "Section\n\nBody.\n"
+    headings = [{"title": ""}, {"title": "Section"}]
+    out = _find_heading_positions_in_text(text, headings)
+    assert len(out) == 1
+    assert text[out[0] :].startswith("Section")
