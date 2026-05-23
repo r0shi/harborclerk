@@ -232,3 +232,46 @@ def test_scan_folder_writes_skipped_count_and_extensions(factory, tmp_path, monk
             sess.close()
     finally:
         _truncate_watched(factory)
+
+
+def test_scan_folder_records_no_extension_sentinel(factory, tmp_path, monkeypatch):
+    """Extension-less files (README, LICENSE) are UNSUPPORTED but Path.suffix
+    is "". They contribute to ``skipped_count`` and appear under the
+    ``"(no extension)"`` sentinel in ``skipped_extensions`` so the per-folder
+    UI summary reflects them instead of leaving the count unexplained."""
+    from sqlalchemy import select
+
+    from harbor_clerk.models.watched import WatchedFolder
+    from harbor_clerk.watcher.main import WatcherDaemon
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+
+    (tmp_path / "README").write_text("readme\n")
+    (tmp_path / "LICENSE").write_text("license\n")
+    (tmp_path / "malware.exe").write_bytes(b"MZ")
+
+    sess = factory()
+    folder = WatchedFolder(path=str(tmp_path), auto_discovered=False)
+    sess.add(folder)
+    sess.commit()
+    folder_id = folder.folder_id
+    sess.close()
+
+    try:
+        daemon = WatcherDaemon(factory)
+        daemon._scan_folder(folder_id, str(tmp_path))
+
+        sess = factory()
+        try:
+            row = sess.execute(select(WatchedFolder).where(WatchedFolder.folder_id == folder_id)).scalar_one()
+            assert row.skipped_count == 3, (
+                f"expected 3 (README + LICENSE + malware.exe), got {row.skipped_count}; "
+                f"extensions={row.skipped_extensions!r}"
+            )
+            # ".exe" + "(no extension)" sentinel (covering both README and LICENSE).
+            assert row.skipped_extensions == ["(no extension)", ".exe"]
+        finally:
+            sess.close()
+    finally:
+        _truncate_watched(factory)

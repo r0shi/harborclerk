@@ -128,8 +128,13 @@ class WatcherDaemon:
                     if reason is SkipReason.UNSUPPORTED_EXTENSION:
                         skipped_count += 1
                         suffix = os.path.splitext(rel_path)[1].lower()
-                        if suffix:
-                            skipped_exts.add(suffix)
+                        # Extension-less files (README, LICENSE, …) are
+                        # legitimately UNSUPPORTED but `splitext` returns
+                        # ""; track them under a sentinel so they show up
+                        # in the per-folder UI summary instead of leaving
+                        # the user wondering why the count went up but
+                        # no new extension appeared.
+                        skipped_exts.add(suffix if suffix else "(no extension)")
                         # Don't dispatch the event — handle_event would
                         # ignore it anyway, but skipping the call saves
                         # the SHA computation and DB roundtrip.
@@ -149,6 +154,12 @@ class WatcherDaemon:
                     )
                     count += 1
                     if self._stop.is_set():
+                        # Early stop: partial skip tally is silently
+                        # discarded along with last_scan_at — both will
+                        # be repopulated by a fresh _scan_folder on the
+                        # next daemon start. Acceptable because scan
+                        # interruption is rare and the next start re-runs
+                        # the whole walk.
                         return
         except Exception:
             logger.exception("watcher: initial scan of %s failed", root)
