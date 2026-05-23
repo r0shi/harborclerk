@@ -4,8 +4,8 @@
 import dataclasses
 
 from scripts.test_corpora.runner.providers.base import (
-    BaselineResult,
     DEFAULT_SYSTEM_PROMPT,
+    BaselineResult,
     Provider,
 )
 
