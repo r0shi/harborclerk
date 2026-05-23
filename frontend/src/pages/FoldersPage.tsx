@@ -15,6 +15,8 @@ interface FolderInfo {
   enabled: boolean
   auto_discovered: boolean
   unavailable_reason: string | null
+  skipped_count: number
+  skipped_extensions: string[]
 }
 
 interface StageCounts {
@@ -60,6 +62,24 @@ function mapFolderStatusLabel(f: FolderInfo, p?: ProgressInfo): string {
   if (!f.enabled) return 'disabled'
   if (p?.scan_status === 'scanning') return 'scanning'
   return 'idle'
+}
+
+// Format the per-folder muted message that surfaces files the watcher
+// rejected for an unsupported extension. Returns null when there's nothing
+// to surface (count <= 0) so callers can render nothing rather than an
+// empty placeholder. Long extension lists are truncated to keep the line
+// affordance to a single visual line; the full list is exposed via the
+// `title` attribute on the rendered element.
+const SKIP_MESSAGE_MAX_EXTS = 6
+function formatSkipMessage(count: number, exts: string[]): string | null {
+  if (count <= 0) return null
+  const noun = count === 1 ? 'file' : 'files'
+  if (exts.length === 0) {
+    return `${count} ${noun} not ingested — unsupported type`
+  }
+  const shown = exts.slice(0, SKIP_MESSAGE_MAX_EXTS).join(', ')
+  const overflow = exts.length > SKIP_MESSAGE_MAX_EXTS ? ` and ${exts.length - SKIP_MESSAGE_MAX_EXTS} more` : ''
+  return `${count} ${noun} not ingested — unsupported types: ${shown}${overflow}`
 }
 
 function AddFolderButton({ onClick }: { onClick: () => void }) {
@@ -300,6 +320,15 @@ function FolderRow({
               {p.completed_files} / {p.total_files} files
             </div>
           )}
+          {(() => {
+            const skipMsg = formatSkipMessage(f.skipped_count, f.skipped_extensions)
+            if (!skipMsg) return null
+            return (
+              <div className="mt-0.5 text-[11px] text-(--color-text-secondary)" title={f.skipped_extensions.join(', ')}>
+                {skipMsg}
+              </div>
+            )
+          })()}
         </div>
         <StatusPill state={mapFolderStatusToPillState(f, p)} label={mapFolderStatusLabel(f, p)} />
         <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
