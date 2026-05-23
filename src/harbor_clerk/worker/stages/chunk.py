@@ -148,11 +148,17 @@ def _split_text(
                         if space > start + target // 2:
                             end = space + 1
 
-            # Code-fence protection: never end inside a fence.
+            # Code-fence protection: never end inside a fence. The loop runs
+            # to completion (no break) so that overlapping or unsorted ranges
+            # are all handled — pushing `end` past one fence can land it
+            # inside another, and a later iteration of the loop will push
+            # it past that one too.
             for fstart, fend in code_fence_ranges:
                 if fstart < end < fend:
+                    # Deliberate oversized-chunk: extending past the fence is
+                    # acceptable; splitting a code block is worse than a chunk
+                    # that exceeds the target by up to one fence's length.
                     end = fend
-                    break
 
         chunks.append((start, end))
 
