@@ -45,6 +45,9 @@ class BaselineResult:
     # carried no title.
     cited_doc_titles: list[str]
     tool_call_count: int
+    # Per-call record [{tool, args, result_summary}] in call order — for
+    # groundedness scoring and tool-use auditing.
+    tool_transcript: list[dict]
     elapsed_seconds: float
     model: str
     timestamp: str
@@ -122,6 +125,7 @@ class BaselineGenerator:
         tools = self._list_tools()
         messages: list[dict] = [{"role": "user", "content": question}]
         tool_call_count = 0
+        tool_transcript: list[dict] = []
         resp = None
 
         while True:
@@ -145,6 +149,13 @@ class BaselineGenerator:
                 if getattr(block, "type", None) == "tool_use":
                     tool_call_count += 1
                     out = self._exec_tool(block.name, block.input)
+                    tool_transcript.append(
+                        {
+                            "tool": block.name,
+                            "args": dict(block.input),
+                            "result_summary": out[:600],
+                        }
+                    )
                     tool_results.append(
                         {
                             "type": "tool_result",
@@ -154,10 +165,14 @@ class BaselineGenerator:
                     )
             messages.append({"role": "user", "content": tool_results})
 
-        # Final answer is the last text block in the assistant turn
+        # Final answer is the last text block in the assistant turn — scan from
+        # the end so a leading non-text block (e.g. tool_use) is skipped.
         final = ""
-        if resp and resp.content and hasattr(resp.content[0], "text"):
-            final = resp.content[0].text
+        if resp and resp.content:
+            for block in reversed(resp.content):
+                if hasattr(block, "text"):
+                    final = block.text
+                    break
 
         return BaselineResult(
             question_id=question_id,
@@ -166,6 +181,7 @@ class BaselineGenerator:
             cited_doc_ids=list(self._cited.keys()),
             cited_doc_titles=list(self._cited.values()),
             tool_call_count=tool_call_count,
+            tool_transcript=tool_transcript,
             elapsed_seconds=time.time() - started,
             model=self._model,
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
