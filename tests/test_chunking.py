@@ -219,3 +219,92 @@ def test_heading_positions_skips_empty_title():
     out = _find_heading_positions_in_text(text, headings)
     assert len(out) == 1
     assert text[out[0] :].startswith("Section")
+
+
+# --- _split_text heading-aware ---
+
+
+def test_split_text_prefers_heading_boundary():
+    """A heading position in the upper half of the target window becomes the break."""
+    pre = "p" * 600
+    heading_line = "\nHeading B\n"
+    rest = "x" * 600
+    text = pre + heading_line + rest
+    heading_pos = len(pre) + 1  # char of 'H' in "Heading B" (after the '\n')
+    result = _split_text(
+        text,
+        target=900,
+        overlap=50,
+        heading_positions=[heading_pos],
+    )
+    assert len(result) >= 2
+    assert result[0][1] == heading_pos
+
+
+def test_split_text_ignores_heading_below_half_target():
+    """A heading in the first half of the target window is NOT preferred."""
+    text = "Heading\n" + "x" * 1500
+    result = _split_text(text, target=1000, overlap=50, heading_positions=[0])
+    # The first chunk MUST NOT end at offset 0 (degenerate empty chunk).
+    assert result[0][1] > 0
+
+
+def test_split_text_no_heading_falls_back_to_paragraph():
+    """With no headings in window, the existing paragraph/sentence/word fallback runs."""
+    para1 = "A" * 600
+    para2 = "B" * 600
+    text = para1 + "\n\n" + para2
+    result = _split_text(text, target=800, overlap=50, heading_positions=[])
+    assert len(result) >= 2
+    first_end = result[0][1]
+    # Paragraph break is at pos 602 (after the \n\n).
+    assert abs(first_end - 602) <= 10
+
+
+# --- _split_text fence-protected ---
+
+
+def test_split_text_does_not_break_inside_code_fence():
+    """If the proposed chunk end falls inside a fence range, push past the fence."""
+    pre = "p" * 800
+    fence = "```\n" + ("L\n" * 100) + "```\n"  # ~210 chars
+    text = pre + fence + ("x" * 200)
+    fence_start = len(pre)
+    fence_end = len(pre) + len(fence)
+    result = _split_text(
+        text,
+        target=900,
+        overlap=50,
+        code_fence_ranges=[(fence_start, fence_end)],
+    )
+    first_end = result[0][1]
+    assert not (fence_start < first_end < fence_end), (
+        f"chunk ends at {first_end}, inside fence [{fence_start}, {fence_end})"
+    )
+
+
+def test_split_text_fence_protection_with_heading():
+    """Heading break and fence protection compose: a heading just past the fence wins."""
+    pre = "p" * 600
+    fence = "```\ncode\n```\n"
+    rest = "Heading\n" + "x" * 400
+    text = pre + fence + rest
+    fence_start = len(pre)
+    fence_end = len(pre) + len(fence)
+    heading_pos = fence_end  # right after the fence
+    result = _split_text(
+        text,
+        target=800,
+        overlap=50,
+        heading_positions=[heading_pos],
+        code_fence_ranges=[(fence_start, fence_end)],
+    )
+    assert result[0][1] == heading_pos
+
+
+def test_split_text_backward_compat_no_params():
+    """Calling _split_text without the new parameters keeps existing behavior."""
+    text = "word " * 300
+    result_old = _split_text(text, target=500, overlap=50)
+    result_new = _split_text(text, target=500, overlap=50, heading_positions=None, code_fence_ranges=None)
+    assert result_old == result_new

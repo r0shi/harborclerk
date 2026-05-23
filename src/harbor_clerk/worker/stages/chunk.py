@@ -89,15 +89,34 @@ def _find_heading_positions_in_text(text: str, headings: list[dict]) -> list[int
     return positions
 
 
-def _split_text(text: str, target: int = 1000, overlap: int = 150) -> list[tuple[int, int]]:
-    """Return list of (char_start, char_end) for chunks.
+def _split_text(
+    text: str,
+    target: int = 1000,
+    overlap: int = 150,
+    heading_positions: list[int] | None = None,
+    code_fence_ranges: list[tuple[int, int]] | None = None,
+) -> list[tuple[int, int]]:
+    """Return list of ``(char_start, char_end)`` for chunks.
 
-    Splits at paragraph > sentence > word boundaries.
+    Break-preference order (highest to lowest priority):
+      1. A heading position in ``heading_positions`` that falls in the upper
+         half of the target window (``start + target // 2 < pos <= start + target``).
+      2. A paragraph break (``\\n\\n``) in the upper half of the window.
+      3. A sentence boundary in the upper half of the window.
+      4. A word boundary in the upper half of the window.
+      5. Hard cut at ``start + target``.
+
+    Code-fence protection: if the chosen end falls strictly inside any range
+    in ``code_fence_ranges``, the end is pushed to the range's far edge — the
+    chunk is extended to cover the entire fence. (Headings do not appear inside
+    fences in practice, but the protection runs after heading selection too.)
     """
     if not text:
         return []
+    heading_positions = heading_positions or []
+    code_fence_ranges = code_fence_ranges or []
 
-    chunks = []
+    chunks: list[tuple[int, int]] = []
     start = 0
     text_len = len(text)
 
@@ -105,25 +124,38 @@ def _split_text(text: str, target: int = 1000, overlap: int = 150) -> list[tuple
         end = min(start + target, text_len)
 
         if end < text_len:
-            # Try to find a paragraph break
-            para_break = text.rfind("\n\n", start, end)
-            if para_break > start + target // 2:
-                end = para_break + 2
+            # Preference 1: a heading boundary in the upper half of the window.
+            heading_break: int | None = None
+            half = start + target // 2
+            for hpos in heading_positions:
+                if half < hpos <= end:
+                    heading_break = hpos  # rightmost match wins (closest to end)
+
+            if heading_break is not None:
+                end = heading_break
             else:
-                # Try sentence break
-                search_region = text[start:end]
-                sentences = list(SENTENCE_RE.finditer(search_region))
-                if sentences and sentences[-1].start() > target // 2:
-                    end = start + sentences[-1].end()
+                # Existing paragraph > sentence > word fallback (unchanged).
+                para_break = text.rfind("\n\n", start, end)
+                if para_break > start + target // 2:
+                    end = para_break + 2
                 else:
-                    # Try word break
-                    space = text.rfind(" ", start, end)
-                    if space > start + target // 2:
-                        end = space + 1
+                    search_region = text[start:end]
+                    sentences = list(SENTENCE_RE.finditer(search_region))
+                    if sentences and sentences[-1].start() > target // 2:
+                        end = start + sentences[-1].end()
+                    else:
+                        space = text.rfind(" ", start, end)
+                        if space > start + target // 2:
+                            end = space + 1
+
+            # Code-fence protection: never end inside a fence.
+            for fstart, fend in code_fence_ranges:
+                if fstart < end < fend:
+                    end = fend
+                    break
 
         chunks.append((start, end))
 
-        # Next chunk starts with overlap
         next_start = end - overlap
         if next_start <= start:
             next_start = end
