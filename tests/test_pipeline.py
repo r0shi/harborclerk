@@ -712,17 +712,37 @@ async def test_run_extract_markdown_writes_headings_and_overrides_title(db_sessi
 
 
 @pytest.mark.asyncio
-async def test_wikilink_graph_resolves_and_kb_find_related_returns_linked(db_session, tmp_path):
+async def test_wikilink_graph_resolves_and_kb_find_related_returns_linked(db_session, _engine, tmp_path, monkeypatch):
     """Integration: doc A and doc B link to each other via [[…]]. After
     extract + finalize, the document_links rows resolve in both directions.
     kb_find_related on either doc returns the other with source='linked'."""
     import json
     import uuid
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     from harbor_clerk.api.deps import Principal
     from harbor_clerk.mcp_server import _mcp_principal, kb_find_related
     from harbor_clerk.models.document_link import DocumentLink
     from harbor_clerk.worker.stages.extract import run_extract
+
+    # Patch `async_session_factory` to use the test session's engine (which is
+    # already bound to this test's event loop via the session-scoped fixture).
+    # We deliberately do NOT bind to db_session's connection — this test commits
+    # mid-flight to make rows visible to the sync extract/finalize stages, and
+    # AsyncSession.commit() under NullPool releases the underlying connection,
+    # so a captured-up-front connection would be closed by the time the MCP
+    # call runs. Going through the engine gives us a fresh connection each
+    # invocation, matching the production behaviour.
+    test_factory = async_sessionmaker(_engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def _factory():
+        async with test_factory() as session:
+            yield session
+
+    monkeypatch.setattr("harbor_clerk.mcp_server.async_session_factory", _factory)
 
     async def _ingest(md_text: str, name: str) -> uuid.UUID:
         md_path = tmp_path / name
