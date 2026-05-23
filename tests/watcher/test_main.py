@@ -165,3 +165,70 @@ def test_daemon_scans_existing_files_when_observer_registers(factory, tmp_path, 
     finally:
         daemon.stop()
         _truncate_watched(factory)
+
+
+def test_scan_folder_writes_skipped_count_and_extensions(factory, tmp_path, monkeypatch):
+    """After _scan_folder visits a folder containing unsupported files,
+    watched_folders.skipped_count and .skipped_extensions are updated.
+    Dotfiles, AppleDouble, __MACOSX, and *.excalidraw.md are NOT counted.
+
+    Covers the realistic vault layout from spec Phase 5 (Task 6 in the plan):
+    PDF + Markdown accepted, two unsupported extensions tallied, dotfile +
+    AppleDouble shadow + Excalidraw note classified as noise (not counted).
+
+    NB: the plan suggested ``board.canvas`` as an unsupported file, but Phase 1
+    added ``.canvas`` to the plain-text allowlist. ``blueprint.dwg`` (a CAD
+    format that is not allowlisted) stands in.
+    """
+    from sqlalchemy import select
+
+    from harbor_clerk.models.watched import WatchedFolder
+    from harbor_clerk.watcher.main import WatcherDaemon
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+
+    # Layout:
+    #   doc.pdf                → accepted
+    #   notes.md               → accepted
+    #   malware.exe            → counted (unsupported)
+    #   blueprint.dwg          → counted (unsupported)
+    #   diagram.excalidraw.md  → NOT counted (noise: excalidraw)
+    #   .DS_Store              → NOT counted (noise: dotfile)
+    #   ._shadow.pdf           → NOT counted (noise: AppleDouble)
+    (tmp_path / "doc.pdf").write_bytes(b"%PDF-1.4\n%fake pdf\n")
+    (tmp_path / "notes.md").write_text("# notes\n")
+    (tmp_path / "malware.exe").write_bytes(b"MZ")
+    (tmp_path / "blueprint.dwg").write_bytes(b"AC1027")
+    (tmp_path / "diagram.excalidraw.md").write_text("---\nexcalidraw-plugin: parsed\n---\n")
+    (tmp_path / ".DS_Store").write_bytes(b"")
+    (tmp_path / "._shadow.pdf").write_bytes(b"")
+
+    # Create the folder row first.
+    sess = factory()
+    folder = WatchedFolder(path=str(tmp_path), auto_discovered=False)
+    sess.add(folder)
+    sess.commit()
+    folder_id = folder.folder_id
+    sess.close()
+
+    try:
+        daemon = WatcherDaemon(factory)
+        # Avoid spinning up real observers — only the scan logic is under test.
+        daemon._scan_folder(folder_id, str(tmp_path))
+
+        sess = factory()
+        try:
+            row = sess.execute(select(WatchedFolder).where(WatchedFolder.folder_id == folder_id)).scalar_one()
+            assert row.skipped_count == 2, (
+                f"expected 2 (malware.exe + blueprint.dwg), got {row.skipped_count}; "
+                f"extensions={row.skipped_extensions!r}"
+            )
+            # Lowercased, sorted, distinct.
+            assert row.skipped_extensions == [".dwg", ".exe"]
+            # Scan completion marker also set.
+            assert row.last_scan_at is not None
+        finally:
+            sess.close()
+    finally:
+        _truncate_watched(factory)
