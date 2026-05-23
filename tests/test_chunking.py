@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from harbor_clerk.worker.stages.chunk import (
     _detect_language,
+    _find_code_fence_ranges,
     _find_page_range,
     _split_text,
 )
@@ -103,3 +104,52 @@ def test_detect_french():
 def test_detect_language_fallback_on_error():
     with patch("langdetect.detect", side_effect=Exception("fail")):
         assert _detect_language("anything") == "english"
+
+
+# --- _find_code_fence_ranges ---
+
+
+def test_fence_ranges_empty_text():
+    assert _find_code_fence_ranges("") == []
+
+
+def test_fence_ranges_no_fence():
+    text = "Just prose.\n\nSome more prose.\n"
+    assert _find_code_fence_ranges(text) == []
+
+
+def test_fence_ranges_single_fence():
+    text = "Intro.\n\n```python\ncode_line()\n```\n\nOutro.\n"
+    ranges = _find_code_fence_ranges(text)
+    assert len(ranges) == 1
+    start, end = ranges[0]
+    # Opening fence starts at char 8 (after "Intro.\n\n").
+    assert text[start:].startswith("```python")
+    # End is the start of the line after the closing fence (i.e. start of "\n").
+    assert text[start:end].endswith("```\n")
+
+
+def test_fence_ranges_multiple_fences():
+    text = "```\nA\n```\n\nMid.\n\n```py\nB\n```\n"
+    ranges = _find_code_fence_ranges(text)
+    assert len(ranges) == 2
+    # Each range covers exactly one fence.
+    for s, e in ranges:
+        block = text[s:e]
+        assert block.count("```") == 2  # opening + closing
+
+
+def test_fence_ranges_tilde_fence():
+    """``~~~`` fences (CommonMark alternative) are also recognized."""
+    text = "Intro.\n\n~~~\ncode\n~~~\n\nOutro.\n"
+    ranges = _find_code_fence_ranges(text)
+    assert len(ranges) == 1
+
+
+def test_fence_ranges_unterminated():
+    """A fence that never closes extends to end-of-text."""
+    text = "Intro.\n\n```\nstart of code\nmore code\n"
+    ranges = _find_code_fence_ranges(text)
+    assert len(ranges) == 1
+    start, end = ranges[0]
+    assert end == len(text)

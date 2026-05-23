@@ -18,6 +18,43 @@ logger = logging.getLogger(__name__)
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
 
+def _find_code_fence_ranges(text: str) -> list[tuple[int, int]]:
+    """Return char ranges covering each fenced code block in ``text``.
+
+    Each range is ``(start, end)`` where ``start`` is the char offset of the
+    opening fence line's first char and ``end`` is the char offset just past
+    the closing fence line (i.e., the start of the next line, or ``len(text)``
+    if the closing fence is unterminated or at end-of-text).
+
+    Recognizes both backtick (``` ``` ```) and tilde (``~~~``) fences.
+    """
+    if not text:
+        return []
+    lines = text.splitlines(keepends=True)
+    line_starts = [0]
+    for line in lines:
+        line_starts.append(line_starts[-1] + len(line))
+
+    ranges: list[tuple[int, int]] = []
+    in_fence = False
+    fence_start_char = 0
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        is_fence = stripped.startswith("```") or stripped.startswith("~~~")
+        if not in_fence and is_fence:
+            in_fence = True
+            fence_start_char = line_starts[i]
+        elif in_fence and is_fence:
+            in_fence = False
+            ranges.append((fence_start_char, line_starts[i + 1]))
+
+    # Unterminated fence at EOF — treat as extending through the rest of the text.
+    if in_fence:
+        ranges.append((fence_start_char, len(text)))
+
+    return ranges
+
+
 def _split_text(text: str, target: int = 1000, overlap: int = 150) -> list[tuple[int, int]]:
     """Return list of (char_start, char_end) for chunks.
 
