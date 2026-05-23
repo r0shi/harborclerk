@@ -42,23 +42,35 @@ class GTItem:
     question: str
     clause_category: str
     gold_doc: str
-    answer_key: str | None
+    answer_key: str | dict | None
     type: str
 
 
 def load_groundtruth(path: Path) -> list[GTItem]:
     data = yaml.safe_load(path.read_text())
-    return [
-        GTItem(
-            id=i["id"],
-            question=i["question"],
-            clause_category=i["clause_category"],
-            gold_doc=i["gold_doc"],
-            answer_key=i.get("answer_key"),
-            type=i["type"],
+    items: list[GTItem] = []
+    for i in data["items"]:
+        ak = i.get("answer_key")
+        qtype = i["type"]
+        if qtype == "find":
+            if not isinstance(ak, dict):
+                raise ValueError(
+                    f"find item {i['id']!r} answer_key must be a dict with count/all/sample, got {type(ak).__name__}"
+                )
+            missing = {"count", "all", "sample"} - set(ak)
+            if missing:
+                raise ValueError(f"find item {i['id']!r} missing required answer_key keys: {sorted(missing)}")
+        items.append(
+            GTItem(
+                id=i["id"],
+                question=i["question"],
+                clause_category=i["clause_category"],
+                gold_doc=i["gold_doc"],
+                answer_key=ak,
+                type=qtype,
+            )
         )
-        for i in data["items"]
-    ]
+    return items
 
 
 def aggregate(rows: list[tuple[str, str, AnswerVerdict]]) -> dict:
@@ -92,6 +104,27 @@ def _cited_text(capture: dict) -> str:
     for call in transcript:
         lines.append(f"[{call.get('tool')}] {str(call.get('result_summary'))[:400]}")
     return "\n".join(lines)
+
+
+def compute_coverage(cited: list[str], truth_all: list[str]) -> int:
+    """Deterministic coverage score for `find` items, mapped to the 0–5 scale.
+
+    `cited` is deduplicated on both branches so a verbose model that repeats
+    the same citation in multiple sentences isn't penalized (or rewarded) more
+    than a concise one for the same set of distinct claims.
+
+    For `find`-negatives (``truth_all == []``): citing nothing is correct (5);
+    each unique false-positive citation costs 1 point, floor 0.
+    For `find` items with a non-empty truth: ``|cited ∩ truth| / |truth| * 5``,
+    banker's-rounded to an int. Used by ``run()`` to override the judge's
+    ``completeness`` for ``find`` items — see the answer-eval phase-2a design
+    (Enron).
+    """
+    cited_unique = set(cited)
+    if not truth_all:
+        return max(0, 5 - len(cited_unique))
+    overlap = len(cited_unique & set(truth_all))
+    return round(overlap / len(truth_all) * 5)
 
 
 def run(
@@ -159,6 +192,14 @@ def run(
                 answer_key=item.answer_key,
                 qtype=item.type,
             )
+            if item.type == "find":
+                truth_all = item.answer_key.get("all", []) if isinstance(item.answer_key, dict) else []
+                coverage = compute_coverage(capture.get("cited_doc_titles", []) or [], truth_all)
+                verdict = dataclasses.replace(
+                    verdict,
+                    completeness=coverage,
+                    source={**verdict.source, "completeness": "deterministic"},
+                )
             ver_path.write_text(json.dumps(dataclasses.asdict(verdict), indent=2))
         log.info(
             "  %s correctness=%d grounded=%d complete=%d",

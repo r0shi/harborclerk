@@ -1,0 +1,388 @@
+corpus: enron
+items:
+- id: enron-find-raptor
+  question: Find emails about Raptor.
+  clause_category: n/a
+  gold_doc: (see answer_key.all)
+  answer_key:
+    count: 4
+    all:
+    - lay-k_inbox_268_
+    - lay-k_inbox_422_
+    - shackleton-s_all_documents_4047_
+    - skilling-j_inbox_1109_
+    sample:
+    - lay-k_inbox_268_
+    - lay-k_inbox_422_
+    - shackleton-s_all_documents_4047_
+    - skilling-j_inbox_1109_
+  type: find
+- id: enron-find-ljm
+  question: Find emails about LJM.
+  clause_category: n/a
+  gold_doc: (see answer_key.all)
+  answer_key:
+    count: 21
+    all:
+    - lay-k__sent_255_
+    - lay-k_all_documents_1121_
+    - lay-k_inbox_1754_
+    - lay-k_inbox_1759_
+    - lay-k_inbox_224_
+    - lay-k_inbox_252_
+    - lay-k_inbox_296_
+    - lay-k_inbox_334_
+    - lay-k_inbox_546_
+    - lay-k_inbox_587_
+    - lay-k_sent_187_
+    - skilling-j_all_documents_1501_
+    - skilling-j_deleted_items_100_
+    - skilling-j_deleted_items_511_
+    - skilling-j_discussion_threads_1189_
+    - skilling-j_inbox_144_
+    - skilling-j_inbox_197_
+    - skilling-j_inbox_4_
+    - skilling-j_inbox_859_
+    - skilling-j_inbox_931_
+    - skilling-j_notes_inbox_342_
+    sample:
+    - lay-k__sent_255_
+    - lay-k_all_documents_1121_
+    - lay-k_inbox_1754_
+    - lay-k_inbox_1759_
+    - lay-k_inbox_224_
+    - lay-k_inbox_252_
+    - lay-k_inbox_296_
+    - lay-k_inbox_334_
+    - lay-k_inbox_546_
+    - lay-k_inbox_587_
+  type: find
+- id: enron-find-offbalancesheet
+  question: Find emails containing 'off-balance-sheet'.
+  clause_category: n/a
+  gold_doc: (see answer_key.all)
+  answer_key:
+    count: 17
+    all:
+    - lay-k__sent_147_
+    - lay-k_all_documents_437_
+    - lay-k_all_documents_660_
+    - lay-k_all_documents_662_
+    - lay-k_discussion_threads_332_
+    - lay-k_discussion_threads_522_
+    - lay-k_discussion_threads_523_
+    - lay-k_inbox_1014_
+    - lay-k_inbox_1759_
+    - lay-k_inbox_224_
+    - lay-k_notes_inbox_228_
+    - lay-k_notes_inbox_449_
+    - lay-k_sent_27_
+    - skilling-j_deleted_items_292_
+    - skilling-j_deleted_items_490_
+    - skilling-j_inbox_338_
+    - weldon-c_all_documents_256_
+    sample:
+    - lay-k__sent_147_
+    - lay-k_all_documents_437_
+    - lay-k_all_documents_660_
+    - lay-k_all_documents_662_
+    - lay-k_discussion_threads_332_
+    - lay-k_discussion_threads_522_
+    - lay-k_discussion_threads_523_
+    - lay-k_inbox_1014_
+    - lay-k_inbox_1759_
+    - lay-k_inbox_224_
+  type: find
+- id: enron-find-arthurandersen
+  question: Find emails mentioning Arthur Andersen.
+  clause_category: n/a
+  gold_doc: (see answer_key.all)
+  answer_key:
+    count: 21
+    all:
+    - lay-k_all_documents_223_
+    - lay-k_discussion_threads_136_
+    - lay-k_inbox_1014_
+    - lay-k_notes_inbox_42_
+    - skilling-j__sent_mail_402_
+    - skilling-j_all_documents_1262_
+    - skilling-j_all_documents_1501_
+    - skilling-j_all_documents_337_
+    - skilling-j_all_documents_447_
+    - skilling-j_deleted_items_511_
+    - skilling-j_deleted_items_524_
+    - skilling-j_discussion_threads_1189_
+    - skilling-j_discussion_threads_257_
+    - skilling-j_discussion_threads_365_
+    - skilling-j_inbox_103_
+    - skilling-j_inbox_197_
+    - skilling-j_notes_inbox_136_
+    - skilling-j_notes_inbox_342_
+    - skilling-j_notes_inbox_57_
+    - skilling-j_sent_358_
+    - wolfe-j_saved_03_44_
+    sample:
+    - lay-k_all_documents_223_
+    - lay-k_discussion_threads_136_
+    - lay-k_inbox_1014_
+    - lay-k_notes_inbox_42_
+    - skilling-j__sent_mail_402_
+    - skilling-j_all_documents_1262_
+    - skilling-j_all_documents_1501_
+    - skilling-j_all_documents_337_
+    - skilling-j_all_documents_447_
+    - skilling-j_deleted_items_511_
+  type: find
+- id: enron-find-ferc
+  question: Find emails about FERC.
+  clause_category: n/a
+  gold_doc: (see answer_key.all)
+  answer_key:
+    count: 50
+    all:
+    - allen-p__sent_mail_369_
+    - allen-p_discussion_threads_197_
+    - brawner-s_inbox_146_
+    - dasovich-j_all_documents_3222_
+    - fossum-d__sent_mail_666_
+    - fossum-d__sent_mail_771_
+    - kean-s_calendar_untitled_8247_
+    - lay-k__sent_165_
+    - lay-k_all_documents_910_
+    - lay-k_all_documents_937_
+    - lay-k_all_documents_938_
+    - lay-k_all_documents_965_
+    - lay-k_discussion_threads_769_
+    - lay-k_discussion_threads_798_
+    - lay-k_discussion_threads_799_
+    - lay-k_discussion_threads_826_
+    - lay-k_inbox_1040_
+    - lay-k_inbox_128_
+    - lay-k_inbox_1884_
+    - lay-k_inbox_226_
+    - lay-k_inbox_480_
+    - lay-k_inbox_552_
+    - lay-k_inbox_562_
+    - lay-k_inbox_565_
+    - lay-k_inbox_567_
+    - lay-k_notes_inbox_679_
+    - lay-k_notes_inbox_706_
+    - lay-k_notes_inbox_731_
+    - lay-k_sent_9_
+    - lokay-m_deleted_items_90_
+    - mann-k_discussion_threads_806_
+    - salisbury-h_inbox_979_
+    - sanders-r_sent_934_
+    - skilling-j_all_documents_155_
+    - skilling-j_deleted_items_162_
+    - skilling-j_deleted_items_220_
+    - skilling-j_deleted_items_221_
+    - skilling-j_deleted_items_268_
+    - skilling-j_deleted_items_388_
+    - skilling-j_deleted_items_460_
+    - skilling-j_deleted_items_465_
+    - skilling-j_discussion_threads_112_
+    - skilling-j_inbox_1057_
+    - skilling-j_inbox_1321_
+    - skilling-j_inbox_13_
+    - skilling-j_inbox_1462_
+    - skilling-j_inbox_342_
+    - skilling-j_inbox_404_
+    - skilling-j_inbox_genie_2_
+    - williams-w3_sent_items_286_
+    sample:
+    - allen-p__sent_mail_369_
+    - allen-p_discussion_threads_197_
+    - brawner-s_inbox_146_
+    - dasovich-j_all_documents_3222_
+    - fossum-d__sent_mail_666_
+    - fossum-d__sent_mail_771_
+    - kean-s_calendar_untitled_8247_
+    - lay-k__sent_165_
+    - lay-k_all_documents_910_
+    - lay-k_all_documents_937_
+  type: find
+- id: enron-find-layforwarded2001
+  question: List emails forwarded by Lay during 2001.
+  clause_category: n/a
+  gold_doc: (see answer_key.all)
+  answer_key:
+    count: 126
+    all:
+    - lay-k__sent_193_
+    - lay-k__sent_195_
+    - lay-k__sent_216_
+    - lay-k__sent_224_
+    - lay-k_all_documents_1058_
+    - lay-k_all_documents_1060_
+    - lay-k_all_documents_1081_
+    - lay-k_all_documents_1090_
+    - lay-k_inbox_101_
+    - lay-k_inbox_111_
+    - lay-k_inbox_116_
+    - lay-k_inbox_119_
+    - lay-k_inbox_123_
+    - lay-k_inbox_124_
+    - lay-k_inbox_127_
+    - lay-k_inbox_1455_
+    - lay-k_inbox_1630_
+    - lay-k_inbox_1657_
+    - lay-k_inbox_1658_
+    - lay-k_inbox_1670_
+    - lay-k_inbox_1687_
+    - lay-k_inbox_1688_
+    - lay-k_inbox_1700_
+    - lay-k_inbox_1704_
+    - lay-k_inbox_1711_
+    - lay-k_inbox_1715_
+    - lay-k_inbox_1724_
+    - lay-k_inbox_1728_
+    - lay-k_inbox_1745_
+    - lay-k_inbox_1764_
+    - lay-k_inbox_1765_
+    - lay-k_inbox_1772_
+    - lay-k_inbox_1778_
+    - lay-k_inbox_1782_
+    - lay-k_inbox_1784_
+    - lay-k_inbox_1790_
+    - lay-k_inbox_1814_
+    - lay-k_inbox_1821_
+    - lay-k_inbox_1824_
+    - lay-k_inbox_1836_
+    - lay-k_inbox_1868_
+    - lay-k_inbox_1881_
+    - lay-k_inbox_1884_
+    - lay-k_inbox_1887_
+    - lay-k_inbox_217_
+    - lay-k_inbox_219_
+    - lay-k_inbox_226_
+    - lay-k_inbox_232_
+    - lay-k_inbox_255_
+    - lay-k_inbox_264_
+    - lay-k_inbox_268_
+    - lay-k_inbox_269_
+    - lay-k_inbox_280_
+    - lay-k_inbox_281_
+    - lay-k_inbox_29_
+    - lay-k_inbox_311_
+    - lay-k_inbox_313_
+    - lay-k_inbox_336_
+    - lay-k_inbox_355_
+    - lay-k_inbox_380_
+    - lay-k_inbox_391_
+    - lay-k_inbox_394_
+    - lay-k_inbox_40_
+    - lay-k_inbox_442_
+    - lay-k_inbox_443_
+    - lay-k_inbox_44_
+    - lay-k_inbox_450_
+    - lay-k_inbox_460_
+    - lay-k_inbox_46_
+    - lay-k_inbox_474_
+    - lay-k_inbox_480_
+    - lay-k_inbox_490_
+    - lay-k_inbox_491_
+    - lay-k_inbox_507_
+    - lay-k_inbox_511_
+    - lay-k_inbox_516_
+    - lay-k_inbox_519_
+    - lay-k_inbox_529_
+    - lay-k_inbox_530_
+    - lay-k_inbox_532_
+    - lay-k_inbox_540_
+    - lay-k_inbox_544_
+    - lay-k_inbox_552_
+    - lay-k_inbox_560_
+    - lay-k_inbox_573_
+    - lay-k_inbox_574_
+    - lay-k_inbox_582_
+    - lay-k_inbox_583_
+    - lay-k_inbox_584_
+    - lay-k_inbox_587_
+    - lay-k_inbox_592_
+    - lay-k_inbox_594_
+    - lay-k_inbox_603_
+    - lay-k_inbox_611_
+    - lay-k_inbox_627_
+    - lay-k_inbox_644_
+    - lay-k_inbox_661_
+    - lay-k_inbox_662_
+    - lay-k_inbox_669_
+    - lay-k_inbox_670_
+    - lay-k_inbox_682_
+    - lay-k_inbox_684_
+    - lay-k_inbox_693_
+    - lay-k_inbox_6_
+    - lay-k_inbox_746_
+    - lay-k_inbox_778_
+    - lay-k_inbox_779_
+    - lay-k_inbox_783_
+    - lay-k_inbox_784_
+    - lay-k_inbox_786_
+    - lay-k_inbox_827_
+    - lay-k_inbox_833_
+    - lay-k_inbox_843_
+    - lay-k_inbox_868_
+    - lay-k_inbox_881_
+    - lay-k_inbox_882_
+    - lay-k_inbox_898_
+    - lay-k_inbox_908_
+    - lay-k_inbox_913_
+    - lay-k_sent_218_
+    - lay-k_sent_226_
+    - lay-k_sent_247_
+    - lay-k_sent_249_
+    - lay-k_sent_items_4_
+    - lay-k_sent_items_5_
+    - lay-k_sent_items_7_
+    sample:
+    - lay-k__sent_193_
+    - lay-k__sent_195_
+    - lay-k__sent_216_
+    - lay-k__sent_224_
+    - lay-k_all_documents_1058_
+    - lay-k_all_documents_1060_
+    - lay-k_all_documents_1081_
+    - lay-k_all_documents_1090_
+    - lay-k_inbox_101_
+    - lay-k_inbox_111_
+  type: find
+- id: enron-lookup-earliest-california
+  question: What was the date of the earliest email about California in the corpus?
+  clause_category: n/a
+  gold_doc: lay-k_all_documents_23_
+  answer_key: '1999-10-13'
+  type: lookup
+- id: enron-lookup-skilling-last-pre-resign
+  question: What was the subject of the last email Skilling sent before his resignation?
+  clause_category: n/a
+  gold_doc: skilling-j_sent_items_104_
+  answer_key: Please Plan to Attend
+  type: lookup
+- id: enron-find-neg-cryptocurrency
+  question: Find emails about cryptocurrency.
+  clause_category: n/a
+  gold_doc: (none expected)
+  answer_key:
+    count: 0
+    all: []
+    sample: []
+  type: find
+- id: enron-find-neg-bitcoin
+  question: Find emails about Bitcoin.
+  clause_category: n/a
+  gold_doc: (none expected)
+  answer_key:
+    count: 0
+    all: []
+    sample: []
+  type: find
+- id: enron-find-neg-spacex
+  question: Find emails about SpaceX.
+  clause_category: n/a
+  gold_doc: (none expected)
+  answer_key:
+    count: 0
+    all: []
+    sample: []
+  type: find
