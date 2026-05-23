@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import Chunk, Document, DocumentPage, Upload
+from harbor_clerk.models import Chunk, Document, DocumentLink, DocumentPage, Upload
 from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 
@@ -67,6 +67,78 @@ def run_finalize(doc_id: uuid.UUID) -> None:
 
         doc.pipeline_status = PipelineStatus.ready
         doc.updated_at = datetime.now(UTC)
+
+        # --- Wikilink resolution ---
+        # Build a name→doc_ids map across all active docs (this doc included,
+        # because incoming links from this doc to itself are valid).
+        all_active = session.execute(
+            select(Document.doc_id, Document.canonical_filename, Document.title).where(Document.status == "active")
+        ).all()
+        candidates_by_name: dict[str, list[uuid.UUID]] = {}
+        for did, fname, title in all_active:
+            if fname:
+                stem = fname.rsplit(".", 1)[0].strip().lower()
+                if stem:
+                    candidates_by_name.setdefault(stem, []).append(did)
+            if title:
+                t = title.strip().lower()
+                if t:
+                    candidates_by_name.setdefault(t, []).append(did)
+
+        # Resolve this doc's outgoing unresolved links.
+        outgoing = (
+            session.execute(
+                select(DocumentLink).where(DocumentLink.src_doc_id == doc_id, DocumentLink.resolved.is_(False))
+            )
+            .scalars()
+            .all()
+        )
+        for link in outgoing:
+            resolved_id = _resolve_link(link.target_title, candidates_by_name)
+            if resolved_id is not None:
+                link.target_doc_id = resolved_id
+                link.resolved = True
+
+        # Re-resolve dangling links pointing AT this doc. Compute the names
+        # this doc matches; find unresolved links whose target_title matches
+        # one of them; resolve if the name is unique (i.e. only this doc has it).
+        my_names: set[str] = set()
+        if doc.canonical_filename:
+            stem = doc.canonical_filename.rsplit(".", 1)[0].strip().lower()
+            if stem:
+                my_names.add(stem)
+        if doc.title:
+            t = doc.title.strip().lower()
+            if t:
+                my_names.add(t)
+
+        # Pre-initialize so the summary log below is safe when my_names is empty.
+        dangling: list[DocumentLink] = []
+        if my_names:
+            dangling = (
+                session.execute(
+                    select(DocumentLink).where(
+                        DocumentLink.resolved.is_(False),
+                        DocumentLink.target_title.in_(my_names),
+                        DocumentLink.src_doc_id != doc_id,  # outgoing already handled above
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for link in dangling:
+                resolved_id = _resolve_link(link.target_title, candidates_by_name)
+                if resolved_id is not None:
+                    link.target_doc_id = resolved_id
+                    link.resolved = True
+
+        if outgoing or (my_names and dangling):
+            logger.info(
+                "Resolved %d outgoing + %d dangling wikilinks for doc %s",
+                sum(1 for link in outgoing if link.resolved),
+                sum(1 for link in (dangling if my_names else []) if link.resolved),
+                doc_id,
+            )
 
         # Mark related uploads as done
         uploads = session.execute(select(Upload).where(Upload.doc_id == doc_id)).scalars().all()
