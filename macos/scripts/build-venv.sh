@@ -50,6 +50,16 @@ fi
 # Use the venv's python directly (not pip script, since shebangs get patched later)
 VENV_PYTHON="$VENV_DIR/bin/python3"
 
+# ── Ensure pip is installed ──
+# Fresh venvs from `python -m venv` ship with pip. But this script strips pip
+# at the end (see "Removing pip from runtime venv" below — the bundled appliance
+# is frozen and doesn't need pip at runtime). Reusing a cached venv from a
+# prior successful build means pip is gone, so the upgrade step below would
+# fail with "No module named pip". `ensurepip --default-pip` is a stdlib no-op
+# when pip is already present and reinstalls from the bundled wheel otherwise.
+echo "==> Ensuring pip is installed"
+"$VENV_PYTHON" -m ensurepip --default-pip
+
 # ── Upgrade pip ──
 # python-build-standalone ships an older pip; upgrade so subsequent installs
 # don't print the "new release available" notice on every invocation.
