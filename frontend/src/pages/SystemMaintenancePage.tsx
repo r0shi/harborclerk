@@ -7,6 +7,7 @@ export default function SystemMaintenancePage() {
   const [error, setError] = useState('')
   const [actionResult, setActionResult] = useState('')
   const [confirmingReprocess, setConfirmingReprocess] = useState(false)
+  const [confirmingReprocessSkipSummary, setConfirmingReprocessSkipSummary] = useState(false)
   const [confirmingResummarize, setConfirmingResummarize] = useState(false)
   const [topicsRunning, setTopicsRunning] = useState(false)
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
@@ -48,6 +49,26 @@ export default function SystemMaintenancePage() {
       setActionResult(`Reprocess all complete: ${data.reprocessed} documents queued`)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Reprocess all failed')
+    }
+  }
+
+  async function handleReprocessAllSkipSummary() {
+    if (!confirmingReprocessSkipSummary) {
+      setConfirmingReprocessSkipSummary(true)
+      return
+    }
+    setConfirmingReprocessSkipSummary(false)
+    setError('')
+    setActionResult('')
+    try {
+      const data = await post<{ reprocessed: number; skipped_stages: string[] }>(
+        '/api/system/reprocess-all-skip-summarize',
+      )
+      setActionResult(
+        `Reprocess (no summaries) complete: ${data.reprocessed} documents queued. Run "Resummarize All" later to fill in summaries.`,
+      )
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Reprocess (no summaries) failed')
     }
   }
 
@@ -170,6 +191,34 @@ export default function SystemMaintenancePage() {
             {confirmingReprocess && (
               <button
                 onClick={() => setConfirmingReprocess(false)}
+                className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="px-5 py-4">
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
+            Same as Reprocess All, but skip the summarize stage (the only LLM-bound step). Cuts a full reprocess from
+            minutes-per-doc to seconds-per-doc when iterating on non-summary pipeline changes. Existing summaries are
+            preserved unchanged; run Resummarize All afterwards to regenerate them when ready.
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleReprocessAllSkipSummary}
+              className={`rounded-lg px-4 py-2 text-sm font-medium ${
+                confirmingReprocessSkipSummary
+                  ? 'bg-amber-600 text-white hover:bg-amber-700'
+                  : 'bg-(--color-bg-tertiary) text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
+              }`}
+            >
+              {confirmingReprocessSkipSummary ? 'Click again to confirm' : 'Reprocess (no summaries)'}
+            </button>
+            {confirmingReprocessSkipSummary && (
+              <button
+                onClick={() => setConfirmingReprocessSkipSummary(false)}
                 className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
               >
                 Cancel
