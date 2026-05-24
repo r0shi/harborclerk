@@ -227,6 +227,35 @@ class TestCliAccessGate:
         assert captured_is_cli == [False]
 
     @pytest.mark.asyncio
+    async def test_cli_gate_honors_native_config_without_restart(self, app, monkeypatch, tmp_path):
+        """Writing enable_cli_access=true to a temp config.json allows the CLI
+        without a process restart.  Mirrors the runtime-refresh pattern used on
+        macOS, where the user toggles the setting in Preferences."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text('{"enable_cli_access": false}\n')
+
+        monkeypatch.delenv("ENABLE_CLI_ACCESS", raising=False)
+        monkeypatch.setenv("NATIVE_CONFIG_FILE", str(config_file))
+        from harbor_clerk import config as _config
+
+        _config._settings = None
+
+        scope = _http_scope(headers=_headers_with(_VALID_KEY, user_agent="harbor-clerk-cli/0.1.0"))
+
+        # Disabled via config.json → 403
+        status, _, body = await _capture_response(app, scope)
+        assert status == 403
+        data = json.loads(body)
+        assert data["error"] == "cli_access_disabled"
+
+        # Simulate macOS Preferences toggle: write true without restarting
+        config_file.write_text('{"enable_cli_access": true}\n')
+
+        # Next request sees the new value without resetting _settings
+        status, _, _ = await _capture_response(app, scope)
+        assert status == 200
+
+    @pytest.mark.asyncio
     async def test_cli_gate_denial_writes_audit_row(self, app, monkeypatch):
         """When CLI access is disabled, the gate writes an audit row with the
         correct request_type, endpoint, status, status_detail, and api_key_id."""

@@ -13,7 +13,7 @@ from sqlalchemy.orm import aliased
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import get_settings, refresh_cli_access_setting
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.mcp_discriminator import _compute_discriminator_hint
 from harbor_clerk.models import (
@@ -148,7 +148,11 @@ class MCPAuthMiddleware:
                 ua = headers.get(b"user-agent", b"").decode()
                 is_cli = ua.startswith(_CLI_USER_AGENT_PREFIX)
 
-                # Gate: CLI traffic blocked unless enable_cli_access is True
+                # Gate: CLI traffic blocked unless enable_cli_access is True.
+                # Refresh from native config.json on every CLI request so
+                # toggling in macOS Preferences takes effect without restart.
+                if is_cli:
+                    refresh_cli_access_setting()
                 if is_cli and not get_settings().enable_cli_access:
                     from harbor_clerk.api.request_log import log_api_request
 
