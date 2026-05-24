@@ -12,6 +12,7 @@ from sqlalchemy import select
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS
+from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
@@ -452,6 +453,18 @@ def run_extract(doc_id: uuid.UUID) -> None:
             doc.has_text_layer = total_chars > 0
 
         doc.extracted_chars = total_chars
+
+        # Extract metadata (Tika headers, frontmatter, sidecar). Runs after body
+        # extraction so raw_bytes are available and the document attributes
+        # (mime_type, source_path) are fully resolved on the doc object.
+        try:
+            metadata = run_metadata_extractors(doc=doc, raw_bytes=data, source_path=doc.source_path)
+            doc.doc_metadata = metadata
+        except Exception as exc:
+            # Extractor framework swallows individual extractor failures already;
+            # this catch is for catastrophic framework-level failures (import
+            # errors, etc). Log and continue — metadata is additive.
+            logger.warning("metadata extraction framework failed for doc %s: %s", doc_id, exc)
 
         session.commit()
         logger.info(

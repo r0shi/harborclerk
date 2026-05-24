@@ -53,6 +53,31 @@ def extract_frontmatter(text: str) -> tuple[dict, str]:
     return parsed, body
 
 
+def strip_frontmatter(text: str) -> str:
+    """Remove the leading YAML frontmatter block from markdown text.
+
+    If the text doesn't start with ``---\\n`` or the frontmatter YAML is
+    malformed, return the text unchanged — don't risk losing content on a
+    parse error.  The FrontmatterExtractor in
+    ``src/harbor_clerk/ingest/metadata_extractors/frontmatter.py`` already
+    captures those fields into ``Document.doc_metadata.frontmatter``, so
+    stripping the block from the body text is pure noise reduction: raw
+    ``tags: [foo, bar]`` lines muddying FTS and semantic similarity.
+
+    The leading blank line that the regex leaves between the closing ``---``
+    and the first body content is also stripped so callers get clean text.
+    """
+    fm, body = extract_frontmatter(text)
+    # extract_frontmatter returns the literal `text` argument on no-match /
+    # malformed / not-a-dict paths, and a fresh stripped slice on the
+    # delimiter-stripped paths. Identity comparison distinguishes them: if
+    # `body is text`, nothing was stripped (pass through unchanged); else
+    # the helper already stripped the YAML block (lstrip leading newlines).
+    if body is text:
+        return text
+    return body.lstrip("\n")
+
+
 def _is_scalar(value) -> bool:
     return isinstance(value, (str, int, float, bool))
 
@@ -331,7 +356,8 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
     """
     text = data.decode("utf-8", errors="replace")
 
-    frontmatter, body = extract_frontmatter(text)
+    frontmatter, _ = extract_frontmatter(text)
+    body = strip_frontmatter(text)
     title = frontmatter.get("title")
     if not isinstance(title, str) or not title.strip():
         title = None

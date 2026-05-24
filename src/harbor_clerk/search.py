@@ -3,9 +3,11 @@
 import logging
 import uuid
 from datetime import datetime
+from typing import Any
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
@@ -56,6 +58,7 @@ async def hybrid_search(
     before: datetime | None = None,
     language: str | None = None,
     mime_type: str | None = None,
+    metadata_filter: dict[str, Any] | None = None,
 ) -> SearchResult:
     """Run hybrid FTS + vector search, merge scores, return top K."""
 
@@ -79,6 +82,35 @@ async def hybrid_search(
         doc_conditions.append(Document.created_at < before)
     if mime_type is not None:
         doc_conditions.append(Document.mime_type == mime_type)
+    # Metadata filter translation. Each "<namespace>.<key>": value pair
+    # becomes either:
+    #   - JSONB @> containment: doc_metadata @> '{"ns": {"key": value}}'
+    #     (matches scalar metadata)
+    #   - OR JSONB ? existence: doc_metadata->'ns'->'key' ? 'value'
+    #     (matches list-valued metadata containing the scalar)
+    # The OR lets a caller use a scalar filter value to match either a
+    # scalar metadata field (sidecar.vendor: "Acme") OR a list-valued one
+    # (frontmatter.tags: ["alpha", "beta"]) without knowing the shape.
+    # Only string filter values get the OR — JSONB `?` operator requires
+    # string keys, so non-string scalars (numbers, bools) use containment
+    # only.
+    if metadata_filter:
+        for path, value in metadata_filter.items():
+            if path.count(".") != 1:
+                raise ValueError(
+                    f"metadata_filter keys must be exactly 'namespace.key' (one dot, two segments); "
+                    f"got {path!r}. Nested paths are not supported in v1."
+                )
+            ns, _, key = path.partition(".")
+            if not ns or not key:
+                raise ValueError(f"metadata_filter keys must have a non-empty namespace and key, got {path!r}")
+            containment = Document.doc_metadata.op("@>")(func.cast({ns: {key: value}}, JSONB))
+            if isinstance(value, str):
+                existence = Document.doc_metadata[ns][key].op("?")(value)
+                doc_conditions.append(or_(containment, existence))
+            else:
+                doc_conditions.append(containment)
+
     if doc_conditions:
         doc_subq = select(Document.doc_id).where(*doc_conditions)
         scope_filters.append(Chunk.doc_id.in_(doc_subq))
