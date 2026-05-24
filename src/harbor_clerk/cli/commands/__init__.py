@@ -38,7 +38,7 @@ def register_all(subparsers: argparse._SubParsersAction) -> None:
                 f"harbor_clerk.cli.commands.{module_name}",
                 fromlist=["add_parser"],
             )
-        except ImportError:
+        except ModuleNotFoundError:
             p = subparsers.add_parser(name, help=f"[stub] {name}")
             p.set_defaults(_handler=_stub_handler(name))
             continue
