@@ -4,18 +4,16 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from harbor_clerk.cli.client import McpHttpClient
 from harbor_clerk.cli.commands import _common_parser
 from harbor_clerk.cli.config import resolve_config
+from harbor_clerk.cli.help import load
 from harbor_clerk.cli.output import render, resolve_mode
-
-_HELP_PATH = Path(__file__).parent.parent / "help" / "get-document.txt"
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
-    description = _HELP_PATH.read_text() if _HELP_PATH.exists() else "Document metadata + first-page summary."
+    description = load("get-document") or "Document metadata + first-page summary."
     p = subparsers.add_parser(
         "get-document",
         help="Document metadata + first-page summary",

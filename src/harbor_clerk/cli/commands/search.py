@@ -4,18 +4,16 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 from harbor_clerk.cli.client import McpHttpClient
 from harbor_clerk.cli.commands import _common_parser
 from harbor_clerk.cli.config import resolve_config
+from harbor_clerk.cli.help import load
 from harbor_clerk.cli.output import render, resolve_mode
-
-_HELP_PATH = Path(__file__).parent.parent / "help" / "search.txt"
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
-    description = _HELP_PATH.read_text() if _HELP_PATH.exists() else "Hybrid FTS + vector search."
+    description = load("search") or "Hybrid FTS + vector search."
     p = subparsers.add_parser(
         "search",
         help="Hybrid FTS + vector search across the corpus",
