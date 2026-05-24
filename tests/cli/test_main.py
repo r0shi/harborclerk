@@ -47,3 +47,11 @@ def test_cli_unknown_command_exits_1():
     _out, err, rc = run_cli("totally-fake-subcommand")
     assert rc == 1
     assert "invalid choice" in err.lower() or "unknown" in err.lower()
+
+
+def test_global_flag_before_subcommand_is_rejected():
+    """--json placed before the subcommand must produce a hard error, not silent overwrite."""
+    _out, err, rc = run_cli("--json", "search", "foo")
+    assert rc == 1, f"Expected exit 1, got {rc}; stderr: {err!r}"
+    # argparse will say something like "unrecognized arguments: --json" or "error: ..."
+    assert err.strip(), "Expected non-empty stderr for bad flag placement"

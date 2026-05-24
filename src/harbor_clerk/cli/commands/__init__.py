@@ -11,9 +11,10 @@ def _common_parser() -> argparse.ArgumentParser:
 
     Each subcommand's add_parser() passes ``parents=[_common_parser()]`` so
     that ``--url``, ``--api-key``, ``--insecure``, ``--json``, and ``--format``
-    are accepted both before *and* after the subcommand name on the command line.
-    The root parser in main.py also defines these flags (for ``--help`` display
-    and the error-handler path), so they are available either way.
+    are recognised on the command line.  These flags MUST appear AFTER the
+    subcommand name (e.g. ``harbor-clerk search --json "foo"``).  Placing them
+    before the subcommand will produce a clear argparse error rather than
+    silently being dropped.
     """
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--url", help="Override $HARBOR_CLERK_URL")

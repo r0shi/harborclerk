@@ -33,12 +33,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"harbor-clerk-cli/{__version__}",
     )
-    parser.add_argument("--url", help="Override $HARBOR_CLERK_URL")
-    parser.add_argument("--api-key", help="Override $HARBOR_CLERK_API_KEY")
-    parser.add_argument("--insecure", action="store_true", help="Allow self-signed TLS")
-    output_group = parser.add_mutually_exclusive_group()
-    output_group.add_argument("--json", action="store_true", help="Force JSON output")
-    output_group.add_argument("--format", choices=["text", "json"], help="Output format")
 
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
     register_all(subparsers)
