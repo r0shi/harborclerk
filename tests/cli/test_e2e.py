@@ -27,11 +27,9 @@ import asyncio
 import json
 import uuid
 from contextlib import asynccontextmanager
-from io import StringIO
 from unittest.mock import AsyncMock, patch
 
 import httpx
-import pytest
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.mcp_server import MCPAuthMiddleware
