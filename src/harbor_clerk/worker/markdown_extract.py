@@ -358,11 +358,8 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
     """
     text = data.decode("utf-8", errors="replace")
 
-    frontmatter, body = extract_frontmatter(text)
-    # Strip the leading blank line that the regex leaves between the closing
-    # ``---`` fence and the first body content. This matches what
-    # strip_frontmatter() returns for external callers.
-    body = body.lstrip("\n")
+    frontmatter, _ = extract_frontmatter(text)
+    body = strip_frontmatter(text)
     title = frontmatter.get("title")
     if not isinstance(title, str) or not title.strip():
         title = None
