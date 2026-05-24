@@ -56,3 +56,57 @@ async def test_extract_stage_writes_sidecar_metadata_to_doc(db_session, tmp_path
     assert metadata["sidecar"] == {"vendor": "Acme", "total_usd": 100}
     assert "_source_provenance" in metadata
     assert "sidecar" in metadata["_source_provenance"]
+
+
+@pytest.mark.asyncio
+async def test_extract_stage_clears_stale_metadata_when_extractors_return_empty(db_session, tmp_path: Path):
+    """Re-ingesting a doc whose sidecar was deleted should drop the stale
+    sidecar metadata, not keep it sticky. Same applies if Tika is unavailable
+    and no other extractor produces results — doc_metadata should be {},
+    not the pre-extract value."""
+    from unittest.mock import patch
+
+    from harbor_clerk.worker.stages import extract
+
+    source = tmp_path / "0001_invoice.txt"
+    source.write_text("Body without any sidecar.")
+    # NOTE: deliberately NO sidecar file created.
+
+    doc = Document(
+        title="0001_invoice",
+        canonical_filename="0001_invoice.txt",
+        status="active",
+        sha256=hashlib.sha256(source.read_bytes()).digest(),
+        pipeline_status=PipelineStatus.queued,
+        mime_type="text/plain",
+        source_path=str(source),
+        # Pre-existing stale metadata that should be cleared
+        doc_metadata={
+            "sidecar": {"vendor": "OldVendor"},
+            "_source_provenance": {"sidecar": "2026-01-01T00:00:00+00:00"},
+        },
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
+    await db_session.commit()
+    doc_id = doc.doc_id
+
+    with patch.object(extract, "_extract_via_tika", return_value=[(1, "Body without any sidecar.")]):
+        from harbor_clerk.worker.stages.extract import run_extract
+
+        run_extract(doc_id)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        metadata = refreshed.doc_metadata
+    finally:
+        sync_session.close()
+
+    # Stale "OldVendor" should be gone, since the sidecar file doesn't exist
+    # and Tika has no body-format-specific metadata for plain text.
+    assert "sidecar" not in metadata, f"stale sidecar key should be cleared, got: {metadata}"
+    # The whole metadata dict should be empty (or at most contain whatever
+    # Tika /meta returned, which for text/plain in this hermetic env is None).
+    assert metadata == {}

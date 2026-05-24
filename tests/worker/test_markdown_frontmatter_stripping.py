@@ -33,3 +33,12 @@ unclosed_list: [a, b
 content
 """
     assert strip_frontmatter(body) == body
+
+
+def test_strip_frontmatter_removes_empty_yaml_block():
+    """Empty frontmatter block (---\\n---\\n) should still have its
+    delimiters stripped from the body. extract_frontmatter handles this
+    case (the dedicated test_extract_frontmatter_empty_block test proves
+    it), and strip_frontmatter must preserve that behavior."""
+    body = "---\n---\nBody content.\n"
+    assert strip_frontmatter(body) == "Body content.\n"

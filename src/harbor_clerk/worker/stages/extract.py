@@ -459,8 +459,7 @@ def run_extract(doc_id: uuid.UUID) -> None:
         # (mime_type, source_path) are fully resolved on the doc object.
         try:
             metadata = run_metadata_extractors(doc=doc, raw_bytes=data, source_path=doc.source_path)
-            if metadata:
-                doc.doc_metadata = metadata
+            doc.doc_metadata = metadata
         except Exception as exc:
             # Extractor framework swallows individual extractor failures already;
             # this catch is for catastrophic framework-level failures (import
