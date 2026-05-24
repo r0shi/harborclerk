@@ -786,6 +786,7 @@ async def kb_batch_search(
     before: str | None = None,
     language: str | None = None,
     mime_type: str | None = None,
+    metadata_filter: dict | None = None,
 ) -> str:
     """Run multiple search queries in one call (max 5), grouped per query.
 
@@ -899,10 +900,14 @@ async def kb_batch_search(
                 before=parsed_before,
                 language=language,
                 mime_type=mime_type,
+                metadata_filter=metadata_filter,
             )
             heading_map = await _resolve_headings(session, result.hits)
             resp = _format_search_response(result, detail, effective_brief_chars, k, 0, heading_map)
             resp["query"] = query
+            hint = await _compute_discriminator_hint(result.hits, session)
+            if hint is not None:
+                resp["discriminator_hint"] = hint
             results.append(resp)
 
             # Runtime stats per query

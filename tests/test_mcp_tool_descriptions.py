@@ -164,3 +164,12 @@ def test_kb_reprocess_description_warns_admin_only():
 def test_kb_system_health_description_clarifies_diagnostic_purpose():
     d = _doc(kb_system_health)
     assert "health" in d or "diagnostic" in d or "status" in d
+
+
+def test_kb_batch_search_signature_accepts_metadata_filter():
+    """kb_batch_search's docstring (rewritten in Task 3) claims metadata_filter
+    is a shared filter across queries — verify the signature actually accepts it."""
+    import inspect
+
+    sig = inspect.signature(kb_batch_search)
+    assert "metadata_filter" in sig.parameters
