@@ -3,7 +3,7 @@
 import uuid
 from dataclasses import dataclass
 
-from harbor_clerk.ingest.metadata_extractors.frontmatter import FrontmatterExtractor
+from harbor_clerk.ingest.metadata_extractors.frontmatter import FrontmatterExtractor, _jsonify
 
 
 @dataclass
@@ -104,3 +104,21 @@ def test_frontmatter_extractor_falls_back_to_source_path_when_no_filename():
         source_path="/tmp/note.md",
     )
     assert out == {"foo": "bar"}
+
+
+def test_frontmatter_extractor_strips_utf8_bom():
+    """UTF-8 BOM (U+FEFF) before --- delimiter shouldn't hide the frontmatter."""
+    body = b"\xef\xbb\xbf---\nfoo: bar\n---\n\ncontent\n"
+    extractor = FrontmatterExtractor()
+    out = extractor.extract(
+        doc=_FakeDoc(doc_id=uuid.uuid4(), title="t", canonical_filename="note.md"),
+        raw_bytes=body,
+        source_path=None,
+    )
+    assert out == {"foo": "bar"}
+
+
+def test_jsonify_converts_yaml_binary_to_string():
+    """!!binary YAML tag produces bytes; _jsonify decodes to a JSON-serializable string."""
+    assert _jsonify({"data": b"hello"}) == {"data": "hello"}
+    assert _jsonify(b"raw") == "raw"

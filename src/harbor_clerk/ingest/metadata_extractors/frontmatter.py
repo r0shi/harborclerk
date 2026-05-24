@@ -37,7 +37,7 @@ class FrontmatterExtractor:
             return None
 
         try:
-            parsed = frontmatter.loads(raw_bytes.decode("utf-8", errors="replace"))
+            parsed = frontmatter.loads(raw_bytes.decode("utf-8-sig", errors="replace"))
         except Exception as exc:
             log.warning(
                 "frontmatter parse failed for doc %s: %s",
@@ -54,7 +54,9 @@ class FrontmatterExtractor:
 
 def _jsonify(obj: Any) -> Any:
     """Recursively convert YAML-parsed values to JSON-serializable equivalents.
-    Mainly: date/datetime → ISO string."""
+    Mainly: date/datetime → ISO string, bytes (YAML !!binary) → decoded string."""
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
     if isinstance(obj, dict):
         return {k: _jsonify(v) for k, v in obj.items()}
     if isinstance(obj, list):
