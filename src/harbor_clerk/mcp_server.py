@@ -15,6 +15,7 @@ from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
+from harbor_clerk.mcp_discriminator import _compute_discriminator_hint
 from harbor_clerk.models import (
     ApiKey,
     Chunk,
@@ -678,6 +679,10 @@ async def kb_search(
             metadata_filter=metadata_filter,
         )
         heading_map = await _resolve_headings(session, result.hits)
+        # Compute discriminator_hint if applicable. Cheap post-processing:
+        # one indexed SELECT for top-K candidate docs' metadata. Skips when
+        # fewer than 2 hits.
+        discriminator_hint = await _compute_discriminator_hint(result.hits, session)
 
     # Resolve brief_chars for brief mode
     effective_brief_chars = brief_chars if brief_chars > 0 else settings.mcp_brief_chars
@@ -746,6 +751,9 @@ async def kb_search(
             _search_stats["detail_brief"],
             _search_stats["detail_compact"],
         )
+
+    if discriminator_hint is not None:
+        resp["discriminator_hint"] = discriminator_hint
 
     return json.dumps(resp, indent=2)
 
