@@ -540,6 +540,7 @@ def mock_hybrid_search(monkeypatch):
         before=None,
         language=None,
         mime_type=None,
+        metadata_filter=None,
     ):
         captured.update(
             query=query,
@@ -551,6 +552,7 @@ def mock_hybrid_search(monkeypatch):
             before=before,
             language=language,
             mime_type=mime_type,
+            metadata_filter=metadata_filter,
         )
         return result_override
 
