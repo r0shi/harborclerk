@@ -69,9 +69,8 @@ def _run_extractors(
     return out
 
 
-# Production extractor tuple — populated by individual extractors in
-# later tasks. Keep at the bottom of the module so the imports below
-# can reference symbols defined above.
+# Production extractors — registered here in declaration order. Kept at the
+# bottom of the module so the imports below can reference symbols defined above.
 from harbor_clerk.ingest.metadata_extractors.tika_metadata import TikaMetadataExtractor  # noqa: E402
 
 EXTRACTORS: list[MetadataExtractor] = [TikaMetadataExtractor()]

@@ -40,8 +40,7 @@ TIKA_FIELD_ALIASES: dict[str, str] = {
     # MIME / encoding
     "Content-Type": "content_type",
     "Content-Encoding": "encoding",
-    # Email headers (Tika's email parser; takes precedence over dcterms:created
-    # when both appear — order matters)
+    # Email headers (Tika's email parser populates these for .eml files)
     "Message-From": "email_from",
     "Message-To": "email_to",
     "Message-Cc": "email_cc",
@@ -60,10 +59,13 @@ class TikaMetadataExtractor:
             return None
         try:
             with httpx.Client(timeout=30) as client:
+                headers = {"Accept": "application/json"}
+                if getattr(doc, "mime_type", None):
+                    headers["Content-Type"] = doc.mime_type
                 resp = client.put(
                     f"{settings.tika_url}/meta",
                     content=raw_bytes,
-                    headers={"Accept": "application/json"},
+                    headers=headers,
                 )
                 if resp.status_code != 200:
                     log.warning(
@@ -73,6 +75,13 @@ class TikaMetadataExtractor:
                     )
                     return None
                 raw: dict[str, Any] = resp.json()
+                if not isinstance(raw, dict):
+                    log.warning(
+                        "tika /meta returned non-dict for doc %s: %s",
+                        getattr(doc, "doc_id", "<unknown>"),
+                        type(raw).__name__,
+                    )
+                    return None
         except (httpx.HTTPError, ValueError) as exc:
             log.warning("tika /meta failed for doc %s: %s", getattr(doc, "doc_id", "<unknown>"), exc)
             return None
