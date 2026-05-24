@@ -5,6 +5,26 @@ from __future__ import annotations
 import argparse
 import sys
 
+
+def _common_parser() -> argparse.ArgumentParser:
+    """Return a parent parser carrying the shared global flags.
+
+    Each subcommand's add_parser() passes ``parents=[_common_parser()]`` so
+    that ``--url``, ``--api-key``, ``--insecure``, ``--json``, and ``--format``
+    are accepted both before *and* after the subcommand name on the command line.
+    The root parser in main.py also defines these flags (for ``--help`` display
+    and the error-handler path), so they are available either way.
+    """
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--url", help="Override $HARBOR_CLERK_URL")
+    p.add_argument("--api-key", help="Override $HARBOR_CLERK_API_KEY")
+    p.add_argument("--insecure", action="store_true", help="Allow self-signed TLS")
+    output_group = p.add_mutually_exclusive_group()
+    output_group.add_argument("--json", action="store_true", help="Force JSON output")
+    output_group.add_argument("--format", choices=["text", "json"], help="Output format")
+    return p
+
+
 _COMMAND_NAMES = [
     "search",
     "batch-search",
