@@ -13,17 +13,24 @@ Revises: 0003_wf_skip_tracking
 Create Date: 2026-05-24
 """
 
-from __future__ import annotations
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "0004_documents_metadata"
-down_revision = "0003_wf_skip_tracking"
-branch_labels = None
-depends_on = None
+revision: str = "0004_documents_metadata"
+down_revision: str | None = "0003_wf_skip_tracking"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+# These four module-level names are read by alembic via attribute access
+# (``module.revision`` etc.) rather than ordinary imports, so static
+# analysis (CodeQL ``py/unused-global-variable``) doesn't see them as used.
+# Declaring them in ``__all__`` marks them as the module's intentional
+# public surface and silences the false positive.
+__all__ = ["revision", "down_revision", "branch_labels", "depends_on", "upgrade", "downgrade"]
 
 
 def upgrade() -> None:
