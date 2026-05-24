@@ -71,7 +71,7 @@ class McpHttpClient:
                     kind="cli_disabled",
                     message=payload.get(
                         "hint",
-                        "CLI access disabled. Enable in System Settings -> Integrations.",
+                        "CLI access disabled. Enable in System Settings → Integrations.",
                     ),
                     status_code=403,
                     body=payload,
@@ -124,5 +124,5 @@ class McpHttpClient:
 def _safe_json(resp) -> Any:
     try:
         return resp.json()
-    except Exception:
+    except (ValueError, json.JSONDecodeError):
         return None

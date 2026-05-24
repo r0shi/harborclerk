@@ -60,13 +60,14 @@ def test_403_cli_disabled_raises_typed_error(cfg):
     respx.post("https://test.local/mcp").mock(
         return_value=Response(
             403,
-            json={"error": "cli_access_disabled", "hint": "Enable in System Settings -> Integrations"},
+            json={"error": "cli_access_disabled", "hint": "Enable in System Settings → Integrations"},
         )
     )
     client = McpHttpClient(cfg)
     with pytest.raises(McpClientError) as exc:
         client.call_tool("kb_search", {"query": "x"})
     assert exc.value.kind == "cli_disabled"
+    assert "→" in exc.value.message
 
 
 @respx.mock
