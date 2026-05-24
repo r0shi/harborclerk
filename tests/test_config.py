@@ -87,3 +87,83 @@ def test_enable_cli_access_reads_env(monkeypatch):
 
     s = Settings()
     assert s.enable_cli_access is True
+
+
+def test_refresh_cli_access_setting_no_native_config(monkeypatch):
+    """refresh_cli_access_setting is a no-op when native_config_file is unset."""
+    monkeypatch.delenv("ENABLE_CLI_ACCESS", raising=False)
+    from harbor_clerk import config as _config
+
+    _config._settings = None
+    monkeypatch.setenv("NATIVE_CONFIG_FILE", "")
+
+    from harbor_clerk.config import refresh_cli_access_setting
+
+    _config._settings = None
+    # Should not raise, and enable_cli_access keeps its default False
+    refresh_cli_access_setting()
+    assert _config.get_settings().enable_cli_access is False
+
+
+def test_refresh_cli_access_setting_reads_from_file(monkeypatch, tmp_path):
+    """refresh_cli_access_setting picks up enable_cli_access=true from config.json."""
+    config_file = tmp_path / "config.json"
+    config_file.write_text('{"enable_cli_access": true}\n')
+
+    monkeypatch.delenv("ENABLE_CLI_ACCESS", raising=False)
+    monkeypatch.setenv("NATIVE_CONFIG_FILE", str(config_file))
+
+    from harbor_clerk import config as _config
+
+    _config._settings = None
+
+    from harbor_clerk.config import refresh_cli_access_setting
+
+    # Before refresh: default is False (env var absent)
+    assert _config.get_settings().enable_cli_access is False
+
+    refresh_cli_access_setting()
+    assert _config.get_settings().enable_cli_access is True
+
+
+def test_refresh_cli_access_setting_disable_after_enable(monkeypatch, tmp_path):
+    """Writing enable_cli_access=false to config.json disables access after refresh."""
+    config_file = tmp_path / "config.json"
+    config_file.write_text('{"enable_cli_access": true}\n')
+
+    monkeypatch.delenv("ENABLE_CLI_ACCESS", raising=False)
+    monkeypatch.setenv("NATIVE_CONFIG_FILE", str(config_file))
+
+    from harbor_clerk import config as _config
+
+    _config._settings = None
+
+    from harbor_clerk.config import refresh_cli_access_setting
+
+    refresh_cli_access_setting()
+    assert _config.get_settings().enable_cli_access is True
+
+    # Toggle off
+    config_file.write_text('{"enable_cli_access": false}\n')
+    refresh_cli_access_setting()
+    assert _config.get_settings().enable_cli_access is False
+
+
+def test_refresh_cli_access_setting_key_absent_leaves_unchanged(monkeypatch, tmp_path):
+    """If enable_cli_access key is absent from config.json, existing value is kept."""
+    config_file = tmp_path / "config.json"
+    config_file.write_text('{"other_key": 123}\n')
+
+    monkeypatch.setenv("ENABLE_CLI_ACCESS", "true")
+    monkeypatch.setenv("NATIVE_CONFIG_FILE", str(config_file))
+
+    from harbor_clerk import config as _config
+
+    _config._settings = None
+
+    from harbor_clerk.config import refresh_cli_access_setting
+
+    # env set it to True; config.json lacks the key — should stay True
+    assert _config.get_settings().enable_cli_access is True
+    refresh_cli_access_setting()
+    assert _config.get_settings().enable_cli_access is True
