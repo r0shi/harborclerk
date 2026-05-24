@@ -231,17 +231,19 @@ def run(
 def _live_capture_fn(*, api_base: str, corpus: str, model: str, insecure: bool) -> Callable[[GTItem], dict]:
     """Build the production capture function: a model+MCP run per item.
 
-    Reuses the phase-1 machinery — SyncMcpSession for the MCP tool calls,
-    BaselineGenerator for the agentic loop. The MCP session MUST be
+    Uses make_provider() to dispatch on model name (claude-* -> AnthropicProvider,
+    gpt-* / o1-* / o3-* -> OpenAIProvider). The MCP session MUST be
     authenticated with a corpus-scoped API key so HC's search is restricted to
     `corpus`: set HC_API_KEY to that scoped key. Falls back to a
     HC_USERNAME/HC_PASSWORD login, which yields an UNSCOPED (full-index)
     session — correct only when `corpus` is the lone corpus loaded.
-    """
-    import anthropic
 
-    from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
+    The provider's underlying API client (anthropic.Anthropic() or
+    openai.OpenAI()) is lazily constructed inside the provider; both read
+    their API keys from env (ANTHROPIC_API_KEY / OPENAI_API_KEY).
+    """
     from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
+    from scripts.test_corpora.runner.providers import make_provider
 
     token = os.environ.get("HC_API_KEY")
     if not token:
@@ -259,11 +261,20 @@ def _live_capture_fn(*, api_base: str, corpus: str, model: str, insecure: bool) 
 
     mcp_url = os.environ.get("HC_MCP_URL") or f"{api_base}/mcp/mcp"
     mcp = SyncMcpSession(url=mcp_url, headers={"Authorization": f"Bearer {token}"})
-    anthro = anthropic.Anthropic()
+
+    # Build a single shared provider for the whole run — each call to
+    # make_provider() would otherwise construct a fresh openai.OpenAI() (and
+    # its httpx connection pool) per item; 29 leaked pools over a run.
+    # Cited-doc bookkeeping is per-question, so we wipe `_cited` between
+    # items to keep results comparable to the pre-refactor per-item model.
+    provider = make_provider(model, mcp_session=mcp)
 
     def capture(item: GTItem) -> dict:
-        gen = BaselineGenerator(client=anthro, mcp_session=mcp, model=model)
-        res = gen.run_question(question=item.question, question_id=item.id, corpus=corpus)
+        # Per-question reset: AnthropicProvider/OpenAIProvider both store
+        # cited docs in `_cited`. A fresh dict per item keeps each
+        # BaselineResult's cited_doc_ids scoped to that question's tool calls.
+        provider._cited = {}
+        res = provider.run_question(question=item.question, question_id=item.id, corpus=corpus)
         return dataclasses.asdict(res)
 
     return capture

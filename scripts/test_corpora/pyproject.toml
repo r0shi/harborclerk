@@ -6,6 +6,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "httpx>=0.28",
     "anthropic>=0.43",
+    "openai>=1.50",
     "mcp>=1.9",
     "pyyaml>=6",
     "tenacity>=9",

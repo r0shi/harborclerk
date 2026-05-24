@@ -96,35 +96,71 @@ ANTHROPIC_RETRY_MAX_DELAY_SECONDS = 600
 ANTHROPIC_RETRY_BUDGET_SECONDS = 3600
 
 
-def _with_anthropic_retry(fn, *args, sleep=time.sleep, max_total_seconds: int = ANTHROPIC_RETRY_BUDGET_SECONDS):
-    """Call ``fn(*args)``, retrying on transient Anthropic API errors —
-    ``RateLimitError`` (HTTP 429) and ``OverloadedError`` (HTTP 529).
+def _retryable_exceptions(client_kind: str) -> tuple[type[BaseException], ...]:
+    """Return the exception classes treated as transient for `client_kind`.
 
-    A rate-limit window or Anthropic overload routinely lasts longer than the
-    SDK's built-in ~5s retry window. Rather than let an uncaught
-    ``RateLimitError`` / ``OverloadedError`` abort a multi-hour sweep, retry
-    with exponential backoff (60s, 120s, 240s, ... capped at 600s per attempt)
-    until ``fn`` succeeds or the cumulative backoff reaches
-    ``max_total_seconds`` (~1 hr). On budget exhaustion the original error is
-    re-raised so the caller can leave the unit PENDING for a later
-    ``--resume``.
+    Imported lazily for openai so the optional dep isn't required at module
+    import time even if no openai-targeted call ever runs.
+    """
+    if client_kind == "anthropic":
+        return (OverloadedError, RateLimitError)
+    if client_kind == "openai":
+        import openai
+
+        # openai.RateLimitError is a SUBCLASS of openai.APIStatusError, so
+        # catching APIStatusError alone covers both. We narrow inside the
+        # retry loop to "truly transient" based on .status_code so a 400
+        # bad-request never gets retried — RateLimitError (429) is always in
+        # the allowlist, but to make the intent explicit and survive future
+        # filter tightening, the retry loop checks isinstance() first.
+        return (openai.APIStatusError,)
+    raise ValueError(f"unknown client_kind {client_kind!r}; supported: anthropic, openai")
+
+
+def _with_provider_retry(
+    fn,
+    *args,
+    client_kind: str = "anthropic",
+    sleep=time.sleep,
+    max_total_seconds: int = ANTHROPIC_RETRY_BUDGET_SECONDS,
+):
+    """Call ``fn(*args)``, retrying on transient API errors from `client_kind`.
+
+    `client_kind` ∈ {"anthropic", "openai"} — picks the exception classes to
+    catch. Backoff schedule is the same across providers: 60s, 120s, 240s,
+    capped at 600s/attempt, with a cumulative budget of `max_total_seconds`
+    (~1 hr default). On budget exhaustion the original exception is re-raised
+    so the caller can leave the unit PENDING for a later --resume.
 
     ``sleep`` is injectable so tests need not wait in real time.
     """
+    transient = _retryable_exceptions(client_kind)
     attempt = 0
     waited = 0.0
     while True:
         try:
             return fn(*args)
-        except (OverloadedError, RateLimitError) as exc:
+        except transient as exc:
+            # For openai.APIStatusError, narrow to truly transient statuses;
+            # a 400 bad-request shouldn't be retried. RateLimitError is a
+            # subclass of APIStatusError — always retry it regardless of the
+            # status-code filter (defensive against the filter shifting).
+            status = getattr(exc, "status_code", None)
+            if client_kind == "openai":
+                import openai as _openai_for_isinstance
+
+                if not isinstance(exc, _openai_for_isinstance.RateLimitError) and (
+                    status is not None and status not in (500, 502, 503, 504)
+                ):
+                    raise
             if waited >= max_total_seconds:
                 raise
             delay = min(ANTHROPIC_RETRY_BASE_SECONDS * 2**attempt, ANTHROPIC_RETRY_MAX_DELAY_SECONDS)
             delay = min(delay, max_total_seconds - waited)
             log.warning(
-                "Anthropic API returned HTTP %s — backing off %.0fs before retry "
-                "(attempt %d, %.0fs of %ds budget used)",
-                exc.status_code,
+                "%s API returned HTTP %s — backing off %.0fs before retry (attempt %d, %.0fs of %ds budget used)",
+                client_kind,
+                status,
                 delay,
                 attempt + 1,
                 waited,
@@ -133,6 +169,20 @@ def _with_anthropic_retry(fn, *args, sleep=time.sleep, max_total_seconds: int = 
             sleep(delay)
             waited += delay
             attempt += 1
+
+
+def _with_anthropic_retry(fn, *args, sleep=time.sleep, max_total_seconds: int = ANTHROPIC_RETRY_BUDGET_SECONDS):
+    """Back-compat alias for callers that haven't yet switched to
+    _with_provider_retry. Functionally identical to
+    _with_provider_retry(client_kind='anthropic', ...).
+    """
+    return _with_provider_retry(
+        fn,
+        *args,
+        client_kind="anthropic",
+        sleep=sleep,
+        max_total_seconds=max_total_seconds,
+    )
 
 
 def _wait_for_hc_reachable(hc: HarborClerkClient, max_wait_seconds: int = HC_RECOVERY_WAIT_SECONDS) -> bool:
