@@ -64,12 +64,18 @@ export function CliAccessCard({ enabled, envVarHint }: { enabled: boolean; envVa
         </span>
       </div>
 
-      {!enabled && envVarHint && (
+      {!enabled && (
         <div className="mb-4 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-4 py-3">
           <p className="text-sm text-amber-800 dark:text-amber-300">
-            To enable, set{' '}
-            <code className="rounded bg-amber-100 dark:bg-amber-900/40 px-1 py-0.5 text-xs">{envVarHint}</code> and
-            restart the API service.
+            <strong>macOS:</strong> toggle in Harbor Clerk Server → Preferences → Network Access. No restart required.
+            <br />
+            {envVarHint && (
+              <>
+                <strong>Docker / Linux:</strong> set{' '}
+                <code className="rounded bg-amber-100 dark:bg-amber-900/40 px-1 py-0.5 text-xs">{envVarHint}</code> and
+                restart the API service.
+              </>
+            )}
           </p>
         </div>
       )}
