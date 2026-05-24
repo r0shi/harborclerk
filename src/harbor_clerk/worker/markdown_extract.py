@@ -53,6 +53,33 @@ def extract_frontmatter(text: str) -> tuple[dict, str]:
     return parsed, body
 
 
+def strip_frontmatter(text: str) -> str:
+    """Remove the leading YAML frontmatter block from markdown text.
+
+    If the text doesn't start with ``---\\n`` or the frontmatter YAML is
+    malformed, return the text unchanged — don't risk losing content on a
+    parse error.  The FrontmatterExtractor in
+    ``src/harbor_clerk/ingest/metadata_extractors/frontmatter.py`` already
+    captures those fields into ``Document.doc_metadata.frontmatter``, so
+    stripping the block from the body text is pure noise reduction: raw
+    ``tags: [foo, bar]`` lines muddying FTS and semantic similarity.
+
+    The leading blank line that the regex leaves between the closing ``---``
+    and the first body content is also stripped so callers get clean text.
+    """
+    fm, body = extract_frontmatter(text)
+    if not fm:
+        # No frontmatter detected (or malformed — extract_frontmatter returns
+        # ({}, original_text) on any parse failure).
+        return text
+    # extract_frontmatter captures the body starting from the character
+    # immediately after the closing ``---\n``, which typically leaves a
+    # leading newline when there's a blank line between the fence and the
+    # first heading. Strip leading newlines only (not all whitespace — that
+    # would eat indented code blocks at the very top of the body).
+    return body.lstrip("\n")
+
+
 def _is_scalar(value) -> bool:
     return isinstance(value, (str, int, float, bool))
 
@@ -332,6 +359,10 @@ def extract_markdown(data: bytes) -> MarkdownExtractResult:
     text = data.decode("utf-8", errors="replace")
 
     frontmatter, body = extract_frontmatter(text)
+    # Strip the leading blank line that the regex leaves between the closing
+    # ``---`` fence and the first body content. This matches what
+    # strip_frontmatter() returns for external callers.
+    body = body.lstrip("\n")
     title = frontmatter.get("title")
     if not isinstance(title, str) or not title.strip():
         title = None
