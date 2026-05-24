@@ -35,3 +35,39 @@ def test_entity_cooccurrence_k_forwarded():
     called_args = client.call_tool.call_args.args[1]
     assert called_args["limit"] == 5
     assert "k" not in called_args
+
+
+def test_entity_cooccurrence_entity_type_forwarded():
+    rc, client = _run(["entity-cooccurrence", "Alice", "--entity-type", "PERSON", "--json"], {"cooccurrences": []})
+    assert rc == 0
+    called_args = client.call_tool.call_args.args[1]
+    assert called_args["entity_type"] == "PERSON"
+
+
+def test_entity_cooccurrence_scope_default_chunk():
+    rc, client = _run(["entity-cooccurrence", "Acme Corp", "--json"], {"cooccurrences": []})
+    assert rc == 0
+    called_args = client.call_tool.call_args.args[1]
+    assert called_args["scope"] == "chunk"
+
+
+def test_entity_cooccurrence_scope_document_forwarded():
+    rc, client = _run(["entity-cooccurrence", "Acme Corp", "--scope", "document", "--json"], {"cooccurrences": []})
+    assert rc == 0
+    called_args = client.call_tool.call_args.args[1]
+    assert called_args["scope"] == "document"
+
+
+def test_entity_cooccurrence_cooccur_type_forwarded():
+    rc, client = _run(["entity-cooccurrence", "Alice", "--cooccur-type", "ORG", "--json"], {"cooccurrences": []})
+    assert rc == 0
+    called_args = client.call_tool.call_args.args[1]
+    assert called_args["cooccur_type"] == "ORG"
+
+
+def test_entity_cooccurrence_doc_id_forwarded():
+    doc_id = "11111111-1111-1111-1111-111111111111"
+    rc, client = _run(["entity-cooccurrence", "Alice", "--doc-id", doc_id, "--json"], {"cooccurrences": []})
+    assert rc == 0
+    called_args = client.call_tool.call_args.args[1]
+    assert called_args["doc_id"] == doc_id

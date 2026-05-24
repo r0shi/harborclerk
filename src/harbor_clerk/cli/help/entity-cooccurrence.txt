@@ -2,9 +2,9 @@ harbor-clerk entity-cooccurrence — entities that appear alongside a given enti
 
 DESCRIPTION
   Given an entity name, finds all other named entities that appear in the
-  same chunk (default scope) as that entity. The source entity is matched
-  by case-insensitive substring, so "Anthropic" matches "Anthropic, Inc."
-  and "Anthropic PBC".
+  same chunk (default scope=chunk) or same document (scope=document) as
+  that entity. The source entity is matched by case-insensitive substring,
+  so "Anthropic" matches "Anthropic, Inc." and "Anthropic PBC".
 
   Co-occurrence counts are aggregated across all matching source-entity
   mentions, then ordered by count descending. Results include up to 3
@@ -15,24 +15,24 @@ DESCRIPTION
   - "Who is mentioned alongside Jane Smith?" (PERSON co-occurrences)
   - "What organizations appear with Acme Corp?" (ORG co-occurrences)
   - "Which locations come up when discussing a given event?"
-
-  NOTE ON SCOPE: The underlying MCP tool supports a `scope` parameter
-  ("chunk" or "document") and `cooccur_type` / `doc_id` filters, but the
-  CLI today only exposes the entity name and -k. If you need those filters,
-  call the MCP server directly via `kb_entity_cooccurrence`. See COMMON
-  MISTAKES below.
+  - "What organizations does Alice appear alongside in this document?"
+    (combine --entity-type PERSON --cooccur-type ORG --scope document)
 
 USAGE
   harbor-clerk entity-cooccurrence <entity> [options]
 
 OPTIONS
-  entity           Entity name (or substring) to find co-occurrences for
-  -k, --k INT      Number of results (default: 20, max: 100)
+  entity                    Entity name (or substring) to find co-occurrences for
+  -k, --k INT               Number of results (default: 20, max: 100)
+  --entity-type STR         Filter source entity by NER type (e.g. PERSON, ORG, GPE)
+  --scope chunk|document    Co-occurrence scope: chunk (default) or document
+  --cooccur-type STR        Filter co-occurring entities by NER type
+  --doc-id UUID             Scope results to a single document by ID
 
 RETURNS (JSON)
   {
     "entity_text": "string",       // the query entity text as passed in
-    "scope":       "chunk",        // always "chunk" from the CLI
+    "scope":       "chunk",        // "chunk" (default) or "document" per --scope
     "cooccurrences": [
       {
         "entity_text":        "string",  // co-occurring entity name
@@ -58,19 +58,16 @@ EXAMPLES
     jq -r '.cooccurrences[0].sample_chunk_ids[0]')
   harbor-clerk read-passages "$CHUNK"
 
-  # jq filter: only ORG co-occurrences (post-filter, since CLI lacks --cooccur-type)
-  harbor-clerk entity-cooccurrence "Smith" | \
-    jq '.cooccurrences[] | select(.entity_type == "ORG")'
+  # Only ORG entities co-occurring with "Smith"
+  harbor-clerk entity-cooccurrence "Smith" --cooccur-type ORG
+
+  # What organizations does Alice appear alongside at the document level?
+  harbor-clerk entity-cooccurrence "Alice" --entity-type PERSON --cooccur-type ORG --scope document
+
+  # Scope to a single document
+  harbor-clerk entity-cooccurrence "Acme Corp" --doc-id 11111111-1111-1111-1111-111111111111
 
 COMMON MISTAKES
-  - The CLI does not expose --scope, --cooccur-type, or --doc-id. If you
-    need to filter co-occurrences to a specific entity type, scope results
-    to a single document, or switch from chunk-level to document-level
-    co-occurrence, you must call the MCP server directly:
-      kb_entity_cooccurrence(entity_text="Acme", cooccur_type="PERSON",
-                             scope="document", doc_id="<uuid>")
-    The CLI is suitable for quick corpus-wide chunk-scoped lookups; for
-    anything more targeted, use the MCP tool directly.
   - Passing a full exact name when a substring match is intended: the
     entity text field is matched as a substring, so "Smith" already catches
     "John Smith", "Smith & Co.", etc. Passing the full phrase is fine but
