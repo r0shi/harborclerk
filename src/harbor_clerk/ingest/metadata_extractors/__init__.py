@@ -72,7 +72,9 @@ def _run_extractors(
 # Production extractor tuple — populated by individual extractors in
 # later tasks. Keep at the bottom of the module so the imports below
 # can reference symbols defined above.
-EXTRACTORS: list[MetadataExtractor] = []
+from harbor_clerk.ingest.metadata_extractors.tika_metadata import TikaMetadataExtractor  # noqa: E402
+
+EXTRACTORS: list[MetadataExtractor] = [TikaMetadataExtractor()]
 
 
 def run_all(*, doc, raw_bytes: bytes, source_path: str | None) -> dict[str, Any]:
