@@ -127,6 +127,14 @@ class Settings(BaseSettings):
     # ALLOW_SOURCE_DOWNLOAD=true in the compose file.
     allow_source_download: bool = Field(default=False)
 
+    enable_cli_access: bool = Field(
+        default=False,
+        description=(
+            "If true, the harbor-clerk CLI (User-Agent: harbor-clerk-cli/*) "
+            "can call MCP tools. Default off; audit-logged as request_type=cli_tool."
+        ),
+    )
+
     @field_validator("public_url")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:

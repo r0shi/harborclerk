@@ -71,3 +71,19 @@ def test_reranker_url_override_for_macos(monkeypatch):
 
     s = Settings()
     assert s.reranker_url == "http://127.0.0.1:8201"
+
+
+def test_enable_cli_access_defaults_false(monkeypatch):
+    monkeypatch.delenv("ENABLE_CLI_ACCESS", raising=False)
+    from harbor_clerk.config import Settings
+
+    s = Settings()
+    assert s.enable_cli_access is False
+
+
+def test_enable_cli_access_reads_env(monkeypatch):
+    monkeypatch.setenv("ENABLE_CLI_ACCESS", "true")
+    from harbor_clerk.config import Settings
+
+    s = Settings()
+    assert s.enable_cli_access is True
