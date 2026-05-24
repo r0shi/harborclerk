@@ -38,7 +38,7 @@ class SidecarExtractor:
         if not sidecar.is_file():
             return None
         try:
-            payload = json.loads(sidecar.read_text(encoding="utf-8"))
+            payload = json.loads(sidecar.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as exc:
             log.warning(
                 "sidecar load failed for doc %s (%s): %s",
