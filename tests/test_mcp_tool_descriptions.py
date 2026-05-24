@@ -6,9 +6,14 @@ from harbor_clerk.mcp_server import (
     kb_batch_search,
     kb_corpus_overview,
     kb_document_outline,
+    kb_entity_cooccurrence,
+    kb_entity_overview,
+    kb_entity_search,
     kb_expand_context,
     kb_find_related,
     kb_get_document,
+    kb_list_recent,
+    kb_read_document,
     kb_read_passages,
     kb_search,
 )
@@ -102,3 +107,37 @@ def test_kb_corpus_overview_description_recommends_first_use():
     the model doesn't know the corpus shape."""
     d = _doc(kb_corpus_overview)
     assert "first" in d or "start" in d
+
+
+# ── Light tier ────────────────────────────────────────────────────────
+
+
+def test_kb_entity_search_description_explains_when_it_beats_freetext():
+    d = _doc(kb_entity_search)
+    # Should clarify it's for entity-specific queries vs free-text
+    assert "entity" in d
+    assert "person" in d or "organization" in d or "named" in d
+
+
+def test_kb_entity_overview_description_mentions_per_doc_option():
+    d = _doc(kb_entity_overview)
+    # Should mention you can scope to a single doc
+    assert "doc_id" in d
+
+
+def test_kb_entity_cooccurrence_description_explains_use_case():
+    d = _doc(kb_entity_cooccurrence)
+    # Should clarify it surfaces entities appearing together
+    assert "together" in d or "co-occur" in d or "with" in d
+
+
+def test_kb_list_recent_description_recommends_for_temporal_queries():
+    d = _doc(kb_list_recent)
+    assert "recent" in d or "newest" in d or "latest" in d
+
+
+def test_kb_read_document_description_clarifies_vs_kb_get_document():
+    """kb_read_document returns full text; kb_get_document returns metadata.
+    Description should make the distinction explicit."""
+    d = _doc(kb_read_document)
+    assert "kb_get_document" in d or "full text" in d or "full document" in d

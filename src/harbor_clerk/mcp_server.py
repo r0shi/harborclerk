@@ -1171,11 +1171,15 @@ async def kb_get_document(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_list_recent(limit: int = 20) -> str:
-    """List documents ordered by most recently updated, with summaries.
+    """List the most recently-added documents in the corpus.
 
-    Returns title, summary, status, and update timestamp for each document.
-    Use this to see what's new or recently changed, or as a paginated
-    document browser (max 100 per call).
+    Use for temporal queries — "what was added last week", "show me the
+    newest contracts", "any recent meeting minutes about X". Quick way to
+    see what's NEW without running a content search.
+
+    Returns up to `limit` docs (default 20) sorted by created_at descending.
+    Use kb_search with `after` / `before` filters if you need a specific
+    date range rather than just "most recent".
     """
     principal = _get_principal()
 
@@ -1685,15 +1689,20 @@ async def kb_entity_search(
     limit: int = 20,
     offset: int = 0,
 ) -> str:
-    """Search for named entities (people, organizations, places, etc.) in the corpus.
+    """Find documents that mention a specific named entity (person, organization, place).
 
-    Args:
-        query: Substring search on entity text (case-insensitive).
-        entity_type: Filter by entity type (PERSON, ORG, GPE, LOC, DATE, etc.).
-        doc_id: Scope to a single document.
-        deduplicate: If true, group by entity_text+entity_type and return mention counts.
-        limit: Max results (1-100, default 20).
-        offset: Pagination offset.
+    Use when:
+      - The question is about a SPECIFIC named entity (e.g. "What did Alice
+        Johnson say in board meetings?", "Which contracts mention Acme Corp?")
+      - You want to disambiguate between similarly-named entities
+      - kb_search by free-text returned too many false matches because the
+        entity name is also a common word
+
+    Returns docs containing the entity, with mention count + sample chunks.
+    Pair with kb_read_passages to read the specific mentions in context.
+
+    For broader entity surveys (which entities appear most, which are linked),
+    use kb_entity_overview instead.
     """
     principal = _get_principal()
     limit = max(1, min(limit, 100))
@@ -1793,14 +1802,19 @@ async def kb_entity_search(
 
 @mcp.tool()
 async def kb_entity_overview(doc_id: str | None = None) -> str:
-    """Get an overview of named entities in the corpus or a specific document.
+    """Survey entities in the corpus (or scoped to a single doc).
 
-    Returns entity type distribution, total/unique counts, and top entities
-    by mention frequency. Useful for understanding what people, organizations,
-    and places appear in the knowledge base.
+    Use when:
+      - The user asks "who/what is mentioned in this corpus?"
+      - You want to find the most-discussed entities by category
+        (people, organizations, places, dates)
+      - You want a quick entity inventory for a specific document
+        (pass doc_id to scope)
 
-    Args:
-        doc_id: Optional — scope to a single document.
+    Returns top entities by mention count, grouped by type. Pair with
+    kb_entity_search to find docs mentioning a specific entity you spot
+    in the overview, or kb_entity_cooccurrence to see which entities
+    appear together.
     """
     principal = _get_principal()
 
@@ -1893,19 +1907,18 @@ async def kb_entity_cooccurrence(
     limit: int = 20,
     offset: int = 0,
 ) -> str:
-    """Find entities that co-occur with a given entity.
+    """Find which entities appear together in the same documents or chunks.
 
-    Discovers relationships by finding which other entities appear alongside
-    the specified entity in the same chunk or document.
+    Use when:
+      - You want to understand relationships between entities
+        (e.g. "which executives are mentioned alongside Project X?",
+        "who works with whom?")
+      - The question is about WHO/WHAT shares context with a known entity
+      - You're mapping a network of related people/orgs across the corpus
 
-    Args:
-        entity_text: The entity text to find co-occurrences for (case-insensitive).
-        entity_type: Optional — filter the source entity by type (PERSON, ORG, etc.).
-        scope: "chunk" (same chunk) or "document" (same document). Default "chunk".
-        cooccur_type: Optional — filter co-occurring entities by type.
-        doc_id: Optional — scope to a single document.
-        limit: Max results (1-100, default 20).
-        offset: Pagination offset.
+    Returns pairs of co-occurring entities with their joint frequency.
+    Pair with kb_entity_search on a specific entity from the result to
+    see the actual documents where the co-occurrence happens.
     """
     principal = _get_principal()
 
@@ -2019,16 +2032,23 @@ async def kb_read_document(
     page_end: int | None = None,
     max_chars: int = 50000,
 ) -> str:
-    """Read a document's text by page range.
+    """Read the full text of a document by doc_id.
 
-    CAUTION: Full documents can be very large. Prefer kb_search +
-    kb_read_passages for targeted retrieval. Use this only for specific
-    page ranges after checking kb_document_outline.
+    Use when you need the COMPLETE document content — not just metadata or
+    a few chunks. Different from kb_get_document, which returns metadata +
+    summary + structure but no chunk text.
 
-    Returns page-level text from DocumentPage rows for the document.
-    If no pages exist (e.g. plain-text files), falls back to concatenated chunks.
-    Use page_start/page_end to limit the range. max_chars caps total output
-    (default 50 000, max 100 000).
+    CAUTION: full documents can be very large. Prefer kb_search +
+    kb_read_passages for targeted reading of specific sections. Use this
+    tool only when:
+      - The document is short enough to read whole (check kb_get_document
+        first to see size)
+      - The question requires synthesizing across the entire document
+        rather than locating a specific fact
+      - kb_search couldn't pin a specific chunk and you need to scan more
+        broadly
+
+    Returns the full text in chunk order, with optional pagination.
     """
     principal = _get_principal()
     try:
