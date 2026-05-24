@@ -555,6 +555,7 @@ async def kb_search(
     before: str | None = None,
     language: str | None = None,
     mime_type: str | None = None,
+    metadata_filter: dict | None = None,
     faceted: bool = False,
 ) -> str:
     """Search the knowledge base with hybrid FTS + vector search.
@@ -573,6 +574,11 @@ async def kb_search(
       before: only documents updated before this ISO datetime
       language: chunk language filter ("english" or "french")
       mime_type: document MIME type filter (e.g. "application/pdf")
+      metadata_filter: dict of {"namespace.key": value} pairs to match against
+        Document.metadata. Use to disambiguate when multiple candidate docs share
+        text but differ on a structured field. Example:
+        metadata_filter={"sidecar.vendor": "Acme", "sidecar.term_months": 24}.
+        Inspect a document's available metadata via kb_get_document.
 
     detail levels control how much text is returned per hit:
       "full" (default): complete chunk text — best for reading a small
@@ -669,6 +675,7 @@ async def kb_search(
             before=parsed_before,
             language=language,
             mime_type=mime_type,
+            metadata_filter=metadata_filter,
         )
         heading_map = await _resolve_headings(session, result.hits)
 
@@ -1073,6 +1080,7 @@ async def kb_get_document(doc_id: str) -> str:
             "extracted_chars": doc.extracted_chars,
             "source_path": doc.source_path,
             "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+            "metadata": doc.doc_metadata,
             "jobs": jobs,
         },
         indent=2,
