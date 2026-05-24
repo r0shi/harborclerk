@@ -132,3 +132,39 @@ async def test_metadata_filter_absent_falls_back_to_existing_behavior(db_session
     await db_session.commit()
     result = await hybrid_search(db_session, query="jurisdiction arbitration", k=10, metadata_filter=None)
     assert any(hit.doc_id == str(doc.doc_id) for hit in result.hits)
+
+
+async def test_metadata_filter_rejects_multi_dot_paths(db_session):
+    """A multi-dot path like 'sidecar.contract.term' silently produces 'no
+    match' under naive partition logic — fail loudly instead. Spec v1 is
+    namespace.key only."""
+    import pytest
+
+    with pytest.raises(ValueError, match="exactly 'namespace.key'"):
+        await hybrid_search(
+            db_session,
+            query="jurisdiction",
+            k=10,
+            metadata_filter={"sidecar.contract.term": 24},
+        )
+
+
+async def test_metadata_filter_rejects_empty_namespace_or_key(db_session):
+    """Edge cases the dot-count check lets through but the partition check
+    catches: leading dot (empty ns), trailing dot (empty key)."""
+    import pytest
+
+    with pytest.raises(ValueError, match="non-empty"):
+        await hybrid_search(
+            db_session,
+            query="jurisdiction",
+            k=10,
+            metadata_filter={".key": "x"},
+        )
+    with pytest.raises(ValueError, match="non-empty"):
+        await hybrid_search(
+            db_session,
+            query="jurisdiction",
+            k=10,
+            metadata_filter={"ns.": "x"},
+        )

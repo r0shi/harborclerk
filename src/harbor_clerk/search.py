@@ -96,9 +96,14 @@ async def hybrid_search(
     # only.
     if metadata_filter:
         for path, value in metadata_filter.items():
+            if path.count(".") != 1:
+                raise ValueError(
+                    f"metadata_filter keys must be exactly 'namespace.key' (one dot, two segments); "
+                    f"got {path!r}. Nested paths are not supported in v1."
+                )
             ns, _, key = path.partition(".")
             if not ns or not key:
-                raise ValueError(f"metadata_filter keys must be 'namespace.key', got {path!r}")
+                raise ValueError(f"metadata_filter keys must have a non-empty namespace and key, got {path!r}")
             containment = Document.doc_metadata.op("@>")(func.cast({ns: {key: value}}, JSONB))
             if isinstance(value, str):
                 existence = Document.doc_metadata[ns][key].op("?")(value)
