@@ -1378,12 +1378,15 @@ async def kb_corpus_overview(limit: int = 50) -> str:
 
 @mcp.tool()
 async def kb_ingest_status(doc_id: str) -> str:
-    """Check ingestion pipeline progress for a document.
+    """Inspect a document's ingestion pipeline status (operator-facing).
 
-    Returns the status of each pipeline stage (extract → ocr → chunk →
-    entities → embed → summarize → finalize) with progress counts,
-    timestamps, and any error messages. Use this to check if a document
-    is still being processed or to diagnose ingestion failures.
+    Use when troubleshooting why a doc isn't appearing in searches or
+    when investigating ingestion failures. Returns the stage-by-stage
+    status (extract, ocr, chunk, embed, entities, summarize, finalize)
+    plus any error messages.
+
+    Rarely needed during normal query flow — models should reach for this
+    only when the user is asking about ingestion state, not content.
     """
     principal = _get_principal()
     did = uuid.UUID(doc_id)
@@ -1425,11 +1428,14 @@ async def kb_ingest_status(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_reprocess(doc_id: str) -> str:
-    """Re-run the full ingestion pipeline for a document (admin only).
+    """Re-run the ingestion pipeline for a specific document. ADMIN-ONLY.
 
-    Resets all pipeline stages and re-queues from the beginning.
-    Use when a document's content appears stale or ingestion failed
-    and you want to retry from scratch.
+    Use when a previously-ingested doc has issues (bad summary, missing
+    entities, OCR errors) and the operator wants to reprocess from
+    scratch without re-uploading. Re-runs the full extract → ocr → chunk →
+    embed → entities → summarize → finalize chain.
+
+    Rarely useful during normal query flow. Requires admin permissions.
     """
     _require_admin()
     did = uuid.UUID(doc_id)
@@ -2170,7 +2176,14 @@ async def kb_read_document(
 
 @mcp.tool()
 async def kb_system_health() -> str:
-    """Check system health (Postgres, storage). Admin only."""
+    """Check HC's system health (PostgreSQL, storage, Tika, reranker). DIAGNOSTIC.
+
+    Use when investigating system issues — "why are searches slow", "is the
+    embedder up", "is storage reachable". Returns per-component status.
+
+    Rarely useful during normal query flow — models should reach for this
+    only when the user is troubleshooting infrastructure.
+    """
     _require_admin()
 
     from sqlalchemy import text
