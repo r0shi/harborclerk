@@ -429,6 +429,77 @@ async def reprocess_all(
     return {"reprocessed": count}
 
 
+@router.post("/system/reprocess-all-skip-summarize")
+async def reprocess_all_skip_summarize(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Re-run the ingestion pipeline on every active document, skipping summarize.
+
+    `summarize` is the only LLM-bound stage; for pipelines hitting only
+    in-process work (extract/ocr/chunk/entities/embed/finalize) it dominates
+    wall-clock by 2-3 orders of magnitude. This endpoint exists so iterative
+    work on the non-summarize stages (e.g. metadata extractor changes, chunker
+    tweaks) can re-ingest the full corpus in seconds-per-doc instead of
+    minutes-per-doc. Use `/system/resummarize-all` afterwards to populate
+    summaries once the iteration is done.
+
+    Mechanism: pre-inserts a "done with skipped=True" IngestionJob row for
+    summarize on each doc immediately after reset_jobs. The cascade in
+    `advance_pipeline` then sees an existing summarize row and won't enqueue
+    a new one.
+    """
+    from harbor_clerk.db_sync import get_sync_session
+    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
+
+    result = await session.execute(select(Document).where(Document.status == "active"))
+    docs = result.scalars().all()
+
+    count = 0
+    doc_ids: list[uuid.UUID] = []
+    for doc in docs:
+        doc.pipeline_status = PipelineStatus.queued
+        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
+        doc.error = None
+        doc_ids.append(doc.doc_id)
+        count += 1
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="reprocess_all_skip_summarize",
+        detail={"reprocessed_count": count, "skipped_stages": ["summarize"]},
+    )
+    await session.commit()
+
+    # Reset jobs, then pre-insert the summarize "skip marker" row, then
+    # enqueue extract. Order matters: reset_jobs deletes prior job rows
+    # (including any summarize), so the skip marker must come after it.
+    for doc_id in doc_ids:
+        reset_jobs(doc_id)
+        sync_session = get_sync_session()
+        try:
+            now = datetime.now(UTC)
+            sync_session.add(
+                IngestionJob(
+                    doc_id=doc_id,
+                    stage=JobStage.summarize,
+                    status=JobStatus.done,
+                    started_at=now,
+                    finished_at=now,
+                    metrics={"skipped": True, "reason": "reprocess_all_skip_summarize"},
+                    priority=0,
+                )
+            )
+            sync_session.commit()
+        finally:
+            sync_session.close()
+        enqueue_stage(doc_id, JobStage.extract)
+
+    logger.info("Reprocess-all-skip-summarize: %d documents queued", count)
+    return {"reprocessed": count, "skipped_stages": ["summarize"]}
+
+
 @router.post("/system/resummarize-all")
 async def resummarize_all(
     admin: Principal = Depends(require_admin),
