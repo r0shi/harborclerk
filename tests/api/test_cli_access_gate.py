@@ -98,9 +98,6 @@ class TestCliAccessGate:
     async def test_cli_request_rejected_when_disabled(self, app, monkeypatch):
         """CLI UA is blocked with 403 when ENABLE_CLI_ACCESS=false."""
         monkeypatch.setenv("ENABLE_CLI_ACCESS", "false")
-        from harbor_clerk.config import get_settings
-
-        get_settings.cache_clear() if hasattr(get_settings, "cache_clear") else None
         # Force re-read by patching settings directly
         from harbor_clerk import config as _config
 
@@ -228,3 +225,42 @@ class TestCliAccessGate:
         scope = _http_scope(headers=_headers_with(_VALID_KEY, user_agent="Claude/1.0"))
         await _capture_response(gated_app, scope)
         assert captured_is_cli == [False]
+
+    @pytest.mark.asyncio
+    async def test_cli_gate_denial_writes_audit_row(self, app, monkeypatch):
+        """When CLI access is disabled, the gate writes an audit row with the
+        correct request_type, endpoint, status, status_detail, and api_key_id."""
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, patch
+
+        monkeypatch.setenv("ENABLE_CLI_ACCESS", "false")
+        from harbor_clerk import config as _config
+
+        _config._settings = None
+
+        mock_log = AsyncMock()
+
+        # The gate opens a DB session purely to call log_api_request; replace
+        # both so the test needs no real database connection.
+        mock_session = AsyncMock()
+        mock_session.commit = AsyncMock()
+
+        @asynccontextmanager
+        async def mock_session_factory():
+            yield mock_session
+
+        with (
+            patch("harbor_clerk.api.request_log.log_api_request", mock_log),
+            patch("harbor_clerk.mcp_server.async_session_factory", mock_session_factory),
+        ):
+            scope = _http_scope(headers=_headers_with(_VALID_KEY, user_agent="harbor-clerk-cli/0.1.0"))
+            status, _, _ = await _capture_response(app, scope)
+
+        assert status == 403
+        mock_log.assert_called_once()
+        _, kwargs = mock_log.call_args
+        assert kwargs["request_type"] == "cli_tool"
+        assert kwargs["endpoint"] == "<gate>"
+        assert kwargs["status"] == "denied"
+        assert kwargs["status_detail"] == "cli_access_disabled"
+        assert kwargs["api_key_id"] == _ADMIN_PRINCIPAL.id

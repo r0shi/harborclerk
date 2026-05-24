@@ -249,6 +249,12 @@ class MCPTokenPathAuth:
         scope["path"] = remaining
         scope["raw_path"] = remaining.encode("ascii")
 
+        # NOTE: This path-auth middleware (used by Claude.ai / ChatGPT URL-paste
+        # connectors) intentionally does NOT apply the CLI access gate or set the
+        # `_mcp_is_cli` contextvar. The `harbor-clerk` CLI is expected to use
+        # Bearer-header auth on /mcp, which is gated by MCPAuthMiddleware. If a
+        # CLI client is ever wired to use URL-token auth, the gate logic from
+        # MCPAuthMiddleware must be replicated here.
         reset_token = _mcp_principal.set(principal)
         try:
             await self.app(scope, receive, send)
