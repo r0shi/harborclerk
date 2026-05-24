@@ -1,0 +1,88 @@
+harbor-clerk batch-search — run multiple searches in one call
+
+DESCRIPTION
+  Runs up to 5 hybrid searches in a single round-trip. Each query gets its
+  own result set with the same hybrid FTS + pgvector scoring as `search`.
+  All filter flags are shared across every query in the batch.
+
+  Use this for comparative analysis — "do any of these contract files mention
+  liquidated damages, force majeure, or indemnification?" — instead of
+  issuing sequential `search` calls and waiting for each response.
+
+  Results are returned as an array in `results`, one element per query,
+  preserving input order. Each element has the same structure as a `search`
+  response (hits, total_candidates, has_more) plus a `query` field echoing
+  the input string. Pagination (offset) is not supported per-query; if you
+  need page 2, switch to individual `search` calls.
+
+  Note: the default -k for batch-search is 5 (not 10 as in search) and
+  the default --detail is brief (not full) — both tuned to keep batch
+  payloads manageable.
+
+USAGE
+  harbor-clerk batch-search <query> [<query> ...] [options]
+
+OPTIONS
+  -k, --k INT               Results per query (default: 5, max: 50)
+  -d, --detail full|brief   Result detail level (default: brief)
+
+RETURNS (JSON)
+  {
+    "results": [
+      {
+        "query":             "termination clause",  // echoed input query
+        "hits": [
+          {
+            "chunk_id":   "uuid",      // pass to read-passages or expand-context
+            "doc_id":     "uuid",      // document identifier
+            "doc_title":  "string",    // document title
+            "page":       42,          // 1-indexed page (null for non-paginated)
+            "snippet":    "string",    // matched text (full or truncated per --detail)
+            "score":      0.87,        // hybrid score, higher = better
+            "language":   "en",        // "en" or "fr"
+            "citation":   "Title, p.42"
+          }
+        ],
+        "total_candidates": 14,        // total matching chunks before k cap
+        "has_more": true               // true when total_candidates > k
+      }
+      // … one element per query, same order as input
+    ]
+  }
+
+EXAMPLES
+  # Compare two legal concepts across the whole corpus
+  harbor-clerk batch-search "liquidated damages" "force majeure"
+
+  # Three queries, 3 results each, extract titles per-query
+  harbor-clerk batch-search \
+    "termination for convenience" \
+    "material breach" \
+    "cure period" \
+    -k 3 | jq '.results[] | {query, titles: [.hits[].doc_title]}'
+
+  # Restrict to a single document, full detail, feed into downstream tool
+  DOC=3f4e2a1b-0000-0000-0000-aabbccddeeff
+  harbor-clerk batch-search \
+    "indemnification" "limitation of liability" \
+    --doc-id "$DOC" -d full
+
+  # Collect all top chunk_ids from a batch run
+  harbor-clerk batch-search "audit rights" "inspection" -k 5 \
+    | jq '[.results[].hits[0].chunk_id] | @tsv'
+
+COMMON MISTAKES
+  - Passing a single string with commas: `batch-search "query1, query2"` is
+    one query containing a comma, not two. Queries are positional arguments:
+    `batch-search "query1" "query2"`.
+  - Expecting a flat list: the top-level `results` is an array of per-query
+    objects, not a merged list of hits. Use `.results[].hits` to reach chunks.
+  - Requesting more than 5 queries — the server returns an error; split into
+    multiple calls.
+  - Using --offset for pagination — batch-search does not support per-query
+    offsets. Use individual `search` calls with --offset when you need page 2.
+  - Using --detail=full on large -k across 5 queries: full detail can return
+    several KB per hit, 5 × 10 = 50 chunks of text. default `brief` is safer.
+
+SEE ALSO
+  search, read-passages, expand-context

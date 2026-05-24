@@ -1,0 +1,80 @@
+harbor-clerk read-passages — fetch full passage text by chunk ID
+
+DESCRIPTION
+  Fetches the complete text of one or more chunks by their chunk_ids. Use
+  this after `search` or `batch-search` when you searched with --detail=brief
+  or --detail=compact and want the full content of a specific hit without
+  re-running the search.
+
+  Accepts any number of chunk_ids in a single call (no hard limit, but
+  practical limit is the number of interesting hits from a prior search).
+  Returns passages in the same order as the input chunk_ids, skipping any
+  that are not found or are outside the API key's document scope.
+
+  Each passage includes the document title and language. Page numbers are
+  included when available (PDFs and other paginated formats); plain-text
+  documents may omit the `pages` field.
+
+  Pass --include-meta to also receive the immediately preceding and following
+  chunks from the same document (`context_before` / `context_after`). This
+  is a lighter alternative to `expand-context` when you want just one chunk
+  of surrounding text rather than N chunks on each side.
+
+USAGE
+  harbor-clerk read-passages <chunk_id> [<chunk_id> ...] [options]
+
+OPTIONS
+  --include-meta   Include the adjacent chunks (one before, one after)
+                   in the response as context_before / context_after.
+                   Default: off.
+
+RETURNS (JSON)
+  {
+    "passages": [
+      {
+        "chunk_id":  "uuid",       // same UUID you passed in
+        "doc_title": "string",     // title of the containing document
+        "text":      "string",     // full chunk text (≈1000 chars)
+        "language":  "en" | "fr",
+        "pages":     "12-13"       // page range (omitted for non-paginated docs)
+        // with --include-meta:
+        "context_before": "string" | null,   // chunk immediately before (if any)
+        "context_after":  "string" | null    // chunk immediately after (if any)
+      }
+    ]
+  }
+
+EXAMPLES
+  # Fetch one passage found during search
+  harbor-clerk read-passages 7c3a9b12-0001-0000-0000-aabbccddeeff
+
+  # Fetch all top hits from a search in one call
+  CHUNKS=$(harbor-clerk search "termination clause" -k 5 \
+    | jq -r '.results[].chunk_id')
+  harbor-clerk read-passages $CHUNKS
+
+  # Read a passage and include surrounding context
+  harbor-clerk read-passages 7c3a9b12-0001-0000-0000-aabbccddeeff \
+    --include-meta | jq '{before: .passages[0].context_before, text: .passages[0].text, after: .passages[0].context_after}'
+
+  # Multi-step: brief search, then read full text of the top 3 results
+  harbor-clerk search "force majeure" -k 3 -d brief \
+    | jq -r '.results[].chunk_id' \
+    | xargs harbor-clerk read-passages
+
+COMMON MISTAKES
+  - Passing a doc_id instead of a chunk_id: chunk_id and doc_id are
+    distinct UUIDs. chunk_id comes from .results[].chunk_id in search
+    output; doc_id comes from .results[].doc_id.
+  - Expecting all IDs back when some are invalid: the server silently skips
+    chunk_ids that are not found or are out of scope. If .passages is shorter
+    than the number of IDs you passed, some were not found.
+  - Expecting `pages` for plain-text documents: only PDF and other paginated
+    formats populate the `pages` field; TXT, Markdown, and similar files
+    will omit it.
+  - Confusing --include-meta with expand-context: --include-meta gives exactly
+    one preceding and one following chunk. Use `expand-context` with -n 3 or
+    higher when you need a wider window.
+
+SEE ALSO
+  search, batch-search, expand-context, read-document
