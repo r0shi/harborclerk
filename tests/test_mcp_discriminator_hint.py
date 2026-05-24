@@ -217,3 +217,31 @@ def test_build_suggestion_mentions_top_field_value():
     assert "sidecar.term_months" in s
     # At least one of the concrete values appears
     assert "24" in s or "12" in s
+
+
+def test_compute_includes_candidate_just_inside_epsilon():
+    """A candidate whose score is exactly within ε of the top should be
+    included. With top_score=0.95, ε = max(0.05, 0.095) = 0.095, so the
+    threshold is 0.855. A score of 0.9001 (above threshold) is in."""
+    a = str(uuid.uuid4())
+    b = str(uuid.uuid4())
+    hits = [
+        _FakeHit(doc_id=a, doc_title="A", score=0.95),
+        _FakeHit(doc_id=b, doc_title="B", score=0.9001),  # just inside ε
+    ]
+    session = _fake_session_for({a: {"sidecar": {"v": 1}}, b: {"sidecar": {"v": 2}}})
+    hint = _compute_discriminator_hint(hits, session)
+    assert hint is not None  # both candidates included
+
+
+def test_compute_excludes_candidate_just_outside_epsilon():
+    """A candidate whose score is just below the threshold should NOT be
+    a candidate, leaving only 1 candidate → None."""
+    a = str(uuid.uuid4())
+    b = str(uuid.uuid4())
+    hits = [
+        _FakeHit(doc_id=a, doc_title="A", score=0.95),
+        _FakeHit(doc_id=b, doc_title="B", score=0.8499),  # just outside ε
+    ]
+    session = _fake_session_for({a: {"sidecar": {"v": 1}}, b: {"sidecar": {"v": 2}}})
+    assert _compute_discriminator_hint(hits, session) is None

@@ -53,6 +53,12 @@ def _compute_discriminator_hint(hits, session) -> dict | None:
         return None  # all hits from a single doc
 
     # Candidate set: docs whose best score is within ε of the overall top.
+    # Note: this additive ε differs from search.py's multiplicative `top_score
+    # * 0.9` used for `possible_conflict`. The two thresholds are nearly
+    # equivalent when top_score ≈ 1.0 (which is typical after the min-max
+    # normalisation in search.py:_normalize_scores), but diverge slightly at
+    # smaller top_scores. The additive form with a 0.05 floor protects against
+    # over-narrowing when normalized scores are unusually low.
     top_score = max(by_doc.values())
     epsilon = max(0.05, 0.1 * top_score)
     candidates = [did for did, s in by_doc.items() if s >= top_score - epsilon]
@@ -140,16 +146,37 @@ def _build_suggestion(top_fields: list[tuple[str, dict[str, Any]]], titles: dict
     """Construct a one-line human-readable suggestion for the model.
 
     Picks the most discriminating field (first in top_fields) and surfaces
-    one concrete metadata_filter call. Falls back gracefully if top_fields
-    is empty (shouldn't happen — the caller checks first).
+    one concrete metadata_filter call. Prefers a value that uniquely pins
+    a single doc when one exists; otherwise falls back to the first-iterated
+    value and softens the claim to "narrow results".
     """
     if not top_fields:
         return "Top results are ambiguous but no discriminating metadata fields found."
 
     path, values_by_title = top_fields[0]
-    # Pick the first concrete value to suggest.
+    available = ", ".join(f"{t}={v!r}" for t, v in values_by_title.items())
+
+    # Count how often each value appears across candidates to prefer one that
+    # uniquely pins a single doc.
+    value_counts: dict[Any, int] = {}
+    for v in values_by_title.values():
+        key = _make_hashable(v)
+        value_counts[key] = value_counts.get(key, 0) + 1
+
+    # Pick a value that appears exactly once if possible
+    unique_value = next(
+        (v for v in values_by_title.values() if value_counts[_make_hashable(v)] == 1),
+        None,
+    )
+    if unique_value is not None:
+        return (
+            f"Top results are ambiguous. Use metadata_filter={{'{path}': {unique_value!r}}} "
+            f"to pin one doc. Available values: {available}."
+        )
+
+    # No value uniquely pins → soften the claim
     first_value = next(iter(values_by_title.values()))
     return (
         f"Top results are ambiguous. Use metadata_filter={{'{path}': {first_value!r}}} "
-        f"to pin one doc. Available values: " + ", ".join(f"{t}={v!r}" for t, v in values_by_title.items()) + "."
+        f"to narrow results. Available values: {available}."
     )
