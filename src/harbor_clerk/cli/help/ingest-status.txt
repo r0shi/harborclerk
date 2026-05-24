@@ -1,0 +1,84 @@
+harbor-clerk ingest-status — per-stage ingestion progress for one document
+
+DESCRIPTION
+  Returns the status of every pipeline stage for a document, with
+  per-stage progress fractions, start/finish timestamps, and error
+  messages. Use this to check whether a document is still being
+  processed, to diagnose which stage failed, or to confirm that a
+  recently ingested file has fully reached `finalize`.
+
+  The pipeline has seven ordered stages:
+    extract → ocr → chunk → entities → embed → summarize → finalize
+
+  After `chunk` completes, the three middle stages (entities, embed,
+  summarize) fan out in parallel; `finalize` waits for all three
+  (fan-in). A failed stage halts the pipeline for that branch.
+
+  This is the rich view — per-stage timestamps and progress fractions.
+  It is distinct from the lightweight `jobs` array in `get-document`,
+  which only has stage/status/error and no timestamps or fractions.
+
+USAGE
+  harbor-clerk ingest-status <doc_id>
+
+OPTIONS
+  <doc_id>   Document UUID (required)
+
+RETURNS (JSON)
+  {
+    "doc_id":          "uuid",
+    "pipeline_status": "queued" | "processing" | "ready" | "error",
+    "jobs": [
+      {
+        "stage":       "extract" | "ocr" | "chunk" | "entities"
+                       | "embed" | "summarize" | "finalize",
+        "status":      "queued" | "running" | "done" | "error" | "skipped",
+        "progress":    "4/12",       // "current/total" or null if not tracked
+        "error":       null,         // error message string when status=error
+        "started_at":  "2026-05-23T14:01:00.123456",  // ISO-8601 or null
+        "finished_at": "2026-05-23T14:01:03.456789"   // ISO-8601 or null
+      }
+    ]
+  }
+
+  Jobs are returned in pipeline order (by created_at). OCR is listed
+  even when skipped (status="skipped"). A missing stage means it has
+  not been enqueued yet.
+
+EXAMPLES
+  # Check whether a document has finished processing
+  harbor-clerk ingest-status 3fa85f64-5717-4562-b3fc-2c963f66afa6
+
+  # Watch until pipeline_status reaches "ready"
+  DOC=3fa85f64-5717-4562-b3fc-2c963f66afa6
+  until harbor-clerk ingest-status "$DOC" | jq -e '.pipeline_status == "ready"' > /dev/null; do
+    sleep 5
+  done
+
+  # Show only failed stages
+  harbor-clerk ingest-status "$DOC" \
+    | jq '.jobs[] | select(.status == "error") | {stage, error}'
+
+  # Print per-stage durations (requires finished_at and started_at)
+  harbor-clerk ingest-status "$DOC" | jq '
+    .jobs[]
+    | select(.started_at != null and .finished_at != null)
+    | {stage, duration_s: ((.finished_at | fromdateiso8601) - (.started_at | fromdateiso8601))}
+  '
+
+  # Confirm readiness before running a batch search
+  STATUS=$(harbor-clerk ingest-status "$DOC" | jq -r '.pipeline_status')
+  if [ "$STATUS" != "ready" ]; then echo "Not ready: $STATUS"; exit 1; fi
+
+COMMON MISTAKES
+  - Confusing this with `get-document` (which has a lightweight `jobs`
+    array — no timestamps or progress fractions). Use `ingest-status`
+    for diagnostic detail; use `get-document` for a quick status check.
+  - Polling too aggressively — a 5-second interval is usually fine;
+    OCR on a large scanned PDF can take several minutes.
+  - Treating a missing stage entry as an error — stages are only
+    enqueued as the pipeline advances, so a missing `embed` row simply
+    means `chunk` hasn't finished yet.
+
+SEE ALSO
+  reprocess, get-document, list-recent
