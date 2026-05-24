@@ -1033,11 +1033,19 @@ async def kb_read_passages(
 
 @mcp.tool()
 async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
-    """Expand context around a chunk — returns the target plus up to N chunks
-    before and after from the same document, in order.
+    """Read N chunks immediately before/after a given chunk_id.
 
-    Use after kb_search or kb_read_passages when you need more surrounding
-    text. The target chunk is marked with "is_target": true.
+    Use after kb_search or kb_read_passages when the chunk you got back
+    doesn't show enough surrounding context to fully understand it —
+    e.g. when the chunk text references "as described above" or "see
+    section 4" or the answer spans a chunk boundary.
+
+    Pair with kb_read_passages: kb_read_passages reads SPECIFIC chunks you
+    already know about; kb_expand_context fetches the surrounding CONTEXT
+    (n chunks before + n after the target).
+
+    n controls the window size (default 2 chunks each direction = 5 total).
+    Returns the chunks in order with the target chunk marked is_target=True.
     """
     principal = _get_principal()
     n = max(1, min(n, 10))
@@ -1214,15 +1222,27 @@ async def kb_list_recent(limit: int = 20) -> str:
 
 @mcp.tool()
 async def kb_corpus_overview(limit: int = 50) -> str:
-    """Get a bird's-eye view of the knowledge base.
+    """Survey the corpus: doc types, date ranges, sample titles.
 
-    Returns corpus-level statistics: document count, chunk/page totals,
-    language distribution, file type breakdown, date range, and a list
-    of documents with titles and summaries.
+    Use FIRST when you don't know the corpus shape — what kinds of documents
+    exist, what time periods are covered, what topics dominate. This is the
+    right starting tool when the user's question is broad ("what's in this
+    corpus?") or when you're not sure what to search for.
 
-    Use this as your first call when exploring an unfamiliar corpus.
-    The statistics section is always complete; only the document list
-    is subject to the limit.
+    What you get back:
+      - Document count by type (invoice, contract, policy, etc.)
+      - Date range of documents in the corpus
+      - Sample titles (first `limit` docs by recency)
+      - Top entities / topics if available
+
+    When to use:
+      - First call in a new conversation when you don't know the corpus
+      - User asks "what kinds of docs do you have?" / "what topics?"
+      - You want to scope a search ("are there any 2024 contracts?") before
+        running kb_search
+
+    Does NOT return chunk text — for actual content, follow up with
+    kb_search or kb_list_recent.
 
     Args:
         limit: Maximum number of documents to include in the list
@@ -1436,11 +1456,21 @@ async def kb_reprocess(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_document_outline(doc_id: str) -> str:
-    """Get the heading outline/structure of a document, including page and chunk counts.
+    """Get a document's section structure (table of contents).
 
-    Returns the heading hierarchy (h1-h6), total page count, and total chunk count
-    for the document. Useful for understanding document structure before reading
-    specific sections.
+    Use to navigate inside a document by section heading. Pair with
+    kb_read_passages to read specific sections you've identified.
+
+    When to use:
+      - You have a doc_id and want to know WHERE in the doc to look
+        (e.g. "the contract has a Termination section — let me read just
+        that")
+      - You're answering a question about doc structure ("how many
+        sections does this report have?")
+
+    Returns the heading hierarchy with chunk_ids per heading, so you can
+    follow up with kb_read_passages([chunk_id, ...]) to read a specific
+    section without dumping the full document.
     """
     principal = _get_principal()
     did = uuid.UUID(doc_id)
@@ -1489,11 +1519,23 @@ async def kb_document_outline(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_find_related(doc_id: str, k: int = 5) -> str:
-    """Find documents most similar to a given document based on embedding similarity.
+    """Find documents related to a given doc_id by semantic overlap.
 
-    Computes the average embedding of the document's chunks and finds the
-    closest documents by cosine distance. Useful for discovering related
-    content, finding duplicates, or understanding topic clusters.
+    Use to EXPAND a relevance set: you have one good hit from kb_search and
+    want to find docs that cover the same topic / cite each other / share
+    entities. Complement to kb_search — kb_search starts from a QUERY,
+    kb_find_related starts from a KNOWN DOC.
+
+    When to use:
+      - Found one relevant doc; need to see what else in the corpus is
+        similar (e.g. "this is the Q3 board minutes — what other meeting
+        minutes discuss the same topics?")
+      - Need to triangulate a fact: read related docs to confirm a claim
+      - Mapping a corpus around a known anchor doc
+
+    Returns top-K related docs with their titles + relevance scores. To
+    actually read the related docs' content, follow up with kb_get_document
+    or kb_search.
 
     Args:
         doc_id: The document to find related documents for.

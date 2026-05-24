@@ -4,6 +4,10 @@ if a future PR removes a key behavior cue, the regression is loud."""
 
 from harbor_clerk.mcp_server import (
     kb_batch_search,
+    kb_corpus_overview,
+    kb_document_outline,
+    kb_expand_context,
+    kb_find_related,
     kb_get_document,
     kb_read_passages,
     kb_search,
@@ -71,3 +75,30 @@ def test_kb_get_document_description_mentions_metadata_field():
     d = _doc(kb_get_document)
     assert "metadata" in d
     assert "metadata_filter" in d or "filter keys" in d
+
+
+# ── Moderate tier ─────────────────────────────────────────────────────
+
+
+def test_kb_expand_context_description_recommends_pairing_with_read_passages():
+    d = _doc(kb_expand_context)
+    assert "kb_read_passages" in d
+
+
+def test_kb_find_related_description_explains_when_it_beats_kb_search():
+    d = _doc(kb_find_related)
+    # Should explain it's a complement: you have one good hit and want to
+    # expand the relevance set
+    assert "expand" in d or "complement" in d or "related" in d
+
+
+def test_kb_document_outline_description_recommends_pairing_with_read_passages():
+    d = _doc(kb_document_outline)
+    assert "kb_read_passages" in d
+
+
+def test_kb_corpus_overview_description_recommends_first_use():
+    """kb_corpus_overview should be flagged as the right FIRST call when
+    the model doesn't know the corpus shape."""
+    d = _doc(kb_corpus_overview)
+    assert "first" in d or "start" in d
