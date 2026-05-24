@@ -1,0 +1,74 @@
+harbor-clerk list-recent — recently updated documents
+
+DESCRIPTION
+  Returns documents ordered by most-recently updated, with their title,
+  summary, status, pipeline status, and timestamp. Use this to catch up
+  on new ingestions, detect newly-failed documents, or as a fast document
+  browser when you don't have a specific query in mind.
+
+  The list is sorted by `updated_at` descending (newest first). "Updated"
+  means any change to the document row — including a pipeline stage
+  completing, a reprocess being triggered, or a file change detected by
+  the watcher.
+
+  The response includes `total_count` (total active documents in the corpus)
+  and `truncated` (true when total_count > the number returned). There is no
+  pagination offset — `list-recent` is a recency window, not a full paginator.
+  For broad corpus exploration use `corpus-overview`.
+
+  The server caps output at 100 documents per call regardless of --limit.
+
+USAGE
+  harbor-clerk list-recent [--limit INT]
+
+OPTIONS
+  --limit INT    Maximum documents to return (default: 20, server cap: 100)
+
+RETURNS (JSON)
+  {
+    "total_count": 143,           // total active documents in the corpus
+    "truncated":   true,          // true when total_count > documents returned
+    "documents": [
+      {
+        "doc_id":          "uuid",         // document identifier
+        "title":           "string",       // filename or extracted title
+        "summary":         "string",       // LLM-generated summary, or null
+        "status":          "active",       // "active" | "deleted"
+        "pipeline_status": "done",         // "queued"|"running"|"done"|"error"|null
+        "updated_at":      "2026-05-20T14:33:00.000Z"  // ISO 8601 timestamp
+      }
+    ]
+  }
+
+EXAMPLES
+  # Default: 20 most-recent documents
+  harbor-clerk list-recent
+
+  # Catch up after a bulk ingest — show up to 100
+  harbor-clerk list-recent --limit 100
+
+  # Filter for documents that failed ingestion
+  harbor-clerk list-recent --limit 50 \
+    | jq '.documents[] | select(.pipeline_status == "error") | {doc_id, title}'
+
+  # List all doc_ids for piping to other commands
+  harbor-clerk list-recent --limit 20 \
+    | jq -r '.documents[].doc_id'
+
+  # Show only docs still in progress
+  harbor-clerk list-recent \
+    | jq '.documents[] | select(.pipeline_status == "running" or .pipeline_status == "queued")'
+
+COMMON MISTAKES
+  - Passing --limit values above 100 — the server silently caps at 100. If you
+    need all documents, use `corpus-overview` (server cap: 500).
+  - Treating `list-recent` as a paginated history browser — there is no offset
+    parameter. It is a recency window. Use `corpus-overview` for broader lists.
+  - Confusing `total_count` with the number of returned documents — `total_count`
+    reflects the full corpus; `documents` is the windowed slice. Always check
+    `truncated` to know whether you're seeing everything.
+  - Filtering for `status == "active"` — the server already filters for active
+    documents only; deleted documents never appear in this list.
+
+SEE ALSO
+  corpus-overview, get-document, ingest-status, search

@@ -1,0 +1,90 @@
+harbor-clerk corpus-overview — corpus-level statistics and document list
+
+DESCRIPTION
+  Returns a bird's-eye view of the entire knowledge base: total document
+  count, total chunks and pages, language distribution (from chunk-level
+  language detection), MIME type breakdown, date range of ingested content,
+  and a list of documents with titles, summaries, and pipeline status.
+
+  Use this as your first call when exploring an unfamiliar corpus. The
+  statistics section (document_count, total_chunks, total_pages, languages,
+  mime_types, date_range) is always complete — it covers the full corpus
+  regardless of --limit. Only the `documents` array is subject to the limit.
+
+  The `documents` list is ordered by most-recently updated (same ordering
+  as `list-recent`). The response includes `truncated` and `document_count`
+  so you can tell whether more documents exist beyond what was returned.
+
+  The server caps the document list at 500 entries regardless of --limit.
+
+USAGE
+  harbor-clerk corpus-overview [--limit INT]
+
+OPTIONS
+  --limit INT    Maximum documents to include in the list
+                 (default: 50, server cap: 500)
+
+RETURNS (JSON)
+  {
+    "document_count": 143,            // total active documents
+    "total_chunks":   4820,           // total retrieval chunks across all docs
+    "total_pages":    2310,           // total document pages across all docs
+    "languages": {
+      "en": 4100,                     // chunk count per detected language
+      "fr": 720
+    },
+    "mime_types": {
+      "application/pdf": 98,          // document count per MIME type
+      "text/plain": 45
+    },
+    "date_range": {
+      "oldest": "2026-01-10T09:00:00.000Z",   // ISO 8601 or null if empty
+      "newest": "2026-05-20T14:33:00.000Z"
+    },
+    "documents": [
+      {
+        "doc_id":          "uuid",            // document identifier
+        "title":           "string",          // filename or extracted title
+        "summary":         "string",          // LLM-generated summary, or null
+        "pipeline_status": "done",            // "queued"|"running"|"done"|"error"|null
+        "updated_at":      "2026-05-20T14:33:00.000Z"
+      }
+    ],
+    "truncated": true                         // true when document_count > documents returned
+  }
+
+EXAMPLES
+  # Full corpus stats (stats are always complete; document list limited to 50)
+  harbor-clerk corpus-overview | jq '{document_count, total_chunks, languages, mime_types}'
+
+  # Scan up to 200 documents for any with failed ingestion
+  harbor-clerk corpus-overview --limit 200 \
+    | jq '.documents[] | select(.pipeline_status == "error") | {doc_id, title}'
+
+  # Check language distribution across the corpus
+  harbor-clerk corpus-overview | jq '.languages'
+
+  # List doc_ids of all returned documents for bulk processing
+  harbor-clerk corpus-overview --limit 500 \
+    | jq -r '.documents[].doc_id'
+
+  # Summarize corpus at a glance — one-liner
+  harbor-clerk corpus-overview \
+    | jq '{docs: .document_count, chunks: .total_chunks, pages: .total_pages, truncated}'
+
+COMMON MISTAKES
+  - Assuming the statistics reflect only the returned documents — statistics
+    (document_count, total_chunks, etc.) always cover the full corpus, not
+    just the `documents` slice.
+  - Passing --limit above 500 — the server silently caps at 500. If the corpus
+    exceeds 500 documents you will not receive a complete list from this command;
+    use `search` with broad queries to explore specific subsets.
+  - Expecting `status` in the document entries — `corpus-overview` omits the
+    `status` field (all returned documents are active). Use `get-document` for
+    lifecycle state.
+  - Confusing `total_pages` (PDF/document pages) with `total_chunks` (retrieval
+    chunks). Pages come from the document layout; chunks are fixed-size retrieval
+    windows that may span multiple pages.
+
+SEE ALSO
+  list-recent, get-document, search, find-related

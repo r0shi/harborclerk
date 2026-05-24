@@ -1,0 +1,85 @@
+harbor-clerk read-document — read a document's text by page range
+
+DESCRIPTION
+  Fetches the full text of a document, optionally restricted to a page range
+  and/or capped by a character limit. Pages are returned in order with
+  per-page metadata (OCR usage, OCR confidence).
+
+  For documents without page records (plain-text files ingested without a PDF
+  parser), the server falls back to concatenated chunks. In that case
+  page_start/page_end are silently ignored and the response notes
+  `"source": "chunks"` alongside a `"note"` field explaining the fallback.
+
+  The hard cap on total output is 100 000 characters (server-enforced).
+  The default cap is 50 000 characters. When output is cut short, the
+  response carries `"truncated": true` and `"pages_returned"` reflects
+  how many pages were fully (or partially) delivered.
+
+  CAUTION: Full documents can be very large. For targeted retrieval prefer
+  `search` + `read-passages`. Use `read-document` only after calling
+  `document-outline` to identify the specific pages you need.
+
+USAGE
+  harbor-clerk read-document <doc_id> [options]
+
+OPTIONS
+  doc_id                  Document UUID (required positional argument)
+  --page-start INT        First page to return, 1-based inclusive
+                          (default: beginning of document)
+  --page-end INT          Last page to return, 1-based inclusive
+                          (default: end of document or max-chars limit)
+  --max-chars INT         Maximum characters to return across all pages
+                          (default: 50 000; server hard-caps at 100 000)
+
+RETURNS (JSON)
+  {
+    "doc_id":        "uuid",        // document identifier
+    "title":         "string",      // document title
+    "source":        "pages",       // "pages" or "chunks" (fallback for plain-text)
+    "page_count":    42,            // total pages in the document (0 for chunk fallback)
+    "pages_returned": 3,            // pages actually included in this response
+    "total_chars":   14823,         // character count of returned text
+    "truncated":     false,         // true if max-chars cut the output short
+    "pages": [
+      {
+        "page_num":       3,        // 1-based page number (chunk fallback uses chunk_num)
+        "text":           "...",    // page text (may be partial on the last page if truncated)
+        "ocr_used":       false,    // true if OCR was applied to this page
+        "ocr_confidence": null      // float 0–1 when ocr_used, else null
+      }
+    ],
+    "note": "..."                   // present only for the chunk-fallback path
+  }
+
+EXAMPLES
+  # Read a single page
+  harbor-clerk read-document 3e4f9a12-... --page-start 3 --page-end 3
+
+  # Read pages 5 through 10 of a contract
+  harbor-clerk read-document 3e4f9a12-... --page-start 5 --page-end 10
+
+  # Read the whole document (up to 50 000 chars); pipe through jq to see structure
+  harbor-clerk read-document 3e4f9a12-... | jq '{truncated, pages_returned, total_chars}'
+
+  # Raise the character cap to 80 000 for a large section
+  harbor-clerk read-document 3e4f9a12-... \
+    --page-start 20 --page-end 35 --max-chars 80000
+
+  # Extract just the text of every returned page
+  harbor-clerk read-document 3e4f9a12-... --page-start 1 --page-end 5 \
+    | jq -r '.pages[].text'
+
+COMMON MISTAKES
+  - Requesting a wide range without checking `truncated` — if `truncated: true`,
+    you only received pages up to the character cap, not the full range. Raise
+    --max-chars or narrow the page window and re-request.
+  - Passing --page-start/--page-end on a plain-text document — the server ignores
+    them and returns chunk text instead. Check `"source"` in the response.
+  - Using this command on large documents without first calling `document-outline`
+    to identify the relevant section. Fetching 100 pages is expensive; fetching
+    3 targeted pages is not.
+  - Confusing the server hard-cap (100 000) with the default (50 000). Even with
+    --max-chars 200000 the server will cap output at 100 000 characters.
+
+SEE ALSO
+  document-outline, read-passages, search, expand-context
