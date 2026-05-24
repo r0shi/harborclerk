@@ -62,6 +62,141 @@ async def test_health_check_reflects_allow_source_download_when_set(client):
         s.allow_source_download = original
 
 
+async def test_health_check_cli_shim_absent_on_docker(client):
+    """On Docker (native_config_file not set), cli_shim_install_status must be
+    None so the frontend omits the macOS-only shim section."""
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    original = s.native_config_file
+    s.native_config_file = ""  # simulate Docker
+    try:
+        resp = await client.get("/api/system/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("cli_shim_install_status") is None
+    finally:
+        s.native_config_file = original
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _cli_shim_install_status() using tmp_path.
+# We pass _shim= directly to avoid touching ~/.local/bin on the test machine.
+# ---------------------------------------------------------------------------
+
+_SHIM_MARKER = "# harbor-clerk — installed by Harbor Clerk Server"
+
+
+def _make_shim(bundle: str) -> str:
+    return (
+        "#!/bin/sh\n"
+        f"{_SHIM_MARKER}\n"
+        f'BUNDLE_RESOURCES="{bundle}"\n'
+        'exec "$BUNDLE_RESOURCES/venv/bin/python" -m harbor_clerk.cli.main "$@"\n'
+    )
+
+
+def test_cli_shim_not_installed_when_file_absent(tmp_path):
+    """When the shim file doesn't exist, return 'not_installed'."""
+    from harbor_clerk.api.routes.system import _cli_shim_install_status
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    original = s.native_config_file
+    config_file = tmp_path / "config.json"
+    config_file.write_text("{}")
+    s.native_config_file = str(config_file)
+    try:
+        absent = tmp_path / "harbor-clerk"  # does not exist
+        assert _cli_shim_install_status(_shim=absent) == "not_installed"
+    finally:
+        s.native_config_file = original
+
+
+def test_cli_shim_installed_when_bundle_matches(tmp_path, monkeypatch):
+    """When shim bundle matches BUNDLE_RESOURCES env var, return 'installed'."""
+    from harbor_clerk.api.routes.system import _cli_shim_install_status
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    original = s.native_config_file
+    config_file = tmp_path / "config.json"
+    config_file.write_text("{}")
+    s.native_config_file = str(config_file)
+
+    fake_bundle = "/fake/Harbor Clerk Server.app/Contents/Resources"
+    shim_file = tmp_path / "harbor-clerk"
+    shim_file.write_text(_make_shim(fake_bundle))
+    monkeypatch.setenv("BUNDLE_RESOURCES", fake_bundle)
+    try:
+        assert _cli_shim_install_status(_shim=shim_file) == "installed"
+    finally:
+        s.native_config_file = original
+
+
+def test_cli_shim_installed_outdated_when_bundle_differs(tmp_path, monkeypatch):
+    """When shim bundle doesn't match BUNDLE_RESOURCES, return 'installed_outdated'."""
+    from harbor_clerk.api.routes.system import _cli_shim_install_status
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    original = s.native_config_file
+    config_file = tmp_path / "config.json"
+    config_file.write_text("{}")
+    s.native_config_file = str(config_file)
+
+    stale_bundle = "/old/Harbor Clerk Server.app/Contents/Resources"
+    current_bundle = "/new/Harbor Clerk Server.app/Contents/Resources"
+    shim_file = tmp_path / "harbor-clerk"
+    shim_file.write_text(_make_shim(stale_bundle))
+    monkeypatch.setenv("BUNDLE_RESOURCES", current_bundle)
+    try:
+        assert _cli_shim_install_status(_shim=shim_file) == "installed_outdated"
+    finally:
+        s.native_config_file = original
+
+
+def test_cli_shim_foreign_script_treated_as_not_installed(tmp_path):
+    """A harbor-clerk script without our marker must be left alone (not_installed)."""
+    from harbor_clerk.api.routes.system import _cli_shim_install_status
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    original = s.native_config_file
+    config_file = tmp_path / "config.json"
+    config_file.write_text("{}")
+    s.native_config_file = str(config_file)
+
+    foreign = '#!/bin/sh\n# installed by homebrew\nexec /opt/homebrew/bin/hc "$@"\n'
+    shim_file = tmp_path / "harbor-clerk"
+    shim_file.write_text(foreign)
+    try:
+        assert _cli_shim_install_status(_shim=shim_file) == "not_installed"
+    finally:
+        s.native_config_file = original
+
+
+def test_cli_shim_no_bundle_resources_env_treated_as_installed(tmp_path, monkeypatch):
+    """When BUNDLE_RESOURCES env var is absent (unusual), treat as installed
+    rather than reporting false outdated status."""
+    from harbor_clerk.api.routes.system import _cli_shim_install_status
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    original = s.native_config_file
+    config_file = tmp_path / "config.json"
+    config_file.write_text("{}")
+    s.native_config_file = str(config_file)
+
+    monkeypatch.delenv("BUNDLE_RESOURCES", raising=False)
+    shim_file = tmp_path / "harbor-clerk"
+    shim_file.write_text(_make_shim("/some/bundle"))
+    try:
+        assert _cli_shim_install_status(_shim=shim_file) == "installed"
+    finally:
+        s.native_config_file = original
+
+
 async def test_summary_backlog_endpoint_returns_all_four_fields(client, admin_user, admin_token):
     """The Observatory Summary Backlog widget needs depth, throughput,
     p50, and depth-over-time history. Endpoint must return all four."""

@@ -33,6 +33,63 @@ from harbor_clerk.storage import get_storage
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["system"])
 
+# Marker baked into every shim by CliShimInstaller.swift
+_SHIM_MARKER = "# harbor-clerk — installed by Harbor Clerk Server"
+
+# Default shim path; overridable in tests via monkeypatch.
+_DEFAULT_SHIM_PATH: Path = Path.home() / ".local" / "bin" / "harbor-clerk"
+
+
+def _cli_shim_install_status(_shim: Path | None = None) -> str | None:
+    """Check whether the harbor-clerk CLI shim is installed in ~/.local/bin.
+
+    Only meaningful on macOS native (``native_config_file`` is set). Returns
+    ``None`` on Docker/Linux so the frontend can omit the section entirely.
+
+    Logic mirrors CliShimInstaller.swift's ``currentStatus()``:
+    - Reads ``~/.local/bin/harbor-clerk`` (or ``_shim`` when supplied by tests).
+    - Confirms it contains our identity marker (don't touch foreign scripts).
+    - Extracts the ``BUNDLE_RESOURCES=`` line and compares it against
+      ``BUNDLE_RESOURCES`` env var (set by Swift to ``Bundle.main.resourceURL``).
+    - Returns ``"installed"``, ``"installed_outdated"``, or ``"not_installed"``.
+    """
+    if not get_settings().native_config_file:
+        # Docker / Linux — shim concept doesn't apply
+        return None
+
+    shim = _shim if _shim is not None else _DEFAULT_SHIM_PATH
+    if not shim.exists():
+        return "not_installed"
+
+    try:
+        contents = shim.read_text(encoding="utf-8")
+    except OSError:
+        return "not_installed"
+
+    if _SHIM_MARKER not in contents:
+        # Foreign harbor-clerk script — report not_installed so we don't mislead
+        return "not_installed"
+
+    # Extract the embedded BUNDLE_RESOURCES path
+    bundle_line = next(
+        (line for line in contents.splitlines() if line.startswith("BUNDLE_RESOURCES=")),
+        None,
+    )
+    if bundle_line is None:
+        return "not_installed"
+
+    embedded_bundle = bundle_line.removeprefix("BUNDLE_RESOURCES=").strip().strip('"')
+
+    # The native macOS app sets BUNDLE_RESOURCES env var to Bundle.main.resourceURL.path
+    current_bundle = os.environ.get("BUNDLE_RESOURCES", "")
+    if not current_bundle:
+        # Can't compare without the current bundle path; treat as installed
+        return "installed"
+
+    if embedded_bundle == current_bundle:
+        return "installed"
+    return "installed_outdated"
+
 
 @router.get("/system/setup-status")
 async def setup_status(
@@ -103,6 +160,11 @@ async def health_check(
         # separate round-trip — see frontend/src/hooks/useSystemConfig.ts.
         "allow_source_download": get_settings().allow_source_download,
         "enable_cli_access": get_settings().enable_cli_access,
+        # Only present on macOS native (native_config_file is set). Returns
+        # one of "installed", "installed_outdated", "not_installed". Absent
+        # (None → omitted by frontend) on Docker/Linux where the shim concept
+        # doesn't apply.
+        "cli_shim_install_status": _cli_shim_install_status(),
     }
 
 
