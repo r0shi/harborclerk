@@ -29,7 +29,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run(args) -> int:
-    arguments: dict = {"entity": args.entity, "k": args.k}
+    arguments: dict = {"entity_text": args.entity, "limit": args.k}
 
     cfg = resolve_config(url=args.url, api_key=args.api_key, insecure=args.insecure)
     mode = resolve_mode(force_json=bool(args.json), fmt=args.format, isatty=sys.stdout.isatty())

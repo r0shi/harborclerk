@@ -30,9 +30,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run(args) -> int:
-    arguments: dict = {"query": args.query, "k": args.k}
+    arguments: dict = {"query": args.query, "limit": args.k}
     if args.type:
-        arguments["type"] = args.type
+        arguments["entity_type"] = args.type
 
     cfg = resolve_config(url=args.url, api_key=args.api_key, insecure=args.insecure)
     mode = resolve_mode(force_json=bool(args.json), fmt=args.format, isatty=sys.stdout.isatty())

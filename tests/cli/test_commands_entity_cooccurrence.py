@@ -23,12 +23,15 @@ def test_entity_cooccurrence_defaults():
     rc, client = _run(["entity-cooccurrence", "Acme Corp", "--json"], {"cooccurrences": []})
     assert rc == 0
     called_args = client.call_tool.call_args.args[1]
-    assert called_args["entity"] == "Acme Corp"
-    assert called_args["k"] == 20
+    assert called_args["entity_text"] == "Acme Corp"
+    assert called_args["limit"] == 20
+    assert "entity" not in called_args
+    assert "k" not in called_args
 
 
 def test_entity_cooccurrence_k_forwarded():
     rc, client = _run(["entity-cooccurrence", "Alice", "-k", "5", "--json"], {"cooccurrences": []})
     assert rc == 0
     called_args = client.call_tool.call_args.args[1]
-    assert called_args["k"] == 5
+    assert called_args["limit"] == 5
+    assert "k" not in called_args

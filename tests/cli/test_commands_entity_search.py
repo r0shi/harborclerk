@@ -24,12 +24,15 @@ def test_entity_search_defaults():
     assert rc == 0
     called_args = client.call_tool.call_args.args[1]
     assert called_args["query"] == "Acme Corp"
-    assert called_args["k"] == 20
+    assert called_args["limit"] == 20
+    assert "k" not in called_args
     assert "type" not in called_args
+    assert "entity_type" not in called_args
 
 
 def test_entity_search_type_forwarded():
     rc, client = _run(["entity-search", "Alice", "--type", "PERSON", "--json"], {"entities": []})
     assert rc == 0
     called_args = client.call_tool.call_args.args[1]
-    assert called_args["type"] == "PERSON"
+    assert called_args["entity_type"] == "PERSON"
+    assert "type" not in called_args

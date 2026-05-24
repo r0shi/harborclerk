@@ -24,13 +24,26 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         parents=[_common_parser()],
     )
     p.add_argument("doc_id", help="Document UUID")
-    p.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
-    p.add_argument("--page-size", type=int, default=5, help="Chunks per page (default: 5)")
+    p.add_argument(
+        "--page-start", type=int, default=None, help="First page to return (1-based; default: server default)"
+    )
+    p.add_argument(
+        "--page-end", type=int, default=None, help="Last page to return (inclusive; default: server default)"
+    )
+    p.add_argument(
+        "--max-chars", type=int, default=None, help="Max characters to return (default: server default of 50000)"
+    )
     p.set_defaults(_handler=run)
 
 
 def run(args) -> int:
-    arguments: dict = {"doc_id": args.doc_id, "page": args.page, "page_size": args.page_size}
+    arguments: dict = {"doc_id": args.doc_id}
+    if args.page_start is not None:
+        arguments["page_start"] = args.page_start
+    if args.page_end is not None:
+        arguments["page_end"] = args.page_end
+    if args.max_chars is not None:
+        arguments["max_chars"] = args.max_chars
 
     cfg = resolve_config(url=args.url, api_key=args.api_key, insecure=args.insecure)
     mode = resolve_mode(force_json=bool(args.json), fmt=args.format, isatty=sys.stdout.isatty())

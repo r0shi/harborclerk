@@ -24,13 +24,19 @@ def test_read_document_defaults():
     assert rc == 0
     client.call_tool.assert_called_once_with(
         "kb_read_document",
-        {"doc_id": "d1", "page": 1, "page_size": 5},
+        {"doc_id": "d1"},
     )
 
 
-def test_read_document_page_and_size_forwarded():
-    rc, client = _run(["read-document", "d1", "--page", "3", "--page-size", "10", "--json"], {"chunks": []})
+def test_read_document_page_range_forwarded():
+    rc, client = _run(
+        ["read-document", "d1", "--page-start", "3", "--page-end", "5", "--max-chars", "10000", "--json"],
+        {"chunks": []},
+    )
     assert rc == 0
     call_args = client.call_tool.call_args.args[1]
-    assert call_args["page"] == 3
-    assert call_args["page_size"] == 10
+    assert call_args["page_start"] == 3
+    assert call_args["page_end"] == 5
+    assert call_args["max_chars"] == 10000
+    assert "page" not in call_args
+    assert "page_size" not in call_args
