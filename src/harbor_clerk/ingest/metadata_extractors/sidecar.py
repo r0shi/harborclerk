@@ -38,6 +38,23 @@ class SidecarExtractor:
         if not sidecar.is_file():
             return None
         try:
+            size = sidecar.stat().st_size
+        except OSError as exc:
+            log.warning(
+                "sidecar stat failed for doc %s (%s): %s",
+                getattr(doc, "doc_id", "<unknown>"),
+                sidecar,
+                exc,
+            )
+            return None
+        if size > 64_000:
+            log.warning(
+                "sidecar for doc %s is %d bytes (>64 KB cap); ignoring to avoid bloating doc_metadata",
+                getattr(doc, "doc_id", "<unknown>"),
+                size,
+            )
+            return None
+        try:
             payload = json.loads(sidecar.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as exc:
             log.warning(

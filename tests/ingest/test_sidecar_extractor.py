@@ -101,6 +101,25 @@ def test_sidecar_extractor_rejects_non_object_top_level(tmp_path: Path):
     assert out is None
 
 
+def test_sidecar_extractor_rejects_oversize_sidecar(tmp_path: Path):
+    """Pathological large sidecars (>64 KB) get rejected with a warning,
+    not silently bloating the doc_metadata JSONB column."""
+    doc_file = tmp_path / "0001_invoice.txt"
+    doc_file.write_text("body")
+    sidecar = tmp_path / "0001_invoice.json"
+    # 65 KB JSON payload — valid JSON, just too big
+    big_value = "x" * 65_000
+    sidecar.write_text(json.dumps({"too_big": big_value}))
+
+    extractor = SidecarExtractor()
+    out = extractor.extract(
+        doc=_FakeDoc(doc_id=uuid.uuid4(), title="i"),
+        raw_bytes=b"body",
+        source_path=str(doc_file),
+    )
+    assert out is None
+
+
 def test_sidecar_extractor_handles_utf8_bom(tmp_path: Path):
     """Windows/Excel-exported sidecars often have a UTF-8 BOM; accept them
     cleanly rather than silently dropping the metadata."""

@@ -45,6 +45,10 @@ TIKA_FIELD_ALIASES: dict[str, str] = {
     "Message-To": "email_to",
     "Message-Cc": "email_cc",
     "Message-Subject": "email_subject",
+    # Tika's email parser also emits Message-Date as a dedicated header for
+    # .eml files, separate from dcterms:created. This gives callers an
+    # explicit email_date field distinct from the generic created_at alias.
+    "Message-Date": "email_date",
 }
 
 
