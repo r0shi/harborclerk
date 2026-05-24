@@ -52,6 +52,19 @@ _mcp_principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVa
     default=None,
 )
 
+# True when the current request comes from harbor-clerk-cli (UA prefix match)
+_mcp_is_cli: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_mcp_is_cli",
+    default=False,
+)
+
+_CLI_USER_AGENT_PREFIX = "harbor-clerk-cli/"
+
+
+def _request_type_for_ua() -> str:
+    """Return 'cli_tool' if the request is from harbor-clerk-cli, else 'mcp_tool'."""
+    return "cli_tool" if _mcp_is_cli.get() else "mcp_tool"
+
 
 async def _resolve_principal(token: str) -> Principal | None:
     """Validate a Bearer token (JWT or API key) and return a Principal."""
@@ -131,11 +144,54 @@ class MCPAuthMiddleware:
             token = auth_header[7:]
             principal = await _resolve_principal(token)
             if principal is not None:
+                # Detect whether this is a harbor-clerk-cli request
+                ua = headers.get(b"user-agent", b"").decode()
+                is_cli = ua.startswith(_CLI_USER_AGENT_PREFIX)
+
+                # Gate: CLI traffic blocked unless enable_cli_access is True
+                if is_cli and not get_settings().enable_cli_access:
+                    from harbor_clerk.api.request_log import log_api_request
+
+                    try:
+                        async with async_session_factory() as log_session:
+                            await log_api_request(
+                                log_session,
+                                api_key_id=principal.id if principal.type == "api_key" else None,
+                                request_type="cli_tool",
+                                endpoint="<gate>",
+                                status="denied",
+                                status_detail="cli_access_disabled",
+                            )
+                            await log_session.commit()
+                    except Exception:
+                        logger.debug("Failed to log CLI gate denial", exc_info=True)
+
+                    body = json.dumps(
+                        {
+                            "error": "cli_access_disabled",
+                            "hint": "Enable in System Settings → Integrations",
+                        }
+                    ).encode()
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 403,
+                            "headers": [
+                                [b"content-type", b"application/json"],
+                                [b"content-length", str(len(body)).encode()],
+                            ],
+                        }
+                    )
+                    await send({"type": "http.response.body", "body": body})
+                    return
+
                 reset_token = _mcp_principal.set(principal)
+                reset_cli_token = _mcp_is_cli.set(is_cli)
                 try:
                     await self.app(scope, receive, send)
                 finally:
                     _mcp_principal.reset(reset_token)
+                    _mcp_is_cli.reset(reset_cli_token)
                 return
 
         # No valid auth — return 401 JSON
@@ -330,7 +386,7 @@ class ScopedFastMCP(FastMCP):
                         await log_api_request(
                             log_session,
                             api_key_id=principal.id,
-                            request_type="mcp_tool",
+                            request_type=_request_type_for_ua(),
                             endpoint=name,
                             parameters=dict(arguments) if arguments else None,
                             status="rate_limited",
@@ -352,7 +408,7 @@ class ScopedFastMCP(FastMCP):
                     await log_api_request(
                         log_session,
                         api_key_id=principal.id,
-                        request_type="mcp_tool",
+                        request_type=_request_type_for_ua(),
                         endpoint=name,
                         parameters=arguments if arguments else None,
                         status="denied",
@@ -377,7 +433,7 @@ class ScopedFastMCP(FastMCP):
                     await log_api_request(
                         log_session,
                         api_key_id=principal.id,
-                        request_type="mcp_tool",
+                        request_type=_request_type_for_ua(),
                         endpoint=name,
                         parameters=arguments if arguments else None,
                         status="error",
@@ -416,7 +472,7 @@ class ScopedFastMCP(FastMCP):
                 await log_api_request(
                     log_session,
                     api_key_id=principal.id,
-                    request_type="mcp_tool",
+                    request_type=_request_type_for_ua(),
                     endpoint=name,
                     parameters=arguments if arguments else None,
                     status="ok",
