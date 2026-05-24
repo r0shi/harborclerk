@@ -255,18 +255,19 @@ Naming note: `metadata` is a reserved column name in some ORMs (SQLAlchemy uses 
 - **Metadata can override per-doc reality.** If a user has a sidecar saying `vendor: "Acme"` but the actual contract is with Pinnacle, the filter answers questions about the sidecar's claim, not the doc's text. This is "garbage in, garbage out" and acceptable — users with sidecars are power users who know what they're declaring.
 - **JSONB column doesn't suit huge metadata blobs.** Tika can return very large metadata for some files (EXIF with thumbnails embedded as base64, etc.). The whitelist cap protects against this; worth noting in the field list documentation.
 
-## Open questions for spec review
+## Decisions (closed during spec review)
 
-- **Strip frontmatter from body text or leave it in?** Leaning strip — the metadata fields cover it and leaving them in adds noise to chunking + retrieval. But some users might write meaningful prose IN their frontmatter (e.g., a long `summary:` field). Decision: strip, document the behavior, revisit if users complain.
-- **`kb_get_document` should return the metadata** so models can inspect what filter keys are available. This is a small change in scope; include in PR-F or queue for PR-D? Leaning include here — keeps the surface coherent.
-- **`metadata_filter` value matching: exact only, or operators (>=, contains, in)?** Leaning exact-only for v1 — covers the boundary-doc disambiguation case. Operator support is a clean follow-up.
-- **List-valued field matching: `metadata_filter={"frontmatter.tags": "alpha"}` should match a frontmatter dict `{tags: ["alpha", "beta"]}`.** JSONB `?` operator handles this, but the query layer needs to know when to use `?` vs `@>`. Leaning: any scalar filter value matches via `@>` against either scalar metadata values OR list-valued metadata values that contain the scalar. Document the behavior.
+- **Frontmatter is stripped from body text.** The frontmatter block is removed before the body is chunked, embedded, and FTS-indexed. All frontmatter fields remain accessible via `Document.metadata.frontmatter` and via `metadata_filter`. Rationale: structured metadata belongs in the metadata column, not duplicated in chunks where YAML markup muddies semantic similarity. Matches Obsidian/MkDocs/Jekyll convention. Revisit if users report meaningful prose in their frontmatter (e.g., a long `summary:` field they expected to be searchable).
+- **`kb_get_document` returns the metadata dict alongside the body.** Lets models inspect available filter keys before crafting a `metadata_filter` query. Scope-creep is minimal (one extra field in an existing response); keeping the surface coherent is worth the small expansion.
+- **`metadata_filter` is exact-match only in v1.** A flat `{path: value}` dict translates to JSONB `@>` containment (with the list-valued fallback below). Covers the boundary-doc disambiguation case the eval surfaced. **Operator support (`>=`, `<`, `in`, `contains`, range queries) is noted as possible future work** — a clean follow-up PR once we see whether users + models actually reach for it.
+- **List-valued field matching uses a smart `@>`/`?` fallback.** A scalar filter value matches via `@>` against scalar metadata values OR via `?` (existence) against list-valued metadata values that contain the scalar. So `metadata_filter={"frontmatter.tags": "alpha"}` matches both `{tags: "alpha"}` and `{tags: ["alpha", "beta"]}`. The query layer detects the metadata shape at filter time. Document the behavior in the `kb_search` tool description.
 
 ## Out of scope / follow-ups
 
 - **PR-D (tool descriptions + kb_search response enhancements)** — sits on top of PR-F to surface the new filter capability in tool descriptions; ships immediately after.
 - **PR-E (kb_verify_identifier + kb_documents_by_date)** — `kb_verify_identifier` can now do exact metadata lookups; PR-E benefits architecturally from PR-F landing first.
 - **PR-G (harness audit + cross-judge sensitivity)** — pure harness work, can land in parallel with D/E if desired.
+- **`metadata_filter` operators** — `>=`, `<`, `in`, `contains`, range queries on date/numeric fields. v1 ships exact-match-only; revisit once we see whether users + models reach for richer operators.
 - **LLM-based metadata extraction** — separate PR with its own design. Tika + frontmatter + sidecar covers the no-LLM-cost layer.
 - **Folder-path-as-metadata** — separate PR; user-facing config story (regex template, opt-in) deserves its own design pass.
 - **Filename-pattern parsing** — separate PR; similar config story.
