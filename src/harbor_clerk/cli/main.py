@@ -6,7 +6,9 @@ import argparse
 import sys
 
 from harbor_clerk.cli import __version__
+from harbor_clerk.cli.client import McpClientError
 from harbor_clerk.cli.commands import register_all
+from harbor_clerk.cli.errors import EXIT_USAGE, map_client_error_to_exit, write_error
 
 
 class _Parser(argparse.ArgumentParser):
@@ -49,8 +51,17 @@ def main(argv: list[str] | None = None) -> int:
     handler = getattr(args, "_handler", None)
     if handler is None:
         parser.print_help(sys.stderr)
-        return 1
-    return handler(args)
+        return EXIT_USAGE
+    try:
+        return handler(args)
+    except McpClientError as err:
+        json_mode = bool(args.json) or args.format == "json"
+        write_error(err, json_mode=json_mode)
+        return map_client_error_to_exit(err)
+    except ValueError as err:
+        # e.g. resolve_config — missing API key
+        sys.stderr.write(f"harbor-clerk: {err}\n")
+        return EXIT_USAGE
 
 
 if __name__ == "__main__":
