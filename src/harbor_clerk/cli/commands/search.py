@@ -9,7 +9,7 @@ from pathlib import Path
 from harbor_clerk.cli.client import McpHttpClient
 from harbor_clerk.cli.commands import _common_parser
 from harbor_clerk.cli.config import resolve_config
-from harbor_clerk.cli.output import OutputMode, render, resolve_mode
+from harbor_clerk.cli.output import render, resolve_mode
 
 _HELP_PATH = Path(__file__).parent.parent / "help" / "search.txt"
 

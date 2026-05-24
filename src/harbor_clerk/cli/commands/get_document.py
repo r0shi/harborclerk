@@ -11,7 +11,7 @@ from harbor_clerk.cli.commands import _common_parser
 from harbor_clerk.cli.config import resolve_config
 from harbor_clerk.cli.output import render, resolve_mode
 
-_HELP_PATH = Path(__file__).parent.parent / "help" / "get_document.txt"
+_HELP_PATH = Path(__file__).parent.parent / "help" / "get-document.txt"
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
