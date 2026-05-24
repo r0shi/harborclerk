@@ -28,11 +28,11 @@ def test_read_passages_calls_kb_read_passages_with_chunk_ids(capsys):
     )
 
 
-def test_read_passages_include_meta_forwarded():
-    rc, client = _run(["read-passages", "c1", "--include-meta", "--json"], {"passages": []})
+def test_read_passages_include_context_forwarded():
+    rc, client = _run(["read-passages", "c1", "--include-context", "--json"], {"passages": []})
     assert rc == 0
     args = client.call_tool.call_args.args[1]
-    assert args["include_meta"] is True
+    assert args["include_context"] is True
 
 
 def test_read_passages_no_chunk_ids_exits_1(capsys):

@@ -15,7 +15,7 @@ DESCRIPTION
   included when available (PDFs and other paginated formats); plain-text
   documents may omit the `pages` field.
 
-  Pass --include-meta to also receive the immediately preceding and following
+  Pass --include-context to also receive the immediately preceding and following
   chunks from the same document (`context_before` / `context_after`). This
   is a lighter alternative to `expand-context` when you want just one chunk
   of surrounding text rather than N chunks on each side.
@@ -24,9 +24,9 @@ USAGE
   harbor-clerk read-passages <chunk_id> [<chunk_id> ...] [options]
 
 OPTIONS
-  --include-meta   Include the adjacent chunks (one before, one after)
-                   in the response as context_before / context_after.
-                   Default: off.
+  --include-context   Include the adjacent chunks (one before, one after)
+                      in the response as context_before / context_after.
+                      Default: off.
 
 RETURNS (JSON)
   {
@@ -37,7 +37,7 @@ RETURNS (JSON)
         "text":      "string",     // full chunk text (≈1000 chars)
         "language":  "en" | "fr",
         "pages":     "12-13"       // page range (omitted for non-paginated docs)
-        // with --include-meta:
+        // with --include-context:
         "context_before": "string" | null,   // chunk immediately before (if any)
         "context_after":  "string" | null    // chunk immediately after (if any)
       }
@@ -55,7 +55,7 @@ EXAMPLES
 
   # Read a passage and include surrounding context
   harbor-clerk read-passages 7c3a9b12-0001-0000-0000-aabbccddeeff \
-    --include-meta | jq '{before: .passages[0].context_before, text: .passages[0].text, after: .passages[0].context_after}'
+    --include-context | jq '{before: .passages[0].context_before, text: .passages[0].text, after: .passages[0].context_after}'
 
   # Multi-step: brief search, then read full text of the top 3 results
   harbor-clerk search "force majeure" -k 3 -d brief \
@@ -72,7 +72,7 @@ COMMON MISTAKES
   - Expecting `pages` for plain-text documents: only PDF and other paginated
     formats populate the `pages` field; TXT, Markdown, and similar files
     will omit it.
-  - Confusing --include-meta with expand-context: --include-meta gives exactly
+  - Confusing --include-context with expand-context: --include-context gives exactly
     one preceding and one following chunk. Use `expand-context` with -n 3 or
     higher when you need a wider window.
 

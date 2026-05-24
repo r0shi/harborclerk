@@ -24,14 +24,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         parents=[_common_parser()],
     )
     p.add_argument("chunk_ids", nargs="+", help="One or more chunk UUIDs")
-    p.add_argument("--include-meta", action="store_true", help="Include chunk metadata in response")
+    p.add_argument(
+        "--include-context",
+        action="store_true",
+        help="Include the chunks immediately before and after each requested chunk",
+    )
     p.set_defaults(_handler=run)
 
 
 def run(args) -> int:
     arguments: dict = {"chunk_ids": list(args.chunk_ids)}
-    if args.include_meta:
-        arguments["include_meta"] = True
+    if args.include_context:
+        arguments["include_context"] = True
 
     cfg = resolve_config(url=args.url, api_key=args.api_key, insecure=args.insecure)
     mode = resolve_mode(force_json=bool(args.json), fmt=args.format, isatty=sys.stdout.isatty())
