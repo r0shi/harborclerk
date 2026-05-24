@@ -559,14 +559,34 @@ async def kb_search(
     metadata_filter: dict | None = None,
     faceted: bool = False,
 ) -> str:
-    """Search the knowledge base with hybrid FTS + vector search.
+    """Search the knowledge base by topic, keyword, or question. Hybrid FTS + vector retrieval.
 
-    Returns ranked chunks with citations (page numbers, scores, section
-    headings). Each hit includes the nearest document heading above the
-    chunk's page (in the "section" field), so you can see where in the
-    document the passage comes from without a separate outline call.
+    Use this as the PRIMARY tool to find information in the corpus.
 
-    Use this as the primary tool to find information.
+    What you get back:
+      - `hits`: ranked chunks with score, doc_id, doc_title, pages, section heading
+      - `total_candidates`: how many chunks matched before pagination
+      - `has_more`: true if more results exist beyond your window — paginate via `offset`
+        or refine your query if you don't yet have the answer
+      - `discriminator_hint` (when present): top hits span multiple docs that differ on
+        a structured metadata field. Use `metadata_filter` with the suggested key/value
+        to pin the right doc. The hint includes `ambiguous_doc_titles`,
+        `differing_metadata` (per-doc values), and a `suggestion` string.
+
+    When to iterate:
+      - One query returned ambiguous results across multiple docs → call `kb_batch_search`
+        with varied query angles, OR use `metadata_filter` (from the discriminator_hint)
+        to pin the right doc
+      - `has_more` is true and you don't have the answer yet → paginate with `offset`
+      - The top hit's chunk text doesn't fully answer the question → call
+        `kb_read_passages` on the chunk_id to verify the surrounding text
+
+    How to decline:
+      - If retrieved chunks DON'T contain the answer the question asks for (e.g. the
+        question mentions an invoice number / contract / person that doesn't appear in
+        any retrieved doc), the information is NOT in the corpus — say so plainly. Do
+        NOT report a "closest match" as a substitute. Adjacent or partial matches are
+        not answers.
 
     Filters (all optional):
       doc_id: restrict to a single document (mutually exclusive with doc_ids)
@@ -587,17 +607,13 @@ async def kb_search(
       "brief": first ~200 characters per chunk (adjustable via brief_chars) —
         use when scanning 20-50 results to identify which are worth
         reading in full via kb_read_passages
-      "compact": metadata only (chunk_id, doc_id, doc_title,
-        score, pages, language — no text) — use when surveying a broad result set (50+) to
-        understand score distribution and document coverage before
-        narrowing down
+      "compact": metadata only (chunk_id, doc_id, doc_title, score, pages,
+        language — no text) — use when surveying a broad result set (50+) to
+        understand score distribution and document coverage before narrowing down
 
     faceted: if true, groups hits by document with per-document top_score
       and hit_count — useful for understanding which documents are most
       relevant at a glance
-
-    Pagination: use offset to page through results. Check has_more
-    in the response to know if more results exist beyond your window.
     """
     principal = _get_principal()
     settings = get_settings()
@@ -771,16 +787,37 @@ async def kb_batch_search(
     language: str | None = None,
     mime_type: str | None = None,
 ) -> str:
-    """Run multiple search queries in one call (max 5).
+    """Run multiple search queries in one call (max 5), grouped per query.
 
-    Returns results grouped by query — useful for comparative analysis
-    ("do any of these case files mention X, Y, or Z?") without
-    sequential round-trips.
+    PREFER THIS OVER multiple sequential kb_search calls when you need to:
+      - Triangulate a single answer from multiple angles ("does this contract
+        mention X, Y, or Z?")
+      - Compare relevance of related concepts in one round-trip
+      - Disambiguate ambiguous results from a single kb_search by probing
+        with varied query phrasings
 
-    All filters are shared across queries. Each query gets its own
-    result set with hits, total_candidates, and has_more.
+    When to use it:
+      - One kb_search returned ambiguous results from multiple docs → run 2-3
+        varied queries here to see which doc consistently ranks first across
+        angles (docs appearing in multiple batch queries are strongly
+        corroborated as the right match)
+      - You need to check several related facts in one go without serial
+        round-trips
 
-    See kb_search for filter and detail level documentation.
+    What you get back:
+      Per-query result dicts (hits, total_candidates, has_more) plus the same
+      `discriminator_hint` field on each query's response when applicable.
+      Treat each query's response the same way you'd treat a single kb_search
+      response — pagination, iteration, and decline rules are identical.
+
+    How to decline:
+      Same as kb_search — if NONE of your queries returned a doc matching the
+      question's identifier (invoice number / contract / person / etc.), the
+      information is NOT in the corpus. Say so plainly rather than reporting
+      adjacent matches as substitutes.
+
+    All filters (doc_id, doc_ids, after, before, language, mime_type,
+    metadata_filter) are shared across queries — see kb_search for documentation.
     """
     principal = _get_principal()
     settings = get_settings()
@@ -898,15 +935,27 @@ async def kb_read_passages(
     chunk_ids: list[str],
     include_context: bool = False,
 ) -> str:
-    """Read full text of specific passages by their chunk IDs.
+    """Read specific passages by chunk_id. Use to verify content before answering.
 
-    Use after kb_search (especially with detail="brief" or "compact")
-    to fetch the complete text of interesting results. Returns each
-    passage with its document title, language, and page numbers.
+    Use this after kb_search to:
+      - Verify the top hit actually contains the answer the question asks for
+        (the chunk text in kb_search results is sometimes truncated or
+        out-of-context — read the full passage before committing)
+      - Read a few high-confidence hits in full when the chunk text in
+        kb_search wasn't enough context to answer
+      - Confirm that a specific named entity / number / clause is present
+        in the cited chunk before claiming it (the verify-before-answer
+        pattern — protects against hallucinating from adjacent text)
 
-    Set include_context=True to also get the immediately preceding and
-    following chunks — useful for understanding a passage in context
-    without a separate kb_expand_context call.
+    Output: list of passages with full chunk_text, doc_id, doc_title, pages,
+    and section heading. Set include_context=True to also get the chunks
+    immediately before and after each requested chunk (useful when the
+    target chunk references "as discussed above" or similar).
+
+    Take this seriously: before reporting a specific number, date, name, or
+    clause as an answer, READ THE CHUNK that supposedly contains it. If the
+    chunk doesn't actually contain it, the kb_search hit was a near-miss
+    rather than a real match — search with different queries or decline.
     """
     principal = _get_principal()
     uuids = [uuid.UUID(cid) for cid in chunk_ids]
@@ -1051,10 +1100,27 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
 
 @mcp.tool()
 async def kb_get_document(doc_id: str) -> str:
-    """Get full metadata for a document: title, processing status, summary,
-    MIME type, file size, extracted character count, and ingestion pipeline
-    jobs. Use this to inspect a specific document after finding it via
-    search or kb_list_recent.
+    """Get a document's metadata + summary by doc_id. Use to inspect structure before deeper queries.
+
+    What you get back:
+      - Title, mime_type, summary (LLM-generated 1-paragraph overview), section
+        headings outline, ingestion status, chunk count
+      - `metadata`: the document's structured metadata extracted at ingest
+        (sidecar facts, Tika fields, frontmatter, etc.). The keys here are
+        EXACTLY the filter keys you can pass to kb_search via metadata_filter
+        — e.g. `metadata.sidecar.vendor` becomes
+        `metadata_filter={"sidecar.vendor": "..."}`
+
+    When to use it:
+      - You want to inspect what filter keys exist on a doc before crafting
+        a metadata_filter for kb_search
+      - You need the summary + structure of a doc to decide whether it's
+        worth reading in full via kb_read_document
+      - You got a doc_id from kb_search or kb_find_related and want quick
+        context before reading chunks
+
+    Output shape: a single dict with the doc's metadata + headings; does NOT
+    include chunk text (use kb_read_document or kb_read_passages for that).
     """
     principal = _get_principal()
     did = uuid.UUID(doc_id)
