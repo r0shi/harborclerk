@@ -12,10 +12,13 @@ from harbor_clerk.mcp_server import (
     kb_expand_context,
     kb_find_related,
     kb_get_document,
+    kb_ingest_status,
     kb_list_recent,
     kb_read_document,
     kb_read_passages,
+    kb_reprocess,
     kb_search,
+    kb_system_health,
 )
 
 
@@ -141,3 +144,23 @@ def test_kb_read_document_description_clarifies_vs_kb_get_document():
     Description should make the distinction explicit."""
     d = _doc(kb_read_document)
     assert "kb_get_document" in d or "full text" in d or "full document" in d
+
+
+# ── Admin tier ────────────────────────────────────────────────────────
+
+
+def test_kb_ingest_status_description_clarifies_admin_use():
+    d = _doc(kb_ingest_status)
+    # Should clarify it's for inspecting ingestion progress (operator-facing)
+    assert "ingest" in d or "pipeline" in d
+
+
+def test_kb_reprocess_description_warns_admin_only():
+    d = _doc(kb_reprocess)
+    # Should clarify it's destructive (re-runs the pipeline)
+    assert "admin" in d or "re-run" in d or "re-runs" in d or "reprocess" in d
+
+
+def test_kb_system_health_description_clarifies_diagnostic_purpose():
+    d = _doc(kb_system_health)
+    assert "health" in d or "diagnostic" in d or "status" in d
