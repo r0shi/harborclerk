@@ -52,7 +52,7 @@ function CodeBlock({ children }: { children: string }) {
 }
 
 export default function IntegrationsPage() {
-  const { enableCliAccess } = useSystemConfig()
+  const { enableCliAccess, cliShimInstallStatus } = useSystemConfig()
   const [settings, setSettings] = useState<IntegrationSettings>({ public_url: '', oauth_refresh_token_days: 90 })
   const [connections, setConnections] = useState<OAuthConnection[]>([])
   const [loading, setLoading] = useState(true)
@@ -460,7 +460,11 @@ export default function IntegrationsPage() {
       </Card>
 
       {/* Agentic CLI */}
-      <CliAccessCard enabled={enableCliAccess} envVarHint="ENABLE_CLI_ACCESS=true" />
+      <CliAccessCard
+        enabled={enableCliAccess}
+        envVarHint="ENABLE_CLI_ACCESS=true"
+        cliShimInstallStatus={cliShimInstallStatus}
+      />
     </div>
   )
 }

@@ -48,7 +48,43 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
-export function CliAccessCard({ enabled, envVarHint }: { enabled: boolean; envVarHint?: string }) {
+const PATH_SNIPPET = 'export PATH="$HOME/.local/bin:$PATH"'
+
+function ShimStatusBadge({ status }: { status: 'installed' | 'installed_outdated' | 'not_installed' }) {
+  if (status === 'installed') {
+    return (
+      <span className="flex items-center gap-1.5 text-sm text-green-700 dark:text-green-400">
+        <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+        Installed at{' '}
+        <code className="rounded bg-(--color-bg-secondary) px-1 py-0.5 text-xs">~/.local/bin/harbor-clerk</code>
+      </span>
+    )
+  }
+  if (status === 'installed_outdated') {
+    return (
+      <span className="flex items-center gap-1.5 text-sm text-amber-700 dark:text-amber-400">
+        <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+        Installed but stale — re-install via Preferences to update
+      </span>
+    )
+  }
+  return (
+    <span className="flex items-center gap-1.5 text-sm text-(--color-text-secondary)">
+      <span className="inline-block h-2 w-2 rounded-full bg-gray-400" />
+      Not installed
+    </span>
+  )
+}
+
+export function CliAccessCard({
+  enabled,
+  envVarHint,
+  cliShimInstallStatus,
+}: {
+  enabled: boolean
+  envVarHint?: string
+  cliShimInstallStatus?: 'installed' | 'installed_outdated' | 'not_installed' | null
+}) {
   return (
     <Card className="p-6">
       <h2 className="text-lg font-semibold mb-2">Agentic CLI</h2>
@@ -77,6 +113,38 @@ export function CliAccessCard({ enabled, envVarHint }: { enabled: boolean; envVa
               </>
             )}
           </p>
+        </div>
+      )}
+
+      {/* Shim install status — only shown on macOS native (status != null) */}
+      {cliShimInstallStatus != null && (
+        <div className="mb-4 rounded-lg border border-(--color-border) bg-(--color-bg-secondary) px-4 py-3 space-y-3">
+          <div>
+            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-(--color-text-secondary)">
+              CLI shim
+            </p>
+            <ShimStatusBadge status={cliShimInstallStatus} />
+            {cliShimInstallStatus === 'not_installed' && (
+              <p className="mt-1.5 text-xs text-(--color-text-secondary)">
+                Install via <strong>Harbor Clerk Server → Preferences → Network Access</strong>.
+              </p>
+            )}
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-(--color-text-secondary)">
+              PATH snippet
+            </p>
+            <div className="flex items-center rounded bg-(--color-bg-primary) px-3 py-2">
+              <code className="flex-1 font-mono text-xs text-(--color-text-primary) select-all">{PATH_SNIPPET}</code>
+              <CopyButton text={PATH_SNIPPET} />
+            </div>
+            <p className="mt-1.5 text-xs text-(--color-text-secondary)">
+              Add to <code className="rounded bg-(--color-bg-primary) px-1 py-0.5 text-xs">~/.zshrc</code> (or{' '}
+              <code className="rounded bg-(--color-bg-primary) px-1 py-0.5 text-xs">~/.bashrc</code>) if{' '}
+              <code className="rounded bg-(--color-bg-primary) px-1 py-0.5 text-xs">harbor-clerk</code> isn&apos;t found
+              on your PATH.
+            </p>
+          </div>
         </div>
       )}
 
