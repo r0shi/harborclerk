@@ -73,6 +73,11 @@ final class AppSettings: @unchecked Sendable {
         set { lock.withLock { data["allow_remote_mcp"] = newValue }; save() }
     }
 
+    var enableCliAccess: Bool {
+        get { lock.withLock { data["enable_cli_access"] as? Bool ?? false } }
+        set { lock.withLock { data["enable_cli_access"] = newValue }; save() }
+    }
+
     var llamaPort: Int {
         get { lock.withLock { data["llama_port"] as? Int ?? 8102 } }
         set { lock.withLock { data["llama_port"] = newValue }; save() }

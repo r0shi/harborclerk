@@ -24,6 +24,8 @@ private let modelOptions: [(id: String, name: String)] = [
 struct PreferencesWindow: View {
     @State private var allowRemoteWeb = AppSettings.shared.allowRemoteWeb
     @State private var allowRemoteMCP = AppSettings.shared.allowRemoteMCP
+    @State private var enableCliAccess = AppSettings.shared.enableCliAccess
+    @State private var enableCliAccessOnOpen = AppSettings.shared.enableCliAccess
     @State private var workerPreset = AppSettings.shared.workerPreset
     @State private var apiPortText = String(AppSettings.shared.apiPort)
     @State private var postgresPortText = String(AppSettings.shared.postgresPort)
@@ -78,6 +80,17 @@ struct PreferencesWindow: View {
                     Toggle("Allow remote model connections (MCP)", isOn: $allowRemoteMCP)
                         .onChange(of: allowRemoteMCP) { _, _ in markDirty() }
                     Text("Let AI models on your network query your documents.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Allow harbor-clerk CLI from agentic tools", isOn: $enableCliAccess)
+                        .onChange(of: enableCliAccess) { _, newValue in
+                            // Applied immediately — no restart required. The API server
+                            // re-reads config.json on every CLI request, so this takes
+                            // effect within seconds without touching the restart banner.
+                            AppSettings.shared.enableCliAccess = newValue
+                        }
+                    Text("Let agent harnesses (Claude Code, Codex, etc.) query documents via the harbor-clerk CLI. Does not require a service restart.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -160,6 +173,9 @@ struct PreferencesWindow: View {
         .frame(width: 480, height: needsRestart ? 600 : 550)
         .animation(.easeInOut(duration: 0.25), value: needsRestart)
         .onAppear {
+            // Sync enableCliAccess from AppSettings in case it changed since the view was created
+            enableCliAccess = AppSettings.shared.enableCliAccess
+            enableCliAccessOnOpen = AppSettings.shared.enableCliAccess
             captureInitial()
         }
     }
@@ -304,6 +320,8 @@ struct PreferencesWindow: View {
             llmModelId: llmModelId,
             logLevel: logLevel
         )
+        // Track the enableCliAccess baseline for Cancel revert
+        enableCliAccessOnOpen = enableCliAccess
     }
 
     private func revertToInitial() {
@@ -319,6 +337,10 @@ struct PreferencesWindow: View {
         llamaPortText = initial.llamaPort
         llmModelId = initial.llmModelId
         logLevel = initial.logLevel
+        // enableCliAccess is applied immediately when toggled, so Cancel must
+        // also write the original value back to config.json to undo the change.
+        enableCliAccess = enableCliAccessOnOpen
+        AppSettings.shared.enableCliAccess = enableCliAccessOnOpen
         needsRestart = false
     }
 
