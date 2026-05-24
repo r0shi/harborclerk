@@ -10,7 +10,7 @@ frontmatter.
 
 Public surface:
   MetadataExtractor — @runtime_checkable Protocol
-  EXTRACTORS        — production tuple, used by extract.py
+  EXTRACTORS        — production list, used by extract.py
   run_all(...)      — production entry point (uses EXTRACTORS)
   _run_extractors() — testable helper that takes an explicit extractor list
 """
