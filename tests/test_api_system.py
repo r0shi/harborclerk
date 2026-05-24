@@ -33,6 +33,17 @@ async def test_health_check_exposes_allow_source_download_default_false(client):
     assert data["allow_source_download"] is False
 
 
+async def test_health_check_exposes_enable_cli_access_default_false(client):
+    """The health endpoint surfaces the enable_cli_access capability so the
+    frontend Integrations page can show whether CLI access is enabled. Default
+    must be False on every deployment — it is an opt-in feature."""
+    resp = await client.get("/api/system/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "enable_cli_access" in data
+    assert data["enable_cli_access"] is False
+
+
 async def test_health_check_reflects_allow_source_download_when_set(client):
     """Toggling the setting at runtime should be visible immediately on the
     next health fetch. Tests use the same Settings singleton; mutating it on

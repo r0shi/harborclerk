@@ -102,6 +102,7 @@ async def health_check(
         # in the health response so it's fetched on app boot without a
         # separate round-trip — see frontend/src/hooks/useSystemConfig.ts.
         "allow_source_download": get_settings().allow_source_download,
+        "enable_cli_access": get_settings().enable_cli_access,
     }
 
 
