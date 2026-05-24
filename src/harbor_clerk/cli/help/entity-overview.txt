@@ -1,0 +1,73 @@
+harbor-clerk entity-overview — aggregate entity statistics (corpus or per-doc)
+
+DESCRIPTION
+  Returns a summary of named entities in the corpus or a single document:
+  total mention count, unique entity count, distribution across entity types,
+  and the top 20 most-frequently-mentioned entities.
+
+  Useful as a first-pass survey — run corpus-wide to see which entity types
+  dominate, then drill into `entity-search` or `entity-cooccurrence` for
+  specifics. Run with --doc-id for a per-document entity profile.
+
+  The top_entities list is always capped at 20 entries ordered by mention
+  frequency. Use `entity-search` with high -k for a broader ranked list.
+
+USAGE
+  harbor-clerk entity-overview [options]
+
+OPTIONS
+  --doc-id UUID    Scope results to a single document (default: corpus-wide)
+
+RETURNS (JSON)
+  {
+    "total_entities":  1520,         // total entity mentions (with duplicates)
+    "unique_entities": 342,          // distinct (entity_text, entity_type) pairs
+    "type_distribution": {
+      "PERSON": 480,
+      "ORG":    310,
+      "GPE":    210,
+      ...                            // all types present, ordered by count desc
+    },
+    "top_entities": [
+      {
+        "entity_text":    "string",  // entity name
+        "entity_type":    "string",  // e.g. PERSON, ORG, GPE
+        "mention_count":  42         // total mentions in scope
+      }
+    ]                                // up to 20 entries, ordered by mention_count desc
+  }
+
+EXAMPLES
+  # Corpus-wide overview
+  harbor-clerk entity-overview
+
+  # Entity profile for one document
+  harbor-clerk entity-overview --doc-id 3f8a1c2d-0000-4b5e-9f6a-000000000001
+
+  # Show only the type distribution
+  harbor-clerk entity-overview | jq '.type_distribution'
+
+  # Top 5 PERSON entities in the corpus
+  harbor-clerk entity-overview | \
+    jq '[.top_entities[] | select(.entity_type == "PERSON")] | .[0:5]'
+
+  # Count how many unique entity types appear
+  harbor-clerk entity-overview | jq '.type_distribution | keys | length'
+
+  # Per-doc overview from a prior document search
+  DOC=$(harbor-clerk list-recent -k 1 | jq -r '.documents[0].doc_id')
+  harbor-clerk entity-overview --doc-id "$DOC" | jq '.top_entities'
+
+COMMON MISTAKES
+  - Expecting more than 20 top_entities: the list is hard-capped at 20.
+    Use `entity-search -k 100` with a broad query for a longer ranked list.
+  - Treating total_entities as unique names: total_entities counts every
+    mention (one per chunk occurrence); unique_entities counts distinct
+    (text, type) pairs. A person mentioned 50 times counts as 1 unique
+    but 50 total.
+  - Running without --doc-id on a large corpus and getting surprised by
+    response size: type_distribution can have 15–20 keys; top_entities
+    always has exactly up to 20 rows, so the response is predictably small.
+
+SEE ALSO
+  entity-search, entity-cooccurrence, corpus-overview

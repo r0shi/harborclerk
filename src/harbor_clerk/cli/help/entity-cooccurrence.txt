@@ -1,0 +1,87 @@
+harbor-clerk entity-cooccurrence — entities that appear alongside a given entity
+
+DESCRIPTION
+  Given an entity name, finds all other named entities that appear in the
+  same chunk (default scope) as that entity. The source entity is matched
+  by case-insensitive substring, so "Anthropic" matches "Anthropic, Inc."
+  and "Anthropic PBC".
+
+  Co-occurrence counts are aggregated across all matching source-entity
+  mentions, then ordered by count descending. Results include up to 3
+  sample chunk_ids and sample doc_ids per co-occurring entity so you can
+  drill in with `read-passages`.
+
+  Use this to answer questions like:
+  - "Who is mentioned alongside Jane Smith?" (PERSON co-occurrences)
+  - "What organizations appear with Acme Corp?" (ORG co-occurrences)
+  - "Which locations come up when discussing a given event?"
+
+  NOTE ON SCOPE: The underlying MCP tool supports a `scope` parameter
+  ("chunk" or "document") and `cooccur_type` / `doc_id` filters, but the
+  CLI today only exposes the entity name and -k. If you need those filters,
+  call the MCP server directly via `kb_entity_cooccurrence`. See COMMON
+  MISTAKES below.
+
+USAGE
+  harbor-clerk entity-cooccurrence <entity> [options]
+
+OPTIONS
+  entity           Entity name (or substring) to find co-occurrences for
+  -k, --k INT      Number of results (default: 20, max: 100)
+
+RETURNS (JSON)
+  {
+    "entity_text": "string",       // the query entity text as passed in
+    "scope":       "chunk",        // always "chunk" from the CLI
+    "cooccurrences": [
+      {
+        "entity_text":        "string",  // co-occurring entity name
+        "entity_type":        "string",  // e.g. PERSON, ORG, GPE
+        "cooccurrence_count": 14,        // number of shared chunk occurrences
+        "sample_chunk_ids":   ["uuid", "uuid", "uuid"],  // up to 3 chunk IDs
+        "sample_doc_ids":     ["uuid", "uuid"]           // up to 3 doc IDs
+      }
+    ],
+    "total":    42,    // total co-occurring entity types found
+    "has_more": false  // true when offset + k < total
+  }
+
+EXAMPLES
+  # Who appears alongside "Anthropic" in the corpus?
+  harbor-clerk entity-cooccurrence "Anthropic"
+
+  # Top 5 entities mentioned with "Alice Johnson"
+  harbor-clerk entity-cooccurrence "Alice Johnson" -k 5
+
+  # Read the passage context of the top co-occurrence's first chunk
+  CHUNK=$(harbor-clerk entity-cooccurrence "Acme Corp" -k 1 | \
+    jq -r '.cooccurrences[0].sample_chunk_ids[0]')
+  harbor-clerk read-passages "$CHUNK"
+
+  # jq filter: only ORG co-occurrences (post-filter, since CLI lacks --cooccur-type)
+  harbor-clerk entity-cooccurrence "Smith" | \
+    jq '.cooccurrences[] | select(.entity_type == "ORG")'
+
+COMMON MISTAKES
+  - The CLI does not expose --scope, --cooccur-type, or --doc-id. If you
+    need to filter co-occurrences to a specific entity type, scope results
+    to a single document, or switch from chunk-level to document-level
+    co-occurrence, you must call the MCP server directly:
+      kb_entity_cooccurrence(entity_text="Acme", cooccur_type="PERSON",
+                             scope="document", doc_id="<uuid>")
+    The CLI is suitable for quick corpus-wide chunk-scoped lookups; for
+    anything more targeted, use the MCP tool directly.
+  - Passing a full exact name when a substring match is intended: the
+    entity text field is matched as a substring, so "Smith" already catches
+    "John Smith", "Smith & Co.", etc. Passing the full phrase is fine but
+    unnecessary.
+  - Expecting sample_chunk_ids to be exhaustive: each co-occurrence row
+    returns at most 3 sample chunks. Pass those chunk_ids to `read-passages`
+    or `expand-context` for context; there may be more chunks where the
+    co-occurrence appears (see cooccurrence_count).
+  - Confusing cooccurrence_count with document count: the count reflects
+    the number of chunk-level co-occurrences, not distinct documents. Use
+    sample_doc_ids to see which documents are involved.
+
+SEE ALSO
+  entity-search, entity-overview, read-passages, expand-context
