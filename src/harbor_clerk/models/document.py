@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, LargeBinary, Text, text
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from harbor_clerk.models.base import Base, created_at, updated_at, uuid_pk
@@ -68,6 +68,19 @@ class Document(Base):
     email_cc_addresses: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     email_date_sent: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     email_label_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Pluggable metadata extracted at ingest time. Namespaced by source:
+    # {"tika": {...}, "frontmatter": {...}, "sidecar": {...},
+    #  "_source_provenance": {"tika": "2026-...", ...}}
+    # The Python attribute is `doc_metadata` (not `metadata`) to avoid
+    # shadowing SQLAlchemy's `Base.metadata`. The PostgreSQL column is
+    # named `metadata` for natural querying.
+    doc_metadata: Mapped[dict] = mapped_column(
+        "metadata",
+        JSONB,
+        nullable=False,
+        server_default="{}",
+    )
 
     created_at: Mapped[created_at]
     updated_at: Mapped[updated_at]
