@@ -30,13 +30,13 @@ _PROVENANCE_KEY = "_source_provenance"
 _MAX_FIELDS_IN_HINT = 3
 
 
-def _compute_discriminator_hint(hits, session) -> dict | None:
+async def _compute_discriminator_hint(hits, session) -> dict | None:
     """Return a discriminator_hint dict if top hits are ambiguous on a
     structured metadata field, or None if no hint applies.
 
     `hits` is a list of SearchHit-shaped objects (must have `.doc_id`
     (str), `.doc_title` (str), `.score` (float)). `session` is a
-    SQLAlchemy session used for one SELECT against `documents.metadata`.
+    SQLAlchemy AsyncSession used for one SELECT against `documents.metadata`.
     """
     if len(hits) < 2:
         return None
@@ -67,9 +67,10 @@ def _compute_discriminator_hint(hits, session) -> dict | None:
         return None
 
     # Fetch metadata for the candidates (one indexed lookup).
-    rows = session.execute(
+    result = await session.execute(
         select(Document.doc_id, Document.doc_metadata).where(Document.doc_id.in_([uuid.UUID(c) for c in candidates]))
-    ).all()
+    )
+    rows = result.all()
     metadata_by_doc: dict[str, dict] = {str(row.doc_id): (row.doc_metadata or {}) for row in rows}
 
     # Find paths where the candidates have differing values.
