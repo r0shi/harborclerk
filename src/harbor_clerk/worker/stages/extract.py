@@ -11,16 +11,36 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import Document, DocumentHeading, DocumentPage
+from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS
+from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.storage import get_storage
 from harbor_clerk.worker.heading_parser import parse_headings_from_xhtml
+from harbor_clerk.worker.markdown_extract import MarkdownExtractResult, extract_markdown
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
+from harbor_clerk.worker.text_pagination import paginate_text
 
 logger = logging.getLogger(__name__)
 
 # MIME types that are images (OCR-only, no text extraction)
 IMAGE_MIMES = {"image/jpeg", "image/png", "image/tiff"}
+
+# Filename suffixes extracted as plain UTF-8 text. A tuple because str.endswith
+# requires one; sorted for deterministic ordering.
+_PLAIN_TEXT_SUFFIXES = tuple(sorted(PLAIN_TEXT_EXTENSIONS))
+
+# Filename suffixes routed through the Markdown extraction pipeline.
+_MARKDOWN_SUFFIXES = tuple(sorted(MARKDOWN_EXTENSIONS))
+
+
+def is_plain_text_source(mime: str, obj_key: str) -> bool:
+    """True if the file should be extracted as plain UTF-8 text (no Tika).
+
+    Single source of truth for three decisions in ``run_extract``: the
+    extraction dispatch, skipping Tika heading extraction, and skipping OCR.
+    """
+    return mime == "text/plain" or obj_key.endswith(_PLAIN_TEXT_SUFFIXES)
+
 
 # Strip ANSI escape sequences and control characters (except tab/newline) from
 # untrusted strings before they land in logs or the DB error column. Java
@@ -43,48 +63,11 @@ def _sanitize_external_string(s: str, max_chars: int = 300) -> str:
     return cleaned[:max_chars]
 
 
-def _paginate_text(text: str, target: int) -> list[tuple[int, str]]:
-    """Split a long text into synthetic pages at paragraph boundaries.
-
-    Returns [(page_num, text)] with 1-based page numbers.
-    """
-    if not text or target <= 0:
-        return [(1, text)]
-
-    if len(text) <= target:
-        return [(1, text)]
-
-    pages: list[tuple[int, str]] = []
-    start = 0
-    page_num = 1
-    text_len = len(text)
-
-    while start < text_len:
-        end = min(start + target, text_len)
-
-        if end < text_len:
-            # Try to break at a paragraph boundary (double newline)
-            para = text.rfind("\n\n", start, end)
-            if para > start + target // 2:
-                end = para + 2  # include the double newline
-            else:
-                # Fall back to single newline
-                nl = text.rfind("\n", start, end)
-                if nl > start + target // 2:
-                    end = nl + 1
-
-        pages.append((page_num, text[start:end]))
-        page_num += 1
-        start = end
-
-    return pages
-
-
 def _extract_txt(data: bytes) -> list[tuple[int, str]]:
     """Plain text, split into synthetic pages."""
     settings = get_settings()
     text = data.decode("utf-8", errors="replace")
-    return _paginate_text(text, settings.synthetic_page_chars)
+    return paginate_text(text, settings.synthetic_page_chars)
 
 
 def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list[tuple[int, str]]:
@@ -117,7 +100,7 @@ def _extract_via_tika(data: bytes, mime_type: str, is_pdf: bool = False) -> list
         raw_pages = text.split("\f")
         return [(i + 1, p.strip()) for i, p in enumerate(raw_pages) if p.strip()]
 
-    return _paginate_text(text, settings.synthetic_page_chars)
+    return paginate_text(text, settings.synthetic_page_chars)
 
 
 def _fetch_tika_exception_detail(data: bytes, mime_type: str) -> str:
@@ -167,7 +150,13 @@ def _alpha_ratio(text: str) -> float:
 
 
 # MIME types where heading extraction from Tika XHTML makes no sense
+# Note: `.md` / `text/markdown` appear here for completeness but are never
+# reached for those files — the `markdown_result is not None` sentinel in
+# `run_extract` short-circuits to the Markdown heading path before this
+# gate runs. They remain to document the historical contract.
 _SKIP_HEADINGS_MIMES = IMAGE_MIMES | {"text/plain", "text/csv", "text/markdown"}
+# Partial/legacy extension list. For plain-text formats the authoritative gate
+# is is_plain_text_source() — see the skip_headings / is_never_ocr expressions.
 _SKIP_HEADINGS_EXTS = (".txt", ".md", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff")
 
 
@@ -274,12 +263,23 @@ def run_extract(doc_id: uuid.UUID) -> None:
         if not is_image and obj_key.endswith((".png", ".tif", ".tiff")):
             is_image = True
 
+        # Sentinel that downstream code (heading-writing) checks to decide
+        # whether to use Markdown-derived headings or fall back to Tika XHTML.
+        markdown_result: MarkdownExtractResult | None = None
+
         if is_image:
             # Image — create empty page, OCR will fill it
             pages = [(1, "")]
-        elif mime == "text/plain" or obj_key.endswith((".txt", ".md", ".csv")):
-            # Plain text / Markdown / CSV — no Tika needed
-            pages = _extract_txt(data)
+        elif is_plain_text_source(mime, obj_key):
+            if obj_key.endswith(_MARKDOWN_SUFFIXES):
+                # Markdown — frontmatter + headings + normalization
+                markdown_result = extract_markdown(data)
+                pages = markdown_result.pages
+                if markdown_result.title:
+                    doc.title = markdown_result.title
+            else:
+                # Other plain-text formats — direct UTF-8 decode
+                pages = _extract_txt(data)
         elif is_rtf or mime == "text/rtf" or obj_key.endswith(".rtf"):
             pages = _extract_via_tika(data, "text/rtf")
         elif is_pdf:
@@ -320,8 +320,22 @@ def run_extract(doc_id: uuid.UUID) -> None:
             )
             session.add(page)
 
-        # Extract headings from Tika XHTML (skip images and plain text)
-        skip_headings = is_image or mime in _SKIP_HEADINGS_MIMES or obj_key.endswith(_SKIP_HEADINGS_EXTS)
+        # Heading source: Markdown's own parser when we ran the Markdown
+        # extractor, otherwise Tika XHTML (skipped entirely for non-Markdown
+        # plain text via the same predicate used for dispatch).
+        if markdown_result is not None:
+            headings = markdown_result.headings
+        else:
+            skip_headings = (
+                is_image
+                or mime in _SKIP_HEADINGS_MIMES
+                or obj_key.endswith(_SKIP_HEADINGS_EXTS)
+                or is_plain_text_source(mime, obj_key)
+            )
+            headings = (
+                [] if skip_headings else _extract_headings_via_tika(data, mime or "application/octet-stream", pages)
+            )
+
         # Delete existing headings (idempotency)
         existing_headings = (
             session.execute(select(DocumentHeading).where(DocumentHeading.doc_id == doc_id)).scalars().all()
@@ -330,22 +344,44 @@ def run_extract(doc_id: uuid.UUID) -> None:
             session.delete(h)
         session.flush()
 
-        if not skip_headings:
-            headings = _extract_headings_via_tika(data, mime or "application/octet-stream", pages)
-            for hd in headings:
+        # Write headings (unified for Markdown and Tika sources).
+        for hd in headings:
+            session.add(
+                DocumentHeading(
+                    doc_id=doc_id,
+                    level=hd["level"],
+                    title=hd["title"],
+                    page_num=hd["page_num"],
+                    position=hd["position"],
+                )
+            )
+        if headings:
+            logger.info("Extracted %d headings for doc %s", len(headings), doc_id)
+
+        # Wikilinks: only Markdown extraction produces these. Delete existing
+        # rows for the doc (idempotent on reprocess), then write one
+        # unresolved row per captured link. Resolution runs in finalize.
+        if markdown_result is not None:
+            existing_links = (
+                session.execute(select(DocumentLink).where(DocumentLink.src_doc_id == doc_id)).scalars().all()
+            )
+            for link in existing_links:
+                session.delete(link)
+            session.flush()
+            for w in markdown_result.wikilinks:
                 session.add(
-                    DocumentHeading(
-                        doc_id=doc_id,
-                        level=hd["level"],
-                        title=hd["title"],
-                        page_num=hd["page_num"],
-                        position=hd["position"],
+                    DocumentLink(
+                        src_doc_id=doc_id,
+                        link_text=w["link_text"],
+                        target_title=w["target_title"],
+                        anchor=w["anchor"],
+                        alias=w["alias"],
                     )
                 )
-            if headings:
+            if markdown_result.wikilinks:
                 logger.info(
-                    "Extracted %d headings for doc %s",
-                    len(headings),
+                    "Captured %d wikilinks for doc %s",
+                    len(markdown_result.wikilinks),
                     doc_id,
                 )
 
@@ -368,6 +404,8 @@ def run_extract(doc_id: uuid.UUID) -> None:
             "application/epub+zip",
             "message/rfc822",
         }
+        # Partial/legacy extension list. For plain-text formats the authoritative gate
+        # is is_plain_text_source() — see the skip_headings / is_never_ocr expressions.
         _NEVER_OCR_EXTS = (
             ".docx",
             ".doc",
@@ -390,7 +428,12 @@ def run_extract(doc_id: uuid.UUID) -> None:
             ".htm",
             ".eml",
         )
-        is_never_ocr = is_rtf or mime in _NEVER_OCR_MIMES or obj_key.endswith(_NEVER_OCR_EXTS)
+        is_never_ocr = (
+            is_rtf
+            or mime in _NEVER_OCR_MIMES
+            or obj_key.endswith(_NEVER_OCR_EXTS)
+            or is_plain_text_source(mime, obj_key)
+        )
 
         if is_image:
             doc.needs_ocr = True

@@ -26,7 +26,7 @@ from harbor_clerk.log_setup import setup_logging
 from harbor_clerk.models.watched import WatchedFolder
 from harbor_clerk.watcher.db_listener import listen_for_folder_changes
 from harbor_clerk.watcher.discovery import scan_watch_root
-from harbor_clerk.watcher.events import EventKind, FileEvent, handle_event
+from harbor_clerk.watcher.events import EventKind, FileEvent, SkipReason, classify_skip, handle_event
 from harbor_clerk.watcher.mail_observer import MailObserver
 from harbor_clerk.watcher.observer import FolderObserver
 
@@ -101,10 +101,16 @@ class WatcherDaemon:
         already in the folder when it was added would never be ingested.
 
         Updates `watched_folders.last_scan_at` when done so the API's
-        scan_status flips from "scanning" to "idle".
+        scan_status flips from "scanning" to "idle". Also tallies the
+        per-folder ``skipped_count`` + ``skipped_extensions`` from files
+        the watcher rejected for an unsupported extension (NOT counting
+        intentional-noise filters: dotfiles, AppleDouble, __MACOSX,
+        Excalidraw).
         """
         logger.info("watcher: initial scan of %s starting", root)
         count = 0
+        skipped_count = 0
+        skipped_exts: set[str] = set()
         try:
             for dirpath, dirnames, filenames in os.walk(root):
                 # Prune dotfile / __MACOSX directories so we don't recurse
@@ -114,6 +120,30 @@ class WatcherDaemon:
                 for fname in filenames:
                     abs_path = os.path.join(dirpath, fname)
                     rel_path = os.path.relpath(abs_path, root).replace(os.sep, "/")
+
+                    # Classify BEFORE handing off to _on_event so we can
+                    # tally UNSUPPORTED_EXTENSION skips without going
+                    # through the event-handler path twice.
+                    reason = classify_skip(rel_path)
+                    if reason is SkipReason.UNSUPPORTED_EXTENSION:
+                        skipped_count += 1
+                        suffix = os.path.splitext(rel_path)[1].lower()
+                        # Extension-less files (README, LICENSE, …) are
+                        # legitimately UNSUPPORTED but `splitext` returns
+                        # ""; track them under a sentinel so they show up
+                        # in the per-folder UI summary instead of leaving
+                        # the user wondering why the count went up but
+                        # no new extension appeared.
+                        skipped_exts.add(suffix if suffix else "(no extension)")
+                        # Don't dispatch the event — handle_event would
+                        # ignore it anyway, but skipping the call saves
+                        # the SHA computation and DB roundtrip.
+                        continue
+                    if reason is SkipReason.NOISE:
+                        # Noise filters are intentional; don't tally and
+                        # don't dispatch.
+                        continue
+
                     self._on_event(
                         FileEvent(
                             kind=EventKind.created,
@@ -124,17 +154,25 @@ class WatcherDaemon:
                     )
                     count += 1
                     if self._stop.is_set():
+                        # Early stop: partial skip tally is silently
+                        # discarded along with last_scan_at — both will
+                        # be repopulated by a fresh _scan_folder on the
+                        # next daemon start. Acceptable because scan
+                        # interruption is rare and the next start re-runs
+                        # the whole walk.
                         return
         except Exception:
             logger.exception("watcher: initial scan of %s failed", root)
             return
 
-        # Mark scan complete on the folder row.
+        # Mark scan complete and write the skip tally on the folder row.
         sess = self._session_factory()
         try:
             folder = sess.query(WatchedFolder).filter_by(folder_id=folder_id).one_or_none()
             if folder is not None:
                 folder.last_scan_at = datetime.now(UTC)
+                folder.skipped_count = skipped_count
+                folder.skipped_extensions = sorted(skipped_exts)
                 sess.commit()
         except Exception:
             sess.rollback()
@@ -142,7 +180,13 @@ class WatcherDaemon:
         finally:
             sess.close()
 
-        logger.info("watcher: initial scan of %s complete (%d files visited)", root, count)
+        logger.info(
+            "watcher: initial scan of %s complete (%d files visited, %d skipped — extensions=%s)",
+            root,
+            count,
+            skipped_count,
+            sorted(skipped_exts),
+        )
 
     def _discovery_loop(self) -> None:
         watch_root = get_settings().watch_root

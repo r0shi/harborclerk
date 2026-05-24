@@ -31,50 +31,13 @@ from harbor_clerk.api.schemas.uploads import (
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import Settings, get_settings
 from harbor_clerk.db import get_session
+from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
 from harbor_clerk.models import Document, Upload, UploadSession
 from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["uploads"])
-
-# Note: a local copy of this set also lives in harbor_clerk/watcher/events.py.
-# The watcher keeps its own copy to avoid a watcher → api dependency.
-ALLOWED_EXTENSIONS = {
-    # Documents
-    ".pdf",
-    ".docx",
-    ".doc",
-    ".rtf",
-    ".txt",
-    ".md",
-    ".odt",
-    ".pages",
-    # Spreadsheets
-    ".xlsx",
-    ".xls",
-    ".ods",
-    ".numbers",
-    ".csv",
-    # Presentations
-    ".pptx",
-    ".ppt",
-    ".odp",
-    ".key",
-    # Images (OCR)
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".tiff",
-    ".tif",
-    # eBooks
-    ".epub",
-    # Web
-    ".html",
-    ".htm",
-    # Email
-    ".eml",
-}
 
 
 @router.post("/uploads", response_model=UploadResponse)
@@ -94,7 +57,7 @@ async def upload_files(
         fname = file.filename or ""
         dot = fname.rfind(".")
         ext = fname[dot:].lower() if dot != -1 else ""
-        if ext not in ALLOWED_EXTENSIONS:
+        if ext not in ALLOWED_EXTENSIONS or is_excalidraw(fname):
             results.append(
                 UploadFileResult(
                     upload_id=str(uuid.uuid4()),

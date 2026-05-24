@@ -1,4 +1,4 @@
-"""Tests for upload session endpoints."""
+"""Tests for upload session endpoints and the legacy /api/uploads endpoint."""
 
 import io
 import os
@@ -351,3 +351,22 @@ async def test_upload_to_inactive_session(client, admin_user, admin_token):
     )
     assert resp.status_code == 400
     assert "not active" in resp.json()["detail"]
+
+
+# --- Legacy POST /api/uploads ---
+
+
+async def test_legacy_upload_excalidraw_skipped(client, admin_user, admin_token):
+    """POST /api/uploads must skip *.excalidraw.md files (status='skipped')."""
+    file_content = b"excalidraw compressed blob"
+    files = {"files": ("Diagram.excalidraw.md", io.BytesIO(file_content), "text/markdown")}
+    resp = await client.post(
+        "/api/uploads",
+        files=files,
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    results = resp.json()["files"]
+    assert len(results) == 1
+    assert results[0]["filename"] == "Diagram.excalidraw.md"
+    assert results[0]["status"] == "skipped"

@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -20,6 +20,7 @@ from harbor_clerk.models import (
     Chunk,
     Document,
     DocumentHeading,
+    DocumentLink,
     DocumentPage,
     Entity,
     IngestionJob,
@@ -1436,6 +1437,32 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
+        # Explicit wikilink graph: docs this doc links to OR docs that link
+        # to this doc, both via resolved DocumentLink rows. Computed up front
+        # so linked docs can be returned even when the source doc has no
+        # embeddings yet (e.g. while the embed stage is still pending).
+        link_rows = (
+            await session.execute(
+                select(DocumentLink.src_doc_id, DocumentLink.target_doc_id).where(
+                    DocumentLink.resolved.is_(True),
+                    or_(
+                        DocumentLink.src_doc_id == target_id,
+                        DocumentLink.target_doc_id == target_id,
+                    ),
+                )
+            )
+        ).all()
+        linked_ids: list[uuid.UUID] = []
+        seen_linked: set[uuid.UUID] = set()
+        for src, tgt in link_rows:
+            other = tgt if src == target_id else src
+            if other is None or other == target_id or other in seen_linked:
+                continue
+            if visible_ids is not None and other not in visible_ids:
+                continue
+            seen_linked.add(other)
+            linked_ids.append(other)
+
         # Get all embeddings for this document's chunks
         rows = (
             await session.execute(
@@ -1446,57 +1473,73 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
             )
         ).all()
 
-        if not rows:
-            return json.dumps({"doc_id": doc_id, "related": [], "note": "No embeddings available"})
+        nearest: list = []
+        distances: dict[uuid.UUID, float] = {}
+        if rows:
+            # Compute average embedding in Python
+            dim = len(rows[0][0])
+            avg = [0.0] * dim
+            for (emb,) in rows:
+                for i, v in enumerate(emb):
+                    avg[i] += v
+            n = len(rows)
+            avg = [v / n for v in avg]
 
-        # Compute average embedding in Python
-        dim = len(rows[0][0])
-        avg = [0.0] * dim
-        for (emb,) in rows:
-            for i, v in enumerate(emb):
-                avg[i] += v
-        n = len(rows)
-        avg = [v / n for v in avg]
+            # Find nearest chunks from OTHER active documents
+            distance = Chunk.embedding.cosine_distance(avg)
+            nearest_q = (
+                select(
+                    Chunk.doc_id,
+                    func.min(distance).label("min_distance"),
+                )
+                .join(Document, Document.doc_id == Chunk.doc_id)
+                .where(
+                    Document.status == "active",
+                    Chunk.embedding.isnot(None),
+                    Chunk.doc_id != target_id,
+                )
+            )
+            if visible_ids is not None:
+                nearest_q = nearest_q.where(Chunk.doc_id.in_(visible_ids))
+            nearest = (
+                await session.execute(nearest_q.group_by(Chunk.doc_id).order_by(func.min(distance)).limit(k))
+            ).all()
+            distances = {row[0]: float(row[1]) for row in nearest}
 
-        # Find nearest chunks from OTHER active documents
-        distance = Chunk.embedding.cosine_distance(avg)
-        nearest_q = (
-            select(
-                Chunk.doc_id,
-                func.min(distance).label("min_distance"),
-            )
-            .join(Document, Document.doc_id == Chunk.doc_id)
-            .where(
-                Document.status == "active",
-                Chunk.embedding.isnot(None),
-                Chunk.doc_id != target_id,
-            )
+        # Embedding-nearest results (deduplicated against linked).
+        nearest_ids = [row[0] for row in nearest if row[0] not in seen_linked]
+
+        # Merge — linked first, then embedding-nearest — capped at k.
+        merged_ids: list[uuid.UUID] = (linked_ids + nearest_ids)[:k]
+        if not merged_ids:
+            payload: dict = {"doc_id": doc_id, "related": []}
+            if not rows:
+                payload["note"] = "No embeddings available"
+            return json.dumps(payload)
+
+        docs_result = await session.execute(
+            select(Document).where(Document.doc_id.in_(merged_ids), Document.status == "active")
         )
-        if visible_ids is not None:
-            nearest_q = nearest_q.where(Chunk.doc_id.in_(visible_ids))
-        nearest = (await session.execute(nearest_q.group_by(Chunk.doc_id).order_by(func.min(distance)).limit(k))).all()
-
-        if not nearest:
-            return json.dumps({"doc_id": doc_id, "related": []})
-
-        # Fetch document metadata for results
-        related_ids = [row[0] for row in nearest]
-        distances = {row[0]: float(row[1]) for row in nearest}
-
-        docs_result = await session.execute(select(Document).where(Document.doc_id.in_(related_ids)))
         related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
 
     items = []
-    for rid in related_ids:
+    for rid in merged_ids:
         rdoc = related_docs.get(rid)
         if not rdoc:
             continue
+        if rid in seen_linked:
+            similarity = 1.0
+            source = "linked"
+        else:
+            similarity = round(1.0 - distances[rid], 4)
+            source = "embedding"
         items.append(
             {
                 "doc_id": str(rid),
                 "title": rdoc.title,
                 "summary": rdoc.summary,
-                "similarity": round(1.0 - distances[rid], 4),
+                "similarity": similarity,
+                "source": source,
                 "doc_type": rdoc.doc_type,
                 "mime_type": rdoc.mime_type,
                 "canonical_filename": rdoc.canonical_filename,

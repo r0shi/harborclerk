@@ -16,6 +16,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_heading import DocumentHeading
@@ -26,44 +27,6 @@ from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
 
 logger = logging.getLogger(__name__)
-
-# Kept in sync with ALLOWED_EXTENSIONS in harbor_clerk/api/routes/uploads.py.
-# Duplicated here to avoid a transitive import chain through the API layer.
-_ALLOWED_EXTENSIONS = {
-    # Documents
-    ".pdf",
-    ".docx",
-    ".doc",
-    ".rtf",
-    ".txt",
-    ".md",
-    ".odt",
-    ".pages",
-    # Spreadsheets
-    ".xlsx",
-    ".xls",
-    ".ods",
-    ".numbers",
-    ".csv",
-    # Presentations
-    ".pptx",
-    ".ppt",
-    ".odp",
-    ".key",
-    # Images (OCR)
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".tiff",
-    ".tif",
-    # eBooks
-    ".epub",
-    # Web
-    ".html",
-    ".htm",
-    # Email
-    ".eml",
-}
 
 # SHA-256 of empty content. Every 0-byte file produces this digest,
 # so it's NOT a unique fingerprint and must never be used as a dedup
@@ -79,6 +42,23 @@ class EventKind(str, Enum):
     deleted = "deleted"
 
 
+class SkipReason(str, Enum):
+    """Why a path was skipped by the watcher.
+
+    ``NOISE`` covers intentional, hard-coded filters that the user never
+    expects to ingest (dotfiles, AppleDouble shadow files, ``__MACOSX``
+    archive metadata, Excalidraw notes). The UI does not surface these.
+
+    ``UNSUPPORTED_EXTENSION`` covers real files whose extension isn't in
+    the allowlist. These ARE surfaced per-folder ("N files not ingested —
+    unsupported types: …") so the user can decide whether to extend the
+    allowlist or accept the omission.
+    """
+
+    NOISE = "noise"
+    UNSUPPORTED_EXTENSION = "unsupported_extension"
+
+
 @dataclass
 class FileEvent:
     kind: EventKind
@@ -87,37 +67,45 @@ class FileEvent:
     absolute_path: str
 
 
-def _should_ignore(relative_path: str) -> bool:
-    """Filter filesystem noise that should never be ingested.
+def classify_skip(relative_path: str) -> SkipReason | None:
+    """Classify why ``relative_path`` would be skipped by the watcher.
 
-    Catches:
-      - AppleDouble shadow files (`._<name>`) created when macOS writes
-        to non-Mac filesystems (network shares, FAT, exFAT, NFS, SMB).
-        These have a real extension like `.pdf` so an extension-only
-        filter would let them through.
-      - macOS metadata files / directories: `.DS_Store`,
-        `.Spotlight-V100`, `.Trashes`, `.fseventsd`, `.TemporaryItems`.
-      - `__MACOSX/` archive metadata directories (left over from
-        unzipping a Mac-created archive on a non-Mac).
-      - Other dotfiles (`.git/*`, `.svn/*`, vim swap files, etc.) — not
-        documents, never useful to ingest.
-      - Files whose extension isn't in the document allowlist
-        (the watcher path historically had no such check; the legacy
-        Swift implementation did).
+    Returns ``None`` if the path WOULD be accepted by ``_should_ignore``
+    (i.e. nothing to skip). Otherwise returns the reason, splitting
+    intentional-noise filters from real "unsupported extension" rejects
+    so callers can count only the latter.
     """
     parts = relative_path.split("/")
     if any(p == "__MACOSX" for p in parts):
-        return True
-    # AppleDouble shadow files at any depth.
+        return SkipReason.NOISE
     if any(p.startswith("._") for p in parts):
-        return True
-    # Any dotfile component (catches .DS_Store, .git/, .svn/, .Trashes/, etc.)
-    # at any depth.
+        return SkipReason.NOISE
     if any(p.startswith(".") and p not in ("", ".", "..") for p in parts):
-        return True
-    # Extension allowlist (lowercase comparison).
+        return SkipReason.NOISE
+    if is_excalidraw(relative_path):
+        return SkipReason.NOISE
     suffix = Path(relative_path).suffix.lower()
-    return suffix not in _ALLOWED_EXTENSIONS
+    if suffix not in ALLOWED_EXTENSIONS:
+        return SkipReason.UNSUPPORTED_EXTENSION
+    return None
+
+
+def _should_ignore(relative_path: str) -> bool:
+    """True if the path should be filtered out (noise OR unsupported extension).
+
+    Kept as a thin wrapper around ``classify_skip`` so callers that don't
+    care about the reason (most of them) stay unchanged. Catches the same
+    filesystem noise as before:
+      - AppleDouble shadow files (`._<name>`) created when macOS writes
+        to non-Mac filesystems (network shares, FAT, exFAT, NFS, SMB).
+      - macOS metadata files / directories: `.DS_Store`,
+        `.Spotlight-V100`, `.Trashes`, `.fseventsd`, `.TemporaryItems`.
+      - `__MACOSX/` archive metadata directories.
+      - Other dotfiles (`.git/*`, `.svn/*`, vim swap files, etc.).
+      - Excalidraw notes (*.excalidraw.md) — JSON blobs, not prose.
+      - Files whose extension isn't in the document allowlist.
+    """
+    return classify_skip(relative_path) is not None
 
 
 def _sha256_of(path: str) -> bytes:

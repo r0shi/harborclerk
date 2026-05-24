@@ -64,16 +64,26 @@ async def test_watched_files_folder_path_unique(db_session):
     assert result.scalar_one() == 1
 
 
-def test_alembic_history_has_single_revision():
-    """The rebase squashed the 0001-0023 chain into one revision."""
+def test_alembic_chain_starts_at_0001_initial():
+    """The rebase squashed the 0001-0023 chain so the base is `0001_initial`.
+
+    The chain MAY grow legitimately past `0001_initial` as new post-rebase
+    migrations land. What we guard here is that `0001_initial` remains the
+    sole base (`<base> -> 0001_initial`) — i.e. no rogue new-base migration
+    accidentally fragments the chain.
+    """
     result = subprocess.run(
         ["uv", "run", "alembic", "history"],
         capture_output=True,
         text=True,
         check=True,
     )
-    # `alembic history` prints one line per revision edge; a single-revision
-    # chain has exactly one line, formatted "<base> -> 0001_initial (head), ...".
+    # `alembic history` prints one line per revision edge in the format
+    # "<from> -> <to>, <description>" (or "<base> -> <to>, ...").
     lines = [ln for ln in result.stdout.splitlines() if "->" in ln]
-    assert len(lines) == 1, f"expected 1 revision, got history:\n{result.stdout}"
-    assert "0001_initial" in lines[0]
+    assert lines, f"expected at least one revision, got history:\n{result.stdout}"
+
+    # Exactly one base edge — `<base> -> 0001_initial`.
+    base_edges = [ln for ln in lines if ln.lstrip().startswith("<base>")]
+    assert len(base_edges) == 1, f"expected one <base> edge, got:\n{result.stdout}"
+    assert "0001_initial" in base_edges[0], f"expected 0001_initial as the base, got: {base_edges[0]!r}"

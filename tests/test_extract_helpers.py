@@ -1,4 +1,4 @@
-"""Tests for extract stage helpers: _paginate_text, _alpha_ratio, Tika 422 diagnostics."""
+"""Tests for extract stage helpers: paginate_text, _alpha_ratio, Tika 422 diagnostics."""
 
 from unittest.mock import patch
 
@@ -9,27 +9,28 @@ from harbor_clerk.worker.stages.extract import (
     _alpha_ratio,
     _extract_headings_via_tika,
     _extract_via_tika,
-    _paginate_text,
     _sanitize_external_string,
+    is_plain_text_source,
 )
+from harbor_clerk.worker.text_pagination import paginate_text
 
-# --- _paginate_text ---
+# --- paginate_text ---
 
 
 def test_paginate_empty():
-    result = _paginate_text("", 3000)
+    result = paginate_text("", 3000)
     assert result == [(1, "")]
 
 
 def test_paginate_short():
     text = "Hello world"
-    result = _paginate_text(text, 3000)
+    result = paginate_text(text, 3000)
     assert result == [(1, text)]
 
 
 def test_paginate_long():
     text = "A" * 10000
-    result = _paginate_text(text, 3000)
+    result = paginate_text(text, 3000)
     assert len(result) > 1
     # Verify page numbers are sequential 1-based
     for i, (pnum, _) in enumerate(result):
@@ -39,7 +40,7 @@ def test_paginate_long():
 def test_paginate_full_coverage():
     """All text should be covered by pages."""
     text = "word " * 2000  # 10000 chars
-    result = _paginate_text(text, 3000)
+    result = paginate_text(text, 3000)
     reconstructed = "".join(t for _, t in result)
     assert reconstructed == text
 
@@ -49,7 +50,7 @@ def test_paginate_paragraph_boundary():
     para1 = "A" * 2000
     para2 = "B" * 2000
     text = para1 + "\n\n" + para2
-    result = _paginate_text(text, 3000)
+    result = paginate_text(text, 3000)
     assert len(result) >= 2
     # First page should end at or near the paragraph break
     first_text = result[0][1]
@@ -262,3 +263,25 @@ def test_sanitize_external_string_caps_length():
 
 def test_sanitize_external_string_handles_empty():
     assert _sanitize_external_string("") == ""
+
+
+# --- is_plain_text_source ---
+
+
+def test_is_plain_text_source_by_mime():
+    assert is_plain_text_source("text/plain", "") is True
+
+
+def test_is_plain_text_source_new_extensions():
+    for key in ("notes.rst", "data.json", "script.py", "subs.srt", "graph.canvas", "doc.markdown"):
+        assert is_plain_text_source("", key) is True, key
+
+
+def test_is_plain_text_source_legacy_plain_text():
+    for key in ("readme.txt", "notes.md", "table.csv"):
+        assert is_plain_text_source("", key) is True, key
+
+
+def test_is_plain_text_source_tika_formats_excluded():
+    for key in ("report.pdf", "memo.docx", "sheet.xlsx", "page.html", "book.epub"):
+        assert is_plain_text_source("", key) is False, key

@@ -10,6 +10,7 @@ from harbor_clerk.models.conversation import Conversation
 from harbor_clerk.models.corpus_topic import CorpusTopic, CorpusTopicsMeta
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_heading import DocumentHeading
+from harbor_clerk.models.document_link import DocumentLink
 from harbor_clerk.models.document_page import DocumentPage
 from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import (
@@ -52,6 +53,7 @@ __all__ = [
     "UploadSession",
     "DocumentPage",
     "DocumentHeading",
+    "DocumentLink",
     "Chunk",
     "IngestionJob",
     "ImapCommandLog",
