@@ -728,6 +728,7 @@ def mock_hybrid_search_multi(monkeypatch):
         before=None,
         language=None,
         mime_type=None,
+        metadata_filter=None,
     ):
         calls.append(
             dict(
@@ -740,6 +741,7 @@ def mock_hybrid_search_multi(monkeypatch):
                 before=before,
                 language=language,
                 mime_type=mime_type,
+                metadata_filter=metadata_filter,
             )
         )
         return result_override

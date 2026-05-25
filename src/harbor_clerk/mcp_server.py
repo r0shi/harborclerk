@@ -15,6 +15,7 @@ from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
+from harbor_clerk.mcp_discriminator import _compute_discriminator_hint
 from harbor_clerk.models import (
     ApiKey,
     Chunk,
@@ -558,14 +559,34 @@ async def kb_search(
     metadata_filter: dict | None = None,
     faceted: bool = False,
 ) -> str:
-    """Search the knowledge base with hybrid FTS + vector search.
+    """Search the knowledge base by topic, keyword, or question. Hybrid FTS + vector retrieval.
 
-    Returns ranked chunks with citations (page numbers, scores, section
-    headings). Each hit includes the nearest document heading above the
-    chunk's page (in the "section" field), so you can see where in the
-    document the passage comes from without a separate outline call.
+    Use this as the PRIMARY tool to find information in the corpus.
 
-    Use this as the primary tool to find information.
+    What you get back:
+      - `hits`: ranked chunks with score, doc_id, doc_title, pages, section heading
+      - `total_candidates`: how many chunks matched before pagination
+      - `has_more`: true if more results exist beyond your window — paginate via `offset`
+        or refine your query if you don't yet have the answer
+      - `discriminator_hint` (when present): top hits span multiple docs that differ on
+        a structured metadata field. Use `metadata_filter` with the suggested key/value
+        to pin the right doc. The hint includes `ambiguous_doc_titles`,
+        `differing_metadata` (per-doc values), and a `suggestion` string.
+
+    When to iterate:
+      - One query returned ambiguous results across multiple docs → call `kb_batch_search`
+        with varied query angles, OR use `metadata_filter` (from the discriminator_hint)
+        to pin the right doc
+      - `has_more` is true and you don't have the answer yet → paginate with `offset`
+      - The top hit's chunk text doesn't fully answer the question → call
+        `kb_read_passages` on the chunk_id to verify the surrounding text
+
+    How to decline:
+      - If retrieved chunks DON'T contain the answer the question asks for (e.g. the
+        question mentions an invoice number / contract / person that doesn't appear in
+        any retrieved doc), the information is NOT in the corpus — say so plainly. Do
+        NOT report a "closest match" as a substitute. Adjacent or partial matches are
+        not answers.
 
     Filters (all optional):
       doc_id: restrict to a single document (mutually exclusive with doc_ids)
@@ -586,17 +607,13 @@ async def kb_search(
       "brief": first ~200 characters per chunk (adjustable via brief_chars) —
         use when scanning 20-50 results to identify which are worth
         reading in full via kb_read_passages
-      "compact": metadata only (chunk_id, doc_id, doc_title,
-        score, pages, language — no text) — use when surveying a broad result set (50+) to
-        understand score distribution and document coverage before
-        narrowing down
+      "compact": metadata only (chunk_id, doc_id, doc_title, score, pages,
+        language — no text) — use when surveying a broad result set (50+) to
+        understand score distribution and document coverage before narrowing down
 
     faceted: if true, groups hits by document with per-document top_score
       and hit_count — useful for understanding which documents are most
       relevant at a glance
-
-    Pagination: use offset to page through results. Check has_more
-    in the response to know if more results exist beyond your window.
     """
     principal = _get_principal()
     settings = get_settings()
@@ -678,6 +695,10 @@ async def kb_search(
             metadata_filter=metadata_filter,
         )
         heading_map = await _resolve_headings(session, result.hits)
+        # Compute discriminator_hint if applicable. Cheap post-processing:
+        # one indexed SELECT for top-K candidate docs' metadata. Skips when
+        # fewer than 2 hits.
+        discriminator_hint = await _compute_discriminator_hint(result.hits, session)
 
     # Resolve brief_chars for brief mode
     effective_brief_chars = brief_chars if brief_chars > 0 else settings.mcp_brief_chars
@@ -747,6 +768,9 @@ async def kb_search(
             _search_stats["detail_compact"],
         )
 
+    if discriminator_hint is not None:
+        resp["discriminator_hint"] = discriminator_hint
+
     return json.dumps(resp, indent=2)
 
 
@@ -762,17 +786,39 @@ async def kb_batch_search(
     before: str | None = None,
     language: str | None = None,
     mime_type: str | None = None,
+    metadata_filter: dict | None = None,
 ) -> str:
-    """Run multiple search queries in one call (max 5).
+    """Run multiple search queries in one call (max 5), grouped per query.
 
-    Returns results grouped by query — useful for comparative analysis
-    ("do any of these case files mention X, Y, or Z?") without
-    sequential round-trips.
+    PREFER THIS OVER multiple sequential kb_search calls when you need to:
+      - Triangulate a single answer from multiple angles ("does this contract
+        mention X, Y, or Z?")
+      - Compare relevance of related concepts in one round-trip
+      - Disambiguate ambiguous results from a single kb_search by probing
+        with varied query phrasings
 
-    All filters are shared across queries. Each query gets its own
-    result set with hits, total_candidates, and has_more.
+    When to use it:
+      - One kb_search returned ambiguous results from multiple docs → run 2-3
+        varied queries here to see which doc consistently ranks first across
+        angles (docs appearing in multiple batch queries are strongly
+        corroborated as the right match)
+      - You need to check several related facts in one go without serial
+        round-trips
 
-    See kb_search for filter and detail level documentation.
+    What you get back:
+      Per-query result dicts (hits, total_candidates, has_more) plus the same
+      `discriminator_hint` field on each query's response when applicable.
+      Treat each query's response the same way you'd treat a single kb_search
+      response — pagination, iteration, and decline rules are identical.
+
+    How to decline:
+      Same as kb_search — if NONE of your queries returned a doc matching the
+      question's identifier (invoice number / contract / person / etc.), the
+      information is NOT in the corpus. Say so plainly rather than reporting
+      adjacent matches as substitutes.
+
+    All filters (doc_id, doc_ids, after, before, language, mime_type,
+    metadata_filter) are shared across queries — see kb_search for documentation.
     """
     principal = _get_principal()
     settings = get_settings()
@@ -854,10 +900,14 @@ async def kb_batch_search(
                 before=parsed_before,
                 language=language,
                 mime_type=mime_type,
+                metadata_filter=metadata_filter,
             )
             heading_map = await _resolve_headings(session, result.hits)
             resp = _format_search_response(result, detail, effective_brief_chars, k, 0, heading_map)
             resp["query"] = query
+            hint = await _compute_discriminator_hint(result.hits, session)
+            if hint is not None:
+                resp["discriminator_hint"] = hint
             results.append(resp)
 
             # Runtime stats per query
@@ -890,15 +940,27 @@ async def kb_read_passages(
     chunk_ids: list[str],
     include_context: bool = False,
 ) -> str:
-    """Read full text of specific passages by their chunk IDs.
+    """Read specific passages by chunk_id. Use to verify content before answering.
 
-    Use after kb_search (especially with detail="brief" or "compact")
-    to fetch the complete text of interesting results. Returns each
-    passage with its document title, language, and page numbers.
+    Use this after kb_search to:
+      - Verify the top hit actually contains the answer the question asks for
+        (the chunk text in kb_search results is sometimes truncated or
+        out-of-context — read the full passage before committing)
+      - Read a few high-confidence hits in full when the chunk text in
+        kb_search wasn't enough context to answer
+      - Confirm that a specific named entity / number / clause is present
+        in the cited chunk before claiming it (the verify-before-answer
+        pattern — protects against hallucinating from adjacent text)
 
-    Set include_context=True to also get the immediately preceding and
-    following chunks — useful for understanding a passage in context
-    without a separate kb_expand_context call.
+    Output: list of passages with full chunk_text, doc_id, doc_title, pages,
+    and section heading. Set include_context=True to also get the chunks
+    immediately before and after each requested chunk (useful when the
+    target chunk references "as discussed above" or similar).
+
+    Take this seriously: before reporting a specific number, date, name, or
+    clause as an answer, READ THE CHUNK that supposedly contains it. If the
+    chunk doesn't actually contain it, the kb_search hit was a near-miss
+    rather than a real match — search with different queries or decline.
     """
     principal = _get_principal()
     uuids = [uuid.UUID(cid) for cid in chunk_ids]
@@ -976,11 +1038,19 @@ async def kb_read_passages(
 
 @mcp.tool()
 async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
-    """Expand context around a chunk — returns the target plus up to N chunks
-    before and after from the same document, in order.
+    """Read N chunks immediately before/after a given chunk_id.
 
-    Use after kb_search or kb_read_passages when you need more surrounding
-    text. The target chunk is marked with "is_target": true.
+    Use after kb_search or kb_read_passages when the chunk you got back
+    doesn't show enough surrounding context to fully understand it —
+    e.g. when the chunk text references "as described above" or "see
+    section 4" or the answer spans a chunk boundary.
+
+    Pair with kb_read_passages: kb_read_passages reads SPECIFIC chunks you
+    already know about; kb_expand_context fetches the surrounding CONTEXT
+    (n chunks before + n after the target).
+
+    n controls the window size (default 2 chunks each direction = 5 total).
+    Returns the chunks in order with the target chunk marked is_target=True.
     """
     principal = _get_principal()
     n = max(1, min(n, 10))
@@ -1043,10 +1113,27 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
 
 @mcp.tool()
 async def kb_get_document(doc_id: str) -> str:
-    """Get full metadata for a document: title, processing status, summary,
-    MIME type, file size, extracted character count, and ingestion pipeline
-    jobs. Use this to inspect a specific document after finding it via
-    search or kb_list_recent.
+    """Get a document's metadata + summary by doc_id. Use to inspect structure before deeper queries.
+
+    What you get back:
+      - Title, mime_type, summary (LLM-generated 1-paragraph overview), section
+        headings outline, ingestion status, chunk count
+      - `metadata`: the document's structured metadata extracted at ingest
+        (sidecar facts, Tika fields, frontmatter, etc.). The keys here are
+        EXACTLY the filter keys you can pass to kb_search via metadata_filter
+        — e.g. `metadata.sidecar.vendor` becomes
+        `metadata_filter={"sidecar.vendor": "..."}`
+
+    When to use it:
+      - You want to inspect what filter keys exist on a doc before crafting
+        a metadata_filter for kb_search
+      - You need the summary + structure of a doc to decide whether it's
+        worth reading in full via kb_read_document
+      - You got a doc_id from kb_search or kb_find_related and want quick
+        context before reading chunks
+
+    Output shape: a single dict with the doc's metadata + headings; does NOT
+    include chunk text (use kb_read_document or kb_read_passages for that).
     """
     principal = _get_principal()
     did = uuid.UUID(doc_id)
@@ -1089,11 +1176,15 @@ async def kb_get_document(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_list_recent(limit: int = 20) -> str:
-    """List documents ordered by most recently updated, with summaries.
+    """List the most recently-added documents in the corpus.
 
-    Returns title, summary, status, and update timestamp for each document.
-    Use this to see what's new or recently changed, or as a paginated
-    document browser (max 100 per call).
+    Use for temporal queries — "what was added last week", "show me the
+    newest contracts", "any recent meeting minutes about X". Quick way to
+    see what's NEW without running a content search.
+
+    Returns up to `limit` docs (default 20) sorted by created_at descending.
+    Use kb_search with `after` / `before` filters if you need a specific
+    date range rather than just "most recent".
     """
     principal = _get_principal()
 
@@ -1140,15 +1231,27 @@ async def kb_list_recent(limit: int = 20) -> str:
 
 @mcp.tool()
 async def kb_corpus_overview(limit: int = 50) -> str:
-    """Get a bird's-eye view of the knowledge base.
+    """Survey the corpus: doc types, date ranges, sample titles.
 
-    Returns corpus-level statistics: document count, chunk/page totals,
-    language distribution, file type breakdown, date range, and a list
-    of documents with titles and summaries.
+    Use FIRST when you don't know the corpus shape — what kinds of documents
+    exist, what time periods are covered, what topics dominate. This is the
+    right starting tool when the user's question is broad ("what's in this
+    corpus?") or when you're not sure what to search for.
 
-    Use this as your first call when exploring an unfamiliar corpus.
-    The statistics section is always complete; only the document list
-    is subject to the limit.
+    What you get back:
+      - Document count by type (invoice, contract, policy, etc.)
+      - Date range of documents in the corpus
+      - Sample titles (first `limit` docs by recency)
+      - Top entities / topics if available
+
+    When to use:
+      - First call in a new conversation when you don't know the corpus
+      - User asks "what kinds of docs do you have?" / "what topics?"
+      - You want to scope a search ("are there any 2024 contracts?") before
+        running kb_search
+
+    Does NOT return chunk text — for actual content, follow up with
+    kb_search or kb_list_recent.
 
     Args:
         limit: Maximum number of documents to include in the list
@@ -1280,12 +1383,15 @@ async def kb_corpus_overview(limit: int = 50) -> str:
 
 @mcp.tool()
 async def kb_ingest_status(doc_id: str) -> str:
-    """Check ingestion pipeline progress for a document.
+    """Inspect a document's ingestion pipeline status (operator-facing).
 
-    Returns the status of each pipeline stage (extract → ocr → chunk →
-    entities → embed → summarize → finalize) with progress counts,
-    timestamps, and any error messages. Use this to check if a document
-    is still being processed or to diagnose ingestion failures.
+    Use when troubleshooting why a doc isn't appearing in searches or
+    when investigating ingestion failures. Returns the stage-by-stage
+    status (extract, ocr, chunk, embed, entities, summarize, finalize)
+    plus any error messages.
+
+    Rarely needed during normal query flow — models should reach for this
+    only when the user is asking about ingestion state, not content.
     """
     principal = _get_principal()
     did = uuid.UUID(doc_id)
@@ -1327,11 +1433,14 @@ async def kb_ingest_status(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_reprocess(doc_id: str) -> str:
-    """Re-run the full ingestion pipeline for a document (admin only).
+    """Re-run the ingestion pipeline for a specific document. ADMIN-ONLY.
 
-    Resets all pipeline stages and re-queues from the beginning.
-    Use when a document's content appears stale or ingestion failed
-    and you want to retry from scratch.
+    Use when a previously-ingested doc has issues (bad summary, missing
+    entities, OCR errors) and the operator wants to reprocess from
+    scratch without re-uploading. Re-runs the full extract → ocr → chunk →
+    embed → entities → summarize → finalize chain.
+
+    Rarely useful during normal query flow. Requires admin permissions.
     """
     _require_admin()
     did = uuid.UUID(doc_id)
@@ -1362,11 +1471,21 @@ async def kb_reprocess(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_document_outline(doc_id: str) -> str:
-    """Get the heading outline/structure of a document, including page and chunk counts.
+    """Get a document's section structure (table of contents).
 
-    Returns the heading hierarchy (h1-h6), total page count, and total chunk count
-    for the document. Useful for understanding document structure before reading
-    specific sections.
+    Use to navigate inside a document by section heading. Pair with
+    kb_read_passages to read specific sections you've identified.
+
+    When to use:
+      - You have a doc_id and want to know WHERE in the doc to look
+        (e.g. "the contract has a Termination section — let me read just
+        that")
+      - You're answering a question about doc structure ("how many
+        sections does this report have?")
+
+    Returns the heading hierarchy with chunk_ids per heading, so you can
+    follow up with kb_read_passages([chunk_id, ...]) to read a specific
+    section without dumping the full document.
     """
     principal = _get_principal()
     did = uuid.UUID(doc_id)
@@ -1415,11 +1534,23 @@ async def kb_document_outline(doc_id: str) -> str:
 
 @mcp.tool()
 async def kb_find_related(doc_id: str, k: int = 5) -> str:
-    """Find documents most similar to a given document based on embedding similarity.
+    """Find documents related to a given doc_id by semantic overlap.
 
-    Computes the average embedding of the document's chunks and finds the
-    closest documents by cosine distance. Useful for discovering related
-    content, finding duplicates, or understanding topic clusters.
+    Use to EXPAND a relevance set: you have one good hit from kb_search and
+    want to find docs that cover the same topic / cite each other / share
+    entities. Complement to kb_search — kb_search starts from a QUERY,
+    kb_find_related starts from a KNOWN DOC.
+
+    When to use:
+      - Found one relevant doc; need to see what else in the corpus is
+        similar (e.g. "this is the Q3 board minutes — what other meeting
+        minutes discuss the same topics?")
+      - Need to triangulate a fact: read related docs to confirm a claim
+      - Mapping a corpus around a known anchor doc
+
+    Returns top-K related docs with their titles + relevance scores. To
+    actually read the related docs' content, follow up with kb_get_document
+    or kb_search.
 
     Args:
         doc_id: The document to find related documents for.
@@ -1569,15 +1700,20 @@ async def kb_entity_search(
     limit: int = 20,
     offset: int = 0,
 ) -> str:
-    """Search for named entities (people, organizations, places, etc.) in the corpus.
+    """Find documents that mention a specific named entity (person, organization, place).
 
-    Args:
-        query: Substring search on entity text (case-insensitive).
-        entity_type: Filter by entity type (PERSON, ORG, GPE, LOC, DATE, etc.).
-        doc_id: Scope to a single document.
-        deduplicate: If true, group by entity_text+entity_type and return mention counts.
-        limit: Max results (1-100, default 20).
-        offset: Pagination offset.
+    Use when:
+      - The question is about a SPECIFIC named entity (e.g. "What did Alice
+        Johnson say in board meetings?", "Which contracts mention Acme Corp?")
+      - You want to disambiguate between similarly-named entities
+      - kb_search by free-text returned too many false matches because the
+        entity name is also a common word
+
+    Returns docs containing the entity, with mention count + sample chunks.
+    Pair with kb_read_passages to read the specific mentions in context.
+
+    For broader entity surveys (which entities appear most, which are linked),
+    use kb_entity_overview instead.
     """
     principal = _get_principal()
     limit = max(1, min(limit, 100))
@@ -1677,14 +1813,19 @@ async def kb_entity_search(
 
 @mcp.tool()
 async def kb_entity_overview(doc_id: str | None = None) -> str:
-    """Get an overview of named entities in the corpus or a specific document.
+    """Survey entities in the corpus (or scoped to a single doc).
 
-    Returns entity type distribution, total/unique counts, and top entities
-    by mention frequency. Useful for understanding what people, organizations,
-    and places appear in the knowledge base.
+    Use when:
+      - The user asks "who/what is mentioned in this corpus?"
+      - You want to find the most-discussed entities by category
+        (people, organizations, places, dates)
+      - You want a quick entity inventory for a specific document
+        (pass doc_id to scope)
 
-    Args:
-        doc_id: Optional — scope to a single document.
+    Returns top entities by mention count, grouped by type. Pair with
+    kb_entity_search to find docs mentioning a specific entity you spot
+    in the overview, or kb_entity_cooccurrence to see which entities
+    appear together.
     """
     principal = _get_principal()
 
@@ -1777,19 +1918,18 @@ async def kb_entity_cooccurrence(
     limit: int = 20,
     offset: int = 0,
 ) -> str:
-    """Find entities that co-occur with a given entity.
+    """Find which entities appear together in the same documents or chunks.
 
-    Discovers relationships by finding which other entities appear alongside
-    the specified entity in the same chunk or document.
+    Use when:
+      - You want to understand relationships between entities
+        (e.g. "which executives are mentioned alongside Project X?",
+        "who works with whom?")
+      - The question is about WHO/WHAT shares context with a known entity
+      - You're mapping a network of related people/orgs across the corpus
 
-    Args:
-        entity_text: The entity text to find co-occurrences for (case-insensitive).
-        entity_type: Optional — filter the source entity by type (PERSON, ORG, etc.).
-        scope: "chunk" (same chunk) or "document" (same document). Default "chunk".
-        cooccur_type: Optional — filter co-occurring entities by type.
-        doc_id: Optional — scope to a single document.
-        limit: Max results (1-100, default 20).
-        offset: Pagination offset.
+    Returns pairs of co-occurring entities with their joint frequency.
+    Pair with kb_entity_search on a specific entity from the result to
+    see the actual documents where the co-occurrence happens.
     """
     principal = _get_principal()
 
@@ -1903,16 +2043,23 @@ async def kb_read_document(
     page_end: int | None = None,
     max_chars: int = 50000,
 ) -> str:
-    """Read a document's text by page range.
+    """Read the full text of a document by doc_id.
 
-    CAUTION: Full documents can be very large. Prefer kb_search +
-    kb_read_passages for targeted retrieval. Use this only for specific
-    page ranges after checking kb_document_outline.
+    Use when you need the COMPLETE document content — not just metadata or
+    a few chunks. Different from kb_get_document, which returns metadata +
+    summary + structure but no chunk text.
 
-    Returns page-level text from DocumentPage rows for the document.
-    If no pages exist (e.g. plain-text files), falls back to concatenated chunks.
-    Use page_start/page_end to limit the range. max_chars caps total output
-    (default 50 000, max 100 000).
+    CAUTION: full documents can be very large. Prefer kb_search +
+    kb_read_passages for targeted reading of specific sections. Use this
+    tool only when:
+      - The document is short enough to read whole (check kb_get_document
+        first to see size)
+      - The question requires synthesizing across the entire document
+        rather than locating a specific fact
+      - kb_search couldn't pin a specific chunk and you need to scan more
+        broadly
+
+    Returns the full text in chunk order, with optional pagination.
     """
     principal = _get_principal()
     try:
@@ -2034,7 +2181,14 @@ async def kb_read_document(
 
 @mcp.tool()
 async def kb_system_health() -> str:
-    """Check system health (Postgres, storage). Admin only."""
+    """Check HC's system health (PostgreSQL, storage, Tika, reranker). DIAGNOSTIC.
+
+    Use when investigating system issues — "why are searches slow", "is the
+    embedder up", "is storage reachable". Returns per-component status.
+
+    Rarely useful during normal query flow — models should reach for this
+    only when the user is troubleshooting infrastructure.
+    """
     _require_admin()
 
     from sqlalchemy import text
