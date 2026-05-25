@@ -240,20 +240,28 @@ class TestCliAccessGate:
 
         _config._settings = None
 
-        scope = _http_scope(headers=_headers_with(_VALID_KEY, user_agent="harbor-clerk-cli/0.1.0"))
+        try:
+            scope = _http_scope(headers=_headers_with(_VALID_KEY, user_agent="harbor-clerk-cli/0.1.0"))
 
-        # Disabled via config.json → 403
-        status, _, body = await _capture_response(app, scope)
-        assert status == 403
-        data = json.loads(body)
-        assert data["error"] == "cli_access_disabled"
+            # Disabled via config.json → 403
+            status, _, body = await _capture_response(app, scope)
+            assert status == 403
+            data = json.loads(body)
+            assert data["error"] == "cli_access_disabled"
 
-        # Simulate macOS Preferences toggle: write true without restarting
-        config_file.write_text('{"enable_cli_access": true}\n')
+            # Simulate macOS Preferences toggle: write true without restarting
+            config_file.write_text('{"enable_cli_access": true}\n')
 
-        # Next request sees the new value without resetting _settings
-        status, _, _ = await _capture_response(app, scope)
-        assert status == 200
+            # Next request sees the new value without resetting _settings
+            status, _, _ = await _capture_response(app, scope)
+            assert status == 200
+        finally:
+            # refresh_cli_access_setting() mutated the singleton's
+            # `enable_cli_access` attribute. monkeypatch restores env vars on
+            # teardown but cannot rewind in-memory mutations, so the next test
+            # that calls get_settings() would otherwise see the leaked True.
+            # Reset so the next test gets a fresh, env-derived singleton.
+            _config._settings = None
 
     @pytest.mark.asyncio
     async def test_cli_gate_denial_writes_audit_row(self, app, monkeypatch):
