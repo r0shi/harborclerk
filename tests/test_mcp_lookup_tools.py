@@ -187,6 +187,43 @@ async def test_excludes_inactive_documents(db_session):
 
 
 @pytest.mark.asyncio
+async def test_metadata_scan_cap_still_finds_match_among_many_non_matching_docs(db_session):
+    """Regression for the unbounded metadata scan.
+
+    Seed 99 active docs all with non-empty metadata but no matching
+    identifier key, then one doc that DOES match via a sidecar contract_id.
+    With LIMIT 100 on the metadata scan, all 100 are fetched and the
+    matching doc (inserted last but within the 100-row window) is found.
+    _find_candidates must still return the matching doc, and the total
+    result count must be bounded by _VERIFY_CANDIDATE_CAP.
+
+    The regression value is in the LIMIT: without it, a corpus with 10k+
+    metadata docs would load them all into memory every call.
+    """
+    # 99 non-matching docs with non-empty metadata (total with the matching
+    # doc = 100, within the LIMIT 100 window).
+    for i in range(99):
+        await _seed_doc(
+            db_session,
+            title=f"NoMatch {i:03d}",
+            metadata={"sidecar": {"vendor": f"Vendor {i}"}},
+        )
+    # One doc that matches only via the Python-side identifier-key walk.
+    matching = await _seed_doc(
+        db_session,
+        title="Unique Title XZQ",
+        metadata={"sidecar": {"contract_id": "UNIQUE-XZQ-9999"}},
+    )
+    await db_session.flush()
+
+    candidates = await _find_candidates(db_session, "UNIQUE-XZQ-9999")
+    # The matching doc must be found despite the large non-matching pool.
+    assert any(c.doc_id == matching.doc_id for c in candidates)
+    # Total candidates must be bounded (at most _VERIFY_CANDIDATE_CAP).
+    assert len(candidates) <= 100
+
+
+@pytest.mark.asyncio
 async def test_caps_at_100_candidates(db_session):
     """100 docs with a shared substring — result is capped at 100."""
     for i in range(105):
@@ -275,6 +312,39 @@ async def test_ambiguous_with_no_differing_fields_uses_fallback_suggestion(db_se
     for c in result["candidates"]:
         assert c["discriminating_fields"] == {}
     assert "identical" in result["suggestion"].lower()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_with_nested_metadata_uses_nested_suggestion(db_session):
+    """When two docs are ambiguous and the discriminating info is nested in a
+    way the top-level projection can't see, the suggestion must mention
+    'nested', NOT 'identical discriminating metadata'.
+
+    Both docs match by title prefix. Doc A has nested metadata under
+    sidecar.contract (a dict-valued leaf). Doc B has flat sidecar metadata
+    on a different key. Because the path sets don't intersect, _find_differing
+    _metadata_fields returns empty — but _has_nested_metadata detects the dict
+    leaf on doc A and routes to the nested-aware suggestion branch.
+    """
+    # Doc A: nested sidecar metadata — sidecar.contract is a dict.
+    await _seed_doc(
+        db_session,
+        title="Pinnacle Nested Alpha",
+        metadata={"sidecar": {"contract": {"id": "K-2025-031"}}},
+    )
+    # Doc B: flat sidecar metadata on a DIFFERENT key — no common path with A.
+    await _seed_doc(
+        db_session,
+        title="Pinnacle Nested Beta",
+        metadata={"sidecar": {"vendor": "Acme Corp"}},
+    )
+    await db_session.flush()
+
+    result = await verify_identifier(db_session, "Pinnacle Nested")
+    assert result["status"] == "ambiguous"
+    suggestion = result["suggestion"].lower()
+    assert "nested" in suggestion
+    assert "identical" not in suggestion
 
 
 @pytest.mark.asyncio

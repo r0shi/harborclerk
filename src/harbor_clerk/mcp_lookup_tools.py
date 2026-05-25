@@ -107,10 +107,17 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
     sql_hits = (await session.execute(stmt)).scalars().all()
     sql_hit_ids = {d.doc_id for d in sql_hits}
 
-    # Python-side pass for identifier-like metadata keys. Fetch all active
-    # docs whose metadata is non-empty (cheap with the existing GIN index)
-    # and walk their JSON structure.
-    stmt_meta = select(Document).where(Document.status == "active").where(Document.doc_metadata != {})
+    # Python-side pass for identifier-like metadata keys. Fetch active
+    # docs whose metadata is non-empty and walk their JSON structure.
+    # Capped at _VERIFY_CANDIDATE_CAP so the Python-side loop is always
+    # bounded: a corpus with 10k+ metadata-bearing docs never loads them
+    # all into memory on a single call.
+    stmt_meta = (
+        select(Document)
+        .where(Document.status == "active")
+        .where(Document.doc_metadata != {})
+        .limit(_VERIFY_CANDIDATE_CAP)
+    )
     meta_hits = (await session.execute(stmt_meta)).scalars().all()
 
     extra: list[Document] = []
@@ -134,6 +141,25 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
         if len(result) >= _VERIFY_CANDIDATE_CAP:
             break
     return result
+
+
+def _has_nested_metadata(metadata_by_doc: dict[str, dict]) -> bool:
+    """Return True if any candidate document has a dict-valued leaf inside a
+    known metadata namespace (e.g. ``sidecar.contract`` is itself a dict).
+
+    This signals that the discriminating information may be nested deeper than
+    the one-level projection used by ``_find_differing_metadata_fields``, so
+    the ambiguous-match suggestion should guide the caller to inspect the raw
+    document rather than implying the candidates are identical.
+    """
+    for meta in metadata_by_doc.values():
+        for ns in _ID_KEY_NAMESPACES:
+            ns_dict = meta.get(ns)
+            if isinstance(ns_dict, dict):
+                for value in ns_dict.values():
+                    if isinstance(value, dict):
+                        return True
+    return False
 
 
 async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
@@ -203,6 +229,11 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
     elif differing:
         field_list = ", ".join(differing.keys())
         suggestion = f"{len(candidates)} candidates differ on {field_list} — pick the one matching your intent."
+    elif _has_nested_metadata(metadata_by_doc):
+        suggestion = (
+            "Multiple candidates matched, but their distinguishing metadata is nested — "
+            "inspect with kb_get_document on each."
+        )
     else:
         suggestion = (
             "Multiple candidates have identical discriminating metadata — try kb_get_document on each to inspect body."
