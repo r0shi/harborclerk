@@ -18,8 +18,8 @@ import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import case, cast, func, literal, or_, select
-from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy import case, cast, func, literal, null, or_, select
+from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
@@ -225,17 +225,40 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
 
 _ALLOWED_DATE_FIELDS = frozenset({"tika.created_at", "frontmatter.date", "sidecar.date", "ingest"})
 
+# ISO 8601 prefix: requires at minimum YYYY-MM-DD.  Matches date-only strings
+# ("2024-01-15") as well as full datetimes ("2024-01-15T08:00:00Z").  Non-ISO
+# strings emitted by Tika (e.g. "N/A", "", localized formats) won't match and
+# produce NULL instead of raising invalid_datetime_format.
+_ISO_DATE_PREFIX_RE = r"^\d{4}-\d{2}-\d{2}"
 
-def _date_components():
+
+def _safe_timestamp_cast(text_expr: Any) -> Any:
+    """Return a SQLAlchemy expression that casts *text_expr* to TIMESTAMPTZ
+    when it starts with an ISO 8601 date prefix, or NULL otherwise.
+
+    This prevents a single document with a malformed Tika date (e.g. "N/A")
+    from raising ``invalid_datetime_format`` and aborting the entire query.
+    """
+    return case(
+        (text_expr.op("~")(_ISO_DATE_PREFIX_RE), cast(text_expr, TIMESTAMP(timezone=True))),
+        else_=null(),
+    )
+
+
+def _date_components() -> list[tuple[str, Any]]:
     """Return (label, expr) tuples per priority slot.
 
     Expressions are built fresh per call — SQLAlchemy column elements are
     immutable but we avoid any cross-call binding state by constructing here.
     The priority order is: tika.created_at → frontmatter.date → sidecar.date → ingest.
+
+    JSONB text slots use _safe_timestamp_cast so a malformed date value
+    (e.g. Tika emitting "N/A") returns NULL and falls through to the next
+    priority slot instead of raising an invalid_datetime_format error.
     """
-    tika_expr = cast(Document.doc_metadata["tika"]["created_at"].astext, TIMESTAMP(timezone=True))
-    fm_expr = cast(Document.doc_metadata["frontmatter"]["date"].astext, TIMESTAMP(timezone=True))
-    sc_expr = cast(Document.doc_metadata["sidecar"]["date"].astext, TIMESTAMP(timezone=True))
+    tika_expr = _safe_timestamp_cast(Document.doc_metadata["tika"]["created_at"].astext)
+    fm_expr = _safe_timestamp_cast(Document.doc_metadata["frontmatter"]["date"].astext)
+    sc_expr = _safe_timestamp_cast(Document.doc_metadata["sidecar"]["date"].astext)
     ingest_expr = Document.created_at
     return [
         ("tika.created_at", tika_expr),
@@ -288,25 +311,20 @@ async def _query_documents_by_date(
         source_label_expr = literal(date_field)
     else:
         # COALESCE in priority order; CASE picks the first non-null source label.
-        # For JSONB-cast slots we check the raw JSONB path (before cast) because
-        # the cast itself may produce NULL on malformed text and we can't compare
-        # a cast expression to NULL with isnot() in a CASE WHEN in a meaningful way.
-        # Checking the raw astext isnot(None) is equivalent to the JSONB key existing.
-        tika_raw = Document.doc_metadata["tika"]["created_at"].astext
-        fm_raw = Document.doc_metadata["frontmatter"]["date"].astext
-        sc_raw = Document.doc_metadata["sidecar"]["date"].astext
+        # Both use the same guarded slot expressions from _date_components() so
+        # they always agree on which slot "won" — if a JSONB cast returned NULL
+        # (malformed date), the CASE won't label it as that slot either.
+        slot_exprs = [e for _, e in components]  # already guarded by _safe_timestamp_cast
+        slot_labels = [label for label, _ in components]
 
-        expr = func.coalesce(
-            cast(tika_raw, TIMESTAMP(timezone=True)),
-            cast(fm_raw, TIMESTAMP(timezone=True)),
-            cast(sc_raw, TIMESTAMP(timezone=True)),
-            Document.created_at,
-        )
+        expr = func.coalesce(*slot_exprs)
+
+        # Build CASE using isnot(None) on the SAME guarded expressions that
+        # COALESCE uses, so label and date always refer to the same source.
+        # The final slot ("ingest") is Document.created_at which is never NULL.
         source_label_expr = case(
-            (tika_raw.isnot(None), literal("tika.created_at")),
-            (fm_raw.isnot(None), literal("frontmatter.date")),
-            (sc_raw.isnot(None), literal("sidecar.date")),
-            else_=literal("ingest"),
+            *[(slot_exprs[i].isnot(None), literal(slot_labels[i])) for i in range(len(components) - 1)],
+            else_=literal(slot_labels[-1]),
         )
 
     stmt = select(Document, expr.label("effective_date"), source_label_expr.label("date_source")).where(
@@ -325,7 +343,17 @@ async def _query_documents_by_date(
         )
         stmt = stmt.where(Document.doc_id.in_(fts_subq))
 
-    # Optional metadata_filter — same validation as hybrid_search in search.py.
+    # Optional metadata_filter — same validation and matching logic as
+    # hybrid_search() in search.py.  Each "<namespace>.<key>": value pair
+    # becomes:
+    #   - JSONB @> containment: doc_metadata @> '{"ns": {"key": value}}'
+    #     (matches scalar metadata)
+    #   - OR JSONB ? existence: doc_metadata->'ns'->'key' ? 'value'
+    #     (matches list-valued metadata containing the scalar)
+    # The OR lets a caller use a scalar filter value to match either a
+    # scalar metadata field OR a list-valued one without knowing the shape,
+    # matching the behavior of kb_search.  If this diverges from search.py,
+    # both should be updated together.
     if metadata_filter:
         for path, value in metadata_filter.items():
             if path.count(".") != 1:
@@ -336,12 +364,12 @@ async def _query_documents_by_date(
             ns, _, key = path.partition(".")
             if not ns or not key:
                 raise ValueError(f"metadata_filter keys must have a non-empty namespace and key, got {path!r}")
+            containment = Document.doc_metadata.op("@>")(func.cast({ns: {key: value}}, JSONB))
             if isinstance(value, str):
-                stmt = stmt.where(Document.doc_metadata[ns][key].astext == value)
+                existence = Document.doc_metadata[ns][key].op("?")(value)
+                stmt = stmt.where(or_(containment, existence))
             else:
-                from sqlalchemy.dialects.postgresql import JSONB
-
-                stmt = stmt.where(Document.doc_metadata[ns][key].cast(JSONB) == cast(literal(str(value)), JSONB))
+                stmt = stmt.where(containment)
 
     # Optional after / before bounds on the effective date.
     if after:

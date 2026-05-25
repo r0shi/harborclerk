@@ -529,3 +529,46 @@ async def test_by_date_excludes_inactive_documents(db_session):
     rows = await _query_documents_by_date(db_session, direction="earliest", limit=10)
     doc_ids = {str(d.doc_id) for d, _, _ in rows}
     assert str(doc.doc_id) not in doc_ids
+
+
+@pytest.mark.asyncio
+async def test_malformed_tika_date_skipped_not_crash(db_session):
+    """Doc with a non-ISO Tika date should fall through to next source,
+    not abort the query with a 500."""
+    bad = await _seed_doc_with_chunk(
+        db_session,
+        title="Bad date doc",
+        metadata={
+            "tika": {"created_at": "N/A"},
+            "sidecar": {"date": "2024-01-01"},
+        },
+    )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="earliest", limit=10)
+    source_by_id = {str(d.doc_id): src for d, _, src in rows}
+    # Tika date couldn't parse → fell through to sidecar.
+    assert source_by_id[str(bad.doc_id)] == "sidecar.date"
+
+
+@pytest.mark.asyncio
+async def test_metadata_filter_list_value_match(db_session):
+    """metadata_filter on a list-valued metadata field must match (parity with search.py)."""
+    target = await _seed_doc_with_chunk(
+        db_session,
+        title="Tagged doc",
+        metadata={
+            "tika": {"created_at": "2024-01-01T00:00:00Z"},
+            "frontmatter": {"tags": ["alpha", "beta"]},
+        },
+    )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(
+        db_session,
+        direction="earliest",
+        metadata_filter={"frontmatter.tags": "alpha"},
+        limit=10,
+    )
+    doc_ids = {str(d.doc_id) for d, _, _ in rows}
+    assert str(target.doc_id) in doc_ids
