@@ -3,7 +3,7 @@
 **Date:** 2026-05-24
 **Status:** spec — awaiting user review before plan + implementation
 **Author:** Claude (with Alex)
-**Companion docs:** PR-F (`2026-05-24-document-metadata-extractors-design.md`), PR-D (`2026-05-24-mcp-tool-descriptions-and-discriminator-hint-design.md`); both have shipped.
+**Companion docs:** PR-F (`2026-05-24-document-metadata-extractors-design.md`), PR-D (`2026-05-24-mcp-tool-descriptions-and-discriminator-hint-design.md`), PR #397 (`2026-05-23-cli-for-agentic-harnesses-design.md`); all have shipped.
 
 ## Goal
 
@@ -36,21 +36,32 @@ Both failures share a structural cause: there's no tool that returns docs **sort
 
 ## Architecture
 
-Two new MCP tools, both implemented in a single new module with a shared date-discovery helper.
+Two new MCP tools, both implemented in a single new module with a shared date-discovery helper. Each MCP tool ships with a matching `harbor-clerk` CLI subcommand to maintain parity with PR #397's CLI surface — every kb_* tool has a peer command.
 
-**New files:**
+**New backend files:**
 - `src/harbor_clerk/mcp_lookup_tools.py` — implementations of both tools (~300 LOC combined)
 - `src/harbor_clerk/metadata_dates.py` — `effective_date()` helper (~40 LOC)
 - `tests/test_mcp_lookup_tools.py` — algorithm + integration tests
 - `tests/test_metadata_dates.py` — date-discovery unit tests
 
+**New CLI files:**
+- `src/harbor_clerk/cli/commands/verify_identifier.py` — `harbor-clerk verify-identifier` subcommand (~50 LOC)
+- `src/harbor_clerk/cli/commands/documents_by_date.py` — `harbor-clerk documents-by-date` subcommand (~70 LOC)
+- `src/harbor_clerk/cli/help/verify-identifier.txt` — long-form help text (description / options / returns / examples)
+- `src/harbor_clerk/cli/help/documents-by-date.txt` — same
+- `tests/cli/test_commands_verify_identifier.py` — CLI command tests
+- `tests/cli/test_commands_documents_by_date.py` — same
+
 **Touched files:**
 - `src/harbor_clerk/mcp_server.py` — two new `@mcp.tool` thin wrappers with PR-D-style 4-part docstrings (what / when / output / decline); registration in the tool list
+- `src/harbor_clerk/cli/commands/__init__.py` — add `"verify-identifier"` and `"documents-by-date"` to `_COMMAND_NAMES`
 - `tests/test_mcp_tool_descriptions.py` — extend the pin-test set for the two new tools
 
-**Why a single module for both tools:** they share semantics ("structured non-similarity lookup over the metadata column"), they share the same surface area in `mcp_server.py`, and individually each is small (~150 LOC). Mirrors the pattern of `mcp_discriminator.py` keeping algorithm + helpers together.
+**Why a single module for both MCP tools:** they share semantics ("structured non-similarity lookup over the metadata column"), they share the same surface area in `mcp_server.py`, and individually each is small (~150 LOC). Mirrors the pattern of `mcp_discriminator.py` keeping algorithm + helpers together.
 
 **Why a separate `metadata_dates.py`:** the effective-date concept is genuinely reusable — future features (document list views, exports, additional filters) can call `effective_date(doc)` rather than re-deriving the priority chain.
+
+**Why one CLI command module per tool (not combined):** PR #397 established the pattern of one file per command in `src/harbor_clerk/cli/commands/` — each module has its own `add_parser()` + `run()` and its own help text. PR-E follows that convention to keep the CLI surface consistent.
 
 ## `kb_verify_identifier`
 
@@ -233,6 +244,60 @@ The effective-date sort is a SQL CASE expression (or `COALESCE` over JSONB extra
 
 When `date_field` is explicit, the expression collapses to a single JSONB extract or column reference.
 
+## CLI parity (`harbor-clerk verify-identifier`, `harbor-clerk documents-by-date`)
+
+PR #397 shipped a `harbor-clerk` CLI that exposes every kb_* MCP tool as a peer subcommand. The two new tools join the lineup. CLI commands are thin: parse argparse → build the `arguments` dict → `McpHttpClient.call_tool(...)` → `render(payload, ...)`. Same pattern as `commands/search.py` and the other 15 commands.
+
+### `harbor-clerk verify-identifier`
+
+```
+USAGE
+  harbor-clerk verify-identifier <identifier> [options]
+
+OPTIONS
+  (inherits global flags from _common_parser: --url, --api-key, --insecure,
+   --json, --format)
+```
+
+No tool-specific options — the MCP tool itself takes only `identifier`. The CLI hands the positional argument through to the `kb_verify_identifier` MCP call.
+
+### `harbor-clerk documents-by-date`
+
+```
+USAGE
+  harbor-clerk documents-by-date [options]
+
+OPTIONS
+      --direction earliest|latest    Sort direction (default: earliest)
+      --query TEXT                   Optional FTS filter (no vector ranking)
+      --metadata-filter JSON         JSONB containment filter; e.g.
+                                       '{"sidecar.vendor": "Pinnacle"}'
+      --after YYYY-MM-DD             Only docs with effective date >= this
+      --before YYYY-MM-DD            Only docs with effective date <= this
+      --date-field FIELD             Override auto-discovery; one of:
+                                       tika.created_at, frontmatter.date,
+                                       sidecar.date, ingest
+  -l, --limit INT                    Result count (default: 10)
+  (plus the global flags)
+```
+
+The `--metadata-filter` arg accepts a JSON string and is parsed before being added to the `arguments` dict — matches the convention `search.py` uses for `--doc-ids` (comma-split parsing on the CLI side).
+
+### Help text files
+
+`src/harbor_clerk/cli/help/verify-identifier.txt` and `documents-by-date.txt` follow the established four-block layout: **DESCRIPTION**, **USAGE**, **OPTIONS**, **RETURNS (JSON)**, **EXAMPLES**. The DESCRIPTION block carries the same WHEN/WHY guidance as the MCP tool docstring (PR-D 4-part style), so the CLI user gets the same affordance as the MCP user. EXAMPLES include both the Enron "earliest California email" pattern and the Pinnacle disambiguation pattern.
+
+### Output rendering
+
+Both new commands fall through to `render(payload, mode=mode, command=...)`. The default `text` mode for these tools displays:
+
+- `verify-identifier` → "Status: unique / ambiguous / not_found", then per-candidate `<title> [<doc_id>] — vendor=X, term_months=Y` lines (the discriminating-fields projection)
+- `documents-by-date` → tabular "date | source | title — doc_id" lines in the requested direction
+
+JSON mode (`--json` or `--format=json`) returns the raw MCP payload — same shape as the MCP response, no transformation.
+
+If `output.py` needs a per-command rendering branch (the existing commands have them), add two short cases following the same pattern.
+
 ## `metadata_dates.py`
 
 ```python
@@ -307,6 +372,29 @@ def effective_date(doc: Document) -> tuple[datetime | None, str]:
 - Key affordance words present: `"verify"`, `"before quoting"`, `"earliest"`, `"latest"`, `"date_source"`
 - New tools listed in the public-tool inventory (the test that pins the list of exposed tools)
 
+### CLI tests
+
+**`tests/cli/test_commands_verify_identifier.py`** (~6 tests, mirrors `test_commands_search.py`):
+- argparse layer: positional identifier required; `--json` flag forces JSON mode
+- HTTP client receives `kb_verify_identifier` with the identifier in arguments
+- Default text rendering for status="unique"
+- Default text rendering for status="ambiguous" with candidate lines
+- Default text rendering for status="not_found"
+- `--json` mode passes raw payload through unchanged
+- Error from HTTP client → non-zero exit code via the standard `McpClientError` path
+
+**`tests/cli/test_commands_documents_by_date.py`** (~8 tests):
+- Default direction is "earliest"
+- `--direction latest` flag flows through to arguments
+- `--query`, `--after`, `--before`, `--date-field` each flow through when provided, absent otherwise
+- `--metadata-filter '{"vendor": "X"}'` parses JSON and forwards as dict
+- Invalid `--metadata-filter` JSON → exit code via argparse error path (or a clear stderr message in `run()`)
+- Default text rendering shows tabular date/source/title lines
+- `--json` mode passes raw payload through
+
+**`tests/cli/test_e2e.py` extension:**
+- Add a smoke test invoking the entry point for each new command with `--help` to confirm the help text loads and argparse registration is correct (matches the existing pattern in test_e2e).
+
 ### Integration test
 
 Seed test DB with 3 fixture docs spanning corpus shapes:
@@ -328,6 +416,7 @@ End-to-end:
 - **Localized / natural-language date parsing** (`"January 15, 2024"` / `"15/01/2024"` / `"yesterday"`) — ISO only for v1. MCP clients are machines.
 - **Sidecar identifier-key heuristic refinement** — the regex `^(id|contract_id|policy_id|case_id|order_id|invoice_id|message_id|.*_id)$` is a guess at common naming. Real-world corpora may use `bates`, `docket`, `claim_number`, `policy_no`. Revisit if eval misses surface; consider a config-driven list.
 - **`verify_identifier` `fields=` parameter** — to let the model choose which fields to search. Punted; v1 hardcodes the field set. Add if eval shows model wants the flexibility.
+- **CLI skill update** — `skills/harbor-clerk/SKILL.md` is intentionally minimal and relies on `harbor-clerk --help` for command discovery, so it doesn't enumerate commands. No SKILL.md edit needed in this PR. Revisit if SKILL.md ever switches to an explicit-command-list shape.
 - **PR-G (harness audit + cross-judge sensitivity)** — pure harness work, can land in parallel or after PR-E.
 
 ## Decisions (closed during brainstorming)
@@ -339,6 +428,7 @@ End-to-end:
 - **Each `verify_identifier` candidate carries `doc_id` + `title` + `canonical_filename` + `discriminating_fields`** (computed via PR-D's algorithm reused). Models can disambiguate without follow-up `kb_get_document` calls.
 - **Single implementation module + separate date helper.** `mcp_lookup_tools.py` for both tools (they're semantically related and individually small); `metadata_dates.py` for the shared helper that future code can call.
 - **Both tools follow PR-D's 4-part docstring convention** (what / when / output / decline). Pin-tested in `test_mcp_tool_descriptions.py`.
+- **CLI parity is in scope.** PR #397 established one CLI subcommand per kb_* tool; PR-E adds `harbor-clerk verify-identifier` and `harbor-clerk documents-by-date` to preserve that 1:1 mapping. Skipping CLI parity would leave the two new tools reachable only via direct MCP, breaking the "every MCP tool has a CLI peer" contract.
 
 ## Open questions / risks
 
