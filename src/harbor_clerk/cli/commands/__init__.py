@@ -44,6 +44,7 @@ _COMMAND_NAMES = [
     "reprocess",
     "system-health",
     "verify-identifier",
+    "documents-by-date",
 ]
 
 

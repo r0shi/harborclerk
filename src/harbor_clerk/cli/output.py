@@ -115,3 +115,28 @@ def _render_verify_identifier(payload: Any, stream: TextIO) -> None:
     import json as _json
 
     stream.write(_json.dumps(payload, indent=2, default=str) + "\n")
+
+
+# --- Documents by date pretty-printer ---
+
+
+@register_text_renderer("documents-by-date")
+def _render_documents_by_date(payload: Any, stream: TextIO) -> None:
+    if not isinstance(payload, dict):
+        stream.write(repr(payload) + "\n")
+        return
+
+    if "error" in payload:
+        stream.write(f"error: {payload['error']}\n")
+        return
+
+    direction = payload.get("direction", "")
+    count = payload.get("count", 0)
+    stream.write(f"{count} results ({direction})\n")
+    for r in payload.get("results", []):
+        date = r.get("date") or ""
+        date_short = date[:10] if isinstance(date, str) and len(date) >= 10 else date
+        src = r.get("date_source") or ""
+        title = r.get("title") or ""
+        doc_id = r.get("doc_id") or ""
+        stream.write(f"  {date_short} [{src}]  {title}  ({doc_id})\n")
