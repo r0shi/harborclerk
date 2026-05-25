@@ -10,7 +10,12 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.mcp_lookup_tools import _find_candidates, _query_documents_by_date, verify_identifier
+from harbor_clerk.mcp_lookup_tools import (
+    _find_candidates,
+    _query_documents_by_date,
+    documents_by_date,
+    verify_identifier,
+)
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.models.enums import PipelineStatus
 
@@ -572,3 +577,83 @@ async def test_metadata_filter_list_value_match(db_session):
     )
     doc_ids = {str(d.doc_id) for d, _, _ in rows}
     assert str(target.doc_id) in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# documents_by_date response-shape tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_documents_by_date_response_shape(db_session):
+    target = await _seed_doc_with_chunk(
+        db_session,
+        title="Pinnacle Doc",
+        metadata={"tika": {"created_at": "2024-06-15T12:00:00Z"}},
+    )
+    await db_session.flush()
+
+    result = await documents_by_date(db_session, direction="earliest", limit=10)
+    assert result["direction"] == "earliest"
+    assert isinstance(result["count"], int)
+    assert any(r["doc_id"] == str(target.doc_id) for r in result["results"])
+    row = next(r for r in result["results"] if r["doc_id"] == str(target.doc_id))
+    assert row["title"] == "Pinnacle Doc"
+    assert row["date"] == "2024-06-15T12:00:00+00:00"
+    assert row["date_source"] == "tika.created_at"
+
+
+@pytest.mark.asyncio
+async def test_documents_by_date_count_matches_results_length(db_session):
+    for i in range(3):
+        await _seed_doc_with_chunk(
+            db_session,
+            title=f"Doc {i}",
+            metadata={"tika": {"created_at": f"2024-01-{i + 1:02d}T00:00:00Z"}},
+        )
+    await db_session.flush()
+
+    result = await documents_by_date(db_session, direction="earliest", limit=2)
+    assert result["count"] == 2
+    assert len(result["results"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_documents_by_date_empty_results(db_session):
+    """No active docs at all — return {count: 0, results: []}, never an error."""
+    result = await documents_by_date(db_session, direction="earliest", limit=10)
+    assert result["direction"] == "earliest"
+    # We can't assert count == 0 because other tests may seed docs in the
+    # same DB session; instead assert the shape is non-error.
+    assert "error" not in result
+    assert "results" in result
+
+
+@pytest.mark.asyncio
+async def test_documents_by_date_invalid_direction_returns_error(db_session):
+    result = await documents_by_date(db_session, direction="sideways", limit=10)
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_documents_by_date_invalid_date_field_returns_error(db_session):
+    result = await documents_by_date(db_session, direction="earliest", date_field="bogus.field", limit=10)
+    assert "error" in result
+    assert "tika.created_at" in result["error"]  # accepted values listed
+
+
+@pytest.mark.asyncio
+async def test_documents_by_date_invalid_after_returns_error(db_session):
+    result = await documents_by_date(db_session, direction="earliest", after="not-a-date", limit=10)
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_documents_by_date_invalid_metadata_filter_returns_error(db_session):
+    result = await documents_by_date(
+        db_session,
+        direction="earliest",
+        metadata_filter={"too.many.dots": "x"},
+        limit=10,
+    )
+    assert "error" in result

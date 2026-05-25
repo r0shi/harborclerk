@@ -387,3 +387,55 @@ async def _query_documents_by_date(
 
     result = await session.execute(stmt)
     return [(row.Document, row.effective_date, row.date_source) for row in result.all()]
+
+
+async def documents_by_date(
+    session: AsyncSession,
+    *,
+    direction: str = "earliest",
+    query: str | None = None,
+    metadata_filter: dict | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    date_field: str | None = None,
+    limit: int = 10,
+) -> dict:
+    """Return documents sorted by their effective date.
+
+    Response shape:
+      {"direction": <input>, "count": N, "results": [
+         {"doc_id": "...", "title": "...", "canonical_filename": "...",
+          "date": "ISO-8601", "date_source": "tika.created_at" | ...},
+         ...
+      ]}
+
+    Returns {"error": "..."} on invalid direction, date_field, after/before
+    string, or metadata_filter.
+    """
+    try:
+        rows = await _query_documents_by_date(
+            session,
+            direction=direction,
+            query=query,
+            metadata_filter=metadata_filter,
+            after=after,
+            before=before,
+            date_field=date_field,
+            limit=limit,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    results: list[dict] = []
+    for doc, eff_date, src in rows:
+        results.append(
+            {
+                "doc_id": str(doc.doc_id),
+                "title": doc.title,
+                "canonical_filename": doc.canonical_filename,
+                "date": eff_date.isoformat() if eff_date else None,
+                "date_source": src,
+            }
+        )
+
+    return {"direction": direction, "count": len(results), "results": results}
