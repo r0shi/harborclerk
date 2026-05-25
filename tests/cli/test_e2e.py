@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import httpx
+import pytest
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.mcp_server import MCPAuthMiddleware
@@ -252,3 +253,57 @@ def test_e2e_happy_path_exits_0(monkeypatch, capsys):
     captured = capsys.readouterr()
     data = json.loads(captured.out)
     assert data.get("status") == "healthy"
+
+
+# ---------------------------------------------------------------------------
+# Test: verify-identifier --help
+# ---------------------------------------------------------------------------
+
+
+def test_verify_identifier_help_loads(capsys):
+    """Test that verify-identifier --help loads correctly from the .txt file."""
+    from harbor_clerk.cli import main as cli_main
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main(["verify-identifier", "--help"])
+    assert exc.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "verify-identifier" in out
+    assert "Verify" in out or "verify" in out
+
+
+# ---------------------------------------------------------------------------
+# Test: documents-by-date --help
+# ---------------------------------------------------------------------------
+
+
+def test_documents_by_date_help_loads(capsys):
+    """Test that documents-by-date --help loads correctly from the .txt file."""
+    from harbor_clerk.cli import main as cli_main
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main(["documents-by-date", "--help"])
+    assert exc.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "documents-by-date" in out
+    assert "earliest" in out and "latest" in out
+
+
+# ---------------------------------------------------------------------------
+# Test: top-level --help lists new commands
+# ---------------------------------------------------------------------------
+
+
+def test_top_level_help_lists_new_commands(capsys):
+    """Test that --help at top level lists both new commands."""
+    from harbor_clerk.cli import main as cli_main
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main(["--help"])
+    assert exc.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "verify-identifier" in out
+    assert "documents-by-date" in out
