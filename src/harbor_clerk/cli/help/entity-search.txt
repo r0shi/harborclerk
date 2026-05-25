@@ -1,0 +1,84 @@
+harbor-clerk entity-search — search named entities by name or type
+
+DESCRIPTION
+  Performs a case-insensitive substring match against the entity text
+  extracted by the spaCy NER pipeline (run during the `entities` ingestion
+  stage). Returns individual entity mentions with their source chunk and
+  document, or deduplicated mention counts when used with --deduplicate.
+
+  Entity types follow spaCy's en_core_web_sm / fr_core_news_sm labels:
+  PERSON, ORG, GPE (geopolitical entity), LOC, DATE, MONEY, PRODUCT,
+  EVENT, LAW, NORP, FAC, WORK_OF_ART, TIME, PERCENT, QUANTITY, ORDINAL,
+  CARDINAL, LANGUAGE. Type names are uppercase.
+
+  Results include chunk_id references usable with `read-passages` and
+  `expand-context` to retrieve the surrounding text.
+
+USAGE
+  harbor-clerk entity-search <query> [options]
+
+OPTIONS
+  --type TYPE           Filter by entity type (e.g. PERSON, ORG, GPE).
+                        Case-sensitive — must be uppercase.
+  -k, --k INT           Number of results (default: 20, max: 100)
+      --doc-id UUID     Scope search to a single document
+
+RETURNS (JSON)
+  {
+    "entities": [
+      {
+        "entity_id":   "uuid",      // unique mention identifier
+        "entity_text": "string",    // matched entity name
+        "entity_type": "string",    // e.g. PERSON, ORG, GPE
+        "doc_id":      "uuid",      // source document
+        "chunk_id":    "uuid",      // source chunk (pass to read-passages)
+        "start_char":  42,          // char offset within chunk
+        "end_char":    55           // char offset within chunk
+      }
+    ],
+    "total":    100,   // total matching records across all pages
+    "has_more": true   // true when offset + k < total
+  }
+
+  When --deduplicate is passed (MCP only — not surfaced in this CLI), each
+  item returns { entity_text, entity_type, mention_count } instead.
+
+EXAMPLES
+  # Find all mentions of anyone named "Smith"
+  harbor-clerk entity-search "Smith" --type PERSON
+
+  # Find organizations containing "Bank"
+  harbor-clerk entity-search "Bank" --type ORG
+
+  # All entity types matching "Paris" — returns PERSON, GPE, etc. mixed
+  harbor-clerk entity-search "Paris"
+
+  # Scope to a single document
+  harbor-clerk entity-search "Dupont" --type PERSON \
+    --doc-id 3f8a1c2d-0000-4b5e-9f6a-000000000001
+
+  # Extract chunk_ids to look up context for first 3 results
+  harbor-clerk entity-search "Acme" --type ORG -k 3 | \
+    jq -r '.entities[].chunk_id' | \
+    xargs -I{} harbor-clerk read-passages {}
+
+  # Paginate — second page of 20
+  harbor-clerk entity-search "Smith" --type PERSON -k 20 \
+    --json | jq 'select(.has_more)'
+
+COMMON MISTAKES
+  - Using lowercase type names: `--type person` returns nothing — types
+    are case-sensitive and must be uppercase (PERSON, ORG, GPE, etc.).
+  - Omitting --type when you want a specific category: without --type, all
+    entity types matching the query substring are returned, so a search for
+    "Paris" yields PERSON (a person named Paris), GPE (Paris the city), and
+    anything else spaCy tagged — check entity_type in each result.
+  - Confusing chunk_id with doc_id: both are UUIDs; use chunk_id for
+    `read-passages`/`expand-context`, doc_id for `get-document`.
+  - Expecting results when NER wasn't run: if spaCy was unavailable during
+    ingestion, the `entities` stage is skipped and this command returns
+    nothing for those documents. Check ingestion status with
+    `harbor-clerk ingest-status`.
+
+SEE ALSO
+  entity-overview, entity-cooccurrence, read-passages, expand-context

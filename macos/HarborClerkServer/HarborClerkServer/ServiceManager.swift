@@ -1129,6 +1129,11 @@ class ServiceManager: ObservableObject {
             "MODELS_DIR": settings.modelsDir.path,
             "NATIVE_CONFIG_FILE": settings.configURL.path,
             "HARBOR_CLERK_MASTER_KEY": masterKeyB64,
+            // Used by /api/system/health's cli_shim_install_status to detect when
+            // ~/.local/bin/harbor-clerk points at a stale (moved-since-install) app
+            // bundle. Absence is treated as "can't tell" — see _cli_shim_install_status
+            // in api/routes/system.py.
+            "BUNDLE_RESOURCES": bundle.path,
         ]
     }
 }

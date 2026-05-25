@@ -1,0 +1,71 @@
+harbor-clerk search — hybrid FTS + vector search
+
+DESCRIPTION
+  Runs a hybrid retrieval combining PostgreSQL full-text search (bilingual,
+  English + French) and pgvector cosine similarity over the corpus. Scores
+  are normalized and merged per-chunk with a small OCR-confidence boost.
+  Results include citations (doc_id, page, chunk_id) usable with
+  `read-passages` and `expand-context`.
+
+  If top hits have similar scores across multiple documents, the response
+  includes `possible_conflict: true` and a `conflict_sources` array — quote
+  both sides to the user.
+
+USAGE
+  harbor-clerk search <query> [options]
+
+OPTIONS
+  -k, --k INT               Number of results (default: 10, max: 50)
+  -o, --offset INT          Pagination offset (default: 0)
+  -d, --detail full|brief   Result detail level (default: full)
+      --brief-chars INT     When --detail=brief, chars per snippet (default: 200)
+      --doc-id UUID         Restrict search to one document
+      --doc-ids UUID,UUID   Restrict search to multiple documents
+      --after YYYY-MM-DD    Only docs ingested after this date
+      --before YYYY-MM-DD   Only docs ingested before this date
+      --language en|fr      Restrict to one language
+      --mime-type MIME      Restrict by MIME type (e.g. application/pdf)
+      --faceted             Include facet counts in response
+
+RETURNS (JSON)
+  {
+    "results": [
+      {
+        "chunk_id":   "uuid",        // pass to read-passages or expand-context
+        "doc_id":     "uuid",        // document identifier
+        "title":      "string",      // document title
+        "page":       42,            // 1-indexed page (or null for non-paginated)
+        "snippet":    "string",      // matched text with context
+        "score":      0.87,          // hybrid score, higher = better
+        "language":   "en" | "fr",
+        "citation":   "Title, p.42"  // human-readable citation
+      }
+    ],
+    "possible_conflict": false,
+    "conflict_sources": []           // present only when possible_conflict=true
+  }
+
+EXAMPLES
+  # Basic search
+  harbor-clerk search "termination clause"
+
+  # Restrict to PDFs ingested in the last month, JSON to jq
+  harbor-clerk search "force majeure" \
+    --mime-type application/pdf \
+    --after 2026-04-23 | jq '.results[] | {title, page, snippet}'
+
+  # Two-stage: search then expand the best hit
+  CHUNK=$(harbor-clerk search "indemnification" -k 1 | jq -r '.results[0].chunk_id')
+  harbor-clerk expand-context "$CHUNK" -n 3
+
+  # Faceted overview before drilling in
+  harbor-clerk search "audit" --faceted | jq '.facets'
+
+COMMON MISTAKES
+  - Passing a chunk_id as --doc-id (chunk_id and doc_id are distinct UUIDs).
+  - Forgetting --detail=brief on large k — default `full` returns the entire
+    matching chunk text, which can be 1–2KB per result.
+  - Using --after/--before with timestamps; only dates (YYYY-MM-DD) are accepted.
+
+SEE ALSO
+  read-passages, expand-context, batch-search, find-related

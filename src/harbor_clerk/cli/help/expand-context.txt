@@ -1,0 +1,83 @@
+harbor-clerk expand-context — read N chunks before and after a target chunk
+
+DESCRIPTION
+  Fetches a target chunk and up to N chunks before and after it from the
+  same document, returned in sequential order. The target chunk is marked
+  with `"is_target": true` so callers can identify it in the window.
+
+  Use this when a search result snippet is too short to fully understand a
+  clause, argument, or table that spans multiple chunks. The window size is
+  symmetric: -n 2 fetches up to 2 chunks before AND up to 2 chunks after the
+  target, for a maximum window of 5 chunks. If the target is near the
+  beginning or end of the document, the window is silently truncated — you
+  get fewer chunks on the short side, not an error.
+
+  Window size is clamped to 1–10 inclusive. Page numbers are included when
+  available (paginated formats); plain-text files omit the `pages` field.
+
+  The response includes the document title and the target's chunk number,
+  which lets you reason about position within the document (e.g., chunk 3
+  of 142 is near the start; chunk 140 of 142 is near the end).
+
+USAGE
+  harbor-clerk expand-context <chunk_id> [options]
+
+OPTIONS
+  -n, --n INT   Chunks to include on each side of the target (default: 2,
+                min: 1, max: 10)
+
+RETURNS (JSON)
+  {
+    "doc_id":            "uuid",          // document the chunk belongs to
+    "doc_title":         "string",        // document title
+    "target_chunk_num":  37,              // sequential position in document
+    "chunks": [
+      {
+        "chunk_id":   "uuid",             // chunk identifier
+        "chunk_num":  35,                 // sequential position (ascending order)
+        "text":       "string",           // full chunk text
+        "language":   "en" | "fr",
+        "pages":      "18-19"             // present for paginated docs only
+        // target chunk only:
+        "is_target":  true
+      }
+      // … up to 2n+1 chunks total
+    ]
+  }
+
+EXAMPLES
+  # Expand 2 chunks around a search hit (default window)
+  harbor-clerk expand-context 7c3a9b12-0001-0000-0000-aabbccddeeff
+
+  # Wider window for a complex multi-page clause
+  harbor-clerk expand-context 7c3a9b12-0001-0000-0000-aabbccddeeff -n 5
+
+  # Two-stage: search for a hit then expand its context
+  CHUNK=$(harbor-clerk search "limitation of liability" -k 1 \
+    | jq -r '.results[0].chunk_id')
+  harbor-clerk expand-context "$CHUNK" -n 3
+
+  # Extract only the text blocks in window order
+  harbor-clerk expand-context 7c3a9b12-0001-0000-0000-aabbccddeeff -n 2 \
+    | jq -r '.chunks[].text' | paste -sd '\n---\n'
+
+  # Check how far into the document a hit is
+  harbor-clerk expand-context 7c3a9b12-0001-0000-0000-aabbccddeeff \
+    | jq '{target: .target_chunk_num, window_size: (.chunks | length)}'
+
+COMMON MISTAKES
+  - Passing a doc_id instead of a chunk_id: the single positional argument
+    is a chunk UUID (from .results[].chunk_id in search output), not a
+    document UUID.
+  - Expecting exactly 2n+1 chunks: chunks near the beginning or end of a
+    document produce a shorter window. Check .chunks | length rather than
+    assuming a fixed count.
+  - Using -n 10 on every call: a window of 10 on each side is up to 21
+    chunks of ~1000 chars each — roughly 20KB of text. Use the smallest -n
+    that answers the question.
+  - Confusing chunk_num with page number: chunk_num is a zero-based sequential
+    index over all chunks in the document, not a page number. Page numbers
+    appear in the `pages` field when available.
+
+SEE ALSO
+  search, read-passages, read-document

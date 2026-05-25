@@ -1,0 +1,75 @@
+harbor-clerk reprocess — re-run the full ingestion pipeline for a document
+
+DESCRIPTION
+  Resets all pipeline stages for a document and re-queues it from the
+  beginning (extract). Use when ingestion failed and you want to retry
+  from scratch, or when a document's source file has been replaced and
+  the indexed content is stale.
+
+  Reprocessing is asynchronous — the command returns immediately with
+  `status: "reprocessing"` and the pipeline runs in the background.
+  Poll `ingest-status` to track progress.
+
+  This command is admin-only. API keys with read-only access will
+  receive a 403 error.
+
+  The full pipeline is always re-run from scratch (all 7 stages):
+    extract → ocr → chunk → entities → embed → summarize → finalize
+
+  There is no CLI option for partial re-runs (e.g. OCR-only or
+  summary-only). Those would require direct API access.
+
+USAGE
+  harbor-clerk reprocess <doc_id>
+
+OPTIONS
+  <doc_id>   Document UUID to reprocess (required)
+
+RETURNS (JSON)
+  {
+    "doc_id": "uuid",
+    "status": "reprocessing"
+  }
+
+  On success, `status` is always `"reprocessing"`. If the document is
+  not found (or not visible to the API key), the response contains an
+  `"error"` key instead.
+
+EXAMPLES
+  # Re-run the pipeline for a document that errored
+  harbor-clerk reprocess 3fa85f64-5717-4562-b3fc-2c963f66afa6
+
+  # Reprocess and then wait for completion
+  DOC=3fa85f64-5717-4562-b3fc-2c963f66afa6
+  harbor-clerk reprocess "$DOC"
+  echo "Waiting for pipeline..."
+  until harbor-clerk ingest-status "$DOC" | jq -e '.pipeline_status == "ready"' > /dev/null; do
+    sleep 10
+  done
+  echo "Done"
+
+  # Reprocess several documents in sequence
+  for DOC in uuid1 uuid2 uuid3; do
+    echo "Reprocessing $DOC..."
+    harbor-clerk reprocess "$DOC"
+    sleep 2
+  done
+
+  # Reprocess all documents in error state (requires list-recent + jq)
+  harbor-clerk list-recent --limit 100 \
+    | jq -r '.documents[] | select(.pipeline_status == "error") | .doc_id' \
+    | while read DOC; do harbor-clerk reprocess "$DOC"; done
+
+COMMON MISTAKES
+  - Forgetting to poll `ingest-status` after reprocessing — the
+    command returns immediately; the pipeline runs in the background.
+  - Using this for minor re-runs (e.g. updating the summary only) —
+    all 7 stages are reset and re-run, which can take several minutes
+    for large PDFs with OCR.
+  - Calling `reprocess` with a read-only API key — this tool is
+    admin-only; you'll get a 403 error.
+  - Reprocessing a document that is still actively processing — check
+    `ingest-status` first and confirm it is not in `processing` state.
+
+SEE ALSO
+  ingest-status, get-document, list-recent

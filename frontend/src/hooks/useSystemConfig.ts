@@ -9,6 +9,17 @@ export interface SystemConfig {
    */
   allowSourceDownload: boolean
   /**
+   * True when the backend has CLI/agentic-harness access enabled. Controls
+   * whether the Integrations page shows the CLI access section and API key
+   * management UI for programmatic clients.
+   */
+  enableCliAccess: boolean
+  /**
+   * macOS native only. One of "installed", "installed_outdated", "not_installed",
+   * or null when running on Docker/Linux (shim concept doesn't apply there).
+   */
+  cliShimInstallStatus: 'installed' | 'installed_outdated' | 'not_installed' | null
+  /**
    * True once the system config has been fetched at least once. While false
    * the UI should treat capability flags conservatively (e.g. hide buttons
    * rather than show them only to have them flicker off when the response
@@ -17,7 +28,12 @@ export interface SystemConfig {
   loaded: boolean
 }
 
-const FALLBACK: SystemConfig = { allowSourceDownload: false, loaded: false }
+const FALLBACK: SystemConfig = {
+  allowSourceDownload: false,
+  enableCliAccess: false,
+  cliShimInstallStatus: null,
+  loaded: false,
+}
 
 /**
  * Fetches /api/system/health once on mount to read deployment-wide
@@ -40,6 +56,8 @@ export function useSystemConfig(): SystemConfig {
         if (cancelled || !data) return
         setConfig({
           allowSourceDownload: Boolean(data.allow_source_download),
+          enableCliAccess: Boolean(data.enable_cli_access),
+          cliShimInstallStatus: data.cli_shim_install_status ?? null,
           loaded: true,
         })
       })

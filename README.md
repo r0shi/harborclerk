@@ -247,6 +247,19 @@ Connect ChatGPT, Claude Desktop, Claude Code, Gemini CLI, OpenClaw, or any MCP-c
 
 > **Security note for agentic tools (OpenClaw, etc.):** Autonomous AI agents can make many tool calls in rapid succession. Always create a dedicated, scoped API key with rate limits and an expiry date. Monitor usage via the per-key audit dashboard.
 
+### Agentic CLI
+
+The `harbor-clerk` CLI mirrors the 16 MCP tools as shell subcommands — built for CLI-orchestrating agent harnesses (OpenClaw, Claude Code, Codex, Aider) that prefer composing commands over speaking MCP. Off by default; admin opt-in.
+
+```bash
+export HARBOR_CLERK_API_KEY=hc_...   # mint in System Settings → API Keys
+export ENABLE_CLI_ACCESS=true        # server-side toggle; restart required
+harbor-clerk --help                  # full subcommand list
+harbor-clerk search "..." --help     # man-page-class help per subcommand
+```
+
+CLI traffic is audit-logged as `request_type="cli_tool"` (distinct from MCP). System Settings → Integrations has a copy-pasteable agent skill markdown for OpenClaw and similar runtimes.
+
 ### Auth
 
 - **Human users**: email + password, JWT access tokens + refresh cookies. Roles: `admin` / `user`.

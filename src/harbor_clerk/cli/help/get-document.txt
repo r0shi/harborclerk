@@ -1,0 +1,79 @@
+harbor-clerk get-document — document metadata, status, and pipeline jobs
+
+DESCRIPTION
+  Returns full metadata for a single document: title, processing status,
+  pipeline status, generated summary, MIME type, file size, extracted
+  character count, source path, last-updated timestamp, and the per-stage
+  ingestion job log.
+
+  This command returns *metadata*, not body text. To read page-level text
+  use `read-document`. To see only the ingestion stage progress use
+  `ingest-status` (which additionally includes timestamps and per-stage
+  progress counts).
+
+  The `status` field reflects the document's lifecycle state ("active",
+  "deleted"). The `pipeline_status` field reflects the ingestion pipeline
+  state: "queued", "running", "done", "error".
+
+  The `jobs` array is ordered by creation time and covers every pipeline
+  stage ever run for this document. Each entry includes the stage name,
+  current status, and any error message. For richer job detail (timestamps,
+  progress fractions) use `ingest-status`.
+
+USAGE
+  harbor-clerk get-document <doc_id>
+
+OPTIONS
+  doc_id    Document UUID (required positional argument)
+
+RETURNS (JSON)
+  {
+    "doc_id":          "uuid",                // document identifier
+    "title":           "string",             // filename or extracted title
+    "status":          "active",             // "active" | "deleted"
+    "pipeline_status": "done",               // "queued"|"running"|"done"|"error"|null
+    "summary":         "string",             // LLM-generated summary, or null
+    "mime_type":       "application/pdf",    // detected MIME type, or null
+    "size_bytes":      204800,               // original file size in bytes, or null
+    "extracted_chars": 38450,                // characters extracted by Tika/UTF-8
+    "source_path":     "/data/watch/...",    // absolute path of the watched file
+    "updated_at":      "2026-05-20T14:33:00.000Z",  // ISO 8601 timestamp
+    "jobs": [
+      {
+        "stage":  "extract",   // pipeline stage name
+        "status": "done",      // "queued"|"running"|"done"|"error"|"skipped"
+        "error":  null         // error message string, or null
+      }
+    ]
+  }
+
+EXAMPLES
+  # Basic metadata read
+  harbor-clerk get-document 3e4f9a12-...
+
+  # Extract the title only
+  harbor-clerk get-document 3e4f9a12-... | jq -r '.title'
+
+  # Check pipeline status without reading body
+  harbor-clerk get-document 3e4f9a12-... | jq '{pipeline_status, summary}'
+
+  # Batch: get metadata for the 5 most-recent docs
+  harbor-clerk list-recent --limit 5 \
+    | jq -r '.documents[].doc_id' \
+    | xargs -I{} harbor-clerk get-document {}
+
+  # Find any errored jobs across the pipeline
+  harbor-clerk get-document 3e4f9a12-... \
+    | jq '.jobs[] | select(.status == "error")'
+
+COMMON MISTAKES
+  - Using get-document to retrieve body text — it returns metadata only.
+    For text use `read-document`.
+  - Expecting per-stage timestamps or progress fractions in the `jobs` array —
+    those fields are only in `ingest-status`.
+  - Confusing `status` (document lifecycle: active/deleted) with
+    `pipeline_status` (ingestion pipeline: queued/running/done/error). A
+    document with `status: "active"` may still have `pipeline_status: "error"`.
+
+SEE ALSO
+  list-recent, ingest-status, read-document, document-outline

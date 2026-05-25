@@ -1,0 +1,71 @@
+harbor-clerk document-outline — heading tree, page count, and chunk count
+
+DESCRIPTION
+  Returns the heading hierarchy (h1–h6) for a document, ordered by position,
+  together with the document's total page count and total chunk count.
+
+  Headings are extracted from the document's structure during ingestion and
+  stored as DocumentHeading rows. Each heading carries its level (1–6), text,
+  and the page number where it appears.
+
+  This command is the recommended first step before calling `read-document`:
+  use the heading tree and page numbers to identify which pages to request,
+  rather than fetching the entire document.
+
+  Documents ingested from plain-text files or those that lack structural
+  markup will return an empty `headings` array. The page count and chunk
+  count are always present even when headings are absent.
+
+USAGE
+  harbor-clerk document-outline <doc_id>
+
+OPTIONS
+  doc_id    Document UUID (required positional argument)
+
+RETURNS (JSON)
+  {
+    "doc_id":      "uuid",        // document identifier
+    "title":       "string",      // document title
+    "page_count":  42,            // total pages (0 for plain-text docs)
+    "chunk_count": 87,            // total retrieval chunks
+    "headings": [
+      {
+        "level":    1,            // heading depth: 1 (h1) through 6 (h6)
+        "title":    "string",     // heading text
+        "page_num": 3             // 1-based page number, or null if unavailable
+      }
+    ]
+  }
+
+EXAMPLES
+  # View the full heading tree
+  harbor-clerk document-outline 3e4f9a12-...
+
+  # Count headings by level
+  harbor-clerk document-outline 3e4f9a12-... \
+    | jq '.headings | group_by(.level) | map({level: .[0].level, count: length})'
+
+  # Find the page range for a specific section, then read it
+  OUTLINE=$(harbor-clerk document-outline 3e4f9a12-...)
+  echo "$OUTLINE" | jq '.headings[] | select(.title | test("Indemnif"; "i"))'
+
+  # Check whether a document has any headings (useful for corpus exploration)
+  harbor-clerk document-outline 3e4f9a12-... \
+    | jq '{has_headings: (.headings | length > 0), page_count, chunk_count}'
+
+  # List all h1 headings across recent documents
+  harbor-clerk list-recent --limit 10 \
+    | jq -r '.documents[].doc_id' \
+    | xargs -I{} sh -c \
+      'harbor-clerk document-outline {} | jq -r --arg d {} "[$d] \(.headings[] | select(.level==1) | .title)"'
+
+COMMON MISTAKES
+  - Expecting headings for plain-text (.txt, .md, .csv) files — these formats
+    do not carry structural heading markup, so `headings` will be empty.
+  - Relying on heading page numbers to be perfectly accurate for scanned PDFs —
+    OCR-derived page numbers are best-effort and may be off by one.
+  - Skipping this command and jumping straight to `read-document` on large
+    documents — fetch the outline first to avoid wasting the character budget.
+
+SEE ALSO
+  read-document, get-document, read-passages, find-related

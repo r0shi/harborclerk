@@ -1,0 +1,84 @@
+harbor-clerk entity-cooccurrence — entities that appear alongside a given entity
+
+DESCRIPTION
+  Given an entity name, finds all other named entities that appear in the
+  same chunk (default scope=chunk) or same document (scope=document) as
+  that entity. The source entity is matched by case-insensitive substring,
+  so "Anthropic" matches "Anthropic, Inc." and "Anthropic PBC".
+
+  Co-occurrence counts are aggregated across all matching source-entity
+  mentions, then ordered by count descending. Results include up to 3
+  sample chunk_ids and sample doc_ids per co-occurring entity so you can
+  drill in with `read-passages`.
+
+  Use this to answer questions like:
+  - "Who is mentioned alongside Jane Smith?" (PERSON co-occurrences)
+  - "What organizations appear with Acme Corp?" (ORG co-occurrences)
+  - "Which locations come up when discussing a given event?"
+  - "What organizations does Alice appear alongside in this document?"
+    (combine --entity-type PERSON --cooccur-type ORG --scope document)
+
+USAGE
+  harbor-clerk entity-cooccurrence <entity> [options]
+
+OPTIONS
+  entity                    Entity name (or substring) to find co-occurrences for
+  -k, --k INT               Number of results (default: 20, max: 100)
+  --entity-type STR         Filter source entity by NER type (e.g. PERSON, ORG, GPE)
+  --scope chunk|document    Co-occurrence scope: chunk (default) or document
+  --cooccur-type STR        Filter co-occurring entities by NER type
+  --doc-id UUID             Scope results to a single document by ID
+
+RETURNS (JSON)
+  {
+    "entity_text": "string",       // the query entity text as passed in
+    "scope":       "chunk",        // "chunk" (default) or "document" per --scope
+    "cooccurrences": [
+      {
+        "entity_text":        "string",  // co-occurring entity name
+        "entity_type":        "string",  // e.g. PERSON, ORG, GPE
+        "cooccurrence_count": 14,        // number of shared chunk occurrences
+        "sample_chunk_ids":   ["uuid", "uuid", "uuid"],  // up to 3 chunk IDs
+        "sample_doc_ids":     ["uuid", "uuid"]           // up to 3 doc IDs
+      }
+    ],
+    "total":    42,    // total co-occurring entity types found
+    "has_more": false  // true when offset + k < total
+  }
+
+EXAMPLES
+  # Who appears alongside "Anthropic" in the corpus?
+  harbor-clerk entity-cooccurrence "Anthropic"
+
+  # Top 5 entities mentioned with "Alice Johnson"
+  harbor-clerk entity-cooccurrence "Alice Johnson" -k 5
+
+  # Read the passage context of the top co-occurrence's first chunk
+  CHUNK=$(harbor-clerk entity-cooccurrence "Acme Corp" -k 1 | \
+    jq -r '.cooccurrences[0].sample_chunk_ids[0]')
+  harbor-clerk read-passages "$CHUNK"
+
+  # Only ORG entities co-occurring with "Smith"
+  harbor-clerk entity-cooccurrence "Smith" --cooccur-type ORG
+
+  # What organizations does Alice appear alongside at the document level?
+  harbor-clerk entity-cooccurrence "Alice" --entity-type PERSON --cooccur-type ORG --scope document
+
+  # Scope to a single document
+  harbor-clerk entity-cooccurrence "Acme Corp" --doc-id 11111111-1111-1111-1111-111111111111
+
+COMMON MISTAKES
+  - Passing a full exact name when a substring match is intended: the
+    entity text field is matched as a substring, so "Smith" already catches
+    "John Smith", "Smith & Co.", etc. Passing the full phrase is fine but
+    unnecessary.
+  - Expecting sample_chunk_ids to be exhaustive: each co-occurrence row
+    returns at most 3 sample chunks. Pass those chunk_ids to `read-passages`
+    or `expand-context` for context; there may be more chunks where the
+    co-occurrence appears (see cooccurrence_count).
+  - Confusing cooccurrence_count with document count: the count reflects
+    the number of chunk-level co-occurrences, not distinct documents. Use
+    sample_doc_ids to see which documents are involved.
+
+SEE ALSO
+  entity-search, entity-overview, read-passages, expand-context

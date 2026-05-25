@@ -3,6 +3,8 @@ import { del, get, put } from '../api'
 import { Link } from 'react-router-dom'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
+import { CliAccessCard } from '../components/CliAccessCard'
+import { useSystemConfig } from '../hooks/useSystemConfig'
 
 interface IntegrationSettings {
   public_url: string
@@ -50,6 +52,7 @@ function CodeBlock({ children }: { children: string }) {
 }
 
 export default function IntegrationsPage() {
+  const { enableCliAccess, cliShimInstallStatus } = useSystemConfig()
   const [settings, setSettings] = useState<IntegrationSettings>({ public_url: '', oauth_refresh_token_days: 90 })
   const [connections, setConnections] = useState<OAuthConnection[]>([])
   const [loading, setLoading] = useState(true)
@@ -455,6 +458,13 @@ export default function IntegrationsPage() {
           </>
         )}
       </Card>
+
+      {/* Agentic CLI */}
+      <CliAccessCard
+        enabled={enableCliAccess}
+        envVarHint="ENABLE_CLI_ACCESS=true"
+        cliShimInstallStatus={cliShimInstallStatus}
+      />
     </div>
   )
 }

@@ -1,0 +1,68 @@
+harbor-clerk system-health — daemon + storage health snapshot
+
+DESCRIPTION
+  Returns a health check across the two core backend subsystems:
+  PostgreSQL (database connectivity) and storage (MinIO/filesystem
+  object store). Use this to verify the system is reachable and
+  operational before running a batch operation, or as a simple liveness
+  probe from a script or CI step.
+
+  This command is admin-only. API keys with read-only access will
+  receive a 403 error.
+
+  Note: this is the MCP-tool view of system health — it runs through
+  the same API key auth path as all other harbor-clerk commands and
+  reflects what the API server can reach. It is distinct from the HTTP
+  endpoint `GET /api/system/health`, which is unauthenticated and
+  intended for load-balancer / uptime probes.
+
+USAGE
+  harbor-clerk system-health
+
+OPTIONS
+  (none)
+
+RETURNS (JSON)
+  {
+    "status": "healthy" | "degraded",
+    "checks": {
+      "postgres": "ok" | "error: <message>",
+      "storage":  "ok" | "error: <message>"
+    }
+  }
+
+  `status` is `"healthy"` only when all individual checks return
+  `"ok"`. Any failing check yields `"degraded"`.
+
+EXAMPLES
+  # Simple liveness ping
+  harbor-clerk system-health
+
+  # Exit non-zero if degraded (for use in scripts)
+  harbor-clerk system-health | jq -e '.status == "healthy"' > /dev/null \
+    || { echo "System degraded"; exit 1; }
+
+  # Show only failing checks
+  harbor-clerk system-health \
+    | jq '.checks | to_entries[] | select(.value != "ok")'
+
+  # Guard a batch operation on system readiness
+  if harbor-clerk system-health | jq -e '.status == "healthy"' > /dev/null; then
+    harbor-clerk batch-search --file queries.jsonl
+  else
+    echo "System not healthy; aborting batch."
+  fi
+
+COMMON MISTAKES
+  - Confusing this with `GET /api/system/health` — the HTTP endpoint
+    is unauthenticated and used by load balancers; `system-health` runs
+    through the MCP auth path and tests the same subsystems the API
+    uses to serve requests.
+  - Expecting worker queue depths or embedder/Tika status — this
+    command checks Postgres connectivity and storage reachability only.
+    Worker state and queue depths are not surfaced here.
+  - Calling with a read-only API key — this tool is admin-only; you'll
+    get a 403 error.
+
+SEE ALSO
+  ingest-status, reprocess
