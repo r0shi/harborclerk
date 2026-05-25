@@ -10,8 +10,8 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.mcp_lookup_tools import _find_candidates, verify_identifier
-from harbor_clerk.models import Document
+from harbor_clerk.mcp_lookup_tools import _find_candidates, _query_documents_by_date, verify_identifier
+from harbor_clerk.models import Chunk, Document
 from harbor_clerk.models.enums import PipelineStatus
 
 # ---------------------------------------------------------------------------
@@ -288,3 +288,244 @@ async def test_overflow_flag_set_when_cap_exceeded(db_session):
     assert result["count"] == 100
     assert result["overflow"] is True
     assert "More than 100" in result["suggestion"]
+
+
+# ---------------------------------------------------------------------------
+# _seed_doc_with_chunk helper
+# ---------------------------------------------------------------------------
+
+
+async def _seed_doc_with_chunk(
+    db_session: AsyncSession,
+    *,
+    title: str,
+    metadata: dict | None = None,
+    text: str = "body text",
+) -> Document:
+    """Like _seed_doc but also adds a chunk so FTS queries can match."""
+    doc = await _seed_doc(db_session, title=title, metadata=metadata or {})
+    db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text=text, language="english"))
+    await db_session.flush()
+    return doc
+
+
+# ---------------------------------------------------------------------------
+# _query_documents_by_date tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_earliest_orders_by_tika_date_ascending(db_session):
+    older = await _seed_doc_with_chunk(
+        db_session,
+        title="Older email",
+        metadata={"tika": {"created_at": "1999-10-13T08:34:00Z"}},
+    )
+    newer = await _seed_doc_with_chunk(
+        db_session,
+        title="Newer email",
+        metadata={"tika": {"created_at": "2001-08-14T08:34:00Z"}},
+    )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="earliest", limit=10)
+    doc_ids = [str(d.doc_id) for d, _, _ in rows]
+    # Older first when direction=earliest. Other test fixtures may add docs
+    # too (autouse cleanup), so only assert the relative order of these two.
+    assert doc_ids.index(str(older.doc_id)) < doc_ids.index(str(newer.doc_id))
+
+
+@pytest.mark.asyncio
+async def test_latest_orders_by_date_descending(db_session):
+    older = await _seed_doc_with_chunk(
+        db_session,
+        title="Older",
+        metadata={"tika": {"created_at": "2020-01-01T00:00:00Z"}},
+    )
+    newer = await _seed_doc_with_chunk(
+        db_session,
+        title="Newer",
+        metadata={"tika": {"created_at": "2024-01-01T00:00:00Z"}},
+    )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="latest", limit=10)
+    doc_ids = [str(d.doc_id) for d, _, _ in rows]
+    assert doc_ids.index(str(newer.doc_id)) < doc_ids.index(str(older.doc_id))
+
+
+@pytest.mark.asyncio
+async def test_query_filters_to_fts_matching_docs(db_session):
+    cali = await _seed_doc_with_chunk(
+        db_session,
+        title="California email",
+        metadata={"tika": {"created_at": "1999-10-13T08:34:00Z"}},
+        text="discussion about California regulators",
+    )
+    await _seed_doc_with_chunk(
+        db_session,
+        title="Unrelated",
+        metadata={"tika": {"created_at": "1999-10-14T00:00:00Z"}},
+        text="discussion about something else entirely",
+    )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="earliest", query="California", limit=10)
+    doc_ids = {str(d.doc_id) for d, _, _ in rows}
+    assert str(cali.doc_id) in doc_ids
+    assert len(doc_ids) == 1
+
+
+@pytest.mark.asyncio
+async def test_metadata_filter_applied(db_session):
+    target = await _seed_doc_with_chunk(
+        db_session,
+        title="Pinnacle contract",
+        metadata={
+            "tika": {"created_at": "2024-01-01T00:00:00Z"},
+            "sidecar": {"vendor": "Pinnacle Tech Solutions"},
+        },
+    )
+    await _seed_doc_with_chunk(
+        db_session,
+        title="Other contract",
+        metadata={
+            "tika": {"created_at": "2024-01-01T00:00:00Z"},
+            "sidecar": {"vendor": "Other Vendor"},
+        },
+    )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(
+        db_session,
+        direction="earliest",
+        metadata_filter={"sidecar.vendor": "Pinnacle Tech Solutions"},
+        limit=10,
+    )
+    doc_ids = [str(d.doc_id) for d, _, _ in rows]
+    assert doc_ids == [str(target.doc_id)]
+
+
+@pytest.mark.asyncio
+async def test_after_filter_bounds_results(db_session):
+    early = await _seed_doc_with_chunk(
+        db_session,
+        title="Early",
+        metadata={"tika": {"created_at": "2020-01-01T00:00:00Z"}},
+    )
+    late = await _seed_doc_with_chunk(
+        db_session,
+        title="Late",
+        metadata={"tika": {"created_at": "2025-01-01T00:00:00Z"}},
+    )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="earliest", after="2024-01-01", limit=10)
+    doc_ids = {str(d.doc_id) for d, _, _ in rows}
+    assert str(late.doc_id) in doc_ids
+    assert str(early.doc_id) not in doc_ids
+
+
+@pytest.mark.asyncio
+async def test_before_filter_bounds_results(db_session):
+    early = await _seed_doc_with_chunk(
+        db_session,
+        title="Early",
+        metadata={"tika": {"created_at": "2020-01-01T00:00:00Z"}},
+    )
+    late = await _seed_doc_with_chunk(
+        db_session,
+        title="Late",
+        metadata={"tika": {"created_at": "2025-01-01T00:00:00Z"}},
+    )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="latest", before="2024-01-01", limit=10)
+    doc_ids = {str(d.doc_id) for d, _, _ in rows}
+    assert str(early.doc_id) in doc_ids
+    assert str(late.doc_id) not in doc_ids
+
+
+@pytest.mark.asyncio
+async def test_date_source_label_reflects_priority_chain(db_session):
+    tika_doc = await _seed_doc_with_chunk(
+        db_session,
+        title="Tika source",
+        metadata={"tika": {"created_at": "2020-01-01T00:00:00Z"}},
+    )
+    fm_doc = await _seed_doc_with_chunk(
+        db_session,
+        title="FM source",
+        metadata={"frontmatter": {"date": "2020-02-01"}},
+    )
+    sc_doc = await _seed_doc_with_chunk(
+        db_session,
+        title="Sidecar source",
+        metadata={"sidecar": {"date": "2020-03-01"}},
+    )
+    ingest_only = await _seed_doc_with_chunk(db_session, title="Ingest only")
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="earliest", limit=20)
+    source_by_id = {str(d.doc_id): src for d, _, src in rows}
+    assert source_by_id[str(tika_doc.doc_id)] == "tika.created_at"
+    assert source_by_id[str(fm_doc.doc_id)] == "frontmatter.date"
+    assert source_by_id[str(sc_doc.doc_id)] == "sidecar.date"
+    assert source_by_id[str(ingest_only.doc_id)] == "ingest"
+
+
+@pytest.mark.asyncio
+async def test_explicit_date_field_skips_fallback(db_session):
+    """date_field='sidecar.date' means docs without sidecar.date are sorted by NULL
+    (PG sorts NULLs LAST asc / FIRST desc), not by Tika even if Tika exists."""
+    sc_only = await _seed_doc_with_chunk(
+        db_session,
+        title="Sidecar only",
+        metadata={"sidecar": {"date": "2020-01-01"}},
+    )
+    tika_only = await _seed_doc_with_chunk(
+        db_session,
+        title="Tika only",
+        metadata={"tika": {"created_at": "2010-01-01T00:00:00Z"}},
+    )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="earliest", date_field="sidecar.date", limit=10)
+    # sc_only is the first non-NULL date when sorting by sidecar.date asc;
+    # tika_only is NULL on that field.
+    doc_ids = [str(d.doc_id) for d, _, _ in rows]
+    sc_idx = doc_ids.index(str(sc_only.doc_id))
+    tika_idx = doc_ids.index(str(tika_only.doc_id))
+    assert sc_idx < tika_idx
+    # date_source label should reflect the explicit choice for the matching doc.
+    source_by_id = {str(d.doc_id): src for d, _, src in rows}
+    assert source_by_id[str(sc_only.doc_id)] == "sidecar.date"
+
+
+@pytest.mark.asyncio
+async def test_limit_respected(db_session):
+    for i in range(5):
+        await _seed_doc_with_chunk(
+            db_session,
+            title=f"Doc {i}",
+            metadata={"tika": {"created_at": f"2024-01-{i + 1:02d}T00:00:00Z"}},
+        )
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="earliest", limit=3)
+    assert len(rows) == 3
+
+
+@pytest.mark.asyncio
+async def test_by_date_excludes_inactive_documents(db_session):
+    doc = await _seed_doc_with_chunk(
+        db_session,
+        title="Will be deleted",
+        metadata={"tika": {"created_at": "2024-01-01T00:00:00Z"}},
+    )
+    doc.status = "deleted"
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(db_session, direction="earliest", limit=10)
+    doc_ids = {str(d.doc_id) for d, _, _ in rows}
+    assert str(doc.doc_id) not in doc_ids

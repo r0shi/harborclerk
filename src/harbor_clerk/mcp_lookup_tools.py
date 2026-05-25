@@ -15,13 +15,15 @@ Task 2 establishes the candidate-matching layer for verify_identifier.
 from __future__ import annotations
 
 import re
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Literal
 
-from sqlalchemy import or_, select
+from sqlalchemy import case, cast, func, literal, or_, select
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
-from harbor_clerk.models import Document
+from harbor_clerk.models import Chunk, Document
 
 _VERIFY_CANDIDATE_CAP = 100
 
@@ -215,3 +217,145 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
     if overflow:
         payload["overflow"] = True
     return payload
+
+
+# ---------------------------------------------------------------------------
+# _query_documents_by_date — SQL query layer for kb_documents_by_date
+# ---------------------------------------------------------------------------
+
+_ALLOWED_DATE_FIELDS = frozenset({"tika.created_at", "frontmatter.date", "sidecar.date", "ingest"})
+
+
+def _date_components():
+    """Return (label, expr) tuples per priority slot.
+
+    Expressions are built fresh per call — SQLAlchemy column elements are
+    immutable but we avoid any cross-call binding state by constructing here.
+    The priority order is: tika.created_at → frontmatter.date → sidecar.date → ingest.
+    """
+    tika_expr = cast(Document.doc_metadata["tika"]["created_at"].astext, TIMESTAMP(timezone=True))
+    fm_expr = cast(Document.doc_metadata["frontmatter"]["date"].astext, TIMESTAMP(timezone=True))
+    sc_expr = cast(Document.doc_metadata["sidecar"]["date"].astext, TIMESTAMP(timezone=True))
+    ingest_expr = Document.created_at
+    return [
+        ("tika.created_at", tika_expr),
+        ("frontmatter.date", fm_expr),
+        ("sidecar.date", sc_expr),
+        ("ingest", ingest_expr),
+    ]
+
+
+def _parse_iso_date(value: str) -> datetime:
+    """Parse an ISO 8601 date or datetime string into a UTC-aware datetime."""
+    s = value.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+async def _query_documents_by_date(
+    session: AsyncSession,
+    *,
+    direction: Literal["earliest", "latest"] = "earliest",
+    query: str | None = None,
+    metadata_filter: dict | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    date_field: str | None = None,
+    limit: int = 10,
+) -> list[tuple[Document, datetime, str]]:
+    """Run the SQL query for documents_by_date and return rows.
+
+    Each row is (Document, effective_date, date_source_label). Caller is
+    responsible for shaping the response.
+
+    Raises ValueError on invalid `date_field`, unparseable `after`/`before`,
+    or invalid `metadata_filter` keys.
+    """
+    if direction not in ("earliest", "latest"):
+        raise ValueError(f"direction must be 'earliest' or 'latest'; got {direction!r}")
+
+    components = _date_components()
+
+    # Build the effective-date expression + source-label CASE.
+    if date_field is not None:
+        if date_field not in _ALLOWED_DATE_FIELDS:
+            raise ValueError(f"date_field must be one of: {sorted(_ALLOWED_DATE_FIELDS)}; got {date_field!r}")
+        expr = next(e for label, e in components if label == date_field)
+        source_label_expr = literal(date_field)
+    else:
+        # COALESCE in priority order; CASE picks the first non-null source label.
+        # For JSONB-cast slots we check the raw JSONB path (before cast) because
+        # the cast itself may produce NULL on malformed text and we can't compare
+        # a cast expression to NULL with isnot() in a CASE WHEN in a meaningful way.
+        # Checking the raw astext isnot(None) is equivalent to the JSONB key existing.
+        tika_raw = Document.doc_metadata["tika"]["created_at"].astext
+        fm_raw = Document.doc_metadata["frontmatter"]["date"].astext
+        sc_raw = Document.doc_metadata["sidecar"]["date"].astext
+
+        expr = func.coalesce(
+            cast(tika_raw, TIMESTAMP(timezone=True)),
+            cast(fm_raw, TIMESTAMP(timezone=True)),
+            cast(sc_raw, TIMESTAMP(timezone=True)),
+            Document.created_at,
+        )
+        source_label_expr = case(
+            (tika_raw.isnot(None), literal("tika.created_at")),
+            (fm_raw.isnot(None), literal("frontmatter.date")),
+            (sc_raw.isnot(None), literal("sidecar.date")),
+            else_=literal("ingest"),
+        )
+
+    stmt = select(Document, expr.label("effective_date"), source_label_expr.label("date_source")).where(
+        Document.status == "active"
+    )
+
+    # Optional FTS filter via chunks join.
+    if query:
+        fts_subq = (
+            select(Chunk.doc_id.distinct())
+            .where(
+                Chunk.fts_en.op("@@")(func.websearch_to_tsquery("english", query))
+                | Chunk.fts_fr.op("@@")(func.websearch_to_tsquery("french", query))
+            )
+            .scalar_subquery()
+        )
+        stmt = stmt.where(Document.doc_id.in_(fts_subq))
+
+    # Optional metadata_filter — same validation as hybrid_search in search.py.
+    if metadata_filter:
+        for path, value in metadata_filter.items():
+            if path.count(".") != 1:
+                raise ValueError(
+                    f"metadata_filter keys must be exactly 'namespace.key' (one dot, two segments); "
+                    f"got {path!r}. Nested paths are not supported in v1."
+                )
+            ns, _, key = path.partition(".")
+            if not ns or not key:
+                raise ValueError(f"metadata_filter keys must have a non-empty namespace and key, got {path!r}")
+            if isinstance(value, str):
+                stmt = stmt.where(Document.doc_metadata[ns][key].astext == value)
+            else:
+                from sqlalchemy.dialects.postgresql import JSONB
+
+                stmt = stmt.where(Document.doc_metadata[ns][key].cast(JSONB) == cast(literal(str(value)), JSONB))
+
+    # Optional after / before bounds on the effective date.
+    if after:
+        stmt = stmt.where(expr >= _parse_iso_date(after))
+    if before:
+        stmt = stmt.where(expr <= _parse_iso_date(before))
+
+    # Sort: NULLs last for both ascending and descending.
+    if direction == "earliest":
+        stmt = stmt.order_by(expr.asc().nullslast())
+    else:
+        stmt = stmt.order_by(expr.desc().nullslast())
+
+    stmt = stmt.limit(limit)
+
+    result = await session.execute(stmt)
+    return [(row.Document, row.effective_date, row.date_source) for row in result.all()]
