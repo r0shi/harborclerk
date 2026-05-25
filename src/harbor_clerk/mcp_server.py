@@ -16,6 +16,12 @@ from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.config import get_settings, refresh_cli_access_setting
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.mcp_discriminator import _compute_discriminator_hint
+from harbor_clerk.mcp_lookup_tools import (
+    documents_by_date as _documents_by_date_impl,
+)
+from harbor_clerk.mcp_lookup_tools import (
+    verify_identifier as _verify_identifier_impl,
+)
 from harbor_clerk.models import (
     ApiKey,
     Chunk,
@@ -2243,6 +2249,117 @@ async def kb_read_document(
         },
         indent=2,
     )
+
+
+@mcp.tool()
+async def kb_verify_identifier(identifier: str) -> str:
+    """Verify a document identifier resolves to exactly one document.
+
+    Use this BEFORE quoting a specific document — checks the identifier
+    against title, filename, and identifier-like metadata fields. Sharp
+    affordance for fabrication-prevention.
+
+    When to call:
+      - Before claiming "the X contract says…" — verify X is a real, unique
+        identifier first
+      - When kb_search returns hits whose titles all share a substring you
+        used as an identifier — verify whether you're looking at one doc or
+        N variants
+      - When the user asks about a specific named document
+
+    What you get back:
+      - status="not_found": no document matches — say so plainly; do NOT
+        fall back to "closest match"
+      - status="unique": one match — its doc_id, title, canonical_filename
+      - status="ambiguous": multiple matches — each candidate carries
+        discriminating_fields (the metadata that distinguishes them) and
+        a suggestion for how to pick one
+
+    When the response is ambiguous, the discriminating_fields per candidate
+    tell you what differs — pick the one matching the user's intent, or ask
+    a clarifying question. With overflow=true (more than 100 candidates),
+    refine the identifier with a more specific substring.
+
+    How to decline:
+      - status="not_found" means the identifier is NOT in the corpus. Do
+        NOT search by similarity as a substitute — tell the user the
+        identifier doesn't exist.
+      - status="ambiguous" with no discriminating_fields means the
+        candidates are indistinguishable by metadata; inspect with
+        kb_get_document if you must.
+    """
+    async with async_session_factory() as session:
+        result = await _verify_identifier_impl(session, identifier)
+    return json.dumps(result, default=str)
+
+
+@mcp.tool()
+async def kb_documents_by_date(
+    direction: str = "earliest",
+    query: str | None = None,
+    metadata_filter: dict | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    date_field: str | None = None,
+    limit: int = 10,
+) -> str:
+    """Return documents sorted by their effective date.
+
+    Use this when the user asks for the earliest / latest / first / last
+    document matching some criteria — similarity-ranked search (kb_search)
+    will not surface boundary docs reliably.
+
+    When to call:
+      - "What's the earliest email about X" / "Find the oldest invoice"
+      - "What's the latest version of Y" / "Most recent contract with Z"
+      - "Show me everything before/after a specific date"
+      - When you need chronological ordering, not similarity ordering
+
+    What you get back:
+      - direction: echoes the input ("earliest" or "latest")
+      - count: number of results returned
+      - results[]: each carries doc_id, title, canonical_filename, date
+        (ISO 8601 UTC), and date_source — which field the date came from:
+          "tika.created_at"  → Tika-extracted email-send / file date
+          "frontmatter.date" → markdown frontmatter
+          "sidecar.date"     → JSON sidecar
+          "ingest"           → fallback to documents.created_at when no
+                               metadata date is available
+
+    Parameters:
+      direction (default "earliest"): "earliest" | "latest"
+      query: optional FTS-only filter (no vector). Returns docs whose chunks
+        match the query, sorted by date.
+      metadata_filter: dict of {"namespace.key": value} pairs — same shape
+        as kb_search's metadata_filter, applied as JSONB containment.
+      after, before: ISO 8601 date or datetime strings; bound the
+        effective-date range.
+      date_field: explicit override for the effective-date source. Accepted
+        values: "tika.created_at", "frontmatter.date", "sidecar.date",
+        "ingest". When set, no fallback is consulted (docs missing that
+        field sort to the end as NULLs).
+      limit (default 10): max results.
+
+    How to decline:
+      - If results is empty, no docs match the date bounds / query / filter
+        — say so plainly. Do NOT broaden the bounds and re-run unless the
+        user asks.
+      - If the user asks for "the earliest" and the top result's
+        date_source is "ingest", note that no metadata date was available
+        — the result is sorted by ingest time, not by document content date.
+    """
+    async with async_session_factory() as session:
+        result = await _documents_by_date_impl(
+            session,
+            direction=direction,
+            query=query,
+            metadata_filter=metadata_filter,
+            after=after,
+            before=before,
+            date_field=date_field,
+            limit=limit,
+        )
+    return json.dumps(result, default=str)
 
 
 @mcp.tool()

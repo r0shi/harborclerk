@@ -5,16 +5,24 @@ title + canonical_filename ILIKE; metadata.tika.title equals; identifier-like
 metadata key equals across sidecar/frontmatter.
 """
 
+import json
 import uuid
+from contextlib import asynccontextmanager, contextmanager
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harbor_clerk.api.deps import Principal
 from harbor_clerk.mcp_lookup_tools import (
     _find_candidates,
     _query_documents_by_date,
     documents_by_date,
     verify_identifier,
+)
+from harbor_clerk.mcp_server import (
+    _mcp_principal,
+    kb_documents_by_date,
+    kb_verify_identifier,
 )
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.models.enums import PipelineStatus
@@ -657,3 +665,61 @@ async def test_documents_by_date_invalid_metadata_filter_returns_error(db_sessio
         limit=10,
     )
     assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# MCP-layer integration tests (Task 6)
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _principal_in_context(user):
+    token = _mcp_principal.set(Principal(type="user", id=user.user_id, role="admin"))
+    try:
+        yield
+    finally:
+        _mcp_principal.reset(token)
+
+
+@pytest.fixture
+async def mock_session_factory(db_session, _engine, monkeypatch):
+    conn = await db_session.connection()
+
+    @asynccontextmanager
+    async def _factory():
+        session = AsyncSession(bind=conn, expire_on_commit=False)
+        try:
+            yield session
+        finally:
+            await session.close()
+
+    monkeypatch.setattr("harbor_clerk.mcp_server.async_session_factory", _factory)
+
+
+@pytest.mark.asyncio
+async def test_kb_verify_identifier_unique_end_to_end(client, admin_user, db_session, mock_session_factory):
+    target = await _seed_doc(db_session, title="Singular Pinnacle Doc")
+    await db_session.flush()
+
+    with _principal_in_context(admin_user):
+        raw = await kb_verify_identifier(identifier="Singular Pinnacle Doc")
+    parsed = json.loads(raw)
+    assert parsed["status"] == "unique"
+    assert parsed["match"]["doc_id"] == str(target.doc_id)
+
+
+@pytest.mark.asyncio
+async def test_kb_documents_by_date_end_to_end(client, admin_user, db_session, mock_session_factory):
+    target = await _seed_doc_with_chunk(
+        db_session,
+        title="Earliest doc",
+        metadata={"tika": {"created_at": "1999-10-13T08:34:00Z"}},
+        text="discussion of California regulators",
+    )
+    await db_session.flush()
+
+    with _principal_in_context(admin_user):
+        raw = await kb_documents_by_date(direction="earliest", query="California", limit=5)
+    parsed = json.loads(raw)
+    assert parsed["direction"] == "earliest"
+    assert any(r["doc_id"] == str(target.doc_id) for r in parsed["results"])
