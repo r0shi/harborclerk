@@ -86,6 +86,39 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(key1, key2)
     }
 
+    // MARK: - CLI access
+
+    func testEnableCliAccessDefaultsFalse() {
+        let settings = AppSettings(configURL: configURL)
+        XCTAssertEqual(settings.enableCliAccess, false)
+    }
+
+    func testEnableCliAccessPersistsAcrossReload() {
+        let settings = AppSettings(configURL: configURL)
+        settings.enableCliAccess = true
+
+        let reloaded = AppSettings(configURL: configURL)
+        XCTAssertEqual(reloaded.enableCliAccess, true)
+    }
+
+    func testEnableCliAccessToggleOffPersists() {
+        let settings = AppSettings(configURL: configURL)
+        settings.enableCliAccess = true
+        settings.enableCliAccess = false
+
+        let reloaded = AppSettings(configURL: configURL)
+        XCTAssertEqual(reloaded.enableCliAccess, false)
+    }
+
+    func testEnableCliAccessLoadedFromExistingConfig() throws {
+        let json: [String: Any] = ["enable_cli_access": true]
+        let data = try JSONSerialization.data(withJSONObject: json)
+        try data.write(to: configURL)
+
+        let settings = AppSettings(configURL: configURL)
+        XCTAssertEqual(settings.enableCliAccess, true)
+    }
+
     // MARK: - Active model path
 
     func testActiveModelPathKnownModels() {

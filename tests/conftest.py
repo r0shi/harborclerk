@@ -132,6 +132,30 @@ def anyio_backend():
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def _reset_global_settings_singleton():
+    """Reset harbor_clerk.config._settings before AND after every test.
+
+    The Settings object is a module-cached singleton (see config.get_settings).
+    Several tests legitimately mutate it — setting ENABLE_CLI_ACCESS via
+    monkeypatch.setenv and forcing a re-read with `_config._settings = None`,
+    or directly mutating attributes like `s.allow_source_download = True` —
+    and `monkeypatch` restores env vars on teardown but cannot rewind the
+    in-memory attribute state of the cached instance. This left leaked values
+    (e.g. enable_cli_access=True after tests/cli/test_e2e.py's happy-path test)
+    visible to later test files in CI's alphabetical collection order.
+
+    Resetting before-and-after every test makes the leak impossible regardless
+    of which test mutates state or how. Negligible perf cost (one `None`
+    assignment + lazy re-read from env on next `get_settings()`).
+    """
+    import harbor_clerk.config as _config
+
+    _config._settings = None
+    yield
+    _config._settings = None
+
+
 @pytest.fixture(scope="session")
 def _engine():
     """Create engine and run Alembic migrations once per test session."""

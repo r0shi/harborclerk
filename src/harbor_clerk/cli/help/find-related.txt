@@ -1,0 +1,96 @@
+harbor-clerk find-related — find documents similar to a given document
+
+DESCRIPTION
+  Returns the documents most similar to a given document based on embedding
+  similarity and explicit wikilink relationships.
+
+  Similarity is computed by averaging the target document's chunk embeddings
+  into a single document-level vector, then finding other active documents
+  whose chunk embeddings are closest by cosine distance. This is semantic
+  similarity — it captures topical relatedness, not surface-level text
+  overlap. Two documents about the same contract clause written in different
+  words will rank high; a document that shares a few keywords but covers a
+  different topic will not.
+
+  Explicit links (wikilinks between documents, if the corpus uses them) are
+  merged in first, ahead of embedding-nearest results, and always receive a
+  synthetic similarity score of 1.0 with `"source": "linked"`. Embedding-
+  based results follow with `"source": "embedding"`.
+
+  If the target document has not yet been embedded (still processing), the
+  response returns an empty `related` array and includes
+  `"note": "No embeddings available"`.
+
+  Practical uses:
+  - Discover related contracts, policies, or memos to cross-reference.
+  - Surface potential duplicates (very high similarity scores, >0.95).
+  - Understand which documents cluster together before running entity or
+    full-text analysis on a topic.
+
+USAGE
+  harbor-clerk find-related <doc_id> [options]
+
+OPTIONS
+  -k, --k INT   Number of related documents to return (default: 5, max: 20)
+
+RETURNS (JSON)
+  {
+    "doc_id": "uuid",      // the query document
+    "related": [
+      {
+        "doc_id":             "uuid",      // related document
+        "title":              "string",
+        "summary":            "string",    // auto-generated summary (may be null)
+        "similarity":         0.91,        // cosine similarity 0–1, higher = more similar
+        "source":             "embedding", // "embedding" or "linked"
+        "doc_type":           "string",    // document type label
+        "mime_type":          "string",    // e.g. "application/pdf"
+        "canonical_filename": "string"     // original filename
+      }
+    ]
+    // when target has no embeddings:
+    // "note": "No embeddings available"
+  }
+
+EXAMPLES
+  # Find 5 documents similar to a known contract
+  harbor-clerk find-related 3f4e2a1b-0000-0000-0000-aabbccddeeff
+
+  # Wider search — top 10 similar documents
+  harbor-clerk find-related 3f4e2a1b-0000-0000-0000-aabbccddeeff -k 10
+
+  # Extract just titles and similarity scores
+  harbor-clerk find-related 3f4e2a1b-0000-0000-0000-aabbccddeeff \
+    | jq '.related[] | {title, similarity, source}'
+
+  # Flag potential duplicates (similarity > 0.95)
+  harbor-clerk find-related 3f4e2a1b-0000-0000-0000-aabbccddeeff -k 20 \
+    | jq '[.related[] | select(.similarity > 0.95)]'
+
+  # Two-stage: find the doc_id from a search hit, then find related docs
+  DOC=$(harbor-clerk search "employment agreement" -k 1 \
+    | jq -r '.results[0].doc_id')
+  harbor-clerk find-related "$DOC" -k 5
+
+COMMON MISTAKES
+  - Passing a chunk_id as doc_id: find-related takes a document UUID
+    (from .results[].doc_id in search output or from `list-recent`), not
+    a chunk UUID. Chunk IDs come from .results[].chunk_id.
+  - Expecting text-overlap matching: similarity is based on dense vector
+    embeddings, not keyword overlap. A document sharing unusual phrasing
+    may rank higher than one sharing common words.
+  - Confusing "linked" vs "embedding" source: `"source": "linked"` means
+    there is an explicit wikilink between the documents; their similarity
+    score is a synthetic 1.0, not a computed distance. These appear first
+    regardless of embedding proximity.
+  - Trusting very high similarity as proof of duplication: scores above
+    ~0.95 are a strong signal but not conclusive. Different editions of
+    the same template, or short documents, can score near-identical without
+    being true duplicates. Always review the summaries and filenames.
+  - Calling find-related immediately after ingestion: the embed pipeline
+    stage must complete before embeddings are available. If the response
+    contains `"note": "No embeddings available"`, wait for the document
+    to finish processing (check with `ingest-status`).
+
+SEE ALSO
+  search, get-document, list-recent, entity-overview

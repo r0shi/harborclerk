@@ -127,6 +127,14 @@ class Settings(BaseSettings):
     # ALLOW_SOURCE_DOWNLOAD=true in the compose file.
     allow_source_download: bool = Field(default=False)
 
+    enable_cli_access: bool = Field(
+        default=False,
+        description=(
+            "If true, the harbor-clerk CLI (User-Agent: harbor-clerk-cli/*) "
+            "can call MCP tools. Default off; audit-logged as request_type=cli_tool."
+        ),
+    )
+
     @field_validator("public_url")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
@@ -141,6 +149,26 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+
+def refresh_cli_access_setting() -> None:
+    """Re-read enable_cli_access from the native config.json file.
+
+    On macOS the user can toggle the CLI gate from the menubar preferences
+    window. The change takes effect for new requests within seconds because
+    MCPAuthMiddleware calls this before checking the gate.  No restart needed.
+    """
+    settings = get_settings()
+    path = settings.native_config_file
+    if not path or not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.loads(f.read())
+        if "enable_cli_access" in data:
+            settings.enable_cli_access = bool(data["enable_cli_access"])
+    except Exception:
+        logger.debug("Failed to refresh enable_cli_access from %s", path, exc_info=True)
 
 
 def refresh_llm_settings() -> None:

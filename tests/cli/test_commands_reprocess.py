@@ -1,0 +1,28 @@
+from unittest.mock import MagicMock, patch
+
+from harbor_clerk.cli import main as cli_main
+
+
+def _run(args, mock_response):
+    """Invoke CLI in-process with a mocked McpHttpClient."""
+    with (
+        patch("harbor_clerk.cli.commands.reprocess.McpHttpClient") as MockClient,
+        patch("harbor_clerk.cli.commands.reprocess.resolve_config") as MockResolve,
+    ):
+        instance = MagicMock()
+        instance.call_tool.return_value = mock_response
+        instance.__enter__.return_value = instance
+        instance.__exit__.return_value = False
+        MockClient.return_value = instance
+        MockResolve.return_value = MagicMock(url="https://test", api_key="hc_t", insecure=False)
+        rc = cli_main.main(args)
+        return rc, instance
+
+
+def test_reprocess_calls_kb_reprocess_with_doc_id():
+    rc, client = _run(["reprocess", "doc-uuid-1", "--json"], {"status": "queued"})
+    assert rc == 0
+    client.call_tool.assert_called_once_with(
+        "kb_reprocess",
+        {"doc_id": "doc-uuid-1"},
+    )

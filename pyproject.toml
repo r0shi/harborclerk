@@ -43,6 +43,7 @@ test = [
     "pytest-asyncio>=0.24",
     "pytest-httpserver>=1.1",
     "pytest-httpx>=0.32",
+    "respx>=0.21",
     "ruff>=0.11",
     "pip-audit>=2.7",
 ]
@@ -59,6 +60,7 @@ harbor-clerk-api = "harbor_clerk.api.app:main"
 harbor-clerk-worker = "harbor_clerk.worker.entry:main"
 harbor-clerk-seed = "harbor_clerk.seed:main"
 harbor-clerk-watcher = "harbor_clerk.watcher.main:main"
+harbor-clerk = "harbor_clerk.cli.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

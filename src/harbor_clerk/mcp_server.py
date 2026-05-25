@@ -13,7 +13,7 @@ from sqlalchemy.orm import aliased
 
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import get_settings, refresh_cli_access_setting
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.mcp_discriminator import _compute_discriminator_hint
 from harbor_clerk.models import (
@@ -51,6 +51,19 @@ _mcp_principal: contextvars.ContextVar[Principal | None] = contextvars.ContextVa
     "_mcp_principal",
     default=None,
 )
+
+# True when the current request comes from harbor-clerk-cli (UA prefix match)
+_mcp_is_cli: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_mcp_is_cli",
+    default=False,
+)
+
+_CLI_USER_AGENT_PREFIX = "harbor-clerk-cli/"
+
+
+def _request_type_for_ua() -> str:
+    """Return 'cli_tool' if the request is from harbor-clerk-cli, else 'mcp_tool'."""
+    return "cli_tool" if _mcp_is_cli.get() else "mcp_tool"
 
 
 async def _resolve_principal(token: str) -> Principal | None:
@@ -131,11 +144,58 @@ class MCPAuthMiddleware:
             token = auth_header[7:]
             principal = await _resolve_principal(token)
             if principal is not None:
+                # Detect whether this is a harbor-clerk-cli request
+                ua = headers.get(b"user-agent", b"").decode()
+                is_cli = ua.startswith(_CLI_USER_AGENT_PREFIX)
+
+                # Gate: CLI traffic blocked unless enable_cli_access is True.
+                # Refresh from native config.json on every CLI request so
+                # toggling in macOS Preferences takes effect without restart.
+                if is_cli:
+                    refresh_cli_access_setting()
+                if is_cli and not get_settings().enable_cli_access:
+                    from harbor_clerk.api.request_log import log_api_request
+
+                    try:
+                        async with async_session_factory() as log_session:
+                            await log_api_request(
+                                log_session,
+                                api_key_id=principal.id if principal.type == "api_key" else None,
+                                request_type="cli_tool",
+                                endpoint="<gate>",
+                                status="denied",
+                                status_detail="cli_access_disabled",
+                            )
+                            await log_session.commit()
+                    except Exception:
+                        logger.debug("Failed to log CLI gate denial", exc_info=True)
+
+                    body = json.dumps(
+                        {
+                            "error": "cli_access_disabled",
+                            "hint": "Enable in System Settings → Integrations",
+                        }
+                    ).encode()
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 403,
+                            "headers": [
+                                [b"content-type", b"application/json"],
+                                [b"content-length", str(len(body)).encode()],
+                            ],
+                        }
+                    )
+                    await send({"type": "http.response.body", "body": body})
+                    return
+
                 reset_token = _mcp_principal.set(principal)
+                reset_cli_token = _mcp_is_cli.set(is_cli)
                 try:
                     await self.app(scope, receive, send)
                 finally:
                     _mcp_principal.reset(reset_token)
+                    _mcp_is_cli.reset(reset_cli_token)
                 return
 
         # No valid auth — return 401 JSON
@@ -193,6 +253,12 @@ class MCPTokenPathAuth:
         scope["path"] = remaining
         scope["raw_path"] = remaining.encode("ascii")
 
+        # NOTE: This path-auth middleware (used by Claude.ai / ChatGPT URL-paste
+        # connectors) intentionally does NOT apply the CLI access gate or set the
+        # `_mcp_is_cli` contextvar. The `harbor-clerk` CLI is expected to use
+        # Bearer-header auth on /mcp, which is gated by MCPAuthMiddleware. If a
+        # CLI client is ever wired to use URL-token auth, the gate logic from
+        # MCPAuthMiddleware must be replicated here.
         reset_token = _mcp_principal.set(principal)
         try:
             await self.app(scope, receive, send)
@@ -330,7 +396,7 @@ class ScopedFastMCP(FastMCP):
                         await log_api_request(
                             log_session,
                             api_key_id=principal.id,
-                            request_type="mcp_tool",
+                            request_type=_request_type_for_ua(),
                             endpoint=name,
                             parameters=dict(arguments) if arguments else None,
                             status="rate_limited",
@@ -352,7 +418,7 @@ class ScopedFastMCP(FastMCP):
                     await log_api_request(
                         log_session,
                         api_key_id=principal.id,
-                        request_type="mcp_tool",
+                        request_type=_request_type_for_ua(),
                         endpoint=name,
                         parameters=arguments if arguments else None,
                         status="denied",
@@ -377,7 +443,7 @@ class ScopedFastMCP(FastMCP):
                     await log_api_request(
                         log_session,
                         api_key_id=principal.id,
-                        request_type="mcp_tool",
+                        request_type=_request_type_for_ua(),
                         endpoint=name,
                         parameters=arguments if arguments else None,
                         status="error",
@@ -416,7 +482,7 @@ class ScopedFastMCP(FastMCP):
                 await log_api_request(
                     log_session,
                     api_key_id=principal.id,
-                    request_type="mcp_tool",
+                    request_type=_request_type_for_ua(),
                     endpoint=name,
                     parameters=arguments if arguments else None,
                     status="ok",

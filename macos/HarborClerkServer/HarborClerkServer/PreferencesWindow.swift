@@ -1,5 +1,130 @@
 import SwiftUI
 
+// MARK: - CLI Shim Row
+
+/// Displays the shim install status and Install / Re-install / Uninstall controls.
+/// Shown inside the Network Access section, below the enableCliAccess toggle.
+private struct CliShimRow: View {
+    @State private var status: CliShimStatus = CliShimInstaller.currentStatus()
+    @State private var actionError: String? = nil
+    private let pathSnippet = #"export PATH="$HOME/.local/bin:$PATH""#
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Status line
+            HStack(spacing: 6) {
+                statusIcon
+                Text(statusLabel)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                Spacer()
+                actionButton
+            }
+
+            // Error (if last action failed)
+            if let err = actionError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            // PATH snippet
+            HStack(spacing: 0) {
+                Text(pathSnippet)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Spacer()
+                CopySnippetButton(text: pathSnippet)
+            }
+            .padding(6)
+            .background(Color(NSColor.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            Text("Add the snippet above to ~/.zshrc (or ~/.bashrc) if harbor-clerk isn't found on your PATH.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Sub-views
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch status {
+        case .installed:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .installedOutdated:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        case .notInstalled:
+            Image(systemName: "circle")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var statusLabel: String {
+        switch status {
+        case .installed(let path):
+            return "Installed at \(path)"
+        case .installedOutdated:
+            return "Installed but stale — re-install to update"
+        case .notInstalled:
+            return "Not installed"
+        }
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        switch status {
+        case .installed:
+            Button("Uninstall") { runAction { try CliShimInstaller.uninstall() } }
+                .controlSize(.small)
+                .buttonStyle(.bordered)
+        case .installedOutdated:
+            Button("Re-install") { runAction { try CliShimInstaller.install() } }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+        case .notInstalled:
+            Button("Install") { runAction { try CliShimInstaller.install() } }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    // MARK: - Action helper
+
+    private func runAction(_ block: () throws -> Void) {
+        actionError = nil
+        do {
+            try block()
+        } catch {
+            actionError = error.localizedDescription
+        }
+        status = CliShimInstaller.currentStatus()
+    }
+}
+
+/// Compact inline copy button for the PATH snippet.
+private struct CopySnippetButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button(copied ? "Copied!" : "Copy") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
+        }
+        .controlSize(.mini)
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+    }
+}
+
 private let defaultPorts: [String: Int] = [
     "api": 8100,
     "postgres": 5433,
@@ -24,6 +149,8 @@ private let modelOptions: [(id: String, name: String)] = [
 struct PreferencesWindow: View {
     @State private var allowRemoteWeb = AppSettings.shared.allowRemoteWeb
     @State private var allowRemoteMCP = AppSettings.shared.allowRemoteMCP
+    @State private var enableCliAccess = AppSettings.shared.enableCliAccess
+    @State private var enableCliAccessOnOpen = AppSettings.shared.enableCliAccess
     @State private var workerPreset = AppSettings.shared.workerPreset
     @State private var apiPortText = String(AppSettings.shared.apiPort)
     @State private var postgresPortText = String(AppSettings.shared.postgresPort)
@@ -80,6 +207,25 @@ struct PreferencesWindow: View {
                     Text("Let AI models on your network query your documents.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    Toggle("Allow harbor-clerk CLI from agentic tools", isOn: $enableCliAccess)
+                        .onChange(of: enableCliAccess) { _, newValue in
+                            // Applied immediately — no restart required. The API server
+                            // re-reads config.json on every CLI request, so this takes
+                            // effect within seconds without touching the restart banner.
+                            AppSettings.shared.enableCliAccess = newValue
+                        }
+                    Text("Let agent harnesses (Claude Code, Codex, etc.) query documents via the harbor-clerk CLI. Does not require a service restart.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if enableCliAccess {
+                        CliShimRow()
+                    } else {
+                        CliShimRow()
+                            .disabled(true)
+                            .help("Enable the toggle above before installing the shim.")
+                    }
 
                     if !allowRemoteWeb && !allowRemoteMCP {
                         Text("Harbor Clerk is only accessible from this Mac.")
@@ -160,6 +306,9 @@ struct PreferencesWindow: View {
         .frame(width: 480, height: needsRestart ? 600 : 550)
         .animation(.easeInOut(duration: 0.25), value: needsRestart)
         .onAppear {
+            // Sync enableCliAccess from AppSettings in case it changed since the view was created
+            enableCliAccess = AppSettings.shared.enableCliAccess
+            enableCliAccessOnOpen = AppSettings.shared.enableCliAccess
             captureInitial()
         }
     }
@@ -304,6 +453,8 @@ struct PreferencesWindow: View {
             llmModelId: llmModelId,
             logLevel: logLevel
         )
+        // Track the enableCliAccess baseline for Cancel revert
+        enableCliAccessOnOpen = enableCliAccess
     }
 
     private func revertToInitial() {
@@ -319,6 +470,10 @@ struct PreferencesWindow: View {
         llamaPortText = initial.llamaPort
         llmModelId = initial.llmModelId
         logLevel = initial.logLevel
+        // enableCliAccess is applied immediately when toggled, so Cancel must
+        // also write the original value back to config.json to undo the change.
+        enableCliAccess = enableCliAccessOnOpen
+        AppSettings.shared.enableCliAccess = enableCliAccessOnOpen
         needsRestart = false
     }
 
