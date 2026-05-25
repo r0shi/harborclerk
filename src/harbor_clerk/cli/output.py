@@ -70,3 +70,48 @@ def _render_search(payload: Any, stream: TextIO) -> None:
         stream.write(f"   {snippet}\n\n")
     if payload.get("possible_conflict"):
         stream.write("⚠  possible_conflict=true — top hits disagree across documents\n")
+
+
+# --- Verify identifier pretty-printer ---
+
+
+@register_text_renderer("verify-identifier")
+def _render_verify_identifier(payload: Any, stream: TextIO) -> None:
+    if not isinstance(payload, dict):
+        stream.write(repr(payload) + "\n")
+        return
+
+    if "error" in payload:
+        stream.write(f"error: {payload['error']}\n")
+        return
+
+    status = payload.get("status")
+
+    if status == "not_found":
+        stream.write(f"not_found: {payload.get('identifier', '')}\n")
+        return
+
+    if status == "unique":
+        m = payload.get("match", {})
+        stream.write(f"unique: {m.get('title', '')}  [{m.get('doc_id', '')}]\n")
+        if m.get("canonical_filename"):
+            stream.write(f"  filename: {m['canonical_filename']}\n")
+        return
+
+    if status == "ambiguous":
+        count = payload.get("count", 0)
+        overflow = " (overflow)" if payload.get("overflow") else ""
+        stream.write(f"ambiguous: {count} candidates{overflow}\n")
+        for c in payload.get("candidates", []):
+            stream.write(f"  - {c.get('title', '')}  [{c.get('doc_id', '')}]\n")
+            for path, value in (c.get("discriminating_fields") or {}).items():
+                stream.write(f"      {path}={value!r}\n")
+        suggestion = payload.get("suggestion")
+        if suggestion:
+            stream.write(f"\n{suggestion}\n")
+        return
+
+    # Unknown status — fall back to JSON-ish
+    import json as _json
+
+    stream.write(_json.dumps(payload, indent=2, default=str) + "\n")

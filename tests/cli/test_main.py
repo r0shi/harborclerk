@@ -19,7 +19,7 @@ def test_cli_version_flag():
     assert "harbor-clerk-cli/" in out
 
 
-def test_cli_help_flag_lists_all_16_commands():
+def test_cli_help_flag_lists_all_17_commands():
     out, _err, rc = run_cli("--help")
     assert rc == 0
     for cmd in [
@@ -39,6 +39,7 @@ def test_cli_help_flag_lists_all_16_commands():
         "ingest-status",
         "reprocess",
         "system-health",
+        "verify-identifier",
     ]:
         assert cmd in out, f"missing subcommand in --help: {cmd}"
 

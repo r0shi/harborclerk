@@ -43,6 +43,7 @@ _COMMAND_NAMES = [
     "ingest-status",
     "reprocess",
     "system-health",
+    "verify-identifier",
 ]
 
 
