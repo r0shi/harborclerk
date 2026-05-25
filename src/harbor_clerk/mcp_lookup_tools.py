@@ -20,10 +20,9 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
 from harbor_clerk.models import Document
 
-# Cap on candidates returned for verify_identifier. Bounds payload size
-# and discriminating-fields compute cost on degenerate inputs.
 _VERIFY_CANDIDATE_CAP = 100
 
 # Leaf-key names that count as identifiers when matching metadata.sidecar.**
@@ -133,3 +132,86 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
         if len(result) >= _VERIFY_CANDIDATE_CAP:
             break
     return result
+
+
+async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
+    """Verify that an identifier resolves to a unique document.
+
+    Returns one of three response shapes:
+      - {"status": "not_found", "identifier": <input>}
+      - {"status": "unique", "match": {doc_id, title, canonical_filename,
+                                       discriminating_fields: {}}}
+      - {"status": "ambiguous", "count": N, "candidates": [...],
+         "suggestion": "...", "overflow"?: true}
+
+    Empty / whitespace-only identifier returns {"error": "..."}.
+    """
+    if not identifier or not identifier.strip():
+        return {"error": "identifier must be a non-empty string"}
+
+    candidates = await _find_candidates(session, identifier)
+
+    if not candidates:
+        return {"status": "not_found", "identifier": identifier}
+
+    if len(candidates) == 1:
+        d = candidates[0]
+        return {
+            "status": "unique",
+            "match": {
+                "doc_id": str(d.doc_id),
+                "title": d.title,
+                "canonical_filename": d.canonical_filename,
+                "discriminating_fields": {},
+            },
+        }
+
+    # Ambiguous — compute which metadata paths differ across candidates.
+    titles = {str(d.doc_id): (d.title or str(d.doc_id)) for d in candidates}
+    metadata_by_doc = {str(d.doc_id): (d.doc_metadata or {}) for d in candidates}
+    candidate_ids = [str(d.doc_id) for d in candidates]
+    differing = _find_differing_metadata_fields(candidate_ids, metadata_by_doc, titles)
+
+    cand_payload: list[dict] = []
+    for d in candidates:
+        did = str(d.doc_id)
+        # Project the per-candidate value at each differing path.
+        per_cand: dict = {}
+        for path in differing:
+            ns, key = path.split(".", 1)
+            value = metadata_by_doc[did].get(ns, {}).get(key)
+            if value is not None:
+                per_cand[path] = value
+        cand_payload.append(
+            {
+                "doc_id": did,
+                "title": d.title,
+                "canonical_filename": d.canonical_filename,
+                "discriminating_fields": per_cand,
+            }
+        )
+
+    overflow = len(candidates) >= _VERIFY_CANDIDATE_CAP
+
+    if overflow:
+        suggestion = (
+            "More than 100 candidates matched — refine the identifier with a more "
+            "specific substring, or use kb_search(metadata_filter=...) to narrow."
+        )
+    elif differing:
+        field_list = ", ".join(differing.keys())
+        suggestion = f"{len(candidates)} candidates differ on {field_list} — pick the one matching your intent."
+    else:
+        suggestion = (
+            "Multiple candidates have identical discriminating metadata — try kb_get_document on each to inspect body."
+        )
+
+    payload: dict = {
+        "status": "ambiguous",
+        "count": len(candidates),
+        "candidates": cand_payload,
+        "suggestion": suggestion,
+    }
+    if overflow:
+        payload["overflow"] = True
+    return payload

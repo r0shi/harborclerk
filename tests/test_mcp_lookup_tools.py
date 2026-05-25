@@ -10,7 +10,7 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.mcp_lookup_tools import _find_candidates
+from harbor_clerk.mcp_lookup_tools import _find_candidates, verify_identifier
 from harbor_clerk.models import Document
 from harbor_clerk.models.enums import PipelineStatus
 
@@ -182,3 +182,109 @@ async def test_caps_at_100_candidates(db_session):
 
     candidates = await _find_candidates(db_session, "Pinnacle")
     assert len(candidates) == 100
+
+
+# ---------------------------------------------------------------------------
+# verify_identifier response-shape tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_not_found_returns_status_not_found(db_session):
+    await _seed_doc(db_session, title="Unrelated")
+    await db_session.flush()
+
+    result = await verify_identifier(db_session, "nothing-matches")
+    assert result == {"status": "not_found", "identifier": "nothing-matches"}
+
+
+@pytest.mark.asyncio
+async def test_unique_match_returns_status_unique(db_session):
+    target = await _seed_doc(
+        db_session,
+        title="Pinnacle Vendor Contract",
+        canonical_filename="0131_vendor_contract.pdf",
+    )
+    await db_session.flush()
+
+    result = await verify_identifier(db_session, "Pinnacle Vendor Contract")
+    assert result["status"] == "unique"
+    assert result["match"]["doc_id"] == str(target.doc_id)
+    assert result["match"]["title"] == "Pinnacle Vendor Contract"
+    assert result["match"]["canonical_filename"] == "0131_vendor_contract.pdf"
+    assert result["match"]["discriminating_fields"] == {}
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_match_with_discriminating_fields(db_session):
+    a = await _seed_doc(
+        db_session,
+        title="Pinnacle Vendor Contract A",
+        metadata={"sidecar": {"vendor": "Pinnacle Tech Solutions", "term_months": 24}},
+    )
+    b = await _seed_doc(
+        db_session,
+        title="Pinnacle Vendor Contract B",
+        metadata={"sidecar": {"vendor": "Pinnacle Industries", "term_months": 36}},
+    )
+    await db_session.flush()
+
+    result = await verify_identifier(db_session, "Pinnacle Vendor Contract")
+    assert result["status"] == "ambiguous"
+    assert result["count"] == 2
+    ids = {c["doc_id"] for c in result["candidates"]}
+    assert ids == {str(a.doc_id), str(b.doc_id)}
+
+    # Per-candidate discriminating_fields should carry that candidate's own values.
+    for c in result["candidates"]:
+        assert "sidecar.vendor" in c["discriminating_fields"]
+        assert "sidecar.term_months" in c["discriminating_fields"]
+    suggestion = result["suggestion"]
+    assert "sidecar.vendor" in suggestion or "sidecar.term_months" in suggestion
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_with_no_differing_fields_uses_fallback_suggestion(db_session):
+    await _seed_doc(
+        db_session,
+        title="Pinnacle Contract Alpha",
+        metadata={"sidecar": {"vendor": "Same Vendor"}},
+    )
+    await _seed_doc(
+        db_session,
+        title="Pinnacle Contract Beta",
+        metadata={"sidecar": {"vendor": "Same Vendor"}},
+    )
+    await db_session.flush()
+
+    result = await verify_identifier(db_session, "Pinnacle Contract")
+    assert result["status"] == "ambiguous"
+    for c in result["candidates"]:
+        assert c["discriminating_fields"] == {}
+    assert "identical" in result["suggestion"].lower()
+
+
+@pytest.mark.asyncio
+async def test_empty_identifier_returns_error(db_session):
+    result = await verify_identifier(db_session, "")
+    assert "error" in result
+    assert "non-empty" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_identifier_returns_error(db_session):
+    result = await verify_identifier(db_session, "   ")
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_overflow_flag_set_when_cap_exceeded(db_session):
+    for i in range(105):
+        await _seed_doc(db_session, title=f"Pinnacle {i:03d}")
+    await db_session.flush()
+
+    result = await verify_identifier(db_session, "Pinnacle")
+    assert result["status"] == "ambiguous"
+    assert result["count"] == 100
+    assert result["overflow"] is True
+    assert "More than 100" in result["suggestion"]
