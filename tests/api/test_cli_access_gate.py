@@ -84,6 +84,23 @@ def _headers_with(auth_key: str, user_agent: str | None = None) -> list:
 
 
 class TestCliAccessGate:
+    @pytest.fixture(autouse=True)
+    def _reset_settings_singleton(self):
+        """Reset the Settings singleton before AND after every test in this class.
+
+        Several tests here set ENABLE_CLI_ACCESS=true via monkeypatch and force
+        a re-read with `_config._settings = None`. monkeypatch restores the env
+        var on teardown, but the in-memory Settings object (cached on the
+        module) still has the test-time value. Without explicit reset the
+        leaked True propagated to later test files in CI's alphabetical order
+        (e.g. tests/test_api_system.py::test_health_check_exposes_enable_cli_access_default_false).
+        """
+        from harbor_clerk import config as _config
+
+        _config._settings = None
+        yield
+        _config._settings = None
+
     @pytest.fixture
     def app(self, monkeypatch):
         async def mock_resolve(token):
