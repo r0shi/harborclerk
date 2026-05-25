@@ -6,6 +6,7 @@ from harbor_clerk.mcp_server import (
     kb_batch_search,
     kb_corpus_overview,
     kb_document_outline,
+    kb_documents_by_date,
     kb_entity_cooccurrence,
     kb_entity_overview,
     kb_entity_search,
@@ -19,6 +20,7 @@ from harbor_clerk.mcp_server import (
     kb_reprocess,
     kb_search,
     kb_system_health,
+    kb_verify_identifier,
 )
 
 
@@ -173,3 +175,36 @@ def test_kb_batch_search_signature_accepts_metadata_filter():
 
     sig = inspect.signature(kb_batch_search)
     assert "metadata_filter" in sig.parameters
+
+
+# ── Lookup tier (PR-E) ────────────────────────────────────────────────
+
+
+def test_kb_verify_identifier_docstring_has_four_parts():
+    doc = kb_verify_identifier.__doc__ or ""
+    # Same 4-part convention as PR-D: section headers with trailing colon.
+    assert "What you get back" in doc or "What it returns" in doc
+    assert "When to" in doc
+    assert "How to decline" in doc or "Decline" in doc
+
+
+def test_kb_verify_identifier_mentions_key_affordances():
+    doc = (kb_verify_identifier.__doc__ or "").lower()
+    assert "verify" in doc
+    assert "before" in doc  # "use before quoting" / "before you cite"
+    assert "ambiguous" in doc or "ambiguity" in doc
+    assert "not_found" in doc
+
+
+def test_kb_documents_by_date_docstring_has_four_parts():
+    doc = kb_documents_by_date.__doc__ or ""
+    assert "What you get back" in doc or "What it returns" in doc
+    assert "When to" in doc
+    assert "How to decline" in doc or "Decline" in doc
+
+
+def test_kb_documents_by_date_mentions_key_affordances():
+    doc = (kb_documents_by_date.__doc__ or "").lower()
+    assert "earliest" in doc
+    assert "latest" in doc
+    assert "date_source" in doc

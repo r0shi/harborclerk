@@ -1,0 +1,59 @@
+harbor-clerk documents-by-date — date-sorted document lookup
+
+DESCRIPTION
+  Returns documents sorted by their effective date (earliest or latest),
+  with optional FTS query, metadata filter, and date bounds. Use this when
+  the user asks for the earliest / latest / oldest / newest document —
+  similarity-ranked search (search) will not surface boundary docs
+  reliably.
+
+  The effective date is discovered per document via this priority chain:
+    1. metadata.tika.created_at  (Tika-extracted email-send / file date)
+    2. metadata.frontmatter.date (markdown frontmatter)
+    3. metadata.sidecar.date     (JSON sidecar)
+    4. documents.created_at      (ingest time — last resort)
+
+  Use --date-field to pin the sort to a single source (docs missing that
+  field sort to the end as NULLs).
+
+USAGE
+  harbor-clerk documents-by-date [options]
+
+OPTIONS
+      --direction earliest|latest    Sort direction (default: earliest)
+      --query TEXT                   Optional FTS filter (no vector ranking)
+      --metadata-filter JSON         JSONB containment filter, e.g.
+                                       '{"sidecar.vendor": "Pinnacle"}'
+      --after YYYY-MM-DD             Lower bound on effective date
+      --before YYYY-MM-DD            Upper bound on effective date
+      --date-field FIELD             Pin sort to one source field. Choices:
+                                       tika.created_at, frontmatter.date,
+                                       sidecar.date, ingest
+  -l, --limit INT                    Max results (default: 10)
+  (Plus global flags: --url, --api-key, --insecure, --json, --format)
+
+RETURNS (JSON)
+  { "direction": "earliest",
+    "count": 5,
+    "results": [
+      { "doc_id": "...",
+        "title": "...",
+        "canonical_filename": "...",
+        "date": "1999-10-13T08:34:00+00:00",
+        "date_source": "tika.created_at" } ] }
+
+EXAMPLES
+  # Earliest email about California regulators
+  harbor-clerk documents-by-date --direction earliest --query "California"
+
+  # Latest contract from a specific vendor
+  harbor-clerk documents-by-date --direction latest \
+    --metadata-filter '{"sidecar.vendor": "Pinnacle Tech Solutions"}'
+
+  # All docs ingested before a date, sorted oldest-first
+  harbor-clerk documents-by-date --direction earliest \
+    --before 2024-01-01 --date-field ingest
+
+  # Skilling's last pre-resignation email
+  harbor-clerk documents-by-date --direction latest \
+    --query "from:skilling" --before 2001-08-14

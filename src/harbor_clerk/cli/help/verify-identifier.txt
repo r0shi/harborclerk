@@ -1,0 +1,62 @@
+harbor-clerk verify-identifier — verify an identifier resolves to one document
+
+DESCRIPTION
+  Checks whether a given identifier string maps to exactly one document in
+  the corpus. Use BEFORE quoting a specific named document — sharp
+  affordance for fabrication-prevention.
+
+  Matches against:
+    - document title (case-insensitive CONTAINS)
+    - canonical filename (case-insensitive CONTAINS)
+    - metadata.tika.title (case-insensitive EQUALS)
+    - identifier-like metadata keys (id, contract_id, policy_id, case_id,
+      order_id, invoice_id, message_id, *_id) under metadata.sidecar.** or
+      metadata.frontmatter.** (case-insensitive EQUALS)
+
+  Status outcomes:
+    not_found  → no document matches; do NOT fall back to similarity
+    unique     → exactly one match
+    ambiguous  → multiple matches; each candidate carries
+                 discriminating_fields showing what distinguishes it
+
+USAGE
+  harbor-clerk verify-identifier <identifier> [options]
+
+OPTIONS
+  (Inherits global flags: --url, --api-key, --insecure, --json, --format.)
+
+RETURNS (JSON)
+  // not_found
+  { "status": "not_found", "identifier": "<input>" }
+
+  // unique
+  { "status": "unique",
+    "match": { "doc_id": "...", "title": "...",
+               "canonical_filename": "...",
+               "discriminating_fields": {} } }
+
+  // ambiguous (count > 1)
+  { "status": "ambiguous",
+    "count": 3,
+    "candidates": [
+      { "doc_id": "...", "title": "...",
+        "canonical_filename": "...",
+        "discriminating_fields": { "sidecar.vendor": "Acme",
+                                   "sidecar.term_months": 24 } }
+    ],
+    "suggestion": "3 candidates differ on sidecar.vendor — pick one." }
+
+  // ambiguous with overflow (> 100 matches)
+  { "status": "ambiguous", "count": 100, "overflow": true,
+    "candidates": [ /* 100 entries */ ],
+    "suggestion": "More than 100 candidates matched — refine ..." }
+
+EXAMPLES
+  # Sharp existence check before quoting
+  harbor-clerk verify-identifier "Pinnacle Vendor Contract"
+
+  # JSON output for scripting
+  harbor-clerk verify-identifier "K-2025-031" --json
+
+  # Disambiguate before answering
+  harbor-clerk verify-identifier "Senior Project Coordinator onboarding letter"
