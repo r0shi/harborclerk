@@ -47,3 +47,88 @@ def tool_use_stats(captures: list[dict]) -> dict:
         "tool_call_counts_per_tool": per_tool,
         "captures_by_tool_count": by_qid,
     }
+
+
+# Substrings that mark a question as "earliest/latest-style" by qid.
+# Tuned to match the convention used by enron + synthetic ground-truth gen.
+_EARLIEST_LATEST_TRIGGERS = ("earliest", "latest", "oldest", "newest", "first", "last")
+
+# Substrings in the judge's rationale that suggest the model hit ambiguity.
+# Lossy heuristic — false positives possible, intentional for v1.
+_AMBIGUITY_TRIGGERS = ("ambiguous", "multiple", "several", "which")
+
+# Score threshold for "low correctness". 0-5 scale; <=2 means clearly wrong.
+_LOW_CORRECTNESS = 2
+
+# Tool-call threshold for "low tool use".
+_LOW_TOOL_COUNT = 1
+
+
+def failure_correlation(captures: list[dict], verdicts: list[dict]) -> dict:
+    """Join captures + verdicts by qid; surface actionable failure patterns.
+
+    Each pattern key is always present in the output, with [] when no
+    items match — callers can blindly index without KeyError.
+
+    Returns:
+      {
+        "low_correctness_low_tool_use": [{qid, tools_used, correctness, title_fragment}, ...],
+        "earliest_latest_questions_no_by_date_tool": [{qid, tools_used, correctness}, ...],
+        "ambiguous_id_questions_no_verify_tool": [{qid, tools_used, correctness}, ...],
+      }
+    """
+    cap_by_qid = {c.get("question_id"): c for c in captures}
+    ver_by_qid = {v.get("id"): v for v in verdicts}
+
+    low_corr: list[dict] = []
+    earliest_latest: list[dict] = []
+    ambiguous: list[dict] = []
+
+    for qid, cap in cap_by_qid.items():
+        ver = ver_by_qid.get(qid)
+        if ver is None:
+            continue  # capture without verdict — silently skip
+        transcript = cap.get("tool_transcript") or []
+        tools_used = [t.get("tool", "") for t in transcript if isinstance(t, dict)]
+        tool_count = len(tools_used)
+        correctness = ver.get("correctness", 0)
+        rationale_lc = (ver.get("rationale") or "").lower()
+
+        if correctness <= _LOW_CORRECTNESS and tool_count <= _LOW_TOOL_COUNT:
+            low_corr.append(
+                {
+                    "qid": qid,
+                    "tools_used": tools_used,
+                    "correctness": correctness,
+                    "title_fragment": (cap.get("question") or "")[:80],
+                }
+            )
+
+        qid_lc = qid.lower()
+        if any(t in qid_lc for t in _EARLIEST_LATEST_TRIGGERS) and "kb_documents_by_date" not in tools_used:
+            earliest_latest.append(
+                {
+                    "qid": qid,
+                    "tools_used": tools_used,
+                    "correctness": correctness,
+                }
+            )
+
+        if (
+            correctness <= _LOW_CORRECTNESS
+            and any(t in rationale_lc for t in _AMBIGUITY_TRIGGERS)
+            and "kb_verify_identifier" not in tools_used
+        ):
+            ambiguous.append(
+                {
+                    "qid": qid,
+                    "tools_used": tools_used,
+                    "correctness": correctness,
+                }
+            )
+
+    return {
+        "low_correctness_low_tool_use": low_corr,
+        "earliest_latest_questions_no_by_date_tool": earliest_latest,
+        "ambiguous_id_questions_no_verify_tool": ambiguous,
+    }

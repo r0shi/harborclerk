@@ -6,7 +6,7 @@ its function needs. No live LLM calls, no DB.
 
 from __future__ import annotations
 
-from scripts.test_corpora.runner.audit import tool_use_stats
+from scripts.test_corpora.runner.audit import failure_correlation, tool_use_stats
 
 
 def _cap(qid: str, tools: list[str], **overrides) -> dict:
@@ -91,3 +91,90 @@ def test_tool_use_stats_4_plus_bucket_includes_exactly_4_and_more():
     ]
     result = tool_use_stats(caps)
     assert result["tool_call_distribution"] == {"4+": 3}
+
+
+def _verdict(qid: str, correctness: int = 5, rationale: str = "ok") -> dict:
+    """Build a minimum-shape verdict for tests. qid is paired in the joined dict layer."""
+    return {
+        "id": qid,
+        "correctness": correctness,
+        "groundedness": 5,
+        "completeness": 5,
+        "rationale": rationale,
+        "source": {},
+    }
+
+
+def test_failure_correlation_low_correctness_low_tool_use():
+    """correctness <= 2 AND tool_count <= 1 surfaces the qid."""
+    caps = [
+        _cap("q-fail", ["kb_search"]),  # 1 tool call
+        _cap("q-iterated", ["kb_search"] * 3),  # 3 tool calls
+        _cap("q-ok", ["kb_search"]),
+    ]
+    verdicts = [
+        _verdict("q-fail", correctness=1),
+        _verdict("q-iterated", correctness=1),
+        _verdict("q-ok", correctness=5),
+    ]
+    result = failure_correlation(caps, verdicts)
+    qids = {item["qid"] for item in result["low_correctness_low_tool_use"]}
+    # q-fail: correctness=1, tool_count=1 -> qualifies
+    # q-iterated: correctness=1 but tool_count=3 -> does NOT qualify
+    # q-ok: tool_count=1 but correctness=5 -> does NOT qualify
+    assert qids == {"q-fail"}
+
+
+def test_failure_correlation_earliest_latest_questions_no_by_date_tool():
+    """qid contains earliest/latest/oldest/newest/first/last AND no
+    kb_documents_by_date call surfaces the qid."""
+    caps = [
+        _cap("enron-earliest-california", ["kb_search"]),
+        _cap("synth-latest-contract", ["kb_documents_by_date"]),  # has the right tool
+        _cap("enron-find-something", ["kb_search"]),  # name doesn't trigger
+    ]
+    verdicts = [
+        _verdict("enron-earliest-california", correctness=0),
+        _verdict("synth-latest-contract", correctness=5),
+        _verdict("enron-find-something", correctness=3),
+    ]
+    result = failure_correlation(caps, verdicts)
+    qids = {item["qid"] for item in result["earliest_latest_questions_no_by_date_tool"]}
+    assert qids == {"enron-earliest-california"}
+
+
+def test_failure_correlation_ambiguous_id_questions_no_verify_tool():
+    """correctness <= 2 AND rationale matches an ambiguity trigger AND no
+    kb_verify_identifier call surfaces the qid."""
+    caps = [
+        _cap("q-ambig", ["kb_search"]),
+        _cap("q-verified", ["kb_verify_identifier", "kb_search"]),
+        _cap("q-not-flagged", ["kb_search"]),
+    ]
+    verdicts = [
+        _verdict("q-ambig", correctness=1, rationale="answer is ambiguous between multiple docs"),
+        _verdict("q-verified", correctness=1, rationale="answer is ambiguous"),  # has verify -> not flagged
+        _verdict("q-not-flagged", correctness=1, rationale="answer is wrong"),  # no ambiguity word -> not flagged
+    ]
+    result = failure_correlation(caps, verdicts)
+    qids = {item["qid"] for item in result["ambiguous_id_questions_no_verify_tool"]}
+    assert qids == {"q-ambig"}
+
+
+def test_failure_correlation_empty_lists_when_no_matches():
+    """Pattern keys MUST be present with [] when nothing matches."""
+    caps = [_cap("q1", ["kb_search"] * 3)]
+    verdicts = [_verdict("q1", correctness=5)]
+    result = failure_correlation(caps, verdicts)
+    assert result["low_correctness_low_tool_use"] == []
+    assert result["earliest_latest_questions_no_by_date_tool"] == []
+    assert result["ambiguous_id_questions_no_verify_tool"] == []
+
+
+def test_failure_correlation_handles_missing_verdict():
+    """Capture without a paired verdict is skipped (not crashed)."""
+    caps = [_cap("q-no-verdict", ["kb_search"]), _cap("q-paired", ["kb_search"])]
+    verdicts = [_verdict("q-paired", correctness=1)]
+    result = failure_correlation(caps, verdicts)
+    qids = {item["qid"] for item in result["low_correctness_low_tool_use"]}
+    assert qids == {"q-paired"}  # the unpaired capture was silently skipped
