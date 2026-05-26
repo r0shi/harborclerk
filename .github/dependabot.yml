@@ -10,11 +10,6 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-  - package-ecosystem: pip
-    directory: "/scripts/test_corpora"
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 10
   - package-ecosystem: npm
     directory: "/frontend"
     schedule:
