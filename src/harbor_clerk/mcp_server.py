@@ -887,6 +887,9 @@ async def kb_batch_search(
         corroborated as the right match)
       - You need to check several related facts in one go without serial
         round-trips
+      - The question expects an enumeration ("list all X", "find every Y") and a
+        single kb_search left `has_more=true` → run varied query angles here in
+        parallel rather than serial-paginating with `offset`.
 
     What you get back:
       Per-query result dicts (hits, total_candidates, has_more) plus the same
@@ -899,6 +902,9 @@ async def kb_batch_search(
       question's identifier (invoice number / contract / person / etc.), the
       information is NOT in the corpus. Say so plainly rather than reporting
       adjacent matches as substitutes.
+
+      Same anti-pattern as kb_search — don't pad declines with
+      "you may be interested in" suggestions across the per-query responses.
 
     All filters (doc_id, doc_ids, after, before, language, mime_type,
     metadata_filter) are shared across queries — see kb_search for documentation.
