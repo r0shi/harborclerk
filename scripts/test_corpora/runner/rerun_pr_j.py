@@ -44,8 +44,10 @@ def _default_workdir() -> Path:
 
 
 def _load_groundtruth(groundtruth_root: Path, corpus: str) -> dict[str, dict]:
-    """Load <corpus>.yaml — handles both real schema (items: + type:) and
-    stub schema (questions: + qtype:). Mirror of sample_pr_j._load_groundtruth."""
+    """Load <corpus>.yaml — handles both real schema (items:) and stub schema
+    (questions:) at the list level. Returns raw item dicts (no field
+    normalization — rerun_populations only reads `question`, not `type`/`qtype`,
+    so it does not need the qtype normalization that sample_pr_j applies)."""
     yaml_path = groundtruth_root / f"{corpus}.yaml"
     if not yaml_path.exists():
         log.warning("missing groundtruth %s", yaml_path)
