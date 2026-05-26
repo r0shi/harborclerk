@@ -219,6 +219,22 @@ def main(argv: list[str] | None = None) -> int:
         len(populations["negatives_hedged"]),
         len(populations["finds_short"]),
     )
+    if not populations["negatives_hedged"]:
+        log.warning(
+            "negatives_hedged is EMPTY — no qtype=negative captures had answers containing "
+            "HEDGE_MARKERS=%s. Check: (a) captures dir has negative-qtype items for the "
+            "model+corpora, (b) HEDGE_MARKERS still match the patterns models emit.",
+            list(HEDGE_MARKERS),
+        )
+    if not populations["finds_short"]:
+        log.warning(
+            "finds_short is EMPTY — no qtype=find captures had truth_count>=%d AND "
+            "cited_titles<=%d. Either the model is iterating well on large-truth finds "
+            "(intended interpretation) or thresholds need recalibration to the real data. "
+            "Inspect captures + groundtruth to decide.",
+            TRUTH_COUNT_THRESHOLD,
+            CITATION_SHORT_THRESHOLD,
+        )
     return 0
 
 

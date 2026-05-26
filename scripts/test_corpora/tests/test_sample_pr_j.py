@@ -147,3 +147,55 @@ def test_write_populations_emits_json_with_required_keys(tmp_path):
     assert "generated_at" in loaded
     assert loaded["negatives_hedged"] == []
     assert loaded["finds_short"] == []
+
+
+def _write_gt_real_schema(path: Path, items: list[dict]) -> None:
+    """Ground-truth YAML stub using the REAL schema (items: + type:) the
+    production YAMLs use — distinct from `_write_gt` which uses the stub
+    schema (questions: + qtype:). Both schemas must work via the dual-key
+    fallback in _load_groundtruth."""
+    import yaml
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"corpus": "test", "items": items}))
+
+
+def test_loader_handles_real_yaml_schema_items_and_type(tmp_path):
+    """The dual-key fallback in _load_groundtruth must handle the real
+    schema (`items:` + `type:`) — the form all production ground-truth
+    YAMLs actually use — not just the stub schema."""
+    from scripts.test_corpora.runner.sample_pr_j import sample_populations
+
+    cap_dir = tmp_path / "captures" / "enron" / "claude-sonnet-4-6"
+    _write_capture(
+        cap_dir,
+        "n-real",
+        answer="not in corpus, however you may be interested in adjacent docs",
+        cited_titles=["x.eml"],
+    )
+    _write_capture(cap_dir, "f-real", answer="found", cited_titles=["a.eml", "b.eml"])
+    gt_dir = tmp_path / "groundtruth"
+    _write_gt_real_schema(
+        gt_dir / "enron.yaml",
+        [
+            # NOTE: using `type:` not `qtype:` — real production schema
+            {"id": "n-real", "type": "negative", "question": "q", "answer_key": None},
+            {
+                "id": "f-real",
+                "type": "find",
+                "question": "q",
+                "answer_key": {"count": 80, "all": [], "sample": []},
+            },
+        ],
+    )
+
+    out = sample_populations(
+        captures_root=tmp_path / "captures",
+        groundtruth_root=gt_dir,
+        corpora=("enron",),
+        model="claude-sonnet-4-6",
+        max_per_population=10,
+    )
+    # Both populations resolve correctly via the real-schema branch.
+    assert {item["qid"] for item in out["negatives_hedged"]} == {"n-real"}
+    assert {item["qid"] for item in out["finds_short"]} == {"f-real"}
