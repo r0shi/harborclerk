@@ -16,6 +16,7 @@ from scripts.test_corpora.audit_answer_eval import (
     load_captures,
     load_verdicts,
     main,
+    render_markdown,
 )
 
 
@@ -148,3 +149,113 @@ def test_main_returns_1_when_no_captures(tmp_path):
     # No captures dir at all
     rc = main(["--workdir", str(tmp_path), "--label", "missing"])
     assert rc == 1
+
+
+def test_render_markdown_has_top_level_header_and_sections():
+    audit = {
+        "label": "smoke",
+        "corpus": "synthetic",
+        "baseline_model": "claude-sonnet-4-6",
+        "generated_at": "2026-05-25T00:00:00+00:00",
+        "tool_use": {
+            "total_captures": 5,
+            "tool_call_distribution": {1: 2, 2: 3},
+            "tool_call_counts_per_tool": {"kb_search": 10, "kb_get_document": 3},
+            "captures_by_tool_count": {},
+        },
+        "failure_correlation": {
+            "low_correctness_low_tool_use": [
+                {"qid": "q-fail", "tools_used": ["kb_search"], "correctness": 1, "title_fragment": "what does X say?"}
+            ],
+            "earliest_latest_questions_no_by_date_tool": [],
+            "ambiguous_id_questions_no_verify_tool": [],
+        },
+        "citation_hygiene": {
+            "grounded_count": 4,
+            "total": 5,
+            "no_citations": [{"qid": "q-no-cite", "answer_preview": "no citations here"}],
+            "fabricated_citations": [],
+        },
+        "cross_judge": None,
+    }
+    md = render_markdown(audit)
+    assert md.startswith("# Audit")
+    assert "synthetic" in md
+    assert "claude-sonnet-4-6" in md
+    assert "## Tool-use distribution" in md
+    assert "## Failure correlation" in md
+    assert "## Citation hygiene" in md
+    assert "q-fail" in md
+    assert "q-no-cite" in md
+
+
+def test_render_markdown_static_only_omits_cross_judge_section():
+    audit = {
+        "label": "smoke",
+        "corpus": "synthetic",
+        "baseline_model": "m",
+        "generated_at": "...",
+        "tool_use": {
+            "total_captures": 0,
+            "tool_call_distribution": {},
+            "tool_call_counts_per_tool": {},
+            "captures_by_tool_count": {},
+        },
+        "failure_correlation": {
+            "low_correctness_low_tool_use": [],
+            "earliest_latest_questions_no_by_date_tool": [],
+            "ambiguous_id_questions_no_verify_tool": [],
+        },
+        "citation_hygiene": {"grounded_count": 0, "total": 0, "no_citations": [], "fabricated_citations": []},
+        "cross_judge": None,
+    }
+    md = render_markdown(audit)
+    assert "Cross-judge" not in md
+
+
+def test_render_markdown_cross_judge_section_shows_deltas_and_disagreements():
+    audit = {
+        "label": "smoke",
+        "corpus": "synthetic",
+        "baseline_model": "claude-sonnet-4-6",
+        "generated_at": "...",
+        "tool_use": {
+            "total_captures": 0,
+            "tool_call_distribution": {},
+            "tool_call_counts_per_tool": {},
+            "captures_by_tool_count": {},
+        },
+        "failure_correlation": {
+            "low_correctness_low_tool_use": [],
+            "earliest_latest_questions_no_by_date_tool": [],
+            "ambiguous_id_questions_no_verify_tool": [],
+        },
+        "citation_hygiene": {"grounded_count": 0, "total": 0, "no_citations": [], "fabricated_citations": []},
+        "cross_judge": {
+            "n": 30,
+            "judges": ["claude-sonnet-4-6", "gpt-4o"],
+            "deltas": {
+                "correctness": {"mean": -0.13, "std": 0.84, "min": -2, "max": 2},
+                "groundedness": {"mean": 0.27, "std": 0.61, "min": -1, "max": 3},
+                "completeness": {"mean": -0.07, "std": 0.92, "min": -3, "max": 2},
+            },
+            "spearman": {"correctness": 0.78, "groundedness": 0.81, "completeness": 0.73},
+            "kappa": {"correctness": 0.42, "groundedness": 0.51, "completeness": 0.38},
+            "disagreements": [
+                {
+                    "qid": "q-disagree",
+                    "judge_a": {"correctness": 4, "groundedness": 5, "completeness": 3, "rationale": "rat-a"},
+                    "judge_b": {"correctness": 2, "groundedness": 5, "completeness": 2, "rationale": "rat-b"},
+                    "max_delta": 2,
+                    "delta_dim": "correctness",
+                },
+            ],
+        },
+    }
+    md = render_markdown(audit)
+    assert "## Cross-judge" in md
+    assert "gpt-4o" in md
+    assert "0.78" in md  # spearman value rendered
+    assert "q-disagree" in md
+    assert "rat-a" in md
+    assert "rat-b" in md

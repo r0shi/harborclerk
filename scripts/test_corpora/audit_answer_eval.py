@@ -168,8 +168,118 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "audit.json").write_text(json.dumps(audit, indent=2, default=str))
     log.info("wrote %s", output_dir / "audit.json")
-    # audit.md wired in Task 7.
+    (output_dir / "audit.md").write_text(render_markdown(audit))
+    log.info("wrote %s", output_dir / "audit.md")
     return 0
+
+
+def render_markdown(audit: dict) -> str:
+    """Render an audit dict as a readable Markdown report."""
+    out: list[str] = []
+    out.append(f"# Audit — {audit['label']} ({audit['baseline_model']})")
+    out.append("")
+    out.append(f"Generated {audit['generated_at']}")
+    out.append(f"Corpus: `{audit['corpus']}`")
+    out.append("")
+
+    tu = audit.get("tool_use")
+    if tu:
+        out.append("## Tool-use distribution")
+        out.append("")
+        out.append(f"Total captures: {tu['total_captures']}")
+        out.append("")
+        out.append("| tool calls | count |")
+        out.append("| --- | --- |")
+        for bucket, count in sorted(tu["tool_call_distribution"].items(), key=lambda kv: str(kv[0])):
+            out.append(f"| {bucket} | {count} |")
+        out.append("")
+        out.append("| tool | calls |")
+        out.append("| --- | --- |")
+        for tool, count in sorted(tu["tool_call_counts_per_tool"].items(), key=lambda kv: -kv[1]):
+            out.append(f"| {tool} | {count} |")
+        out.append("")
+
+    fc = audit.get("failure_correlation")
+    if fc:
+        out.append("## Failure correlation")
+        out.append("")
+        _render_fc_block(out, "Low correctness + low tool use", fc["low_correctness_low_tool_use"])
+        _render_fc_block(
+            out,
+            "Earliest/latest questions, no kb_documents_by_date",
+            fc["earliest_latest_questions_no_by_date_tool"],
+        )
+        _render_fc_block(
+            out, "Possibly-ambiguous questions, no kb_verify_identifier", fc["ambiguous_id_questions_no_verify_tool"]
+        )
+
+    ch = audit.get("citation_hygiene")
+    if ch:
+        out.append("## Citation hygiene")
+        out.append("")
+        out.append(
+            f"- {ch['grounded_count']}/{ch['total']} grounded (every cited doc_id appears in some tool transcript)"
+        )
+        out.append(f"- {len(ch['no_citations'])} captures with no citations")
+        out.append(
+            f"- {len(ch['fabricated_citations'])} captures with fabricated citations (cited doc_id not seen in any tool response)"
+        )
+        out.append("")
+        out.append(
+            'Note: "seen in transcript" uses a UUID-shape regex over `result_summary`; false positives/negatives possible. Treat as a heuristic.'
+        )
+        out.append("")
+        if ch["no_citations"]:
+            out.append("### No-citation captures")
+            for nc in ch["no_citations"][:20]:
+                out.append(f"- `{nc['qid']}` — {nc['answer_preview'][:120]}")
+            out.append("")
+        if ch["fabricated_citations"]:
+            out.append("### Fabricated-citation captures")
+            for fab in ch["fabricated_citations"][:20]:
+                out.append(f"- `{fab['qid']}` — cited {fab['cited']}, seen-in-transcript {fab['seen_in_transcript']}")
+            out.append("")
+
+    cj = audit.get("cross_judge")
+    if cj:
+        ja, jb = cj["judges"]
+        out.append(f"## Cross-judge — {ja} vs {jb} (Δ = {jb} − {ja}; n={cj['n']})")
+        out.append("")
+        out.append("| dim | mean Δ | std | min | max | spearman | kappa |")
+        out.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for dim in ("correctness", "groundedness", "completeness"):
+            d = cj["deltas"][dim]
+            out.append(
+                f"| {dim} | {d['mean']:+.2f} | {d['std']:.2f} | {d['min']:+d} | {d['max']:+d} | {cj['spearman'][dim]:.2f} | {cj['kappa'][dim]:.2f} |"
+            )
+        out.append("")
+        if cj["disagreements"]:
+            out.append(f"### Top disagreements (|Δ| ≥ 2 on any dimension; {len(cj['disagreements'])} items)")
+            out.append("")
+            for dis in cj["disagreements"][:20]:
+                a, b = dis["judge_a"], dis["judge_b"]
+                out.append(
+                    f"- `{dis['qid']}` — {dis['delta_dim']} {a[dis['delta_dim']]} ({ja}) vs {b[dis['delta_dim']]} ({jb})"
+                )
+                out.append(f"  - {ja}: {a.get('rationale', '')[:140]}")
+                out.append(f"  - {jb}: {b.get('rationale', '')[:140]}")
+            out.append("")
+
+    return "\n".join(out)
+
+
+def _render_fc_block(out: list[str], title: str, items: list[dict]) -> None:
+    out.append(f"### {title} ({len(items)} items)")
+    if not items:
+        out.append("- (none)")
+    for item in items[:20]:
+        tools = ", ".join(item.get("tools_used", []))
+        corr = item.get("correctness", "?")
+        line = f"- `{item['qid']}` — correctness {corr}, tools [{tools}]"
+        if item.get("title_fragment"):
+            line += f" — {item['title_fragment']}"
+        out.append(line)
+    out.append("")
 
 
 if __name__ == "__main__":
