@@ -65,7 +65,7 @@ def _build_prompt(capture: dict, *, qtype: str, answer_key: Any) -> str:
     cited = "\n".join(f"- {t}" for t in (capture.get("cited_doc_titles") or [])) or "(no passages cited)"
     return render_prompt(
         question=capture.get("question", ""),
-        model_answer=capture.get("answer") or "(empty)",
+        model_answer=capture.get("answer") or "",
         cited=cited,
         answer_key=answer_key,
         qtype=qtype,

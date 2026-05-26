@@ -278,3 +278,29 @@ def test_build_prompt_find_qtype_matches_render_prompt():
         qtype="find",
     )
     assert via_wrapper == via_render
+
+
+def test_build_prompt_empty_answer_delegates_to_render_prompts_sentinel():
+    """If `render_prompt`'s "(empty)" fallback ever changes, _build_prompt
+    must not silently keep emitting the old sentinel. The wrapper should
+    pass the raw empty string through and let render_prompt own the
+    substitution — same convention as AnswerJudge.judge_answer."""
+    from scripts.test_corpora.runner.answer_judge import render_prompt
+    from scripts.test_corpora.runner.cross_judge import _build_prompt
+
+    # capture with answer=None
+    cap_none = {"question": "q", "answer": None, "cited_doc_titles": ["d.pdf"]}
+    via_wrapper = _build_prompt(cap_none, qtype="lookup", answer_key="K")
+    via_render = render_prompt(
+        question="q",
+        model_answer="",  # raw empty — render_prompt is the sentinel owner
+        cited="- d.pdf",
+        answer_key="K",
+        qtype="lookup",
+    )
+    assert via_wrapper == via_render
+
+    # capture with answer=""
+    cap_empty = {"question": "q", "answer": "", "cited_doc_titles": ["d.pdf"]}
+    via_wrapper_2 = _build_prompt(cap_empty, qtype="lookup", answer_key="K")
+    assert via_wrapper_2 == via_render
