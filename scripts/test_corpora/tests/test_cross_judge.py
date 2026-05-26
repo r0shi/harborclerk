@@ -231,3 +231,50 @@ def test_compare_judges_skips_judge_error_items():
     b = [_ver("q1", 5, 5, 5), {"qid": "q2", "judge_error": "rate limit"}]
     result = compare_judges(a, b)
     assert result["n"] == 1
+
+
+# ── PR-J: _build_prompt delegates to render_prompt ────────────────────
+
+
+def test_build_prompt_delegates_to_render_prompt():
+    """A capture-shaped dict + qtype + answer_key passed through _build_prompt
+    must produce byte-identical output to a direct render_prompt() call."""
+    from scripts.test_corpora.runner.answer_judge import render_prompt
+    from scripts.test_corpora.runner.cross_judge import _build_prompt
+
+    cap = {
+        "question": "What's the governing law?",
+        "answer": "Delaware",
+        "cited_doc_titles": ["contract.pdf", "amendment.pdf"],
+    }
+    via_wrapper = _build_prompt(cap, qtype="lookup", answer_key="Delaware")
+    via_render = render_prompt(
+        question="What's the governing law?",
+        model_answer="Delaware",
+        cited="- contract.pdf\n- amendment.pdf",
+        answer_key="Delaware",
+        qtype="lookup",
+    )
+    assert via_wrapper == via_render
+
+
+def test_build_prompt_find_qtype_matches_render_prompt():
+    """Same parity check for the find branch."""
+    from scripts.test_corpora.runner.answer_judge import render_prompt
+    from scripts.test_corpora.runner.cross_judge import _build_prompt
+
+    cap = {
+        "question": "List Houston emails",
+        "answer": "3 found",
+        "cited_doc_titles": ["e1.eml"],
+    }
+    ak = {"count": 87, "all": [], "sample": ["e1.eml", "e2.eml"]}
+    via_wrapper = _build_prompt(cap, qtype="find", answer_key=ak)
+    via_render = render_prompt(
+        question="List Houston emails",
+        model_answer="3 found",
+        cited="- e1.eml",
+        answer_key=ak,
+        qtype="find",
+    )
+    assert via_wrapper == via_render
