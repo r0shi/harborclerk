@@ -111,10 +111,22 @@ def rerun_populations(
                     out_dir,
                     qid,
                     {
+                        # BaselineResult-shaped fields (filled with empties so
+                        # downstream readers that don't pre-filter on `error`
+                        # get safe defaults rather than KeyError).
                         "question_id": qid,
+                        "question": question,
+                        "answer": "",
+                        "cited_doc_ids": [],
+                        "cited_doc_titles": [],
+                        "tool_call_count": 0,
+                        "tool_transcript": [],
+                        "elapsed_seconds": 0.0,
+                        "model": model,
+                        "timestamp": "",
+                        # Extras that mark this as a failure capture.
                         "corpus": corpus,
                         "error": str(exc),
-                        "model": model,
                     },
                 )
 

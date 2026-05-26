@@ -158,3 +158,10 @@ def test_rerun_provider_exception_records_error_capture(tmp_path):
     data = json.loads(n_cap.read_text())
     assert "error" in data
     assert "provider boom" in data["error"]
+    # Regression lock: error captures must include BaselineResult-shaped fields
+    # so downstream readers (judge loop, cross_judge, metrics roll-up) don't
+    # crash with KeyError when reading the capture without first checking for
+    # the `error` key.
+    assert data["answer"] == ""
+    assert data["cited_doc_titles"] == []
+    assert data["cited_doc_ids"] == []
