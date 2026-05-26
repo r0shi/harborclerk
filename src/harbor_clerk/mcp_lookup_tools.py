@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
 from harbor_clerk.models import Chunk, Document
+from harbor_clerk.sql_escape import escape_ilike
 
 _VERIFY_CANDIDATE_CAP = 100
 
@@ -90,8 +91,10 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
 
     # SQL-side pass: title / canonical_filename ILIKE, plus tika.title equality.
     # The metadata-key match needs Python-side traversal because the leaf
-    # paths are variable.
-    pattern = f"%{normalized}%"
+    # paths are variable. Escape ILIKE metacharacters so an identifier like
+    # "50% off" or "___" doesn't act as a wildcard. (tika.title branch uses
+    # equality without wildcards — no escape needed there.)
+    pattern = f"%{escape_ilike(normalized)}%"
     stmt = (
         select(Document)
         .where(Document.status == "active")
