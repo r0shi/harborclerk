@@ -9,6 +9,10 @@ Used by: scripts/test_corpora/audit_answer_eval.py.
 
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger(__name__)
+
 
 def tool_use_stats(captures: list[dict]) -> dict:
     """Aggregate tool-use distribution + per-tool counts across captures.
@@ -77,8 +81,19 @@ def failure_correlation(captures: list[dict], verdicts: list[dict]) -> dict:
         "ambiguous_id_questions_no_verify_tool": [{qid, tools_used, correctness}, ...],
       }
     """
-    cap_by_qid = {c.get("question_id"): c for c in captures}
-    ver_by_qid = {v.get("id"): v for v in verdicts}
+    cap_by_qid: dict = {}
+    for c in captures:
+        qid = c.get("question_id")
+        if qid in cap_by_qid:
+            log.warning("duplicate capture question_id %r — keeping last", qid)
+        cap_by_qid[qid] = c
+
+    ver_by_qid: dict = {}
+    for v in verdicts:
+        qid = v.get("id")
+        if qid in ver_by_qid:
+            log.warning("duplicate verdict id %r — keeping last", qid)
+        ver_by_qid[qid] = v
 
     low_corr: list[dict] = []
     earliest_latest: list[dict] = []
