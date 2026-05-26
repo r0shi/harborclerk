@@ -3,7 +3,7 @@ harbor-clerk get-document — document metadata, status, and pipeline jobs
 DESCRIPTION
   Returns full metadata for a single document: title, processing status,
   pipeline status, generated summary, MIME type, file size, extracted
-  character count, source path, last-updated timestamp, and the per-stage
+  character count, last-updated timestamp, and the per-stage
   ingestion job log.
 
   This command returns *metadata*, not body text. To read page-level text
@@ -36,7 +36,6 @@ RETURNS (JSON)
     "mime_type":       "application/pdf",    // detected MIME type, or null
     "size_bytes":      204800,               // original file size in bytes, or null
     "extracted_chars": 38450,                // characters extracted by Tika/UTF-8
-    "source_path":     "/data/watch/...",    // absolute path of the watched file
     "updated_at":      "2026-05-20T14:33:00.000Z",  // ISO 8601 timestamp
     "jobs": [
       {

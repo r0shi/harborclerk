@@ -102,3 +102,18 @@ async def test_kb_get_document_metadata_field_is_empty_dict_when_unset(
 
     parsed = json.loads(raw)
     assert parsed.get("metadata") == {}
+
+
+async def test_kb_get_document_does_not_leak_source_path(client, admin_user, db_session, mock_session_factory):
+    """source_path is host-filesystem-private; never include in MCP responses."""
+    target = await _seed_doc(db_session, title="some-doc", metadata={})
+    target.source_path = "/Users/alex/private/host-only/path.pdf"
+    await db_session.flush()
+
+    with _principal_in_context(admin_user):
+        raw = await kb_get_document(doc_id=str(target.doc_id))
+
+    parsed = json.loads(raw)
+    assert "source_path" not in parsed
+    # canonical_filename / title still convey the leaf-filename
+    assert "title" in parsed
