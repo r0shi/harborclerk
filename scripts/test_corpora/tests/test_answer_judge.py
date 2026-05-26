@@ -186,3 +186,84 @@ def test_judge_find_type_with_empty_sample_renders_cleanly():
     assert "count: 0" in prompt_sent
     assert "(empty)" in prompt_sent
     assert v.correctness == 5
+
+
+# ── PR-J: render_prompt() module-level function ───────────────────────
+
+
+def test_render_prompt_lookup_includes_answer_key_and_qtype():
+    from scripts.test_corpora.runner.answer_judge import render_prompt
+
+    out = render_prompt(
+        question="What is the governing law?",
+        model_answer="Delaware.",
+        cited="- contract.pdf",
+        answer_key="Delaware",
+        qtype="lookup",
+    )
+    assert "GROUND-TRUTH ANSWER KEY" in out
+    assert "Delaware" in out
+    assert "QUESTION TYPE: lookup" in out
+    assert "What is the governing law?" in out
+
+
+def test_render_prompt_find_includes_count_and_sample():
+    from scripts.test_corpora.runner.answer_judge import render_prompt
+
+    out = render_prompt(
+        question="List every email from Houston",
+        model_answer="3 emails found",
+        cited="- email1.eml\n- email2.eml",
+        answer_key={"count": 87, "all": [], "sample": ["e1.eml", "e2.eml"]},
+        qtype="find",
+    )
+    assert "QUESTION TYPE: find" in out
+    assert "count: 87" in out
+    assert "e1.eml" in out
+    assert "e2.eml" in out
+    # find prompt sets completeness=0 deterministically
+    assert "SET TO 0" in out
+
+
+def test_render_prompt_negative_renders_NONE_for_missing_key():
+    from scripts.test_corpora.runner.answer_judge import render_prompt
+
+    out = render_prompt(
+        question="Does this mention a non-compete?",
+        model_answer="No mention.",
+        cited="(no passages cited)",
+        answer_key=None,
+        qtype="negative",
+    )
+    assert "NONE" in out
+    assert "QUESTION TYPE: negative" in out
+
+
+def test_render_prompt_empty_model_answer_renders_placeholder():
+    from scripts.test_corpora.runner.answer_judge import render_prompt
+
+    out = render_prompt(
+        question="q",
+        model_answer="",
+        cited="",
+        answer_key="k",
+        qtype="lookup",
+    )
+    # Both placeholders should appear
+    assert "(empty)" in out
+    assert "(no passages cited)" in out
+
+
+def test_render_prompt_find_empty_sample_renders_empty_placeholder():
+    """find-negative items (sample=[]) shouldn't crash — should render '(empty)'."""
+    from scripts.test_corpora.runner.answer_judge import render_prompt
+
+    out = render_prompt(
+        question="q",
+        model_answer="a",
+        cited="c",
+        answer_key={"count": 0, "all": [], "sample": []},
+        qtype="find",
+    )
+    assert "count: 0" in out
+    assert "(empty)" in out
