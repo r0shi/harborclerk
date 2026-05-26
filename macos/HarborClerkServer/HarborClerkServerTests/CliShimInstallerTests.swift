@@ -40,27 +40,68 @@ final class CliShimInstallerTests: XCTestCase {
     // MARK: - makeShimContent
 
     func testShimContentContainsMarker() {
-        let content = CliShimInstaller.makeShimContent(bundleResources: "/tmp/fake.app/Contents/Resources")
+        let content = CliShimInstaller.makeShimContent(bundleResources: "/tmp/fake.app/Contents/Resources", apiPort: 8100)
         XCTAssertTrue(content.contains("# harbor-clerk — installed by Harbor Clerk Server"),
                       "Shim must contain the identity marker so status detection recognises it")
     }
 
     func testShimContentContainsBundleResourcesLine() {
         let bundle = "/fake/Harbor Clerk Server.app/Contents/Resources"
-        let content = CliShimInstaller.makeShimContent(bundleResources: bundle)
+        let content = CliShimInstaller.makeShimContent(bundleResources: bundle, apiPort: 8100)
         XCTAssertTrue(content.contains("BUNDLE_RESOURCES=\"\(bundle)\""),
                       "Shim must embed BUNDLE_RESOURCES with the provided path")
     }
 
     func testShimContentIsExecutableScript() {
-        let content = CliShimInstaller.makeShimContent(bundleResources: "/x")
+        let content = CliShimInstaller.makeShimContent(bundleResources: "/x", apiPort: 8100)
         XCTAssertTrue(content.hasPrefix("#!/bin/sh"), "Shim must start with a sh shebang")
     }
 
     func testShimContentDelegatesViaExec() {
-        let content = CliShimInstaller.makeShimContent(bundleResources: "/x")
+        let content = CliShimInstaller.makeShimContent(bundleResources: "/x", apiPort: 8100)
         XCTAssertTrue(content.contains("exec \"$BUNDLE_RESOURCES/venv/bin/python\" -m harbor_clerk.cli.main \"$@\""),
                       "Shim must exec python with the correct module and forward args")
+    }
+
+    // MARK: - HARBOR_CLERK_URL default
+
+    func testShimContentEmbedsApiUrlAsDefault() {
+        let content = CliShimInstaller.makeShimContent(bundleResources: "/x", apiPort: 8100)
+        XCTAssertTrue(
+            content.contains(#"export HARBOR_CLERK_URL="${HARBOR_CLERK_URL:-http://localhost:8100}""#),
+            "Shim must bake in the apiPort as the default HARBOR_CLERK_URL using ${VAR:-default} so users can still override in their shell"
+        )
+    }
+
+    func testShimContentUsesProvidedPort() {
+        let content = CliShimInstaller.makeShimContent(bundleResources: "/x", apiPort: 9999)
+        XCTAssertTrue(
+            content.contains("http://localhost:9999}"),
+            "Shim must reflect the apiPort passed in, not a hardcoded default"
+        )
+    }
+
+    func testExtractEmbeddedApiPortRoundTrip() {
+        let content = CliShimInstaller.makeShimContent(bundleResources: "/x", apiPort: 8100)
+        XCTAssertEqual(CliShimInstaller.extractEmbeddedApiPort(from: content), 8100)
+    }
+
+    func testExtractEmbeddedApiPortRoundTripNonDefault() {
+        let content = CliShimInstaller.makeShimContent(bundleResources: "/x", apiPort: 12345)
+        XCTAssertEqual(CliShimInstaller.extractEmbeddedApiPort(from: content), 12345)
+    }
+
+    func testExtractEmbeddedApiPortReturnsNilForLegacyShim() {
+        // Old shims (pre-URL-baking) have no `export HARBOR_CLERK_URL=` line.
+        let legacy = """
+        #!/bin/sh
+        # harbor-clerk — installed by Harbor Clerk Server
+        BUNDLE_RESOURCES="/x"
+        export PATH="$BUNDLE_RESOURCES/venv/bin:/usr/bin:/bin"
+        exec "$BUNDLE_RESOURCES/venv/bin/python" -m harbor_clerk.cli.main "$@"
+        """
+        XCTAssertNil(CliShimInstaller.extractEmbeddedApiPort(from: legacy),
+                     "Legacy shim without a URL line should parse as nil so currentStatus marks it outdated")
     }
 
     // MARK: - Status detection helpers (shimPath-independent)
@@ -71,7 +112,7 @@ final class CliShimInstallerTests: XCTestCase {
         // We test the internal logic by manually checking content parsing
         // (can't inject shimPath, so we verify make/parse round-trip)
         let bundle = "/my/bundle"
-        let shim = CliShimInstaller.makeShimContent(bundleResources: bundle)
+        let shim = CliShimInstaller.makeShimContent(bundleResources: bundle, apiPort: 8100)
 
         // Simulate the parse that currentStatus() does
         XCTAssertTrue(shim.contains("# harbor-clerk — installed by Harbor Clerk Server"))
@@ -97,7 +138,7 @@ final class CliShimInstallerTests: XCTestCase {
         let shimURL = nestedDir.appendingPathComponent("harbor-clerk")
 
         try FileManager.default.createDirectory(at: nestedDir, withIntermediateDirectories: true)
-        let shim = CliShimInstaller.makeShimContent(bundleResources: "/test/bundle")
+        let shim = CliShimInstaller.makeShimContent(bundleResources: "/test/bundle", apiPort: 8100)
         try shim.write(to: shimURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shimURL.path)
 
@@ -106,7 +147,7 @@ final class CliShimInstallerTests: XCTestCase {
 
     func testInstallWritesCorrectContent() throws {
         let bundle = "/Applications/Harbor Clerk Server.app/Contents/Resources"
-        let shim = CliShimInstaller.makeShimContent(bundleResources: bundle)
+        let shim = CliShimInstaller.makeShimContent(bundleResources: bundle, apiPort: 8100)
         try shim.write(to: fakeShimPath, atomically: true, encoding: .utf8)
 
         let written = try String(contentsOf: fakeShimPath, encoding: .utf8)
@@ -115,7 +156,7 @@ final class CliShimInstallerTests: XCTestCase {
     }
 
     func testInstallSetsExecutablePermissions() throws {
-        let shim = CliShimInstaller.makeShimContent(bundleResources: "/x")
+        let shim = CliShimInstaller.makeShimContent(bundleResources: "/x", apiPort: 8100)
         try shim.write(to: fakeShimPath, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeShimPath.path)
 
@@ -129,7 +170,7 @@ final class CliShimInstallerTests: XCTestCase {
     func testInstalledStatusAfterWritingMatchingShim() throws {
         // Write a shim that matches Bundle.main.resourceURL
         let currentBundle = Bundle.main.resourceURL?.path ?? "/fake/bundle"
-        let shim = CliShimInstaller.makeShimContent(bundleResources: currentBundle)
+        let shim = CliShimInstaller.makeShimContent(bundleResources: currentBundle, apiPort: 8100)
 
         // Write to the real shimPath (which points to ~/.local/bin/harbor-clerk)
         // ONLY if shimPath == ~/.local/bin/harbor-clerk and we definitely want to
@@ -145,7 +186,7 @@ final class CliShimInstallerTests: XCTestCase {
     func testInstalledOutdatedWhenBundlePathDiffers() throws {
         let staleBundle = "/old/path/Harbor Clerk Server.app/Contents/Resources"
         let currentBundle = Bundle.main.resourceURL?.path ?? "/new/bundle"
-        let shim = CliShimInstaller.makeShimContent(bundleResources: staleBundle)
+        let shim = CliShimInstaller.makeShimContent(bundleResources: staleBundle, apiPort: 8100)
 
         let lines = shim.components(separatedBy: "\n")
         let bundleLine = lines.first(where: { $0.hasPrefix("BUNDLE_RESOURCES=") })!
@@ -179,7 +220,7 @@ final class CliShimInstallerTests: XCTestCase {
     func testUninstallRemovesOurShimFile() throws {
         // Write our shim to a temp path and remove it manually (simulating what
         // uninstall() does when it detects .installed or .installedOutdated)
-        let ourShim = CliShimInstaller.makeShimContent(bundleResources: "/test")
+        let ourShim = CliShimInstaller.makeShimContent(bundleResources: "/test", apiPort: 8100)
         try ourShim.write(to: fakeShimPath, atomically: true, encoding: .utf8)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: fakeShimPath.path))

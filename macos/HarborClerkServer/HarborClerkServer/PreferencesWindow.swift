@@ -44,6 +44,12 @@ private struct CliShimRow: View {
             Text("Add the snippet above to ~/.zshrc (or ~/.bashrc) if harbor-clerk isn't found on your PATH.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            // API key is the per-client credential — the shim bakes in the
+            // server URL, but each agent still needs its own key.
+            Text("Each agent also needs an API key — pass `--api-key hc_...` or set `HARBOR_CLERK_API_KEY`. Mint a key in System Settings → API Keys (in the web app).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
@@ -215,7 +221,7 @@ struct PreferencesWindow: View {
                             // effect within seconds without touching the restart banner.
                             AppSettings.shared.enableCliAccess = newValue
                         }
-                    Text("Let agent harnesses (Claude Code, Codex, etc.) query documents via the harbor-clerk CLI. Does not require a service restart.")
+                    Text("Master switch for the harbor-clerk CLI (Claude Code, Codex, etc.). Like the MCP toggle above, individual clients still authenticate with API keys minted in System Settings → API Keys. No service restart required.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
