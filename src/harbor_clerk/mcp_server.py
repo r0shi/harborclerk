@@ -652,6 +652,11 @@ async def kb_search(
       - `has_more` is true and you don't have the answer yet → paginate with `offset`
       - The top hit's chunk text doesn't fully answer the question → call
         `kb_read_passages` on the chunk_id to verify the surrounding text
+      - The question asks to "list", "find all", "enumerate", or otherwise expects a
+        complete set, AND `has_more` is true → ONE page is not the answer. Drain via
+        `offset` pagination (or widen with `kb_batch_search`) until you've covered
+        the relevant set. If you cap at a maximum, say so explicitly ("reviewed the
+        top 50 of 287 matches") — don't present a partial set as if it were complete.
 
     How to decline:
       - If retrieved chunks DON'T contain the answer the question asks for (e.g. the
@@ -659,6 +664,12 @@ async def kb_search(
         any retrieved doc), the information is NOT in the corpus — say so plainly. Do
         NOT report a "closest match" as a substitute. Adjacent or partial matches are
         not answers.
+      - ANTI-PATTERN — do NOT pad a decline with adjacent-document suggestions.
+        Phrases like "however, you may be interested in...", "the closest match
+        is...", "while X isn't in the corpus, here's Y..." defeat the purpose of
+        declining. If the answer isn't there, the decline IS the answer — stop
+        there. The user asked a specific question; an adjacent document is not a
+        partial-credit response.
 
     Filters (all optional):
       doc_id: restrict to a single document (mutually exclusive with doc_ids)

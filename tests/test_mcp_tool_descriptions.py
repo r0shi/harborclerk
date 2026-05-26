@@ -208,3 +208,27 @@ def test_kb_documents_by_date_mentions_key_affordances():
     assert "earliest" in doc
     assert "latest" in doc
     assert "date_source" in doc
+
+
+# ── PR-J: kb_search reinforcement ─────────────────────────────────────
+
+
+def test_kb_search_iterate_calls_out_find_all_pagination():
+    """For 'list/find all/enumerate' questions, the model must drain `has_more`
+    via offset pagination rather than summarizing one page."""
+    d = _doc(kb_search)
+    assert "find all" in d or "enumerate" in d, "missing find-all iteration cue"
+    # The drain instruction
+    assert "offset" in d
+    # Honesty cue for capped iteration
+    assert "partial" in d or "cap" in d
+
+
+def test_kb_search_decline_calls_out_anti_pattern_hedging():
+    """PR-D added 'don't substitute closest match'; PR-J adds an explicit
+    ANTI-PATTERN paragraph naming the hedge phrases models actually emit."""
+    d = _doc(kb_search)
+    assert "anti-pattern" in d, "missing explicit ANTI-PATTERN marker"
+    # Pin two of the canonical hedge phrases we saw in the failure population
+    assert "you may be interested" in d
+    assert "closest match" in d
