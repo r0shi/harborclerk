@@ -196,8 +196,10 @@ def _cohens_kappa(xs: list[int], ys: list[int]) -> float:
     px = {c: xs.count(c) / n for c in cats}
     py = {c: ys.count(c) / n for c in cats}
     expected = sum(px[c] * py[c] for c in cats)
-    if expected >= 1.0:
-        return 0.0  # both raters constant → no chance to disagree → 0
+    # Note: expected >= 1.0 is unreachable here — that case requires both
+    # raters using a single identical bucket, which the observed >= 1.0
+    # early return above already caught. (When raters use *different* single
+    # buckets, expected is 0 because they share no category.)
     return (observed - expected) / (1.0 - expected)
 
 

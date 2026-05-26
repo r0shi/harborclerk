@@ -279,7 +279,7 @@ def render_markdown(audit: dict) -> str:
             out.append("")
 
     cj = audit.get("cross_judge")
-    if cj:
+    if cj and cj.get("n", 0) > 0:
         ja, jb = cj["judges"]
         out.append(f"## Cross-judge — {ja} vs {jb} (Δ = {jb} − {ja}; n={cj['n']})")
         out.append("")
@@ -302,6 +302,12 @@ def render_markdown(audit: dict) -> str:
                 out.append(f"  - {ja}: {a.get('rationale', '')[:140]}")
                 out.append(f"  - {jb}: {b.get('rationale', '')[:140]}")
             out.append("")
+    elif cj is not None and cj.get("n", 0) == 0:
+        ja, jb = cj.get("judges", [None, None])
+        out.append(f"## Cross-judge — {ja} vs {jb}")
+        out.append("")
+        out.append("No overlapping items between the two judges' verdict sets — cannot compute stats.")
+        out.append("")
 
     return "\n".join(out)
 

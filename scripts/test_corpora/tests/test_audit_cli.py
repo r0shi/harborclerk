@@ -348,3 +348,42 @@ def test_main_cross_judge_requires_openai_api_key(tmp_path, monkeypatch):
         ]
     )
     assert rc == 1
+
+
+def test_render_markdown_cross_judge_zero_n_does_not_crash():
+    """When the two judges' verdicts have no overlap (n=0), the cross-judge
+    section should explain the situation rather than KeyError on empty deltas."""
+    audit = {
+        "label": "smoke",
+        "corpus": "synthetic",
+        "baseline_model": "claude-sonnet-4-6",
+        "generated_at": "...",
+        "tool_use": {
+            "total_captures": 0,
+            "tool_call_distribution": {},
+            "tool_call_counts_per_tool": {},
+            "captures_by_tool_count": {},
+        },
+        "failure_correlation": {
+            "low_correctness_low_tool_use": [],
+            "earliest_latest_questions_no_by_date_tool": [],
+            "ambiguous_id_questions_no_verify_tool": [],
+        },
+        "citation_hygiene": {
+            "grounded_count": 0,
+            "total": 0,
+            "no_citations": [],
+            "fabricated_citations": [],
+        },
+        "cross_judge": {
+            "n": 0,
+            "judges": ["claude-sonnet-4-6", "gpt-4o"],
+            "deltas": {},
+            "spearman": {},
+            "kappa": {},
+            "disagreements": [],
+        },
+    }
+    md = render_markdown(audit)  # must not raise
+    assert "## Cross-judge" in md
+    assert "No overlapping" in md or "no overlap" in md.lower()
