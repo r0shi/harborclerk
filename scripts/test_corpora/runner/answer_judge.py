@@ -84,6 +84,41 @@ Reply with ONLY a JSON object:
 """
 
 
+def render_prompt(
+    *,
+    question: str,
+    model_answer: str,
+    cited: str,
+    answer_key: str | dict | None,
+    qtype: str,
+) -> str:
+    """Render the judge prompt for a single capture.
+
+    Single source of truth for _PROMPT / _PROMPT_FIND .format() calls — used
+    by both AnswerJudge.judge_answer and cross_judge._build_prompt so that any
+    future prompt-text change lands in one place.
+    """
+    if qtype == "find":
+        ak = answer_key if isinstance(answer_key, dict) else {"count": 0, "all": [], "sample": []}
+        sample = ak.get("sample") or []
+        rendered_sample = "\n".join(f"- {s}" for s in sample) or "(empty)"
+        return _PROMPT_FIND.format(
+            question=question,
+            count=ak.get("count", 0),
+            sample_size=len(sample),
+            rendered_sample=rendered_sample,
+            model_answer=model_answer or "(empty)",
+            cited=cited or "(no passages cited)",
+        )
+    return _PROMPT.format(
+        question=question,
+        answer_key="NONE" if answer_key is None else answer_key,
+        qtype=qtype,
+        model_answer=model_answer or "(empty)",
+        cited=cited or "(no passages cited)",
+    )
+
+
 @dataclasses.dataclass
 class AnswerVerdict:
     correctness: int
@@ -118,26 +153,13 @@ class AnswerJudge:
     def judge_answer(
         self, *, question: str, model_answer: str, cited: str, answer_key: str | dict | None, qtype: str
     ) -> AnswerVerdict:
-        if qtype == "find":
-            ak = answer_key if isinstance(answer_key, dict) else {"count": 0, "all": [], "sample": []}
-            sample = ak.get("sample") or []
-            rendered_sample = "\n".join(f"- {s}" for s in sample) or "(empty)"
-            prompt = _PROMPT_FIND.format(
-                question=question,
-                count=ak.get("count", 0),
-                sample_size=len(sample),
-                rendered_sample=rendered_sample,
-                model_answer=model_answer or "(empty)",
-                cited=cited or "(no passages cited)",
-            )
-        else:
-            prompt = _PROMPT.format(
-                question=question,
-                answer_key="NONE" if answer_key is None else answer_key,
-                qtype=qtype,
-                model_answer=model_answer or "(empty)",
-                cited=cited or "(no passages cited)",
-            )
+        prompt = render_prompt(
+            question=question,
+            model_answer=model_answer,
+            cited=cited,
+            answer_key=answer_key,
+            qtype=qtype,
+        )
         msg = self._client.messages.create(
             model=self._model,
             max_tokens=600,

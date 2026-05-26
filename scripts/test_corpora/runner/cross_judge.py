@@ -8,9 +8,10 @@ Two halves:
     adapter.
   - compare_judges(): pure stats over two verdict lists. Added in Task 5.
 
-Reuses _PROMPT, _PROMPT_FIND, _extract_json, _score from
-scripts.test_corpora.runner.answer_judge so the cross-judge rubric tracks
-any future change to the Sonnet judge's prompt text.
+Delegates prompt rendering to answer_judge.render_prompt() (single source of
+truth for the _PROMPT / _PROMPT_FIND format dispatch) and reuses
+_extract_json + _score from answer_judge so the cross-judge rubric tracks
+any future change to the Sonnet judge's prompt text or scoring helpers.
 """
 
 from __future__ import annotations
@@ -21,10 +22,9 @@ import random
 from typing import Any, Protocol, runtime_checkable
 
 from scripts.test_corpora.runner.answer_judge import (
-    _PROMPT,
-    _PROMPT_FIND,
     _extract_json,
     _score,
+    render_prompt,
 )
 
 log = logging.getLogger(__name__)
@@ -56,27 +56,19 @@ class OpenAIJudgeProvider:
 
 
 def _build_prompt(capture: dict, *, qtype: str, answer_key: Any) -> str:
-    """Render the same prompt AnswerJudge.judge_answer would build,
-    given the capture + ground-truth answer_key + qtype."""
+    """Render the judge prompt from a capture dict.
+
+    Extracts the wire-shape fields (question / answer / cited_doc_titles) and
+    delegates to answer_judge.render_prompt() — single source of truth for the
+    _PROMPT / _PROMPT_FIND format dispatch.
+    """
     cited = "\n".join(f"- {t}" for t in (capture.get("cited_doc_titles") or [])) or "(no passages cited)"
-    if qtype == "find":
-        ak = answer_key if isinstance(answer_key, dict) else {"count": 0, "all": [], "sample": []}
-        sample = ak.get("sample") or []
-        rendered_sample = "\n".join(f"- {s}" for s in sample) or "(empty)"
-        return _PROMPT_FIND.format(
-            question=capture.get("question", ""),
-            count=ak.get("count", 0),
-            sample_size=len(sample),
-            rendered_sample=rendered_sample,
-            model_answer=capture.get("answer") or "(empty)",
-            cited=cited,
-        )
-    return _PROMPT.format(
+    return render_prompt(
         question=capture.get("question", ""),
-        answer_key="NONE" if answer_key is None else answer_key,
-        qtype=qtype,
-        model_answer=capture.get("answer") or "(empty)",
+        model_answer=capture.get("answer") or "",
         cited=cited,
+        answer_key=answer_key,
+        qtype=qtype,
     )
 
 
