@@ -98,7 +98,7 @@ async def list_documents(
 
     # Entity filter: docs containing matching entities
     if entity:
-        entity_filters = [Entity.entity_text.ilike(f"%{entity}%")]
+        entity_filters = [Entity.entity_text.ilike(f"%{escape_ilike(entity)}%")]
         if entity_type:
             entity_filters.append(Entity.entity_type == entity_type)
         entity_subq = select(Entity.doc_id).where(*entity_filters).group_by(Entity.doc_id).subquery()
@@ -294,7 +294,7 @@ async def entity_autocomplete(
 
     filters = [
         Document.status == "active",
-        Entity.entity_text.ilike(f"%{q}%"),
+        Entity.entity_text.ilike(f"%{escape_ilike(q)}%"),
     ]
     if entity_type:
         filters.append(Entity.entity_type == entity_type)

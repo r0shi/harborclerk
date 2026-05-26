@@ -376,3 +376,89 @@ async def test_download_403_fires_before_doc_existence_check(client, admin_user,
     fake_id = uuid.uuid4()
     resp = await client.get(f"/api/docs/{fake_id}/download", headers=auth_header(admin_token))
     assert resp.status_code == 403
+
+
+async def test_list_documents_entity_filter_escapes_percent(client, admin_user, admin_token, db_session):
+    """entity= filter must treat '%' as a literal character, not a wildcard."""
+    doc_match = Document(title="50% off coupon", status="active", **_DOC_DEFAULTS)
+    doc_nomatch = Document(title="50 percent off something", status="active", **_DOC_DEFAULTS)
+    db_session.add_all([doc_match, doc_nomatch])
+    await db_session.flush()
+
+    chunk_match = Chunk(doc_id=doc_match.doc_id, chunk_num=0, chunk_text="text", language="en")
+    chunk_nomatch = Chunk(doc_id=doc_nomatch.doc_id, chunk_num=0, chunk_text="text", language="en")
+    db_session.add_all([chunk_match, chunk_nomatch])
+    await db_session.flush()
+
+    # Seed an entity with a literal % in the text only on doc_match
+    db_session.add(
+        Entity(
+            doc_id=doc_match.doc_id,
+            chunk_id=chunk_match.chunk_id,
+            entity_text="50% discount",
+            entity_type="MISC",
+            start_char=0,
+            end_char=11,
+        )
+    )
+    # A distractor entity on doc_nomatch that should NOT match the literal query
+    db_session.add(
+        Entity(
+            doc_id=doc_nomatch.doc_id,
+            chunk_id=chunk_nomatch.chunk_id,
+            entity_text="50 percent discount",
+            entity_type="MISC",
+            start_char=0,
+            end_char=19,
+        )
+    )
+    await db_session.flush()
+
+    # URL-encode: %25 = literal %, so entity=50%25+discount -> entity="50% discount"
+    resp = await client.get("/api/docs?entity=50%25+discount", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    doc_ids = {item["doc_id"] for item in data["items"]}
+    assert str(doc_match.doc_id) in doc_ids
+    # Without escape, "50% discount" would ILIKE-match "50 percent discount" via the % wildcard.
+    assert str(doc_nomatch.doc_id) not in doc_ids
+
+
+async def test_entity_autocomplete_escapes_percent(client, admin_user, admin_token, db_session):
+    """Autocomplete q= with literal % must not wildcard-match other entities."""
+    doc = Document(title="Test doc", status="active", **_DOC_DEFAULTS)
+    db_session.add(doc)
+    await db_session.flush()
+
+    chunk = Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="text", language="en")
+    db_session.add(chunk)
+    await db_session.flush()
+
+    db_session.add(
+        Entity(
+            doc_id=doc.doc_id,
+            chunk_id=chunk.chunk_id,
+            entity_text="100% Complete",
+            entity_type="MISC",
+            start_char=0,
+            end_char=13,
+        )
+    )
+    db_session.add(
+        Entity(
+            doc_id=doc.doc_id,
+            chunk_id=chunk.chunk_id,
+            entity_text="100 percent complete",
+            entity_type="MISC",
+            start_char=0,
+            end_char=20,
+        )
+    )
+    await db_session.flush()
+
+    # q=100%25 -> literal "100%" — should match only "100% Complete", not "100 percent complete"
+    resp = await client.get("/api/docs/entities/autocomplete?q=100%25", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    texts = {row["entity_text"] for row in resp.json()}
+    assert "100% Complete" in texts
+    assert "100 percent complete" not in texts

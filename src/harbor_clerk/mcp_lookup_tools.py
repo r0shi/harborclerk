@@ -89,11 +89,11 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
     if not normalized:
         return []
 
-    # SQL-side pass: title / canonical_filename ILIKE, plus tika.title equality.
+    # SQL-side pass: title / canonical_filename ILIKE (escape metacharacters
+    # so an identifier like "50% off" or "___" doesn't act as a wildcard),
+    # plus tika.title true equality via func.lower() (no wildcards needed).
     # The metadata-key match needs Python-side traversal because the leaf
-    # paths are variable. Escape ILIKE metacharacters so an identifier like
-    # "50% off" or "___" doesn't act as a wildcard. (tika.title branch uses
-    # equality without wildcards — no escape needed there.)
+    # paths are variable.
     pattern = f"%{escape_ilike(normalized)}%"
     stmt = (
         select(Document)
@@ -102,8 +102,9 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
             or_(
                 Document.title.op("ILIKE")(pattern),
                 Document.canonical_filename.op("ILIKE")(pattern),
-                # JSONB ->> returns text; lower() then equals the normalized input.
-                Document.doc_metadata["tika"]["title"].astext.op("ILIKE")(normalized),
+                # JSONB ->> returns text; func.lower() gives true case-insensitive
+                # equality without wildcard semantics (normalized is already lowercase).
+                func.lower(Document.doc_metadata["tika"]["title"].astext) == normalized,
             )
         )
     )

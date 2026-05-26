@@ -823,3 +823,36 @@ async def test_find_candidates_escapes_underscore_wildcard(db_session):
     assert distractor.doc_id not in doc_ids
     # Without the escape, "_" matches any single character, so distractor
     # "contracta2024" would have matched.
+
+
+@pytest.mark.asyncio
+async def test_find_candidates_tika_title_match_does_not_wildcard(db_session):
+    """tika.title match must be true case-insensitive equality, not ILIKE
+    with wildcard semantics on the value."""
+    target = await _seed_doc(
+        db_session, title="some-other-title", metadata={"tika": {"title": "Pinnacle Vendor Contract"}}
+    )
+    distractor = await _seed_doc(
+        db_session, title="some-other-distractor", metadata={"tika": {"title": "Pinnacle Vendor"}}
+    )
+    await db_session.flush()
+
+    # Without the fix, identifier "Pinnacle%Contract" would match both via
+    # ILIKE pattern semantics. With true equality, only target matches.
+    candidates = await _find_candidates(db_session, "Pinnacle%Contract")
+    doc_ids = {c.doc_id for c in candidates}
+    # Neither doc has a tika.title literally equal to "pinnacle%contract", so neither matches via tika.
+    # And the title/filename ILIKE escape (Task 3) ensures the literal "%" doesn't wildcard either.
+    assert target.doc_id not in doc_ids
+    assert distractor.doc_id not in doc_ids
+
+
+@pytest.mark.asyncio
+async def test_find_candidates_tika_title_exact_match_works(db_session):
+    """Exact tika.title match still works after the fix."""
+    target = await _seed_doc(db_session, title="raw-filename", metadata={"tika": {"title": "Pinnacle Vendor Contract"}})
+    await db_session.flush()
+
+    candidates = await _find_candidates(db_session, "Pinnacle Vendor Contract")
+    doc_ids = {c.doc_id for c in candidates}
+    assert target.doc_id in doc_ids
