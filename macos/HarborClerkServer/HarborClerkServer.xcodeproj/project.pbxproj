@@ -32,6 +32,7 @@
 		A100000062 /* LaunchdPlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000062; };
 		A100000063 /* LaunchdAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000063; };
 		A100000064 /* ProcessAsync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000064; };
+		A100000065 /* CliShimInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = B100000065; };
 		AT10000001 /* WorkerCountsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000001; };
 		AT10000002 /* AppSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000002; };
 		AT10000003 /* OverallStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000003; };
@@ -43,6 +44,7 @@
 		AT10000012 /* LaunchctlClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000012; };
 		AT10000013 /* LaunchdPlistTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000013; };
 		AT10000014 /* LaunchdAgentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000014; };
+		AT10000015 /* CliShimInstallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000015; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -82,6 +84,7 @@
 		B100000062 /* LaunchdPlist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdPlist.swift; sourceTree = "<group>"; };
 		B100000063 /* LaunchdAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdAgent.swift; sourceTree = "<group>"; };
 		B100000064 /* ProcessAsync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessAsync.swift; sourceTree = "<group>"; };
+		B100000065 /* CliShimInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CliShimInstaller.swift; sourceTree = "<group>"; };
 		D100000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D100000002 /* HarborClerkServer.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HarborClerkServer.entitlements; sourceTree = "<group>"; };
 		CT10000001 /* HarborClerkServerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HarborClerkServerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -96,6 +99,7 @@
 		BT10000012 /* LaunchctlClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchctlClientTests.swift; sourceTree = "<group>"; };
 		BT10000013 /* LaunchdPlistTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdPlistTests.swift; sourceTree = "<group>"; };
 		BT10000014 /* LaunchdAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdAgentTests.swift; sourceTree = "<group>"; };
+		BT10000015 /* CliShimInstallerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CliShimInstallerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -144,6 +148,7 @@
 				B100000062 /* LaunchdPlist.swift */,
 				B100000063 /* LaunchdAgent.swift */,
 				B100000064 /* ProcessAsync.swift */,
+				B100000065 /* CliShimInstaller.swift */,
 				B100000016 /* Assets.xcassets */,
 				D100000001 /* Info.plist */,
 				D100000002 /* HarborClerkServer.entitlements */,
@@ -190,6 +195,7 @@
 				BT10000012 /* LaunchctlClientTests.swift */,
 				BT10000013 /* LaunchdPlistTests.swift */,
 				BT10000014 /* LaunchdAgentTests.swift */,
+				BT10000015 /* CliShimInstallerTests.swift */,
 			);
 			path = HarborClerkServerTests;
 			sourceTree = "<group>";
@@ -330,6 +336,7 @@
 				A100000062 /* LaunchdPlist.swift in Sources */,
 				A100000063 /* LaunchdAgent.swift in Sources */,
 				A100000064 /* ProcessAsync.swift in Sources */,
+				A100000065 /* CliShimInstaller.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -348,6 +355,7 @@
 				AT10000012 /* LaunchctlClientTests.swift in Sources */,
 				AT10000013 /* LaunchdPlistTests.swift in Sources */,
 				AT10000014 /* LaunchdAgentTests.swift in Sources */,
+				AT10000015 /* CliShimInstallerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
