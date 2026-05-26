@@ -117,6 +117,17 @@ def load_verdicts(workdir: Path, *, label: str, corpus: str, model: str) -> list
     return out
 
 
+def _build_judge_provider(model: str):
+    """Build a JudgeProvider for the named model. Test seam: patched in tests."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        sys.stderr.write("audit: --cross-judge requires OPENAI_API_KEY in the environment\n")
+        raise SystemExit(1)
+    # Lazy import keeps the static-only path importable without `openai`.
+    from scripts.test_corpora.runner.cross_judge import OpenAIJudgeProvider
+
+    return OpenAIJudgeProvider(model=model)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="audit_answer_eval.py")
     p.add_argument("--workdir", type=Path, default=None)
@@ -162,7 +173,34 @@ def main(argv: list[str] | None = None) -> int:
         audit["failure_correlation"] = failure_correlation(captures, verdicts)
         audit["citation_hygiene"] = citation_hygiene(captures)
 
-    # Cross-judge wired in Task 8.
+    # Cross-judge re-score (optional)
+    if args.cross_judge:
+        try:
+            judge_provider = _build_judge_provider(args.cross_judge)
+        except SystemExit as exc:
+            return int(exc.code or 1)
+        from scripts.test_corpora.runner.cross_judge import compare_judges, rejudge_with
+
+        rejudge_results = rejudge_with(
+            captures,
+            judge_provider,
+            judge_model=args.cross_judge,
+            items=args.rejudge_sample,
+        )
+        # Reshape verdicts (from detail.json or per-item files) to the
+        # compare_judges input shape: needs {"qid", correctness, groundedness,
+        # completeness, rationale}.
+        verdicts_a = [
+            {
+                "qid": v.get("id"),
+                "correctness": v.get("correctness", 0),
+                "groundedness": v.get("groundedness", 0),
+                "completeness": v.get("completeness", 0),
+                "rationale": v.get("rationale", ""),
+            }
+            for v in verdicts
+        ]
+        audit["cross_judge"] = compare_judges(verdicts_a, rejudge_results, judges=(model, args.cross_judge))
 
     output_dir = args.output_dir or (workdir / "answer-eval" / "reports" / args.label)
     output_dir.mkdir(parents=True, exist_ok=True)

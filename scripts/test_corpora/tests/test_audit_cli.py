@@ -259,3 +259,92 @@ def test_render_markdown_cross_judge_section_shows_deltas_and_disagreements():
     assert "q-disagree" in md
     assert "rat-a" in md
     assert "rat-b" in md
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — --cross-judge wiring tests
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch  # noqa: E402
+
+
+class _FixedJudge:
+    """Always returns the same canned verdict for any prompt."""
+
+    def judge(self, prompt: str) -> str:
+        return json.dumps({"correctness": 5, "groundedness": 4, "completeness": 5, "rationale": "ok"})
+
+
+def test_main_cross_judge_invokes_rejudge_and_compare(tmp_path):
+    cap_dir = tmp_path / "answer-eval" / "captures" / "synthetic" / "claude-sonnet-4-6"
+    _write_capture(cap_dir, "q1", ["kb_search"])
+    _write_capture(cap_dir, "q2", ["kb_search"])
+    v_dir = tmp_path / "answer-eval" / "verdicts" / "synthetic" / "claude-sonnet-4-6"
+    _write_verdict(v_dir, "q1", correctness=5)
+    _write_verdict(v_dir, "q2", correctness=4)
+
+    with patch("scripts.test_corpora.audit_answer_eval._build_judge_provider") as mb:
+        mb.return_value = _FixedJudge()
+        rc = main(
+            [
+                "--workdir",
+                str(tmp_path),
+                "--label",
+                "smoke",
+                "--cross-judge",
+                "gpt-4o",
+            ]
+        )
+    assert rc == 0
+    audit = json.loads((tmp_path / "answer-eval" / "reports" / "smoke" / "audit.json").read_text())
+    assert audit["cross_judge"] is not None
+    assert audit["cross_judge"]["judges"] == ["claude-sonnet-4-6", "gpt-4o"]
+    assert audit["cross_judge"]["n"] == 2
+
+    md = (tmp_path / "answer-eval" / "reports" / "smoke" / "audit.md").read_text()
+    assert "## Cross-judge" in md
+
+
+def test_main_skip_static_only_runs_cross_judge(tmp_path):
+    cap_dir = tmp_path / "answer-eval" / "captures" / "synthetic" / "claude-sonnet-4-6"
+    _write_capture(cap_dir, "q1", ["kb_search"])
+    v_dir = tmp_path / "answer-eval" / "verdicts" / "synthetic" / "claude-sonnet-4-6"
+    _write_verdict(v_dir, "q1", correctness=5)
+
+    with patch("scripts.test_corpora.audit_answer_eval._build_judge_provider") as mb:
+        mb.return_value = _FixedJudge()
+        rc = main(
+            [
+                "--workdir",
+                str(tmp_path),
+                "--label",
+                "smoke",
+                "--cross-judge",
+                "gpt-4o",
+                "--skip-static",
+            ]
+        )
+    assert rc == 0
+    audit = json.loads((tmp_path / "answer-eval" / "reports" / "smoke" / "audit.json").read_text())
+    assert audit["tool_use"] is None
+    assert audit["failure_correlation"] is None
+    assert audit["citation_hygiene"] is None
+    assert audit["cross_judge"] is not None
+
+
+def test_main_cross_judge_requires_openai_api_key(tmp_path, monkeypatch):
+    """Without --cross-judge mocked AND without OPENAI_API_KEY, exit 1 with clear message."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cap_dir = tmp_path / "answer-eval" / "captures" / "synthetic" / "claude-sonnet-4-6"
+    _write_capture(cap_dir, "q1", ["kb_search"])
+    rc = main(
+        [
+            "--workdir",
+            str(tmp_path),
+            "--label",
+            "smoke",
+            "--cross-judge",
+            "gpt-4o",
+        ]
+    )
+    assert rc == 1
