@@ -16,6 +16,7 @@ any future change to the Sonnet judge's prompt text.
 from __future__ import annotations
 
 import logging
+import math
 import random
 from typing import Any, Protocol, runtime_checkable
 
@@ -140,3 +141,134 @@ def rejudge_with(
                 }
             )
     return results
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — compare_judges + hand-rolled stats helpers
+# ---------------------------------------------------------------------------
+
+_DIMENSIONS = ("correctness", "groundedness", "completeness")
+_DELTA_DISAGREEMENT_THRESHOLD = 2
+
+
+def _ranks(xs: list[float]) -> list[float]:
+    """Average rank (1-based). Ties get the mean of their ranks."""
+    indexed = sorted(range(len(xs)), key=lambda i: xs[i])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(indexed):
+        j = i
+        while j + 1 < len(indexed) and xs[indexed[j + 1]] == xs[indexed[i]]:
+            j += 1
+        avg_rank = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            ranks[indexed[k]] = avg_rank
+        i = j + 1
+    return ranks
+
+
+def _spearman(xs: list[float], ys: list[float]) -> float:
+    """Spearman rank correlation. Returns 0.0 on n < 2 or zero-variance input."""
+    if len(xs) != len(ys) or len(xs) < 2:
+        return 0.0
+    rx, ry = _ranks(xs), _ranks(ys)
+    mean_x = sum(rx) / len(rx)
+    mean_y = sum(ry) / len(ry)
+    num = sum((a - mean_x) * (b - mean_y) for a, b in zip(rx, ry))
+    den = math.sqrt(sum((a - mean_x) ** 2 for a in rx) * sum((b - mean_y) ** 2 for b in ry))
+    if den:
+        return num / den
+    # Both rank arrays are constant (all ties). Equal inputs → 1.0, otherwise undefined → 0.0.
+    return 1.0 if xs == ys else 0.0
+
+
+def _cohens_kappa(xs: list[int], ys: list[int]) -> float:
+    """Cohen's kappa on integer 0-5 scores. Returns 0.0 on n == 0 or
+    when both raters used a single bucket (no chance to disagree)."""
+    if not xs:
+        return 0.0
+    n = len(xs)
+    observed = sum(1 for a, b in zip(xs, ys) if a == b) / n
+    if observed >= 1.0:
+        return 1.0  # perfect agreement → kappa = 1 by convention
+    # Marginal proportions per category.
+    cats = set(xs) | set(ys)
+    px = {c: xs.count(c) / n for c in cats}
+    py = {c: ys.count(c) / n for c in cats}
+    expected = sum(px[c] * py[c] for c in cats)
+    if expected >= 1.0:
+        return 0.0  # both raters constant → no chance to disagree → 0
+    return (observed - expected) / (1.0 - expected)
+
+
+def compare_judges(
+    verdicts_a: list[dict],
+    verdicts_b: list[dict],
+    *,
+    judges: tuple[str | None, str | None] = (None, None),
+) -> dict:
+    """Pure-stats comparison of two judges' verdicts.
+
+    Joins by qid; skips items with judge_error on either side. Returns:
+      {n, judges, deltas{dim: {mean, std, min, max}}, spearman{dim: r},
+       kappa{dim: k}, disagreements: [...]}
+
+    Delta sign: b - a (judge_b minus judge_a). Documented in the markdown.
+    """
+    a_by_qid = {v.get("qid"): v for v in verdicts_a if "judge_error" not in v}
+    b_by_qid = {v.get("qid"): v for v in verdicts_b if "judge_error" not in v}
+    common = sorted(set(a_by_qid) & set(b_by_qid))
+
+    if not common:
+        return {
+            "n": 0,
+            "judges": list(judges),
+            "deltas": {},
+            "spearman": {},
+            "kappa": {},
+            "disagreements": [],
+        }
+
+    deltas: dict[str, dict] = {}
+    spearman: dict[str, float] = {}
+    kappa: dict[str, float] = {}
+
+    for dim in _DIMENSIONS:
+        a_scores = [int(a_by_qid[q].get(dim, 0)) for q in common]
+        b_scores = [int(b_by_qid[q].get(dim, 0)) for q in common]
+        diffs = [b - a for a, b in zip(a_scores, b_scores)]
+        mean = sum(diffs) / len(diffs)
+        var = sum((d - mean) ** 2 for d in diffs) / len(diffs)
+        deltas[dim] = {
+            "mean": round(mean, 4),
+            "std": round(math.sqrt(var), 4),
+            "min": min(diffs),
+            "max": max(diffs),
+        }
+        spearman[dim] = round(_spearman(a_scores, b_scores), 4)
+        kappa[dim] = round(_cohens_kappa(a_scores, b_scores), 4)
+
+    disagreements = []
+    for qid in common:
+        va, vb = a_by_qid[qid], b_by_qid[qid]
+        per_dim_deltas = {dim: abs(int(vb.get(dim, 0)) - int(va.get(dim, 0))) for dim in _DIMENSIONS}
+        worst_dim, worst_delta = max(per_dim_deltas.items(), key=lambda kv: kv[1])
+        if worst_delta >= _DELTA_DISAGREEMENT_THRESHOLD:
+            disagreements.append(
+                {
+                    "qid": qid,
+                    "judge_a": {dim: va.get(dim) for dim in (*_DIMENSIONS, "rationale")},
+                    "judge_b": {dim: vb.get(dim) for dim in (*_DIMENSIONS, "rationale")},
+                    "max_delta": worst_delta,
+                    "delta_dim": worst_dim,
+                }
+            )
+
+    return {
+        "n": len(common),
+        "judges": list(judges),
+        "deltas": deltas,
+        "spearman": spearman,
+        "kappa": kappa,
+        "disagreements": disagreements,
+    }

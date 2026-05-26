@@ -9,7 +9,15 @@ from __future__ import annotations
 
 import json
 
-from scripts.test_corpora.runner.cross_judge import JudgeProvider, rejudge_with
+import pytest
+
+from scripts.test_corpora.runner.cross_judge import (
+    JudgeProvider,
+    _cohens_kappa,
+    _spearman,
+    compare_judges,
+    rejudge_with,
+)
 
 
 class _MockJudge:
@@ -125,3 +133,101 @@ def test_rejudge_with_find_qtype_uses_find_prompt():
     rejudge_with(caps, judge, judge_model="mock", answer_keys={"q-find": {"count": 5, "all": [], "sample": ["a", "b"]}})
     # _PROMPT_FIND has the marker "QUESTION TYPE: find"
     assert "QUESTION TYPE: find" in judge.calls[0]
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — compare_judges + hand-rolled stats
+# ---------------------------------------------------------------------------
+
+
+def _ver(qid: str, c: int, g: int, comp: int, rat: str = "") -> dict:
+    return {
+        "qid": qid,
+        "correctness": c,
+        "groundedness": g,
+        "completeness": comp,
+        "rationale": rat,
+    }
+
+
+def test_spearman_identical_arrays_is_one():
+    assert _spearman([1, 2, 3, 4, 5], [1, 2, 3, 4, 5]) == pytest.approx(1.0)
+
+
+def test_spearman_reversed_arrays_is_minus_one():
+    assert _spearman([1, 2, 3, 4, 5], [5, 4, 3, 2, 1]) == pytest.approx(-1.0)
+
+
+def test_spearman_with_ties_uses_rank_average():
+    """Hand-computed: [1, 2, 2, 3] vs [10, 20, 20, 30] -> ranks identical -> 1.0"""
+    assert _spearman([1, 2, 2, 3], [10, 20, 20, 30]) == pytest.approx(1.0)
+
+
+def test_cohens_kappa_perfect_agreement_is_one():
+    assert _cohens_kappa([0, 1, 2, 3, 4, 5], [0, 1, 2, 3, 4, 5]) == pytest.approx(1.0)
+
+
+def test_cohens_kappa_random_assignment_near_zero():
+    """All A=0, B distributed across [0..5]. Observed agreement equals
+    chance agreement, so kappa ~= 0."""
+    a = [0] * 6
+    b = [0, 1, 2, 3, 4, 5]
+    # observed agreement = 1/6; chance agreement also ~1/6 (B is uniform).
+    # kappa ~= 0 (allow tolerance).
+    assert abs(_cohens_kappa(a, b)) < 0.3
+
+
+def test_compare_judges_empty_inputs_shape():
+    result = compare_judges([], [])
+    assert result == {
+        "n": 0,
+        "judges": [None, None],
+        "deltas": {},
+        "spearman": {},
+        "kappa": {},
+        "disagreements": [],
+    }
+
+
+def test_compare_judges_identical_verdicts_zero_delta():
+    a = [_ver("q1", 5, 5, 5), _ver("q2", 3, 4, 5)]
+    b = [_ver("q1", 5, 5, 5), _ver("q2", 3, 4, 5)]
+    result = compare_judges(a, b, judges=("sonnet", "gpt-4o"))
+    assert result["n"] == 2
+    assert result["judges"] == ["sonnet", "gpt-4o"]
+    for dim in ("correctness", "groundedness", "completeness"):
+        assert result["deltas"][dim]["mean"] == 0.0
+        assert result["spearman"][dim] == pytest.approx(1.0)
+        assert result["kappa"][dim] == pytest.approx(1.0)
+    assert result["disagreements"] == []
+
+
+def test_compare_judges_disagreement_surfaces_on_delta_two():
+    a = [_ver("q1", 4, 5, 4, rat="a-rat"), _ver("q2", 3, 3, 3)]
+    b = [_ver("q1", 2, 5, 4, rat="b-rat"), _ver("q2", 3, 3, 3)]
+    result = compare_judges(a, b, judges=("sonnet", "gpt-4o"))
+    assert len(result["disagreements"]) == 1
+    dis = result["disagreements"][0]
+    assert dis["qid"] == "q1"
+    assert dis["delta_dim"] == "correctness"
+    assert dis["max_delta"] == 2
+    assert dis["judge_a"]["correctness"] == 4
+    assert dis["judge_b"]["correctness"] == 2
+    assert dis["judge_a"]["rationale"] == "a-rat"
+    assert dis["judge_b"]["rationale"] == "b-rat"
+
+
+def test_compare_judges_mismatched_qids_intersection_only():
+    """If one judge has verdicts the other doesn't, only the intersection counts."""
+    a = [_ver("q1", 5, 5, 5), _ver("q2", 3, 3, 3)]
+    b = [_ver("q1", 5, 5, 5), _ver("q3", 4, 4, 4)]
+    result = compare_judges(a, b)
+    assert result["n"] == 1  # only q1 intersected
+
+
+def test_compare_judges_skips_judge_error_items():
+    """Items with judge_error in either judge are skipped."""
+    a = [_ver("q1", 5, 5, 5), _ver("q2", 4, 4, 4)]
+    b = [_ver("q1", 5, 5, 5), {"qid": "q2", "judge_error": "rate limit"}]
+    result = compare_judges(a, b)
+    assert result["n"] == 1
