@@ -6,18 +6,8 @@ The provider call is mocked — we don't make real LLM calls in CI.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock
-
-# Stub out optional heavy deps that are not installed in this venv so that
-# imports of providers.base (and the providers package __init__) don't raise
-# ModuleNotFoundError at test-collection time.  The stubs are registered
-# before any test-local import so they're visible to all import paths.
-_STUB_MODULES = ["anthropic", "anthropic.types", "openai", "tenacity"]
-for _mod in _STUB_MODULES:
-    if _mod not in sys.modules:
-        sys.modules[_mod] = MagicMock()  # type: ignore[assignment]
 
 
 def _populations_file(tmp_path: Path) -> Path:
