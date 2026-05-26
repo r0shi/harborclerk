@@ -3,7 +3,6 @@
 import contextvars
 import json
 import logging
-import re
 import uuid
 from datetime import UTC, datetime
 
@@ -35,6 +34,7 @@ from harbor_clerk.models import (
 from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
 from harbor_clerk.search import SearchHit, SearchResult, hybrid_search
+from harbor_clerk.sql_escape import escape_ilike
 
 logger = logging.getLogger(__name__)
 
@@ -1791,8 +1791,8 @@ async def kb_entity_search(
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
-    # Escape ILIKE metacharacters in query
-    escaped_query = re.sub(r"([%_\\])", r"\\\1", query)
+    # Escape ILIKE metacharacters in query (helper at src/harbor_clerk/sql_escape.py)
+    escaped_query = escape_ilike(query)
 
     async with async_session_factory() as session:
         visible_ids = await _visible_doc_ids(session, principal)
@@ -2011,7 +2011,7 @@ async def kb_entity_cooccurrence(
     limit = max(1, min(limit, 100))
     offset = max(0, offset)
 
-    escaped_text = re.sub(r"([%_\\])", r"\\\1", entity_text)
+    escaped_text = escape_ilike(entity_text)
 
     e1 = aliased(Entity, name="e1")
     e2 = aliased(Entity, name="e2")

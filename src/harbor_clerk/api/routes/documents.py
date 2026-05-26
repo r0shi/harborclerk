@@ -2,7 +2,6 @@
 
 import logging
 import posixpath
-import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -39,6 +38,7 @@ from harbor_clerk.models import (
 )
 from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFolder
+from harbor_clerk.sql_escape import escape_ilike
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ async def list_documents(
         base = base.where(Document.topic_id == topic_id)
 
     if q:
-        escaped = re.sub(r"([%_\\])", r"\\\1", q)
+        escaped = escape_ilike(q)
         pattern = f"%{escaped}%"
         base = base.where(Document.title.ilike(pattern) | Document.canonical_filename.ilike(pattern))
 
