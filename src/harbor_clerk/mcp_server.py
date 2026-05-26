@@ -1237,7 +1237,6 @@ async def kb_get_document(doc_id: str) -> str:
             "mime_type": doc.mime_type,
             "size_bytes": doc.size_bytes,
             "extracted_chars": doc.extracted_chars,
-            "source_path": doc.source_path,
             "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
             "metadata": doc.doc_metadata,
             "jobs": jobs,
