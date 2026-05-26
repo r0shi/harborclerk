@@ -219,13 +219,13 @@ struct PreferencesWindow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    if enableCliAccess {
-                        CliShimRow()
-                    } else {
-                        CliShimRow()
-                            .disabled(true)
-                            .help("Enable the toggle above before installing the shim.")
-                    }
+                    // Shim install is a client-side convenience — it drops a
+                    // small shell script at ~/.local/bin/harbor-clerk that
+                    // delegates to the bundled Python. The CLI toggle above
+                    // is the actual access gate (server-side 403). Decoupling
+                    // them means the Install button always fires; a user can
+                    // pre-stage the binary and flip the toggle later.
+                    CliShimRow()
 
                     if !allowRemoteWeb && !allowRemoteMCP {
                         Text("Harbor Clerk is only accessible from this Mac.")
