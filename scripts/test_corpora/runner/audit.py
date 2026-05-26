@@ -10,8 +10,15 @@ Used by: scripts/test_corpora/audit_answer_eval.py.
 from __future__ import annotations
 
 import logging
+import re
 
 log = logging.getLogger(__name__)
+
+# UUID v4 shape: 8-4-4-4-12 hex chars. Matches what HC's tool responses use
+# for doc_id. False positives possible (a query string echoed in result_summary
+# could match), false negatives possible (a tool that doesn't include doc_id);
+# documented as a heuristic in the spec and surfaced in the markdown report.
+_UUID_RE = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
 
 
 def tool_use_stats(captures: list[dict]) -> dict:
@@ -146,4 +153,57 @@ def failure_correlation(captures: list[dict], verdicts: list[dict]) -> dict:
         "low_correctness_low_tool_use": low_corr,
         "earliest_latest_questions_no_by_date_tool": earliest_latest,
         "ambiguous_id_questions_no_verify_tool": ambiguous,
+    }
+
+
+def citation_hygiene(captures: list[dict]) -> dict:
+    """For each capture, compare cited_doc_ids against doc_ids seen in any
+    tool transcript result_summary. Each capture lands in exactly one bucket:
+
+      - no_citations: capture has empty cited_doc_ids
+      - fabricated_citations: at least one cited doc_id is NOT in any
+        result_summary's UUID set
+      - grounded (count): every cited doc_id is in the seen set
+    """
+    no_citations: list[dict] = []
+    fabricated: list[dict] = []
+    grounded = 0
+
+    for cap in captures:
+        cited = cap.get("cited_doc_ids") or []
+        transcript = cap.get("tool_transcript") or []
+        seen_uuids: set[str] = set()
+        for call in transcript:
+            if not isinstance(call, dict):
+                continue
+            summary = call.get("result_summary") or ""
+            if isinstance(summary, str):
+                seen_uuids.update(_UUID_RE.findall(summary))
+
+        if not cited:
+            no_citations.append(
+                {
+                    "qid": cap.get("question_id", ""),
+                    "answer_preview": (cap.get("answer") or "")[:200],
+                }
+            )
+            continue
+
+        missing = [c for c in cited if c not in seen_uuids]
+        if missing:
+            fabricated.append(
+                {
+                    "qid": cap.get("question_id", ""),
+                    "cited": cited,
+                    "seen_in_transcript": sorted(seen_uuids),
+                }
+            )
+        else:
+            grounded += 1
+
+    return {
+        "no_citations": no_citations,
+        "fabricated_citations": fabricated,
+        "grounded_count": grounded,
+        "total": len(captures),
     }

@@ -6,7 +6,7 @@ its function needs. No live LLM calls, no DB.
 
 from __future__ import annotations
 
-from scripts.test_corpora.runner.audit import failure_correlation, tool_use_stats
+from scripts.test_corpora.runner.audit import citation_hygiene, failure_correlation, tool_use_stats
 
 
 def _cap(qid: str, tools: list[str], **overrides) -> dict:
@@ -178,3 +178,87 @@ def test_failure_correlation_handles_missing_verdict():
     result = failure_correlation(caps, verdicts)
     qids = {item["qid"] for item in result["low_correctness_low_tool_use"]}
     assert qids == {"q-paired"}  # the unpaired capture was silently skipped
+
+
+def _cap_with_transcript_uuids(qid: str, cited: list[str], transcript_uuids: list[str]) -> dict:
+    """Build a capture where the tool transcript result_summary mentions the
+    given UUIDs as doc_id values (so the UUID extractor will find them)."""
+    import json as _json
+
+    transcript = [
+        {
+            "tool": "kb_search",
+            "args": {},
+            "result_summary": _json.dumps({"hits": [{"doc_id": u, "score": 0.9} for u in transcript_uuids]}),
+        }
+    ]
+    return {
+        "question_id": qid,
+        "question": "q",
+        "answer": "an answer with some prose",
+        "cited_doc_ids": cited,
+        "cited_doc_titles": [],
+        "tool_call_count": 1,
+        "tool_transcript": transcript,
+        "elapsed_seconds": 0.0,
+        "model": "test",
+        "timestamp": "2026-05-25T00:00:00Z",
+    }
+
+
+# Use real UUIDs (regex-shaped); strings differ to make assertions clearer.
+_U1 = "11111111-1111-1111-1111-111111111111"
+_U2 = "22222222-2222-2222-2222-222222222222"
+_U3 = "33333333-3333-3333-3333-333333333333"
+
+
+def test_citation_hygiene_grounded_when_cited_subset_of_seen():
+    caps = [_cap_with_transcript_uuids("q1", cited=[_U1], transcript_uuids=[_U1, _U2])]
+    result = citation_hygiene(caps)
+    assert result["grounded_count"] == 1
+    assert result["total"] == 1
+    assert result["fabricated_citations"] == []
+    assert result["no_citations"] == []
+
+
+def test_citation_hygiene_fabricated_when_cited_not_seen():
+    caps = [_cap_with_transcript_uuids("q1", cited=[_U3], transcript_uuids=[_U1, _U2])]
+    result = citation_hygiene(caps)
+    assert result["grounded_count"] == 0
+    fab = result["fabricated_citations"]
+    assert len(fab) == 1
+    assert fab[0]["qid"] == "q1"
+    assert _U3 in fab[0]["cited"]
+    assert set(fab[0]["seen_in_transcript"]) == {_U1, _U2}
+
+
+def test_citation_hygiene_no_citations_bucket():
+    caps = [_cap_with_transcript_uuids("q1", cited=[], transcript_uuids=[_U1])]
+    result = citation_hygiene(caps)
+    assert result["grounded_count"] == 0  # no cited == no grounded claim either
+    assert len(result["no_citations"]) == 1
+    nc = result["no_citations"][0]
+    assert nc["qid"] == "q1"
+    assert nc["answer_preview"].startswith("an answer")
+
+
+def test_citation_hygiene_partial_fabrication_counts_as_fabricated():
+    """If ANY cited doc_id isn't in the transcript, the capture goes in
+    fabricated_citations — not grounded_count."""
+    caps = [_cap_with_transcript_uuids("q1", cited=[_U1, _U3], transcript_uuids=[_U1, _U2])]
+    result = citation_hygiene(caps)
+    assert result["grounded_count"] == 0
+    assert len(result["fabricated_citations"]) == 1
+
+
+def test_citation_hygiene_buckets_partition_total():
+    """grounded_count + len(no_citations) + len(fabricated_citations) == total
+    for any set of captures (each capture lives in exactly one bucket)."""
+    caps = [
+        _cap_with_transcript_uuids("q-grounded", cited=[_U1], transcript_uuids=[_U1]),
+        _cap_with_transcript_uuids("q-no-cite", cited=[], transcript_uuids=[_U1]),
+        _cap_with_transcript_uuids("q-fab", cited=[_U3], transcript_uuids=[_U1]),
+    ]
+    result = citation_hygiene(caps)
+    assert result["total"] == 3
+    assert result["grounded_count"] + len(result["no_citations"]) + len(result["fabricated_citations"]) == 3
