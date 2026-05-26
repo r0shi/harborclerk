@@ -36,11 +36,18 @@ class McpHttpClient:
             base_url=config.url,
             timeout=httpx.Timeout(30.0, connect=10.0),
             verify=verify,
+            # Follow redirects: FastAPI's `redirect_slashes=True` default sends
+            # POST /mcp -> 307 POST /mcp/. httpx defaults to follow_redirects=False
+            # which would surface as a confusing 307 to the user.
+            follow_redirects=True,
             headers={
                 "Authorization": f"Bearer {config.api_key}",
                 "User-Agent": f"harbor-clerk-cli/{__version__}",
                 "Content-Type": "application/json",
-                "Accept": "application/json",
+                # Streamable HTTP MCP can stream tool responses as SSE; advertising
+                # both content types lets the server pick whichever is best for the
+                # call (the inner handler streams events for tools/call).
+                "Accept": "application/json, text/event-stream",
             },
         )
 
@@ -53,7 +60,11 @@ class McpHttpClient:
             "params": {"name": tool_name, "arguments": arguments},
         }
         try:
-            resp = self._http.post("/mcp", json=body)
+            # POST to /mcp/ (trailing slash): the server mounts the bare MCP
+            # ASGI handler at /mcp, but FastAPI's mount semantics on the exact
+            # path `/mcp` collide with the SPA catch-all route — sending to
+            # `/mcp/` lands cleanly inside the mount.
+            resp = self._http.post("/mcp/", json=body)
         except (httpx.ConnectError, httpx.TimeoutException, ConnectionError) as e:
             raise McpClientError(kind="connection", message=str(e)) from e
 
@@ -90,7 +101,7 @@ class McpHttpClient:
                 body=_safe_json(resp),
             )
 
-        envelope = _safe_json(resp)
+        envelope = _parse_mcp_response(resp)
         if not isinstance(envelope, dict):
             raise McpClientError(kind="protocol", message="Non-JSON response body.")
         if "error" in envelope:
@@ -126,3 +137,30 @@ def _safe_json(resp) -> Any:
         return resp.json()
     except (ValueError, json.JSONDecodeError):
         return None
+
+
+def _parse_mcp_response(resp) -> Any:
+    """Parse the response body as MCP JSON-RPC.
+
+    The MCP Streamable HTTP transport requires clients to advertise both
+    `application/json` and `text/event-stream` in Accept; the server picks
+    SSE for tool responses. We accept either: plain JSON or SSE-formatted
+    `event: message\\ndata: <json>` frames.
+    """
+    content_type = resp.headers.get("content-type", "").lower()
+    if "text/event-stream" in content_type:
+        # Extract the first JSON-RPC payload from the SSE stream. MCP servers
+        # send a single `event: message` frame per call with the JSON-RPC
+        # response as the `data:` value. Other frames (heartbeats, progress)
+        # are ignored — we return the first parseable one.
+        for line in resp.text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("data:"):
+                payload = stripped[len("data:") :].strip()
+                if payload and payload != "[DONE]":
+                    try:
+                        return json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+        return None
+    return _safe_json(resp)
