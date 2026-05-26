@@ -161,7 +161,16 @@ def test_rerun_provider_exception_records_error_capture(tmp_path):
     # Regression lock: error captures must include BaselineResult-shaped fields
     # so downstream readers (judge loop, cross_judge, metrics roll-up) don't
     # crash with KeyError when reading the capture without first checking for
-    # the `error` key.
+    # the `error` key. The docstring on this block promises the whole shape;
+    # this assertion set must match that promise.
+    assert data["question_id"] == "n-1"
+    assert data["question"] == "Q1?"
     assert data["answer"] == ""
-    assert data["cited_doc_titles"] == []
     assert data["cited_doc_ids"] == []
+    assert data["cited_doc_titles"] == []
+    assert data["tool_call_count"] == 0
+    assert data["tool_transcript"] == []
+    assert data["elapsed_seconds"] == 0.0
+    assert data["model"] == "claude-sonnet-4-6"
+    assert data["timestamp"] == ""
+    assert data["corpus"] == "enron"
