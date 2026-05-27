@@ -295,6 +295,12 @@ async def find_all(
     if sort_by not in _VALID_SORTS:
         raise ValueError(f"sort_by must be one of {sorted(_VALID_SORTS)}, got {sort_by!r}")
 
+    # presentation='full' payloads include chunk text, ~500 chars/doc.
+    # Clamp max_results to keep total payload under ~20 KB.
+    _FULL_MAX_RESULTS = 30
+    if presentation == "full" and max_results > _FULL_MAX_RESULTS:
+        max_results = _FULL_MAX_RESULTS
+
     # Pull a generous candidate pool so dedupe doesn't starve the result set
     # AND high-offset pagination reports accurate total_matches.
     # Internal k = 5x (offset + max_results), capped at 1000.

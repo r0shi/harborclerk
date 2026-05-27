@@ -108,3 +108,58 @@ async def test_find_all_sort_by_invalid_raises(db_session):
     """Invalid sort_by raises ValueError."""
     with pytest.raises(ValueError, match="sort_by"):
         await find_all(db_session, "query", sort_by="title")
+
+
+async def test_find_all_offset_paginates_stably(db_session):
+    """Calling find_all twice with consecutive offsets yields the full set
+    in stable order with no overlaps."""
+    await _seed_docs_with_chunks(db_session, n_docs=12, chunks_per_doc=1)
+
+    page1 = await find_all(db_session, "off-balance-sheet", max_results=5, offset=0)
+    page2 = await find_all(db_session, "off-balance-sheet", max_results=5, offset=5)
+
+    assert len(page1.hits) == 5
+    assert len(page2.hits) == 5
+    overlap = {h.doc_id for h in page1.hits} & {h.doc_id for h in page2.hits}
+    assert overlap == set(), f"unexpected overlap: {overlap}"
+    assert page1.total_matches == page2.total_matches == 12
+    assert page1.truncated is True
+    assert page2.truncated is True  # 10 < 12
+
+
+async def test_find_all_presentation_brief_omits_chunk_text(db_session):
+    """presentation='brief' (default) leaves top_chunk_text None."""
+    await _seed_docs_with_chunks(db_session, n_docs=2, chunks_per_doc=1)
+
+    result = await find_all(db_session, "off-balance-sheet", max_results=10, presentation="brief")
+
+    for h in result.hits:
+        assert h.top_chunk_text is None
+        assert h.top_chunk_id is None
+
+
+async def test_find_all_presentation_full_includes_chunk_text(db_session):
+    """presentation='full' populates the top_chunk_* fields."""
+    await _seed_docs_with_chunks(db_session, n_docs=2, chunks_per_doc=1)
+
+    result = await find_all(db_session, "off-balance-sheet", max_results=10, presentation="full")
+
+    for h in result.hits:
+        assert h.top_chunk_text is not None
+        assert h.top_chunk_id is not None
+
+
+async def test_find_all_presentation_full_clamps_max_results(db_session):
+    """presentation='full' clamps max_results to 30 (token economy).
+
+    The clamp is applied server-side and total_matches still reflects
+    the true count; only `returned` (len(hits)) is bounded.
+    """
+    await _seed_docs_with_chunks(db_session, n_docs=50, chunks_per_doc=1)
+
+    # Request 100 with presentation=full → server clamps to 30
+    result = await find_all(db_session, "off-balance-sheet", max_results=100, presentation="full")
+
+    assert len(result.hits) <= 30
+    assert result.total_matches == 50
+    assert result.truncated is True
