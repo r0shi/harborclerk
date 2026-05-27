@@ -52,3 +52,45 @@ def test_dispatch_routes_find_all_documents_to_kb_find_all():
 
     mcp_name, _ = _TOOL_DISPATCH["find_all_documents"]
     assert mcp_name == "kb_find_all"
+
+
+def test_get_chat_tools_uses_model_find_all_default(monkeypatch):
+    """When called with a model whose find_all_default_max_results is set,
+    the find_all_documents schema's max_results.default matches."""
+    from harbor_clerk.llm.models import ModelInfo
+    from harbor_clerk.llm.tools import get_chat_tools
+
+    custom_model = ModelInfo(
+        id="custom-test",
+        name="Custom",
+        huggingface_repo="x",
+        filename="x.gguf",
+        size_bytes=1,
+        context_window=4096,
+        supports_tools=True,
+        find_all_default_max_results=30,
+    )
+
+    tools = get_chat_tools(model=custom_model)
+    fa = next(t for t in tools if t["function"]["name"] == "find_all_documents")
+    assert fa["function"]["parameters"]["properties"]["max_results"]["default"] == 30
+
+
+def test_get_chat_tools_falls_back_to_100_when_model_default_none():
+    """find_all_default_max_results=None => schema uses tool default of 100."""
+    from harbor_clerk.llm.models import ModelInfo
+    from harbor_clerk.llm.tools import get_chat_tools
+
+    null_model = ModelInfo(
+        id="null-test",
+        name="Null",
+        huggingface_repo="x",
+        filename="x.gguf",
+        size_bytes=1,
+        context_window=4096,
+        supports_tools=True,
+        find_all_default_max_results=None,
+    )
+    tools = get_chat_tools(model=null_model)
+    fa = next(t for t in tools if t["function"]["name"] == "find_all_documents")
+    assert fa["function"]["parameters"]["properties"]["max_results"]["default"] == 100

@@ -5,6 +5,7 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 import httpx
 from sqlalchemy import select
@@ -17,6 +18,9 @@ from harbor_clerk.llm.models import get_model
 from harbor_clerk.llm.tools import execute_tool, get_chat_tools, summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
+
+if TYPE_CHECKING:
+    from harbor_clerk.llm.models import ModelInfo
 
 logger = logging.getLogger(__name__)
 
@@ -55,20 +59,20 @@ def _estimate_messages_tokens(messages: list[dict]) -> int:
     return total
 
 
-def _get_tool_schema_tokens() -> int:
+def _get_tool_schema_tokens(model: "ModelInfo | None" = None) -> int:
     """Compute the tool schema token estimate from current settings."""
-    return _estimate_tokens(json.dumps(get_chat_tools()))
+    return _estimate_tokens(json.dumps(get_chat_tools(model=model)))
 
 
-def _context_usage(messages: list[dict], context_window: int) -> float:
+def _context_usage(messages: list[dict], context_window: int, model: "ModelInfo | None" = None) -> float:
     """Return fraction of context window used by current messages + tool schema."""
     if context_window <= 0:
         return 0.0
-    tokens = _estimate_messages_tokens(messages) + _get_tool_schema_tokens()
+    tokens = _estimate_messages_tokens(messages) + _get_tool_schema_tokens(model)
     return tokens / context_window
 
 
-def _trim_to_budget(messages: list[dict], context_window: int) -> list[dict]:
+def _trim_to_budget(messages: list[dict], context_window: int, model: "ModelInfo | None" = None) -> list[dict]:
     """Trim oldest history messages to fit within context budget.
 
     Keeps the system prompt (index 0) and the most recent user message
@@ -78,7 +82,7 @@ def _trim_to_budget(messages: list[dict], context_window: int) -> list[dict]:
     Returns a new list (does not mutate the input).
     """
     budget = int(context_window * (1 - _RESPONSE_RESERVE))
-    budget -= _get_tool_schema_tokens()
+    budget -= _get_tool_schema_tokens(model)
 
     if _estimate_messages_tokens(messages) <= budget:
         return messages
@@ -263,7 +267,7 @@ async def chat_stream(
             messages.append(entry)
 
         # Trim history to fit within context budget
-        messages = _trim_to_budget(messages, context_tokens)
+        messages = _trim_to_budget(messages, context_tokens, model)
 
         # Tool-calling loop — runs until the model produces a text response,
         # context budget is exhausted, or we hit the hard safety cap.
@@ -279,7 +283,7 @@ async def chat_stream(
 
         for _round in range(_MAX_TOOL_ROUNDS):
             # Check context budget before each LLM call
-            usage_frac = _context_usage(messages, context_tokens)
+            usage_frac = _context_usage(messages, context_tokens, model)
             if usage_frac >= _TOOL_LOOP_BUDGET and _round > 0:
                 budget_exhausted = True
                 logger.info(
@@ -296,7 +300,7 @@ async def chat_stream(
 
             # If budget is getting tight, omit tool definitions so the model
             # generates a text response instead of requesting more tool calls.
-            send_tools = get_chat_tools() if usage_frac < _TOOL_LOOP_BUDGET else None
+            send_tools = get_chat_tools(model=model) if usage_frac < _TOOL_LOOP_BUDGET else None
 
             try:
                 payload: dict = {
@@ -566,7 +570,7 @@ async def chat_stream(
 
         # Estimate context usage for the UI indicator.
         # Include tool schema, all messages sent to the LLM, and the response.
-        input_tokens = _estimate_messages_tokens(messages) + _get_tool_schema_tokens()
+        input_tokens = _estimate_messages_tokens(messages) + _get_tool_schema_tokens(model)
         response_tokens = _estimate_tokens(assistant_content) if assistant_content else 0
         used_tokens = input_tokens + response_tokens
         context_pct = round(min(used_tokens / context_tokens, 1.0) * 100) if context_tokens > 0 else 0

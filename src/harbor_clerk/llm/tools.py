@@ -16,6 +16,10 @@ import copy
 import json
 import logging
 import uuid
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from harbor_clerk.llm.models import ModelInfo
 
 logger = logging.getLogger(__name__)
 
@@ -376,14 +380,38 @@ def _apply_search_settings(tools: list[dict], *, paginated: bool, max_k: int, de
     return tools
 
 
-def get_chat_tools() -> list[dict]:
-    """Build chat tool schema, respecting current retrieval settings."""
+def _apply_find_all_settings(tools: list[dict], *, model: "ModelInfo | None") -> None:
+    """Set the find_all_documents.max_results default per active model.
+
+    Mutates *tools* in place. If the model has no per-model override
+    (find_all_default_max_results is None) or model is None, falls back to
+    the tool's static default of 100.
+    """
+    default_max = 100
+    if model is not None and model.find_all_default_max_results is not None:
+        default_max = model.find_all_default_max_results
+
+    for tool in tools:
+        if tool["function"]["name"] != "find_all_documents":
+            continue
+        tool["function"]["parameters"]["properties"]["max_results"]["default"] = default_max
+
+
+def get_chat_tools(*, model: "ModelInfo | None" = None) -> list[dict]:
+    """Build chat tool schema, respecting current retrieval settings.
+
+    model: optional active ModelInfo — used to set the find_all_documents
+    max_results default from model.find_all_default_max_results (None → 100).
+    """
     from harbor_clerk.config import get_settings
 
     s = get_settings()
     if s.chat_search_paginated:
-        return _apply_search_settings(_BASE_CHAT_TOOLS, paginated=True, max_k=50, default_k=5)
-    return _apply_search_settings(_BASE_CHAT_TOOLS, paginated=False, max_k=s.chat_search_k, default_k=5)
+        tools = _apply_search_settings(_BASE_CHAT_TOOLS, paginated=True, max_k=50, default_k=5)
+    else:
+        tools = _apply_search_settings(_BASE_CHAT_TOOLS, paginated=False, max_k=s.chat_search_k, default_k=5)
+    _apply_find_all_settings(tools, model=model)
+    return tools
 
 
 # Map chat tool names → (MCP function import path, arg mapper)
@@ -543,8 +571,12 @@ _RESEARCH_DESCRIPTION_OVERRIDES: dict[str, str] = {
 _RESEARCH_SEARCH_K_DESCRIPTION = "Number of results (default 10, max 50)"
 
 
-def get_research_tools() -> list[dict]:
-    """Build research tool schema, respecting current retrieval settings."""
+def get_research_tools(*, model: "ModelInfo | None" = None) -> list[dict]:
+    """Build research tool schema, respecting current retrieval settings.
+
+    model: optional active ModelInfo — used to set the find_all_documents
+    max_results default from model.find_all_default_max_results (None → 100).
+    """
     from harbor_clerk.config import get_settings
 
     s = get_settings()
@@ -559,6 +591,7 @@ def get_research_tools() -> list[dict]:
         name = fn["name"]
         if name in _RESEARCH_DESCRIPTION_OVERRIDES:
             fn["description"] = _RESEARCH_DESCRIPTION_OVERRIDES[name]
+    _apply_find_all_settings(base, model=model)
     return base
 
 
