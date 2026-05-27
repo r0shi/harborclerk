@@ -13,11 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.config import get_settings
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.search_rerank import rerank_hits
-from harbor_clerk.search_types import ConflictSource, SearchHit, SearchResult
+from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
 
 # Re-export for backward compatibility — callers that do
 # `from harbor_clerk.search import SearchHit` continue to work.
-__all__ = ["ConflictSource", "SearchHit", "SearchResult", "hybrid_search"]
+__all__ = ["ConflictSource", "FindAllHit", "FindAllResult", "SearchHit", "SearchResult", "find_all", "hybrid_search"]
 
 logger = logging.getLogger(__name__)
 
@@ -264,4 +264,110 @@ async def hybrid_search(
         possible_conflict=possible_conflict,
         conflict_sources=conflict_sources,
         reranker_status=reranker_status,
+    )
+
+
+async def find_all(
+    session: AsyncSession,
+    query: str,
+    *,
+    max_results: int = 100,
+    offset: int = 0,
+    sort_by: str = "relevance",
+    text_contains: str | None = None,
+    doc_id: uuid.UUID | None = None,
+    doc_ids: list[uuid.UUID] | None = None,
+    after: datetime | None = None,
+    before: datetime | None = None,
+    language: str | None = None,
+    mime_type: str | None = None,
+    metadata_filter: dict[str, Any] | None = None,
+    presentation: str = "brief",
+) -> FindAllResult:
+    """Doc-level enumeration. Aggregates chunks → docs, sorts, paginates.
+
+    Reuses hybrid_search for candidate generation, then projects chunk-level
+    hits to doc-level with score = max(chunk_score per doc). See
+    docs/superpowers/specs/2026-05-26-find-iteration-enumeration-design.md.
+    """
+    # Pull a generous candidate pool so dedupe doesn't starve the result set.
+    # Internal k = 5x the request, capped at 1000.
+    internal_k = min(max_results * 5, 1000)
+
+    inner = await hybrid_search(
+        session,
+        query,
+        k=internal_k,
+        offset=0,
+        doc_id=doc_id,
+        doc_ids=doc_ids,
+        after=after,
+        before=before,
+        language=language,
+        mime_type=mime_type,
+        metadata_filter=metadata_filter,
+        text_contains=text_contains,
+    )
+
+    # Group hits by doc_id (str); keep the max-score chunk per doc.
+    by_doc: dict[str, SearchHit] = {}
+    for hit in inner.hits:
+        existing = by_doc.get(hit.doc_id)
+        if existing is None or hit.score > existing.score:
+            by_doc[hit.doc_id] = hit
+
+    total_matches = len(by_doc)
+    docs_sorted = sorted(by_doc.values(), key=lambda h: h.score, reverse=True)
+
+    # Slice offset..offset+max_results
+    window = docs_sorted[offset : offset + max_results]
+
+    # Build FindAllHit rows — needs Document.mime_type / created_at, which
+    # SearchHit doesn't carry. Fetch in one round-trip.
+    # SearchHit.doc_id is a str; cast to uuid.UUID for the SQL IN() clause.
+    if window:
+        doc_id_list = [uuid.UUID(h.doc_id) for h in window]
+        rows = (
+            await session.execute(
+                select(Document.doc_id, Document.title, Document.mime_type, Document.created_at).where(
+                    Document.doc_id.in_(doc_id_list)
+                )
+            )
+        ).all()
+        doc_meta = {str(r.doc_id): r for r in rows}
+    else:
+        doc_meta = {}
+
+    hits: list[FindAllHit] = []
+    for sh in window:
+        meta = doc_meta.get(sh.doc_id)
+        if meta is None:
+            continue
+        hits.append(
+            FindAllHit(
+                doc_id=sh.doc_id,
+                doc_title=meta.title or sh.doc_title or "",
+                mime_type=meta.mime_type or "",
+                language=sh.language,
+                score=sh.score,
+                ingested_at=meta.created_at,
+                page_range=(
+                    f"{sh.page_start}-{sh.page_end}"
+                    if sh.page_start is not None and sh.page_end is not None
+                    else (str(sh.page_start) if sh.page_start is not None else None)
+                ),
+                top_chunk_id=sh.chunk_id if presentation == "full" else None,
+                top_chunk_text=sh.chunk_text if presentation == "full" else None,
+                top_chunk_page=sh.page_start if presentation == "full" else None,
+                top_chunk_heading=None,  # SearchHit has no heading field
+            )
+        )
+
+    return FindAllResult(
+        hits=hits,
+        total_matches=total_matches,
+        offset=offset,
+        truncated=total_matches > offset + len(hits),
+        sort_by=sort_by,  # sort_by modes wired in next task
+        presentation=presentation,
     )
