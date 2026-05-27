@@ -65,6 +65,7 @@ async def hybrid_search(
     mime_type: str | None = None,
     metadata_filter: dict[str, Any] | None = None,
     text_contains: str | None = None,
+    bypass_reranker: bool = False,
 ) -> SearchResult:
     """Run hybrid FTS + vector search, merge scores, return top K."""
 
@@ -221,7 +222,7 @@ async def hybrid_search(
     settings = get_settings()
     reranker_status: str = "disabled"
 
-    if settings.reranker_enabled:
+    if settings.reranker_enabled and not bypass_reranker:
         # Rerank a candidate pool spanning the requested page (offset + k),
         # padded for rerank headroom and capped by reranker_pool_size, then
         # slice the page out of the reranked order.
@@ -316,6 +317,11 @@ async def find_all(
     else:
         return_limit = max_results
 
+    # Enumeration must operate on the full FTS+vector candidate pool. The
+    # reranker is a chunk-level precision tool: when enabled, hybrid_search
+    # caps its result pool at settings.reranker_pool_size (default 50),
+    # which silently truncates total_matches. For find_all that breaks the
+    # enumeration contract — we want broad coverage, not top-K precision.
     inner = await hybrid_search(
         session,
         query,
@@ -329,6 +335,7 @@ async def find_all(
         mime_type=mime_type,
         metadata_filter=metadata_filter,
         text_contains=text_contains,
+        bypass_reranker=True,  # enumeration must see the full candidate pool
     )
 
     # Group hits by doc_id (str); keep the max-score chunk per doc.

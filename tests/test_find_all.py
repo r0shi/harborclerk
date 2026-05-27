@@ -177,3 +177,31 @@ async def test_find_all_presentation_invalid_raises(db_session):
 
     with pytest.raises(ValueError, match="presentation"):
         await find_all(db_session, "query", presentation="summary")
+
+
+async def test_find_all_total_matches_exceeds_reranker_pool_size(db_session):
+    """REGRESSION: find_all() must enumerate beyond settings.reranker_pool_size.
+
+    Bug: hybrid_search caps results at reranker_pool_size (default 50) when
+    reranker is enabled. find_all relied on hybrid_search and inherited the cap,
+    so total_matches was silently truncated to 50 even on corpora with 100+
+    matches. This broke the enumeration contract.
+
+    Fix: find_all bypasses the reranker (it operates on chunks; enumeration
+    operates on docs and doesn't need the cross-encoder precision boost).
+    """
+    # Seed 60 distinct docs all matching "off-balance-sheet"
+    await _seed_docs_with_chunks(db_session, n_docs=60, chunks_per_doc=1)
+
+    result = await find_all(db_session, "off-balance-sheet", max_results=100)
+
+    # Critical assertion: total_matches must reflect the full corpus, not the
+    # reranker pool size. If reranker_pool_size default is 50 and find_all
+    # bleeds through hybrid_search's cap, this assert will fail with
+    # total_matches == 50 (or less).
+    assert result.total_matches == 60, (
+        f"find_all enumeration capped at {result.total_matches} (expected 60); "
+        f"hybrid_search's reranker pool is leaking through"
+    )
+    assert len(result.hits) == 60  # all returned since max_results=100
+    assert result.truncated is False
