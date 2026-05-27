@@ -156,7 +156,8 @@ def test_parse_missing_subject_falls_back_to_no_subject_marker():
     assert result.subject == "(no subject)"
 
 
-def test_parse_empty_body_returns_empty_string():
+def test_parse_empty_body_returns_preamble_only():
+    """When the body is empty, body_text is just the header preamble (no body content)."""
     from email.message import EmailMessage
 
     msg = EmailMessage()
@@ -166,7 +167,9 @@ def test_parse_empty_body_returns_empty_string():
     msg["To"] = "bob@example.com"
     # Don't call set_content — body is empty
     result = parse_eml(msg.as_bytes())
-    assert result.body_text == ""
+    # body_text is the preamble alone (preamble ends with \n\n, no body after)
+    assert "Subject: empty\n" in result.body_text
+    assert result.body_text.endswith("\n\n")
 
 
 def test_sanitize_subject_replaces_path_separators():
@@ -347,3 +350,30 @@ def test_header_preamble_subject_always_shown():
     )
 
     assert "Subject: (no subject)\n" in preamble
+
+
+def test_parse_eml_prepends_header_preamble_to_body_text():
+    """parse_eml's body_text starts with the rendered header preamble."""
+    from harbor_clerk.mail.parser import parse_eml
+    from tests.mail.fixtures.build_eml import build_simple_email
+
+    eml = build_simple_email(
+        message_id="<preamble-test@example.com>",
+        subject="Q3 Review",
+        sender="Alice Anderson <alice@firm.com>",
+        recipients=["bob@firm.com", "carol@firm.com"],
+        cc=["dan@firm.com"],
+        body_text="Original body content goes here.",
+    )
+
+    result = parse_eml(eml)
+
+    # body_text starts with the preamble block
+    assert result.body_text.startswith("From: Alice Anderson <alice@firm.com>\n")
+    assert "To: bob@firm.com, carol@firm.com\n" in result.body_text
+    assert "Cc: dan@firm.com\n" in result.body_text
+    assert "Subject: Q3 Review\n" in result.body_text
+    # And the body still follows
+    assert "Original body content goes here." in result.body_text
+    # With exactly one blank line between preamble and body
+    assert "\n\nOriginal body content goes here." in result.body_text
