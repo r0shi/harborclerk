@@ -1,5 +1,6 @@
 """Hybrid search engine — FTS + vector merge with score normalization."""
 
+import datetime as dt
 import logging
 import uuid
 from datetime import datetime
@@ -13,13 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.config import get_settings
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.search_rerank import rerank_hits
-from harbor_clerk.search_types import ConflictSource, SearchHit, SearchResult
+from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
 
 # Re-export for backward compatibility — callers that do
 # `from harbor_clerk.search import SearchHit` continue to work.
-__all__ = ["ConflictSource", "SearchHit", "SearchResult", "hybrid_search"]
+__all__ = ["ConflictSource", "FindAllHit", "FindAllResult", "SearchHit", "SearchResult", "find_all", "hybrid_search"]
 
 logger = logging.getLogger(__name__)
+
+# Max docs returned when presentation="full" — keeps payload under ~20 KB
+# (top chunk text per doc, ~500 chars).
+_FIND_ALL_FULL_MAX_RESULTS = 30
 
 
 async def _embed_query(query: str) -> list[float]:
@@ -59,6 +64,8 @@ async def hybrid_search(
     language: str | None = None,
     mime_type: str | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    text_contains: str | None = None,
+    bypass_reranker: bool = False,
 ) -> SearchResult:
     """Run hybrid FTS + vector search, merge scores, return top K."""
 
@@ -73,6 +80,11 @@ async def hybrid_search(
         scope_filters.append(Chunk.doc_id.in_(doc_ids))
     if language is not None:
         scope_filters.append(Chunk.language == language)
+    if text_contains is not None:
+        from harbor_clerk.sql_escape import escape_ilike
+
+        escaped = escape_ilike(text_contains)
+        scope_filters.append(Chunk.chunk_text.ilike(f"%{escaped}%", escape="\\"))
 
     # Document-level filters — subquery on doc_ids
     doc_conditions = []
@@ -210,7 +222,7 @@ async def hybrid_search(
     settings = get_settings()
     reranker_status: str = "disabled"
 
-    if settings.reranker_enabled:
+    if settings.reranker_enabled and not bypass_reranker:
         # Rerank a candidate pool spanning the requested page (offset + k),
         # padded for rerank headroom and capped by reranker_pool_size, then
         # slice the page out of the reranked order.
@@ -258,4 +270,149 @@ async def hybrid_search(
         possible_conflict=possible_conflict,
         conflict_sources=conflict_sources,
         reranker_status=reranker_status,
+    )
+
+
+async def find_all(
+    session: AsyncSession,
+    query: str,
+    *,
+    max_results: int = 100,
+    offset: int = 0,
+    sort_by: str = "relevance",
+    text_contains: str | None = None,
+    doc_id: uuid.UUID | None = None,
+    doc_ids: list[uuid.UUID] | None = None,
+    after: datetime | None = None,
+    before: datetime | None = None,
+    language: str | None = None,
+    mime_type: str | None = None,
+    metadata_filter: dict[str, Any] | None = None,
+    presentation: str = "brief",
+) -> FindAllResult:
+    """Doc-level enumeration. Aggregates chunks → docs, sorts, paginates.
+
+    Reuses hybrid_search for candidate generation, then projects chunk-level
+    hits to doc-level with score = max(chunk_score per doc). See
+    docs/superpowers/specs/2026-05-26-find-iteration-enumeration-design.md.
+    """
+    _VALID_SORTS = {"relevance", "date_desc", "date_asc"}
+    if sort_by not in _VALID_SORTS:
+        raise ValueError(f"sort_by must be one of {sorted(_VALID_SORTS)}, got {sort_by!r}")
+
+    _VALID_PRESENTATIONS = {"brief", "full"}
+    if presentation not in _VALID_PRESENTATIONS:
+        raise ValueError(f"presentation must be one of {sorted(_VALID_PRESENTATIONS)}, got {presentation!r}")
+
+    # internal_k uses the ORIGINAL max_results so total_matches stays accurate
+    # even when the return slice is clamped by presentation="full".
+    # Pull a generous candidate pool so dedupe doesn't starve the result set
+    # AND high-offset pagination reports accurate total_matches.
+    # Internal k = 5x (offset + max_results), capped at 1000.
+    internal_k = min((offset + max_results) * 5, 1000)
+
+    # Window size — clamped for presentation="full" to bound the payload.
+    if presentation == "full" and max_results > _FIND_ALL_FULL_MAX_RESULTS:
+        return_limit = _FIND_ALL_FULL_MAX_RESULTS
+    else:
+        return_limit = max_results
+
+    # Enumeration must operate on the full FTS+vector candidate pool. The
+    # reranker is a chunk-level precision tool: when enabled, hybrid_search
+    # caps its result pool at settings.reranker_pool_size (default 50),
+    # which silently truncates total_matches. For find_all that breaks the
+    # enumeration contract — we want broad coverage, not top-K precision.
+    inner = await hybrid_search(
+        session,
+        query,
+        k=internal_k,
+        offset=0,
+        doc_id=doc_id,
+        doc_ids=doc_ids,
+        after=after,
+        before=before,
+        language=language,
+        mime_type=mime_type,
+        metadata_filter=metadata_filter,
+        text_contains=text_contains,
+        bypass_reranker=True,  # enumeration must see the full candidate pool
+    )
+
+    # Group hits by doc_id (str); keep the max-score chunk per doc.
+    by_doc: dict[str, SearchHit] = {}
+    for hit in inner.hits:
+        existing = by_doc.get(hit.doc_id)
+        if existing is None or hit.score > existing.score:
+            by_doc[hit.doc_id] = hit
+
+    total_matches = len(by_doc)
+
+    # Sort the doc-level dict. For date sorts, fetch created_at up front.
+    if sort_by in ("date_desc", "date_asc"):
+        date_rows = (
+            await session.execute(
+                select(Document.doc_id, Document.created_at).where(Document.doc_id.in_([uuid.UUID(k) for k in by_doc]))
+            )
+        ).all()
+        # Key by str to match by_doc keys
+        date_map: dict[str, datetime] = {str(r.doc_id): r.created_at for r in date_rows}
+        docs_sorted = sorted(
+            by_doc.values(),
+            key=lambda h: date_map.get(h.doc_id, dt.datetime.min.replace(tzinfo=dt.UTC)),
+            reverse=(sort_by == "date_desc"),
+        )
+    else:  # relevance (default)
+        docs_sorted = sorted(by_doc.values(), key=lambda h: h.score, reverse=True)
+
+    # Slice offset..offset+return_limit
+    window = docs_sorted[offset : offset + return_limit]
+
+    # Build FindAllHit rows — needs Document.mime_type / created_at, which
+    # SearchHit doesn't carry. Fetch in one round-trip.
+    # SearchHit.doc_id is a str; cast to uuid.UUID for the SQL IN() clause.
+    if window:
+        doc_id_list = [uuid.UUID(h.doc_id) for h in window]
+        rows = (
+            await session.execute(
+                select(Document.doc_id, Document.title, Document.mime_type, Document.created_at).where(
+                    Document.doc_id.in_(doc_id_list)
+                )
+            )
+        ).all()
+        doc_meta = {str(r.doc_id): r for r in rows}
+    else:
+        doc_meta = {}
+
+    hits: list[FindAllHit] = []
+    for sh in window:
+        meta = doc_meta.get(sh.doc_id)
+        if meta is None:
+            continue
+        hits.append(
+            FindAllHit(
+                doc_id=sh.doc_id,
+                doc_title=meta.title or sh.doc_title or "",
+                mime_type=meta.mime_type or "",
+                language=sh.language,
+                score=sh.score,
+                ingested_at=meta.created_at,
+                page_range=(
+                    f"{sh.page_start}-{sh.page_end}"
+                    if sh.page_start is not None and sh.page_end is not None
+                    else (str(sh.page_start) if sh.page_start is not None else None)
+                ),
+                top_chunk_id=sh.chunk_id if presentation == "full" else None,
+                top_chunk_text=sh.chunk_text if presentation == "full" else None,
+                top_chunk_page=sh.page_start if presentation == "full" else None,
+                top_chunk_heading=None,  # SearchHit has no heading field
+            )
+        )
+
+    return FindAllResult(
+        hits=hits,
+        total_matches=total_matches,
+        offset=offset,
+        truncated=total_matches > offset + len(hits),
+        sort_by=sort_by,
+        presentation=presentation,
     )

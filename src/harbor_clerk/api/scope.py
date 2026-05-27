@@ -14,9 +14,24 @@ if TYPE_CHECKING:
     from harbor_clerk.api.deps import Principal
 
 # Tier -> base tool set
-SEARCH_TIER_TOOLS: frozenset[str] = frozenset({"kb_search", "kb_batch_search", "kb_corpus_overview", "kb_list_recent"})
+SEARCH_TIER_TOOLS: frozenset[str] = frozenset(
+    {
+        "kb_search",
+        "kb_batch_search",
+        "kb_corpus_overview",
+        "kb_list_recent",
+        "kb_find_all",
+        "kb_documents_by_date",
+    }
+)
 READ_TIER_TOOLS: frozenset[str] = SEARCH_TIER_TOOLS | frozenset(
-    {"kb_read_passages", "kb_expand_context", "kb_document_outline", "kb_get_document"}
+    {
+        "kb_read_passages",
+        "kb_expand_context",
+        "kb_document_outline",
+        "kb_get_document",
+        "kb_verify_identifier",
+    }
 )
 FULL_TIER_TOOLS: frozenset[str] = READ_TIER_TOOLS | frozenset(
     {

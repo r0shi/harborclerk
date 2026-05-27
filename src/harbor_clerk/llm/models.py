@@ -46,6 +46,12 @@ class ModelInfo:
     # MCP-driven external use is unaffected. The API blocks starting a
     # Research task when the active model has supports_research=False.
     supports_research: bool = True
+    # Per-model override for kb_find_all's default max_results. None means
+    # "use the tool's static default of 100". The MCP server still clamps
+    # at settings.find_all_max_results_cap regardless. This is the per-model
+    # experimentation surface — small local models may want 30, larger
+    # ones 150. All 8 curated models start at None.
+    find_all_default_max_results: int | None = None
 
 
 MODELS: dict[str, ModelInfo] = {
