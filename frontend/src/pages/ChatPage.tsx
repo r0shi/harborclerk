@@ -373,9 +373,9 @@ export default function ChatPage() {
           ) : (
             <h2 className="text-[13px] font-medium text-gray-400 dark:text-gray-500">New conversation</h2>
           )}
-          {activeConvScope && (activeConvScope.folder_ids?.length ?? 0) > 0 && (
+          {activeConv && (
             <ScopeChip
-              scope={activeConvScope}
+              scope={activeConvScope ?? {}}
               folders={folders}
               className="shrink-0 inline-flex items-center rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-2 py-0.5 text-[11px] font-medium text-[var(--color-text-secondary)]"
             />

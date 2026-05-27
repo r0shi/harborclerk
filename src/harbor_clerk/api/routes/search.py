@@ -202,6 +202,12 @@ async def read_passages(
     if principal.type == "api_key" and principal.key_scope is not None and not principal.key_scope.is_unrestricted:
         visible_q = apply_key_scope(select(Document.doc_id), principal)
         visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
+    elif principal.type == "user" and principal.user_scope is not None and not principal.user_scope.is_unrestricted:
+        visible_q = apply_folder_scope(
+            select(Document.doc_id).where(Document.status == "active"),
+            principal.user_scope.folder_ids,
+        )
+        visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
 
     result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(chunk_uuids)))
     chunks = {c.chunk_id: c for c in result.scalars().all()}

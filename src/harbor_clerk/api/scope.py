@@ -132,6 +132,18 @@ def build_user_scope(scope_dict: dict | None) -> "UserScope | None":
     return UserScope(folder_ids=folder_ids)
 
 
+def _folder_watched_doc_ids_subquery(folder_ids: list[uuid.UUID]) -> Select:
+    """Subquery yielding doc_ids that have an ACTIVE WatchedFile in any of `folder_ids`.
+
+    Shared by apply_folder_scope and apply_key_scope's folder branch so both call sites
+    use the same SQL shape.
+    """
+    return select(WatchedFile.doc_id).where(
+        WatchedFile.folder_id.in_(folder_ids),
+        WatchedFile.status == WatchedFileStatus.active,
+    )
+
+
 def apply_folder_scope(query: Select, folder_ids: list[uuid.UUID] | None) -> Select:
     """Filter a Document query to documents whose active WatchedFile lives in any
     of the given folders. No-op when folder_ids is None or empty.
@@ -140,11 +152,7 @@ def apply_folder_scope(query: Select, folder_ids: list[uuid.UUID] | None) -> Sel
     """
     if not folder_ids:
         return query
-    watched_doc_ids = select(WatchedFile.doc_id).where(
-        WatchedFile.folder_id.in_(folder_ids),
-        WatchedFile.status == WatchedFileStatus.active,
-    )
-    return query.where(Document.doc_id.in_(watched_doc_ids))
+    return query.where(Document.doc_id.in_(_folder_watched_doc_ids_subquery(folder_ids)))
 
 
 def apply_key_scope(query: Select, principal: "Principal") -> Select:
@@ -171,11 +179,7 @@ def apply_key_scope(query: Select, principal: "Principal") -> Select:
         except (ValueError, AttributeError):
             folder_uuids = []
         if folder_uuids:
-            # Delegate to apply_folder_scope to keep the WatchedFile join logic in one
-            # place. Extract the WHERE clause so we can append it alongside the topic
-            # condition and OR them at the end.
-            folder_condition = apply_folder_scope(select(Document.doc_id), folder_uuids).whereclause
-            conditions.append(folder_condition)
+            conditions.append(Document.doc_id.in_(_folder_watched_doc_ids_subquery(folder_uuids)))
 
     if not conditions:
         # Both axes empty — explicitly nothing visible
