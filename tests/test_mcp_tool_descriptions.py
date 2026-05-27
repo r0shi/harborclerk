@@ -11,6 +11,7 @@ from harbor_clerk.mcp_server import (
     kb_entity_overview,
     kb_entity_search,
     kb_expand_context,
+    kb_find_all,
     kb_find_related,
     kb_get_document,
     kb_ingest_status,
@@ -250,3 +251,24 @@ def test_kb_batch_search_decline_references_kb_search_anti_pattern():
     # The pointer to kb_search's wording
     assert "kb_search" in d
     assert "you may be interested" in d
+
+
+# ── PR-K: kb_find_all + text_contains ────────────────────────────────
+
+
+def test_kb_find_all_docstring_signals_enumeration_intent():
+    """kb_find_all's description must guide model to use it for list/find-all."""
+    d = _doc(kb_find_all)
+    # Must distinguish from kb_search
+    assert "list" in d or "enumerate" in d or "find all" in d
+    assert "dedupe" in d or "deduplicat" in d or "per document" in d
+    # Must mention text_contains
+    assert "text_contains" in d
+    # Must mention sort_by options
+    assert "date_desc" in d and "date_asc" in d
+
+
+def test_kb_search_docstring_mentions_text_contains():
+    """text_contains is shared with kb_search — its docstring must mention it."""
+    d = _doc(kb_search)
+    assert "text_contains" in d

@@ -541,6 +541,7 @@ def mock_hybrid_search(monkeypatch):
         language=None,
         mime_type=None,
         metadata_filter=None,
+        text_contains=None,
     ):
         captured.update(
             query=query,
@@ -553,6 +554,7 @@ def mock_hybrid_search(monkeypatch):
             language=language,
             mime_type=mime_type,
             metadata_filter=metadata_filter,
+            text_contains=text_contains,
         )
         return result_override
 
@@ -729,6 +731,7 @@ def mock_hybrid_search_multi(monkeypatch):
         language=None,
         mime_type=None,
         metadata_filter=None,
+        text_contains=None,
     ):
         calls.append(
             dict(
@@ -742,6 +745,7 @@ def mock_hybrid_search_multi(monkeypatch):
                 language=language,
                 mime_type=mime_type,
                 metadata_filter=metadata_filter,
+                text_contains=text_contains,
             )
         )
         return result_override

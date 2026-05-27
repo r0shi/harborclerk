@@ -33,7 +33,7 @@ from harbor_clerk.models import (
 )
 from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
-from harbor_clerk.search import SearchHit, SearchResult, hybrid_search
+from harbor_clerk.search import FindAllResult, SearchHit, SearchResult, find_all, hybrid_search
 from harbor_clerk.sql_escape import escape_ilike
 
 logger = logging.getLogger(__name__)
@@ -630,6 +630,7 @@ async def kb_search(
     mime_type: str | None = None,
     metadata_filter: dict | None = None,
     faceted: bool = False,
+    text_contains: str | None = None,
 ) -> str:
     """Search the knowledge base by topic, keyword, or question. Hybrid FTS + vector retrieval.
 
@@ -697,6 +698,12 @@ async def kb_search(
     faceted: if true, groups hits by document with per-document top_score
       and hit_count — useful for understanding which documents are most
       relevant at a glance
+
+    text_contains: optional case-insensitive literal-substring filter
+      on chunk text. Use when the question names a literal phrase that
+      must appear ("documents mentioning X"). Special chars (% _) are
+      matched literally. Combine with `query` for relevance ranking
+      among the literal-match subset.
     """
     principal = _get_principal()
     settings = get_settings()
@@ -776,6 +783,7 @@ async def kb_search(
             language=language,
             mime_type=mime_type,
             metadata_filter=metadata_filter,
+            text_contains=text_contains,
         )
         heading_map = await _resolve_headings(session, result.hits)
         # Compute discriminator_hint if applicable. Cheap post-processing:
@@ -854,6 +862,212 @@ async def kb_search(
     if discriminator_hint is not None:
         resp["discriminator_hint"] = discriminator_hint
 
+    return json.dumps(resp, indent=2)
+
+
+@mcp.tool()
+async def kb_find_all(
+    query: str,
+    text_contains: str | None = None,
+    max_results: int = 100,
+    offset: int = 0,
+    presentation: str = "brief",
+    sort_by: str = "relevance",
+    after: str | None = None,
+    before: str | None = None,
+    doc_id: str | None = None,
+    doc_ids: list[str] | None = None,
+    language: str | None = None,
+    mime_type: str | None = None,
+    metadata_filter: dict | None = None,
+) -> str:
+    """Enumerate documents matching a query — deduped by document, with
+    optional literal-substring filtering. Use this when the question asks
+    to LIST or FIND ALL matching documents (rather than the single best hit).
+
+    Differences from kb_search:
+      - Returns DOCUMENTS deduped by doc_id (not chunks). Each doc appears
+        once with its best chunk's score.
+      - Server iterates internally — you get all matches (up to max_results)
+        in ONE call rather than paginating with kb_search yourself.
+      - Adds the text_contains filter for literal-substring matching.
+
+    When to use it:
+      - The user says "list all", "find every", "show me all", "enumerate",
+        or similar.
+      - The question names a literal phrase that must appear ("emails
+        containing X", "contracts that mention Y") — pass text_contains=X
+        so semantic ranking doesn't dilute exact matches.
+
+    When NOT to use it:
+      - You just want the single best match (use kb_search with k=1).
+      - You want to triangulate from multiple angles (use kb_batch_search).
+
+    Parameters:
+      query: relevance query (FTS + vector). Required even when using
+        text_contains — relevance still orders the result set.
+      text_contains: optional case-insensitive literal substring on chunk
+        text. A doc is eligible iff at least one of its chunks contains the
+        substring. Special chars (% _) are matched literally.
+      max_results: cap on documents returned (default 100; server clamps
+        at settings.find_all_max_results_cap, default 500).
+      offset: pagination offset over the sorted result set. Default 0.
+      presentation: "brief" (default; title + score + page range, no chunk
+        text) or "full" (adds the top chunk text per doc; clamps
+        max_results to 30 to keep the payload bounded).
+      sort_by: "relevance" (default, by max chunk score per doc),
+        "date_desc" (newest first by ingested_at), or "date_asc".
+
+    All other filters (after, before, doc_id, doc_ids, language, mime_type,
+    metadata_filter) work the same as kb_search.
+
+    Response:
+      results: list of {doc_id, doc_title, mime_type, language, score,
+        ingested_at, page_range, top_chunk (if presentation=full)}
+      total_matches: total docs matching (post-dedupe, scope-aware)
+      returned: len(results)
+      offset: echoed back
+      truncated: true if total_matches > offset + returned
+      sort_by, presentation: echoed back
+    """
+    principal = _get_principal()
+    settings = get_settings()
+
+    # Mutual exclusion check
+    if doc_id is not None and doc_ids is not None:
+        return json.dumps({"error": "Cannot specify both doc_id and doc_ids"})
+
+    did = uuid.UUID(doc_id) if doc_id else None
+
+    # Parse doc_ids
+    parsed_doc_ids = None
+    if doc_ids is not None:
+        if len(doc_ids) > 50:
+            return json.dumps({"error": "doc_ids limited to 50 entries"})
+        try:
+            parsed_doc_ids = [uuid.UUID(d) for d in doc_ids]
+        except ValueError:
+            return json.dumps({"error": "Invalid UUID in doc_ids"})
+
+    # Parse dates
+    parsed_after = None
+    parsed_before = None
+    if after is not None:
+        try:
+            parsed_after = datetime.fromisoformat(after)
+        except ValueError:
+            return json.dumps({"error": f"Invalid ISO datetime for after: {after}"})
+    if before is not None:
+        try:
+            parsed_before = datetime.fromisoformat(before)
+        except ValueError:
+            return json.dumps({"error": f"Invalid ISO datetime for before: {before}"})
+
+    # Validate sort_by and presentation before any DB work
+    if sort_by not in ("relevance", "date_desc", "date_asc"):
+        return json.dumps({"error": f"sort_by must be one of relevance, date_desc, date_asc; got {sort_by!r}"})
+    if presentation not in ("brief", "full"):
+        return json.dumps({"error": f"presentation must be 'brief' or 'full'; got {presentation!r}"})
+
+    # Server-side clamp
+    max_results = max(1, min(max_results, settings.find_all_max_results_cap))
+    offset = max(0, offset)
+
+    async with async_session_factory() as session:
+        # Per-API-key scope: intersect with visible doc_ids for scoped keys.
+        visible_ids = await _visible_doc_ids(session, principal)
+        if visible_ids is not None:
+            if not visible_ids:
+                return json.dumps(
+                    {
+                        "results": [],
+                        "total_matches": 0,
+                        "returned": 0,
+                        "offset": offset,
+                        "truncated": False,
+                        "sort_by": sort_by,
+                        "presentation": presentation,
+                    },
+                    indent=2,
+                )
+            if did is not None and did not in visible_ids:
+                return json.dumps(
+                    {
+                        "results": [],
+                        "total_matches": 0,
+                        "returned": 0,
+                        "offset": offset,
+                        "truncated": False,
+                        "sort_by": sort_by,
+                        "presentation": presentation,
+                    },
+                    indent=2,
+                )
+            if parsed_doc_ids is not None:
+                parsed_doc_ids = [d for d in parsed_doc_ids if d in visible_ids]
+                if not parsed_doc_ids:
+                    return json.dumps(
+                        {
+                            "results": [],
+                            "total_matches": 0,
+                            "returned": 0,
+                            "offset": offset,
+                            "truncated": False,
+                            "sort_by": sort_by,
+                            "presentation": presentation,
+                        },
+                        indent=2,
+                    )
+            elif did is None:
+                parsed_doc_ids = list(visible_ids)
+
+        result: FindAllResult = await find_all(
+            session,
+            query,
+            max_results=max_results,
+            offset=offset,
+            sort_by=sort_by,
+            text_contains=text_contains,
+            doc_id=did,
+            doc_ids=parsed_doc_ids,
+            after=parsed_after,
+            before=parsed_before,
+            language=language,
+            mime_type=mime_type,
+            metadata_filter=metadata_filter,
+            presentation=presentation,
+        )
+
+    # Build per-hit response dicts
+    results = []
+    for h in result.hits:
+        hit: dict = {
+            "doc_id": h.doc_id,
+            "doc_title": h.doc_title,
+            "mime_type": h.mime_type,
+            "language": h.language,
+            "score": round(h.score, 4),
+            "ingested_at": h.ingested_at.isoformat() if h.ingested_at is not None else None,
+            "page_range": h.page_range,
+        }
+        if presentation == "full":
+            hit["top_chunk"] = {
+                "chunk_id": h.top_chunk_id,
+                "text": h.top_chunk_text,
+                "page": h.top_chunk_page,
+                "heading": h.top_chunk_heading,
+            }
+        results.append(hit)
+
+    resp: dict = {
+        "results": results,
+        "total_matches": result.total_matches,
+        "returned": len(results),
+        "offset": result.offset,
+        "truncated": result.truncated,
+        "sort_by": result.sort_by,
+        "presentation": result.presentation,
+    }
     return json.dumps(resp, indent=2)
 
 
