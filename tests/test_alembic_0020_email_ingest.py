@@ -106,6 +106,7 @@ def test_documents_email_columns_added(sync_engine):
         "email_from_name",
         "email_to_addresses",
         "email_cc_addresses",
+        "email_subject",
         "email_date_sent",
         "email_label_path",
     ):
