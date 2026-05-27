@@ -2429,13 +2429,31 @@ def create_mcp_app():
     - token_path_app: expects API key in URL path (mounted at ``/t`` for authless MCP clients)
     - session_manager: must be started via ``async with session_manager.run():``
       in the host application's lifespan
+
+    The MCP SDK's ``streamable_http_app()`` returns a *Starlette wrapper* with
+    its own internal ``/mcp`` route around the actual ``StreamableHTTPASGIApp``
+    handler. Mounting that wrapper at ``/mcp`` would create a routing
+    collision: FastAPI's mount strips the ``/mcp`` prefix before forwarding,
+    so the inner wrapper sees ``/`` and fails to match its ``/mcp`` route —
+    ``POST /mcp`` returns 405 ``Method Not Allowed``. Clients ended up having
+    to POST to ``/mcp/mcp`` to land inside the real handler.
+
+    Pull the bare ASGI handler out of the wrapper's single route and use it
+    directly so the mount works the obvious way (``/mcp`` → strip prefix →
+    handler runs regardless of inner path).
     """
     mcp_http = mcp.streamable_http_app()
-    # Dig out the session manager so the host can run it
     session_manager = None
+    inner_asgi = None
     for route in mcp_http.routes:
         inner = getattr(route, "app", None)
-        if hasattr(inner, "session_manager"):
+        if inner is not None and hasattr(inner, "session_manager"):
             session_manager = inner.session_manager
+            inner_asgi = inner
             break
-    return MCPAuthMiddleware(mcp_http), MCPTokenPathAuth(mcp_http), session_manager
+
+    # Fallback: if the SDK ever changes shape and we can't find the bare
+    # handler, fall back to the wrapper. Tests assert the bare-handler path
+    # so a regression here surfaces in CI rather than silently degrading.
+    handler: object = inner_asgi if inner_asgi is not None else mcp_http
+    return MCPAuthMiddleware(handler), MCPTokenPathAuth(handler), session_manager
