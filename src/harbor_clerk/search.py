@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from sqlalchemy import any_, func, or_, select
+from sqlalchemy import any_, false, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -133,12 +133,22 @@ async def hybrid_search(
                     doc_conditions.append(Document.email_subject.ilike(f"%{escaped}%", escape="\\"))
                 elif subkey == "to_addresses":
                     if isinstance(value, list):
-                        doc_conditions.append(or_(*[v == any_(Document.email_to_addresses) for v in value]))
+                        if not value:
+                            # Empty list explicitly matches nothing (avoid or_(*[]) silently
+                            # dropping the WHERE clause and matching every doc).
+                            doc_conditions.append(false())
+                        else:
+                            doc_conditions.append(or_(*[v == any_(Document.email_to_addresses) for v in value]))
                     else:
                         doc_conditions.append(value == any_(Document.email_to_addresses))
                 elif subkey == "cc_addresses":
                     if isinstance(value, list):
-                        doc_conditions.append(or_(*[v == any_(Document.email_cc_addresses) for v in value]))
+                        if not value:
+                            # Empty list explicitly matches nothing (avoid or_(*[]) silently
+                            # dropping the WHERE clause and matching every doc).
+                            doc_conditions.append(false())
+                        else:
+                            doc_conditions.append(or_(*[v == any_(Document.email_cc_addresses) for v in value]))
                     else:
                         doc_conditions.append(value == any_(Document.email_cc_addresses))
                 elif subkey == "thread_id":

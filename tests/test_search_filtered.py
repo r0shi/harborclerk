@@ -485,7 +485,7 @@ async def test_metadata_filter_email_contains_escapes_special_chars(db_session):
         status="active",
         sha256=b"sha_se_b_0000000000000000000000",
         pipeline_status=PipelineStatus.ready,
-        email_subject="Revenue grew significantly",
+        email_subject="Revenue grew 50X YoY",
     )
     db_session.add_all([a, b])
     await db_session.flush()
@@ -516,6 +516,87 @@ async def test_metadata_filter_email_unknown_key_raises(db_session):
             k=10,
             metadata_filter={"email.bogus_field": "x"},
         )
+
+
+async def test_metadata_filter_email_cc_addresses_array_element(db_session):
+    """email.cc_addresses matches when the address appears in the cc array."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_ca_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_cc_addresses=["bob@firm.com", "carol@firm.com"],
+    )
+    b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_ca_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_cc_addresses=["dan@firm.com"],
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    for doc in (a, b):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="content", language="en"))
+    await db_session.flush()
+
+    res = await hybrid_search(
+        db_session,
+        "content",
+        k=10,
+        metadata_filter={"email.cc_addresses": "carol@firm.com"},
+    )
+    assert {h.doc_id for h in res.hits} == {str(a.doc_id)}
+
+
+async def test_metadata_filter_email_array_empty_list_matches_nothing(db_session):
+    """Empty list value matches no documents (not all, which is the bug
+    caught by code review)."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_el_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_to_addresses=["bob@firm.com"],
+    )
+    b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_el_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_to_addresses=["carol@firm.com"],
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    for doc in (a, b):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="content", language="en"))
+    await db_session.flush()
+
+    # Empty list to_addresses should match nothing
+    res = await hybrid_search(
+        db_session,
+        "content",
+        k=10,
+        metadata_filter={"email.to_addresses": []},
+    )
+    assert res.hits == []
+
+    # Same for cc_addresses
+    res2 = await hybrid_search(
+        db_session,
+        "content",
+        k=10,
+        metadata_filter={"email.cc_addresses": []},
+    )
+    assert res2.hits == []
 
 
 async def test_metadata_filter_email_does_not_break_jsonb(db_session):
