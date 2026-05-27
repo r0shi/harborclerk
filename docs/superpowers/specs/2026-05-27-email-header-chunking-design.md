@@ -41,11 +41,12 @@ Both surface improvements propagate to `kb_search`, `kb_find_all`, and `kb_docum
 
 Two surgical changes to existing files; no new modules.
 
-**A. Header block prepended to email `body_text` in the parser.**
-- File: `src/harbor_clerk/mail/parser.py`
-- A new helper `_build_header_preamble(parsed: EmailParseResult) -> str` returns the structured block.
-- `parse_eml` calls the helper and prepends the result to `body_text` before constructing the `EmailParseResult`.
-- Downstream is untouched — the extract stage reads `body_text`, the chunk stage splits it, and chunk 0 naturally inherits the preamble.
+**A. Header block prepended in the extract stage, reading from Document.email_* columns.**
+- File: `src/harbor_clerk/worker/stages/extract.py`
+- For email Documents (gated on `email_message_id IS NOT NULL AND email_parent_doc_id IS NULL` — excludes attachments), after Tika produces page text, build a structured key:value header block from the already-stored `Document.email_*` columns and prepend to the first DocumentPage's text.
+- The chunker then naturally places the preamble at the start of chunk 0.
+- The header preamble construction helper lives in `src/harbor_clerk/mail/parser.py` (called from extract.py via direct import).
+- (Why we moved it from the parser: the parser approach was intuitive, but Tika is the source of truth for chunk text — the chunker reads `DocumentPage.page_text` populated by Tika; `parse_eml.body_text` is never persisted. Injecting in the parser would silently have no effect on chunks.)
 
 **B. `email.*` keys recognized in `metadata_filter`.**
 - File: `src/harbor_clerk/search.py` — the `metadata_filter` translator block inside `hybrid_search`.
@@ -53,9 +54,9 @@ Two surgical changes to existing files; no new modules.
 
 Both changes propagate to `kb_search`, `kb_find_all`, and `kb_documents_by_date` automatically — they all delegate to `hybrid_search` / `find_all`. MCP tool docstrings get a paragraph each describing the new `email.*` filter keys.
 
-## §2 — Parser changes (header preamble)
+## §2 — Preamble helper (parser.py) and extract-stage wiring
 
-A new helper `_build_header_preamble(parsed: EmailParseResult) -> str` is called from `parse_eml` just before constructing the result. The existing `body_text=body_text` line becomes `body_text=preamble + body_text` (with a blank-line separator embedded in the preamble's trailing newlines).
+A new helper `_build_header_preamble(*, from_name, from_address, to_addresses, cc_addresses, subject, date_sent)` lives in `src/harbor_clerk/mail/parser.py`. It is called from the extract stage (`extract.py`) with values read directly from the already-stored `Document.email_*` columns, not from an `EmailParseResult`. The helper is pure — no DB access; extract.py imports it by name.
 
 **Format — fixed key:value, in this exact order:**
 
@@ -90,16 +91,19 @@ Date: 2026-01-15
 
 ## §3 — Chunking integration
 
-**No chunker code changes.** The chunker reads `parser.body_text` and produces ~1000-char chunks with 150-char overlap. The new preamble (≤400 chars worst-case) sits at the start of `body_text`, so it ends up at the start of chunk 0 by construction.
+**No chunker code changes.** The chunker reads `DocumentPage.page_text` (Tika's output, stored in the DB) and produces ~1000-char chunks with 150-char overlap. The preamble is prepended to the first page's text by the extract stage *before* the chunk stage runs, so chunk 0 naturally inherits the preamble without any chunker modification.
+
+**Source of the preamble:** extract.py post-Tika, reading `Document.email_*` columns (populated earlier by `mail/ingest.py`). Attachment Documents (`email_parent_doc_id IS NOT NULL`) are excluded by the gate — they never receive the preamble.
 
 **Edge cases handled by the existing chunker:**
 
-- **Body shorter than one chunk** → chunk 0 = preamble + entire body. Single chunk doc.
-- **Empty-body email** → chunk 0 contains preamble only (~150 chars). Existing "empty-body emails get a low-value summary; relevance ranking buries them" handling from the original spec still applies — the headers make the doc *more* discoverable than today via subject/from-name FTS.
+- **Body shorter than one chunk** → chunk 0 = preamble + entire body. Single-chunk doc.
+- **Empty-body email** → chunk 0 contains preamble only (~150 chars). The headers make the doc *more* discoverable than today via subject/from-name FTS.
 - **Chunk overlap windows.** The 150-char overlap means chunk 1's start may include the tail of chunk 0's body — *not* the preamble (assuming preamble + body > ~1150 chars, which is typical). Subject lines etc. appear in chunk 0 only.
-- **Preamble accidentally splitting across chunks.** Edge case: a ~900-char email where preamble + first body sentence lands at the chunk boundary. The chunker uses word/sentence boundaries; the preamble ends with `\n\n` (a strong boundary). Risk is negligible.
+- **Preamble accidentally splitting across chunks.** Edge case: a ~900-char email where preamble + first body sentence lands at the chunk boundary. The preamble ends with `\n\n` (a strong sentence boundary for the chunker). Risk is negligible.
+- **Attachment Documents** → extract stage gate excludes them; they receive no preamble. Only email body Documents (top-level emails) get the injection.
 
-**Header block placed at chunk 0 only** (i.e., the start of `body_text`). Not repeated per chunk. Subject lines / from-names are 1-shot context for that doc — repeating them per chunk would bloat embeddings without adding discrimination signal.
+**Header block placed at chunk 0 only** (i.e., the start of the first page's text). Not repeated per chunk. Subject lines / from-names are 1-shot context for that doc — repeating them per chunk would bloat embeddings without adding discrimination signal.
 
 ## §4 — `metadata_filter` mapping for `email.*` keys
 
@@ -162,12 +166,14 @@ After the code lands and the macOS app rebuilds, all existing email docs need th
 **Operator action:** the spec doesn't pick a mechanism; HC's existing bulk-reprocess machinery (Documents page bulk action, `kb_reprocess` MCP tool in a loop, or a direct SQL update on `ingestion_jobs.status`) all work. Cleanest one-line trigger via direct SQL:
 
 ```sql
-UPDATE ingestion_jobs SET status = 'pending'
+UPDATE ingestion_jobs SET status = 'queued'
   WHERE doc_id IN (
     SELECT doc_id FROM documents WHERE email_message_id IS NOT NULL AND email_parent_doc_id IS NULL
   )
   AND stage = 'extract';
 ```
+
+Note: this raw SQL doesn't bump `documents.pipeline_seq`, which the worker race-checks during extract/chunk. For more robust re-processing on large corpora, prefer the `kb_reprocess` MCP tool (per-doc) or the Documents page bulk reprocess UI — both update `pipeline_seq` correctly. The raw SQL is fine on a quiescent system but may surprise during heavy concurrent ingest.
 
 **Expected runtime:** ~1–2 hours wallclock for 10k emails on the menubar Mac. Full pipeline per doc: extract → chunk → entities → embed (skip summarize: body content unchanged; skip finalize: no-op). Visible via the Observatory page.
 

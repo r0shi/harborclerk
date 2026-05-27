@@ -6,6 +6,8 @@
 
 **Architecture:** A new helper `_build_header_preamble()` in `parser.py` builds the block and `parse_eml` prepends it before returning. `hybrid_search` grows a pre-pass that strips `email.*` keys from `metadata_filter` and dispatches to dedicated column predicates (exact, ILIKE substring via `escape_ilike()`, or `= ANY` on TEXT[] arrays). Two new trgm GIN indexes on `email_subject` + `email_from_name` keep ILIKE queries fast. Docstring updates on `kb_search` / `kb_find_all` / `kb_documents_by_date` describe the new filter keys.
 
+**Implementation note (post-merge):** Tasks 1-2 originally wired the preamble into `parse_eml.body_text`. Fresh-eyes review on the branch caught that `parse_eml.body_text` is never persisted — Tika re-extracts .eml bytes in the extract stage, so the chunker reads `DocumentPage.page_text` (Tika's output), not the parser's body_text. Task 2's parse_eml wire-up was reverted; the preamble is now built in the extract stage from already-stored `Document.email_*` columns, gated on `email_message_id IS NOT NULL AND email_parent_doc_id IS NULL` to exclude attachment Documents. See commits `3038f30` and `21c78e2`.
+
 **Tech Stack:** Python 3.12, SQLAlchemy 2.0 async, asyncpg, PostgreSQL 18 with `pg_trgm`, pytest, alembic.
 
 **Spec:** `docs/superpowers/specs/2026-05-27-email-header-chunking-design.md`
@@ -1174,7 +1176,7 @@ After the PR merges and the macOS app rebuilds, existing email docs need
 re-ingest for the header preamble to materialize in their chunks. Run
 this SQL against the menubar's Postgres (port 5433, db `lka`, user `lka`):
 
-    UPDATE ingestion_jobs SET status = 'pending'
+    UPDATE ingestion_jobs SET status = 'queued'
       WHERE doc_id IN (
         SELECT doc_id FROM documents WHERE email_message_id IS NOT NULL
       )
