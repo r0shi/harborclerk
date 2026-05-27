@@ -16,6 +16,8 @@ def test_search_tier_has_search_tools():
     assert "kb_batch_search" in tools
     assert "kb_corpus_overview" in tools
     assert "kb_list_recent" in tools
+    assert "kb_find_all" in tools  # doc-level enumeration is a search variant
+    assert "kb_documents_by_date" in tools  # date-bounded lookup is a search variant
     # No read tools
     assert "kb_read_passages" not in tools
     # No admin tools
@@ -26,10 +28,12 @@ def test_search_tier_has_search_tools():
 def test_read_tier_extends_search():
     tools = compute_effective_tools("read", {})
     assert "kb_search" in tools  # search tier inherited
+    assert "kb_find_all" in tools  # search tier inherited
     assert "kb_read_passages" in tools
     assert "kb_expand_context" in tools
     assert "kb_document_outline" in tools
     assert "kb_get_document" in tools
+    assert "kb_verify_identifier" in tools  # disambiguation tool — read-only doc lookup
     # Not in this tier
     assert "kb_find_related" not in tools
     assert "kb_entity_search" not in tools
