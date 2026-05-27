@@ -64,11 +64,23 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
           sudo apt-get update && sudo apt-get install -y trivy
 
+      # Trivy flags:
+      #   --scanners vuln    Disable the secret scanner. Its line-by-line
+      #                      scan timed out on multi-tens-of-megabytes CUDA
+      #                      `.cpp` / `.so` files in the app image
+      #                      (libcublasLt.so.12, cuda/bindings/driver.cpp).
+      #                      We don't gate on secrets here — that's covered
+      #                      by GitHub repo-level secret scanning + push
+      #                      protection. Trivy itself recommends this in the
+      #                      "secret scanning is slow" hint it prints.
+      #   --timeout 15m      Belt-and-braces — vuln scanning should be fast,
+      #                      but ML images grow over time and the default
+      #                      5m timeout has been close to the edge.
       - name: Trivy scan app
-        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 harborclerk-app:ci
+        run: trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --timeout 15m --exit-code 1 harborclerk-app:ci
 
       - name: Trivy scan embedder
-        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 harborclerk-embedder:ci
+        run: trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --timeout 15m --exit-code 1 harborclerk-embedder:ci
 
       - name: Trivy scan reranker
-        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 harborclerk-reranker:ci
+        run: trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --timeout 15m --exit-code 1 harborclerk-reranker:ci
