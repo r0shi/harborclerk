@@ -1,7 +1,5 @@
 """find_all_documents chat tool — wiring + arg mapping."""
 
-import pytest
-
 
 def test_find_all_documents_in_base_chat_tools():
     from harbor_clerk.llm.tools import _BASE_CHAT_TOOLS
@@ -44,3 +42,13 @@ def test_map_args_find_all_drops_unknown_keys():
 
     out = _map_args_find_all({"query": "X", "k": 99})
     assert "k" not in out
+
+
+def test_dispatch_routes_find_all_documents_to_kb_find_all():
+    """Catch typos in the dispatch table — chat tool name must route to the
+    correct MCP function name. Without this, a future rename to e.g.
+    kb_find_all_docs would silently return 'Unknown tool' at runtime."""
+    from harbor_clerk.llm.tools import _TOOL_DISPATCH
+
+    mcp_name, _ = _TOOL_DISPATCH["find_all_documents"]
+    assert mcp_name == "kb_find_all"
