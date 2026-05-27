@@ -117,6 +117,21 @@ class UserScope:
         return not self.folder_ids
 
 
+def build_user_scope(scope_dict: dict | None) -> "UserScope | None":
+    """Build a UserScope from a Conversation.scope or ResearchState.scope JSONB dict.
+
+    Returns None when scope_dict is None, empty, or contains an empty folder_ids list.
+    String UUIDs are parsed to uuid.UUID; UUID objects pass through unchanged.
+    """
+    if not scope_dict:
+        return None
+    folder_ids_raw = scope_dict.get("folder_ids") or []
+    if not folder_ids_raw:
+        return None
+    folder_ids = [uuid.UUID(fid) if isinstance(fid, str) else fid for fid in folder_ids_raw]
+    return UserScope(folder_ids=folder_ids)
+
+
 def apply_folder_scope(query: Select, folder_ids: list[uuid.UUID] | None) -> Select:
     """Filter a Document query to documents whose active WatchedFile lives in any
     of the given folders. No-op when folder_ids is None or empty.

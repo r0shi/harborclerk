@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import httpx
 from sqlalchemy import select
 
+from harbor_clerk.api.scope import build_user_scope
 from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.citations import dedupe_citations, extract_citations_from_tool_result
@@ -235,6 +236,9 @@ async def chat_stream(
 
         # Auto-title immediately on first message so the sidebar updates before LLM responds
         conv = await session.get(Conversation, conversation_id)
+        # Build scope filter from the conversation's stored scope JSONB.
+        # user_scope is None when no folder restriction is active.
+        user_scope = build_user_scope(conv.scope) if conv else None
         if conv and conv.title == "New conversation":
             conv.title = _generate_title(user_message)
             await session.commit()
@@ -489,7 +493,7 @@ async def chat_stream(
 
                     yield f"data: {json.dumps({'type': 'tool_call', 'name': fn_name, 'arguments': fn_args})}\n\n"
 
-                    result_str = await execute_tool(fn_name, fn_args, user_id)
+                    result_str = await execute_tool(fn_name, fn_args, user_id, user_scope=user_scope)
 
                     # Capture citations parsed from this tool result. Best-effort:
                     # tools that don't return citation-shaped JSON contribute nothing.
