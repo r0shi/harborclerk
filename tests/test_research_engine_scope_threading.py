@@ -15,7 +15,6 @@ import pytest
 
 from harbor_clerk.api.scope import UserScope, build_user_scope
 
-
 # ---------------------------------------------------------------------------
 # Unit tests — build_user_scope is shared; verify it behaves the same when
 # called from the research path (no branching in the helper itself, but
