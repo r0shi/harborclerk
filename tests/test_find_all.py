@@ -1,5 +1,9 @@
 """Unit tests for find_all() — doc-level enumeration."""
 
+import datetime as dt
+
+import pytest
+
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.search import find_all
@@ -45,3 +49,62 @@ async def test_find_all_total_matches_unaffected_by_max_results(db_session):
     assert len(result.hits) == 3
     assert result.total_matches == 10
     assert result.truncated is True
+
+
+async def test_find_all_sort_by_date_desc(db_session):
+    """sort_by='date_desc' returns docs newest-first."""
+    # Seed 3 docs with explicit created_at timestamps
+    docs_in_order = []
+    for i, days_ago in enumerate([30, 5, 60]):
+        doc = Document(
+            title=f"Doc{i}",
+            status="active",
+            sha256=f"sha_dt_{i:020d}".encode(),
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+            created_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=days_ago),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="off-balance-sheet", language="en"))
+        docs_in_order.append((doc.doc_id, days_ago))
+    await db_session.flush()
+
+    result = await find_all(db_session, "off-balance-sheet", max_results=10, sort_by="date_desc")
+
+    # Expected order: 5 days, 30 days, 60 days
+    got_order = [h.doc_id for h in result.hits]
+    expected_order = [d[0] for d in sorted(docs_in_order, key=lambda x: x[1])]
+    assert got_order == [str(d) for d in expected_order]
+
+
+async def test_find_all_sort_by_date_asc(db_session):
+    """sort_by='date_asc' returns docs oldest-first."""
+    docs_in_order = []
+    for i, days_ago in enumerate([30, 5, 60]):
+        doc = Document(
+            title=f"Doc{i}",
+            status="active",
+            sha256=f"sha_da_{i:020d}".encode(),
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+            created_at=dt.datetime.now(dt.UTC) - dt.timedelta(days=days_ago),
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="off-balance-sheet", language="en"))
+        docs_in_order.append((doc.doc_id, days_ago))
+    await db_session.flush()
+
+    result = await find_all(db_session, "off-balance-sheet", max_results=10, sort_by="date_asc")
+
+    # Expected order: 60 days, 30 days, 5 days
+    got_order = [h.doc_id for h in result.hits]
+    expected_order = [d[0] for d in sorted(docs_in_order, key=lambda x: -x[1])]
+    assert got_order == [str(d) for d in expected_order]
+
+
+async def test_find_all_sort_by_invalid_raises(db_session):
+    """Invalid sort_by raises ValueError."""
+    with pytest.raises(ValueError, match="sort_by"):
+        await find_all(db_session, "query", sort_by="title")

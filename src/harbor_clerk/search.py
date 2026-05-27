@@ -1,5 +1,6 @@
 """Hybrid search engine — FTS + vector merge with score normalization."""
 
+import datetime as dt
 import logging
 import uuid
 from datetime import datetime
@@ -290,6 +291,10 @@ async def find_all(
     hits to doc-level with score = max(chunk_score per doc). See
     docs/superpowers/specs/2026-05-26-find-iteration-enumeration-design.md.
     """
+    _VALID_SORTS = {"relevance", "date_desc", "date_asc"}
+    if sort_by not in _VALID_SORTS:
+        raise ValueError(f"sort_by must be one of {sorted(_VALID_SORTS)}, got {sort_by!r}")
+
     # Pull a generous candidate pool so dedupe doesn't starve the result set
     # AND high-offset pagination reports accurate total_matches.
     # Internal k = 5x (offset + max_results), capped at 1000.
@@ -318,7 +323,25 @@ async def find_all(
             by_doc[hit.doc_id] = hit
 
     total_matches = len(by_doc)
-    docs_sorted = sorted(by_doc.values(), key=lambda h: h.score, reverse=True)
+
+    # Sort the doc-level dict. For date sorts, fetch created_at up front.
+    if sort_by in ("date_desc", "date_asc"):
+        date_rows = (
+            await session.execute(
+                select(Document.doc_id, Document.created_at).where(
+                    Document.doc_id.in_([uuid.UUID(k) for k in by_doc.keys()])
+                )
+            )
+        ).all()
+        # Key by str to match by_doc keys
+        date_map: dict[str, datetime] = {str(r.doc_id): r.created_at for r in date_rows}
+        docs_sorted = sorted(
+            by_doc.values(),
+            key=lambda h: date_map.get(h.doc_id, dt.datetime.min.replace(tzinfo=dt.UTC)),
+            reverse=(sort_by == "date_desc"),
+        )
+    else:  # relevance (default)
+        docs_sorted = sorted(by_doc.values(), key=lambda h: h.score, reverse=True)
 
     # Slice offset..offset+max_results
     window = docs_sorted[offset : offset + max_results]
