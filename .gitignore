@@ -39,4 +39,8 @@ minio_data/
 pg_data/
 redis_data/
 .agents/
-research-debugging/**/*.sse
+
+# Local-only LLM/eval scratch directory. Houses ad-hoc sweep output,
+# per-model reports, raw SSE captures, and analysis writeups. Stays on
+# the developer's machine — nothing here ships in the repo.
+research-debugging/

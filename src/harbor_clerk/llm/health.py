@@ -75,9 +75,8 @@ def request_llm_restart(reason: str) -> None:
     up a new configuration (model switch, YaRN toggle), regardless of the
     5xx error counter. Without this, the Swift host's config-watcher path
     is unreliable for distinguishing a model_id change from other settings,
-    so the model switch silently does nothing — see
-    research-debugging/findings.md and the project_llm_restart_investigation
-    memory note.
+    so the model switch silently does nothing. See the
+    project_llm_restart_investigation memory note for the diagnosis trail.
     """
     global _last_restart_signal, _consecutive_5xx
     with _lock:
