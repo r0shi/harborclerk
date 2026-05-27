@@ -99,6 +99,21 @@ class KeyScope:
         return compute_effective_tools(self.permission_tier, self.tool_overrides)
 
 
+def apply_folder_scope(query: Select, folder_ids: list[uuid.UUID] | None) -> Select:
+    """Filter a Document query to documents whose active WatchedFile lives in any
+    of the given folders. No-op when folder_ids is None or empty.
+
+    Pure query builder — no DB access. Safe to compose with other WHERE clauses.
+    """
+    if not folder_ids:
+        return query
+    watched_doc_ids = select(WatchedFile.doc_id).where(
+        WatchedFile.folder_id.in_(folder_ids),
+        WatchedFile.status == WatchedFileStatus.active,
+    )
+    return query.where(Document.doc_id.in_(watched_doc_ids))
+
+
 def apply_key_scope(query: Select, principal: "Principal") -> Select:
     """Filter a Document query by the API key's scope.
 
@@ -123,11 +138,11 @@ def apply_key_scope(query: Select, principal: "Principal") -> Select:
         except (ValueError, AttributeError):
             folder_uuids = []
         if folder_uuids:
-            watched_doc_ids = select(WatchedFile.doc_id).where(
-                WatchedFile.folder_id.in_(folder_uuids),
-                WatchedFile.status == WatchedFileStatus.active,
-            )
-            conditions.append(Document.doc_id.in_(watched_doc_ids))
+            # Delegate to apply_folder_scope to keep the WatchedFile join logic in one
+            # place. Extract the WHERE clause so we can append it alongside the topic
+            # condition and OR them at the end.
+            folder_condition = apply_folder_scope(select(Document.doc_id), folder_uuids).whereclause
+            conditions.append(folder_condition)
 
     if not conditions:
         # Both axes empty — explicitly nothing visible
