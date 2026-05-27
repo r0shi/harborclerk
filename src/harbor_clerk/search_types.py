@@ -60,7 +60,8 @@ class FindAllResult:
     """Result of find_all() — doc-level deduped, sortable, paginated."""
 
     hits: list[FindAllHit]
-    total_matches: int  # post-dedupe, post-filter count of unique docs
+    total_matches: int  # post-dedupe, post-filter count of unique docs in
+    # the candidate pool (bounded by internal_k=5*(offset+max_results))
     offset: int  # echo of the input
     truncated: bool  # total_matches > offset + len(hits)
     sort_by: str  # echo of the input

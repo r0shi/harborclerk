@@ -290,9 +290,10 @@ async def find_all(
     hits to doc-level with score = max(chunk_score per doc). See
     docs/superpowers/specs/2026-05-26-find-iteration-enumeration-design.md.
     """
-    # Pull a generous candidate pool so dedupe doesn't starve the result set.
-    # Internal k = 5x the request, capped at 1000.
-    internal_k = min(max_results * 5, 1000)
+    # Pull a generous candidate pool so dedupe doesn't starve the result set
+    # AND high-offset pagination reports accurate total_matches.
+    # Internal k = 5x (offset + max_results), capped at 1000.
+    internal_k = min((offset + max_results) * 5, 1000)
 
     inner = await hybrid_search(
         session,
