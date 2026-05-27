@@ -64,6 +64,7 @@ class Document(Base):
     )
     email_from_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     email_from_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
     email_to_addresses: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     email_cc_addresses: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     email_date_sent: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
