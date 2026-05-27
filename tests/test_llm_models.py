@@ -1,4 +1,4 @@
-from harbor_clerk.llm.models import ModelInfo, MODELS
+from harbor_clerk.llm.models import MODELS, ModelInfo
 
 
 def test_modelinfo_has_find_all_default_max_results():

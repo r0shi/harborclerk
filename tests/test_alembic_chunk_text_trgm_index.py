@@ -1,6 +1,5 @@
 """Verify the chunks.chunk_text trgm index exists after migrate-up."""
 
-import pytest
 from sqlalchemy import text
 
 
