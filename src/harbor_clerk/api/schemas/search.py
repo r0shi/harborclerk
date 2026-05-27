@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from harbor_clerk.api.schemas.scope import ScopeSpec
+
 
 class SearchRequest(BaseModel):
     query: str
@@ -17,6 +19,7 @@ class SearchRequest(BaseModel):
     language: str | None = None
     mime_type: str | None = None
     faceted: bool = False
+    scope: ScopeSpec | None = None
 
     @model_validator(mode="after")
     def check_doc_id_mutual_exclusion(self):
