@@ -2,16 +2,13 @@
 
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from sqlalchemy import or_, select
 from sqlalchemy.sql import Select
 
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
-
-if TYPE_CHECKING:
-    from harbor_clerk.api.deps import Principal
 
 # Tier -> base tool set
 SEARCH_TIER_TOOLS: frozenset[str] = frozenset(
@@ -117,6 +114,18 @@ class UserScope:
         return not self.folder_ids
 
 
+class _ScopedPrincipal(Protocol):
+    """Subset of Principal that apply_key_scope reads.
+
+    Defined as a Protocol so apply_key_scope doesn't need to import the
+    full Principal from deps — avoiding the scope ⇄ deps cyclic import.
+    Principal in deps satisfies this protocol structurally.
+    """
+
+    type: str
+    key_scope: KeyScope | None
+
+
 def build_user_scope(scope_dict: dict | None) -> "UserScope | None":
     """Build a UserScope from a Conversation.scope or ResearchState.scope JSONB dict.
 
@@ -155,7 +164,7 @@ def apply_folder_scope(query: Select, folder_ids: list[uuid.UUID] | None) -> Sel
     return query.where(Document.doc_id.in_(_folder_watched_doc_ids_subquery(folder_ids)))
 
 
-def apply_key_scope(query: Select, principal: "Principal") -> Select:
+def apply_key_scope(query: Select, principal: _ScopedPrincipal) -> Select:
     """Filter a Document query by the API key's scope.
 
     No-op for human users (type='user') and unrestricted API keys.

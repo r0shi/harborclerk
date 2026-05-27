@@ -18,8 +18,9 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
+from harbor_clerk.api.scope import UserScope
+
 if TYPE_CHECKING:
-    from harbor_clerk.api.scope import UserScope
     from harbor_clerk.llm.models import ModelInfo
 
 logger = logging.getLogger(__name__)
@@ -652,7 +653,7 @@ async def execute_tool(
     user_id: uuid.UUID | None = None,
     *,
     mode: str = "chat",
-    user_scope: "UserScope | None" = None,
+    user_scope: UserScope | None = None,
 ) -> str:
     """Execute a tool by delegating to the corresponding MCP function.
 
