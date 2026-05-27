@@ -30,7 +30,13 @@ interface ResearchState {
   error: string | null
   conversationId: string | null
   completedToolCalls: ToolCallEntry[]
-  startResearch: (question: string, strategy?: string, timeLimitMinutes?: number, depth?: string) => Promise<boolean>
+  startResearch: (
+    question: string,
+    strategy?: string,
+    timeLimitMinutes?: number,
+    depth?: string,
+    scope?: { folder_ids?: string[] },
+  ) => Promise<boolean>
   resumeResearch: (convId: string) => Promise<void>
   cancelResearch: () => void
   reset: () => void
@@ -162,7 +168,13 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const startResearch = useCallback(
-    async (question: string, strategy?: string, timeLimitMinutes?: number, depth?: string): Promise<boolean> => {
+    async (
+      question: string,
+      strategy?: string,
+      timeLimitMinutes?: number,
+      depth?: string,
+      scope?: { folder_ids?: string[] },
+    ): Promise<boolean> => {
       if (!token) return false
 
       setError(null)
@@ -175,6 +187,7 @@ export function ResearchProvider({ children }: { children: ReactNode }) {
         if (strategy) body.strategy = strategy
         if (timeLimitMinutes) body.time_limit_minutes = timeLimitMinutes
         if (depth) body.depth = depth
+        if (scope && scope.folder_ids && scope.folder_ids.length > 0) body.scope = scope
 
         const res = await fetchWithRefresh('/api/research', {
           method: 'POST',
