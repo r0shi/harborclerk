@@ -1,6 +1,6 @@
 """Tests for email .eml parsing."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from harbor_clerk.mail.parser import parse_eml, sanitize_subject_for_filename
 from tests.mail.fixtures.build_eml import build_email_with_attachments, build_simple_email
@@ -193,9 +193,6 @@ def test_sanitize_subject_handles_empty_input():
     assert sanitize_subject_for_filename("   ") == "untitled"
 
 
-from datetime import datetime, timezone
-
-
 def test_header_preamble_full_block():
     """All five fields render in fixed key:value order, then a blank line."""
     from harbor_clerk.mail.parser import _build_header_preamble
@@ -206,7 +203,7 @@ def test_header_preamble_full_block():
         to_addresses=["bob@firm.com", "carol@firm.com"],
         cc_addresses=["dan@firm.com"],
         subject="Q3 Vendor Agreement Review",
-        date_sent=datetime(2026, 1, 15, 14, 30, tzinfo=timezone.utc),
+        date_sent=datetime(2026, 1, 15, 14, 30, tzinfo=UTC),
     )
 
     assert preamble == (
@@ -229,7 +226,7 @@ def test_header_preamble_omits_empty_recipients():
         to_addresses=[],
         cc_addresses=[],
         subject="Solo memo",
-        date_sent=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
     )
 
     assert "To:" not in preamble
@@ -247,7 +244,7 @@ def test_header_preamble_from_no_name():
         to_addresses=["alice@firm.com"],
         cc_addresses=[],
         subject="Notification",
-        date_sent=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
     )
 
     assert "From: bot@notifications.example.com\n" in preamble
@@ -266,7 +263,7 @@ def test_header_preamble_to_cap_at_11_recipients():
         to_addresses=ten,
         cc_addresses=[],
         subject="S",
-        date_sent=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
     )
     assert "r0@firm.com" in preamble_10
     assert "r9@firm.com" in preamble_10
@@ -280,7 +277,7 @@ def test_header_preamble_to_cap_at_11_recipients():
         to_addresses=eleven,
         cc_addresses=[],
         subject="S",
-        date_sent=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
     )
     assert "To: 11 recipients\n" in preamble_11
     assert "r0@firm.com" not in preamble_11
@@ -297,7 +294,7 @@ def test_header_preamble_cc_cap_at_11_recipients():
         to_addresses=["bob@firm.com"],
         cc_addresses=eleven,
         subject="S",
-        date_sent=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
     )
 
     assert "Cc: 11 recipients\n" in preamble
@@ -330,7 +327,7 @@ def test_header_preamble_no_from_at_all():
         to_addresses=["bob@firm.com"],
         cc_addresses=[],
         subject="S",
-        date_sent=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
     )
 
     assert "From:" not in preamble
@@ -346,7 +343,7 @@ def test_header_preamble_subject_always_shown():
         to_addresses=["bob@firm.com"],
         cc_addresses=[],
         subject="(no subject)",
-        date_sent=datetime(2026, 1, 15, tzinfo=timezone.utc),
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
     )
 
     assert "Subject: (no subject)\n" in preamble
