@@ -328,9 +328,7 @@ async def find_all(
     if sort_by in ("date_desc", "date_asc"):
         date_rows = (
             await session.execute(
-                select(Document.doc_id, Document.created_at).where(
-                    Document.doc_id.in_([uuid.UUID(k) for k in by_doc.keys()])
-                )
+                select(Document.doc_id, Document.created_at).where(Document.doc_id.in_([uuid.UUID(k) for k in by_doc]))
             )
         ).all()
         # Key by str to match by_doc keys
@@ -392,6 +390,6 @@ async def find_all(
         total_matches=total_matches,
         offset=offset,
         truncated=total_matches > offset + len(hits),
-        sort_by=sort_by,  # sort_by modes wired in next task
+        sort_by=sort_by,
         presentation=presentation,
     )
