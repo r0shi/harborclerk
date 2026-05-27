@@ -81,6 +81,7 @@ async def test_create_email_document_persists_metadata(db_session, watched_label
     assert doc.email_thread_id == "thread-1"
     assert doc.email_label_path == watched_label.label_path
     assert doc.email_date_sent == datetime(2026, 4, 30, 14, 23, tzinfo=UTC)
+    assert doc.email_subject == "Test email"
     # created_at should equal date_sent (per spec — sort by send date)
     assert doc.created_at == datetime(2026, 4, 30, 14, 23, tzinfo=UTC)
     assert doc.mime_type == "message/rfc822"
