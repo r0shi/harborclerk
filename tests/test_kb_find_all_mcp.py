@@ -85,17 +85,39 @@ async def test_kb_find_all_returns_dedupe_by_doc_id(db_session, mcp_principal, m
 
 
 async def test_kb_find_all_clamps_at_settings_cap(db_session, mcp_principal, mock_session_factory, monkeypatch):
-    """max_results above settings.find_all_max_results_cap is clamped."""
+    """max_results above settings.find_all_max_results_cap is clamped.
+
+    Seed 15 docs; cap to 10; request max_results=99999; expect exactly 10.
+    """
     from harbor_clerk.config import get_settings
     from harbor_clerk.mcp_server import kb_find_all
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+
+    # Seed 15 distinct docs, each with one matching chunk
+    for i in range(15):
+        doc = Document(
+            title=f"D{i}",
+            status="active",
+            sha256=f"sha_clamp_{i:020d}".encode(),
+            pipeline_status=PipelineStatus.ready,
+            mime_type="text/plain",
+        )
+        db_session.add(doc)
+        await db_session.flush()
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="off-balance-sheet entity", language="en"))
+    await db_session.flush()
 
     # Lower the cap to 10 for this test
     monkeypatch.setattr(get_settings(), "find_all_max_results_cap", 10)
 
-    raw = await kb_find_all(query="x", max_results=99999)
+    raw = await kb_find_all(query="off-balance-sheet", max_results=99999)
     payload = json.loads(raw)
-    # The returned set will be capped (regardless of corpus size).
-    assert len(payload["results"]) <= 10
+
+    # 15 docs in corpus, cap clamps return to 10, total_matches reports full 15
+    assert len(payload["results"]) == 10, f"clamp violated: got {len(payload['results'])}, expected exactly 10"
+    assert payload["total_matches"] == 15
+    assert payload["truncated"] is True
 
 
 async def test_kb_find_all_response_shape(db_session, mcp_principal, mock_session_factory):
@@ -199,3 +221,64 @@ async def test_kb_find_all_invalid_sort_by_returns_error(db_session, mcp_princip
     raw = await kb_find_all(query="test", sort_by="bogus")
     payload = json.loads(raw)
     assert "error" in payload
+
+
+async def test_kb_find_all_text_contains_filters_results(db_session, mcp_principal, mock_session_factory):
+    """text_contains restricts results to docs whose chunks contain the literal."""
+    from harbor_clerk.mcp_server import kb_find_all
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+
+    # Doc A contains "off-balance-sheet" literally
+    doc_a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_tc_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+    )
+    db_session.add(doc_a)
+    await db_session.flush()
+    db_session.add(
+        Chunk(
+            doc_id=doc_a.doc_id,
+            chunk_num=0,
+            chunk_text="The off-balance-sheet entity disclosed.",
+            language="en",
+        )
+    )
+
+    # Doc B is semantically similar but lacks the literal phrase
+    doc_b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_tc_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        mime_type="text/plain",
+    )
+    db_session.add(doc_b)
+    await db_session.flush()
+    db_session.add(
+        Chunk(
+            doc_id=doc_b.doc_id,
+            chunk_num=0,
+            chunk_text="The unconsolidated subsidiary disclosed.",
+            language="en",
+        )
+    )
+    await db_session.flush()
+
+    # Without text_contains: both docs eligible
+    raw = await kb_find_all(query="disclosed", max_results=10)
+    payload = json.loads(raw)
+    assert payload["total_matches"] == 2
+
+    # With text_contains: only Doc A
+    raw = await kb_find_all(
+        query="disclosed",
+        max_results=10,
+        text_contains="off-balance-sheet",
+    )
+    payload = json.loads(raw)
+    assert payload["total_matches"] == 1
+    assert payload["results"][0]["doc_id"] == str(doc_a.doc_id)
