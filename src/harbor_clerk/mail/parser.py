@@ -63,15 +63,6 @@ def parse_eml(eml_bytes: bytes) -> EmailParseResult:
     date_sent = _parse_date(msg.get("Date"))
     thread_id = msg.get("X-GM-THRID") or _thread_id_from_references(msg)
     body_text = _extract_body_text(msg)
-    preamble = _build_header_preamble(
-        from_name=from_name,
-        from_address=from_address,
-        to_addresses=to_addresses,
-        cc_addresses=cc_addresses,
-        subject=subject,
-        date_sent=date_sent,
-    )
-    body_text = preamble + body_text
     return EmailParseResult(
         message_id=message_id,
         subject=subject,

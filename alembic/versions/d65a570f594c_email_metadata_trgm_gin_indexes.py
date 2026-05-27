@@ -16,8 +16,6 @@ transactional (standard alembic DDL) and must run before the CONCURRENTLY
 index creates, so it is placed in a separate block.
 """
 
-import sqlalchemy as sa
-
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -29,8 +27,9 @@ depends_on = None
 
 def upgrade() -> None:
     # Add the email_subject column (transactional DDL — runs in alembic's
-    # default transaction).
-    op.add_column("documents", sa.Column("email_subject", sa.Text(), nullable=True))
+    # default transaction). ADD COLUMN IF NOT EXISTS makes the migration
+    # replay-safe in environments where the column was added out-of-band.
+    op.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS email_subject TEXT")
 
     # Create trgm GIN indexes CONCURRENTLY (cannot run inside a transaction).
     with op.get_context().autocommit_block():
