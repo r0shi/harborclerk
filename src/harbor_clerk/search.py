@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from sqlalchemy import func, or_, select
+from sqlalchemy import any_, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -106,6 +106,53 @@ async def hybrid_search(
     # Only string filter values get the OR — JSONB `?` operator requires
     # string keys, so non-string scalars (numbers, bools) use containment
     # only.
+    # --- email.* pre-pass: strip email.* keys before the JSONB translator ---
+    # The Document.email_* columns are dedicated typed columns, not in
+    # doc_metadata JSONB, so they need column-level predicates rather than
+    # JSONB containment. We pull these out first, build predicates, and
+    # let the remaining keys (if any) flow through the JSONB block below.
+    if metadata_filter:
+        from harbor_clerk.sql_escape import escape_ilike
+
+        email_keys = {k: v for k, v in metadata_filter.items() if k.startswith("email.")}
+        if email_keys:
+            metadata_filter = {k: v for k, v in metadata_filter.items() if not k.startswith("email.")}
+            for path, value in email_keys.items():
+                _, _, subkey = path.partition(".")
+                if subkey == "from_address":
+                    doc_conditions.append(func.lower(Document.email_from_address) == value.lower())
+                elif subkey == "from_name":
+                    doc_conditions.append(Document.email_from_name == value)
+                elif subkey == "from_name_contains":
+                    escaped = escape_ilike(value)
+                    doc_conditions.append(Document.email_from_name.ilike(f"%{escaped}%", escape="\\"))
+                elif subkey == "subject":
+                    doc_conditions.append(Document.email_subject == value)
+                elif subkey == "subject_contains":
+                    escaped = escape_ilike(value)
+                    doc_conditions.append(Document.email_subject.ilike(f"%{escaped}%", escape="\\"))
+                elif subkey == "to_addresses":
+                    if isinstance(value, list):
+                        doc_conditions.append(or_(*[v == any_(Document.email_to_addresses) for v in value]))
+                    else:
+                        doc_conditions.append(value == any_(Document.email_to_addresses))
+                elif subkey == "cc_addresses":
+                    if isinstance(value, list):
+                        doc_conditions.append(or_(*[v == any_(Document.email_cc_addresses) for v in value]))
+                    else:
+                        doc_conditions.append(value == any_(Document.email_cc_addresses))
+                elif subkey == "thread_id":
+                    doc_conditions.append(Document.email_thread_id == value)
+                elif subkey == "message_id":
+                    doc_conditions.append(Document.email_message_id == value)
+                else:
+                    raise ValueError(
+                        f"unknown email.* filter key: {path!r}. Recognized: "
+                        f"email.from_address, email.from_name, email.from_name_contains, "
+                        f"email.subject, email.subject_contains, email.to_addresses, "
+                        f"email.cc_addresses, email.thread_id, email.message_id."
+                    )
+
     if metadata_filter:
         for path, value in metadata_filter.items():
             if path.count(".") != 1:

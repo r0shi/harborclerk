@@ -280,3 +280,280 @@ async def test_hybrid_search_text_contains_escapes_special_chars(db_session):
         text_contains="50%",
     )
     assert {h.doc_id for h in result.hits} == {str(doc1.doc_id)}
+
+
+async def test_metadata_filter_email_from_address_exact(db_session):
+    """email.from_address matches case-insensitively."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_ef_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_from_address="alice@firm.com",
+    )
+    b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_ef_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_from_address="bob@firm.com",
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    for doc in (a, b):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="quarterly report", language="en"))
+    await db_session.flush()
+
+    # Exact match
+    res = await hybrid_search(
+        db_session,
+        "quarterly",
+        k=10,
+        metadata_filter={"email.from_address": "alice@firm.com"},
+    )
+    assert {h.doc_id for h in res.hits} == {str(a.doc_id)}
+
+    # Case-insensitive
+    res2 = await hybrid_search(
+        db_session,
+        "quarterly",
+        k=10,
+        metadata_filter={"email.from_address": "ALICE@FIRM.COM"},
+    )
+    assert {h.doc_id for h in res2.hits} == {str(a.doc_id)}
+
+
+async def test_metadata_filter_email_from_name_contains(db_session):
+    """email.from_name_contains does ILIKE substring (case-insensitive)."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_fc_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_from_name="Alice Anderson",
+    )
+    b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_fc_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_from_name="Bob Smith",
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    for doc in (a, b):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="quarterly report", language="en"))
+    await db_session.flush()
+
+    res = await hybrid_search(
+        db_session,
+        "quarterly",
+        k=10,
+        metadata_filter={"email.from_name_contains": "alice"},
+    )
+    assert {h.doc_id for h in res.hits} == {str(a.doc_id)}
+
+
+async def test_metadata_filter_email_subject_contains(db_session):
+    """email.subject_contains does ILIKE substring (case-insensitive)."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_sc_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_subject="Q3 Vendor Agreement Review",
+    )
+    b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_sc_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_subject="Holiday party planning",
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    for doc in (a, b):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="content", language="en"))
+    await db_session.flush()
+
+    res = await hybrid_search(
+        db_session,
+        "content",
+        k=10,
+        metadata_filter={"email.subject_contains": "VENDOR"},
+    )
+    assert {h.doc_id for h in res.hits} == {str(a.doc_id)}
+
+
+async def test_metadata_filter_email_to_addresses_array_element(db_session):
+    """email.to_addresses matches when the address appears in the array."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_ta_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_to_addresses=["bob@firm.com", "carol@firm.com"],
+    )
+    b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_ta_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_to_addresses=["dan@firm.com"],
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    for doc in (a, b):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="content", language="en"))
+    await db_session.flush()
+
+    res = await hybrid_search(
+        db_session,
+        "content",
+        k=10,
+        metadata_filter={"email.to_addresses": "carol@firm.com"},
+    )
+    assert {h.doc_id for h in res.hits} == {str(a.doc_id)}
+
+
+async def test_metadata_filter_email_to_addresses_list_any(db_session):
+    """List value matches when ANY element appears in the array."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_tl_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_to_addresses=["bob@firm.com", "carol@firm.com"],
+    )
+    b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_tl_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_to_addresses=["zelda@elsewhere.com"],
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    for doc in (a, b):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="content", language="en"))
+    await db_session.flush()
+
+    res = await hybrid_search(
+        db_session,
+        "content",
+        k=10,
+        metadata_filter={"email.to_addresses": ["carol@firm.com", "nobody@nope.com"]},
+    )
+    assert {h.doc_id for h in res.hits} == {str(a.doc_id)}
+
+
+async def test_metadata_filter_email_contains_escapes_special_chars(db_session):
+    """ILIKE special chars (% _) in input are matched literally."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_se_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_subject="Revenue grew 50% YoY",
+    )
+    b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_se_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_subject="Revenue grew significantly",
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    for doc in (a, b):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="content", language="en"))
+    await db_session.flush()
+
+    # "50%" must match only Doc A; '%' must NOT act as a wildcard
+    res = await hybrid_search(
+        db_session,
+        "content",
+        k=10,
+        metadata_filter={"email.subject_contains": "50%"},
+    )
+    assert {h.doc_id for h in res.hits} == {str(a.doc_id)}
+
+
+async def test_metadata_filter_email_unknown_key_raises(db_session):
+    """Unknown email.* key raises ValueError (loud failure)."""
+    import pytest
+
+    from harbor_clerk.search import hybrid_search
+
+    with pytest.raises(ValueError, match="email"):
+        await hybrid_search(
+            db_session,
+            "content",
+            k=10,
+            metadata_filter={"email.bogus_field": "x"},
+        )
+
+
+async def test_metadata_filter_email_does_not_break_jsonb(db_session):
+    """Existing JSONB metadata_filter still works alongside email.* keys."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    a = Document(
+        title="A",
+        status="active",
+        sha256=b"sha_jx_a_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_from_address="alice@firm.com",
+        doc_metadata={"sidecar": {"vendor": "Acme"}},
+    )
+    b = Document(
+        title="B",
+        status="active",
+        sha256=b"sha_jx_b_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        email_from_address="alice@firm.com",
+        doc_metadata={"sidecar": {"vendor": "Globex"}},
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+    for doc in (a, b):
+        db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="content", language="en"))
+    await db_session.flush()
+
+    # Both filters apply (AND): from Alice AND vendor=Acme
+    res = await hybrid_search(
+        db_session,
+        "content",
+        k=10,
+        metadata_filter={
+            "email.from_address": "alice@firm.com",
+            "sidecar.vendor": "Acme",
+        },
+    )
+    assert {h.doc_id for h in res.hits} == {str(a.doc_id)}
