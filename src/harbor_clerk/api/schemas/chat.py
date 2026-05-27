@@ -5,11 +5,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from harbor_clerk.api.schemas.scope import ScopeSpec
+
 # --- Conversations ---
 
 
 class CreateConversationRequest(BaseModel):
     title: str = "New conversation"
+    scope: ScopeSpec | None = None
 
 
 class ConversationSummary(BaseModel):
@@ -17,6 +20,7 @@ class ConversationSummary(BaseModel):
     title: str
     created_at: datetime
     updated_at: datetime
+    scope: dict[str, Any] = {}
 
 
 class ChatMessageOut(BaseModel):
@@ -37,6 +41,7 @@ class ConversationDetail(BaseModel):
     title: str
     created_at: datetime
     updated_at: datetime
+    scope: dict[str, Any] = {}
     messages: list[ChatMessageOut]
 
 

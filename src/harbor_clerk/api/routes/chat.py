@@ -20,6 +20,7 @@ from harbor_clerk.api.schemas.chat import (
     ModelOut,
     SendMessageRequest,
 )
+from harbor_clerk.api.scope_validation import validate_scope_folders
 from harbor_clerk.config import get_settings, refresh_llm_settings, sync_native_config
 from harbor_clerk.db import get_session
 from harbor_clerk.llm.chat import chat_stream
@@ -97,6 +98,7 @@ async def list_conversations(
             title=c.title,
             created_at=c.created_at,
             updated_at=c.updated_at,
+            scope=c.scope,
         )
         for c in result.scalars().all()
     ]
@@ -108,7 +110,9 @@ async def create_conversation(
     principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
-    conv = Conversation(user_id=principal.id, title=body.title)
+    await validate_scope_folders(body.scope, session)
+    scope_dict = body.scope.model_dump(mode="json", exclude_none=True) if body.scope else {}
+    conv = Conversation(user_id=principal.id, title=body.title, scope=scope_dict)
     session.add(conv)
     await session.commit()
     await session.refresh(conv)
@@ -117,6 +121,7 @@ async def create_conversation(
         title=conv.title,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
+        scope=conv.scope,
     )
 
 
@@ -170,6 +175,7 @@ async def get_conversation(
         title=conv.title,
         created_at=conv.created_at,
         updated_at=conv.updated_at,
+        scope=conv.scope,
         messages=messages,
     )
 

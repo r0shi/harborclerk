@@ -303,6 +303,23 @@ async def two_folder_corpus(db_session):
 
 
 @pytest_asyncio.fixture
+async def unavailable_folder(db_session):
+    """A WatchedFolder that has been marked unavailable."""
+    from harbor_clerk.models.watched import WatchedFolder
+
+    folder = WatchedFolder(
+        path="/unavailable",
+        display_name="Unavailable",
+        auto_discovered=False,
+        unavailable_reason="test-disabled",
+    )
+    db_session.add(folder)
+    await db_session.commit()
+    await db_session.refresh(folder)
+    return folder
+
+
+@pytest_asyncio.fixture
 async def mark_one_removed(db_session):
     """Helper fixture: returns a coroutine that marks one WatchedFile in a folder as removed."""
     from sqlalchemy import select
