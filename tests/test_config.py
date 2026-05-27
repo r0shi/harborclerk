@@ -149,6 +149,13 @@ def test_refresh_cli_access_setting_disable_after_enable(monkeypatch, tmp_path):
     assert _config.get_settings().enable_cli_access is False
 
 
+def test_find_all_max_results_cap_default():
+    from harbor_clerk.config import Settings
+
+    s = Settings()
+    assert s.find_all_max_results_cap == 500
+
+
 def test_refresh_cli_access_setting_key_absent_leaves_unchanged(monkeypatch, tmp_path):
     """If enable_cli_access key is absent from config.json, existing value is kept."""
     config_file = tmp_path / "config.json"

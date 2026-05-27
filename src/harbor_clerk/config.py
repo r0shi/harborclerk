@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     # MCP search defaults
     mcp_brief_chars: int = Field(default=200)
     mcp_max_k: int = Field(default=350)
+    # kb_find_all: server-side cap on max_results. Clamps any tool argument
+    # above this value. 500 chosen as a hard ceiling — enumeration is
+    # bounded by token economy of the model receiving it, not server cost.
+    find_all_max_results_cap: int = Field(default=500)
 
     # Chat/Research search tunables
     chat_search_paginated: bool = Field(default=False)
