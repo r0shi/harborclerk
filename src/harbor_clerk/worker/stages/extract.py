@@ -303,7 +303,13 @@ def run_extract(doc_id: uuid.UUID) -> None:
         # The Document.email_* columns are already populated by the ingest
         # stage; we build the preamble from them here rather than re-parsing
         # the raw bytes. Only page 0 (index 0 in the pages list) is modified.
-        if doc.email_message_id is not None and pages:
+        #
+        # Guard: attachment Documents also carry email_message_id (it links
+        # them back to the parent email). They must NOT get the preamble —
+        # their content is a PDF, DOCX, etc. and injecting "(no subject)"
+        # would pollute NER and FTS. email_parent_doc_id IS NULL is the
+        # canonical "I am the email body, not an attachment" signal.
+        if doc.email_message_id is not None and doc.email_parent_doc_id is None and pages:
             from harbor_clerk.mail.parser import _build_header_preamble
 
             preamble = _build_header_preamble(

@@ -157,14 +157,14 @@ Document column lookups (faster + typed vs. raw tika.email_* via JSONB):
 
 After the code lands and the macOS app rebuilds, all existing email docs need their extract stage re-run so the new chunks (with header preamble) materialize.
 
-**Criterion:** any Document with `email_message_id IS NOT NULL`.
+**Criterion:** any Document with `email_message_id IS NOT NULL AND email_parent_doc_id IS NULL`. Attachment Documents also carry `email_message_id` (linking them to their parent email), but the extract-stage gate requires `email_parent_doc_id IS NULL` to exclude attachments from preamble injection — only email body Documents get the preamble.
 
 **Operator action:** the spec doesn't pick a mechanism; HC's existing bulk-reprocess machinery (Documents page bulk action, `kb_reprocess` MCP tool in a loop, or a direct SQL update on `ingestion_jobs.status`) all work. Cleanest one-line trigger via direct SQL:
 
 ```sql
 UPDATE ingestion_jobs SET status = 'pending'
   WHERE doc_id IN (
-    SELECT doc_id FROM documents WHERE email_message_id IS NOT NULL
+    SELECT doc_id FROM documents WHERE email_message_id IS NOT NULL AND email_parent_doc_id IS NULL
   )
   AND stage = 'extract';
 ```
