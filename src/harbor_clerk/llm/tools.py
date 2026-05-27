@@ -298,6 +298,59 @@ _BASE_CHAT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_all_documents",
+            "description": (
+                "Enumerate all documents matching a query. Use for 'list all' "
+                "/ 'find every' / 'show me all' questions. Returns DOCUMENTS "
+                "(not chunks) deduped by doc_id with server-side iteration — "
+                "you get all matches in one call. Optional text_contains for "
+                "literal-substring filtering ('emails containing X')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Relevance query (FTS + vector).",
+                    },
+                    "text_contains": {
+                        "type": "string",
+                        "description": (
+                            "Optional case-insensitive literal substring. "
+                            "Document is eligible iff at least one chunk "
+                            "contains this phrase. Special chars (% _) match "
+                            "literally."
+                        ),
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Cap on documents returned (default 100).",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Pagination offset (default 0).",
+                    },
+                    "sort_by": {
+                        "type": "string",
+                        "enum": ["relevance", "date_desc", "date_asc"],
+                        "description": "Sort order. Default 'relevance'.",
+                    },
+                    "presentation": {
+                        "type": "string",
+                        "enum": ["brief", "full"],
+                        "description": (
+                            "'brief' (default) returns title + score per doc. "
+                            "'full' includes top chunk text (max 30 docs)."
+                        ),
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -429,6 +482,19 @@ def _map_args_corpus_topics(args: dict) -> dict:
     return {}
 
 
+def _map_args_find_all(args: dict) -> dict:
+    """Map chat-tool args to find_all() kwargs. Drops unknown keys."""
+    allowed = {
+        "query",
+        "text_contains",
+        "max_results",
+        "offset",
+        "sort_by",
+        "presentation",
+    }
+    return {k: v for k, v in args.items() if k in allowed}
+
+
 _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
     "search_documents": ("kb_search", _map_args_search),
     "read_passages": ("kb_read_passages", _map_args_read_passages),
@@ -444,6 +510,7 @@ _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
     "read_document": ("kb_read_document", _map_args_read_document),
     "ingest_status": ("kb_ingest_status", _map_args_ingest_status),
     "corpus_topics": ("kb_corpus_topics", _map_args_corpus_topics),
+    "find_all_documents": ("kb_find_all", _map_args_find_all),
 }
 
 
