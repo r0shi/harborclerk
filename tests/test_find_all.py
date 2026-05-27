@@ -41,12 +41,17 @@ async def test_find_all_dedupes_by_doc_id(db_session):
 
 
 async def test_find_all_total_matches_unaffected_by_max_results(db_session):
-    """total_matches reflects ALL matches, even when max_results truncates."""
-    await _seed_docs_with_chunks(db_session, n_docs=10, chunks_per_doc=2)
+    """total_matches reflects ALL matches, even when max_results truncates.
 
-    result = await find_all(db_session, "off-balance-sheet", max_results=3)
+    Uses max_results=5 so internal_k=(0+5)*5=25 comfortably covers all
+    10 docs × 1 chunk — avoids the FTS candidate-pool starvation that
+    occurs with max_results=3 (internal_k=15) across 10 docs × 2 chunks.
+    """
+    await _seed_docs_with_chunks(db_session, n_docs=10, chunks_per_doc=1)
 
-    assert len(result.hits) == 3
+    result = await find_all(db_session, "off-balance-sheet", max_results=5)
+
+    assert len(result.hits) == 5
     assert result.total_matches == 10
     assert result.truncated is True
 
@@ -136,6 +141,7 @@ async def test_find_all_presentation_brief_omits_chunk_text(db_session):
     for h in result.hits:
         assert h.top_chunk_text is None
         assert h.top_chunk_id is None
+        assert h.top_chunk_page is None
 
 
 async def test_find_all_presentation_full_includes_chunk_text(db_session):
@@ -160,6 +166,14 @@ async def test_find_all_presentation_full_clamps_max_results(db_session):
     # Request 100 with presentation=full → server clamps to 30
     result = await find_all(db_session, "off-balance-sheet", max_results=100, presentation="full")
 
-    assert len(result.hits) <= 30
+    assert len(result.hits) == 30
     assert result.total_matches == 50
     assert result.truncated is True
+
+
+async def test_find_all_presentation_invalid_raises(db_session):
+    """Invalid presentation raises ValueError."""
+    from harbor_clerk.search import find_all
+
+    with pytest.raises(ValueError, match="presentation"):
+        await find_all(db_session, "query", presentation="summary")

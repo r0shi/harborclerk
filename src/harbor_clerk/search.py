@@ -22,6 +22,10 @@ __all__ = ["ConflictSource", "FindAllHit", "FindAllResult", "SearchHit", "Search
 
 logger = logging.getLogger(__name__)
 
+# Max docs returned when presentation="full" — keeps payload under ~20 KB
+# (top chunk text per doc, ~500 chars).
+_FIND_ALL_FULL_MAX_RESULTS = 30
+
 
 async def _embed_query(query: str) -> list[float]:
     """Embed a query string via the embedder service."""
@@ -295,16 +299,22 @@ async def find_all(
     if sort_by not in _VALID_SORTS:
         raise ValueError(f"sort_by must be one of {sorted(_VALID_SORTS)}, got {sort_by!r}")
 
-    # presentation='full' payloads include chunk text, ~500 chars/doc.
-    # Clamp max_results to keep total payload under ~20 KB.
-    _FULL_MAX_RESULTS = 30
-    if presentation == "full" and max_results > _FULL_MAX_RESULTS:
-        max_results = _FULL_MAX_RESULTS
+    _VALID_PRESENTATIONS = {"brief", "full"}
+    if presentation not in _VALID_PRESENTATIONS:
+        raise ValueError(f"presentation must be one of {sorted(_VALID_PRESENTATIONS)}, got {presentation!r}")
 
+    # internal_k uses the ORIGINAL max_results so total_matches stays accurate
+    # even when the return slice is clamped by presentation="full".
     # Pull a generous candidate pool so dedupe doesn't starve the result set
     # AND high-offset pagination reports accurate total_matches.
     # Internal k = 5x (offset + max_results), capped at 1000.
     internal_k = min((offset + max_results) * 5, 1000)
+
+    # Window size — clamped for presentation="full" to bound the payload.
+    if presentation == "full" and max_results > _FIND_ALL_FULL_MAX_RESULTS:
+        return_limit = _FIND_ALL_FULL_MAX_RESULTS
+    else:
+        return_limit = max_results
 
     inner = await hybrid_search(
         session,
@@ -347,8 +357,8 @@ async def find_all(
     else:  # relevance (default)
         docs_sorted = sorted(by_doc.values(), key=lambda h: h.score, reverse=True)
 
-    # Slice offset..offset+max_results
-    window = docs_sorted[offset : offset + max_results]
+    # Slice offset..offset+return_limit
+    window = docs_sorted[offset : offset + return_limit]
 
     # Build FindAllHit rows — needs Document.mime_type / created_at, which
     # SearchHit doesn't carry. Fetch in one round-trip.
