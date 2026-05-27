@@ -316,17 +316,31 @@ def _require_admin() -> Principal:
 async def _visible_doc_ids(session: AsyncSession, principal: Principal) -> set[uuid.UUID] | None:
     """Get the set of doc_ids visible to this principal, or None if unrestricted.
 
-    Returns None for human users and unrestricted API keys (no filter needed).
-    Returns the explicit set for scoped keys — callers use this to filter results.
-    Only active (non-removed) documents are included.
+    Returns None when no scope filter applies (API key with no scope, OR human
+    user with no user_scope). Returns the explicit set for scoped keys/users —
+    callers use this to filter results. Only active (non-removed) documents
+    are included.
     """
-    if principal.type != "api_key" or principal.key_scope is None or principal.key_scope.is_unrestricted:
-        return None
-    from harbor_clerk.api.scope import apply_key_scope
+    # API-key path (existing behavior, unchanged)
+    if principal.type == "api_key" and principal.key_scope is not None and not principal.key_scope.is_unrestricted:
+        from harbor_clerk.api.scope import apply_key_scope
 
-    query = apply_key_scope(select(Document.doc_id).where(Document.status == "active"), principal)
-    result = await session.execute(query)
-    return {row[0] for row in result.all()}
+        query = apply_key_scope(select(Document.doc_id).where(Document.status == "active"), principal)
+        result = await session.execute(query)
+        return {row[0] for row in result.all()}
+
+    # User-scope path (new)
+    if principal.type == "user" and principal.user_scope is not None and not principal.user_scope.is_unrestricted:
+        from harbor_clerk.api.scope import apply_folder_scope
+
+        query = apply_folder_scope(
+            select(Document.doc_id).where(Document.status == "active"),
+            principal.user_scope.folder_ids,
+        )
+        result = await session.execute(query)
+        return {row[0] for row in result.all()}
+
+    return None
 
 
 # ---------------------------------------------------------------------------
