@@ -39,18 +39,17 @@ _LLM_TIMEOUT = 120.0
 
 # Per-phase output caps. Without these, models like Gemma 26B routinely
 # produce 5,000+ tokens for what should be a ~200-token JSON object, which
-# wastes the entire research budget on a single call. See research-debugging/
-# findings.md for the runaway-generation diagnosis.
+# wastes the entire research budget on a single call.
 #
 # Sized for big models that "think" before answering. llama-server's default
 # `reasoning_format: deepseek` puts thinking in `reasoning_content` (separate
 # from `content`), so the cap is consumed by thinking before the actual
-# answer is emitted. Diagnosed by direct probe: Gemma 26B used ~1500–2000
-# tokens of thinking just for planning, and similar for note extraction. Caps
-# below the thinking budget reliably starve out the answer (content==""). All
-# caps are sized to comfortably accommodate thinking + the actual answer.
+# answer is emitted. Direct probe showed Gemma 26B used ~1500–2000 tokens of
+# thinking just for planning, and similar for note extraction. Caps below
+# the thinking budget reliably starve out the answer (content==""). All caps
+# below are sized to comfortably accommodate thinking + the actual answer.
 # Cost: more tokens generated per call. Mitigated by tighter prompt caps and
-# the deadline guard around note extraction. See research-debugging/findings.md.
+# the deadline guard around note extraction.
 _MAX_TOKENS_PLANNING = 5000
 _MAX_TOKENS_NOTES = 8000
 _MAX_TOKENS_GAP = 5000
@@ -479,8 +478,7 @@ def _build_synthesis_messages(user_question: str, notes: str) -> list[dict]:
         # uses tables natively and they read 2-3× better than paragraphs for
         # multi-region/producer comparisons; nudging the other models toward
         # them when the question shape calls for it makes the cross-model
-        # output more uniformly useful. See research-debugging/cross-topic-
-        # analysis.md ("GPT-OSS 20B's table format is the gold standard").
+        # output more uniformly useful.
         user_content += (
             "Format guidance: this is a comparative question. Where it fits, "
             "use markdown tables with one row per region/tradition/producer/case "

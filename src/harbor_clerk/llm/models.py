@@ -1,7 +1,6 @@
 """Curated model registry for local LLM inference.
 
-Notes from the cross-topic research sweep (research-debugging/
-cross-topic-analysis.md, 2026-04-28):
+Notes from the 2026-04-28 cross-topic research sweep:
 
 - Best for narrative/historical questions: Qwen3.6 35B-A3B. Strongest
   document-shaped output (executive summary, themed sections). Prefer
