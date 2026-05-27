@@ -181,3 +181,102 @@ async def test_hybrid_search_doc_id_doc_ids_raises(db_session, two_docs):
             doc_id=doc_a.doc_id,
             doc_ids=[doc_b.doc_id],
         )
+
+
+async def test_hybrid_search_text_contains_filters_chunks(db_session):
+    """text_contains restricts candidates to chunks whose text contains
+    the substring (case-insensitive). Match the spec wording: 'a document
+    is a candidate iff at least one of its chunks contains the substring'."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    # Doc A contains "off-balance-sheet" exactly
+    doc_a = Document(
+        title="A", status="active", sha256=b"sha_a_0000000000000000000000000", pipeline_status=PipelineStatus.ready
+    )
+    db_session.add(doc_a)
+    await db_session.flush()
+    db_session.add(
+        Chunk(doc_id=doc_a.doc_id, chunk_num=0, chunk_text="The off-balance-sheet entity was disclosed.", language="en")
+    )
+
+    # Doc B is semantically similar but lacks the literal phrase
+    doc_b = Document(
+        title="B", status="active", sha256=b"sha_b_0000000000000000000000000", pipeline_status=PipelineStatus.ready
+    )
+    db_session.add(doc_b)
+    await db_session.flush()
+    db_session.add(
+        Chunk(
+            doc_id=doc_b.doc_id, chunk_num=0, chunk_text="The unconsolidated subsidiary was disclosed.", language="en"
+        )
+    )
+    await db_session.flush()
+
+    # No text_contains: both candidates eligible (query matches both docs)
+    result = await hybrid_search(db_session, "disclosed", k=10)
+    assert {h.doc_id for h in result.hits} == {str(doc_a.doc_id), str(doc_b.doc_id)}
+
+    # With text_contains="off-balance-sheet": only Doc A
+    result = await hybrid_search(
+        db_session,
+        "disclosed",
+        k=10,
+        text_contains="off-balance-sheet",
+    )
+    assert {h.doc_id for h in result.hits} == {str(doc_a.doc_id)}
+
+
+async def test_hybrid_search_text_contains_case_insensitive(db_session):
+    """Case differences in the substring match."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    doc = Document(
+        title="A", status="active", sha256=b"sha_x_0000000000000000000000000", pipeline_status=PipelineStatus.ready
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="The OFF-BALANCE-SHEET entity.", language="en"))
+    await db_session.flush()
+
+    result = await hybrid_search(
+        db_session,
+        "entity",
+        k=10,
+        text_contains="off-balance-sheet",
+    )
+    assert result.hits and result.hits[0].doc_id == str(doc.doc_id)
+
+
+async def test_hybrid_search_text_contains_escapes_special_chars(db_session):
+    """% and _ in the substring are matched literally, not as wildcards."""
+    from harbor_clerk.models import Chunk, Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.search import hybrid_search
+
+    doc1 = Document(
+        title="A", status="active", sha256=b"sha_p_0000000000000000000000000", pipeline_status=PipelineStatus.ready
+    )
+    db_session.add(doc1)
+    await db_session.flush()
+    db_session.add(Chunk(doc_id=doc1.doc_id, chunk_num=0, chunk_text="Revenue grew 50% YoY.", language="en"))
+
+    doc2 = Document(
+        title="B", status="active", sha256=b"sha_q_0000000000000000000000000", pipeline_status=PipelineStatus.ready
+    )
+    db_session.add(doc2)
+    await db_session.flush()
+    db_session.add(Chunk(doc_id=doc2.doc_id, chunk_num=0, chunk_text="Revenue grew significantly.", language="en"))
+    await db_session.flush()
+
+    # "50%" should match only Doc 1; the % must NOT act as a wildcard
+    result = await hybrid_search(
+        db_session,
+        "revenue",
+        k=10,
+        text_contains="50%",
+    )
+    assert {h.doc_id for h in result.hits} == {str(doc1.doc_id)}

@@ -59,6 +59,7 @@ async def hybrid_search(
     language: str | None = None,
     mime_type: str | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    text_contains: str | None = None,
 ) -> SearchResult:
     """Run hybrid FTS + vector search, merge scores, return top K."""
 
@@ -73,6 +74,11 @@ async def hybrid_search(
         scope_filters.append(Chunk.doc_id.in_(doc_ids))
     if language is not None:
         scope_filters.append(Chunk.language == language)
+    if text_contains is not None:
+        from harbor_clerk.sql_escape import escape_ilike
+
+        escaped = escape_ilike(text_contains)
+        scope_filters.append(Chunk.chunk_text.ilike(f"%{escaped}%", escape="\\"))
 
     # Document-level filters — subquery on doc_ids
     doc_conditions = []
