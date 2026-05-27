@@ -272,3 +272,29 @@ def test_kb_search_docstring_mentions_text_contains():
     """text_contains is shared with kb_search — its docstring must mention it."""
     d = _doc(kb_search)
     assert "text_contains" in d
+
+
+def test_kb_search_docstring_mentions_email_namespace():
+    """email.* filter keys must appear in kb_search description so models
+    can discover them."""
+    from harbor_clerk.mcp_server import kb_search
+
+    desc = (kb_search.__doc__ or "").lower()
+    assert "email.from_address" in desc
+    assert "email.subject_contains" in desc
+    assert "email.to_addresses" in desc
+
+
+def test_kb_find_all_docstring_mentions_email_namespace():
+    from harbor_clerk.mcp_server import kb_find_all
+
+    desc = (kb_find_all.__doc__ or "").lower()
+    assert "email.from_address" in desc
+    assert "email.subject_contains" in desc
+
+
+def test_kb_documents_by_date_docstring_mentions_email_namespace():
+    from harbor_clerk.mcp_server import kb_documents_by_date
+
+    desc = (kb_documents_by_date.__doc__ or "").lower()
+    assert "email.from_address" in desc

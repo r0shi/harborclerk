@@ -138,6 +138,7 @@ async def create_email_document(
         email_thread_id=parsed.thread_id,
         email_from_address=parsed.from_address,
         email_from_name=parsed.from_name,
+        email_subject=parsed.subject,
         email_to_addresses=parsed.to_addresses or None,
         email_cc_addresses=parsed.cc_addresses or None,
         email_date_sent=parsed.date_sent,

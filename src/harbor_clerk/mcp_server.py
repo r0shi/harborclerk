@@ -684,6 +684,16 @@ async def kb_search(
         text but differ on a structured field. Example:
         metadata_filter={"sidecar.vendor": "Acme", "sidecar.term_months": 24}.
         Inspect a document's available metadata via kb_get_document.
+        Additionally accepts the `email.*` namespace for native Document
+        column lookups (faster + typed vs. raw tika.email_* via JSONB):
+          email.from_address (exact, case-insensitive)
+          email.from_name / email.from_name_contains
+          email.subject / email.subject_contains
+          email.to_addresses / email.cc_addresses (element-of-array;
+            pass a list to match any element)
+          email.thread_id / email.message_id (exact)
+        For date filtering on emails, use the after=/before= filters
+        (already mapped to email_date_sent for emails).
 
     detail levels control how much text is returned per hit:
       "full" (default): complete chunk text — best for reading a small
@@ -920,6 +930,16 @@ async def kb_find_all(
 
     All other filters (after, before, doc_id, doc_ids, language, mime_type,
     metadata_filter) work the same as kb_search.
+    Additionally accepts the `email.*` namespace for native Document
+    column lookups (faster + typed vs. raw tika.email_* via JSONB):
+      email.from_address (exact, case-insensitive)
+      email.from_name / email.from_name_contains
+      email.subject / email.subject_contains
+      email.to_addresses / email.cc_addresses (element-of-array;
+        pass a list to match any element)
+      email.thread_id / email.message_id (exact)
+    For date filtering on emails, use the after=/before= filters
+    (already mapped to email_date_sent for emails).
 
     Response:
       results: list of {doc_id, doc_title, mime_type, language, score,
@@ -2562,6 +2582,16 @@ async def kb_documents_by_date(
         match the query, sorted by date.
       metadata_filter: dict of {"namespace.key": value} pairs — same shape
         as kb_search's metadata_filter, applied as JSONB containment.
+        Additionally accepts the `email.*` namespace for native Document
+        column lookups (faster + typed vs. raw tika.email_* via JSONB):
+          email.from_address (exact, case-insensitive)
+          email.from_name / email.from_name_contains
+          email.subject / email.subject_contains
+          email.to_addresses / email.cc_addresses (element-of-array;
+            pass a list to match any element)
+          email.thread_id / email.message_id (exact)
+        For date filtering on emails, use the after=/before= filters
+        (already mapped to email_date_sent for emails).
       after, before: ISO 8601 date or datetime strings; bound the
         effective-date range.
       date_field: explicit override for the effective-date source. Accepted

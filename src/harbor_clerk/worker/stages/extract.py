@@ -297,6 +297,32 @@ def run_extract(doc_id: uuid.UUID) -> None:
             # Unknown type — try Tika
             pages = _extract_via_tika(data, mime or "application/octet-stream")
 
+        # Email preamble injection: for .eml documents, prepend a key:value
+        # header block (From / To / Cc / Subject / Date) to the first page
+        # so that those fields are searchable as plain text in chunks.
+        # The Document.email_* columns are already populated by the ingest
+        # stage; we build the preamble from them here rather than re-parsing
+        # the raw bytes. Only page 0 (index 0 in the pages list) is modified.
+        #
+        # Guard: attachment Documents also carry email_message_id (it links
+        # them back to the parent email). They must NOT get the preamble —
+        # their content is a PDF, DOCX, etc. and injecting "(no subject)"
+        # would pollute NER and FTS. email_parent_doc_id IS NULL is the
+        # canonical "I am the email body, not an attachment" signal.
+        if doc.email_message_id is not None and doc.email_parent_doc_id is None and pages:
+            from harbor_clerk.mail.parser import _build_header_preamble
+
+            preamble = _build_header_preamble(
+                from_name=doc.email_from_name or "",
+                from_address=doc.email_from_address or "",
+                to_addresses=doc.email_to_addresses or [],
+                cc_addresses=doc.email_cc_addresses or [],
+                subject=doc.email_subject or "(no subject)",
+                date_sent=doc.email_date_sent,
+            )
+            first_page_num, first_page_text = pages[0]
+            pages[0] = (first_page_num, preamble + first_page_text)
+
         # Compute totals before the race check
         total_chars = sum(len(text) for _, text in pages)
 

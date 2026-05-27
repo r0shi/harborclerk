@@ -172,6 +172,57 @@ def _strip_html(html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+_RECIPIENT_CAP = 10
+
+
+def _build_header_preamble(
+    *,
+    from_name: str,
+    from_address: str,
+    to_addresses: list[str],
+    cc_addresses: list[str],
+    subject: str,
+    date_sent: datetime | None,
+) -> str:
+    """Render a key:value header block to prepend to body_text.
+
+    Lines emitted in fixed order — From, To, Cc, Subject, Date — with
+    omit-on-empty for each line and a trailing blank line. The chunker
+    treats the preamble as the start of chunk 0, exposing headers to
+    NER + FTS + text_contains without changing downstream pipeline code.
+
+    To / Cc with >_RECIPIENT_CAP entries collapse to '$N recipients' to
+    bound preamble length on distribution-list emails.
+    """
+    lines: list[str] = []
+
+    # From: 'Name <address>' if name present, just address if not, omit if both empty
+    if from_name and from_address:
+        lines.append(f"From: {from_name} <{from_address}>")
+    elif from_address:
+        lines.append(f"From: {from_address}")
+
+    if to_addresses:
+        if len(to_addresses) > _RECIPIENT_CAP:
+            lines.append(f"To: {len(to_addresses)} recipients")
+        else:
+            lines.append(f"To: {', '.join(to_addresses)}")
+
+    if cc_addresses:
+        if len(cc_addresses) > _RECIPIENT_CAP:
+            lines.append(f"Cc: {len(cc_addresses)} recipients")
+        else:
+            lines.append(f"Cc: {', '.join(cc_addresses)}")
+
+    # Subject is always shown (caller's '(no subject)' fallback persists)
+    lines.append(f"Subject: {subject}")
+
+    if date_sent is not None:
+        lines.append(f"Date: {date_sent.strftime('%Y-%m-%d')}")
+
+    return "\n".join(lines) + "\n\n"
+
+
 def _synthesize_message_id(eml_bytes: bytes) -> str:
     """Stable Message-ID derived from .eml content for messages with no
     header. The digest covers the full bytes, so the same email always

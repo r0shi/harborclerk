@@ -18,7 +18,16 @@ from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult,
 
 # Re-export for backward compatibility — callers that do
 # `from harbor_clerk.search import SearchHit` continue to work.
-__all__ = ["ConflictSource", "FindAllHit", "FindAllResult", "SearchHit", "SearchResult", "find_all", "hybrid_search"]
+__all__ = [
+    "ConflictSource",
+    "FindAllHit",
+    "FindAllResult",
+    "SearchHit",
+    "SearchResult",
+    "_apply_email_metadata_filter",
+    "find_all",
+    "hybrid_search",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +46,84 @@ async def _embed_query(query: str) -> list[float]:
         )
         resp.raise_for_status()
         return resp.json()["embeddings"][0]
+
+
+def _apply_email_metadata_filter(
+    metadata_filter: dict[str, Any],
+    doc_conditions: list,
+) -> dict[str, Any]:
+    """Pre-pass for metadata_filter: strip email.* keys, build column predicates,
+    append to doc_conditions, return the remaining non-email.* keys for downstream
+    JSONB processing.
+
+    The Document.email_* columns are dedicated typed columns, not stored in
+    doc_metadata JSONB, so they need column-level predicates rather than
+    JSONB containment. This helper is called by both hybrid_search() and
+    _query_documents_by_date() so the dispatch logic stays in one place.
+
+    Raises ValueError on unknown email.* keys.
+    """
+    from sqlalchemy import false, func, or_
+
+    from harbor_clerk.sql_escape import escape_ilike
+
+    email_keys = {k: v for k, v in metadata_filter.items() if k.startswith("email.")}
+    if not email_keys:
+        return metadata_filter
+
+    remaining = {k: v for k, v in metadata_filter.items() if not k.startswith("email.")}
+
+    for path, value in email_keys.items():
+        _, _, subkey = path.partition(".")
+        if subkey == "from_address":
+            doc_conditions.append(func.lower(Document.email_from_address) == value.lower())
+        elif subkey == "from_name":
+            doc_conditions.append(Document.email_from_name == value)
+        elif subkey == "from_name_contains":
+            escaped = escape_ilike(value)
+            doc_conditions.append(Document.email_from_name.ilike(f"%{escaped}%", escape="\\"))
+        elif subkey == "subject":
+            doc_conditions.append(Document.email_subject == value)
+        elif subkey == "subject_contains":
+            escaped = escape_ilike(value)
+            doc_conditions.append(Document.email_subject.ilike(f"%{escaped}%", escape="\\"))
+        elif subkey == "to_addresses":
+            from sqlalchemy import any_
+
+            if isinstance(value, list):
+                if not value:
+                    # Empty list explicitly matches nothing (avoid or_(*[]) silently
+                    # dropping the WHERE clause and matching every doc).
+                    doc_conditions.append(false())
+                else:
+                    doc_conditions.append(or_(*[v == any_(Document.email_to_addresses) for v in value]))
+            else:
+                doc_conditions.append(value == any_(Document.email_to_addresses))
+        elif subkey == "cc_addresses":
+            from sqlalchemy import any_
+
+            if isinstance(value, list):
+                if not value:
+                    # Empty list explicitly matches nothing (avoid or_(*[]) silently
+                    # dropping the WHERE clause and matching every doc).
+                    doc_conditions.append(false())
+                else:
+                    doc_conditions.append(or_(*[v == any_(Document.email_cc_addresses) for v in value]))
+            else:
+                doc_conditions.append(value == any_(Document.email_cc_addresses))
+        elif subkey == "thread_id":
+            doc_conditions.append(Document.email_thread_id == value)
+        elif subkey == "message_id":
+            doc_conditions.append(Document.email_message_id == value)
+        else:
+            raise ValueError(
+                f"unknown email.* filter key: {path!r}. Recognized: "
+                f"email.from_address, email.from_name, email.from_name_contains, "
+                f"email.subject, email.subject_contains, email.to_addresses, "
+                f"email.cc_addresses, email.thread_id, email.message_id."
+            )
+
+    return remaining
 
 
 def _normalize_scores(scores: dict[uuid.UUID, float]) -> dict[uuid.UUID, float]:
@@ -106,6 +193,14 @@ async def hybrid_search(
     # Only string filter values get the OR — JSONB `?` operator requires
     # string keys, so non-string scalars (numbers, bools) use containment
     # only.
+    # --- email.* pre-pass: strip email.* keys before the JSONB translator ---
+    # The Document.email_* columns are dedicated typed columns, not in
+    # doc_metadata JSONB, so they need column-level predicates rather than
+    # JSONB containment. We pull these out first, build predicates, and
+    # let the remaining keys (if any) flow through the JSONB block below.
+    if metadata_filter:
+        metadata_filter = _apply_email_metadata_filter(metadata_filter, doc_conditions)
+
     if metadata_filter:
         for path, value in metadata_filter.items():
             if path.count(".") != 1:

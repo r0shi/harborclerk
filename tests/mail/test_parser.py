@@ -1,6 +1,6 @@
 """Tests for email .eml parsing."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from harbor_clerk.mail.parser import parse_eml, sanitize_subject_for_filename
 from tests.mail.fixtures.build_eml import build_email_with_attachments, build_simple_email
@@ -157,6 +157,7 @@ def test_parse_missing_subject_falls_back_to_no_subject_marker():
 
 
 def test_parse_empty_body_returns_empty_string():
+    """When the body is empty, body_text is the empty string."""
     from email.message import EmailMessage
 
     msg = EmailMessage()
@@ -191,3 +192,159 @@ def test_sanitize_subject_preserves_unicode():
 def test_sanitize_subject_handles_empty_input():
     assert sanitize_subject_for_filename("") == "untitled"
     assert sanitize_subject_for_filename("   ") == "untitled"
+
+
+def test_header_preamble_full_block():
+    """All five fields render in fixed key:value order, then a blank line."""
+    from harbor_clerk.mail.parser import _build_header_preamble
+
+    preamble = _build_header_preamble(
+        from_name="Alice Anderson",
+        from_address="alice@firm.com",
+        to_addresses=["bob@firm.com", "carol@firm.com"],
+        cc_addresses=["dan@firm.com"],
+        subject="Q3 Vendor Agreement Review",
+        date_sent=datetime(2026, 1, 15, 14, 30, tzinfo=UTC),
+    )
+
+    assert preamble == (
+        "From: Alice Anderson <alice@firm.com>\n"
+        "To: bob@firm.com, carol@firm.com\n"
+        "Cc: dan@firm.com\n"
+        "Subject: Q3 Vendor Agreement Review\n"
+        "Date: 2026-01-15\n"
+        "\n"
+    )
+
+
+def test_header_preamble_omits_empty_recipients():
+    """Empty To / Cc lists skip those lines entirely."""
+    from harbor_clerk.mail.parser import _build_header_preamble
+
+    preamble = _build_header_preamble(
+        from_name="Alice",
+        from_address="alice@firm.com",
+        to_addresses=[],
+        cc_addresses=[],
+        subject="Solo memo",
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
+    )
+
+    assert "To:" not in preamble
+    assert "Cc:" not in preamble
+    assert preamble == ("From: Alice <alice@firm.com>\nSubject: Solo memo\nDate: 2026-01-15\n\n")
+
+
+def test_header_preamble_from_no_name():
+    """from_name empty → emit address only (no angle brackets)."""
+    from harbor_clerk.mail.parser import _build_header_preamble
+
+    preamble = _build_header_preamble(
+        from_name="",
+        from_address="bot@notifications.example.com",
+        to_addresses=["alice@firm.com"],
+        cc_addresses=[],
+        subject="Notification",
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
+    )
+
+    assert "From: bot@notifications.example.com\n" in preamble
+    assert "<" not in preamble  # no angle brackets when no display name
+
+
+def test_header_preamble_to_cap_at_11_recipients():
+    """>10 To recipients collapses to '$N recipients'; ≤10 lists addresses."""
+    from harbor_clerk.mail.parser import _build_header_preamble
+
+    # Exactly 10 — listed
+    ten = [f"r{i}@firm.com" for i in range(10)]
+    preamble_10 = _build_header_preamble(
+        from_name="Alice",
+        from_address="alice@firm.com",
+        to_addresses=ten,
+        cc_addresses=[],
+        subject="S",
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
+    )
+    assert "r0@firm.com" in preamble_10
+    assert "r9@firm.com" in preamble_10
+    assert "recipients" not in preamble_10
+
+    # 11 — collapsed
+    eleven = [f"r{i}@firm.com" for i in range(11)]
+    preamble_11 = _build_header_preamble(
+        from_name="Alice",
+        from_address="alice@firm.com",
+        to_addresses=eleven,
+        cc_addresses=[],
+        subject="S",
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
+    )
+    assert "To: 11 recipients\n" in preamble_11
+    assert "r0@firm.com" not in preamble_11
+
+
+def test_header_preamble_cc_cap_at_11_recipients():
+    """Same >10 collapse rule applies to Cc."""
+    from harbor_clerk.mail.parser import _build_header_preamble
+
+    eleven = [f"c{i}@firm.com" for i in range(11)]
+    preamble = _build_header_preamble(
+        from_name="Alice",
+        from_address="alice@firm.com",
+        to_addresses=["bob@firm.com"],
+        cc_addresses=eleven,
+        subject="S",
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
+    )
+
+    assert "Cc: 11 recipients\n" in preamble
+    assert "c0@firm.com" not in preamble
+
+
+def test_header_preamble_no_date():
+    """date_sent=None → Date line omitted entirely."""
+    from harbor_clerk.mail.parser import _build_header_preamble
+
+    preamble = _build_header_preamble(
+        from_name="Alice",
+        from_address="alice@firm.com",
+        to_addresses=["bob@firm.com"],
+        cc_addresses=[],
+        subject="S",
+        date_sent=None,
+    )
+
+    assert "Date:" not in preamble
+
+
+def test_header_preamble_no_from_at_all():
+    """Both from_name and from_address empty → From line omitted."""
+    from harbor_clerk.mail.parser import _build_header_preamble
+
+    preamble = _build_header_preamble(
+        from_name="",
+        from_address="",
+        to_addresses=["bob@firm.com"],
+        cc_addresses=[],
+        subject="S",
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
+    )
+
+    assert "From:" not in preamble
+
+
+def test_header_preamble_subject_always_shown():
+    """Subject line is always present (caller's '(no subject)' fallback persists)."""
+    from harbor_clerk.mail.parser import _build_header_preamble
+
+    preamble = _build_header_preamble(
+        from_name="Alice",
+        from_address="alice@firm.com",
+        to_addresses=["bob@firm.com"],
+        cc_addresses=[],
+        subject="(no subject)",
+        date_sent=datetime(2026, 1, 15, tzinfo=UTC),
+    )
+
+    assert "Subject: (no subject)\n" in preamble

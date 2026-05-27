@@ -856,3 +856,50 @@ async def test_find_candidates_tika_title_exact_match_works(db_session):
     candidates = await _find_candidates(db_session, "Pinnacle Vendor Contract")
     doc_ids = {c.doc_id for c in candidates}
     assert target.doc_id in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# email.* dispatch parity — _query_documents_by_date must honour email.*
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_documents_by_date_email_from_address_filter(db_session):
+    """kb_documents_by_date with email.from_address filter returns only
+    docs with a matching email_from_address column.
+
+    Critical Fix #2 regression test: before the fix, email.* keys fell
+    through the JSONB-only path and silently returned zero rows.
+    """
+    from datetime import UTC, datetime
+
+    a = Document(
+        title="Alice email",
+        status="active",
+        sha256=(uuid.uuid4().bytes + uuid.uuid4().bytes)[:32],
+        pipeline_status=PipelineStatus.ready,
+        email_from_address="alice@firm.com",
+        email_date_sent=datetime(2026, 1, 15, tzinfo=UTC),
+        email_message_id="<dbd-a@test>",
+    )
+    b = Document(
+        title="Bob email",
+        status="active",
+        sha256=(uuid.uuid4().bytes + uuid.uuid4().bytes)[:32],
+        pipeline_status=PipelineStatus.ready,
+        email_from_address="bob@firm.com",
+        email_date_sent=datetime(2026, 1, 15, tzinfo=UTC),
+        email_message_id="<dbd-b@test>",
+    )
+    db_session.add_all([a, b])
+    await db_session.flush()
+
+    rows = await _query_documents_by_date(
+        db_session,
+        direction="earliest",
+        metadata_filter={"email.from_address": "alice@firm.com"},
+        limit=10,
+    )
+    doc_ids = {str(d.doc_id) for d, _, _ in rows}
+    assert str(a.doc_id) in doc_ids
+    assert str(b.doc_id) not in doc_ids
