@@ -19,6 +19,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from harbor_clerk.api.scope import UserScope
     from harbor_clerk.llm.models import ModelInfo
 
 logger = logging.getLogger(__name__)
@@ -645,10 +646,19 @@ _RESEARCH_TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
 }
 
 
-async def execute_tool(name: str, arguments: dict, user_id: uuid.UUID | None = None, *, mode: str = "chat") -> str:
+async def execute_tool(
+    name: str,
+    arguments: dict,
+    user_id: uuid.UUID | None = None,
+    *,
+    mode: str = "chat",
+    user_scope: "UserScope | None" = None,
+) -> str:
     """Execute a tool by delegating to the corresponding MCP function.
 
     mode: "chat" (conservative limits) or "research" (permissive limits).
+    user_scope: optional folder-level scope to apply to all retrievals in
+        this tool call. Mirrors KeyScope.scope_folder_ids semantics.
     """
     from harbor_clerk.api.deps import Principal
     from harbor_clerk.mcp_server import _mcp_principal
@@ -669,7 +679,7 @@ async def execute_tool(name: str, arguments: dict, user_id: uuid.UUID | None = N
     # Set MCP auth context so the tool function sees the chat user
     token = None
     if user_id is not None:
-        principal = Principal(type="user", id=user_id, role="user")
+        principal = Principal(type="user", id=user_id, role="user", user_scope=user_scope)
         token = _mcp_principal.set(principal)
 
     try:
