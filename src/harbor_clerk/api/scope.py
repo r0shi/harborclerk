@@ -99,6 +99,24 @@ class KeyScope:
         return compute_effective_tools(self.permission_tier, self.tool_overrides)
 
 
+@dataclass
+class UserScope:
+    """Per-request scope for human-user tool calls.
+
+    Distinct from KeyScope: no permission_tier / tool_overrides / rate_limit —
+    human users authenticate via JWT and aren't tool-gated. Only document-axis
+    filters live here. Forward-compatible: collection_ids, doc_ids, topic_ids
+    will be added here additively when Collections ships.
+    """
+
+    folder_ids: list[uuid.UUID] | None = None
+
+    @property
+    def is_unrestricted(self) -> bool:
+        """True when no document-axis filter applies. Both None and [] count."""
+        return not self.folder_ids
+
+
 def apply_folder_scope(query: Select, folder_ids: list[uuid.UUID] | None) -> Select:
     """Filter a Document query to documents whose active WatchedFile lives in any
     of the given folders. No-op when folder_ids is None or empty.
