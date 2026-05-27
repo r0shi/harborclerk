@@ -1,7 +1,9 @@
 import uuid
+from typing import Any
 
+import sqlalchemy as sa
 from sqlalchemy import ForeignKey, Index, String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from harbor_clerk.models.base import Base, created_at, updated_at, uuid_pk
@@ -22,6 +24,12 @@ class Conversation(Base):
         server_default="New conversation",
     )
     mode: Mapped[str] = mapped_column(String(10), nullable=False, server_default="chat")
+    scope: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=sa.text("'{}'::jsonb"),
+        default=dict,
+    )
     created_at: Mapped[created_at]
     updated_at: Mapped[updated_at]
 
