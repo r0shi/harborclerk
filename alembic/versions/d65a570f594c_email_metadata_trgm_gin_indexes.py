@@ -17,6 +17,7 @@ index creates, so it is placed in a separate block.
 """
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
