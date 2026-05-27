@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 import httpx
 from sqlalchemy import select
 
+from harbor_clerk.api.scope import UserScope, apply_folder_scope, build_user_scope
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.health import report_llm_error, report_llm_success
@@ -425,12 +426,16 @@ def _is_plausible_query(q: object) -> bool:
     return len(words) >= 1
 
 
-async def _fetch_document_list(user_id: uuid.UUID | None) -> list[dict]:
+async def _fetch_document_list(
+    user_id: uuid.UUID | None,
+    user_scope: UserScope | None = None,
+) -> list[dict]:
     """Get corpus document list for sweep strategy."""
     async with async_session_factory() as session:
-        result = await session.execute(
-            select(Document.doc_id, Document.title).where(Document.status == "ready").order_by(Document.title)
-        )
+        query = select(Document.doc_id, Document.title).where(Document.status == "ready").order_by(Document.title)
+        if user_scope and user_scope.folder_ids:
+            query = apply_folder_scope(query, user_scope.folder_ids)
+        result = await session.execute(query)
         return [{"doc_id": str(row.doc_id), "title": row.title} for row in result.all()]
 
 
@@ -643,6 +648,7 @@ async def _search_fan_out(
     k_per_query: int,
     *,
     paginate: bool = False,
+    user_scope: UserScope | None = None,
 ) -> dict[str, dict]:
     """Phase 2: Run all queries, dedupe by chunk_id.
 
@@ -661,6 +667,7 @@ async def _search_fan_out(
                 {"queries": batch, "k": k_per_query},
                 user_id,
                 mode="research",
+                user_scope=user_scope,
             )
             result = json.loads(result_json)
 
@@ -682,6 +689,7 @@ async def _search_fan_out(
                         {"query": query_text, "k": k_per_query, "offset": offset},
                         user_id,
                         mode="research",
+                        user_scope=user_scope,
                     )
                     page_result = json.loads(page_json)
                     hits = page_result.get("hits", [])
@@ -705,6 +713,8 @@ async def _read_evidence(
     user_id: uuid.UUID | None,
     max_passages: int,
     context_budget_chars: int,
+    *,
+    user_scope: UserScope | None = None,
 ) -> tuple[str, list[dict]]:
     """Phase 3: Read full passages for top-scoring chunks.
 
@@ -762,6 +772,7 @@ async def _read_evidence(
                 {"chunk_ids": batch_ids, "include_context": False},
                 user_id,
                 mode="research",
+                user_scope=user_scope,
             )
             result = json.loads(result_json)
 
@@ -994,6 +1005,8 @@ async def research_stream(
             yield _sse({"type": "error", "message": "No user question found"})
             return
 
+        user_scope = build_user_scope(state.scope)
+
         strategy = state.strategy
         resume_from_synthesis = resume and state.notes and len(state.notes) > 200
 
@@ -1035,7 +1048,9 @@ async def research_stream(
                     from harbor_clerk.topics import get_topic_summary
 
                     topic_hint = await get_topic_summary()
-                    doc_list = await _fetch_document_list(user_id) if strategy == "sweep" else None
+                    doc_list = (
+                        await _fetch_document_list(user_id, user_scope=user_scope) if strategy == "sweep" else None
+                    )
 
                     try:
                         queries = await _plan_queries(
@@ -1095,6 +1110,7 @@ async def research_stream(
                         user_id,
                         depth_config["k_per_query"],
                         paginate=depth_config.get("paginate", False),
+                        user_scope=user_scope,
                     )
 
                     # Build coverage summary
@@ -1162,6 +1178,7 @@ async def research_stream(
                         user_id,
                         depth_config["max_passages"],
                         passage_budget_chars,
+                        user_scope=user_scope,
                     )
                     research_citations = list(evidence_docs)
 
@@ -1300,6 +1317,7 @@ async def research_stream(
                             gap_queries,
                             user_id,
                             depth_config["k_per_query"],
+                            user_scope=user_scope,
                         )
                         # Filter out already-seen chunks
                         new_chunks = {k: v for k, v in gap_coverage.items() if k not in coverage}
@@ -1326,6 +1344,7 @@ async def research_stream(
                             user_id,
                             20,
                             passage_budget_chars // 3,
+                            user_scope=user_scope,
                         )
                         seen_cite_ids = {c["doc_id"] for c in research_citations}
                         research_citations.extend(d for d in gap_evidence_docs if d["doc_id"] not in seen_cite_ids)
