@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Harbor Clerk** — a single-tenant, web-first document dropbox for non-technical offices running on Mac mini/Studio. Local extraction, OCR (English/French), hybrid retrieval. Cloud LLMs query via MCP over HTTPS with read-only API keys, receiving only cited snippets (no full corpus upload).
+**Harbor Clerk** — a single-tenant, watched-folder-first document archive for non-technical offices running on Mac mini/Studio. Local extraction, OCR (English/French), hybrid retrieval. Cloud LLMs query via MCP over HTTPS with read-only API keys, receiving only cited snippets (no full corpus upload). Local agent harnesses (OpenClaw, Claude Code, Codex, Aider) can use the `harbor-clerk` CLI as a parallel surface to MCP.
 
-The full specification lives in `spec.txt`.
+Current state lives in this file plus `README.md` and `docs/architecture.md`.
 
 ## Architecture
 
@@ -16,11 +16,14 @@ The full specification lives in `spec.txt`.
 |---|---|
 | **gateway** (Caddy) | HTTPS termination (self-signed CA), reverse proxy |
 | **app** (FastAPI) | REST API + MCP endpoint + serves React SPA |
-| **worker-io** | PostgreSQL-polling worker for `io` queue (extract/chunk/finalize) |
+| **watcher** | `harbor-clerk-watcher` daemon — auto-discovers top-level subdirs of `WATCH_ROOT` and enqueues ingest jobs |
+| **worker-io** | PostgreSQL-polling worker for `io` queue (extract/chunk/entities/summarize/finalize) |
 | **worker-cpu** | PostgreSQL-polling worker for `cpu` queue (ocr/embed) |
 | **embedder** | multilingual-e5-small model server (384-dim, MIT) |
+| **reranker** | Cross-encoder re-ranking service used by hybrid search before final score merge |
+| **llama-server** | `llama.cpp` HTTP server for local LLM inference (chat, research, summarize) |
 | **postgres** | PostgreSQL + pgvector + pg_trgm |
-| **minio** | Object storage for originals |
+| **minio** | Object storage for legacy upload originals (watched-folder docs are read in place) |
 | **tika** | Apache Tika server (text extraction for PDF, Office, eBook, HTML, email formats) |
 
 ### macOS Native Apps
@@ -57,6 +60,7 @@ Entry points:
 - `harbor-clerk-worker` — PostgreSQL-polling background worker
 - `harbor-clerk-watcher` — folder watcher (one process per deployment; macOS subprocess or Docker `watcher` container)
 - `harbor-clerk-seed` — Database seeder
+- `harbor-clerk` — CLI for local agent harnesses (OpenClaw, Claude Code, Codex, Aider); off by default, gated by `ENABLE_CLI_ACCESS`. Talks to `/mcp` over JSON-RPC using `HARBOR_CLERK_API_KEY`
 
 ## Ingestion Pipeline
 
@@ -87,7 +91,7 @@ The legacy `POST /api/uploads/*` endpoints are intentionally kept callable (no U
 
 ## Retrieval
 
-Hybrid search: Postgres FTS (bilingual, queries both `fts_en` and `fts_fr` columns) + pgvector cosine → normalize and merge per-chunk scores with a small OCR-confidence boost → top K (default 10). All results include citations. Returns `possible_conflict=true` when the top hits have similar scores across different documents.
+Hybrid search: Postgres FTS (bilingual, queries both `fts_en` and `fts_fr` columns) + pgvector cosine → normalize and merge per-chunk scores with a small OCR-confidence boost → optional cross-encoder rerank pass via the `reranker` service (bge-reranker-v2-m3, `reranker_enabled` default on) → top K (default 10). All results include citations. Returns `possible_conflict=true` when the top hits have similar scores across different documents.
 
 ## Auth Model
 
@@ -100,8 +104,8 @@ Hybrid search: Postgres FTS (bilingual, queries both `fts_en` and `fts_fr` colum
 - Watch: `/api/watch/system`, `/api/watch/folders` (CRUD; POST gated to macOS via `picker=ui`), `/api/watch/folders/{id}/progress`, `/api/watch/folders/stream`, `/api/watch/folders/{id}/rescan`, `/api/watch/ingest`, `/api/watch/remove`, `/api/watch/rename`, `/api/watch/allowed-extensions`
 - Source files: `/api/docs/{id}/download` (gated by `ALLOW_SOURCE_DOWNLOAD`, default off; macOS uses `window.harborclerk.revealInFinder` instead)
 - Legacy: `/api/uploads*` — endpoints retained for non-interactive ingest paths (planned email ingestion); no UI affordance
-- MCP: `POST /mcp` — 16 tools: `kb_search`, `kb_batch_search`, `kb_read_passages`, `kb_expand_context`, `kb_get_document`, `kb_list_recent`, `kb_corpus_overview`, `kb_document_outline`, `kb_find_related`, `kb_entity_search`, `kb_entity_overview`, `kb_entity_cooccurrence`, `kb_read_document`, `kb_ingest_status`, `kb_reprocess`, `kb_system_health`
-- CLI: `harbor-clerk <command>` — 16 subcommands mirroring the MCP tools, for CLI-orchestrating agent harnesses (OpenClaw, Claude Code, etc.). Off by default. macOS: toggle in **Harbor Clerk Server → Preferences** — `MCPAuthMiddleware` re-reads the config file on every CLI request, so the change takes effect in seconds without a service restart. Docker: set `ENABLE_CLI_ACCESS=true` in the env and restart the API service. Audit-logged as `request_type="cli_tool"`. Auth via `HARBOR_CLERK_API_KEY`. Skill markdown at `skills/harbor-clerk/SKILL.md`; Integrations page surfaces a copy-paste block.
+- MCP: `POST /mcp` — 19 tools: `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_read_passages`, `kb_expand_context`, `kb_get_document`, `kb_list_recent`, `kb_corpus_overview`, `kb_document_outline`, `kb_find_related`, `kb_entity_search`, `kb_entity_overview`, `kb_entity_cooccurrence`, `kb_read_document`, `kb_verify_identifier`, `kb_documents_by_date`, `kb_ingest_status`, `kb_reprocess`, `kb_system_health`
+- CLI: `harbor-clerk <command>` — 18 subcommands mirroring the MCP tools (all except `kb_find_all`), for CLI-orchestrating agent harnesses (OpenClaw, Claude Code, Codex, Aider). Off by default. macOS: toggle in **Harbor Clerk Server → Preferences** — `MCPAuthMiddleware` re-reads the config file on every CLI request, so the change takes effect in seconds without a service restart. Docker: set `ENABLE_CLI_ACCESS=true` in the env and restart the API service. Audit-logged as `request_type="cli_tool"`. Auth via `HARBOR_CLERK_API_KEY`. Skill markdown at `skills/harbor-clerk/SKILL.md`; Integrations page surfaces a copy-paste block.
 - SSE: `GET /api/jobs/stream` — streams job progress events (server→client only)
 
 ## Database
@@ -110,7 +114,7 @@ PostgreSQL 18 with extensions: `vector`, `pg_trgm`, `citext`. No tenant table or
 
 Key tables: `users`, `api_keys`, `documents` (flat — was split into `documents` + `document_versions` pre-0017), `document_pages`, `document_headings`, `chunks`, `entities`, `ingestion_jobs`, `audit_log`, `api_request_log`, `conversations`, `chat_messages`, `watched_folders`, `watched_files`, `corpus_topics`, `corpus_topics_meta`, `model_settings`, `research_state`. The `uploads` and `upload_sessions` tables remain for the legacy upload endpoints.
 
-`chunks` has dual FTS columns (`fts_en` TSVECTOR, `fts_fr` TSVECTOR) both as generated stored columns with GIN indexes, plus `embedding vector(384)` with HNSW index. Full DDL in `spec.txt` section I (pre-flatten — current state is in `alembic/versions/`).
+`chunks` has dual FTS columns (`fts_en` TSVECTOR, `fts_fr` TSVECTOR) both as generated stored columns with GIN indexes, plus `embedding vector(384)` with HNSW index. Current schema lives in `alembic/versions/`.
 
 Storage (legacy uploads only): bucket `originals`, key pattern `originals/<doc_id>/<original_filename>`. Watched-folder docs do not store originals in MinIO — they are read in place from `source_path` on the host filesystem.
 

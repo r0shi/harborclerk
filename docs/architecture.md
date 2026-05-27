@@ -6,7 +6,8 @@
 graph TB
     subgraph Clients
         browser["Browser / WKWebView"]
-        mcp_client["MCP Client<br/>(Claude, etc.)"]
+        mcp_client["MCP Client<br/>(Claude, ChatGPT, etc.)"]
+        cli_agent["CLI Agent Harness<br/>harbor-clerk<br/>(OpenClaw, Claude Code, Codex)"]
     end
 
     subgraph Gateway
@@ -34,15 +35,18 @@ graph TB
     subgraph Services
         tika["Apache Tika<br/>text extraction"]
         embedder["Embedder<br/>multilingual-e5-small<br/>384-dim"]
+        reranker["Reranker<br/>cross-encoder<br/>(search re-ranking)"]
         llama["llama.cpp<br/>local LLM inference"]
     end
 
     browser -- "HTTPS" --> caddy
     mcp_client -- "HTTPS POST /mcp" --> caddy
+    cli_agent -- "HTTPS POST /mcp<br/>request_type=cli_tool" --> caddy
     caddy --> api
 
     api -- "async queries" --> pg
     api -- "chat streaming" --> llama
+    api -- "re-rank search hits" --> reranker
     api -- "SSE /api/jobs/stream" --> browser
 
     watcher -- "scan + LISTEN" --> fs
@@ -58,6 +62,20 @@ graph TB
 
     llama -. "tool calls<br/>via API" .-> api
 ```
+
+## Client Surfaces
+
+Three first-class ways for clients to reach the corpus, all hitting the same backend through Caddy:
+
+| Surface | Transport | Auth | Audit `request_type` | Primary consumer |
+|---|---|---|---|---|
+| **Web UI** | HTTPS to React SPA + REST API | JWT (email + password) | `rest` | Humans in browser / WKWebView |
+| **MCP endpoint** | `POST /mcp` (Streamable HTTP) | API key bearer or OAuth 2.1 | `mcp_tool` | Cloud LLMs — Claude, ChatGPT, Claude Desktop, Gemini CLI |
+| **`harbor-clerk` CLI** | `POST /mcp` (same endpoint, JSON-RPC framing) | API key bearer | `cli_tool` | Local agent harnesses — OpenClaw, Claude Code, Codex, Aider |
+
+The CLI is intentionally a thin shell wrapper over the same MCP transport — it does not get its own API. Two surfaces, one source of truth. Authorization scoping, rate limits, and per-key audit dashboards apply identically. The `request_type` split lets operators separate "human-driven cloud LLM traffic" from "local-agent-driven traffic" in the audit dashboard without giving them different security postures.
+
+The CLI is opt-in (off by default). On macOS the toggle lives in **Harbor Clerk Server → Preferences**; on Docker it's `ENABLE_CLI_ACCESS=true`. See [the CLI agent skill](../skills/harbor-clerk/SKILL.md) for the harness-side surface.
 
 ## Ingestion Pipeline
 
@@ -98,13 +116,17 @@ graph LR
     fts["PostgreSQL FTS<br/>bilingual (en + fr)"]
     vec["pgvector<br/>cosine similarity"]
     merge["Normalize & merge scores<br/>OCR-confidence boost"]
+    rerank["Reranker<br/>cross-encoder<br/>(top-K pool)"]
     results["Top K Results<br/>with citations"]
 
     query --> fts & vec
     fts --> merge
     vec --> merge
-    merge --> results
+    merge --> rerank
+    rerank --> results
 ```
+
+> Reranker pass is optional (`reranker_enabled`, default on). When disabled or unreachable, the merged FTS+vector score is the final ordering.
 
 ## Deployment Modes
 
@@ -119,6 +141,7 @@ graph TB
         wio["worker-io"]
         wcpu["worker-cpu"]
         emb["embedder"]
+        rerank["reranker"]
         pg[("postgres<br/>pgvector/pgvector:pg18")]
         minio["minio<br/>(legacy upload API)"]
         tika["tika"]
@@ -128,7 +151,7 @@ graph TB
     host_fs["Host bind mount<br/>./data/watch"]
 
     gw --> app
-    app --> pg & llama
+    app --> pg & llama & rerank
     app -. "legacy uploads" .-> minio
     watcher --> pg
     watcher -- "WATCH_ROOT<br/>/data/watch" --> host_fs
@@ -147,6 +170,7 @@ graph TB
         pg["PostgreSQL 18<br/>(subprocess)"]
         tika["Tika<br/>(subprocess)"]
         emb["Embedder<br/>(subprocess)"]
+        rerank["Reranker<br/>(subprocess)"]
         llama["llama.cpp<br/>(subprocess)"]
         api["harbor-clerk-api<br/>(subprocess)"]
         watcher["harbor-clerk-watcher<br/>(subprocess)"]
@@ -161,7 +185,7 @@ graph TB
 
     user_dirs["User-picked folders<br/>(anywhere on disk)"]
 
-    sm --> pg & tika & emb & llama & api & watcher & wio & wcpu
+    sm --> pg & tika & emb & rerank & llama & api & watcher & wio & wcpu
     spa -- "http://localhost:8000" --> api
     spa -. "window.harborclerk" .-> bridge
     bridge -. "NSOpenPanel · NSWorkspace" .-> user_dirs

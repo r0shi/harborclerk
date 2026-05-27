@@ -56,6 +56,35 @@ graph LR
     harbor -. "retrieved snippets + citations only" .-> models
 ```
 
+## Three ways to use Harbor Clerk
+
+Once your documents are indexed, you can reach them three ways — pick whichever fits the moment.
+
+```mermaid
+graph LR
+    corpus[("Your indexed corpus")]
+    web["Web UI<br/>Search · Chat · Research"]
+    mcp["MCP endpoint<br/>Cloud LLMs · Claude · ChatGPT"]
+    cli["harbor-clerk CLI<br/>Local agent harnesses<br/>OpenClaw · Claude Code · Codex · Aider"]
+    web --> corpus
+    mcp --> corpus
+    cli --> corpus
+```
+
+**1. Web UI — search, chat, deep research.** Open Harbor Clerk in your browser (or the native Mac window) and search, browse, or chat with a local LLM. Deep Research runs structured plan→search→read→synthesize over the whole corpus and produces a cited report.
+
+**2. MCP endpoint — for cloud LLMs.** Connect Claude, ChatGPT, Claude Desktop, Gemini CLI, or any MCP-compatible client. They authenticate with a scoped, read-only API key and receive only the cited snippets needed to answer a question — never your full corpus.
+
+**3. `harbor-clerk` CLI — for local agent harnesses.** OpenClaw, Claude Code, Codex, Aider, and other harnesses that prefer composing shell commands over speaking MCP can drive Harbor Clerk through a first-class CLI that mirrors the MCP tools as subcommands, with full `--help` pages and JSON output ready to pipe through `jq`. Same auth model as MCP, same audit trail (logged distinctly as `request_type="cli_tool"`). Off by default; admin opt-in.
+
+```bash
+export HARBOR_CLERK_API_KEY=hc_...
+harbor-clerk --help                  # full subcommand list
+harbor-clerk search "termination clause" | jq '.results[].citation'
+```
+
+A copy-pasteable agent skill for these harnesses is in **System Settings → Integrations**.
+
 ## Why Harbor Clerk?
 
 **Your documents stay private**
@@ -65,7 +94,7 @@ Everything runs locally. No uploads to SaaS services, no background syncing, and
 Harbor Clerk reads documents, performs OCR when needed, builds hybrid full-text and semantic search, and lets you explore everything through search or chat — always with citations.
 
 **Use any model you trust**
-Chat locally with built-in models, or connect external AI tools through MCP. They see only the passages needed to answer a question — never your full corpus.
+Chat locally with built-in models, connect external AI tools through MCP, or hand the CLI to a local agent harness. They see only the passages needed to answer a question — never your full corpus.
 
 ## Quick Start (Mac)
 
@@ -75,7 +104,7 @@ Chat locally with built-in models, or connect external AI tools through MCP. The
 4. Click **Folders → Add Folder**, pick a directory full of documents, and let ingestion run
 5. Ask questions, browse the corpus, or kick off a deep research task
 
-That's it — everything runs locally.
+That's it — everything runs locally. To wire in an external LLM or agent harness, head to **System Settings → Integrations** for MCP and CLI setup.
 
 ## Quick Start (Docker)
 
@@ -88,6 +117,8 @@ docker compose up --build
 ```
 
 Then open https://localhost, accept the self-signed certificate, and create your admin account. Drop documents into `./data/watch/inbox/` (or any subdirectory of `./data/watch/`) and they'll start ingesting within ~60 seconds. See [docs/watched-folders-docker.md](docs/watched-folders-docker.md) for mounting external paths and other operator details.
+
+To enable the `harbor-clerk` CLI for local agent harnesses, set `ENABLE_CLI_ACCESS=true` in `.env` and restart the `app` service.
 
 ## Who Harbor Clerk Is For
 
@@ -121,7 +152,7 @@ Harbor Clerk can run in two ways:
 | | macOS Native | Docker Compose |
 |---|---|---|
 | **Best for** | Target audience — small offices with a Mac | DIY / Linux servers |
-| **Services** | Managed by menubar app as subprocesses | Ten Docker containers |
+| **Services** | Managed by menubar app as subprocesses | Eleven Docker containers |
 | **Folder picker** | Native folder picker in the UI | Operator mounts host paths into the watcher container |
 | **Originals** | Read in place from your filesystem | Read in place from bind-mounted volumes |
 | **HTTPS** | Direct localhost access | Caddy reverse proxy with self-signed cert |
@@ -170,7 +201,7 @@ docker compose logs -f app        # tail app logs
 docker compose logs -f watcher    # see what the watcher is picking up
 ```
 
-**Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `worker-io`, `worker-cpu`, `watcher` (folder watching + ingest queueing), `embedder` (multilingual-e5-small), `postgres` (pgvector + pg_trgm), `minio`, `tika`, `llama-server` (local LLM inference).
+**Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `watcher` (folder watching + ingest queueing), `worker-io`, `worker-cpu`, `embedder` (multilingual-e5-small), `reranker` (cross-encoder re-ranking), `llama-server` (local LLM inference), `postgres` (pgvector + pg_trgm), `minio`, `tika`.
 
 ---
 
@@ -205,7 +236,7 @@ The reason the download endpoint is locked down by default: it returns the *raw 
 
 ### Hybrid Search
 
-Results combine PostgreSQL full-text search (bilingual English/French) and pgvector cosine similarity, normalized and merged into a single score with a small boost for higher-confidence OCR text. All results include source citations with page numbers. Search supports filtering by document, date range, language, and MIME type, with faceted results grouping hits by document.
+Results combine PostgreSQL full-text search (bilingual English/French) and pgvector cosine similarity, normalized and merged into a single score with a small boost for higher-confidence OCR text. A cross-encoder re-ranking pass (`bge-reranker-v2-m3`, served by a dedicated `reranker` container/subprocess; on by default, gracefully degrades to merged-score ordering if unavailable) refines the top-K pool before returning results. All results include source citations with page numbers. Search supports filtering by document, date range, language, and MIME type, with faceted results grouping hits by document.
 
 ### Local Chat
 
@@ -247,18 +278,24 @@ Connect ChatGPT, Claude Desktop, Claude Code, Gemini CLI, OpenClaw, or any MCP-c
 
 > **Security note for agentic tools (OpenClaw, etc.):** Autonomous AI agents can make many tool calls in rapid succession. Always create a dedicated, scoped API key with rate limits and an expiry date. Monitor usage via the per-key audit dashboard.
 
-### Agentic CLI
+### Agentic CLI — full surface
 
-The `harbor-clerk` CLI mirrors the 16 MCP tools as shell subcommands — built for CLI-orchestrating agent harnesses (OpenClaw, Claude Code, Codex, Aider) that prefer composing commands over speaking MCP. Off by default; admin opt-in.
+The `harbor-clerk` CLI mirrors 18 of the 19 MCP tools as shell subcommands. See the [Three ways to use Harbor Clerk](#three-ways-to-use-harbor-clerk) overview above for the framing; this section is the operator detail.
+
+**Enabling it:**
+
+- **macOS:** toggle in **Harbor Clerk Server → Preferences**. The middleware re-reads config on every CLI request, so changes take effect within seconds — no restart.
+- **Docker:** set `ENABLE_CLI_ACCESS=true` in the env and restart the `app` service.
+
+**Auth:** the CLI talks to the same `/mcp` endpoint as MCP clients do, using the same API key:
 
 ```bash
 export HARBOR_CLERK_API_KEY=hc_...   # mint in System Settings → API Keys
-export ENABLE_CLI_ACCESS=true        # server-side toggle; restart required
 harbor-clerk --help                  # full subcommand list
-harbor-clerk search "..." --help     # man-page-class help per subcommand
+harbor-clerk <command> --help        # man-page-class help with JSON return shape + examples
 ```
 
-CLI traffic is audit-logged as `request_type="cli_tool"` (distinct from MCP). System Settings → Integrations has a copy-pasteable agent skill markdown for OpenClaw and similar runtimes.
+**Audit:** CLI traffic is logged as `request_type="cli_tool"` (distinct from `mcp_tool`) so you can split per-key dashboards by surface. **System Settings → Integrations** has a copy-pasteable agent skill markdown for OpenClaw, Claude Code, and similar runtimes — drop it into the harness's skill directory and the agent learns the corpus.
 
 ### Auth
 
@@ -319,23 +356,26 @@ CLI traffic is audit-logged as `request_type="cli_tool"` (distinct from MCP). Sy
 
 ### MCP
 
-`POST /mcp` — Streamable HTTP transport. Authenticate with `Authorization: Bearer <api_key>`.
+`POST /mcp` — Streamable HTTP transport. Authenticate with `Authorization: Bearer <api_key>`. 19 tools available; the CLI mirrors all of them except `kb_find_all` (which is an enumeration shape that agents use less than search).
 
 | Tool | Description |
 |---|---|
 | `kb_search` | Hybrid search with pagination, detail modes, and optional filters |
+| `kb_batch_search` | Run up to 5 search queries in a single call |
+| `kb_find_all` | Unified enumeration: list, filter, and paginate documents without scoring (MCP-only) |
 | `kb_read_passages` | Read specific passages by chunk ID |
 | `kb_expand_context` | Get surrounding chunks for a given chunk |
 | `kb_get_document` | Document metadata and summary |
+| `kb_read_document` | Read full document text or a page range |
 | `kb_list_recent` | Recently added documents with summaries |
+| `kb_documents_by_date` | List documents inside a date range, ordered chronologically |
+| `kb_verify_identifier` | Resolve a free-text identifier (title, filename, UUID) to a `doc_id` before issuing other tool calls |
 | `kb_corpus_overview` | Aggregate corpus stats (languages, types, dates) |
 | `kb_document_outline` | Document heading structure and page layout |
 | `kb_find_related` | Find similar documents via embedding similarity |
 | `kb_entity_search` | Search named entities across the corpus |
 | `kb_entity_overview` | Entity type breakdown (per-doc or corpus-wide) |
 | `kb_entity_cooccurrence` | Find entities that co-occur in the same chunk or document |
-| `kb_read_document` | Read full document text or a page range |
-| `kb_batch_search` | Run up to 5 search queries in a single call |
 | `kb_ingest_status` | Check ingestion progress |
 | `kb_reprocess` | Re-run ingestion on a document |
 | `kb_system_health` | System health check |
