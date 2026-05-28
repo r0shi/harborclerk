@@ -448,3 +448,109 @@ async def test_folder_serializer_skip_fields_defaults(client, admin_token, db_se
     row = by_path["/tmp/test-skip-defaults-api"]
     assert row["skipped_count"] == 0
     assert row["skipped_extensions"] == []
+
+
+# ---------------------------------------------------------------------------
+# PATCH /folders/{id} — display_name
+# ---------------------------------------------------------------------------
+
+
+async def test_patch_folder_sets_display_name(client, admin_token, two_folder_corpus):
+    """PATCH with display_name='Receipts' updates the row and returns 200."""
+    folder_a, _, _, _ = two_folder_corpus
+    r = await client.patch(
+        f"/api/watch/folders/{folder_a.folder_id}",
+        json={"display_name": "Receipts"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+
+    list_r = await client.get(
+        "/api/watch/folders",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    folder_row = next(f for f in list_r.json() if f["folder_id"] == str(folder_a.folder_id))
+    assert folder_row["display_name"] == "Receipts"
+
+
+async def test_patch_folder_empty_display_name_reverts_to_basename(client, admin_token, two_folder_corpus):
+    """PATCH with display_name='' (or whitespace) writes Path(folder.path).name."""
+    from pathlib import Path
+
+    folder_a, _, _, _ = two_folder_corpus
+
+    # First alias to something custom, then clear it
+    await client.patch(
+        f"/api/watch/folders/{folder_a.folder_id}",
+        json={"display_name": "Custom"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    r = await client.patch(
+        f"/api/watch/folders/{folder_a.folder_id}",
+        json={"display_name": ""},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+
+    list_r = await client.get(
+        "/api/watch/folders",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    folder_row = next(f for f in list_r.json() if f["folder_id"] == str(folder_a.folder_id))
+    assert folder_row["display_name"] == Path(folder_a.path).name
+
+
+async def test_patch_folder_whitespace_display_name_reverts_to_basename(client, admin_token, two_folder_corpus):
+    """PATCH with display_name='   ' is treated as empty → reverts."""
+    from pathlib import Path
+
+    folder_a, _, _, _ = two_folder_corpus
+    r = await client.patch(
+        f"/api/watch/folders/{folder_a.folder_id}",
+        json={"display_name": "   "},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+    list_r = await client.get(
+        "/api/watch/folders",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    folder_row = next(f for f in list_r.json() if f["folder_id"] == str(folder_a.folder_id))
+    assert folder_row["display_name"] == Path(folder_a.path).name
+
+
+async def test_patch_folder_too_long_display_name_returns_422(client, admin_token, two_folder_corpus):
+    """display_name longer than 200 chars → 422."""
+    folder_a, _, _, _ = two_folder_corpus
+    r = await client.patch(
+        f"/api/watch/folders/{folder_a.folder_id}",
+        json={"display_name": "x" * 201},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 422
+
+
+async def test_patch_folder_omitted_display_name_leaves_field_unchanged(client, admin_token, two_folder_corpus):
+    """A PATCH that doesn't include display_name must not alter it."""
+    folder_a, _, _, _ = two_folder_corpus
+
+    # Set a custom alias first
+    await client.patch(
+        f"/api/watch/folders/{folder_a.folder_id}",
+        json={"display_name": "Sentinel"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    # Now PATCH only enabled
+    r = await client.patch(
+        f"/api/watch/folders/{folder_a.folder_id}",
+        json={"enabled": True},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+
+    list_r = await client.get(
+        "/api/watch/folders",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    folder_row = next(f for f in list_r.json() if f["folder_id"] == str(folder_a.folder_id))
+    assert folder_row["display_name"] == "Sentinel"
