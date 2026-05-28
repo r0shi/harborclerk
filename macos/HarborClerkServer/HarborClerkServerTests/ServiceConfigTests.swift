@@ -65,6 +65,113 @@ final class ServiceConfigTests: XCTestCase {
         XCTAssertEqual(action, .removeUnparseable)
     }
 
+    // MARK: - PG Data Dir Safety Move
+
+    /// Helper: create a fresh fake data dir in a tempdir, return (parent, dataDir).
+    private func makeFakeDataDir(withPGVersion stored: String?) throws -> (parent: URL, dataDir: URL) {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("pg-safety-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: parent) }
+        let dataDir = parent.appendingPathComponent("postgres-data", isDirectory: true)
+        try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        if let stored {
+            try stored.write(
+                to: dataDir.appendingPathComponent("PG_VERSION"),
+                atomically: true,
+                encoding: .utf8,
+            )
+        }
+        // Drop a sentinel file so we can prove the move preserved contents.
+        try Data("hello".utf8).write(to: dataDir.appendingPathComponent("sentinel.txt"))
+        return (parent, dataDir)
+    }
+
+    func testMoveDataDirAsideRenamesToTimestampedSibling() throws {
+        let (parent, dataDir) = try makeFakeDataDir(withPGVersion: "16")
+        let now = Date(timeIntervalSince1970: 1_716_864_000)  // 2026-05-28 00:00:00 UTC
+
+        let backup = try PostgresService.moveDataDirAside(
+            dataDir: dataDir,
+            storedVersion: "16",
+            now: now,
+        )
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: dataDir.path),
+            "Original data dir should be gone after the move",
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: backup.path),
+            "Backup dir should exist after the move",
+        )
+        XCTAssertEqual(backup.deletingLastPathComponent(), parent, "Backup must be a sibling, not nested")
+        XCTAssertEqual(backup.lastPathComponent, "postgres-data-pg16-backup-20260528-000000")
+        // Sentinel survived → it's a real rename, not a copy-and-truncate
+        let sentinel = try String(contentsOf: backup.appendingPathComponent("sentinel.txt"), encoding: .utf8)
+        XCTAssertEqual(sentinel, "hello")
+    }
+
+    func testMoveDataDirAsideHandlesUnknownStoredVersion() throws {
+        let (_, dataDir) = try makeFakeDataDir(withPGVersion: nil)
+        let now = Date(timeIntervalSince1970: 1_716_864_000)
+
+        let backup = try PostgresService.moveDataDirAside(
+            dataDir: dataDir,
+            storedVersion: nil,
+            now: now,
+        )
+        XCTAssertEqual(backup.lastPathComponent, "postgres-data-pg-unknown-backup-20260528-000000")
+
+        // Empty-string stored version (defensive — `String(contentsOf:)` could
+        // theoretically yield this if PG_VERSION existed but was empty) takes
+        // the same branch as nil.
+        let (_, dataDir2) = try makeFakeDataDir(withPGVersion: nil)
+        let backup2 = try PostgresService.moveDataDirAside(
+            dataDir: dataDir2,
+            storedVersion: "",
+            now: now,
+        )
+        XCTAssertTrue(backup2.lastPathComponent.contains("pg-unknown"))
+    }
+
+    func testMoveDataDirAsideHandlesSameSecondCollision() throws {
+        let (parent, dataDir) = try makeFakeDataDir(withPGVersion: "16")
+        let now = Date(timeIntervalSince1970: 1_716_864_000)
+
+        // Pre-create the naive candidate destination so the helper has to
+        // pick a suffixed name. This is the "two restarts within the same
+        // second after a crash" edge case.
+        let pre = parent.appendingPathComponent("postgres-data-pg16-backup-20260528-000000")
+        try FileManager.default.createDirectory(at: pre, withIntermediateDirectories: true)
+
+        let backup = try PostgresService.moveDataDirAside(
+            dataDir: dataDir,
+            storedVersion: "16",
+            now: now,
+        )
+
+        XCTAssertEqual(
+            backup.lastPathComponent,
+            "postgres-data-pg16-backup-20260528-000000-1",
+            "First collision should append -1, not overwrite the existing backup",
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pre.path), "Existing backup must remain untouched")
+    }
+
+    func testMoveDataDirAsideThrowsWhenSourceMissing() throws {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("pg-safety-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: parent) }
+        let missing = parent.appendingPathComponent("postgres-data", isDirectory: true)
+
+        XCTAssertThrowsError(
+            try PostgresService.moveDataDirAside(dataDir: missing, storedVersion: "16"),
+            "Move should throw when the source dir does not exist; refusing to start is safer than silent data loss",
+        )
+    }
+
     // MARK: - Log Formatting
 
     func testLogFormatForCopy() {
