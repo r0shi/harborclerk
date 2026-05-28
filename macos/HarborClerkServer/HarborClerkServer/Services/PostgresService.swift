@@ -70,7 +70,7 @@ final class PostgresService: ManagedService {
         // agent.ensureInstalled) handles the lingering instance.
         let pidFile = dataDir.appendingPathComponent("postmaster.pid")
         if fm.fileExists(atPath: pidFile.path) {
-            let action = Self.stalePidAction(pidFileContents: try? String(contentsOf: pidFile))
+            let action = Self.stalePidAction(pidFileContents: try? String(contentsOf: pidFile, encoding: .utf8))
             switch action {
             case .remove(let pid):
                 try? fm.removeItem(at: pidFile)
