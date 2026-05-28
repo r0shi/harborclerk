@@ -393,7 +393,7 @@ async def deactivate_model(
 async def llm_status(
     _principal: Principal = Depends(require_user),
 ):
-    """Lightweight probe of llama-server's health.
+    """Lightweight probe of llama-server's health + the summarize backend.
 
     Returns one of three states the UI uses to drive a "model is
     loading" banner across the model-switch transition:
@@ -409,6 +409,16 @@ async def llm_status(
     Probe is bounded to 2s so this endpoint stays fast even when
     llama-server is wedged. The frontend polls it every second or
     two during a model switch.
+
+    Also reports the **summarize** backend separately. The summarize
+    pipeline stage can be configured (via the "Always use Apple
+    Intelligence for summaries" toggle) to bypass the local LLM and
+    use AFM directly — so the Observatory's per-stage label needs to
+    reflect AFM, not the unrelated llama-server model that happens to
+    be loaded. Three possible backends:
+      - `apple-intelligence`: AFM is configured + available
+      - `<llm_model_id>`: the active llama-server model
+      - `extractive`: heuristic fallback (no LLM, no AFM)
     """
     # See list_available_models — refresh to catch menubar-side writes
     # to config.json that bypass this process.
@@ -418,33 +428,48 @@ async def llm_status(
     info = get_model(model_id) if model_id else None
     model_name = info.name if info else None
 
+    # Llama-server state (existing logic, hoisted out so we can reuse it
+    # for the summarize sub-status when the LLM is the summarize backend).
     if not model_id:
-        return {"state": "deactivated", "model_id": None, "model_name": None}
+        state = "deactivated"
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                r = await client.get(f"{settings.llama_server_url}/health")
+                state = "ready" if r.status_code == 200 else "loading"
+        except (httpx.ConnectError, httpx.TimeoutException):
+            state = "loading"
 
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get(f"{settings.llama_server_url}/health")
-            if r.status_code == 200:
-                return {
-                    "state": "ready",
-                    "model_id": model_id,
-                    "model_name": model_name,
-                }
-            # Non-200 — model still coming up (llama-server returns
-            # 503 during model load) or in some other transient state.
-            return {
-                "state": "loading",
-                "model_id": model_id,
-                "model_name": model_name,
+    # Summarize backend resolution mirrors the precedence in
+    # `harbor_clerk.llm.summarize.generate_summary`:
+    #   force_afm=true → AFM (or extractive if AFM unavailable)
+    #   else LLM model active → LLM
+    #   else → AFM (or extractive)
+    from harbor_clerk.llm.summarize import _find_apple_summarize_binary
+
+    afm_available = _find_apple_summarize_binary() is not None
+    if settings.summary_force_apple_intelligence:
+        if afm_available:
+            summarize = {"backend": "apple-intelligence", "name": "Apple Intelligence", "state": "ready"}
+        else:
+            summarize = {
+                "backend": "extractive",
+                "name": "Extractive (Apple Intelligence unavailable)",
+                "state": "ready",
             }
-    except (httpx.ConnectError, httpx.TimeoutException):
-        # Connection refused (server stopped or restarting) or didn't
-        # answer within 2s (loading weights, mmap'ing the gguf, etc.).
-        return {
-            "state": "loading",
-            "model_id": model_id,
-            "model_name": model_name,
-        }
+    elif model_id:
+        summarize = {"backend": model_id, "name": model_name, "state": state}
+    elif afm_available:
+        summarize = {"backend": "apple-intelligence", "name": "Apple Intelligence", "state": "ready"}
+    else:
+        summarize = {"backend": "extractive", "name": "Extractive", "state": "ready"}
+
+    return {
+        "state": state,
+        "model_id": model_id,
+        "model_name": model_name,
+        "summarize": summarize,
+    }
 
 
 @router.put("/chat/models/yarn", status_code=200)

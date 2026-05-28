@@ -201,7 +201,14 @@ function SummarizeCircle({ queued, running }: { queued: number; running: number 
 
 function SummarizeCard({ queued, running, summarizing }: SummarizeCardProps) {
   const { status } = useLLMStatusContext()
-  const model = modelLabel(status.state, status.model_name, status.model_id)
+  // The summarize stage has its own backend resolution (AFM / LLM / extractive)
+  // that's independent of the loaded llama-server model. Prefer the dedicated
+  // `summarize` sub-status from the backend; fall back to the top-level llama
+  // fields only if the field is absent (older builds).
+  const summarize = status.summarize
+  const model = summarize
+    ? modelLabel(summarize.state, summarize.name, summarize.backend)
+    : modelLabel(status.state, status.model_name, status.model_id)
 
   // Running first (most-advanced map step on top), then queued in FIFO.
   // Backend already orders by created_at; we resort here just for the

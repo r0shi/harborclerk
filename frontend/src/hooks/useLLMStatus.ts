@@ -3,10 +3,20 @@ import { useAuth } from '../auth'
 
 export type LLMState = 'deactivated' | 'loading' | 'ready' | 'unknown'
 
+// Per-stage summarize backend. Decoupled from the llama-server fields above
+// because the summarize stage can run against AFM (Apple Intelligence) — or
+// fall back to extractive — independently of the active llama-server model.
+export interface SummarizeBackend {
+  backend: string // 'apple-intelligence' | <llm_model_id> | 'extractive'
+  name: string | null
+  state: LLMState
+}
+
 export interface LLMStatus {
   state: LLMState
   model_id: string | null
   model_name: string | null
+  summarize?: SummarizeBackend
 }
 
 const IDLE_INTERVAL_MS = 8000 // poll every 8s when nothing seems to be transitioning
