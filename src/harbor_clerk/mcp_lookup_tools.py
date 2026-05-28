@@ -19,12 +19,12 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from sqlalchemy import case, cast, func, literal, null, or_, select
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
 from harbor_clerk.models import Chunk, Document
-from harbor_clerk.search import _apply_email_metadata_filter
+from harbor_clerk.search import _apply_email_metadata_filter, _apply_jsonb_metadata_filter
 from harbor_clerk.sql_escape import escape_ilike
 
 _VERIFY_CANDIDATE_CAP = 100
@@ -384,31 +384,14 @@ async def _query_documents_by_date(
     # becomes:
     #   - email.* keys: translated to Document.email_* column predicates via
     #     _apply_email_metadata_filter() (shared with hybrid_search).
-    #   - other keys: JSONB @> containment OR JSONB ? existence (see search.py).
-    # The OR lets a caller use a scalar filter value to match either a
-    # scalar metadata field OR a list-valued one without knowing the shape,
-    # matching the behavior of kb_search.  If this diverges from search.py,
-    # both should be updated together.
+    #   - other keys: delegated to _apply_jsonb_metadata_filter() (shared
+    #     with hybrid_search).
     doc_conditions: list = []
     if metadata_filter:
         metadata_filter = _apply_email_metadata_filter(metadata_filter, doc_conditions)
 
     if metadata_filter:
-        for path, value in metadata_filter.items():
-            if path.count(".") != 1:
-                raise ValueError(
-                    f"metadata_filter keys must be exactly 'namespace.key' (one dot, two segments); "
-                    f"got {path!r}. Nested paths are not supported in v1."
-                )
-            ns, _, key = path.partition(".")
-            if not ns or not key:
-                raise ValueError(f"metadata_filter keys must have a non-empty namespace and key, got {path!r}")
-            containment = Document.doc_metadata.op("@>")(func.cast({ns: {key: value}}, JSONB))
-            if isinstance(value, str):
-                existence = Document.doc_metadata[ns][key].op("?")(value)
-                doc_conditions.append(or_(containment, existence))
-            else:
-                doc_conditions.append(containment)
+        _apply_jsonb_metadata_filter(metadata_filter, doc_conditions)
 
     for cond in doc_conditions:
         stmt = stmt.where(cond)

@@ -128,3 +128,32 @@ def test_tika_field_aliases_has_no_duplicate_target_keys():
     duplicates = [t for t in unique_targets if targets.count(t) > 1]
     # Document expected duplicates explicitly:
     assert sorted(duplicates) == sorted(["page_count"])
+
+
+def test_tika_extractor_aliases_dc_identifier_to_isbn(httpserver: HTTPServer, monkeypatch):
+    """EPUB and some PDFs carry ISBN as dc:identifier. The alias map
+    routes it to a flat `tika.isbn` key for metadata_filter use."""
+    tika_response = {
+        "dc:identifier": "978-0-13-468599-1",
+        "dc:title": "The Book",
+        "Content-Type": "application/epub+zip",
+    }
+    httpserver.expect_request("/meta").respond_with_json(tika_response)
+
+    monkeypatch.setattr(
+        "harbor_clerk.ingest.metadata_extractors.tika_metadata.get_settings",
+        lambda: type("S", (), {"tika_url": httpserver.url_for("").rstrip("/")})(),
+    )
+
+    extractor = TikaMetadataExtractor()
+    out = extractor.extract(
+        doc=_FakeDoc(doc_id=uuid.uuid4(), title="book", mime_type="application/epub+zip"),
+        raw_bytes=b"PK\x03\x04...",
+        source_path=None,
+    )
+
+    assert out == {
+        "isbn": "978-0-13-468599-1",
+        "title": "The Book",
+        "content_type": "application/epub+zip",
+    }

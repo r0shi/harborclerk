@@ -168,3 +168,82 @@ async def test_metadata_filter_rejects_empty_namespace_or_key(db_session):
             k=10,
             metadata_filter={"ns.": "x"},
         )
+
+
+def test_apply_jsonb_metadata_filter_string_value_appends_or_clause():
+    """String value: appends an OR(containment, existence) predicate."""
+    from harbor_clerk.search import _apply_jsonb_metadata_filter
+
+    doc_conditions = []
+    _apply_jsonb_metadata_filter({"sidecar.vendor": "Acme"}, doc_conditions)
+    # One predicate appended
+    assert len(doc_conditions) == 1
+    # Rendered SQL contains both the @> containment and the ? existence
+    # operators. compile() without literal_binds works fine because we
+    # only inspect the SQL fragment, not the bound values.
+    compiled = str(doc_conditions[0].compile())
+    assert "@>" in compiled
+    # JSONB existence operator — compiled SQL form
+    assert "?" in compiled or "jsonb_exists" in compiled.lower()
+
+
+def test_apply_jsonb_metadata_filter_int_value_appends_containment_only():
+    """Non-string scalar: containment only, no existence OR-branch."""
+    from harbor_clerk.search import _apply_jsonb_metadata_filter
+
+    doc_conditions = []
+    _apply_jsonb_metadata_filter({"sidecar.term_months": 24}, doc_conditions)
+    assert len(doc_conditions) == 1
+    compiled = str(doc_conditions[0].compile())
+    assert "@>" in compiled
+    # No OR / existence — just plain containment. The compiled form for
+    # OR(...) uses "OR" between the two operands; containment-only is a
+    # single @> predicate with no OR.
+    assert " OR " not in compiled.upper()
+
+
+def test_apply_jsonb_metadata_filter_multiple_keys_append_in_order():
+    """Multiple keys: each becomes its own predicate appended in input order."""
+    from harbor_clerk.search import _apply_jsonb_metadata_filter
+
+    doc_conditions = []
+    _apply_jsonb_metadata_filter(
+        {"sidecar.vendor": "Acme", "frontmatter.author": "Alice"},
+        doc_conditions,
+    )
+    assert len(doc_conditions) == 2
+
+
+def test_apply_jsonb_metadata_filter_rejects_multi_dot_path():
+    """Nested paths (two dots) raise ValueError."""
+    import pytest
+
+    from harbor_clerk.search import _apply_jsonb_metadata_filter
+
+    with pytest.raises(ValueError, match="exactly 'namespace.key'"):
+        _apply_jsonb_metadata_filter(
+            {"sidecar.contract.id": "x"},
+            [],
+        )
+
+
+def test_apply_jsonb_metadata_filter_rejects_empty_segment():
+    """Empty namespace or key raises ValueError."""
+    import pytest
+
+    from harbor_clerk.search import _apply_jsonb_metadata_filter
+
+    with pytest.raises(ValueError, match="non-empty namespace and key"):
+        _apply_jsonb_metadata_filter({".vendor": "Acme"}, [])
+
+    with pytest.raises(ValueError, match="non-empty namespace and key"):
+        _apply_jsonb_metadata_filter({"sidecar.": "Acme"}, [])
+
+
+def test_apply_jsonb_metadata_filter_returns_none():
+    """Helper mutates doc_conditions in place; returns None (companion to
+    _apply_email_metadata_filter which returns the remaining dict)."""
+    from harbor_clerk.search import _apply_jsonb_metadata_filter
+
+    result = _apply_jsonb_metadata_filter({"sidecar.vendor": "Acme"}, [])
+    assert result is None

@@ -25,6 +25,7 @@ __all__ = [
     "SearchHit",
     "SearchResult",
     "_apply_email_metadata_filter",
+    "_apply_jsonb_metadata_filter",
     "find_all",
     "hybrid_search",
 ]
@@ -126,6 +127,50 @@ def _apply_email_metadata_filter(
     return remaining
 
 
+def _apply_jsonb_metadata_filter(
+    metadata_filter: dict[str, Any],
+    doc_conditions: list,
+) -> None:
+    """Translate non-email.* metadata_filter keys into JSONB predicates.
+
+    Each `<namespace>.<key>: value` pair becomes either:
+      - JSONB @> containment: doc_metadata @> '{"ns": {"key": value}}'
+        (matches scalar metadata)
+      - OR JSONB ? existence: doc_metadata->'ns'->'key' ? 'value'
+        (matches list-valued metadata containing the scalar)
+
+    The OR lets a caller use a scalar filter value to match either a
+    scalar metadata field (sidecar.vendor: "Acme") OR a list-valued one
+    (frontmatter.tags: ["alpha", "beta"]) without knowing the shape.
+    Only string filter values get the OR — JSONB `?` operator requires
+    string keys, so non-string scalars (numbers, bools) use containment
+    only.
+
+    Mutates doc_conditions in place by appending predicates; returns
+    None. Companion to _apply_email_metadata_filter — that one strips
+    email.* keys and returns the remaining dict; this one consumes
+    that remaining dict.
+
+    Raises ValueError on malformed keys (must be 'namespace.key', one
+    dot, two non-empty segments). Nested paths are not supported in v1.
+    """
+    for path, value in metadata_filter.items():
+        if path.count(".") != 1:
+            raise ValueError(
+                f"metadata_filter keys must be exactly 'namespace.key' (one dot, two segments); "
+                f"got {path!r}. Nested paths are not supported in v1."
+            )
+        ns, _, key = path.partition(".")
+        if not ns or not key:
+            raise ValueError(f"metadata_filter keys must have a non-empty namespace and key, got {path!r}")
+        containment = Document.doc_metadata.op("@>")(func.cast({ns: {key: value}}, JSONB))
+        if isinstance(value, str):
+            existence = Document.doc_metadata[ns][key].op("?")(value)
+            doc_conditions.append(or_(containment, existence))
+        else:
+            doc_conditions.append(containment)
+
+
 def _normalize_scores(scores: dict[uuid.UUID, float]) -> dict[uuid.UUID, float]:
     """Normalize scores to 0-1 range within a candidate set."""
     if not scores:
@@ -202,21 +247,7 @@ async def hybrid_search(
         metadata_filter = _apply_email_metadata_filter(metadata_filter, doc_conditions)
 
     if metadata_filter:
-        for path, value in metadata_filter.items():
-            if path.count(".") != 1:
-                raise ValueError(
-                    f"metadata_filter keys must be exactly 'namespace.key' (one dot, two segments); "
-                    f"got {path!r}. Nested paths are not supported in v1."
-                )
-            ns, _, key = path.partition(".")
-            if not ns or not key:
-                raise ValueError(f"metadata_filter keys must have a non-empty namespace and key, got {path!r}")
-            containment = Document.doc_metadata.op("@>")(func.cast({ns: {key: value}}, JSONB))
-            if isinstance(value, str):
-                existence = Document.doc_metadata[ns][key].op("?")(value)
-                doc_conditions.append(or_(containment, existence))
-            else:
-                doc_conditions.append(containment)
+        _apply_jsonb_metadata_filter(metadata_filter, doc_conditions)
 
     if doc_conditions:
         doc_subq = select(Document.doc_id).where(*doc_conditions)

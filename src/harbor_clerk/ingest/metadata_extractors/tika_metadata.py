@@ -31,6 +31,12 @@ TIKA_FIELD_ALIASES: dict[str, str] = {
     "dc:subject": "subject",
     "dc:description": "description",
     "dc:language": "language",
+    # dc:identifier is intentionally generic in Dublin Core (can be ISBN,
+    # DOI, URN, or arbitrary string). EPUBs and many PDFs carry ISBN here;
+    # we alias to `isbn` because that's the most common HC-corpus use.
+    # Non-ISBN values still round-trip to tika.isbn; consumers can filter
+    # by shape as needed.
+    "dc:identifier": "isbn",
     "dcterms:created": "created_at",
     "dcterms:modified": "modified_at",
     "meta:keyword": "keywords",
