@@ -16,7 +16,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
+from harbor_clerk.file_types import ALLOWED_EXTENSIONS, guess_mime_type, is_excalidraw
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_heading import DocumentHeading
@@ -209,12 +209,18 @@ def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path:
 
 def _create_doc_and_enqueue(session: Session, event: FileEvent, sha: bytes) -> None:
     filename = Path(event.absolute_path).name
+    # mime_type was historically left NULL on the watched-folder path (the
+    # primary ingest path post Stage-2 watched-folder-first refactor), which
+    # broke the Observatory's file-type breakdown. The extract stage already
+    # expects mime_type to be set (`doc.mime_type or ""` at extract.py:254),
+    # so populating here also tightens that contract.
     doc = Document(
         title=Path(event.absolute_path).stem,
         canonical_filename=filename,
         status="active",
         sha256=sha,
         source_path=event.absolute_path,
+        mime_type=guess_mime_type(filename),
         pipeline_status=PipelineStatus.queued,
     )
     session.add(doc)

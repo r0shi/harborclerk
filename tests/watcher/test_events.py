@@ -44,6 +44,9 @@ def test_new_file_creates_document_and_extract_job(sync_session, folder, tmp_pat
     assert doc.pipeline_status == PipelineStatus.queued
     assert doc.pipeline_seq == 0
     assert doc.sha256 == hashlib.sha256(b"hello world").digest()
+    # mime_type is populated at create-time so the extract stage and the
+    # Observatory file-type breakdown both have something better than NULL.
+    assert doc.mime_type == "application/pdf"
 
     wf = sync_session.query(WatchedFile).one()
     assert wf.relative_path == "doc.pdf"

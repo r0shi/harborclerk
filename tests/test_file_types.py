@@ -1,9 +1,12 @@
 """Unit tests for the shared file-type classification module."""
 
+import pytest
+
 from harbor_clerk.file_types import (
     ALLOWED_EXTENSIONS,
     MARKDOWN_EXTENSIONS,
     PLAIN_TEXT_EXTENSIONS,
+    guess_mime_type,
     is_excalidraw,
 )
 
@@ -101,3 +104,59 @@ def test_uploads_route_uses_shared_allowlist():
     from harbor_clerk.api.routes import uploads
 
     assert uploads.ALLOWED_EXTENSIONS is ALLOWED_EXTENSIONS
+
+
+# ---------------------------------------------------------------------------
+# guess_mime_type
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "filename,expected",
+    [
+        # Tika formats — Python's mimetypes covers these on all supported versions.
+        ("report.pdf", "application/pdf"),
+        ("brief.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        ("legacy.doc", "application/msword"),
+        ("budget.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        ("deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        ("page.html", "text/html"),
+        ("mail.eml", "message/rfc822"),
+        ("book.epub", "application/epub+zip"),
+        # Plain text family.
+        ("notes.txt", "text/plain"),
+        ("readme.md", "text/markdown"),
+        ("data.csv", "text/csv"),
+        ("data.json", "application/json"),
+        # Image formats route to the right image/ subtypes.
+        ("scan.jpg", "image/jpeg"),
+        ("logo.png", "image/png"),
+        ("fax.tiff", "image/tiff"),
+        # HC-specific extensions Python's registry may not know — covered by
+        # the _MIME_FALLBACKS table so we get something better than octet-stream.
+        ("captions.srt", "application/x-subrip"),
+        ("notes.org", "text/x-org"),
+        ("manual.adoc", "text/x-asciidoc"),
+        ("compose.yaml", "application/yaml"),
+        ("ci.yml", "application/yaml"),
+        ("notebook.ipynb", "application/x-ipynb+json"),
+        ("graph.canvas", "application/x-obsidian-canvas"),
+        ("memo.pages", "application/x-iwork-pages"),
+        ("model.numbers", "application/x-iwork-numbers"),
+        ("pitch.key", "application/x-iwork-keynote"),
+    ],
+)
+def test_guess_mime_type_known_extensions(filename, expected):
+    assert guess_mime_type(filename) == expected
+
+
+def test_guess_mime_type_is_extension_based_not_case_sensitive():
+    """mimetypes.guess_type lowercases the extension internally; verify."""
+    assert guess_mime_type("REPORT.PDF") == "application/pdf"
+    assert guess_mime_type("Scan.TIFF") == "image/tiff"
+
+
+def test_guess_mime_type_unknown_falls_back_to_octet_stream():
+    """RFC 2046 'no information' sentinel — what Tika expects when given bytes blindly."""
+    assert guess_mime_type("opaque.zzzzz") == "application/octet-stream"
+    assert guess_mime_type("noextension") == "application/octet-stream"
