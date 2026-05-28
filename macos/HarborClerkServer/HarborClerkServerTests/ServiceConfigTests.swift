@@ -172,6 +172,96 @@ final class ServiceConfigTests: XCTestCase {
         )
     }
 
+    // MARK: - Data Dir Pre-Init Audit
+
+    /// Helper: create a fresh `parent` dir in a tempdir, add a teardown block,
+    /// and return the parent + the not-yet-created `dataDir` URL inside it.
+    /// Callers seed `dataDir` to whatever state they want for the test.
+    private func makeAuditScaffold() throws -> (parent: URL, dataDir: URL) {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("pg-audit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: parent) }
+        return (parent, parent.appendingPathComponent("postgres-data", isDirectory: true))
+    }
+
+    func testAuditDataDirReportsMissingWhenDirAbsent() throws {
+        let (_, dataDir) = try makeAuditScaffold()
+        // Note: dataDir not created — exercise the missing path.
+        XCTAssertEqual(PostgresService.auditDataDirBeforeInit(dataDir: dataDir), .missing)
+    }
+
+    func testAuditDataDirReportsMissingWhenPathIsAFile() throws {
+        // A regular file at `dataDir.path` is not a usable data directory.
+        let (parent, _) = try makeAuditScaffold()
+        let dataDir = parent.appendingPathComponent("postgres-data")
+        try Data().write(to: dataDir)
+        XCTAssertEqual(PostgresService.auditDataDirBeforeInit(dataDir: dataDir), .missing)
+    }
+
+    func testAuditDataDirReportsEmptyWhenDirHasNoFiles() throws {
+        let (_, dataDir) = try makeAuditScaffold()
+        try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        XCTAssertEqual(PostgresService.auditDataDirBeforeInit(dataDir: dataDir), .empty)
+    }
+
+    func testAuditDataDirReportsPGVersionPresentWithTrimmedContents() throws {
+        let (_, dataDir) = try makeAuditScaffold()
+        try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        // Real PG_VERSION files end with a newline; the audit must trim it.
+        try "18\n".write(to: dataDir.appendingPathComponent("PG_VERSION"), atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(
+            PostgresService.auditDataDirBeforeInit(dataDir: dataDir),
+            .pgVersionPresent("18"),
+        )
+    }
+
+    func testAuditDataDirReportsCorruptWhenPGVersionMissingButFilesPresent() throws {
+        // The tripwire case: real cluster subdirs present (base/, global/,
+        // pg_wal/, pg_xact/) but PG_VERSION is gone. Pre-this-PR the bare
+        // `fileExists(PG_VERSION)` check would treat this as a fresh launch
+        // and call initdb; `initdb` would refuse, but the user only sees
+        // "initdb failed with N". The audit surfaces the real state.
+        let (_, dataDir) = try makeAuditScaffold()
+        try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        for name in ["base", "global", "pg_wal", "pg_xact"] {
+            try FileManager.default.createDirectory(
+                at: dataDir.appendingPathComponent(name, isDirectory: true),
+                withIntermediateDirectories: true,
+            )
+        }
+
+        let result = PostgresService.auditDataDirBeforeInit(dataDir: dataDir)
+        guard case .corruptOrForeign(let fileCount, let sampleNames) = result else {
+            return XCTFail("Expected .corruptOrForeign, got \(result)")
+        }
+        XCTAssertEqual(fileCount, 4)
+        XCTAssertEqual(sampleNames, ["base", "global", "pg_wal", "pg_xact"])
+    }
+
+    func testAuditDataDirSampleNamesCapAt8() throws {
+        let (_, dataDir) = try makeAuditScaffold()
+        try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        // 12 entries; the sample is capped at 8 and returned sorted ascending.
+        let names = ["a01", "b02", "c03", "d04", "e05", "f06", "g07", "h08", "i09", "j10", "k11", "l12"]
+        for name in names {
+            try Data().write(to: dataDir.appendingPathComponent(name))
+        }
+
+        let result = PostgresService.auditDataDirBeforeInit(dataDir: dataDir)
+        guard case .corruptOrForeign(let fileCount, let sampleNames) = result else {
+            return XCTFail("Expected .corruptOrForeign, got \(result)")
+        }
+        XCTAssertEqual(fileCount, 12)
+        // FileManager.contentsOfDirectory's order is undefined per Apple's
+        // docs (depends on filesystem semantics) so we assert only that we
+        // get exactly 8 entries from the seeded set, sorted ascending.
+        XCTAssertEqual(sampleNames.count, 8)
+        XCTAssertTrue(Set(sampleNames).isSubset(of: Set(names)))
+        XCTAssertEqual(sampleNames, sampleNames.sorted())
+    }
+
     // MARK: - Log Formatting
 
     func testLogFormatForCopy() {
