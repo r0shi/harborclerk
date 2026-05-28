@@ -233,10 +233,13 @@ def _apply_email_fields(doc: Document, parsed: EmailParseResult) -> None:
     """Copy parsed-email metadata onto an existing Document row.
 
     Mirrors `mail/ingest.py::create_email_document` for the watched-folder
-    ingest path. Only the email_* columns + title + created_at/updated_at;
-    we don't touch sha256, source_path, mime_type, etc. The IMAP path also
-    sets email_label_path (Gmail label name); watched-folder ingest has
-    folder_id on the WatchedFile row for that role, so email_label_path
+    ingest path. Sets the email_* columns + title + created_at; we don't
+    touch sha256, source_path, mime_type, or updated_at. `updated_at` is
+    intentionally left to the caller — on a reprocess (in-place .eml edit)
+    it would be wrong to slide updated_at backwards to the email's send
+    date when the record was just touched now. The IMAP path also sets
+    `email_label_path` (Gmail label name); watched-folder ingest has
+    `folder_id` on the WatchedFile row for that role, so email_label_path
     stays NULL here.
     """
     doc.title = parsed.subject
@@ -250,10 +253,11 @@ def _apply_email_fields(doc: Document, parsed: EmailParseResult) -> None:
     doc.email_date_sent = parsed.date_sent
     # Match IMAP-path semantics: created_at = email send date, so the
     # Documents page sorts emails by when they were sent, not when they
-    # were dropped into the watched folder.
+    # were dropped into the watched folder. Stays semantically correct
+    # on reprocess too — `created_at` describes the email content, and
+    # the new bytes' Date header is what we want.
     if parsed.date_sent is not None:
         doc.created_at = parsed.date_sent
-        doc.updated_at = parsed.date_sent
 
 
 def _create_doc_and_enqueue(session: Session, event: FileEvent, sha: bytes) -> None:
@@ -284,6 +288,12 @@ def _create_doc_and_enqueue(session: Session, event: FileEvent, sha: bytes) -> N
         parsed = _try_parse_eml(event.absolute_path)
         if parsed is not None:
             _apply_email_fields(doc, parsed)
+            # Pin updated_at = date_sent at first-create only (matches IMAP
+            # `create_email_document`). `_apply_email_fields` deliberately
+            # doesn't touch updated_at because the reprocess caller would
+            # otherwise slide updated_at backwards on every in-place edit.
+            if parsed.date_sent is not None:
+                doc.updated_at = parsed.date_sent
 
     session.add(doc)
     session.flush()

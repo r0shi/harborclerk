@@ -323,8 +323,12 @@ def run_extract(doc_id: uuid.UUID) -> None:
                 # Mirror the watcher's title-and-date semantics. Only adopt
                 # parsed.subject when the existing title looks generic (== the
                 # filename stem) so we don't clobber an operator-edited title.
+                # `stem` truthiness check: if both source_path and
+                # canonical_filename are NULL/empty (pathological legacy doc),
+                # `Path("").stem` is "" — without the truthy guard we'd then
+                # clobber any doc whose title happens to also be empty.
                 stem = Path(doc.source_path or doc.canonical_filename or "").stem
-                if doc.title == stem and parsed.subject:
+                if stem and doc.title == stem and parsed.subject:
                     doc.title = parsed.subject
                 if parsed.date_sent is not None:
                     doc.created_at = parsed.date_sent

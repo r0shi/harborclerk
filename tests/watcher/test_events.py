@@ -96,8 +96,10 @@ def test_new_eml_file_populates_email_metadata_columns(sync_session, folder, tmp
     assert doc.email_date_sent is not None
     # Match IMAP-path semantics: title = subject, not filename.stem.
     assert doc.title == "Project status update"
-    # created_at = date_sent so Documents page sorts by send date.
+    # created_at = date_sent so Documents page sorts by send date. updated_at
+    # tracks created_at at first-ingest (matches IMAP `create_email_document`).
     assert doc.created_at == doc.email_date_sent
+    assert doc.updated_at == doc.email_date_sent
 
 
 def test_new_eml_file_with_unparseable_content_falls_through(sync_session, folder, tmp_path):
@@ -186,6 +188,22 @@ def test_modify_eml_refreshes_email_metadata(sync_session, folder, tmp_path):
     assert doc.email_subject == "RE: Project status update"
     assert doc.email_from_address == "bob@example.com"
     assert doc.title == "RE: Project status update"
+    # `created_at` refreshes from the new Date header (it's a property of the
+    # email content). `updated_at` MUST NOT slide backwards to date_sent on
+    # reprocess — `_apply_email_fields` intentionally doesn't touch it, only
+    # `_create_doc_and_enqueue` does for first-ingest. The reprocess path
+    # otherwise has the same first-set value updated_at held before the modify,
+    # which is the correct "record was meaningfully touched at first-ingest
+    # time" answer for the IMAP-parity model.
+    assert doc.created_at == doc.email_date_sent  # = 2026-05-29 from new Date header
+    # The first-ingest set updated_at to the OLD date_sent (2026-05-28); the
+    # reprocess must NOT have slid it to the NEW date_sent (2026-05-29). The
+    # `<` assertion catches both the original bug (would have been ==) and any
+    # future change that incorrectly clobbers updated_at on reprocess.
+    assert doc.updated_at < doc.email_date_sent, (
+        f"updated_at ({doc.updated_at}) should NOT slide forward to the new date_sent "
+        f"({doc.email_date_sent}) on reprocess"
+    )
 
 
 def test_modify_same_sha_is_noop(sync_session, folder, tmp_path):
