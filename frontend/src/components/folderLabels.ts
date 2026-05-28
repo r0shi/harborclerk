@@ -97,12 +97,11 @@ export function disambiguateLabels(folders: FolderLike[]): Map<string, string> {
       siblingLabelsAtD.set(f.folder_id, labelAt(f, resolvedDepth))
     }
 
-    // Phase 2: assign labels greedily, processing folders with longer paths
-    // first (they need more segments to distinguish themselves). Each folder
-    // gets the shortest depth (≥ 2) whose label doesn't match any
-    // already-assigned label. Shorter-path folders benefit because the longer
-    // siblings have already "claimed" their deeper labels, leaving the shorter
-    // suffixes free.
+    // Phase 2: assign labels greedily, processing shorter paths first.
+    // Shorter paths claim the minimal (depth-2) suffix first; longer paths
+    // get pushed to deeper depths only when the shorter suffixes are already
+    // taken. The full resolvedDepth label is always available as a fallback
+    // since Phase 1 guarantees it's unique within the group.
     const groupLabels = new Map<string, string>()
     const assigned = new Set<string>() // labels already locked in
 
