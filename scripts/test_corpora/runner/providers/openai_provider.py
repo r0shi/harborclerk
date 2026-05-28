@@ -157,7 +157,11 @@ class OpenAIProvider:
         while True:
             kwargs: dict[str, Any] = {
                 "model": self._model,
-                "max_tokens": 8000,
+                # max_completion_tokens replaced max_tokens in OpenAI's API
+                # starting with the o1 / gpt-5 families. It's accepted by
+                # older models too (gpt-4o, gpt-4-turbo) for back-compat, so
+                # we use the new name universally.
+                "max_completion_tokens": 8000,
                 "messages": messages,
             }
             if tools:
