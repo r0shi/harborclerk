@@ -396,6 +396,7 @@ class HarborClerkClient:
         depth: str = "standard",
         time_limit_minutes: int = 30,
         strategy: str | None = None,
+        scope: dict | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """POST /api/research and drain the SSE stream until the research
         finishes server-side. Returns ``(conv_id, ResearchDetail)``.
@@ -424,6 +425,8 @@ class HarborClerkClient:
         }
         if strategy is not None:
             body["strategy"] = strategy
+        if scope:
+            body["scope"] = scope
 
         # Read timeout must accommodate the full time_limit + slack for
         # synthesis tail.
@@ -542,7 +545,11 @@ class HarborClerkClient:
 
     # ── ask (chat SSE) ──
 
-    def create_conversation(self, title: str = "test-corpora") -> str:
+    def create_conversation(
+        self,
+        title: str = "test-corpora",
+        scope: dict | None = None,
+    ) -> str:
         """POST /api/chat/conversations — returns conversation_id.
 
         HC's ``CreateConversationRequest`` schema is ``title: str`` (no longer
@@ -550,8 +557,16 @@ class HarborClerkClient:
         harness sent ``{"title": null, "mode": "chat"}`` which Pydantic
         rejects with 422 ("Input should be a valid string"). We now always
         pass a non-empty title and never send ``mode``.
+
+        ``scope``: optional folder-scope spec (PR #415). When set, HC's chat
+        engine restricts tool calls during the conversation to documents in
+        the named folders. Pass e.g. ``{"folder_ids": ["<uuid>"]}``. Omitted
+        and None both mean "no folder restriction" (the default).
         """
-        r = self._client.post("/api/chat/conversations", json={"title": title})
+        body: dict[str, object] = {"title": title}
+        if scope:
+            body["scope"] = scope
+        r = self._client.post("/api/chat/conversations", json=body)
         r.raise_for_status()
         return r.json()["conversation_id"]
 
@@ -662,6 +677,36 @@ class HarborClerkClient:
         r = self._client.get("/api/watch/folders")
         r.raise_for_status()
         return r.json()
+
+    def folder_id_for_corpus(self, corpus: str) -> str:
+        """Resolve a corpus name (cuad / enron / synthetic / etc.) to its watch
+        folder UUID. Used by scoped runs to scope chat/research to a single
+        corpus on a multi-corpus HC instance.
+
+        Matches by ``display_name`` first (set by the Folders page rename UI
+        or assigned on auto-discovery), and falls back to the last path
+        segment when display_name doesn't match — so a folder ingested at
+        ``…/test-corpora/cuad/ingest`` resolves under either ``cuad`` (the
+        display name) or the literal path basename.
+
+        Raises ValueError when no folder matches — callers should fail loudly
+        rather than silently fall back to an unscoped query that would pull
+        cross-corpus contamination into the tool results.
+        """
+        folders = self.watch_folder_list()
+        # Prefer display_name match
+        for f in folders:
+            if f.get("display_name") == corpus:
+                return f["folder_id"]
+        # Fall back to the parent directory of the ingest path
+        # (e.g. .../cuad/ingest -> corpus=cuad)
+        for f in folders:
+            path = f.get("path", "")
+            parts = [p for p in path.split("/") if p]
+            if len(parts) >= 2 and parts[-2] == corpus:
+                return f["folder_id"]
+        known = [f.get("display_name") for f in folders]
+        raise ValueError(f"no watch folder matches corpus {corpus!r}; known display_names: {known}")
 
     def watch_folder_delete(self, folder_id: str) -> None:
         """DELETE /api/watch/folders/{folder_id}."""
