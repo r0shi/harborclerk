@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { del, get, patch, post, ApiError } from '../api'
 import { useAuth } from '../auth'
 import { useFolderProgress } from '../hooks/useFolderProgress'
@@ -113,6 +114,11 @@ export default function FoldersPage() {
   // the Delete button look broken. The state tracks which folder is
   // armed for delete; first click sets it, second confirms.
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  // Inline rename state
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const queryClient = useQueryClient()
 
   async function reload() {
     try {
@@ -215,6 +221,19 @@ export default function FoldersPage() {
     }
   }
 
+  async function saveAlias(folderId: string, alias: string) {
+    setRenameError(null)
+    try {
+      await patch(`/api/watch/folders/${folderId}`, { display_name: alias })
+      setEditingId(null)
+      setDraftName('')
+      reload()
+      queryClient.invalidateQueries({ queryKey: ['watch', 'folders'] })
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : 'Rename failed')
+    }
+  }
+
   if (!system) return <div className="text-sm text-(--color-text-secondary)">Loading…</div>
 
   const addButton = system.picker === 'native' ? <AddFolderButton onClick={handleAdd} /> : null
@@ -264,10 +283,25 @@ export default function FoldersPage() {
                 isExpanded={isExpanded}
                 deleteDisabled={deleteDisabled}
                 pendingDelete={pendingDelete}
+                isEditing={editingId === f.folder_id}
+                draftName={draftName}
+                renameError={renameError}
                 onToggleExpand={() => setExpanded(isExpanded ? null : f.folder_id)}
                 onToggleEnabled={() => handleToggle(f)}
                 onDelete={() => handleDeleteClick(f.folder_id)}
                 onCancelDelete={() => setPendingDeleteId(null)}
+                onStartEdit={() => {
+                  setDraftName(f.display_name ?? '')
+                  setEditingId(f.folder_id)
+                  setRenameError(null)
+                }}
+                onDraftChange={(v) => setDraftName(v)}
+                onSaveAlias={() => saveAlias(f.folder_id, draftName)}
+                onCancelEdit={() => {
+                  setEditingId(null)
+                  setDraftName('')
+                  setRenameError(null)
+                }}
               />
             )
           })}
@@ -288,10 +322,17 @@ interface FolderRowProps {
   isExpanded: boolean
   deleteDisabled: boolean
   pendingDelete: boolean
+  isEditing: boolean
+  draftName: string
+  renameError: string | null
   onToggleExpand: () => void
   onToggleEnabled: () => void
   onDelete: () => void
   onCancelDelete: () => void
+  onStartEdit: () => void
+  onDraftChange: (value: string) => void
+  onSaveAlias: () => void
+  onCancelEdit: () => void
 }
 
 function FolderRow({
@@ -300,17 +341,71 @@ function FolderRow({
   isExpanded,
   deleteDisabled,
   pendingDelete,
+  isEditing,
+  draftName,
+  renameError,
   onToggleExpand,
   onToggleEnabled,
   onDelete,
   onCancelDelete,
+  onStartEdit,
+  onDraftChange,
+  onSaveAlias,
+  onCancelEdit,
 }: FolderRowProps) {
+  // Escape keydown sets this flag so the subsequent blur event (fired by the
+  // browser when focus leaves the input) doesn't trigger a spurious save with
+  // an empty draftName. Enter doesn't need it — React doesn't fire blur on
+  // unmount the same way.
+  const ignoreBlurRef = useRef(false)
+
   return (
     <Card className="mb-2" interactive>
       <div className="flex cursor-pointer items-center gap-3 px-3.5 py-3" onClick={onToggleExpand}>
         <IconTile size={30}>📁</IconTile>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-medium text-(--color-text-primary)">{f.display_name || f.path}</div>
+          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+            {isEditing ? (
+              <>
+                <input
+                  autoFocus
+                  value={draftName}
+                  onChange={(e) => onDraftChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') onSaveAlias()
+                    if (e.key === 'Escape') {
+                      ignoreBlurRef.current = true
+                      onCancelEdit()
+                    }
+                  }}
+                  onBlur={() => {
+                    if (ignoreBlurRef.current) {
+                      ignoreBlurRef.current = false
+                      return
+                    }
+                    onSaveAlias()
+                  }}
+                  maxLength={200}
+                  className="rounded border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-2 py-1 text-sm font-medium"
+                />
+                {renameError ? <span className="text-xs text-red-400">{renameError}</span> : null}
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-(--color-text-primary)" title={f.path}>
+                  {f.display_name ?? f.path.split('/').filter(Boolean).pop() ?? f.folder_id}
+                </span>
+                <button
+                  type="button"
+                  onClick={onStartEdit}
+                  aria-label={`Rename ${f.display_name ?? f.folder_id}`}
+                  className="text-(--color-text-secondary) hover:text-(--color-text-primary)"
+                >
+                  ✎
+                </button>
+              </>
+            )}
+          </div>
           <div className="flex items-center gap-2 text-[11px] text-(--color-text-secondary)">
             <span className="truncate font-mono">{f.path}</span>
             {f.auto_discovered && (

@@ -79,4 +79,67 @@ describe('FolderPicker', () => {
     expect(screen.queryByText('Contracts')).not.toBeInTheDocument()
     expect(screen.getByText('Legal')).toBeInTheDocument()
   })
+
+  it('disambiguates labels when two folders share display_name', () => {
+    const colliding = [
+      {
+        folder_id: 'a',
+        path: '/work/cuad/ingest',
+        display_name: 'ingest',
+        unavailable_reason: null,
+        enabled: true,
+        auto_discovered: false,
+        skipped_count: 0,
+        skipped_extensions: [],
+      },
+      {
+        folder_id: 'b',
+        path: '/work/qwen3-20b/cuad/ingest',
+        display_name: 'ingest',
+        unavailable_reason: null,
+        enabled: true,
+        auto_discovered: false,
+        skipped_count: 0,
+        skipped_extensions: [],
+      },
+    ]
+    render(<FolderPicker value={[]} onChange={() => {}} folders={colliding} />)
+    fireEvent.click(screen.getAllByRole('button')[0])
+    expect(screen.getByText('cuad/ingest')).toBeInTheDocument()
+    expect(screen.getByText('qwen3-20b/cuad/ingest')).toBeInTheDocument()
+  })
+
+  it('renders a title attribute with the full path on each row', () => {
+    render(<FolderPicker value={[]} onChange={() => {}} folders={folders} />)
+    fireEvent.click(screen.getAllByRole('button')[0])
+    const row = screen.getByText('Contracts').closest('label')
+    expect(row).toHaveAttribute('title', '/c')
+  })
+
+  it('uses disambiguated labels in the trigger button summary', () => {
+    const colliding = [
+      {
+        folder_id: 'a',
+        path: '/work/cuad/ingest',
+        display_name: 'ingest',
+        unavailable_reason: null,
+        enabled: true,
+        auto_discovered: false,
+        skipped_count: 0,
+        skipped_extensions: [],
+      },
+      {
+        folder_id: 'b',
+        path: '/work/qwen3-20b/cuad/ingest',
+        display_name: 'ingest',
+        unavailable_reason: null,
+        enabled: true,
+        auto_discovered: false,
+        skipped_count: 0,
+        skipped_extensions: [],
+      },
+    ]
+    render(<FolderPicker value={['a', 'b']} onChange={() => {}} folders={colliding} />)
+    expect(screen.getByRole('button')).toHaveTextContent('Folders: cuad/ingest, qwen3-20b/cuad/ingest (2)')
+  })
 })

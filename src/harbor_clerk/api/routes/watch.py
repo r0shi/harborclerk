@@ -45,6 +45,7 @@ class FolderCreate(BaseModel):
 class FolderPatch(BaseModel):
     enabled: bool | None = None
     last_event_id: int | None = None
+    display_name: str | None = None
 
 
 class IngestRequest(BaseModel):
@@ -415,6 +416,13 @@ async def patch_folder(
         enabled_changed_to = body.enabled
     if body.last_event_id is not None:
         folder.last_event_id = body.last_event_id
+    if body.display_name is not None:
+        new_name = body.display_name.strip()
+        if not new_name:
+            new_name = Path(folder.path).name
+        if len(new_name) > 200:
+            raise HTTPException(status_code=422, detail="display_name exceeds 200 chars")
+        folder.display_name = new_name
 
     if enabled_changed_to is not None:
         action = "enabled" if enabled_changed_to else "disabled"
