@@ -60,6 +60,134 @@ def test_new_file_creates_document_and_extract_job(sync_session, folder, tmp_pat
     assert job.status == JobStatus.queued
 
 
+_SAMPLE_EML = (
+    b'From: "Alice" <alice@example.com>\r\n'
+    b"To: bob@example.com\r\n"
+    b"Cc: carol@example.com, dave@example.com\r\n"
+    b"Subject: Project status update\r\n"
+    b"Message-ID: <eml-fixture-001@example.com>\r\n"
+    b"Date: Wed, 28 May 2026 12:00:00 +0000\r\n"
+    b"\r\n"
+    b"Body of the email here.\r\n"
+)
+
+
+def test_new_eml_file_populates_email_metadata_columns(sync_session, folder, tmp_path):
+    """For .eml ingest, the watcher must populate email_* columns by calling
+    parse_eml on the bytes. Pre-this-PR these were NULL on every watched-folder
+    .eml, leaving PR #414's preamble injection + email.* metadata_filter
+    dormant on the entire Enron-style corpus."""
+    f = tmp_path / "msg.eml"
+    f.write_bytes(_SAMPLE_EML)
+    handle_event(
+        sync_session,
+        FileEvent(EventKind.created, folder.folder_id, "msg.eml", str(f)),
+    )
+    sync_session.commit()
+
+    doc = sync_session.query(Document).one()
+    assert doc.mime_type == "message/rfc822"
+    assert doc.email_message_id == "<eml-fixture-001@example.com>"
+    assert doc.email_from_address == "alice@example.com"
+    assert doc.email_from_name == "Alice"
+    assert doc.email_subject == "Project status update"
+    assert doc.email_to_addresses == ["bob@example.com"]
+    assert doc.email_cc_addresses == ["carol@example.com", "dave@example.com"]
+    assert doc.email_date_sent is not None
+    # Match IMAP-path semantics: title = subject, not filename.stem.
+    assert doc.title == "Project status update"
+    # created_at = date_sent so Documents page sorts by send date.
+    assert doc.created_at == doc.email_date_sent
+
+
+def test_new_eml_file_with_unparseable_content_falls_through(sync_session, folder, tmp_path):
+    """A malformed .eml shouldn't crash ingest — the doc is created with
+    email_* NULL and the standard extract job is still enqueued."""
+    f = tmp_path / "broken.eml"
+    # `parse_eml` is best-effort and tolerates most malformed content; force a
+    # parse failure by making the file non-readable as RFC 5322. The Python
+    # `email` module is famously forgiving, so the surest way to exercise the
+    # except branch is a unicode-decode error inside the parser path. We
+    # achieve that obliquely by writing a header line that triggers the
+    # downstream `decode_header` to choke. Empty bytes round-trip cleanly
+    # through `message_from_bytes` returning an empty Message — that exercises
+    # the "no headers" fallback (synthetic message_id) and so does NOT hit
+    # the except branch. To exercise the except, we monkeypatch parse_eml.
+    f.write_bytes(b"this is not really an email\r\n\r\n")
+    import harbor_clerk.watcher.events as ev
+
+    original = ev.parse_eml
+
+    def _exploding_parse(_data: bytes):
+        raise RuntimeError("simulated parser failure")
+
+    ev.parse_eml = _exploding_parse
+    try:
+        handle_event(
+            sync_session,
+            FileEvent(EventKind.created, folder.folder_id, "broken.eml", str(f)),
+        )
+        sync_session.commit()
+    finally:
+        ev.parse_eml = original
+
+    doc = sync_session.query(Document).one()
+    assert doc.mime_type == "message/rfc822"
+    assert doc.email_message_id is None  # fell through cleanly
+    # Filename-stem title (parsing failed → no subject)
+    assert doc.title == "broken"
+    # Extract job still enqueued — ingest is best-effort about email metadata
+    # but never blocks the pipeline.
+    assert sync_session.query(IngestionJob).count() == 1
+
+
+def test_new_non_eml_file_leaves_email_metadata_null(sync_session, folder, tmp_path):
+    """Sanity guard: parse_eml only runs for .eml. A PDF must NOT accidentally
+    populate email_* columns."""
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"%PDF-1.4\nfake pdf body")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "report.pdf", str(f)))
+    sync_session.commit()
+
+    doc = sync_session.query(Document).one()
+    assert doc.email_message_id is None
+    assert doc.email_subject is None
+    assert doc.title == "report"  # filename stem
+
+
+def test_modify_eml_refreshes_email_metadata(sync_session, folder, tmp_path):
+    """In-place .eml edit (SHA change) must re-parse so email_* reflects the
+    new contents instead of the old."""
+    f = tmp_path / "msg.eml"
+    f.write_bytes(_SAMPLE_EML)
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "msg.eml", str(f)))
+    sync_session.commit()
+
+    doc_id = sync_session.query(Document).one().doc_id
+
+    # Replace with a fresh email — different subject + sender.
+    updated = (
+        b"From: bob@example.com\r\n"
+        b"To: alice@example.com\r\n"
+        b"Subject: RE: Project status update\r\n"
+        b"Message-ID: <eml-fixture-002@example.com>\r\n"
+        b"Date: Thu, 29 May 2026 09:00:00 +0000\r\n"
+        b"\r\n"
+        b"Thanks for the update.\r\n"
+    )
+    f.write_bytes(updated)
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "msg.eml", str(f)))
+    sync_session.commit()
+
+    # Same doc_id, refreshed email_* columns.
+    doc = sync_session.query(Document).one()
+    assert doc.doc_id == doc_id
+    assert doc.email_message_id == "<eml-fixture-002@example.com>"
+    assert doc.email_subject == "RE: Project status update"
+    assert doc.email_from_address == "bob@example.com"
+    assert doc.title == "RE: Project status update"
+
+
 def test_modify_same_sha_is_noop(sync_session, folder, tmp_path):
     """Branch 1: existing+active+same SHA → no-op (no new job, no state change)."""
     f = tmp_path / "doc.pdf"
