@@ -55,9 +55,7 @@ interface RequestPage {
 
 /* ---------- constants ---------- */
 
-const REQUEST_RANGES = ['1h', '6h', '12h', '24h', '7d', '30d'] as const
-const ERROR_RANGES = ['1h', '24h', '7d'] as const
-const DENIAL_RANGES = ['1h', '24h', '7d'] as const
+const RANGES = ['1h', '6h', '12h', '24h', '7d', '30d'] as const
 const PAGE_SIZES = [25, 50, 100, 200] as const
 
 /* ---------- helpers ---------- */
@@ -94,11 +92,9 @@ export default function ApiKeyDashboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  // card dropdown selections
-  const [reqRange, setReqRange] = useState<string>('24h')
-  const [errRange, setErrRange] = useState<string>('7d')
-  const [denRange, setDenRange] = useState<string>('7d')
-  const [rlRange, setRlRange] = useState<string>('7d')
+  // Single time-range selector drives every count card and the tool-breakdown
+  // chart. The 30-day timeline and the request log have their own controls.
+  const [range, setRange] = useState<string>('24h')
 
   // request log filters + pagination
   const [logPage, setLogPage] = useState(1)
@@ -197,7 +193,7 @@ export default function ApiKeyDashboardPage() {
     )
   }
 
-  const hasData = usage && (usage.requests['24h'] > 0 || usage.requests['30d'] > 0 || timeline.length > 0)
+  const hasData = usage && (usage.requests[range] > 0 || usage.requests['30d'] > 0 || timeline.length > 0)
 
   // Collect unique endpoints from top_tools across all ranges for filter dropdown
   const allEndpoints = usage
@@ -280,87 +276,50 @@ export default function ApiKeyDashboardPage() {
 
       {usage && (
         <>
+          {/* Unified time range — drives every count card and the tool-breakdown chart */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold text-(--color-text-primary)">Activity</h2>
+            <label className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+              Time range
+              <select
+                value={range}
+                onChange={(e) => setRange(e.target.value)}
+                className="rounded border-0 bg-(--color-bg-secondary) px-2 py-1 text-xs"
+              >
+                {RANGES.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
           {/* Summary cards */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
             {/* Requests card */}
             <Card className="p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Requests</span>
-                <select
-                  value={reqRange}
-                  onChange={(e) => setReqRange(e.target.value)}
-                  className="rounded border-0 bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs"
-                >
-                  {REQUEST_RANGES.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <p className="mt-2 text-2xl font-bold">{usage.requests[reqRange] ?? 0}</p>
+              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Requests</span>
+              <p className="mt-2 text-2xl font-bold">{usage.requests[range] ?? 0}</p>
             </Card>
 
             {/* Errors card */}
-            <Card className={`p-4 ${(usage.errors[errRange] ?? 0) > 0 ? 'bg-red-50 dark:bg-red-900/10' : ''}`}>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Errors</span>
-                <select
-                  value={errRange}
-                  onChange={(e) => setErrRange(e.target.value)}
-                  className="rounded border-0 bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs"
-                >
-                  {ERROR_RANGES.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <p className="mt-2 text-2xl font-bold text-red-600 dark:text-red-400">{usage.errors[errRange] ?? 0}</p>
+            <Card className={`p-4 ${(usage.errors[range] ?? 0) > 0 ? 'bg-red-50 dark:bg-red-900/10' : ''}`}>
+              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Errors</span>
+              <p className="mt-2 text-2xl font-bold text-red-600 dark:text-red-400">{usage.errors[range] ?? 0}</p>
             </Card>
 
             {/* Denials card */}
-            <Card className={`p-4 ${(usage.denials[denRange] ?? 0) > 0 ? 'bg-amber-50 dark:bg-amber-900/10' : ''}`}>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Denials</span>
-                <select
-                  value={denRange}
-                  onChange={(e) => setDenRange(e.target.value)}
-                  className="rounded border-0 bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs"
-                >
-                  {DENIAL_RANGES.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <p className="mt-2 text-2xl font-bold text-amber-600 dark:text-amber-400">
-                {usage.denials[denRange] ?? 0}
-              </p>
+            <Card className={`p-4 ${(usage.denials[range] ?? 0) > 0 ? 'bg-amber-50 dark:bg-amber-900/10' : ''}`}>
+              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Denials</span>
+              <p className="mt-2 text-2xl font-bold text-amber-600 dark:text-amber-400">{usage.denials[range] ?? 0}</p>
             </Card>
 
             {/* Rate Limited card */}
-            <Card
-              className={`p-4 ${(usage.rate_limited[rlRange] ?? 0) > 0 ? 'bg-orange-50 dark:bg-orange-900/20' : ''}`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Rate Limited</span>
-                <select
-                  value={rlRange}
-                  onChange={(e) => setRlRange(e.target.value)}
-                  className="rounded border-0 bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs"
-                >
-                  {DENIAL_RANGES.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <Card className={`p-4 ${(usage.rate_limited[range] ?? 0) > 0 ? 'bg-orange-50 dark:bg-orange-900/20' : ''}`}>
+              <span className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Rate Limited</span>
               <p className="mt-2 text-2xl font-bold text-orange-600 dark:text-orange-400">
-                {usage.rate_limited[rlRange] ?? 0}
+                {usage.rate_limited[range] ?? 0}
               </p>
             </Card>
 
@@ -395,25 +354,12 @@ export default function ApiKeyDashboardPage() {
               )}
             </Card>
 
-            {/* Tool breakdown */}
+            {/* Tool breakdown — uses the unified time range from the Activity header above */}
             <Card className="p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-sm font-semibold">Tool breakdown</h2>
-                <select
-                  value={reqRange}
-                  onChange={(e) => setReqRange(e.target.value)}
-                  className="rounded border-0 bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs"
-                >
-                  {REQUEST_RANGES.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {(usage.top_tools[reqRange] ?? []).length > 0 ? (
+              <h2 className="mb-3 text-sm font-semibold">Tool breakdown</h2>
+              {(usage.top_tools[range] ?? []).length > 0 ? (
                 <ResponsiveContainer width="100%" height={240}>
-                  <BarChart data={usage.top_tools[reqRange]} layout="vertical">
+                  <BarChart data={usage.top_tools[range]} layout="vertical">
                     <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
                     <YAxis dataKey="endpoint" type="category" width={140} tick={{ fontSize: 11 }} />
                     <Tooltip />
