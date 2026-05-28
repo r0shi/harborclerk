@@ -89,7 +89,7 @@ final class ServiceConfigTests: XCTestCase {
 
     func testMoveDataDirAsideRenamesToTimestampedSibling() throws {
         let (parent, dataDir) = try makeFakeDataDir(withPGVersion: "16")
-        let now = Date(timeIntervalSince1970: 1_716_864_000)  // 2026-05-28 00:00:00 UTC
+        let now = Date(timeIntervalSince1970: 1_779_926_400)  // 2026-05-28 00:00:00 UTC
 
         let backup = try PostgresService.moveDataDirAside(
             dataDir: dataDir,
@@ -114,7 +114,7 @@ final class ServiceConfigTests: XCTestCase {
 
     func testMoveDataDirAsideHandlesUnknownStoredVersion() throws {
         let (_, dataDir) = try makeFakeDataDir(withPGVersion: nil)
-        let now = Date(timeIntervalSince1970: 1_716_864_000)
+        let now = Date(timeIntervalSince1970: 1_779_926_400)
 
         let backup = try PostgresService.moveDataDirAside(
             dataDir: dataDir,
@@ -137,7 +137,7 @@ final class ServiceConfigTests: XCTestCase {
 
     func testMoveDataDirAsideHandlesSameSecondCollision() throws {
         let (parent, dataDir) = try makeFakeDataDir(withPGVersion: "16")
-        let now = Date(timeIntervalSince1970: 1_716_864_000)
+        let now = Date(timeIntervalSince1970: 1_779_926_400)
 
         // Pre-create the naive candidate destination so the helper has to
         // pick a suffixed name. This is the "two restarts within the same

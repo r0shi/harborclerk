@@ -46,7 +46,11 @@ final class PostgresService: ManagedService {
         if fm.fileExists(atPath: pgVersionFile.path) {
             let stored = (try? String(contentsOf: pgVersionFile, encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if stored != expectedMajor {
+            // Guard against `expectedMajor` being empty — `bundledPgMajorVersion()`
+            // returns "" on any failure to probe `postgres --version`. Without
+            // this, a transient bundled-binary error would treat a healthy
+            // data dir as mismatched and move it aside unnecessarily.
+            if !expectedMajor.isEmpty && stored != expectedMajor {
                 Log.logger("postgresql").warning(
                     "Data directory version mismatch: found \(stored ?? "?", privacy: .public), expected \(expectedMajor, privacy: .public). Moving aside before initializing a fresh cluster."
                 )
