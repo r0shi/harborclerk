@@ -57,6 +57,9 @@ def _render_search(payload: Any, stream: TextIO) -> None:
     if not isinstance(payload, dict):
         stream.write(repr(payload) + "\n")
         return
+    if "error" in payload:
+        stream.write(f"error: {payload['error']}\n")
+        return
     hits = payload.get("hits")
     if hits is None:
         # Backwards-compatible fallback for pre-MCP-contract fixtures.

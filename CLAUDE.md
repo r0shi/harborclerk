@@ -8,6 +8,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Current state lives in this file plus `README.md` and `docs/architecture.md`.
 
+## PR Review Policy
+
+Feature PRs must receive a fresh-eyes review before merge. In practice, any PR
+should get an explicit review unless it is extremely small and low-risk: tiny
+documentation-only edits, one-line mechanical changes, or very obvious bug
+fixes. If a PR touches more than three files, changes behavior, modifies public
+APIs/tool contracts, adjusts security/auth, or affects ingest/retrieval/LLM
+flows, assume review is required.
+
+When an agent opens or updates a non-trivial PR, it should either request a
+fresh-eyes review from another agent/person or perform a separate review pass
+that treats the change as if someone else wrote it. Review findings should lead
+with bugs, regressions, missing tests, and user-facing contract risks.
+
 ## Architecture
 
 ### Docker Compose (DIY/Linux)

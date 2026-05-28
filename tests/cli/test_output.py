@@ -53,6 +53,14 @@ def test_render_text_search_results_uses_pretty_printer():
     assert "0.9" in out or "0.90" in out
 
 
+def test_render_text_search_error_prints_error():
+    buf = io.StringIO()
+    render({"error": "Cannot specify both doc_id and doc_ids"}, mode=OutputMode.TEXT, command="search", stream=buf)
+    out = buf.getvalue()
+    assert "error: Cannot specify both doc_id and doc_ids" in out
+    assert "0 results" not in out
+
+
 def test_render_text_falls_back_to_json_for_unknown_command():
     buf = io.StringIO()
     render({"foo": "bar"}, mode=OutputMode.TEXT, command="unknown-command", stream=buf)
