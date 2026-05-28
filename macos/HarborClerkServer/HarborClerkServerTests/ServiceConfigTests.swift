@@ -217,6 +217,26 @@ final class ServiceConfigTests: XCTestCase {
         )
     }
 
+    func testAuditDataDirReportsPGVersionPresentNilWhenContentsUnreadable() throws {
+        // Simulate "PG_VERSION exists but unreadable" by making the path a
+        // directory instead of a regular file. `fileExists(atPath:)` returns
+        // true, but `String(contentsOfFile:)` fails (EISDIR) and the audit
+        // surfaces `.pgVersionPresent(nil)`. The `start()` switch arm refuses
+        // to start in this case (rather than treating `nil != expectedMajor`
+        // as mismatch and moving aside a potentially-valid cluster).
+        let (_, dataDir) = try makeAuditScaffold()
+        try FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: dataDir.appendingPathComponent("PG_VERSION", isDirectory: true),
+            withIntermediateDirectories: true,
+        )
+
+        XCTAssertEqual(
+            PostgresService.auditDataDirBeforeInit(dataDir: dataDir),
+            .pgVersionPresent(nil),
+        )
+    }
+
     func testAuditDataDirReportsCorruptWhenPGVersionMissingButFilesPresent() throws {
         // The tripwire case: real cluster subdirs present (base/, global/,
         // pg_wal/, pg_xact/) but PG_VERSION is gone. Pre-this-PR the bare

@@ -57,6 +57,20 @@ final class PostgresService: ManagedService {
             needsInit = true
 
         case .pgVersionPresent(let stored):
+            // PG_VERSION exists but unreadable (permission glitch, full disk,
+            // NFS hiccup) → `auditDataDirBeforeInit` reports the file as
+            // present but with `nil` contents. Without this guard, `nil !=
+            // expectedMajor` would fire the move-aside path and reinitialize
+            // a potentially-valid cluster — same shape as the original
+            // wipe bug. Refuse instead; operator should investigate.
+            guard let stored else {
+                let message =
+                    "PG_VERSION at \(dataDir.path)/PG_VERSION exists but could not be read. " +
+                    "Refusing to start — check filesystem permissions and disk space; " +
+                    "do NOT delete the data directory manually before recovery."
+                Log.logger("postgresql").error("\(message, privacy: .public)")
+                throw ServiceError.startFailed(name, message)
+            }
             // Existing version-mismatch + move-aside path (PR #426). Guard
             // against `expectedMajor` being empty — `bundledPgMajorVersion()`
             // returns "" on any failure to probe `postgres --version`; without
@@ -64,7 +78,7 @@ final class PostgresService: ManagedService {
             // data dir as mismatched.
             if !expectedMajor.isEmpty && stored != expectedMajor {
                 Log.logger("postgresql").warning(
-                    "Data directory version mismatch: found \(stored ?? "?", privacy: .public), expected \(expectedMajor, privacy: .public). Moving aside before initializing a fresh cluster."
+                    "Data directory version mismatch: found \(stored, privacy: .public), expected \(expectedMajor, privacy: .public). Moving aside before initializing a fresh cluster."
                 )
                 let backup: URL
                 do {
