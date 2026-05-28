@@ -25,6 +25,7 @@ __all__ = [
     "SearchHit",
     "SearchResult",
     "_apply_email_metadata_filter",
+    "_apply_jsonb_metadata_filter",
     "find_all",
     "hybrid_search",
 ]
