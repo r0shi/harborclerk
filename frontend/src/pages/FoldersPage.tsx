@@ -31,6 +31,7 @@ interface ProgressInfo {
   completed_files: number
   by_stage: Record<string, StageCounts>
   scan_status: 'scanning' | 'idle'
+  ingest_status: 'processing' | 'idle'
   last_scan_at: string | null
 }
 
@@ -48,11 +49,12 @@ function errorMessage(e: unknown, fallback: string): string {
   return fallback
 }
 
-// Precedence: a disabled folder shouldn't show "scanning" even if a stale scan is in flight.
+// Precedence: a disabled folder shouldn't show "scanning" or "processing" even
+// if a stale scan is in flight or jobs are still draining.
 function mapFolderStatusToPillState(f: FolderInfo, p?: ProgressInfo): PillState {
   if (f.unavailable_reason) return 'error'
   if (!f.enabled) return 'idle'
-  if (p?.scan_status === 'scanning') return 'running'
+  if (p?.scan_status === 'scanning' || p?.ingest_status === 'processing') return 'running'
   return 'active'
 }
 
@@ -61,6 +63,7 @@ function mapFolderStatusLabel(f: FolderInfo, p?: ProgressInfo): string {
   if (f.unavailable_reason) return 'unavailable'
   if (!f.enabled) return 'disabled'
   if (p?.scan_status === 'scanning') return 'scanning'
+  if (p?.ingest_status === 'processing') return 'processing'
   return 'idle'
 }
 
@@ -163,6 +166,7 @@ export default function FoldersPage() {
           total_files: event.total_files,
           completed_files: event.completed_files,
           scan_status: event.scan_status,
+          ingest_status: event.ingest_status,
         },
       }
     })

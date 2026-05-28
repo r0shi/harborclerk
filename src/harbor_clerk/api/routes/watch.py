@@ -184,11 +184,13 @@ async def _folder_progress_event_generator(session_factory=None):
     """
     if session_factory is None:
         session_factory = async_session_factory
-    prev: dict[str, tuple[int, int, str]] = {}
+    prev: dict[str, tuple[int, int, str, str]] = {}
     try:
         while True:
             async with session_factory() as sess:
-                # Per-folder counts: total active files + finalize-done jobs
+                # Per-folder counts: total active files + finalize-done jobs +
+                # in-flight (queued OR running) jobs across any stage. The
+                # in_flight count drives the "processing" pill on the frontend.
                 stmt = (
                     select(
                         WatchedFolder.folder_id,
@@ -202,6 +204,9 @@ async def _folder_progress_event_generator(session_factory=None):
                             IngestionJob.status == JobStatus.done,
                         )
                         .label("done"),
+                        func.count(IngestionJob.job_id)
+                        .filter(IngestionJob.status.in_((JobStatus.queued, JobStatus.running)))
+                        .label("in_flight"),
                     )
                     .outerjoin(WatchedFile, WatchedFile.folder_id == WatchedFolder.folder_id)
                     .outerjoin(IngestionJob, IngestionJob.doc_id == WatchedFile.doc_id)
@@ -209,9 +214,10 @@ async def _folder_progress_event_generator(session_factory=None):
                 )
                 rows = (await sess.execute(stmt)).all()
 
-            for fid, last_scan, total, done in rows:
+            for fid, last_scan, total, done, in_flight in rows:
                 scan_status = "scanning" if last_scan is None else "idle"
-                snap = (total or 0, done or 0, scan_status)
+                ingest_status = "processing" if (in_flight or 0) > 0 else "idle"
+                snap = (total or 0, done or 0, scan_status, ingest_status)
                 fid_str = str(fid)
                 if prev.get(fid_str) != snap:
                     prev[fid_str] = snap
@@ -223,6 +229,7 @@ async def _folder_progress_event_generator(session_factory=None):
                                 "total_files": snap[0],
                                 "completed_files": snap[1],
                                 "scan_status": snap[2],
+                                "ingest_status": snap[3],
                             }
                         )
                         + "\n\n"
@@ -303,12 +310,17 @@ async def get_folder_progress(
             by_stage[stage.value][status_map[status]] = count
 
     completed = by_stage[JobStage.finalize.value]["done"]
+    # A folder is "processing" while any stage has work queued or running for one
+    # of its files; otherwise "idle". scan_status (the filesystem walk) is
+    # independent of this — both can be true at once on a first-add.
+    in_flight = sum(counts["pending"] + counts["running"] for counts in by_stage.values())
 
     return {
         "total_files": total or 0,
         "completed_files": completed,
         "by_stage": by_stage,
         "scan_status": "scanning" if folder.last_scan_at is None else "idle",
+        "ingest_status": "processing" if in_flight > 0 else "idle",
         "last_scan_at": folder.last_scan_at.isoformat() if folder.last_scan_at else None,
     }
 

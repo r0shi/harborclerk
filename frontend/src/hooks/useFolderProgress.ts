@@ -6,6 +6,7 @@ export interface FolderProgressEvent {
   total_files: number
   completed_files: number
   scan_status: 'scanning' | 'idle'
+  ingest_status: 'processing' | 'idle'
 }
 
 type Listener = (event: FolderProgressEvent) => void
