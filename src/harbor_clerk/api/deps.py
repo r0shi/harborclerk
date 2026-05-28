@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.scope import KeyScope
+from harbor_clerk.api.scope import KeyScope, UserScope
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.db import get_session
 from harbor_clerk.models import ApiKey, User
@@ -23,6 +23,7 @@ class Principal:
     id: uuid.UUID  # user_id or key_id
     role: str  # "admin" or "user"
     key_scope: KeyScope | None = None  # populated for api_key principals only
+    user_scope: UserScope | None = None  # populated for human-user principals when folder scope is active
 
 
 def _extract_bearer_token(request: Request) -> str | None:

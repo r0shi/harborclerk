@@ -2,10 +2,13 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import CitedMarkdown from '../components/CitedMarkdown'
 import { IconTile } from '../components/IconTile'
+import { FolderPicker } from '../components/FolderPicker'
+import { ScopeChip } from '../components/ScopeChip'
 import { del, get, post } from '../api'
 import { useAuth } from '../auth'
 import { useChat, type ChatMessage, type RagContextChunk, type ToolCallInfo } from '../contexts/ChatContext'
 import { useResearch } from '../contexts/ResearchContext'
+import { useWatchedFolders } from '../hooks/useWatchedFolders'
 import RagContextCard from '../components/RagContextCard'
 import ToolResultDisplay from '../components/ToolResultDisplay'
 import { formatRelativeDate } from '../utils/dates'
@@ -16,6 +19,7 @@ interface ConversationSummary {
   title: string
   created_at: string
   updated_at: string
+  scope?: { folder_ids?: string[] }
 }
 
 interface ConversationDetail extends ConversationSummary {
@@ -69,10 +73,13 @@ export default function ChatPage() {
     latestTitle,
   } = useChat()
   const { conversationId: researchConversationId } = useResearch()
+  const { folders } = useWatchedFolders()
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
   const [hasActiveModel, setHasActiveModel] = useState(true) // optimistic default
   const [activeModelId, setActiveModelId] = useState<string | null>(null)
   const [researchActive, setResearchActive] = useState(false)
+  // Folder scope for next new conversation (reset when conversation is created)
+  const [newConvFolderIds, setNewConvFolderIds] = useState<string[]>([])
 
   // Derive latest context_pct from most recent assistant message
   const latestContextPct = [...messages]
@@ -194,10 +201,13 @@ export default function ChatPage() {
         let activeConvId = conversationId
         if (!activeConvId) {
           const eagerTitle = text.length > 80 ? text.slice(0, 77) + '...' : text
+          const scopePayload = newConvFolderIds.length > 0 ? { scope: { folder_ids: newConvFolderIds } } : {}
           const conv = await post<ConversationSummary>('/api/chat/conversations', {
             title: eagerTitle,
+            ...scopePayload,
           })
           activeConvId = conv.conversation_id
+          setNewConvFolderIds([])
           setConversations((prev) => [conv, ...prev])
           navigate(`/c/${activeConvId}`, { replace: true })
         }
@@ -216,7 +226,18 @@ export default function ChatPage() {
         setInput(text)
       }
     },
-    [isStreaming, conversationId, sendMessage, lastTitle, hasActiveModel, activeModelId, contextFull, setInput],
+    [
+      isStreaming,
+      conversationId,
+      sendMessage,
+      lastTitle,
+      hasActiveModel,
+      activeModelId,
+      contextFull,
+      setInput,
+      navigate,
+      newConvFolderIds,
+    ],
   )
 
   const handleNewChat = useCallback(() => {
@@ -248,9 +269,9 @@ export default function ChatPage() {
     [handleSubmit],
   )
 
-  const activeConvTitle = conversationId
-    ? conversations.find((c) => c.conversation_id === conversationId)?.title
-    : undefined
+  const activeConv = conversationId ? conversations.find((c) => c.conversation_id === conversationId) : undefined
+  const activeConvTitle = activeConv?.title
+  const activeConvScope = activeConv?.scope
 
   return (
     <div className="chat-page flex h-[calc(100vh-3.5rem)] -mx-4 -my-6 overflow-hidden">
@@ -351,6 +372,13 @@ export default function ChatPage() {
             <h2 className="text-[13px] font-semibold text-gray-700 dark:text-gray-300 truncate">{activeConvTitle}</h2>
           ) : (
             <h2 className="text-[13px] font-medium text-gray-400 dark:text-gray-500">New conversation</h2>
+          )}
+          {activeConv && (
+            <ScopeChip
+              scope={activeConvScope ?? {}}
+              folders={folders}
+              className="shrink-0 inline-flex items-center rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-2 py-0.5 text-[11px] font-medium text-[var(--color-text-secondary)]"
+            />
           )}
           <div className="ml-auto flex items-center gap-2">
             {isStreaming && (
@@ -489,9 +517,21 @@ export default function ChatPage() {
                   }}
                 />
                 <div className="flex items-center justify-between px-3 pb-2">
-                  <span className="text-[10px] text-gray-300 dark:text-gray-600 select-none">
-                    {input.trim() ? 'Enter to send' : 'Shift+Enter for new line'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    {!conversationId && (
+                      <FolderPicker
+                        value={newConvFolderIds}
+                        onChange={setNewConvFolderIds}
+                        folders={folders}
+                        size="sm"
+                      />
+                    )}
+                    {conversationId && (
+                      <span className="text-[10px] text-gray-300 dark:text-gray-600 select-none">
+                        {input.trim() ? 'Enter to send' : 'Shift+Enter for new line'}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     {isStreaming ? (
                       <button

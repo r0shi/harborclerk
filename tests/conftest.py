@@ -259,3 +259,79 @@ def user_token(regular_user: User) -> str:
 
 def auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+import pytest_asyncio  # noqa: E402
+
+
+@pytest_asyncio.fixture
+async def two_folder_corpus(db_session):
+    """Create two watched folders, each with 2 active documents."""
+    from harbor_clerk.models.document import Document
+    from harbor_clerk.models.enums import PipelineStatus
+    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
+
+    folder_a = WatchedFolder(path="/a", display_name="Folder A", auto_discovered=False)
+    folder_b = WatchedFolder(path="/b", display_name="Folder B", auto_discovered=False)
+    db_session.add_all([folder_a, folder_b])
+    await db_session.flush()
+
+    docs_in_a, docs_in_b = [], []
+    for i, folder in [(0, folder_a), (1, folder_a), (2, folder_b), (3, folder_b)]:
+        d = Document(
+            title=f"FolderScopeTest Doc {i}",
+            canonical_filename=f"doc{i}.txt",
+            status="active",
+            sha256=bytes([i] * 32),
+            pipeline_status=PipelineStatus.ready,
+        )
+        db_session.add(d)
+        await db_session.flush()
+        wf = WatchedFile(
+            folder_id=folder.folder_id,
+            doc_id=d.doc_id,
+            relative_path=f"doc{i}.txt",
+            sha256=d.sha256,
+            bookmark_data=b"",
+            status=WatchedFileStatus.active,
+        )
+        db_session.add(wf)
+        (docs_in_a if folder is folder_a else docs_in_b).append(d)
+
+    await db_session.commit()
+    return folder_a, folder_b, docs_in_a, docs_in_b
+
+
+@pytest_asyncio.fixture
+async def unavailable_folder(db_session):
+    """A WatchedFolder that has been marked unavailable."""
+    from harbor_clerk.models.watched import WatchedFolder
+
+    folder = WatchedFolder(
+        path="/unavailable",
+        display_name="Unavailable",
+        auto_discovered=False,
+        unavailable_reason="test-disabled",
+    )
+    db_session.add(folder)
+    await db_session.commit()
+    await db_session.refresh(folder)
+    return folder
+
+
+@pytest_asyncio.fixture
+async def mark_one_removed(db_session):
+    """Helper fixture: returns a coroutine that marks one WatchedFile in a folder as removed."""
+    from sqlalchemy import select
+
+    from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus
+
+    async def _mark(folder):
+        wf = (
+            await db_session.execute(select(WatchedFile).where(WatchedFile.folder_id == folder.folder_id).limit(1))
+        ).scalar_one()
+        wf.status = WatchedFileStatus.removed
+        await db_session.commit()
+        return wf.doc_id
+
+    return _mark

@@ -2,7 +2,9 @@ import { FormEvent, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { post } from '../api'
 import { Card } from '../components/Card'
+import { FolderPicker } from '../components/FolderPicker'
 import { PageHeader } from '../components/PageHeader'
+import { useWatchedFolders } from '../hooks/useWatchedFolders'
 
 interface SearchHit {
   chunk_id: string
@@ -152,8 +154,10 @@ export default function SearchPage() {
   const [showHistory, setShowHistory] = useState(false)
   const [pageSize, setPageSize] = useState(initial?.pageSize || 25)
   const [currentPage, setCurrentPage] = useState(initial?.currentPage || 1)
+  const [scopeFolderIds, setScopeFolderIds] = useState<string[]>([])
   const lastQuery = useRef(initial?.lastQuery || '')
   const wrapperRef = useRef<HTMLDivElement>(null)
+  const { folders } = useWatchedFolders()
 
   // Persist search state to sessionStorage
   useEffect(() => {
@@ -171,7 +175,7 @@ export default function SearchPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  async function doSearch(q: string, page: number, size: number) {
+  async function doSearch(q: string, page: number, size: number, folderIds: string[] = scopeFolderIds) {
     const trimmed = q.trim()
     if (!trimmed) return
     setError('')
@@ -185,6 +189,7 @@ export default function SearchPage() {
         query: trimmed,
         k: size,
         offset,
+        ...(folderIds.length > 0 && { scope: { folder_ids: folderIds } }),
       })
       setResults(data)
     } catch (e) {
@@ -234,7 +239,7 @@ export default function SearchPage() {
   return (
     <div>
       <PageHeader title="Search" subtitle="Hybrid lexical + semantic retrieval" />
-      <form onSubmit={handleSearch} className="mb-6 flex space-x-2">
+      <form onSubmit={handleSearch} className="mb-6 flex items-center gap-2">
         <div className="relative flex-1" ref={wrapperRef}>
           <input
             type="text"
@@ -289,6 +294,7 @@ export default function SearchPage() {
             </div>
           )}
         </div>
+        <FolderPicker value={scopeFolderIds} onChange={setScopeFolderIds} folders={folders} size="sm" />
         <button
           type="submit"
           disabled={loading}

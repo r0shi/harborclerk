@@ -1,12 +1,15 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import CitedMarkdown from '../components/CitedMarkdown'
+import { FolderPicker } from '../components/FolderPicker'
 import { PageHeader } from '../components/PageHeader'
+import { ScopeChip } from '../components/ScopeChip'
 import ToolResultDisplay from '../components/ToolResultDisplay'
 import { del, get } from '../api'
 import { useChat } from '../contexts/ChatContext'
 import { useResearch, type ToolCallEntry } from '../contexts/ResearchContext'
 import { useLLMStatus } from '../hooks/useLLMStatus'
+import { useWatchedFolders } from '../hooks/useWatchedFolders'
 import { formatRelativeDate } from '../utils/dates'
 import { topicDotVar } from '../utils/topicDotColor'
 
@@ -19,6 +22,7 @@ interface ResearchSummary {
   max_rounds: number
   created_at: string
   completed_at: string | null
+  scope?: { folder_ids?: string[] }
 }
 
 interface ResearchMessage {
@@ -104,6 +108,7 @@ export default function ResearchPage() {
   const { isStreaming: chatStreaming } = useChat()
   const { status: llmStatus } = useLLMStatus()
   const hasActiveModel = llmStatus.state === 'ready' && llmStatus.model_id !== null
+  const { folders } = useWatchedFolders()
   const [history, setHistory] = useState<ResearchSummary[]>([])
   const [selectedTask, setSelectedTask] = useState<ResearchDetail | null>(null)
   const [question, setQuestionRaw] = useState(() => sessionStorage.getItem('research_draft') ?? '')
@@ -115,6 +120,7 @@ export default function ResearchPage() {
   const [strategy, setStrategy] = useState<'search' | 'sweep'>('search')
   const [depth, setDepth] = useState<'light' | 'standard' | 'thorough'>('standard')
   const [timeLimit, setTimeLimit] = useState(30)
+  const [scopeFolderIds, setScopeFolderIds] = useState<string[]>([])
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [discardConfirm, setDiscardConfirm] = useState<string | null>(null)
   const discardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -259,9 +265,13 @@ export default function ResearchPage() {
     setSelectedTask(null)
     setShowNewForm(false)
     hasAutoNavigatedRef.current = null
-    const accepted = await startResearch(q, strategy, timeLimit, depth)
-    if (accepted) setQuestion('')
-  }, [question, strategy, timeLimit, depth, startResearch, setQuestion])
+    const scope = scopeFolderIds.length > 0 ? { folder_ids: scopeFolderIds } : undefined
+    const accepted = await startResearch(q, strategy, timeLimit, depth, scope)
+    if (accepted) {
+      setQuestion('')
+      setScopeFolderIds([])
+    }
+  }, [question, strategy, timeLimit, depth, scopeFolderIds, startResearch, setQuestion])
 
   const handleResume = useCallback(
     async (convId: string) => {
@@ -565,6 +575,10 @@ export default function ResearchPage() {
                       </select>
                     </div>
 
+                    <div className="flex items-center justify-center">
+                      <FolderPicker value={scopeFolderIds} onChange={setScopeFolderIds} folders={folders} size="sm" />
+                    </div>
+
                     <button
                       onClick={handleStartResearch}
                       disabled={!question.trim()}
@@ -744,6 +758,9 @@ export default function ResearchPage() {
                       )}
                       {selectedTask.time_limit_minutes != null && ` / ${selectedTask.time_limit_minutes}m limit`}
                     </span>
+                  )}
+                  {selectedTask.scope?.folder_ids && selectedTask.scope.folder_ids.length > 0 && (
+                    <ScopeChip scope={selectedTask.scope} folders={folders} />
                   )}
                 </div>
               )}

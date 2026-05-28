@@ -19,7 +19,8 @@ from harbor_clerk.api.schemas.search import (
     SearchRequest,
     SearchResponse,
 )
-from harbor_clerk.api.scope import apply_key_scope
+from harbor_clerk.api.scope import apply_folder_scope, apply_key_scope
+from harbor_clerk.api.scope_validation import validate_scope_folders
 from harbor_clerk.db import get_session
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.search import hybrid_search
@@ -50,6 +51,8 @@ async def search(
     principal: Principal = Depends(require_read_access),
     session: AsyncSession = Depends(get_session),
 ):
+    await validate_scope_folders(body.scope, session)
+
     doc_id = uuid.UUID(body.doc_id) if body.doc_id else None
     doc_ids = [uuid.UUID(d) for d in body.doc_ids] if body.doc_ids else None
 
@@ -79,6 +82,43 @@ async def search(
             doc_ids = list(visible_ids)
         # Also enforce single-doc filter against visible set
         if doc_id is not None and doc_id not in visible_ids:
+            return SearchResponse(
+                hits=[],
+                total_candidates=0,
+                has_more=False,
+                possible_conflict=False,
+                conflict_sources=[],
+            )
+
+    # Per-request user scope: intersect with visible doc_ids for the requested folders.
+    if body.scope is not None and body.scope.folder_ids:
+        scoped_q = apply_folder_scope(
+            select(Document.doc_id).where(Document.status == "active"),
+            list(body.scope.folder_ids),
+        )
+        scoped_visible = {row[0] for row in (await session.execute(scoped_q)).all()}
+        if not scoped_visible:
+            return SearchResponse(
+                hits=[],
+                total_candidates=0,
+                has_more=False,
+                possible_conflict=False,
+                conflict_sources=[],
+            )
+        if doc_ids is not None:
+            doc_ids = [d for d in doc_ids if d in scoped_visible]
+            if not doc_ids:
+                return SearchResponse(
+                    hits=[],
+                    total_candidates=0,
+                    has_more=False,
+                    possible_conflict=False,
+                    conflict_sources=[],
+                )
+        else:
+            doc_ids = list(scoped_visible)
+        # Also enforce single-doc filter against scoped visible set
+        if doc_id is not None and doc_id not in scoped_visible:
             return SearchResponse(
                 hits=[],
                 total_candidates=0,
@@ -161,6 +201,12 @@ async def read_passages(
     visible_ids: set[uuid.UUID] | None = None
     if principal.type == "api_key" and principal.key_scope is not None and not principal.key_scope.is_unrestricted:
         visible_q = apply_key_scope(select(Document.doc_id), principal)
+        visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
+    elif principal.type == "user" and principal.user_scope is not None and not principal.user_scope.is_unrestricted:
+        visible_q = apply_folder_scope(
+            select(Document.doc_id).where(Document.status == "active"),
+            principal.user_scope.folder_ids,
+        )
         visible_ids = {row[0] for row in (await session.execute(visible_q)).all()}
 
     result = await session.execute(select(Chunk).where(Chunk.chunk_id.in_(chunk_uuids)))

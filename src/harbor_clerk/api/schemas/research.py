@@ -1,8 +1,11 @@
 """Pydantic schemas for research mode API."""
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
+
+from harbor_clerk.api.schemas.scope import ScopeSpec
 
 
 class StartResearchRequest(BaseModel):
@@ -10,6 +13,7 @@ class StartResearchRequest(BaseModel):
     strategy: str | None = Field(default=None, pattern="^(search|sweep)$", description="Override default strategy")
     time_limit_minutes: int = Field(default=30, ge=15, le=180)
     depth: str = Field(default="standard", pattern="^(light|standard|thorough)$")
+    scope: ScopeSpec | None = None
 
 
 class ResearchProgress(BaseModel):
@@ -39,6 +43,7 @@ class ResearchSummary(BaseModel):
     max_rounds: int
     time_limit_minutes: int | None = None
     depth: str | None = None
+    scope: dict[str, Any] = {}
     created_at: datetime
     completed_at: datetime | None = None
 
@@ -55,6 +60,7 @@ class ResearchDetail(BaseModel):
     max_rounds: int
     time_limit_minutes: int | None = None
     depth: str | None = None
+    scope: dict[str, Any] = {}
     progress: dict | None = None
     notes: str | None = None
     report: str | None = None

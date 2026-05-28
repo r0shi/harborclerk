@@ -82,6 +82,7 @@ async def list_research(
             max_rounds=rs.max_rounds,
             time_limit_minutes=rs.time_limit_minutes,
             depth=rs.depth,
+            scope=rs.scope or {},
             created_at=conv.created_at,
             completed_at=rs.completed_at,
         )
@@ -189,6 +190,7 @@ async def get_research(
         max_rounds=state.max_rounds,
         time_limit_minutes=state.time_limit_minutes,
         depth=state.depth,
+        scope=state.scope or {},
         progress=state.progress,
         notes=state.notes,
         report=report,
@@ -212,6 +214,11 @@ async def start_research(
     principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
+    from harbor_clerk.api.scope_validation import validate_scope_folders
+
+    # Validate scope before any DB writes
+    await validate_scope_folders(body.scope, session)
+
     # Check no active research
     running_result = await session.execute(select(ResearchState).where(ResearchState.status == "running"))
     if running_result.scalar_one_or_none():
@@ -247,6 +254,9 @@ async def start_research(
     # Safety cap for max_rounds; actual stopping is wall-time based
     max_rounds = 500
 
+    # Serialise scope to plain dict (UUIDs → strings) for JSONB storage
+    scope_dict = body.scope.model_dump(mode="json", exclude_none=True) if body.scope else {}
+
     # Create conversation — title from question immediately
     eager_title = body.question.strip()
     if len(eager_title) > 80:
@@ -272,6 +282,7 @@ async def start_research(
         max_rounds=max_rounds,
         time_limit_minutes=body.time_limit_minutes,
         depth=body.depth,
+        scope=scope_dict,
     )
     session.add(state)
     try:
