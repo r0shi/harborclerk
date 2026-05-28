@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { WatchedFolderInfo } from '../hooks/useWatchedFolders'
 
 export interface FolderPickerProps {
@@ -20,6 +20,8 @@ export function FolderPicker({ value, onChange, folders, disabled, size = 'md' }
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [popDirection, setPopDirection] = useState<'down' | 'up'>('down')
 
   const visible = useMemo(
     () =>
@@ -48,6 +50,16 @@ export function FolderPicker({ value, onChange, folders, disabled, size = 'md' }
     }
   }, [open])
 
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return
+    const rect = triggerRef.current.getBoundingClientRect()
+    const popoverMaxHeight = 360 // matches the max-h cap on the popover div
+    const margin = 8
+    const spaceBelow = window.innerHeight - rect.bottom - margin
+    const spaceAbove = rect.top - margin
+    setPopDirection(spaceBelow >= popoverMaxHeight || spaceBelow >= spaceAbove ? 'down' : 'up')
+  }, [open])
+
   const noFolders = folders.length === 0
   const isDisabled = disabled || noFolders
   const buttonText = noFolders ? 'No folders to scope to' : summarize(value, folders)
@@ -62,6 +74,7 @@ export function FolderPicker({ value, onChange, folders, disabled, size = 'md' }
   return (
     <div className="relative inline-block" ref={containerRef}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => !isDisabled && setOpen((o) => !o)}
         disabled={isDisabled}
@@ -93,7 +106,8 @@ export function FolderPicker({ value, onChange, folders, disabled, size = 'md' }
       {open && !noFolders && (
         <div
           className={[
-            'absolute z-30 mt-1 min-w-[200px] rounded-lg shadow-mac-lg',
+            'absolute z-30 min-w-[200px] max-h-[360px] rounded-lg shadow-mac-lg overflow-hidden',
+            popDirection === 'up' ? 'bottom-full mb-1' : 'top-full mt-1',
             'border border-[var(--color-border)] bg-[var(--color-bg-primary)]',
             'flex flex-col',
           ].join(' ')}
