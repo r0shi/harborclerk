@@ -23,6 +23,11 @@ async def test_usage_summary_empty(client, admin_token):
     resp = await client.get(f"/api/api-keys/{key_id}/usage", headers=auth_header(admin_token))
     assert resp.status_code == 200
     data = resp.json()
+    # All four metric maps share the same bucket set so a single unified time-range
+    # selector on the frontend can drive every panel.
+    expected_buckets = {"1h", "6h", "12h", "24h", "7d", "30d"}
+    for metric in ("requests", "errors", "denials", "rate_limited", "top_tools"):
+        assert set(data[metric].keys()) == expected_buckets, f"{metric} missing buckets"
     assert data["requests"]["1h"] == 0
     assert data["requests"]["30d"] == 0
     assert data["errors"]["7d"] == 0

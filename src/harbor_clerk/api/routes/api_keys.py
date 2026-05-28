@@ -265,35 +265,33 @@ async def get_key_usage(
     ts = ApiRequestLog.created_at
     st = ApiRequestLog.status
 
-    # Single query: all request/error/denial counts + last_used via FILTER (WHERE ...)
-    request_buckets = {"1h": 1, "6h": 6, "12h": 12, "24h": 24, "7d": 168, "30d": 720}
-    error_buckets = {"1h": 1, "24h": 24, "7d": 168}
+    # Single query: all request/error/denial counts + last_used via FILTER (WHERE ...).
+    # All metrics share the same bucket set so a single time-range selector on the
+    # frontend can drive every panel coherently.
+    buckets = {"1h": 1, "6h": 6, "12h": 12, "24h": 24, "7d": 168, "30d": 720}
 
     columns = [func.max(ts).label("last_used")]
     labels = ["last_used"]
-    for label, hours in request_buckets.items():
+    for label, hours in buckets.items():
         cutoff = now - timedelta(hours=hours)
         columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff).label(f"req_{label}"))
-        labels.append(f"req_{label}")
-    for label, hours in error_buckets.items():
-        cutoff = now - timedelta(hours=hours)
         columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff, st == "error").label(f"err_{label}"))
         columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff, st == "denied").label(f"den_{label}"))
         columns.append(
             func.count(ApiRequestLog.request_id).filter(ts >= cutoff, st == "rate_limited").label(f"rl_{label}")
         )
-        labels.extend([f"err_{label}", f"den_{label}", f"rl_{label}"])
+        labels.extend([f"req_{label}", f"err_{label}", f"den_{label}", f"rl_{label}"])
 
     row = (await session.execute(select(*columns).where(ApiRequestLog.api_key_id == key_id))).one()
 
-    requests = {label: getattr(row, f"req_{label}") for label in request_buckets}
-    errors = {label: getattr(row, f"err_{label}") for label in error_buckets}
-    denials = {label: getattr(row, f"den_{label}") for label in error_buckets}
-    rate_limited = {label: getattr(row, f"rl_{label}") for label in error_buckets}
+    requests = {label: getattr(row, f"req_{label}") for label in buckets}
+    errors = {label: getattr(row, f"err_{label}") for label in buckets}
+    denials = {label: getattr(row, f"den_{label}") for label in buckets}
+    rate_limited = {label: getattr(row, f"rl_{label}") for label in buckets}
 
     # Top tools: single query with FILTER per bucket, sort/limit in Python
     tool_columns = [ApiRequestLog.endpoint]
-    for label, hours in request_buckets.items():
+    for label, hours in buckets.items():
         cutoff = now - timedelta(hours=hours)
         tool_columns.append(func.count(ApiRequestLog.request_id).filter(ts >= cutoff).label(f"cnt_{label}"))
     tool_rows = (
@@ -305,7 +303,7 @@ async def get_key_usage(
     ).all()
 
     top_tools: dict[str, list[dict[str, object]]] = {}
-    for label in request_buckets:
+    for label in buckets:
         col = f"cnt_{label}"
         ranked = sorted(
             [(r.endpoint, getattr(r, col)) for r in tool_rows if getattr(r, col) > 0],
