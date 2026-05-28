@@ -114,6 +114,8 @@ async def test_folder_progress_aggregates(client, admin_token, db_session):
     assert body["by_stage"]["ocr"]["error"] == 1
     assert body["by_stage"]["chunk"]["pending"] == 1
     assert body["scan_status"] == "scanning"  # last_scan_at is null
+    # File A has ocr.running + chunk.queued — in-flight count > 0 → processing.
+    assert body["ingest_status"] == "processing"
 
 
 async def test_folder_progress_404_for_unknown(client, admin_token):
@@ -139,6 +141,45 @@ async def test_folder_progress_empty_folder(client, admin_token, db_session):
     # All 7 stages × 4 states should still be present, all zero
     for stage in ("extract", "ocr", "chunk", "entities", "embed", "summarize", "finalize"):
         assert body["by_stage"][stage] == {"pending": 0, "running": 0, "done": 0, "error": 0}
+    # No jobs means nothing in flight.
+    assert body["ingest_status"] == "idle"
+
+
+async def test_folder_progress_ingest_status_idle_when_only_done_or_error(client, admin_token, db_session):
+    """Folder with finished + errored jobs only (no pending/running) reports idle."""
+    folder = WatchedFolder(path="/tmp/done", display_name="done", bookmark_data=None)
+    db_session.add(folder)
+    await db_session.flush()
+    sha = b"d" * 32
+    doc = Document(title="d", status="active", sha256=sha, pipeline_status=PipelineStatus.queued)
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(
+        WatchedFile(
+            folder_id=folder.folder_id,
+            relative_path="d",
+            bookmark_data=b"",
+            sha256=sha,
+            doc_id=doc.doc_id,
+            status=WatchedFileStatus.active,
+        )
+    )
+    db_session.add_all(
+        [
+            IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.done),
+            IngestionJob(doc_id=doc.doc_id, stage=JobStage.ocr, status=JobStatus.error),
+            IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.done),
+        ]
+    )
+    await db_session.flush()
+
+    resp = await client.get(
+        f"/api/watch/folders/{folder.folder_id}/progress",
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ingest_status"] == "idle"
 
 
 async def test_folder_progress_scan_status_idle(client, admin_token, db_session):
@@ -368,6 +409,7 @@ async def test_folder_progress_stream_emits_initial_snapshot(_engine, db_session
         assert "total_files" in payload
         assert "completed_files" in payload
         assert payload["scan_status"] in ("scanning", "idle")
+        assert payload["ingest_status"] in ("processing", "idle")
     finally:
         # Cleanup the seeded folder so it doesn't leak across tests
         from sqlalchemy import delete as sa_delete
