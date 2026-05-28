@@ -57,19 +57,29 @@ def _render_search(payload: Any, stream: TextIO) -> None:
     if not isinstance(payload, dict):
         stream.write(repr(payload) + "\n")
         return
-    results = payload.get("results", [])
-    for i, r in enumerate(results, 1):
-        title = r.get("title", "")
-        citation = r.get("citation", "")
+    hits = payload.get("hits")
+    if hits is None:
+        # Backwards-compatible fallback for pre-MCP-contract fixtures.
+        hits = payload.get("results", [])
+    if not hits:
+        stream.write("0 results\n")
+    for i, r in enumerate(hits, 1):
+        title = r.get("doc_title") or r.get("title") or ""
         score = r.get("score")
-        snippet = (r.get("snippet") or "").strip().replace("\n", " ")
-        if len(snippet) > 200:
-            snippet = snippet[:200] + "…"
+        text = (r.get("text") or r.get("snippet") or "").strip().replace("\n", " ")
+        if len(text) > 200:
+            text = text[:200] + "..."
         score_str = f"{score:.2f}" if isinstance(score, (int, float)) else "?"
-        stream.write(f"{i}. {title}  [{score_str}]  {citation}\n")
-        stream.write(f"   {snippet}\n\n")
+        pages = r.get("pages") or r.get("page")
+        location = f" p. {pages}" if pages else ""
+        chunk_id = r.get("chunk_id")
+        chunk_suffix = f"  chunk={chunk_id}" if chunk_id else ""
+        stream.write(f"{i}. {title}{location}  [{score_str}]{chunk_suffix}\n")
+        if text:
+            stream.write(f"   {text}\n")
+        stream.write("\n")
     if payload.get("possible_conflict"):
-        stream.write("⚠  possible_conflict=true — top hits disagree across documents\n")
+        stream.write("possible_conflict=true - top hits span multiple similarly scored documents\n")
 
 
 # --- Verify identifier pretty-printer ---

@@ -80,7 +80,7 @@ graph LR
 ```bash
 export HARBOR_CLERK_API_KEY=hc_...
 harbor-clerk --help                  # full subcommand list
-harbor-clerk search "termination clause" | jq '.results[].citation'
+harbor-clerk search "termination clause" | jq '.hits[] | {title: .doc_title, pages, chunk_id}'
 ```
 
 A copy-pasteable agent skill for these harnesses is in **System Settings → Integrations**.

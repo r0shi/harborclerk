@@ -33,16 +33,15 @@ def test_render_json_emits_indented_json():
 def test_render_text_search_results_uses_pretty_printer():
     buf = io.StringIO()
     payload = {
-        "results": [
+        "hits": [
             {
                 "chunk_id": "c1",
                 "doc_id": "d1",
-                "title": "Doc A",
-                "page": 1,
-                "snippet": "hello world",
+                "doc_title": "Doc A",
+                "pages": "1",
+                "text": "hello world",
                 "score": 0.9,
-                "language": "en",
-                "citation": "Doc A, p.1",
+                "language": "english",
             },
         ],
         "possible_conflict": False,

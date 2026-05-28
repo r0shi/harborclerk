@@ -5,7 +5,7 @@ DESCRIPTION
   same document, returned in sequential order. The target chunk is marked
   with `"is_target": true` so callers can identify it in the window.
 
-  Use this when a search result snippet is too short to fully understand a
+  Use this when search hit text is too short to fully understand a
   clause, argument, or table that spans multiple chunks. The window size is
   symmetric: -n 2 fetches up to 2 chunks before AND up to 2 chunks after the
   target, for a maximum window of 5 chunks. If the target is near the
@@ -54,7 +54,7 @@ EXAMPLES
 
   # Two-stage: search for a hit then expand its context
   CHUNK=$(harbor-clerk search "limitation of liability" -k 1 \
-    | jq -r '.results[0].chunk_id')
+    | jq -r '.hits[0].chunk_id')
   harbor-clerk expand-context "$CHUNK" -n 3
 
   # Extract only the text blocks in window order
@@ -67,7 +67,7 @@ EXAMPLES
 
 COMMON MISTAKES
   - Passing a doc_id instead of a chunk_id: the single positional argument
-    is a chunk UUID (from .results[].chunk_id in search output), not a
+    is a chunk UUID (from .hits[].chunk_id in search output), not a
     document UUID.
   - Expecting exactly 2n+1 chunks: chunks near the beginning or end of a
     document produce a shorter window. Check .chunks | length rather than

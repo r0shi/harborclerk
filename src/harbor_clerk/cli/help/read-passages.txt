@@ -50,7 +50,7 @@ EXAMPLES
 
   # Fetch all top hits from a search in one call
   CHUNKS=$(harbor-clerk search "termination clause" -k 5 \
-    | jq -r '.results[].chunk_id')
+    | jq -r '.hits[].chunk_id')
   harbor-clerk read-passages $CHUNKS
 
   # Read a passage and include surrounding context
@@ -59,13 +59,13 @@ EXAMPLES
 
   # Multi-step: brief search, then read full text of the top 3 results
   harbor-clerk search "force majeure" -k 3 -d brief \
-    | jq -r '.results[].chunk_id' \
+    | jq -r '.hits[].chunk_id' \
     | xargs harbor-clerk read-passages
 
 COMMON MISTAKES
   - Passing a doc_id instead of a chunk_id: chunk_id and doc_id are
-    distinct UUIDs. chunk_id comes from .results[].chunk_id in search
-    output; doc_id comes from .results[].doc_id.
+    distinct UUIDs. chunk_id comes from .hits[].chunk_id in search
+    output; doc_id comes from .hits[].doc_id.
   - Expecting all IDs back when some are invalid: the server silently skips
     chunk_ids that are not found or are out of scope. If .passages is shorter
     than the number of IDs you passed, some were not found.
