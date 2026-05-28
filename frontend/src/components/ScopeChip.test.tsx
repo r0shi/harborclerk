@@ -52,4 +52,37 @@ describe('ScopeChip', () => {
     render(<ScopeChip scope={{ folder_ids: ['unknown'] }} folders={folders} />)
     expect(screen.getByText(/Folders: \?/i)).toBeInTheDocument()
   })
+
+  it('disambiguates colliding display_names', () => {
+    const colliding = [
+      {
+        folder_id: 'a',
+        path: '/work/cuad/ingest',
+        display_name: 'ingest',
+        unavailable_reason: null,
+        enabled: true,
+        auto_discovered: false,
+        skipped_count: 0,
+        skipped_extensions: [],
+      },
+      {
+        folder_id: 'b',
+        path: '/work/qwen3-20b/cuad/ingest',
+        display_name: 'ingest',
+        unavailable_reason: null,
+        enabled: true,
+        auto_discovered: false,
+        skipped_count: 0,
+        skipped_extensions: [],
+      },
+    ]
+    render(<ScopeChip scope={{ folder_ids: ['a', 'b'] }} folders={colliding} />)
+    expect(screen.getByText(/cuad\/ingest.*qwen3-20b\/cuad\/ingest/)).toBeInTheDocument()
+  })
+
+  it('sets a title attribute with full paths', () => {
+    render(<ScopeChip scope={{ folder_ids: ['a'] }} folders={folders} />)
+    const chip = screen.getByText(/Contracts/)
+    expect(chip.getAttribute('title')).toContain('/c')
+  })
 })
