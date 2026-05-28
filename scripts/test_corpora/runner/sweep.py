@@ -637,8 +637,17 @@ def _run_local(
     time_limit_minutes: int,
     is_research: bool,
     results_dir: Path,
+    scope_folder_id: str | None = None,
 ) -> dict:
-    """Run one local-model question. Assumes the right model is already active and loaded."""
+    """Run one local-model question. Assumes the right model is already active and loaded.
+
+    ``scope_folder_id`` (optional): when set, the spawned chat conversation
+    or research run is scoped to a single watched folder via PR #415's
+    folder-scope feature. Used by ``--no-ingest`` unified-corpus runs to
+    isolate per-corpus retrieval on a multi-corpus HC instance. When None,
+    HC searches across all visible documents (legacy wipe-and-reload mode).
+    """
+    scope = {"folder_ids": [scope_folder_id]} if scope_folder_id else None
     if is_research:
         # Clean up any orphan research task from a prior killed sweep before
         # POSTing a new one — otherwise Harbor Clerk returns 409 Conflict
@@ -649,14 +658,16 @@ def _run_local(
         # run_research drains the SSE stream until the research finishes
         # server-side. Closing the stream early would trigger HC's
         # "interrupted-on-disconnect" handler and produce empty results.
-        conv_id, result = hc.run_research(question_text, depth=depth, time_limit_minutes=time_limit_minutes)
+        conv_id, result = hc.run_research(
+            question_text, depth=depth, time_limit_minutes=time_limit_minutes, scope=scope
+        )
         # Normalize: ResearchDetail returns "report", chat returns "answer".
         # Store under "answer" so all downstream metrics code uses a uniform key.
         normalized_answer = result.get("report") or result.get("answer", "")
         result["answer"] = normalized_answer
     else:
         # Ask flow: create a chat conversation, then send the question, drain SSE
-        conv_id = hc.create_conversation(title=f"test-corpora/{corpus}/{model}/{question_id}")
+        conv_id = hc.create_conversation(title=f"test-corpora/{corpus}/{model}/{question_id}", scope=scope)
         events = list(hc.stream_ask(conv_id, question_text))
         # Harbor Clerk chat SSE emits {type: "token", content: "<text>"} for tokens.
         # Citations are in the final {type: "done"} event's rag_context.citations field.
@@ -1020,6 +1031,14 @@ def main(argv: list[str] | None = None) -> int:
         # Sonnet 4.6 baseline generator has real KB tools available.
         mcp_session: SyncMcpSession | None = None
 
+        # Corpus → folder_id mapping for scoped local runs. Populated lazily
+        # on the first _run_local call when --no-ingest is set, so unified
+        # multi-corpus HC instances can isolate per-corpus retrieval via
+        # PR #415's folder-scope feature. Skipped entirely when ingesting
+        # corpora the legacy way (one corpus loaded at a time, no scope
+        # needed).
+        scope_folder_id_by_corpus: dict[str, str] = {}
+
         # Iterate corpus-outer / phase-inner so each corpus is ingested at most
         # once per sweep run. The previous phase-outer / corpus-inner ordering
         # forced the corpus to be wiped + re-ingested between phases (e.g.
@@ -1277,6 +1296,16 @@ def main(argv: list[str] | None = None) -> int:
                                 error=f"unfilled placeholder: {placeholder}",
                             )
                             continue
+                        # In --no-ingest mode (unified-corpus HC), resolve the
+                        # corpus's watch-folder UUID once and reuse it. Passing
+                        # the UUID to _run_local makes HC's chat / research
+                        # restrict tool calls to that folder (PR #415).
+                        scope_folder_id: str | None = None
+                        if args.no_ingest and u.corpus != "unified":
+                            if u.corpus not in scope_folder_id_by_corpus:
+                                scope_folder_id_by_corpus[u.corpus] = hc.folder_id_for_corpus(u.corpus)
+                            scope_folder_id = scope_folder_id_by_corpus[u.corpus]
+
                         out = _run_local(
                             hc=hc,
                             corpus=u.corpus,
@@ -1287,6 +1316,7 @@ def main(argv: list[str] | None = None) -> int:
                             time_limit_minutes=args.time_limit_minutes,
                             is_research=_is_research(u.question_id),
                             results_dir=run_dir,
+                            scope_folder_id=scope_folder_id,
                         )
 
                         # One-shot retry on transient research failures. The most
@@ -1321,6 +1351,7 @@ def main(argv: list[str] | None = None) -> int:
                                     time_limit_minutes=args.time_limit_minutes,
                                     is_research=True,
                                     results_dir=run_dir,
+                                    scope_folder_id=scope_folder_id,
                                 )
 
                     # For local-model questions (phases 2-6), inspect the
