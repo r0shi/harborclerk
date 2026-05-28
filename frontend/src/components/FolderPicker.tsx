@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { WatchedFolderInfo } from '../hooks/useWatchedFolders'
+import { disambiguateLabels } from './folderLabels'
 
 export interface FolderPickerProps {
   value: string[]
@@ -9,9 +10,11 @@ export interface FolderPickerProps {
   size?: 'sm' | 'md'
 }
 
-function summarize(value: string[], folders: WatchedFolderInfo[]): string {
+function summarize(value: string[], folders: WatchedFolderInfo[], labelMap: Map<string, string>): string {
   if (value.length === 0) return 'Folders: All'
-  const labels = value.map((id) => folders.find((f) => f.folder_id === id)?.display_name ?? '?').slice(0, 3)
+  const labels = value
+    .map((id) => labelMap.get(id) ?? folders.find((f) => f.folder_id === id)?.display_name ?? '?')
+    .slice(0, 3)
   const suffix = value.length > 1 ? ` (${value.length})` : ''
   return `Folders: ${labels.join(', ')}${suffix}`
 }
@@ -23,12 +26,16 @@ export function FolderPicker({ value, onChange, folders, disabled, size = 'md' }
   const triggerRef = useRef<HTMLButtonElement>(null)
   const [popDirection, setPopDirection] = useState<'down' | 'up'>('down')
 
+  const labelMap = useMemo(() => disambiguateLabels(folders), [folders])
+
   const visible = useMemo(
     () =>
-      folders.filter((f) =>
-        filter.trim() === '' ? true : (f.display_name ?? '').toLowerCase().includes(filter.toLowerCase()),
-      ),
-    [folders, filter],
+      folders.filter((f) => {
+        if (filter.trim() === '') return true
+        const label = labelMap.get(f.folder_id) ?? f.display_name ?? ''
+        return label.toLowerCase().includes(filter.toLowerCase())
+      }),
+    [folders, filter, labelMap],
   )
 
   // Close popover on outside click or Escape
@@ -62,7 +69,7 @@ export function FolderPicker({ value, onChange, folders, disabled, size = 'md' }
 
   const noFolders = folders.length === 0
   const isDisabled = disabled || noFolders
-  const buttonText = noFolders ? 'No folders to scope to' : summarize(value, folders)
+  const buttonText = noFolders ? 'No folders to scope to' : summarize(value, folders, labelMap)
 
   const toggle = (id: string) => {
     if (value.includes(id)) onChange(value.filter((v) => v !== id))
@@ -154,16 +161,19 @@ export function FolderPicker({ value, onChange, folders, disabled, size = 'md' }
           <ul role="listbox" aria-multiselectable="true" className="max-h-48 overflow-y-auto px-1 pb-1">
             {visible.map((f) => (
               <li key={f.folder_id} role="option" aria-selected={value.includes(f.folder_id)}>
-                <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-[var(--color-bg-secondary)]">
+                <label
+                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-[var(--color-bg-secondary)]"
+                  title={f.path}
+                >
                   <input
                     type="checkbox"
                     checked={value.includes(f.folder_id)}
                     onChange={() => toggle(f.folder_id)}
-                    aria-label={f.display_name ?? f.folder_id}
+                    aria-label={labelMap.get(f.folder_id) ?? f.folder_id}
                     className="h-3.5 w-3.5 accent-[var(--color-accent)]"
                   />
                   <span className="text-sm text-[var(--color-text-primary)] truncate">
-                    {f.display_name ?? f.folder_id}
+                    {labelMap.get(f.folder_id) ?? f.folder_id}
                   </span>
                 </label>
               </li>
