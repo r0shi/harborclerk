@@ -8,15 +8,21 @@ Three tiers based on document length:
 
 from __future__ import annotations
 
+import atexit
+import contextlib
+import json
 import logging
 import random
+import select
+import subprocess
+import threading
 import time
 from collections.abc import Callable
 from enum import Enum
 
 import httpx
 
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.llm.models import get_model
 
 logger = logging.getLogger(__name__)
@@ -32,6 +38,26 @@ class _Tier(Enum):
     SHORT = "short"
     MEDIUM = "medium"
     LONG = "long"
+
+
+def _llm_intentionally_deactivated() -> bool:
+    """True when the user has deactivated the LLM (no model selected).
+
+    Workers are separate processes from the API and see a stale Settings
+    singleton when the user toggles the model from the menubar; we
+    `refresh_llm_settings()` first so this answer reflects the current
+    on-disk config.json, not whatever the worker booted with.
+
+    On `ConnectError` against llama-server we use this to fail-fast back
+    to the AFM / extractive fallback path instead of burning ~95 s of
+    jittered retries against a server that's never coming up. The
+    "loading" state (model_id set, llama-server still booting) is NOT
+    handled here — we can't distinguish it from a crash via settings
+    alone, and the existing retry loop is the right thing for genuine
+    transients.
+    """
+    refresh_llm_settings()
+    return not get_settings().llm_model_id
 
 
 # --- System prompts ---
@@ -254,6 +280,20 @@ def _call_llm(
         except (httpx.TimeoutException, httpx.ConnectError) as e:
             elapsed = time.perf_counter() - call_started
             last_err = e
+            # Fail-fast when the user has intentionally deactivated the
+            # LLM — retrying for ~95 s only to fall through to the same
+            # AFM / extractive fallback path makes the worker spend a
+            # full minute of wall time per stalled summarize, which the
+            # user feels. On loading / genuine-transient cases we still
+            # retry with backoff.
+            if isinstance(e, httpx.ConnectError) and _llm_intentionally_deactivated():
+                logger.info(
+                    "LLM call phase=%s elapsed=%.1fs ConnectError + LLM deactivated — skipping %d remaining retries",
+                    phase,
+                    elapsed,
+                    max_attempts - attempt,
+                )
+                return None
             if attempt < max_attempts:
                 delay = 5 + random.uniform(0, 10 * attempt)
                 logger.info(
@@ -381,39 +421,153 @@ def _find_apple_summarize_binary() -> str | None:
     return None
 
 
-def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str | None:
-    """Call the apple-summarize CLI with the given mode. Returns None on failure."""
-    import subprocess
+# Module-level state for the long-running apple-summarize daemon. The
+# previous one-shot CLI fork+session-init was ~600 ms per call; the daemon
+# pays that once at first use and reuses the session for subsequent calls.
+# `_daemon_lock` serializes both daemon-startup AND request/response on
+# stdin/stdout (the daemon processes requests strictly sequentially; a
+# parallel call would interleave the JSON lines).
+_daemon_lock = threading.Lock()
+_daemon: subprocess.Popen | None = None
+# Per-request read timeout. The old one-shot path used 120 s for the whole
+# subprocess.run; the daemon's session-init is amortized, so an individual
+# inference taking >120 s here would be a hang, not slow startup.
+_DAEMON_READ_TIMEOUT_S = 120.0
 
+
+def _stop_daemon() -> None:
+    """Tear down the cached apple-summarize daemon. Safe to call when no
+    daemon is running. Caller MUST hold `_daemon_lock` or be in atexit."""
+    global _daemon
+    if _daemon is None:
+        return
+    try:
+        if _daemon.stdin is not None:
+            try:
+                _daemon.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+        try:
+            _daemon.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            _daemon.kill()
+            with contextlib.suppress(Exception):
+                _daemon.wait(timeout=1)
+    except Exception:
+        logger.debug("Error stopping apple-summarize daemon", exc_info=True)
+    finally:
+        _daemon = None
+
+
+def _get_or_start_daemon() -> subprocess.Popen | None:
+    """Return the cached daemon process, starting one if necessary. Returns
+    None when the apple-summarize binary isn't available (Docker / older
+    macOS / unbundled dev runs). Caller MUST hold `_daemon_lock`."""
+    global _daemon
+    if _daemon is not None and _daemon.poll() is None:
+        return _daemon
+    if _daemon is not None:
+        # Previous daemon died; clear before respawn so the atexit
+        # handler doesn't try to clean up a zombie.
+        _daemon = None
     binary = _find_apple_summarize_binary()
     if not binary:
-        logger.debug("apple-summarize binary not found — skipping Apple Intelligence")
+        return None
+    try:
+        _daemon = subprocess.Popen(
+            [binary],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            # DEVNULL, NOT PIPE — Python never reads from daemon stderr, and an
+            # unread stderr pipe with the OS-default 64KB buffer can deadlock
+            # the daemon if it produces enough output (e.g. Foundation Models
+            # framework diagnostics during a startup failure on an unsupported
+            # macOS) while Python is blocked in select() on stdout. DEVNULL
+            # discards on the OS side so there's no buffer to fill.
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,  # line-buffered on the Python end (daemon already line-buffers via FileHandle.write)
+        )
+        # Register cleanup once per process. Repeated calls to
+        # atexit.register would stack handlers; the global sentinel avoids that.
+        global _atexit_registered
+        if not _atexit_registered:
+            atexit.register(_atexit_stop_daemon)
+            _atexit_registered = True
+        return _daemon
+    except (FileNotFoundError, OSError) as exc:
+        logger.debug("Failed to start apple-summarize daemon: %s", exc)
         return None
 
+
+_atexit_registered = False
+
+
+def _atexit_stop_daemon() -> None:
+    """atexit shim that takes the lock before tearing down."""
+    with _daemon_lock:
+        _stop_daemon()
+
+
+def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str | None:
+    """Send a single request to the cached apple-summarize daemon. Returns
+    None on any failure (binary not present, daemon died mid-request, parse
+    error, AFM error response, read timeout). The daemon is respawned on
+    next call after a failure."""
     # Cap at 12,000 chars for ~4K token context
     text = text[:12_000]
+    request_line = json.dumps({"prompt": text, "max_chars": max_chars, "mode": mode}) + "\n"
 
+    with _daemon_lock:
+        daemon = _get_or_start_daemon()
+        if daemon is None:
+            logger.debug("apple-summarize binary not found — skipping Apple Intelligence")
+            return None
+        try:
+            assert daemon.stdin is not None and daemon.stdout is not None  # bound at Popen-time
+            daemon.stdin.write(request_line)
+            daemon.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            logger.warning("apple-summarize daemon stdin broken (%s); will respawn next call", exc)
+            _stop_daemon()
+            return None
+
+        # Wait up to _DAEMON_READ_TIMEOUT_S for a response line. Using
+        # select() instead of a blocking readline() keeps a hung daemon
+        # from wedging the worker forever — the existing one-shot path
+        # capped at 120 s and we preserve that contract.
+        ready, _, _ = select.select([daemon.stdout], [], [], _DAEMON_READ_TIMEOUT_S)
+        if not ready:
+            logger.warning("apple-summarize daemon timed out after %.0fs; respawning", _DAEMON_READ_TIMEOUT_S)
+            _stop_daemon()
+            return None
+        try:
+            line = daemon.stdout.readline()
+        except (BrokenPipeError, OSError) as exc:
+            logger.warning("apple-summarize daemon stdout broken (%s); will respawn next call", exc)
+            _stop_daemon()
+            return None
+
+    # JSON parsing happens outside the lock — the wire I/O is complete and
+    # subsequent callers can proceed in parallel against the daemon.
+    if not line:
+        logger.debug("apple-summarize daemon closed stdout; will respawn next call")
+        with _daemon_lock:
+            _stop_daemon()
+        return None
     try:
-        result = subprocess.run(
-            [binary, "--max-chars", str(max_chars), "--mode", mode],
-            input=text,
-            capture_output=True,
-            timeout=120,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            output = result.stdout.strip()
-            logger.info("Apple Intelligence %s: %d chars", mode, len(output))
-            return output
-        logger.debug("apple-summarize exited %d: %s", result.returncode, result.stderr.strip()[:200])
-    except FileNotFoundError:
-        logger.debug("apple-summarize binary not found at %s", binary)
-    except subprocess.TimeoutExpired:
-        logger.warning("apple-summarize timed out after 120s")
-    except Exception:
-        logger.debug("apple-summarize failed", exc_info=True)
-
-    return None
+        response = json.loads(line)
+    except ValueError:
+        logger.debug("apple-summarize returned non-JSON line: %.200s", line)
+        return None
+    if "error" in response:
+        logger.debug("apple-summarize error response: %.200s", str(response.get("error", ""))[:200])
+        return None
+    result = (response.get("result") or "").strip()
+    if not result:
+        return None
+    logger.info("Apple Intelligence %s: %d chars", mode, len(result))
+    return result
 
 
 def _apple_intelligence_summary(chunks: list[str], max_chars: int) -> str | None:
@@ -730,10 +884,14 @@ def generate_summary(
     else:
         logger.info("No language model active — trying Apple Intelligence fallback")
 
-    # Try Apple Intelligence (macOS native only)
+    # Try Apple Intelligence (macOS native only). Use `_has_visible_content`
+    # instead of bare truthiness to match the LLM-path check above and the
+    # forced-AFM branch — invisible-only Unicode (zero-width chars, format
+    # codes) is a real model failure mode and should fall through to
+    # extractive rather than getting stored as a summary.
     ai_summary = _apple_intelligence_summary(chunks, max_chars)
-    if ai_summary:
-        return ai_summary, "apple-intelligence"
+    if _has_visible_content(ai_summary):
+        return ai_summary, "apple-intelligence"  # type: ignore[return-value]
 
     if not settings.llm_model_id:
         logger.warning(
