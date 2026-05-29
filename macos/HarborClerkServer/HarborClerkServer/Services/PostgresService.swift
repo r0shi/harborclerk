@@ -46,11 +46,32 @@ final class PostgresService: ManagedService {
         if fm.fileExists(atPath: pgVersionFile.path) {
             let stored = (try? String(contentsOf: pgVersionFile, encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if stored != expectedMajor {
+            // Guard against `expectedMajor` being empty — `bundledPgMajorVersion()`
+            // returns "" on any failure to probe `postgres --version`. Without
+            // this, a transient bundled-binary error would treat a healthy
+            // data dir as mismatched and move it aside unnecessarily.
+            if !expectedMajor.isEmpty && stored != expectedMajor {
                 Log.logger("postgresql").warning(
-                    "Data directory version mismatch: found \(stored ?? "?", privacy: .public), expected \(expectedMajor, privacy: .public). Reinitializing."
+                    "Data directory version mismatch: found \(stored ?? "?", privacy: .public), expected \(expectedMajor, privacy: .public). Moving aside before initializing a fresh cluster."
                 )
-                try? fm.removeItem(at: dataDir)
+                // Move the existing data dir aside instead of `removeItem` —
+                // a user restoring an older-PG backup or running a worktree
+                // build with stale bundled PG would otherwise lose every
+                // user / document / chat history with no recovery path.
+                // Throwing on failure is intentional: refusing to start beats
+                // silent data loss.
+                let backup: URL
+                do {
+                    backup = try Self.moveDataDirAside(dataDir: dataDir, storedVersion: stored)
+                } catch {
+                    Log.logger("postgresql").error(
+                        "Could not move data directory aside: \(error.localizedDescription, privacy: .public). Refusing to start to avoid data loss."
+                    )
+                    throw error
+                }
+                Log.logger("postgresql").warning(
+                    "Previous PostgreSQL data preserved at: \(backup.path, privacy: .public) — delete it manually once you've confirmed nothing was lost."
+                )
                 needsInit = true
             }
         } else {
@@ -279,6 +300,55 @@ final class PostgresService: ManagedService {
             return .remove(pid)
         }
         return .keep
+    }
+
+    /// Move the existing data directory aside to a timestamped sibling, returning
+    /// the backup URL on success. Data-safety guard for the PG major-version
+    /// mismatch path — without it, a user restoring an older-PG backup (or
+    /// running a worktree build with stale bundled PG) silently loses every
+    /// user / document / chat history when start() calls removeItem.
+    ///
+    /// The destination name encodes the source PG version and a UTC timestamp
+    /// (`postgres-data-pg16-backup-20260528-120000`) so an operator can tell
+    /// which cluster the backup belongs to and what time the move happened.
+    /// Same-second collisions (rare — implies two restarts in the same second)
+    /// get a numeric suffix; >100 collisions throws to surface the bug.
+    ///
+    /// Throws on move failure. Callers should let the error propagate —
+    /// refusing to start beats silent data loss. Extracted as static for
+    /// testability against tempdirs.
+    nonisolated static func moveDataDirAside(
+        dataDir: URL,
+        storedVersion: String?,
+        now: Date = Date(),
+        fileManager: FileManager = .default,
+    ) throws -> URL {
+        let parent = dataDir.deletingLastPathComponent()
+        let base = dataDir.lastPathComponent
+        let pgTag = storedVersion.flatMap { $0.isEmpty ? nil : "pg\($0)" } ?? "pg-unknown"
+        let stampFmt = DateFormatter()
+        stampFmt.locale = Locale(identifier: "en_US_POSIX")
+        stampFmt.timeZone = TimeZone(identifier: "UTC")
+        stampFmt.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = stampFmt.string(from: now)
+
+        var candidate = parent.appendingPathComponent("\(base)-\(pgTag)-backup-\(stamp)")
+        var attempt = 1
+        while fileManager.fileExists(atPath: candidate.path) {
+            candidate = parent.appendingPathComponent("\(base)-\(pgTag)-backup-\(stamp)-\(attempt)")
+            attempt += 1
+            if attempt > 100 {
+                throw NSError(
+                    domain: "com.harborclerk.postgres",
+                    code: -1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "Too many backup-directory collisions at \(candidate.path)",
+                    ],
+                )
+            }
+        }
+        try fileManager.moveItem(at: dataDir, to: candidate)
+        return candidate
     }
 
     private func pgEnvironment() -> [String: String] {
