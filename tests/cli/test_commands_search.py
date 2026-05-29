@@ -21,14 +21,14 @@ def _run(args, mock_response):
 
 
 def test_search_calls_kb_search_with_query_and_defaults(capsys):
-    rc, client = _run(["search", "termination", "--json"], {"results": []})
+    rc, client = _run(["search", "termination", "--json"], {"hits": []})
     assert rc == 0
     client.call_tool.assert_called_once_with(
         "kb_search",
         {"query": "termination", "k": 10, "offset": 0, "detail": "full"},
     )
     out = capsys.readouterr().out
-    assert json.loads(out) == {"results": []}
+    assert json.loads(out) == {"hits": []}
 
 
 def test_search_forwards_optional_filters(capsys):
@@ -39,35 +39,47 @@ def test_search_forwards_optional_filters(capsys):
             "--k",
             "5",
             "--detail",
-            "brief",
+            "compact",
             "--language",
             "en",
             "--after",
             "2026-01-01",
+            "--metadata-filter",
+            '{"email.from": "alice@example.com"}',
+            "--text-contains",
+            "force majeure",
             "--json",
         ],
-        {"results": []},
+        {"hits": []},
     )
     assert rc == 0
     args = client.call_tool.call_args.args[1]
     assert args["k"] == 5
-    assert args["detail"] == "brief"
-    assert args["language"] == "en"
+    assert args["detail"] == "compact"
+    assert args["language"] == "english"
     assert args["after"] == "2026-01-01"
+    assert args["metadata_filter"] == {"email.from": "alice@example.com"}
+    assert args["text_contains"] == "force majeure"
+
+
+def test_search_invalid_metadata_filter_exits_1(capsys):
+    rc, client = _run(["search", "foo", "--metadata-filter", "not-json", "--json"], {"hits": []})
+    assert rc == 1
+    client.call_tool.assert_not_called()
+    assert "--metadata-filter must be valid JSON" in capsys.readouterr().err
 
 
 def test_search_text_mode_prints_human_readable(capsys):
     payload = {
-        "results": [
+        "hits": [
             {
                 "chunk_id": "c1",
                 "doc_id": "d1",
-                "title": "Contract A",
-                "page": 4,
-                "snippet": "shall terminate",
+                "doc_title": "Contract A",
+                "pages": "4",
+                "text": "shall terminate",
                 "score": 0.87,
-                "language": "en",
-                "citation": "Contract A, p.4",
+                "language": "english",
             }
         ],
         "possible_conflict": False,

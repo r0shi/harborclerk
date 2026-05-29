@@ -24,7 +24,18 @@ USAGE
 
 OPTIONS
   -k, --k INT               Results per query (default: 5, max: 50)
-  -d, --detail full|brief   Result detail level (default: brief)
+  -d, --detail full|brief|compact
+                             Result detail level (default: brief)
+      --brief-chars INT     When --detail=brief, chars per hit text
+      --doc-id UUID         Restrict searches to one document
+      --doc-ids UUID,UUID   Restrict searches to multiple documents
+      --after YYYY-MM-DD    Only docs ingested after this date
+      --before YYYY-MM-DD   Only docs ingested before this date
+      --language english|french|en|fr
+                             Restrict to one language
+      --mime-type MIME      Restrict by MIME type (e.g. application/pdf)
+      --metadata-filter JSON
+                             JSON metadata containment filter
 
 RETURNS (JSON)
   {
@@ -36,11 +47,10 @@ RETURNS (JSON)
             "chunk_id":   "uuid",      // pass to read-passages or expand-context
             "doc_id":     "uuid",      // document identifier
             "doc_title":  "string",    // document title
-            "page":       42,          // 1-indexed page (null for non-paginated)
-            "snippet":    "string",    // matched text (full or truncated per --detail)
+            "pages":      "42",        // page or page range (omitted when unavailable)
+            "text":       "string",    // matched chunk text; omitted with --detail=compact
             "score":      0.87,        // hybrid score, higher = better
-            "language":   "en",        // "en" or "fr"
-            "citation":   "Title, p.42"
+            "language":   "english"    // "english" or "french"
           }
         ],
         "total_candidates": 14,        // total matching chunks before k cap
@@ -83,6 +93,8 @@ COMMON MISTAKES
     offsets. Use individual `search` calls with --offset when you need page 2.
   - Using --detail=full on large -k across 5 queries: full detail can return
     several KB per hit, 5 × 10 = 50 chunks of text. default `brief` is safer.
+  - Expecting a standalone `citation` field; cite with doc_title + pages +
+    chunk_id, or call `read-passages` to verify exact context.
 
 SEE ALSO
   search, read-passages, expand-context

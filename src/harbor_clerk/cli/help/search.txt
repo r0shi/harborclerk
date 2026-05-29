@@ -4,12 +4,13 @@ DESCRIPTION
   Runs a hybrid retrieval combining PostgreSQL full-text search (bilingual,
   English + French) and pgvector cosine similarity over the corpus. Scores
   are normalized and merged per-chunk with a small OCR-confidence boost.
-  Results include citations (doc_id, page, chunk_id) usable with
-  `read-passages` and `expand-context`.
+  Results include citation-ready fields (doc_id, doc_title, pages,
+  chunk_id) usable with `read-passages` and `expand-context`.
 
   If top hits have similar scores across multiple documents, the response
-  includes `possible_conflict: true` and a `conflict_sources` array — quote
-  both sides to the user.
+  includes `possible_conflict: true` and a `conflict_sources` array. Treat
+  this as an ambiguity signal and inspect the relevant sources before
+  answering.
 
 USAGE
   harbor-clerk search <query> [options]
@@ -17,30 +18,37 @@ USAGE
 OPTIONS
   -k, --k INT               Number of results (default: 10, max: 50)
   -o, --offset INT          Pagination offset (default: 0)
-  -d, --detail full|brief   Result detail level (default: full)
-      --brief-chars INT     When --detail=brief, chars per snippet (default: 200)
+  -d, --detail full|brief|compact
+                             Result detail level (default: full)
+      --brief-chars INT     When --detail=brief, chars per hit text (default: 200)
       --doc-id UUID         Restrict search to one document
       --doc-ids UUID,UUID   Restrict search to multiple documents
       --after YYYY-MM-DD    Only docs ingested after this date
       --before YYYY-MM-DD   Only docs ingested before this date
-      --language en|fr      Restrict to one language
+      --language english|french|en|fr
+                             Restrict to one language
       --mime-type MIME      Restrict by MIME type (e.g. application/pdf)
-      --faceted             Include facet counts in response
+      --metadata-filter JSON
+                             JSON metadata containment filter
+      --text-contains TEXT  Require an exact substring in chunk text
+      --faceted             Include document-grouped results
 
 RETURNS (JSON)
   {
-    "results": [
+    "hits": [
       {
         "chunk_id":   "uuid",        // pass to read-passages or expand-context
         "doc_id":     "uuid",        // document identifier
-        "title":      "string",      // document title
-        "page":       42,            // 1-indexed page (or null for non-paginated)
-        "snippet":    "string",      // matched text with context
+        "doc_title":  "string",      // document title
+        "pages":      "42",          // page or page range (omitted when unavailable)
+        "section":    "string",      // nearest heading, when available
+        "text":       "string",      // matched chunk text; omitted with --detail=compact
         "score":      0.87,          // hybrid score, higher = better
-        "language":   "en" | "fr",
-        "citation":   "Title, p.42"  // human-readable citation
+        "language":   "english" | "french"
       }
     ],
+    "total_candidates": 14,
+    "has_more": false,
     "possible_conflict": false,
     "conflict_sources": []           // present only when possible_conflict=true
   }
@@ -52,19 +60,21 @@ EXAMPLES
   # Restrict to PDFs ingested in the last month, JSON to jq
   harbor-clerk search "force majeure" \
     --mime-type application/pdf \
-    --after 2026-04-23 | jq '.results[] | {title, page, snippet}'
+    --after 2026-04-23 | jq '.hits[] | {title: .doc_title, pages, text}'
 
   # Two-stage: search then expand the best hit
-  CHUNK=$(harbor-clerk search "indemnification" -k 1 | jq -r '.results[0].chunk_id')
+  CHUNK=$(harbor-clerk search "indemnification" -k 1 | jq -r '.hits[0].chunk_id')
   harbor-clerk expand-context "$CHUNK" -n 3
 
   # Faceted overview before drilling in
-  harbor-clerk search "audit" --faceted | jq '.facets'
+  harbor-clerk search "audit" --faceted | jq '.documents'
 
 COMMON MISTAKES
   - Passing a chunk_id as --doc-id (chunk_id and doc_id are distinct UUIDs).
   - Forgetting --detail=brief on large k — default `full` returns the entire
     matching chunk text, which can be 1–2KB per result.
+  - Expecting a standalone `citation` field; cite with doc_title + pages +
+    chunk_id, or call `read-passages` to verify exact context.
   - Using --after/--before with timestamps; only dates (YYYY-MM-DD) are accepted.
 
 SEE ALSO

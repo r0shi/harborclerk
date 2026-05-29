@@ -33,16 +33,15 @@ def test_render_json_emits_indented_json():
 def test_render_text_search_results_uses_pretty_printer():
     buf = io.StringIO()
     payload = {
-        "results": [
+        "hits": [
             {
                 "chunk_id": "c1",
                 "doc_id": "d1",
-                "title": "Doc A",
-                "page": 1,
-                "snippet": "hello world",
+                "doc_title": "Doc A",
+                "pages": "1",
+                "text": "hello world",
                 "score": 0.9,
-                "language": "en",
-                "citation": "Doc A, p.1",
+                "language": "english",
             },
         ],
         "possible_conflict": False,
@@ -52,6 +51,14 @@ def test_render_text_search_results_uses_pretty_printer():
     assert "Doc A" in out
     assert "hello world" in out
     assert "0.9" in out or "0.90" in out
+
+
+def test_render_text_search_error_prints_error():
+    buf = io.StringIO()
+    render({"error": "Cannot specify both doc_id and doc_ids"}, mode=OutputMode.TEXT, command="search", stream=buf)
+    out = buf.getvalue()
+    assert "error: Cannot specify both doc_id and doc_ids" in out
+    assert "0 results" not in out
 
 
 def test_render_text_falls_back_to_json_for_unknown_command():

@@ -35,3 +35,48 @@ def test_batch_search_defaults():
     assert args["k"] == 5
     assert args["detail"] == "brief"
     assert args["queries"] == ["only-query"]
+
+
+def test_batch_search_forwards_optional_filters():
+    rc, client = _run(
+        [
+            "batch-search",
+            "q1",
+            "q2",
+            "--k",
+            "3",
+            "--detail",
+            "compact",
+            "--brief-chars",
+            "120",
+            "--doc-ids",
+            "d1,d2",
+            "--language",
+            "fr",
+            "--mime-type",
+            "application/pdf",
+            "--metadata-filter",
+            '{"sidecar.vendor": "Pinnacle"}',
+            "--json",
+        ],
+        {"results": []},
+    )
+    assert rc == 0
+    args = client.call_tool.call_args.args[1]
+    assert args == {
+        "queries": ["q1", "q2"],
+        "k": 3,
+        "detail": "compact",
+        "brief_chars": 120,
+        "doc_ids": ["d1", "d2"],
+        "language": "french",
+        "mime_type": "application/pdf",
+        "metadata_filter": {"sidecar.vendor": "Pinnacle"},
+    }
+
+
+def test_batch_search_invalid_metadata_filter_exits_1(capsys):
+    rc, client = _run(["batch-search", "q1", "--metadata-filter", "not-json", "--json"], {"results": []})
+    assert rc == 1
+    client.call_tool.assert_not_called()
+    assert "--metadata-filter must be valid JSON" in capsys.readouterr().err

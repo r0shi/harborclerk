@@ -69,13 +69,13 @@ EXAMPLES
 
   # Two-stage: find the doc_id from a search hit, then find related docs
   DOC=$(harbor-clerk search "employment agreement" -k 1 \
-    | jq -r '.results[0].doc_id')
+    | jq -r '.hits[0].doc_id')
   harbor-clerk find-related "$DOC" -k 5
 
 COMMON MISTAKES
   - Passing a chunk_id as doc_id: find-related takes a document UUID
-    (from .results[].doc_id in search output or from `list-recent`), not
-    a chunk UUID. Chunk IDs come from .results[].chunk_id.
+    (from .hits[].doc_id in search output or from `list-recent`), not
+    a chunk UUID. Chunk IDs come from .hits[].chunk_id.
   - Expecting text-overlap matching: similarity is based on dense vector
     embeddings, not keyword overlap. A document sharing unusual phrasing
     may rank higher than one sharing common words.
