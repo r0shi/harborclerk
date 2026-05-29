@@ -138,6 +138,22 @@ class TestExtractiveFallback:
 class TestCallLlmRetry:
     """Test retry behavior of _call_llm for transient failures."""
 
+    @pytest.fixture(autouse=True)
+    def _llm_active(self, monkeypatch):
+        """Default to "LLM is active" for the retry-behavior tests below.
+
+        Without this, `_call_llm`'s ConnectError branch would consult
+        `_llm_intentionally_deactivated()` (which reads settings.llm_model_id
+        from disk), see the test environment's empty default, and fail-fast
+        instead of retrying — which is the correct production behavior but
+        the wrong test setup for "does the retry loop work on transient
+        errors?". The dedicated fail-fast test below explicitly opts in.
+        """
+        monkeypatch.setattr(
+            "harbor_clerk.llm.summarize._llm_intentionally_deactivated",
+            lambda: False,
+        )
+
     def test_succeeds_first_attempt(self):
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -235,6 +251,83 @@ class TestCallLlmRetry:
             result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
             assert result is None
             assert mock_post.call_count == 1
+
+
+class TestCallLlmDeactivatedFailFast:
+    """ConnectError + user-deactivated LLM → return None on the FIRST attempt,
+    skipping the ~95 s of jittered retries that would otherwise just fall
+    through to the AFM / extractive fallback path anyway.
+
+    The 'loading' state (model_id set, llama-server still warming up) is NOT
+    handled — see `_llm_intentionally_deactivated` docstring for why."""
+
+    def test_connect_error_when_deactivated_skips_remaining_retries(self, monkeypatch):
+        monkeypatch.setattr(
+            "harbor_clerk.llm.summarize._llm_intentionally_deactivated",
+            lambda: True,  # user took the LLM down
+        )
+        sleeps: list[float] = []
+        monkeypatch.setattr("harbor_clerk.llm.summarize.time.sleep", sleeps.append)
+        with patch(
+            "harbor_clerk.llm.summarize.httpx.post",
+            side_effect=httpx.ConnectError("refused"),
+        ) as mock_post:
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+        assert result is None
+        # Exactly ONE post — no retry sleeps after the deactivation check.
+        assert mock_post.call_count == 1
+        assert sleeps == []
+
+    def test_connect_error_when_active_still_retries(self, monkeypatch):
+        """Sanity check the fixture: when the LLM is active, we get the
+        existing retry behavior (not the fail-fast path). Mirrors the
+        autouse-fixture'd TestCallLlmRetry.test_retries_on_connect_error
+        but inline so this test class is self-contained."""
+        monkeypatch.setattr(
+            "harbor_clerk.llm.summarize._llm_intentionally_deactivated",
+            lambda: False,
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"choices": [{"message": {"content": "OK"}}]}
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                side_effect=[httpx.ConnectError("refused"), mock_response],
+            ) as mock_post,
+            patch("harbor_clerk.llm.summarize.time.sleep"),
+        ):
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+        assert result == "OK"
+        assert mock_post.call_count == 2
+
+    def test_timeout_still_retries_even_when_deactivated(self, monkeypatch):
+        """The fail-fast guard only fires on ConnectError, not TimeoutException.
+        A timeout against llama-server could mean the model is loading slowly
+        (long mmap on big GGUFs); the user may have deactivated AND re-activated
+        in the meantime. Conservative: only short-circuit when we're definitely
+        not going to hit a working server."""
+        monkeypatch.setattr(
+            "harbor_clerk.llm.summarize._llm_intentionally_deactivated",
+            lambda: True,
+        )
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                side_effect=httpx.TimeoutException("timeout"),
+            ) as mock_post,
+            patch("harbor_clerk.llm.summarize.time.sleep"),
+        ):
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+        assert result is None
+        assert mock_post.call_count == 3  # full retry budget
 
 
 # --- generate_summary tests ---
