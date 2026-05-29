@@ -17,6 +17,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from harbor_clerk.file_types import ALLOWED_EXTENSIONS, guess_mime_type, is_excalidraw
+from harbor_clerk.mail.parser import EmailParseResult, parse_eml
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_heading import DocumentHeading
@@ -197,6 +198,14 @@ def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path:
     doc.source_path = source_path
     doc.pipeline_status = PipelineStatus.queued
     doc.error = None
+    # For .eml: re-parse so the email_* columns (subject, from, to, date,
+    # etc.) reflect the new bytes. Otherwise an in-place edit that, say,
+    # corrects a misspelled subject would leave the old subject in the DB.
+    # Best-effort — parse failure leaves the existing values intact.
+    if (doc.mime_type or guess_mime_type(source_path)) == "message/rfc822":
+        parsed = _try_parse_eml(source_path)
+        if parsed is not None:
+            _apply_email_fields(doc, parsed)
     # Delete child rows explicitly (FKs have CASCADE but we do it here for
     # clarity and to avoid relying on DB-level CASCADE for application state).
     session.query(Chunk).filter_by(doc_id=doc_id).delete()
@@ -207,8 +216,54 @@ def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path:
     session.add(IngestionJob(doc_id=doc_id, stage=JobStage.extract, status=JobStatus.queued))
 
 
+def _try_parse_eml(absolute_path: str) -> EmailParseResult | None:
+    """Best-effort `.eml` parse from disk. Returns None on any read or parse
+    failure — the caller falls through to a generic Document with email_*
+    columns NULL. `.eml` files are typically small; the extra read here on
+    top of the SHA-streaming read is page-cache-cheap in practice."""
+    try:
+        with open(absolute_path, "rb") as fh:
+            return parse_eml(fh.read())
+    except Exception as exc:
+        logger.warning("watcher: parse_eml failed for %s: %s", absolute_path, exc)
+        return None
+
+
+def _apply_email_fields(doc: Document, parsed: EmailParseResult) -> None:
+    """Copy parsed-email metadata onto an existing Document row.
+
+    Mirrors `mail/ingest.py::create_email_document` for the watched-folder
+    ingest path. Sets the email_* columns + title + created_at; we don't
+    touch sha256, source_path, mime_type, or updated_at. `updated_at` is
+    intentionally left to the caller — on a reprocess (in-place .eml edit)
+    it would be wrong to slide updated_at backwards to the email's send
+    date when the record was just touched now. The IMAP path also sets
+    `email_label_path` (Gmail label name); watched-folder ingest has
+    `folder_id` on the WatchedFile row for that role, so email_label_path
+    stays NULL here.
+    """
+    doc.title = parsed.subject
+    doc.email_message_id = parsed.message_id
+    doc.email_thread_id = parsed.thread_id
+    doc.email_from_address = parsed.from_address
+    doc.email_from_name = parsed.from_name
+    doc.email_subject = parsed.subject
+    doc.email_to_addresses = parsed.to_addresses or None
+    doc.email_cc_addresses = parsed.cc_addresses or None
+    doc.email_date_sent = parsed.date_sent
+    # Match IMAP-path semantics: created_at = email send date, so the
+    # Documents page sorts emails by when they were sent, not when they
+    # were dropped into the watched folder. Stays semantically correct
+    # on reprocess too — `created_at` describes the email content, and
+    # the new bytes' Date header is what we want.
+    if parsed.date_sent is not None:
+        doc.created_at = parsed.date_sent
+
+
 def _create_doc_and_enqueue(session: Session, event: FileEvent, sha: bytes) -> None:
     filename = Path(event.absolute_path).name
+    mime = guess_mime_type(filename)
+
     # mime_type was historically left NULL on the watched-folder path (the
     # primary ingest path post Stage-2 watched-folder-first refactor), which
     # broke the Observatory's file-type breakdown. The extract stage already
@@ -220,9 +275,26 @@ def _create_doc_and_enqueue(session: Session, event: FileEvent, sha: bytes) -> N
         status="active",
         sha256=sha,
         source_path=event.absolute_path,
-        mime_type=guess_mime_type(filename),
+        mime_type=mime,
         pipeline_status=PipelineStatus.queued,
     )
+
+    # For .eml files: parse RFC 5322 headers at ingest so PR #414's preamble
+    # injection and the `email.*` metadata_filter namespace actually fire on
+    # watched-folder docs (not just IMAP-synced ones). The previous version
+    # left email_* NULL, which silently disabled both features for every
+    # .eml ever loaded via a watched folder.
+    if mime == "message/rfc822":
+        parsed = _try_parse_eml(event.absolute_path)
+        if parsed is not None:
+            _apply_email_fields(doc, parsed)
+            # Pin updated_at = date_sent at first-create only (matches IMAP
+            # `create_email_document`). `_apply_email_fields` deliberately
+            # doesn't touch updated_at because the reprocess caller would
+            # otherwise slide updated_at backwards on every in-place edit.
+            if parsed.date_sent is not None:
+                doc.updated_at = parsed.date_sent
+
     session.add(doc)
     session.flush()
     session.add(

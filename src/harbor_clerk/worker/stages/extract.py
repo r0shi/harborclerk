@@ -297,12 +297,50 @@ def run_extract(doc_id: uuid.UUID) -> None:
             # Unknown type — try Tika
             pages = _extract_via_tika(data, mime or "application/octet-stream")
 
+        # Backfill the email_* columns from the raw bytes if this is an .eml
+        # and the ingest path didn't populate them (pre-this-PR watched-folder
+        # ingests left them NULL). Running `kb_reprocess` on those docs will
+        # land here and populate the columns in the same extract pass, so the
+        # preamble-injection block below also fires on the same run. This is
+        # the operator's backfill path for the existing 10k+ watched-folder
+        # .eml docs that pre-date the watcher fix in this PR.
+        if (mime == "message/rfc822" or obj_key.endswith(".eml")) and doc.email_message_id is None:
+            from harbor_clerk.mail.parser import parse_eml
+
+            try:
+                parsed = parse_eml(data)
+            except Exception as exc:
+                logger.warning("extract: parse_eml backfill failed for %s: %s", doc_id, exc)
+            else:
+                doc.email_message_id = parsed.message_id
+                doc.email_thread_id = parsed.thread_id
+                doc.email_from_address = parsed.from_address
+                doc.email_from_name = parsed.from_name
+                doc.email_subject = parsed.subject
+                doc.email_to_addresses = parsed.to_addresses or None
+                doc.email_cc_addresses = parsed.cc_addresses or None
+                doc.email_date_sent = parsed.date_sent
+                # Mirror the watcher's title-and-date semantics. Only adopt
+                # parsed.subject when the existing title looks generic (== the
+                # filename stem) so we don't clobber an operator-edited title.
+                # `stem` truthiness check: if both source_path and
+                # canonical_filename are NULL/empty (pathological legacy doc),
+                # `Path("").stem` is "" — without the truthy guard we'd then
+                # clobber any doc whose title happens to also be empty.
+                stem = Path(doc.source_path or doc.canonical_filename or "").stem
+                if stem and doc.title == stem and parsed.subject:
+                    doc.title = parsed.subject
+                if parsed.date_sent is not None:
+                    doc.created_at = parsed.date_sent
+                    doc.updated_at = parsed.date_sent
+
         # Email preamble injection: for .eml documents, prepend a key:value
         # header block (From / To / Cc / Subject / Date) to the first page
         # so that those fields are searchable as plain text in chunks.
         # The Document.email_* columns are already populated by the ingest
-        # stage; we build the preamble from them here rather than re-parsing
-        # the raw bytes. Only page 0 (index 0 in the pages list) is modified.
+        # stage (or the backfill block immediately above for legacy rows);
+        # we build the preamble from them here rather than re-parsing the
+        # raw bytes. Only page 0 (index 0 in the pages list) is modified.
         #
         # Guard: attachment Documents also carry email_message_id (it links
         # them back to the parent email). They must NOT get the preamble —
