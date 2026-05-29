@@ -231,47 +231,56 @@ def run(
 def _live_capture_fn(*, api_base: str, corpus: str, model: str, insecure: bool) -> Callable[[GTItem], dict]:
     """Build the production capture function: a model+MCP run per item.
 
-    Uses make_provider() to dispatch on model name (claude-* -> AnthropicProvider,
-    gpt-* / o1-* / o3-* -> OpenAIProvider). The MCP session MUST be
+    Cloud models (claude-*, gpt-*, o1-*, o3-*) talk to HC's MCP endpoint
+    directly and drive the tool-use loop themselves. The MCP session MUST be
     authenticated with a corpus-scoped API key so HC's search is restricted to
     `corpus`: set HC_API_KEY to that scoped key. Falls back to a
     HC_USERNAME/HC_PASSWORD login, which yields an UNSCOPED (full-index)
-    session — correct only when `corpus` is the lone corpus loaded.
+    MCP session — correct only when `corpus` is the lone corpus loaded.
 
-    The provider's underlying API client (anthropic.Anthropic() or
-    openai.OpenAI()) is lazily constructed inside the provider; both read
-    their API keys from env (ANTHROPIC_API_KEY / OPENAI_API_KEY).
+    Local HC-hosted models (qwen3-*, gemma4-*, phi4-*, deepseek-*, gpt-oss-*,
+    smollm3-*, ...) live INSIDE HC and can't speak MCP themselves. We route
+    them through HC's chat API instead, scoping the conversation by folder.
+    That path needs admin auth (HC_USERNAME + HC_PASSWORD) because the
+    PUT /chat/models/{id}/activate endpoint is admin-only.
     """
     from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
     from scripts.test_corpora.runner.providers import make_provider
+    from scripts.test_corpora.runner.providers.factory import model_is_cloud
 
-    token = os.environ.get("HC_API_KEY")
-    if not token:
+    if model_is_cloud(model):
+        token = os.environ.get("HC_API_KEY")
+        if not token:
+            user, password = os.environ.get("HC_USERNAME"), os.environ.get("HC_PASSWORD")
+            if not (user and password):
+                raise RuntimeError(
+                    "answer-eval cloud path needs HC_API_KEY (a corpus-scoped key) or HC_USERNAME + HC_PASSWORD in the environment"
+                )
+            hc = HarborClerkClient(api_base, verify=not insecure)
+            hc.login(user, password)
+            token = hc.get_bearer_token()
+            if not token:
+                raise RuntimeError("HC login did not yield a bearer token — check HC_USERNAME / HC_PASSWORD")
+            log.warning("HC_API_KEY unset — using an unscoped login; search is NOT corpus-restricted")
+
+        mcp_url = os.environ.get("HC_MCP_URL") or f"{api_base}/mcp/mcp"
+        mcp = SyncMcpSession(url=mcp_url, headers={"Authorization": f"Bearer {token}"})
+        provider = make_provider(model, mcp_session=mcp)
+    else:
+        # Local-model path — needs admin auth for PUT /chat/models/{id}/activate.
         user, password = os.environ.get("HC_USERNAME"), os.environ.get("HC_PASSWORD")
         if not (user and password):
             raise RuntimeError(
-                "answer-eval needs HC_API_KEY (a corpus-scoped key) or HC_USERNAME + HC_PASSWORD in the environment"
+                "answer-eval local path needs HC_USERNAME + HC_PASSWORD in the environment "
+                "(local models need admin auth for model activation)"
             )
         hc = HarborClerkClient(api_base, verify=not insecure)
         hc.login(user, password)
-        token = hc.get_bearer_token()
-        if not token:
-            raise RuntimeError("HC login did not yield a bearer token — check HC_USERNAME / HC_PASSWORD")
-        log.warning("HC_API_KEY unset — using an unscoped login; search is NOT corpus-restricted")
-
-    mcp_url = os.environ.get("HC_MCP_URL") or f"{api_base}/mcp/mcp"
-    mcp = SyncMcpSession(url=mcp_url, headers={"Authorization": f"Bearer {token}"})
-
-    # Build a single shared provider for the whole run — each call to
-    # make_provider() would otherwise construct a fresh openai.OpenAI() (and
-    # its httpx connection pool) per item; 29 leaked pools over a run.
-    # Cited-doc bookkeeping is per-question, so we wipe `_cited` between
-    # items to keep results comparable to the pre-refactor per-item model.
-    provider = make_provider(model, mcp_session=mcp)
+        provider = make_provider(model, hc_client=hc)
 
     def capture(item: GTItem) -> dict:
-        # Per-question reset: AnthropicProvider/OpenAIProvider both store
-        # cited docs in `_cited`. A fresh dict per item keeps each
+        # Per-question reset: AnthropicProvider/OpenAIProvider/LocalProvider all
+        # store cited docs in `_cited`. A fresh dict per item keeps each
         # BaselineResult's cited_doc_ids scoped to that question's tool calls.
         provider._cited = {}
         res = provider.run_question(question=item.question, question_id=item.id, corpus=corpus)
