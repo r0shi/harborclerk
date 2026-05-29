@@ -57,10 +57,15 @@ final class LlamaService: ManagedService {
             "--host", "127.0.0.1",
             "--port", String(port),
             "-ngl", "99",
-            // Single parallel slot. Heavy models can't afford more KV
-            // cache; small models could but we don't tune per-model yet.
-            // See memory note: project_per_model_np_tuning.md
-            "-np", "1",
+            // Per-model parallel slot count. Heavy models (Gemma 26B, Qwen
+            // 35B) stay at 1 — each slot costs ~3-5 GB of KV cache and
+            // doesn't fit on 18 GB unified memory. Small models (SmolLM3
+            // 3B, Qwen 4B, Phi-4 Mini) get 4 so chat / research / worker
+            // requests don't queue behind each other on the LLM lock.
+            // Source of truth: ModelInfo.parallel_slots in
+            // src/harbor_clerk/llm/models.py (mirrored above in
+            // Settings.activeModelParallelSlots).
+            "-np", String(settings.activeModelParallelSlots),
             "-c", String(contextWindow),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
