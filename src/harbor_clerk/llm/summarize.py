@@ -478,7 +478,13 @@ def _get_or_start_daemon() -> subprocess.Popen | None:
             [binary],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,  # discarded; daemon shouldn't print to stderr in steady state
+            # DEVNULL, NOT PIPE — Python never reads from daemon stderr, and an
+            # unread stderr pipe with the OS-default 64KB buffer can deadlock
+            # the daemon if it produces enough output (e.g. Foundation Models
+            # framework diagnostics during a startup failure on an unsupported
+            # macOS) while Python is blocked in select() on stdout. DEVNULL
+            # discards on the OS side so there's no buffer to fill.
+            stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,  # line-buffered on the Python end (daemon already line-buffers via FileHandle.write)
         )
@@ -878,10 +884,14 @@ def generate_summary(
     else:
         logger.info("No language model active — trying Apple Intelligence fallback")
 
-    # Try Apple Intelligence (macOS native only)
+    # Try Apple Intelligence (macOS native only). Use `_has_visible_content`
+    # instead of bare truthiness to match the LLM-path check above and the
+    # forced-AFM branch — invisible-only Unicode (zero-width chars, format
+    # codes) is a real model failure mode and should fall through to
+    # extractive rather than getting stored as a summary.
     ai_summary = _apple_intelligence_summary(chunks, max_chars)
-    if ai_summary:
-        return ai_summary, "apple-intelligence"
+    if _has_visible_content(ai_summary):
+        return ai_summary, "apple-intelligence"  # type: ignore[return-value]
 
     if not settings.llm_model_id:
         logger.warning(
