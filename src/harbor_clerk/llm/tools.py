@@ -357,6 +357,34 @@ _BASE_CHAT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_identifier",
+            "description": (
+                "Resolve a specific document identifier (title, filename, or "
+                "metadata identifier) to exactly one doc_id. Call BEFORE "
+                "quoting a named document so you do not confuse it with "
+                "similarly-named documents. Returns status='unique' with "
+                "doc_id + title; status='ambiguous' with discriminating "
+                "fields per candidate; or status='not_found' (the document "
+                "does not exist in the corpus — do NOT fall back to similarity "
+                "search)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "identifier": {
+                        "type": "string",
+                        "description": (
+                            "The identifier to verify (full title, filename, or metadata identifier substring)."
+                        ),
+                    },
+                },
+                "required": ["identifier"],
+            },
+        },
+    },
 ]
 
 
@@ -512,6 +540,10 @@ def _map_args_corpus_topics(args: dict) -> dict:
     return {}
 
 
+def _map_args_verify_identifier(args: dict) -> dict:
+    return {"identifier": args["identifier"]}
+
+
 def _map_args_find_all(args: dict) -> dict:
     """Map chat-tool args to find_all() kwargs. Drops unknown keys."""
     allowed = {
@@ -541,6 +573,7 @@ _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
     "ingest_status": ("kb_ingest_status", _map_args_ingest_status),
     "corpus_topics": ("kb_corpus_topics", _map_args_corpus_topics),
     "find_all_documents": ("kb_find_all", _map_args_find_all),
+    "verify_identifier": ("kb_verify_identifier", _map_args_verify_identifier),
 }
 
 
