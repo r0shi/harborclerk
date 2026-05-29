@@ -29,15 +29,25 @@ from scripts.test_corpora.runner.providers.openai_provider import OpenAIProvider
 
 _ANTHROPIC_PREFIXES = ("claude-",)
 _OPENAI_PREFIXES = ("gpt-", "o1-", "o3-")
+# Models whose name starts with an "OpenAI-looking" prefix but are actually
+# HC-hosted local llama-server models. They must be excluded from the cloud
+# routing decision so make_provider returns LocalProvider for them.
+_LOCAL_OVERRIDES = ("gpt-oss-",)
 
 
 def model_is_cloud(model: str) -> bool:
     """True for cloud-routed models (claude-*, gpt-*, o1-*, o3-*).
 
+    `gpt-oss-*` is explicitly excluded — it's a HC-hosted local model whose
+    name happens to start with `gpt-`. Without this carve-out the factory
+    would dispatch it to the OpenAI API and get a 404.
+
     Callers use this to pick between the cloud path (open an MCP session
     against HC) and the local path (drive HC's chat API for HC-hosted
     llama-server models).
     """
+    if model.startswith(_LOCAL_OVERRIDES):
+        return False
     return model.startswith(_ANTHROPIC_PREFIXES + _OPENAI_PREFIXES)
 
 
@@ -59,7 +69,7 @@ def make_provider(
     """
     if model.startswith(_ANTHROPIC_PREFIXES):
         return AnthropicProvider(mcp_session=mcp_session, model=model, doc_ids_seen=doc_ids_seen)
-    if model.startswith(_OPENAI_PREFIXES):
+    if model.startswith(_OPENAI_PREFIXES) and not model.startswith(_LOCAL_OVERRIDES):
         return OpenAIProvider(mcp_session=mcp_session, model=model, doc_ids_seen=doc_ids_seen)
     if hc_client is None:
         raise ValueError(f"model {model!r} is not a cloud model; LocalProvider needs hc_client=")
