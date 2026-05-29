@@ -83,11 +83,13 @@ class LocalProvider:
         cited_doc_titles: list[str] = []
         tool_call_count = 0
 
-        # Index tool_result events by tool_call_id so we can pair them up in
-        # the transcript. HC's SSE emits tool_call (with id+args) and
-        # tool_result (with id+result) as separate events.
-        tool_results_by_id: dict[str, dict] = {}
-        tool_calls_by_id: dict[str, dict] = {}
+        # Pair tool_call ↔ tool_result by stream order. HC's SSE shape is
+        # `{type:"tool_call", name, arguments}` followed by
+        # `{type:"tool_result", name, summary, raw_result}` — there is no id
+        # field, so we rely on the contract that result immediately follows
+        # call within the same model turn. Using a parallel list (vs. dict)
+        # also preserves the citation flood ordering for the judge.
+        pending_calls: list[dict] = []
 
         for ev in events:
             etype = ev.get("type")
@@ -97,9 +99,24 @@ class LocalProvider:
                     answer_chunks.append(content)
             elif etype == "tool_call":
                 tool_call_count += 1
-                tool_calls_by_id[ev.get("id") or f"_call_{tool_call_count}"] = ev
+                pending_calls.append(ev)
             elif etype == "tool_result":
-                tool_results_by_id[ev.get("id") or f"_call_{tool_call_count}"] = ev
+                # Read HC's actual field names. `summary` is already truncated
+                # by HC's summarize_tool_result; prefer it over raw_result so
+                # the captured transcript stays bounded.
+                summary = ev.get("summary")
+                if summary is None:
+                    summary = ev.get("raw_result")
+                if isinstance(summary, str) and len(summary) > 500:
+                    summary = summary[:500]
+                call_ev = pending_calls.pop(0) if pending_calls else {}
+                tool_transcript.append(
+                    {
+                        "tool": ev.get("name") or call_ev.get("name") or "",
+                        "args": call_ev.get("arguments") or {},
+                        "result_summary": summary,
+                    }
+                )
             elif etype == "done":
                 rc = ev.get("rag_context") or {}
                 citations = rc.get("citations") or ev.get("citations") or []
@@ -114,22 +131,14 @@ class LocalProvider:
                             # mirrors cloud providers' behavior.
                             self._cited[str(did)] = str(title_str)
 
-        # Build a transcript in invocation order, pairing tool_call + tool_result.
-        for call_id, call_ev in tool_calls_by_id.items():
-            result_ev = tool_results_by_id.get(call_id, {})
-            raw_result = result_ev.get("result")
-            # Keep summary compact — full tool result blobs can be large.
-            if isinstance(raw_result, str):
-                summary = raw_result[:500]
-            elif isinstance(raw_result, dict):
-                summary = {k: v for k, v in raw_result.items() if k in ("hits", "passages", "count", "doc_id", "title")}
-            else:
-                summary = raw_result
+        # Any tool_calls that never received a matching tool_result still
+        # belong in the transcript — the model invoked them.
+        for call_ev in pending_calls:
             tool_transcript.append(
                 {
-                    "tool": call_ev.get("name") or call_ev.get("tool") or "",
-                    "args": call_ev.get("arguments") or call_ev.get("args") or {},
-                    "result_summary": summary,
+                    "tool": call_ev.get("name") or "",
+                    "args": call_ev.get("arguments") or {},
+                    "result_summary": None,
                 }
             )
 
