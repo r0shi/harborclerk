@@ -36,30 +36,50 @@ final class PostgresService: ManagedService {
 
     func start() async throws {
         let fm = FileManager.default
-        let pgVersionFile = dataDir.appendingPathComponent("PG_VERSION")
 
         // Determine bundled PG major version (e.g. "18" from "postgres (PostgreSQL) 18.3")
         let expectedMajor = await bundledPgMajorVersion()
 
-        // Check if data directory needs (re-)initialization
+        // Audit the data directory before any potentially-destructive action.
+        // Always log so a recurrence of the undiagnosed 2026-05-14 user-table
+        // wipe (described in pr_followups.md § Data safety) has forensic data
+        // on what state the directory was in pre-init, instead of disappearing
+        // into the noise like the original incident did.
+        let audit = Self.auditDataDirBeforeInit(dataDir: dataDir)
+        Log.logger("postgresql").info(
+            "Data dir audit at start: \(String(describing: audit), privacy: .public)"
+        )
+
         var needsInit = false
-        if fm.fileExists(atPath: pgVersionFile.path) {
-            let stored = (try? String(contentsOf: pgVersionFile, encoding: .utf8))?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            // Guard against `expectedMajor` being empty — `bundledPgMajorVersion()`
-            // returns "" on any failure to probe `postgres --version`. Without
+        switch audit {
+        case .missing, .empty:
+            // No data present — proceed to initdb (the normal first-launch path).
+            needsInit = true
+
+        case .pgVersionPresent(let stored):
+            // PG_VERSION exists but unreadable (permission glitch, full disk,
+            // NFS hiccup) → `auditDataDirBeforeInit` reports the file as
+            // present but with `nil` contents. Without this guard, `nil !=
+            // expectedMajor` would fire the move-aside path and reinitialize
+            // a potentially-valid cluster — same shape as the original
+            // wipe bug. Refuse instead; operator should investigate.
+            guard let stored else {
+                let message =
+                    "PG_VERSION at \(dataDir.path)/PG_VERSION exists but could not be read. " +
+                    "Refusing to start — check filesystem permissions and disk space; " +
+                    "do NOT delete the data directory manually before recovery."
+                Log.logger("postgresql").error("\(message, privacy: .public)")
+                throw ServiceError.startFailed(name, message)
+            }
+            // Existing version-mismatch + move-aside path (PR #426). Guard
+            // against `expectedMajor` being empty — `bundledPgMajorVersion()`
+            // returns "" on any failure to probe `postgres --version`; without
             // this, a transient bundled-binary error would treat a healthy
-            // data dir as mismatched and move it aside unnecessarily.
+            // data dir as mismatched.
             if !expectedMajor.isEmpty && stored != expectedMajor {
                 Log.logger("postgresql").warning(
-                    "Data directory version mismatch: found \(stored ?? "?", privacy: .public), expected \(expectedMajor, privacy: .public). Moving aside before initializing a fresh cluster."
+                    "Data directory version mismatch: found \(stored, privacy: .public), expected \(expectedMajor, privacy: .public). Moving aside before initializing a fresh cluster."
                 )
-                // Move the existing data dir aside instead of `removeItem` —
-                // a user restoring an older-PG backup or running a worktree
-                // build with stale bundled PG would otherwise lose every
-                // user / document / chat history with no recovery path.
-                // Throwing on failure is intentional: refusing to start beats
-                // silent data loss.
                 let backup: URL
                 do {
                     backup = try Self.moveDataDirAside(dataDir: dataDir, storedVersion: stored)
@@ -74,8 +94,19 @@ final class PostgresService: ManagedService {
                 )
                 needsInit = true
             }
-        } else {
-            needsInit = true
+
+        case .corruptOrForeign(let fileCount, let sampleNames):
+            // Tripwire for the undiagnosed-wipe path: PG_VERSION is gone but
+            // the data dir contains files. `initdb` would refuse anyway, but
+            // its "initdb failed with N" hides the real condition. Surface
+            // the actual state and refuse — recovery should be manual so the
+            // operator can inspect what's left of the cluster.
+            let message =
+                "Data directory at \(dataDir.path) is non-empty (\(fileCount) files; sample: " +
+                "\(sampleNames.joined(separator: ", "))) but PG_VERSION is missing. " +
+                "Refusing to initialize a fresh cluster over potentially-populated state — investigate manually."
+            Log.logger("postgresql").error("\(message, privacy: .public)")
+            throw ServiceError.startFailed(name, message)
         }
 
         if needsInit {
@@ -301,6 +332,66 @@ final class PostgresService: ManagedService {
         }
         return .keep
     }
+
+    // MARK: - Data Dir Pre-Init Audit
+
+    /// Classification of the data directory's state at the moment `start()`
+    /// is about to consider initdb. Drives both forensic logging and the
+    /// `corruptOrForeign` tripwire — the audit is the only entry point that
+    /// can refuse to start without a version-mismatch having fired first.
+    enum DataDirState: Equatable {
+        /// dataDir does not exist on disk. First-launch or post-wipe.
+        case missing
+        /// dataDir exists, is a directory, but is completely empty.
+        case empty
+        /// PG_VERSION present at top level. Inner string is the trimmed
+        /// contents (or nil if the file existed but couldn't be read).
+        case pgVersionPresent(String?)
+        /// PG_VERSION missing but the directory contains other files. Suspect
+        /// state — refuse to initdb on top. `fileCount` is the entire entry
+        /// count; `sampleNames` is up to 8 entry basenames, sorted, for log
+        /// triage (e.g. `["base", "global", "pg_wal"]` is unmistakably a
+        /// real cluster missing its version sentinel).
+        case corruptOrForeign(fileCount: Int, sampleNames: [String])
+    }
+
+    /// Classify the data directory's pre-init state. Forensic + safety guard
+    /// for the undiagnosed 2026-05-14 user-table wipe scenario: if PG_VERSION
+    /// is missing but the directory contains files, something has interfered
+    /// with the cluster — `initdb` would refuse anyway, but the resulting
+    /// "initdb failed with N" error hides the actual condition. By auditing
+    /// first we (a) always log what was on disk pre-init (the forensic data
+    /// the original incident report asked for), and (b) refuse with a
+    /// specific error message instead of the opaque `initdb` failure.
+    ///
+    /// Extracted as static for testability against tempdirs.
+    nonisolated static func auditDataDirBeforeInit(
+        dataDir: URL,
+        fileManager: FileManager = .default,
+    ) -> DataDirState {
+        var isDir: ObjCBool = false
+        guard fileManager.fileExists(atPath: dataDir.path, isDirectory: &isDir), isDir.boolValue else {
+            return .missing
+        }
+        let pgVersionPath = dataDir.appendingPathComponent("PG_VERSION").path
+        if fileManager.fileExists(atPath: pgVersionPath) {
+            let contents = (try? String(contentsOfFile: pgVersionPath, encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return .pgVersionPresent(contents)
+        }
+        let entries = (try? fileManager.contentsOfDirectory(
+            at: dataDir,
+            includingPropertiesForKeys: nil,
+            options: [],
+        )) ?? []
+        if entries.isEmpty {
+            return .empty
+        }
+        let sample = entries.prefix(8).map { $0.lastPathComponent }.sorted()
+        return .corruptOrForeign(fileCount: entries.count, sampleNames: sample)
+    }
+
+    // MARK: - Version-Mismatch Safety Move
 
     /// Move the existing data directory aside to a timestamped sibling, returning
     /// the backup URL on success. Data-safety guard for the PG major-version
