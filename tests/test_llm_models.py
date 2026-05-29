@@ -18,3 +18,54 @@ def test_modelinfo_has_find_all_default_max_results():
 def test_all_curated_models_default_find_all_max_to_none():
     for m in MODELS.values():
         assert m.find_all_default_max_results is None, m.id
+
+
+def test_modelinfo_parallel_slots_defaults_to_one():
+    """Heavy-tier-safe default — no model gets implicit extra KV cache."""
+    info = ModelInfo(
+        id="dummy",
+        name="Dummy",
+        huggingface_repo="repo",
+        filename="dummy.gguf",
+        size_bytes=1,
+        context_window=4096,
+        supports_tools=True,
+    )
+    assert info.parallel_slots == 1
+
+
+def test_curated_models_parallel_slots_tiered_by_size():
+    """Per-model `-np` values follow the size-based tier table:
+
+    - Small (≤4 GB GGUF): 4 slots
+    - Mid (5-12 GB): 2 slots
+    - Heavy (>15 GB): 1 slot
+
+    The MoE exception is GPT-OSS 20B (11.6 GB raw but small active params
+    → mid tier, not heavy).
+    """
+    expected = {
+        # Small
+        "smollm3-3b": 4,
+        "qwen3-4b": 4,
+        "phi4-mini": 4,
+        # Mid
+        "qwen3-8b": 2,
+        "deepseek-r1-0528-8b": 2,
+        "gpt-oss-20b": 2,  # MoE — active params more like 5-8B
+        # Heavy
+        "gemma4-26b-a4b": 1,
+        "qwen36-35b-a3b": 1,
+    }
+    for model_id, slots in expected.items():
+        m = MODELS[model_id]
+        assert m.parallel_slots == slots, (
+            f"{model_id}: expected parallel_slots={slots} (size={m.size_bytes / 1e9:.1f} GB), got {m.parallel_slots}"
+        )
+    # Belt-and-suspenders: every curated model must have an explicit
+    # parallel_slots entry above (no silent default-to-1).
+    assert set(expected.keys()) == set(MODELS.keys()), (
+        f"parallel_slots tier table out of sync with MODELS registry: "
+        f"missing={set(MODELS.keys()) - set(expected.keys())}, "
+        f"extra={set(expected.keys()) - set(MODELS.keys())}"
+    )

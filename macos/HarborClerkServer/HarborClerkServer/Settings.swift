@@ -172,6 +172,27 @@ final class AppSettings: @unchecked Sendable {
         return configs[modelId]
     }
 
+    /// llama-server `-np` slot count for the active model. Mirrors
+    /// `ModelInfo.parallel_slots` in `src/harbor_clerk/llm/models.py`.
+    /// Defaults to 1 when the active model id isn't recognized (e.g.
+    /// during the brief window of a model switch when config.json
+    /// references a model the Swift mirror doesn't know yet) — safest
+    /// fallback since `-np 1` always fits.
+    var activeModelParallelSlots: Int {
+        let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
+        let slots: [String: Int] = [
+            "qwen3-8b": 2,             // mid
+            "qwen3-4b": 4,             // small
+            "phi4-mini": 4,            // small
+            "deepseek-r1-0528-8b": 2,  // mid
+            "smollm3-3b": 4,           // small
+            "gpt-oss-20b": 2,          // mid (MoE)
+            "gemma4-26b-a4b": 1,       // heavy
+            "qwen36-35b-a3b": 1,       // heavy
+        ]
+        return slots[modelId] ?? 1
+    }
+
     // MARK: - Init
 
     private init() {

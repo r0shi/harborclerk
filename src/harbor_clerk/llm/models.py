@@ -51,6 +51,16 @@ class ModelInfo:
     # experimentation surface — small local models may want 30, larger
     # ones 150. All 8 curated models start at None.
     find_all_default_max_results: int | None = None
+    # llama-server `-np` value. Heavy models (>15 GB GGUF) can't afford
+    # more than 1 KV cache slot on consumer Macs (each slot adds ~3-5 GB of
+    # KV memory). Mid models (5-12 GB) tolerate 2 slots. Small models
+    # (≤4 GB) handle 4 slots comfortably even on 18 GB unified memory.
+    # Per-model so we don't bottleneck small models on a global -np 1, and
+    # don't OOM heavy ones on a global -np 4. With 1 LLM worker today, the
+    # batch-summarize gain requires also scaling worker count (deferred);
+    # the immediate benefit is the chat-while-summarize case, where chat
+    # gets its own slot instead of queueing behind the worker's request.
+    parallel_slots: int = 1
 
 
 MODELS: dict[str, ModelInfo] = {
@@ -65,6 +75,7 @@ MODELS: dict[str, ModelInfo] = {
             context_window=32768,
             supports_tools=True,
             yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768),
+            parallel_slots=2,  # mid tier (5-12 GB)
         ),
         ModelInfo(
             id="qwen3-4b",
@@ -75,6 +86,7 @@ MODELS: dict[str, ModelInfo] = {
             context_window=32768,
             supports_tools=True,
             yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768),
+            parallel_slots=4,  # small tier (≤4 GB)
         ),
         ModelInfo(
             id="phi4-mini",
@@ -84,6 +96,7 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=2_670_000_000,
             context_window=128000,
             supports_tools=True,
+            parallel_slots=4,  # small tier (≤4 GB)
         ),
         ModelInfo(
             id="deepseek-r1-0528-8b",
@@ -94,6 +107,7 @@ MODELS: dict[str, ModelInfo] = {
             context_window=32768,
             supports_tools=True,
             yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768, attn_factor=0.8782),
+            parallel_slots=2,  # mid tier (5-12 GB)
         ),
         ModelInfo(
             id="gemma4-26b-a4b",
@@ -103,6 +117,7 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=17_000_000_000,
             context_window=128000,
             supports_tools=True,
+            parallel_slots=1,  # heavy tier (>15 GB)
         ),
         ModelInfo(
             id="smollm3-3b",
@@ -118,6 +133,7 @@ MODELS: dict[str, ModelInfo] = {
             # from seeded query keywords (e.g. presented "Argan and Levain
             # cultures" as cheese-making traditions). Chat-mode use is fine.
             supports_research=False,
+            parallel_slots=4,  # small tier (≤4 GB)
         ),
         ModelInfo(
             id="gpt-oss-20b",
@@ -127,6 +143,9 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=11_600_000_000,
             context_window=128000,
             supports_tools=True,
+            # GPT-OSS 20B is MoE with smaller active params; KV cache per slot
+            # is closer to a dense 5-8B model than to a dense 20B. Mid tier.
+            parallel_slots=2,
         ),
         ModelInfo(
             id="qwen36-35b-a3b",
@@ -136,6 +155,7 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=22_134_528_992,
             context_window=262144,
             supports_tools=True,
+            parallel_slots=1,  # heavy tier (>15 GB)
         ),
     ]
 }

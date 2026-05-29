@@ -151,4 +151,54 @@ final class AppSettingsTests: XCTestCase {
         settings.llmModelId = ""
         XCTAssertEqual(settings.activeModelPath, "")
     }
+
+    // MARK: - Per-model parallel_slots (llama-server -np)
+
+    /// Mirror of `tests/test_llm_models.py::test_curated_models_parallel_slots_tiered_by_size`.
+    /// If this test diverges from the Python registry, llama-server will
+    /// launch with the wrong -np value, either OOMing on a heavy model
+    /// (slots too high) or wasting capacity on a small model (slots too
+    /// low). The python-side test enforces the source-of-truth values;
+    /// this one enforces the Swift mirror agrees.
+    func testActiveModelParallelSlotsMatchesPythonRegistry() {
+        let settings = AppSettings(configURL: configURL)
+        let expected: [String: Int] = [
+            // Small (≤4 GB GGUF) → 4 slots
+            "smollm3-3b": 4,
+            "qwen3-4b": 4,
+            "phi4-mini": 4,
+            // Mid (5-12 GB) → 2 slots
+            "qwen3-8b": 2,
+            "deepseek-r1-0528-8b": 2,
+            "gpt-oss-20b": 2,  // MoE — active params closer to 5-8B
+            // Heavy (>15 GB) → 1 slot
+            "gemma4-26b-a4b": 1,
+            "qwen36-35b-a3b": 1,
+        ]
+        for (modelId, slots) in expected {
+            settings.llmModelId = modelId
+            XCTAssertEqual(
+                settings.activeModelParallelSlots,
+                slots,
+                "Expected \(modelId) → -np \(slots), got \(settings.activeModelParallelSlots)",
+            )
+        }
+    }
+
+    /// Unknown model id (e.g. mid-switch when config.json names a model
+    /// the Swift mirror doesn't know yet) falls back to the always-safe
+    /// `-np 1`. Without this, an unrecognized id would crash llama-server
+    /// startup via `String(0)` being passed to `-np`, which `llama-server`
+    /// rejects as an invalid argument.
+    func testActiveModelParallelSlotsUnknownModelDefaultsToOne() {
+        let settings = AppSettings(configURL: configURL)
+        settings.llmModelId = "nonexistent-future-model"
+        XCTAssertEqual(settings.activeModelParallelSlots, 1)
+    }
+
+    func testActiveModelParallelSlotsEmptyModelIdDefaultsToOne() {
+        let settings = AppSettings(configURL: configURL)
+        settings.llmModelId = ""
+        XCTAssertEqual(settings.activeModelParallelSlots, 1)
+    }
 }
