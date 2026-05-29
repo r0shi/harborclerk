@@ -40,9 +40,11 @@ def test_factory_dispatches_o3_to_openai():
     assert isinstance(p, OpenAIProvider)
 
 
-def test_factory_raises_value_error_on_unknown_model():
-    """An unknown prefix raises ValueError with the supported list in the message."""
-    with pytest.raises(ValueError, match=r"unknown model.*supported prefixes.*claude-.*gpt-"):
+def test_factory_raises_value_error_on_local_model_without_hc_client():
+    """Non-cloud prefixes fall through to LocalProvider, which requires
+    hc_client. Without it the factory raises ValueError naming the missing
+    keyword — callers must wire up HC auth for local models."""
+    with pytest.raises(ValueError, match=r"is not a cloud model.*LocalProvider needs hc_client"):
         make_provider("llama-3.1-70b", mcp_session=MagicMock())
 
 
