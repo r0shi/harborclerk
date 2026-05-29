@@ -38,22 +38,25 @@ def test_curated_models_parallel_slots_tiered_by_size():
     """Per-model `-np` values follow the size-based tier table:
 
     - Small (≤4 GB GGUF): 4 slots
-    - Mid (5-12 GB): 2 slots
-    - Heavy (>15 GB): 1 slot
+    - Mid (5-12 GB, ≤32K context): 2 slots
+    - Heavy (>15 GB OR 128K+ context): 1 slot
 
-    The MoE exception is GPT-OSS 20B (11.6 GB raw but small active params
-    → mid tier, not heavy).
+    Context window matters as much as parameter count because llama-server
+    allocates KV cache for all slots upfront. GPT-OSS 20B has small MoE
+    active params but a 128K context window, so 2 slots' KV would risk
+    OOM on 18 GB unified memory — it lives in the heavy tier with the
+    big dense models.
     """
     expected = {
         # Small
         "smollm3-3b": 4,
         "qwen3-4b": 4,
         "phi4-mini": 4,
-        # Mid
+        # Mid (≤32K native context)
         "qwen3-8b": 2,
         "deepseek-r1-0528-8b": 2,
-        "gpt-oss-20b": 2,  # MoE — active params more like 5-8B
         # Heavy
+        "gpt-oss-20b": 1,  # 128K context → KV cache too big for 2 slots on 18 GB
         "gemma4-26b-a4b": 1,
         "qwen36-35b-a3b": 1,
     }

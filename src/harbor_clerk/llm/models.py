@@ -143,9 +143,13 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=11_600_000_000,
             context_window=128000,
             supports_tools=True,
-            # GPT-OSS 20B is MoE with smaller active params; KV cache per slot
-            # is closer to a dense 5-8B model than to a dense 20B. Mid tier.
-            parallel_slots=2,
+            # Heavy tier despite MoE active-params being smaller, because the
+            # native context window is 128K and llama-server allocates KV cache
+            # for all slots upfront. ~7 GB weights + 2 × 128K KV would push
+            # past the ~11 GB free after weights on 18 GB unified memory. If
+            # post-deploy memory headroom proves comfortable on YaRN-disabled
+            # 24/36 GB Macs, this can be re-evaluated to 2.
+            parallel_slots=1,
         ),
         ModelInfo(
             id="qwen36-35b-a3b",

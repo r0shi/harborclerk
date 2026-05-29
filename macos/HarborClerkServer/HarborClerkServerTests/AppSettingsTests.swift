@@ -154,12 +154,31 @@ final class AppSettingsTests: XCTestCase {
 
     // MARK: - Per-model parallel_slots (llama-server -np)
 
+    /// All model IDs Swift knows about. Source of truth for the completeness
+    /// checks: every model in this set MUST have an entry in both
+    /// `activeModelPath`'s filenames dict and `activeModelParallelSlots`'s
+    /// slots dict. The Python-side test enforces the same completeness
+    /// against `MODELS.keys()`; this test enforces Swift's mirror stays
+    /// internally consistent so a new model can't be added to one Swift
+    /// dict without the other.
+    private static let knownModelIds: Set<String> = [
+        "qwen3-8b",
+        "qwen3-4b",
+        "phi4-mini",
+        "deepseek-r1-0528-8b",
+        "smollm3-3b",
+        "gpt-oss-20b",
+        "qwen36-35b-a3b",
+        "gemma4-26b-a4b",
+    ]
+
     /// Mirror of `tests/test_llm_models.py::test_curated_models_parallel_slots_tiered_by_size`.
     /// If this test diverges from the Python registry, llama-server will
     /// launch with the wrong -np value, either OOMing on a heavy model
     /// (slots too high) or wasting capacity on a small model (slots too
     /// low). The python-side test enforces the source-of-truth values;
-    /// this one enforces the Swift mirror agrees.
+    /// this one enforces the Swift mirror agrees AND that every known
+    /// model has an explicit tier entry.
     func testActiveModelParallelSlotsMatchesPythonRegistry() {
         let settings = AppSettings(configURL: configURL)
         let expected: [String: Int] = [
@@ -167,11 +186,11 @@ final class AppSettingsTests: XCTestCase {
             "smollm3-3b": 4,
             "qwen3-4b": 4,
             "phi4-mini": 4,
-            // Mid (5-12 GB) → 2 slots
+            // Mid (5-12 GB, ≤32K context) → 2 slots
             "qwen3-8b": 2,
             "deepseek-r1-0528-8b": 2,
-            "gpt-oss-20b": 2,  // MoE — active params closer to 5-8B
-            // Heavy (>15 GB) → 1 slot
+            // Heavy (>15 GB OR 128K+ context) → 1 slot
+            "gpt-oss-20b": 1,  // 128K context → KV cache too big for 2 slots on 18 GB
             "gemma4-26b-a4b": 1,
             "qwen36-35b-a3b": 1,
         ]
@@ -183,13 +202,24 @@ final class AppSettingsTests: XCTestCase {
                 "Expected \(modelId) → -np \(slots), got \(settings.activeModelParallelSlots)",
             )
         }
+        // Completeness check (mirrors the Python test's belt-and-suspenders):
+        // every model the Swift mirror knows about must have an explicit tier
+        // entry. Without this, a future model added to Settings.activeModelPath
+        // but missed in activeModelParallelSlots' slots dict would silently
+        // fall back to `-np 1`, leaving the small/mid throughput gain on the
+        // floor with no test failure.
+        XCTAssertEqual(
+            Set(expected.keys),
+            Self.knownModelIds,
+            "parallel_slots tier table out of sync with Settings.activeModelPath's filename map",
+        )
     }
 
     /// Unknown model id (e.g. mid-switch when config.json names a model
-    /// the Swift mirror doesn't know yet) falls back to the always-safe
-    /// `-np 1`. Without this, an unrecognized id would crash llama-server
-    /// startup via `String(0)` being passed to `-np`, which `llama-server`
-    /// rejects as an invalid argument.
+    /// the Swift mirror doesn't know yet, or a typo) falls back to the
+    /// always-safe `-np 1`. Without this fallback, an unrecognized id
+    /// risks an OOM if a hypothetical future entry got a too-large slot
+    /// count via some other code path — defense in depth.
     func testActiveModelParallelSlotsUnknownModelDefaultsToOne() {
         let settings = AppSettings(configURL: configURL)
         settings.llmModelId = "nonexistent-future-model"

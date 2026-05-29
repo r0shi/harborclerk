@@ -181,12 +181,12 @@ final class AppSettings: @unchecked Sendable {
     var activeModelParallelSlots: Int {
         let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
         let slots: [String: Int] = [
-            "qwen3-8b": 2,             // mid
+            "qwen3-8b": 2,             // mid (32K context)
             "qwen3-4b": 4,             // small
             "phi4-mini": 4,            // small
-            "deepseek-r1-0528-8b": 2,  // mid
+            "deepseek-r1-0528-8b": 2,  // mid (32K context)
             "smollm3-3b": 4,           // small
-            "gpt-oss-20b": 2,          // mid (MoE)
+            "gpt-oss-20b": 1,          // heavy — MoE active params are small but 128K context → KV too big for 2 slots
             "gemma4-26b-a4b": 1,       // heavy
             "qwen36-35b-a3b": 1,       // heavy
         ]

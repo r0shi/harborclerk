@@ -92,10 +92,16 @@ class ServiceManager: ObservableObject {
     private var ioWorkers: [WorkerService] = []
     private var cpuWorkers: [WorkerService] = []
     /// Single-worker pool dedicated to LLM-bound stages (currently just
-    /// `summarize`). llama-server runs with -np 1 on heavy models, so
-    /// allowing multiple workers to pull summarize jobs would just have
-    /// them busy-wait on the LLM lock and starve other IO/CPU work.
-    /// Always exactly one worker; doesn't scale with preset.
+    /// `summarize`). Always exactly one worker; doesn't scale with preset
+    /// or with per-model `-np` slot count (see ModelInfo.parallel_slots
+    /// in src/harbor_clerk/llm/models.py). Even on small models where
+    /// llama-server now runs with `-np 4`, the LLM worker pool stays at
+    /// 1 — bumping it would require recreating workers on every model
+    /// switch (which changes the slot count), and the dominant immediate
+    /// benefit of per-model `-np` is the chat-while-summarize case, not
+    /// batch summarize throughput. Worker-pool scaling is a deferred
+    /// follow-up: pull it when batch-summarize throughput becomes the
+    /// observed bottleneck on small-model workloads.
     private var llmWorkers: [WorkerService] = []
 
     /// All worker services regardless of queue. Use this anywhere a
