@@ -94,3 +94,49 @@ def test_get_chat_tools_falls_back_to_100_when_model_default_none():
     tools = get_chat_tools(model=null_model)
     fa = next(t for t in tools if t["function"]["name"] == "find_all_documents")
     assert fa["function"]["parameters"]["properties"]["max_results"]["default"] == 100
+
+
+def test_verify_identifier_in_base_chat_tools():
+    """verify_identifier resolves a named document to one doc_id before
+    quoting it — closes the local-vs-cloud groundedness gap by giving local
+    models the same fabrication-prevention surface MCP-direct callers use."""
+    from harbor_clerk.llm.tools import _BASE_CHAT_TOOLS
+
+    names = {t["function"]["name"] for t in _BASE_CHAT_TOOLS}
+    assert "verify_identifier" in names
+
+
+def test_verify_identifier_schema_requires_identifier():
+    from harbor_clerk.llm.tools import _BASE_CHAT_TOOLS
+
+    vi = next(t for t in _BASE_CHAT_TOOLS if t["function"]["name"] == "verify_identifier")
+    params = vi["function"]["parameters"]
+    assert params["required"] == ["identifier"]
+    assert "identifier" in params["properties"]
+    assert params["properties"]["identifier"]["type"] == "string"
+
+
+def test_map_args_verify_identifier_passes_identifier():
+    from harbor_clerk.llm.tools import _map_args_verify_identifier
+
+    assert _map_args_verify_identifier({"identifier": "2ThemartComInc_19990826"}) == {
+        "identifier": "2ThemartComInc_19990826"
+    }
+
+
+def test_dispatch_routes_verify_identifier_to_kb_verify_identifier():
+    """Catch typos in the dispatch table — without this, a chat-mode call to
+    verify_identifier would silently return 'Unknown tool' at runtime."""
+    from harbor_clerk.llm.tools import _TOOL_DISPATCH
+
+    mcp_name, _ = _TOOL_DISPATCH["verify_identifier"]
+    assert mcp_name == "kb_verify_identifier"
+
+
+def test_research_dispatch_inherits_verify_identifier():
+    """Research mode dispatch inherits from chat dispatch via spread; the new
+    tool must be reachable in both modes."""
+    from harbor_clerk.llm.tools import _RESEARCH_TOOL_DISPATCH
+
+    assert "verify_identifier" in _RESEARCH_TOOL_DISPATCH
+    assert _RESEARCH_TOOL_DISPATCH["verify_identifier"][0] == "kb_verify_identifier"
