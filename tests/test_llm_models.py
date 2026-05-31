@@ -49,9 +49,7 @@ def test_curated_models_parallel_slots_tiered_by_size():
     """
     expected = {
         # Small
-        "smollm3-3b": 4,
         "qwen3-4b": 4,
-        "phi4-mini": 4,
         # Mid (≤32K native context)
         "qwen3-8b": 2,
         "deepseek-r1-0528-8b": 2,
