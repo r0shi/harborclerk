@@ -29,6 +29,14 @@ _PROVENANCE_KEY = "_source_provenance"
 # response. Ordered by distinctness (most discriminating first).
 _MAX_FIELDS_IN_HINT = 3
 
+# Cap on collection summaries embedded in differing_metadata. The full
+# list/dict values per candidate can run thousands of chars (e.g.
+# `sidecar.attendees` for 5 board-minutes docs is ~3 KB). The judge —
+# and small-context models — don't need the full table; they need
+# enough to recognize the field is non-scalar and pick a different
+# discriminator. A length + first-element summary is sufficient.
+_COLLECTION_SUMMARY_FIRST_CHARS = 60
+
 
 async def _compute_discriminator_hint(hits, session) -> dict | None:
     """Return a discriminator_hint dict if top hits are ambiguous on a
@@ -78,18 +86,67 @@ async def _compute_discriminator_hint(hits, session) -> dict | None:
     if not differing:
         return None
 
-    # Order by number of distinct values (most discriminating first).
-    top_fields = sorted(
-        differing.items(),
-        key=lambda kv: -len({_make_hashable(v) for v in kv[1].values()}),
-    )[:_MAX_FIELDS_IN_HINT]
+    # Order by: scalar fields first (so the suggestion can name a usable
+    # metadata_filter value), then number of distinct values (most
+    # discriminating first). A scalar field is something the LLM can put
+    # back into a metadata_filter directly — strings, numbers, bools.
+    # Lists/dicts get compacted in `differing_metadata` and are not
+    # useful targets for the suggestion.
+    def _sort_key(kv: tuple[str, dict[str, Any]]) -> tuple[int, int]:
+        _, values_by_title = kv
+        is_scalar = all(_is_scalar(v) for v in values_by_title.values())
+        distinct = len({_make_hashable(v) for v in values_by_title.values()})
+        # Lower tuple = higher priority. Scalar gets 0; non-scalar 1. Distinct
+        # is negated so higher distinctness ranks first.
+        return (0 if is_scalar else 1, -distinct)
+
+    top_fields = sorted(differing.items(), key=_sort_key)[:_MAX_FIELDS_IN_HINT]
+
+    # Compact non-scalar values so a list of 8 attendees doesn't expand to a
+    # 3 KB block per doc. Scalar values pass through unchanged.
+    compacted = {
+        path: {t: _compact_value(v) for t, v in values_by_title.items()} for path, values_by_title in top_fields
+    }
 
     return {
         "ambiguous_doc_ids": candidates,
         "ambiguous_doc_titles": [titles[d] for d in candidates],
-        "differing_metadata": dict(top_fields),
+        "differing_metadata": compacted,
         "suggestion": _build_suggestion(top_fields, titles),
     }
+
+
+def _is_scalar(v: Any) -> bool:
+    """Treat strings, numbers, bools, and None as scalars. Lists/dicts/etc.
+    are non-scalars and get compacted before reaching the LLM."""
+    return v is None or isinstance(v, str | int | float | bool)
+
+
+def _compact_value(v: Any) -> Any:
+    """Return a JSON-serializable summary of v that is small even when v
+    itself is a large list/dict. Scalars pass through.
+
+    For lists: ``{"len": N, "first": str(v[0])[:60]}`` so the LLM can see
+    the field is multi-valued and recognize the type without paying the
+    serialization cost of every element.
+
+    For dicts: ``{"keys": sorted(v.keys())[:5], "len": N}`` — keys are
+    usually short and distinctive; values can be arbitrarily large.
+
+    For anything else non-scalar (sets, custom objects): stringify and
+    truncate.
+    """
+    if _is_scalar(v):
+        return v
+    if isinstance(v, list):
+        out: dict[str, Any] = {"len": len(v)}
+        if v:
+            out["first"] = str(v[0])[:_COLLECTION_SUMMARY_FIRST_CHARS]
+        return out
+    if isinstance(v, dict):
+        keys = sorted(str(k) for k in v)
+        return {"len": len(v), "keys": keys[:5]}
+    return str(v)[:_COLLECTION_SUMMARY_FIRST_CHARS]
 
 
 def _find_differing_metadata_fields(

@@ -245,6 +245,114 @@ def test_find_differing_metadata_fields_returns_empty_for_identical_metadata():
     assert _find_differing_metadata_fields(["a", "b"], metadata, titles) == {}
 
 
+async def test_compute_compacts_non_scalar_values_in_differing_metadata():
+    """Long list values (e.g. sidecar.attendees) bloat the response and crowd
+    out small-context models. Lists must be summarized to {len, first} so the
+    LLM sees the field is non-scalar without paying for every element.
+    """
+    a = str(uuid.uuid4())
+    b = str(uuid.uuid4())
+    long_attendees_a = [
+        "Eleanor Voss",
+        "Raymond Holt",
+        "Sandra Kimura",
+        "Frederick Osei",
+        "Diana Marchetti",
+        "Thomas Blaine",
+        "Priya Nandakumar",
+        "Gerald Whitmore",
+    ]
+    long_attendees_b = [
+        "Eleanor Voss",
+        "Raymond Calloway",
+        "Priya Nanthakumar",
+        "Theodore Birch",
+        "Sandra Ouellet",
+        "Marcus Hensley",
+    ]
+    hits = [
+        _FakeHit(doc_id=a, doc_title="0101_board_minutes", score=0.997),
+        _FakeHit(doc_id=b, doc_title="0107_board_minutes", score=0.994),
+    ]
+    session = _fake_session_for(
+        {
+            a: {"sidecar": {"date": "2025-03-07", "attendees": long_attendees_a}},
+            b: {"sidecar": {"date": "2025-03-03", "attendees": long_attendees_b}},
+        }
+    )
+    hint = await _compute_discriminator_hint(hits, session)
+    assert hint is not None
+    # Date (scalar) is surfaced unchanged
+    assert hint["differing_metadata"]["sidecar.date"] == {
+        "0101_board_minutes": "2025-03-07",
+        "0107_board_minutes": "2025-03-03",
+    }
+    # Attendees (list) is compacted to {len, first}, not the full 8-name list
+    att = hint["differing_metadata"]["sidecar.attendees"]
+    assert att["0101_board_minutes"]["len"] == 8
+    assert att["0101_board_minutes"]["first"].startswith("Eleanor Voss")
+    assert att["0107_board_minutes"]["len"] == 6
+    # Verify we didn't accidentally embed the full list
+    import json
+
+    serialized = json.dumps(hint)
+    assert "Raymond Holt" not in serialized  # would appear if the full list leaked through
+    assert "Gerald Whitmore" not in serialized
+
+
+async def test_compute_prefers_scalar_fields_for_suggestion():
+    """When both scalar and non-scalar fields differ, the suggestion should
+    reference a scalar field — the LLM can put it back into a metadata_filter
+    directly. A list-valued field is not a usable filter target.
+    """
+    a = str(uuid.uuid4())
+    b = str(uuid.uuid4())
+    hits = [
+        _FakeHit(doc_id=a, doc_title="A", score=0.9),
+        _FakeHit(doc_id=b, doc_title="B", score=0.88),
+    ]
+    session = _fake_session_for(
+        {
+            # type (scalar) and attendees (list) both differ; only type should
+            # be the basis for the suggestion text.
+            a: {"sidecar": {"type": "board-minutes", "attendees": ["Alice", "Bob"]}},
+            b: {"sidecar": {"type": "vendor-contract", "attendees": ["Carol", "Dave"]}},
+        }
+    )
+    hint = await _compute_discriminator_hint(hits, session)
+    assert hint is not None
+    # Suggestion references the scalar type field, not attendees
+    assert "sidecar.type" in hint["suggestion"]
+    # And the suggestion does NOT include a list literal — a list-valued
+    # metadata_filter is not something the LLM can use.
+    assert "['Alice'" not in hint["suggestion"]
+    assert "Bob" not in hint["suggestion"]
+
+
+async def test_compute_compacts_dict_values_to_keys_and_len():
+    """Dict-valued metadata fields are also compacted; the LLM sees the
+    shape (keys + count) without the full nested content."""
+    a = str(uuid.uuid4())
+    b = str(uuid.uuid4())
+    hits = [
+        _FakeHit(doc_id=a, doc_title="A", score=0.9),
+        _FakeHit(doc_id=b, doc_title="B", score=0.88),
+    ]
+    session = _fake_session_for(
+        {
+            a: {"sidecar": {"nested": {"x": "long " * 100, "y": "verbose " * 100}}},
+            b: {"sidecar": {"nested": {"x": "different long " * 100, "z": "completely other " * 50}}},
+        }
+    )
+    hint = await _compute_discriminator_hint(hits, session)
+    assert hint is not None
+    nested = hint["differing_metadata"]["sidecar.nested"]
+    # Both summaries carry keys + len, not the full nested content
+    assert nested["A"]["keys"] == ["x", "y"]
+    assert nested["A"]["len"] == 2
+    assert "long " * 100 not in str(nested["A"])
+
+
 def test_build_suggestion_mentions_top_field_value():
     """The suggestion string should reference at least one concrete
     metadata_filter call the model can use."""
