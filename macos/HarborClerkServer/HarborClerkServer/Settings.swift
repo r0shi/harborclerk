@@ -125,9 +125,7 @@ final class AppSettings: @unchecked Sendable {
         let filenames: [String: String] = [
             "qwen3-8b": "Qwen3-8B-Q4_K_M.gguf",
             "qwen3-4b": "Qwen3-4B-Q4_K_M.gguf",
-            "phi4-mini": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
             "deepseek-r1-0528-8b": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
-            "smollm3-3b": "HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
             "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
@@ -142,9 +140,7 @@ final class AppSettings: @unchecked Sendable {
         let contextWindows: [String: Int] = [
             "qwen3-8b": 32768,
             "qwen3-4b": 32768,
-            "phi4-mini": 128000,
             "deepseek-r1-0528-8b": 32768,
-            "smollm3-3b": 65536,
             "gpt-oss-20b": 128000,
             "qwen36-35b-a3b": 262144,
             "gemma4-26b-a4b": 128000,
@@ -167,7 +163,6 @@ final class AppSettings: @unchecked Sendable {
             "qwen3-8b": YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: nil),
             "qwen3-4b": YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: nil),
             "deepseek-r1-0528-8b": YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: 0.8782),
-            "smollm3-3b": YarnConfig(extendedContext: 131072, ropeScale: 2.0, originalContext: 65536, attnFactor: nil),
         ]
         return configs[modelId]
     }
@@ -183,9 +178,7 @@ final class AppSettings: @unchecked Sendable {
         let slots: [String: Int] = [
             "qwen3-8b": 2,             // mid (32K context)
             "qwen3-4b": 4,             // small
-            "phi4-mini": 4,            // small
             "deepseek-r1-0528-8b": 2,  // mid (32K context)
-            "smollm3-3b": 4,           // small
             "gpt-oss-20b": 1,          // heavy — MoE active params are small but 128K context → KV too big for 2 slots
             "gemma4-26b-a4b": 1,       // heavy
             "qwen36-35b-a3b": 1,       // heavy

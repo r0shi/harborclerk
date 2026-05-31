@@ -126,9 +126,7 @@ final class AppSettingsTests: XCTestCase {
         let expected: [String: String] = [
             "qwen3-8b": "Qwen3-8B-Q4_K_M.gguf",
             "qwen3-4b": "Qwen3-4B-Q4_K_M.gguf",
-            "phi4-mini": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
             "deepseek-r1-0528-8b": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
-            "smollm3-3b": "HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
             "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
@@ -164,9 +162,7 @@ final class AppSettingsTests: XCTestCase {
     private static let knownModelIds: Set<String> = [
         "qwen3-8b",
         "qwen3-4b",
-        "phi4-mini",
         "deepseek-r1-0528-8b",
-        "smollm3-3b",
         "gpt-oss-20b",
         "qwen36-35b-a3b",
         "gemma4-26b-a4b",
@@ -183,9 +179,7 @@ final class AppSettingsTests: XCTestCase {
         let settings = AppSettings(configURL: configURL)
         let expected: [String: Int] = [
             // Small (≤4 GB GGUF) → 4 slots
-            "smollm3-3b": 4,
             "qwen3-4b": 4,
-            "phi4-mini": 4,
             // Mid (5-12 GB, ≤32K context) → 2 slots
             "qwen3-8b": 2,
             "deepseek-r1-0528-8b": 2,

@@ -89,16 +89,6 @@ MODELS: dict[str, ModelInfo] = {
             parallel_slots=4,  # small tier (≤4 GB)
         ),
         ModelInfo(
-            id="phi4-mini",
-            name="Phi-4 Mini 3.8B",
-            huggingface_repo="bartowski/microsoft_Phi-4-mini-instruct-GGUF",
-            filename="microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
-            size_bytes=2_670_000_000,
-            context_window=128000,
-            supports_tools=True,
-            parallel_slots=4,  # small tier (≤4 GB)
-        ),
-        ModelInfo(
             id="deepseek-r1-0528-8b",
             name="DeepSeek R1 0528 8B",
             huggingface_repo="unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF",
@@ -118,22 +108,6 @@ MODELS: dict[str, ModelInfo] = {
             context_window=128000,
             supports_tools=True,
             parallel_slots=1,  # heavy tier (>15 GB)
-        ),
-        ModelInfo(
-            id="smollm3-3b",
-            name="SmolLM3 3B",
-            huggingface_repo="bartowski/HuggingFaceTB_SmolLM3-3B-GGUF",
-            filename="HuggingFaceTB_SmolLM3-3B-Q4_K_M.gguf",
-            size_bytes=2_060_000_000,
-            context_window=65536,
-            supports_tools=True,
-            yarn=YarnConfig(extended_context=131072, rope_scale=2.0, original_context=65536),
-            # Disabled for research mode: in the cross-topic sweep, SmolLM3
-            # produced 0 citations on 2 of 3 topics and confabulated content
-            # from seeded query keywords (e.g. presented "Argan and Levain
-            # cultures" as cheese-making traditions). Chat-mode use is fine.
-            supports_research=False,
-            parallel_slots=4,  # small tier (≤4 GB)
         ),
         ModelInfo(
             id="gpt-oss-20b",
