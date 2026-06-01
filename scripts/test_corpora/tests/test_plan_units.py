@@ -23,10 +23,10 @@ def test_models_filter_restricts_phase4_loop():
         _qbc(["cuad"]),
         phases={4},
         depth="standard",
-        models_filter={"qwen3-8b", "phi4-mini"},
+        models_filter={"qwen3-8b", "qwen3-4b"},
     )
     models = {u.model for u in units}
-    assert models == {"qwen3-8b", "phi4-mini"}
+    assert models == {"qwen3-8b", "qwen3-4b"}
 
 
 def test_models_filter_restricts_phase5_to_top_subset():
@@ -49,7 +49,7 @@ def test_models_filter_excludes_phase2_smoke_when_qwen35_filtered_out():
         _qbc(["cuad"]),
         phases={2},
         depth="standard",
-        models_filter={"phi4-mini"},
+        models_filter={"qwen3-4b"},
     )
     assert units == []
 
@@ -57,8 +57,8 @@ def test_models_filter_excludes_phase2_smoke_when_qwen35_filtered_out():
 def test_no_models_filter_means_all_models():
     units = _plan_units(_qbc(["cuad"]), phases={4}, depth="standard", models_filter=None)
     models = {u.model for u in units}
-    # Should be exactly the 8 ALL_MODELS
-    assert len(models) == 8
+    # Should be exactly the 6 ALL_MODELS
+    assert len(models) == 6
 
 
 def test_corpora_filter_phase0_only_lists_provided_corpora():
@@ -75,7 +75,7 @@ def test_phase4_corpus_then_model_ordering_minimizes_db_wipes():
         _qbc(["cuad", "enron"]),
         phases={4},
         depth="standard",
-        models_filter={"qwen3-8b", "phi4-mini"},
+        models_filter={"qwen3-8b", "qwen3-4b"},
     )
     # Walk the unit list and count corpus transitions
     transitions = sum(1 for a, b in zip(units, units[1:]) if a.corpus != b.corpus)
