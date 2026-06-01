@@ -22,7 +22,12 @@ from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.health import report_llm_error, report_llm_success
 from harbor_clerk.llm.models import get_model
-from harbor_clerk.llm.research_prompts import VERIFIER_SYSTEM, render_verifier_user
+from harbor_clerk.llm.research_prompts import (
+    REVISION_SYSTEM,
+    VERIFIER_SYSTEM,
+    render_revision_user,
+    render_verifier_user,
+)
 from harbor_clerk.llm.tools import execute_tool
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
@@ -1092,6 +1097,60 @@ async def _verify_citations(
         }
 
 
+# Revision-pass tuning. Output budget mirrors synthesis so a long revised
+# report doesn't get truncated mid-conclusion; the revision is rarely
+# longer than the draft but the cap stays roomy.
+_REVISION_TIMEOUT = 600.0
+_REVISION_MAX_TOKENS = 4096
+# Verdict values that warrant a revision pass. 'supported' stays out (no
+# problem to fix) and 'skipped' stays out (the verifier couldn't judge).
+_VERDICTS_NEEDING_REVISION = ("partial", "unsupported")
+
+
+async def _revise_with_feedback(
+    *,
+    client: httpx.AsyncClient,
+    llm_url: str,
+    user_question: str,
+    draft_report: str,
+    notes: str,
+    verdicts: list[dict],
+) -> str:
+    """Run the revision pass.
+
+    Filters `verdicts` to the partial/unsupported subset and asks the model
+    to revise the draft based on that feedback. Returns the revised report
+    text. Single pass per the spec — caller does NOT loop on the result.
+
+    The caller should gate on `_needs_revision(verdicts)` to skip when
+    there is no feedback to act on.
+    """
+    feedback = [v for v in verdicts if v.get("verdict") in _VERDICTS_NEEDING_REVISION]
+    user_content = render_revision_user(
+        user_question=user_question,
+        draft_report=draft_report,
+        notes=notes,
+        feedback_items=feedback,
+    )
+    messages = [
+        {"role": "system", "content": REVISION_SYSTEM},
+        {"role": "user", "content": user_content},
+    ]
+    return await _llm_complete(
+        client,
+        llm_url,
+        messages,
+        timeout=_REVISION_TIMEOUT,
+        max_tokens=_REVISION_MAX_TOKENS,
+        phase="revision",
+    )
+
+
+def _needs_revision(verdicts: list[dict]) -> bool:
+    """True iff any verdict warrants a revision pass."""
+    return any(v.get("verdict") in _VERDICTS_NEEDING_REVISION for v in verdicts)
+
+
 # ---------------------------------------------------------------------------
 # Main research engine
 # ---------------------------------------------------------------------------
@@ -1576,22 +1635,15 @@ async def research_stream(
                 )
                 return
 
-            # Save report
-            session.add(
-                ChatMessage(
-                    conversation_id=conversation_id,
-                    role="assistant",
-                    content=report_content,
-                    model_id=active_model_id,
-                )
-            )
-
-            # Stage-1 verifier loop: emit per-citation verdicts via SSE. The
-            # revision pass (stage 2) is not wired up here; for now we only
-            # surface verdicts so the frontend and eval harness can capture
-            # them. Gated by `research_verifier_enabled` so the default
-            # research path is unchanged until the A/B clears.
+            # Verifier loop. Stage 1: emit per-citation verdicts via SSE.
+            # Stage 2: if any verdict is partial/unsupported, run a single
+            # revision pass that consumes the feedback and replaces
+            # report_content with the revised text. Both are gated by
+            # `research_verifier_enabled` so the default research path is
+            # unchanged until the A/B clears.
             verifier_verdicts: list[dict] = []
+            original_draft = report_content
+            revised = False
             if settings.research_verifier_enabled and report_content and research_citations:
                 try:
                     async with httpx.AsyncClient(timeout=httpx.Timeout(_VERIFIER_TIMEOUT)) as v_client:
@@ -1609,17 +1661,65 @@ async def research_stream(
                     # a research run that already produced a report.
                     logger.exception("Verifier loop failed; proceeding with unverified report")
 
+                if _needs_revision(verifier_verdicts):
+                    flagged_count = sum(1 for v in verifier_verdicts if v.get("verdict") in _VERDICTS_NEEDING_REVISION)
+                    yield _sse({"type": "revision_started", "flagged_count": flagged_count})
+                    try:
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(_REVISION_TIMEOUT)) as r_client:
+                            revised_content = await _revise_with_feedback(
+                                client=r_client,
+                                llm_url=llm_url,
+                                user_question=user_question,
+                                draft_report=original_draft,
+                                notes=notes,
+                                verdicts=verifier_verdicts,
+                            )
+                        if revised_content.strip():
+                            report_content = revised_content
+                            revised = True
+                            yield _sse(
+                                {
+                                    "type": "revision_complete",
+                                    "revised_content": report_content,
+                                    "flagged_count": flagged_count,
+                                }
+                            )
+                        else:
+                            # Empty revision — keep the original draft and log.
+                            logger.warning("Revision pass returned empty content; keeping original draft")
+                    except Exception:
+                        # Revision is best-effort, same as verifier. A failed
+                        # revision pass must not drop the original report.
+                        logger.exception("Revision pass failed; keeping original draft")
+
+            # Save report (revised if available, otherwise the original draft).
+            session.add(
+                ChatMessage(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=report_content,
+                    model_id=active_model_id,
+                )
+            )
+
             state.status = "completed"
             state.notes = notes
             state.citations = research_citations
             state.current_round = step_count
             state.completed_at = datetime.now(UTC)
-            state.progress = {"step": step_count}
+            progress_blob: dict = {"step": step_count}
             if verifier_verdicts:
                 # Persist the verdicts on the progress blob until ResearchState
-                # gets a dedicated `verifier_verdicts` column (stage 2). This
+                # gets a dedicated `verifier_verdicts` column (deferred). This
                 # lets the eval harness read them back without an SSE replay.
-                state.progress = {"step": step_count, "verifier_verdicts": verifier_verdicts}
+                progress_blob["verifier_verdicts"] = verifier_verdicts
+            if revised:
+                # Keep the original draft alongside the revised version so a
+                # reviewer can see what the verifier corrected. The on-disk
+                # ChatMessage carries the revised content.
+                progress_blob["original_draft"] = original_draft
+                progress_blob["revised"] = True
+            state.progress = progress_blob
             await session.commit()
 
             done_payload: dict = {"type": "done", "conversation_id": str(conversation_id)}

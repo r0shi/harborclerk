@@ -271,3 +271,140 @@ async def test_verify_citations_truncates_long_reason(fake_client):
         )
 
     assert len(out[0]["reason"]) <= 300
+
+
+# ---------------------------------------------------------------------------
+# Stage-2 revision pass — _needs_revision + _revise_with_feedback
+# ---------------------------------------------------------------------------
+
+
+def test_needs_revision_false_on_empty():
+    from harbor_clerk.llm.research import _needs_revision
+
+    assert _needs_revision([]) is False
+
+
+def test_needs_revision_false_on_all_supported():
+    from harbor_clerk.llm.research import _needs_revision
+
+    verdicts = [
+        {"verdict": "supported", "reason": "ok"},
+        {"verdict": "supported", "reason": "ok"},
+    ]
+    assert _needs_revision(verdicts) is False
+
+
+def test_needs_revision_true_on_any_partial():
+    from harbor_clerk.llm.research import _needs_revision
+
+    verdicts = [
+        {"verdict": "supported", "reason": "ok"},
+        {"verdict": "partial", "reason": "missing date"},
+    ]
+    assert _needs_revision(verdicts) is True
+
+
+def test_needs_revision_true_on_any_unsupported():
+    from harbor_clerk.llm.research import _needs_revision
+
+    verdicts = [{"verdict": "unsupported", "reason": "fabricated"}]
+    assert _needs_revision(verdicts) is True
+
+
+def test_needs_revision_ignores_skipped():
+    """`skipped` means the verifier couldn't judge; treat as no problem
+    to fix (the original draft stays)."""
+    from harbor_clerk.llm.research import _needs_revision
+
+    verdicts = [
+        {"verdict": "supported", "reason": "ok"},
+        {"verdict": "skipped", "reason": "source not located"},
+    ]
+    assert _needs_revision(verdicts) is False
+
+
+async def test_revise_with_feedback_filters_to_partial_and_unsupported_only(fake_client):
+    """The revision prompt should only include actionable feedback —
+    supported and skipped verdicts are dropped before the prompt is built."""
+    from harbor_clerk.llm.research import _revise_with_feedback
+
+    verdicts = [
+        {"doc_title": "DocA", "page": "1", "verdict": "supported", "reason": "ok"},
+        {"doc_title": "DocB", "page": "2", "verdict": "partial", "reason": "missing $X figure"},
+        {"doc_title": "DocC", "page": "3", "verdict": "skipped", "reason": "not located"},
+        {"doc_title": "DocD", "page": "4", "verdict": "unsupported", "reason": "fabricated"},
+    ]
+
+    captured: dict = {}
+
+    async def fake_complete(client, url, messages, **kwargs):
+        captured["messages"] = messages
+        return "REVISED REPORT"
+
+    with patch("harbor_clerk.llm.research._llm_complete", new=AsyncMock(side_effect=fake_complete)):
+        result = await _revise_with_feedback(
+            client=fake_client,
+            llm_url="http://x",
+            user_question="q?",
+            draft_report="DRAFT",
+            notes="NOTES",
+            verdicts=verdicts,
+        )
+
+    assert result == "REVISED REPORT"
+    user_content = captured["messages"][1]["content"]
+    assert "DocB" in user_content
+    assert "DocD" in user_content
+    # Supported and skipped verdicts must not appear in the feedback list
+    assert "DocA" not in user_content
+    assert "DocC" not in user_content
+
+
+async def test_revise_with_feedback_returns_complete_text_from_llm(fake_client):
+    """Whatever the LLM emits as the revised report is what the function
+    returns. No post-processing or truncation in v1."""
+    from harbor_clerk.llm.research import _revise_with_feedback
+
+    verdicts = [{"doc_title": "DocB", "page": "2", "verdict": "partial", "reason": "x"}]
+
+    revised_text = "# Revised report\n\nFully revised content with corrected claims."
+    with patch("harbor_clerk.llm.research._llm_complete", new=AsyncMock(return_value=revised_text)):
+        out = await _revise_with_feedback(
+            client=fake_client,
+            llm_url="http://x",
+            user_question="q?",
+            draft_report="DRAFT",
+            notes="NOTES",
+            verdicts=verdicts,
+        )
+
+    assert out == revised_text
+
+
+async def test_revise_with_feedback_includes_original_question_and_draft(fake_client):
+    """The revision prompt must carry both the original question and the
+    full previous draft so the model can produce a coherent rewrite, not a
+    standalone new report."""
+    from harbor_clerk.llm.research import _revise_with_feedback
+
+    verdicts = [{"doc_title": "DocB", "page": "2", "verdict": "partial", "reason": "x"}]
+    captured: dict = {}
+
+    async def fake_complete(client, url, messages, **kwargs):
+        captured["messages"] = messages
+        return "OUT"
+
+    with patch("harbor_clerk.llm.research._llm_complete", new=AsyncMock(side_effect=fake_complete)):
+        await _revise_with_feedback(
+            client=fake_client,
+            llm_url="http://x",
+            user_question="What were the Q3 board decisions?",
+            draft_report="DRAFT REPORT BODY",
+            notes="NOTES BODY",
+            verdicts=verdicts,
+        )
+
+    user_content = captured["messages"][1]["content"]
+    assert "What were the Q3 board decisions?" in user_content
+    assert "DRAFT REPORT BODY" in user_content
+    assert "NOTES BODY" in user_content
