@@ -18,7 +18,7 @@ import httpx
 from sqlalchemy import select
 
 from harbor_clerk.api.scope import UserScope, apply_folder_scope, build_user_scope
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.health import report_llm_error, report_llm_success
 from harbor_clerk.llm.models import get_model
@@ -1115,6 +1115,11 @@ async def research_stream(
     Each LLM call is bounded and context-managed. Search/read steps are
     pure Python with no LLM involvement.
     """
+    # Pick up runtime-mutable settings (active model, verifier flag) from
+    # config.json before the pipeline starts. Without this, a setting flipped
+    # via the menubar Preferences (or the API) after process start would be
+    # invisible to research_stream — see chat.py for the same call pattern.
+    refresh_llm_settings()
     settings = get_settings()
     active_model_id = settings.llm_model_id or None
     llm_url = f"{settings.llama_server_url}/v1/chat/completions"
