@@ -390,6 +390,47 @@ _BASE_CHAT_TOOLS = [
     },
 ]
 
+# Tool defined separately because it's added to chat conditionally — only
+# for mid-tier and heavier models. Small models tend to either ignore the
+# multi-query affordance or saturate their per-slot context budget on the
+# concatenated results.
+_BATCH_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "batch_search",
+        "description": (
+            "Run several search_documents queries in parallel and get all "
+            "hits back in one tool result. Cheaper than N sequential "
+            "search_documents calls — use when the question maps to "
+            'obviously distinct sub-queries ("compare X and Y", '
+            '"every email about A or B").'
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "2-8 distinct queries. Each gets its own search; results are grouped by query in the response."
+                    ),
+                },
+                "k": {
+                    "type": "integer",
+                    "description": "Hits per query (default 5).",
+                },
+            },
+            "required": ["queries"],
+        },
+    },
+}
+
+# Models below this weight threshold do not get batch_search in their chat
+# tool surface. The v3 sweep showed small models (4B/8B) struggle with the
+# multi-query result aggregation; 8B+ comfortably drives 2-4 queries per
+# batch. Threshold tracks the small-vs-mid tier boundary in models.py.
+_BATCH_SEARCH_MIN_SIZE_BYTES = 5_000_000_000
+
 
 # ---------------------------------------------------------------------------
 # Dynamic tool builders — read settings at call time
@@ -433,8 +474,10 @@ def _apply_find_all_settings(tools: list[dict], *, model: "ModelInfo | None") ->
 def get_chat_tools(*, model: "ModelInfo | None" = None) -> list[dict]:
     """Build chat tool schema, respecting current retrieval settings.
 
-    model: optional active ModelInfo — used to set the find_all_documents
-    max_results default from model.find_all_default_max_results (None → 100).
+    model: optional active ModelInfo. Used to (a) set the find_all_documents
+    max_results default from model.find_all_default_max_results (None → 100),
+    and (b) gate batch_search — only included for models with size_bytes >=
+    `_BATCH_SEARCH_MIN_SIZE_BYTES`.
     """
     from harbor_clerk.config import get_settings
 
@@ -444,6 +487,8 @@ def get_chat_tools(*, model: "ModelInfo | None" = None) -> list[dict]:
     else:
         tools = _apply_search_settings(_BASE_CHAT_TOOLS, paginated=False, max_k=s.chat_search_k, default_k=5)
     _apply_find_all_settings(tools, model=model)
+    if model is not None and model.size_bytes >= _BATCH_SEARCH_MIN_SIZE_BYTES:
+        tools.append(copy.deepcopy(_BATCH_SEARCH_TOOL))
     return tools
 
 
@@ -547,6 +592,23 @@ def _map_args_verify_identifier(args: dict) -> dict:
     return {"identifier": args["identifier"]}
 
 
+def _map_args_batch_search_chat(args: dict) -> dict:
+    """Chat-mode batch_search mapper. Caps `queries` length so a confused
+    model can't flood the search backend, and clamps `k` to the chat search
+    setting the same way single search_documents does.
+    """
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    max_k = 50 if s.chat_search_paginated else s.chat_search_k
+    queries = list(args.get("queries") or [])[:8]
+    return {
+        "queries": queries,
+        "k": min(int(args.get("k", 5)), max_k),
+        "detail": "full",
+    }
+
+
 def _map_args_find_all(args: dict) -> dict:
     """Map chat-tool args to find_all() kwargs. Drops unknown keys."""
     allowed = {
@@ -577,6 +639,7 @@ _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
     "corpus_topics": ("kb_corpus_topics", _map_args_corpus_topics),
     "find_all_documents": ("kb_find_all", _map_args_find_all),
     "verify_identifier": ("kb_verify_identifier", _map_args_verify_identifier),
+    "batch_search": ("kb_batch_search", _map_args_batch_search_chat),
 }
 
 
