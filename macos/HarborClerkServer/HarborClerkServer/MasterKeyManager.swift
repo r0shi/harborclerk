@@ -20,7 +20,7 @@ import os
 /// signed) no longer trigger the "binary X wants to access your keychain"
 /// prompt.
 final class MasterKeyManager {
-    static let production = MasterKeyManager(serviceIdentifier: "com.bitblot.harborclerk.master-key")
+    static let production = MasterKeyManager(serviceIdentifier: "com.harborclerk.master-key")
 
     private let serviceIdentifier: String
     private let account = "master-key"
