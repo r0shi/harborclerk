@@ -22,6 +22,7 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.health import report_llm_error, report_llm_success
 from harbor_clerk.llm.models import get_model
+from harbor_clerk.llm.research_prompts import VERIFIER_SYSTEM, render_verifier_user
 from harbor_clerk.llm.tools import execute_tool
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
@@ -955,6 +956,143 @@ async def _check_gaps(
 
 
 # ---------------------------------------------------------------------------
+# Verifier loop — re-judges cited sources against the synthesized report.
+# Stage 1: emit per-citation verdicts via SSE. Stage 2 (not in this file
+# yet) will gate a revision pass on the verdicts. Spec:
+# docs/superpowers/specs/2026-06-01-verifier-loop-design.md
+# ---------------------------------------------------------------------------
+
+_VERIFIER_TIMEOUT = 120.0
+_VERIFIER_MAX_TOKENS = 200
+_VERIFIER_REPORT_WINDOW = 400
+_VERIFIER_SOURCE_WINDOW = 600
+_VALID_VERDICTS = ("supported", "partial", "unsupported")
+
+
+def _excerpt_around(text: str, needle: str, *, context_chars: int) -> str:
+    """Return a window of `text` around the first occurrence of `needle`,
+    or empty string if not found.
+
+    Used by the verifier to locate the portion of a report or notes block
+    that mentions a specific document title. The window is bounded so the
+    verifier prompt stays cheap regardless of report length.
+    """
+    if not needle or not text:
+        return ""
+    idx = text.find(needle)
+    if idx < 0:
+        return ""
+    start = max(0, idx - context_chars)
+    end = min(len(text), idx + len(needle) + context_chars)
+    return text[start:end]
+
+
+async def _verify_citations(
+    *,
+    client: httpx.AsyncClient,
+    llm_url: str,
+    report_content: str,
+    research_citations: list[dict],
+    notes: str,
+) -> AsyncGenerator[dict, None]:
+    """Verify each cited source against the synthesized report.
+
+    Yields one verdict dict per citation:
+
+        {"doc_id", "doc_title", "page", "verdict", "reason", "index", "total"}
+
+    Sequential per the spec (parallelization deferred to stage 2). Fails open
+    on unparseable output or LLM error — a malformed verdict is logged and
+    treated as 'supported' so a brittle verifier can't drop a real report.
+    """
+    total = len(research_citations)
+    for i, cite in enumerate(research_citations):
+        doc_title = (cite.get("doc_title") or "").strip()
+        page = cite.get("page")
+        doc_id = cite.get("doc_id") or ""
+
+        report_excerpt = _excerpt_around(report_content, doc_title, context_chars=_VERIFIER_REPORT_WINDOW)
+        source_excerpt = _excerpt_around(notes, doc_title, context_chars=_VERIFIER_SOURCE_WINDOW)
+
+        if not report_excerpt:
+            # Report doesn't mention this doc's title — the citation was
+            # tracked as an evidence doc but the synthesizer chose not to
+            # reference it. No claim to verify.
+            yield {
+                "doc_id": doc_id,
+                "doc_title": doc_title,
+                "page": page,
+                "verdict": "skipped",
+                "reason": "Source was retrieved but not referenced in the report",
+                "index": i,
+                "total": total,
+            }
+            continue
+
+        if not source_excerpt:
+            # Notes didn't capture this doc — likely a chunking quirk where
+            # the cited title differs from how it appears in retrieved notes.
+            # Can't verify without source text.
+            yield {
+                "doc_id": doc_id,
+                "doc_title": doc_title,
+                "page": page,
+                "verdict": "skipped",
+                "reason": "Source evidence text not located in the research notes",
+                "index": i,
+                "total": total,
+            }
+            continue
+
+        user_content = render_verifier_user(
+            report_excerpt=report_excerpt,
+            doc_title=doc_title,
+            page=page,
+            source_excerpt=source_excerpt,
+        )
+        messages = [
+            {"role": "system", "content": VERIFIER_SYSTEM},
+            {"role": "user", "content": user_content},
+        ]
+
+        verdict = "supported"
+        reason = ""
+        try:
+            raw = await _llm_complete(
+                client,
+                llm_url,
+                messages,
+                timeout=_VERIFIER_TIMEOUT,
+                max_tokens=_VERIFIER_MAX_TOKENS,
+                phase="verifier",
+                json_mode=True,
+            )
+            parsed = _parse_json_from_llm(raw)
+            if not parsed:
+                # _parse_json_from_llm returns {} on unparseable input rather
+                # than raising; treat that as a verifier-call failure so the
+                # fail-open path lights up.
+                raise ValueError("Empty JSON object from verifier")
+            raw_verdict = parsed.get("verdict")
+            if raw_verdict in _VALID_VERDICTS:
+                verdict = raw_verdict
+            reason = str(parsed.get("reason") or "").strip()[:300]
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError, KeyError) as exc:
+            logger.warning("Verifier failed for citation %d (%s): %r", i, doc_title, exc)
+            reason = f"Verifier call failed: {type(exc).__name__}"
+
+        yield {
+            "doc_id": doc_id,
+            "doc_title": doc_title,
+            "page": page,
+            "verdict": verdict,
+            "reason": reason,
+            "index": i,
+            "total": total,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Main research engine
 # ---------------------------------------------------------------------------
 
@@ -1443,12 +1581,40 @@ async def research_stream(
                 )
             )
 
+            # Stage-1 verifier loop: emit per-citation verdicts via SSE. The
+            # revision pass (stage 2) is not wired up here; for now we only
+            # surface verdicts so the frontend and eval harness can capture
+            # them. Gated by `research_verifier_enabled` so the default
+            # research path is unchanged until the A/B clears.
+            verifier_verdicts: list[dict] = []
+            if settings.research_verifier_enabled and report_content and research_citations:
+                try:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(_VERIFIER_TIMEOUT)) as v_client:
+                        async for verdict in _verify_citations(
+                            client=v_client,
+                            llm_url=llm_url,
+                            report_content=report_content,
+                            research_citations=research_citations,
+                            notes=notes,
+                        ):
+                            verifier_verdicts.append(verdict)
+                            yield _sse({"type": "verifier_pass", **verdict})
+                except Exception:
+                    # Verifier is best-effort. A failure here must not abort
+                    # a research run that already produced a report.
+                    logger.exception("Verifier loop failed; proceeding with unverified report")
+
             state.status = "completed"
             state.notes = notes
             state.citations = research_citations
             state.current_round = step_count
             state.completed_at = datetime.now(UTC)
             state.progress = {"step": step_count}
+            if verifier_verdicts:
+                # Persist the verdicts on the progress blob until ResearchState
+                # gets a dedicated `verifier_verdicts` column (stage 2). This
+                # lets the eval harness read them back without an SSE replay.
+                state.progress = {"step": step_count, "verifier_verdicts": verifier_verdicts}
             await session.commit()
 
             done_payload: dict = {"type": "done", "conversation_id": str(conversation_id)}

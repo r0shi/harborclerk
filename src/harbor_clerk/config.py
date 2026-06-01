@@ -106,6 +106,13 @@ class Settings(BaseSettings):
     research_search_paginated: bool = Field(default=True)
     research_search_k: int = Field(default=20)
 
+    # Research verifier loop — staged in via PR series tracked under
+    # docs/superpowers/specs/2026-06-01-verifier-loop-design.md.
+    # When enabled, after synthesis the model re-judges each cited source
+    # against the report and (in stage 2) revises if mismatches are found.
+    # Default off until the A/B clears the +0.30 groundedness bar.
+    research_verifier_enabled: bool = Field(default=False)
+
     # Chat history
     max_history_messages: int = Field(default=40)
 
