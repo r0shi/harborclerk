@@ -202,6 +202,8 @@ def refresh_llm_settings() -> None:
             settings.llm_yarn_enabled = bool(data["llm_yarn_enabled"])
         if "summary_force_apple_intelligence" in data:
             settings.summary_force_apple_intelligence = bool(data["summary_force_apple_intelligence"])
+        if "research_verifier_enabled" in data:
+            settings.research_verifier_enabled = bool(data["research_verifier_enabled"])
     except Exception:
         logger.debug("Failed to refresh LLM settings from %s", path, exc_info=True)
 
