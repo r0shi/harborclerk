@@ -86,7 +86,15 @@ MODELS: dict[str, ModelInfo] = {
             context_window=32768,
             supports_tools=True,
             yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768),
-            parallel_slots=4,  # small tier (≤4 GB)
+            # Exception to the small-tier "-np 4" rule: at -np 4 the per-slot
+            # context is 32K/4 = 8K, which the 2026-05-31 v3 sweep showed is
+            # too tight for the chat tools schema (~2K tokens) + an ambiguous
+            # search result on the synthetic corpus, causing the model to
+            # emit empty answers when the prompt overflows. -np 1 restores
+            # the full 32K per request and lets qwen3-4b handle ambiguous
+            # queries that 3.5× its slot budget at -np 4. Throughput cost:
+            # summarize + chat serialize for this model only.
+            parallel_slots=1,
         ),
         ModelInfo(
             id="deepseek-r1-0528-8b",

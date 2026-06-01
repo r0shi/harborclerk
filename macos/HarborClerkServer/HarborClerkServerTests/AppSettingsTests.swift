@@ -178,8 +178,8 @@ final class AppSettingsTests: XCTestCase {
     func testActiveModelParallelSlotsMatchesPythonRegistry() {
         let settings = AppSettings(configURL: configURL)
         let expected: [String: Int] = [
-            // Small (≤4 GB GGUF) → 4 slots
-            "qwen3-4b": 4,
+            // Small — but exception: qwen3-4b is -np 1, see models.py
+            "qwen3-4b": 1,
             // Mid (5-12 GB, ≤32K context) → 2 slots
             "qwen3-8b": 2,
             "deepseek-r1-0528-8b": 2,

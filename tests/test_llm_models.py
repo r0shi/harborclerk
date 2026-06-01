@@ -48,8 +48,10 @@ def test_curated_models_parallel_slots_tiered_by_size():
     big dense models.
     """
     expected = {
-        # Small
-        "qwen3-4b": 4,
+        # Small — but exception: qwen3-4b is -np 1 (not 4) because the
+        # 8K per-slot budget under -np 4 was too tight for the chat tools
+        # schema plus an ambiguous search result. See models.py.
+        "qwen3-4b": 1,
         # Mid (≤32K native context)
         "qwen3-8b": 2,
         "deepseek-r1-0528-8b": 2,
