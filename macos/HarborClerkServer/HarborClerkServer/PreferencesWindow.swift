@@ -144,7 +144,6 @@ private let modelOptions: [(id: String, name: String)] = [
     ("", "None"),
     ("qwen3-8b", "Qwen3 8B (5.0 GB)"),
     ("qwen3-4b", "Qwen3 4B (2.5 GB)"),
-    ("deepseek-r1-0528-8b", "DeepSeek R1 0528 8B (5.0 GB)"),
     ("gpt-oss-20b", "GPT-OSS 20B (11.6 GB)"),
     ("qwen36-35b-a3b", "Qwen3.6 35B-A3B (22.1 GB)"),
     ("gemma4-26b-a4b", "Gemma 4 26B-A4B (17.0 GB)"),

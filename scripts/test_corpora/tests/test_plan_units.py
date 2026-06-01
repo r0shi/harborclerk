@@ -57,8 +57,8 @@ def test_models_filter_excludes_phase2_smoke_when_qwen35_filtered_out():
 def test_no_models_filter_means_all_models():
     units = _plan_units(_qbc(["cuad"]), phases={4}, depth="standard", models_filter=None)
     models = {u.model for u in units}
-    # Should be exactly the 6 ALL_MODELS
-    assert len(models) == 6
+    # Should be exactly the 5 ALL_MODELS
+    assert len(models) == 5
 
 
 def test_corpora_filter_phase0_only_lists_provided_corpora():
