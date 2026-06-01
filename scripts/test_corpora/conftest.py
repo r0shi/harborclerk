@@ -17,17 +17,17 @@ from pathlib import Path
 API_BASE = os.environ.get("HC_API_BASE", "http://localhost:8100")
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 
-# All eight downloaded models, by Harbor Clerk model_id. These MUST match the
-# canonical ids in src/harbor_clerk/llm/models.py — anything else 404s on
+# The curated downloaded models, by Harbor Clerk model_id. These MUST match
+# the canonical ids in src/harbor_clerk/llm/models.py — anything else 404s on
 # PUT /api/chat/models/<id>/activate. Phase 4 sweeps over this list. Phase 5
-# uses TOP_MODELS only.
+# uses TOP_MODELS only. The list shrank from 8 to 6 in PR #434 when phi4-mini
+# and smollm3-3b were dropped after the 2026-05-29 sweep showed both well
+# below the quality threshold.
 ALL_MODELS = [
     "qwen3-8b",
     "qwen3-4b",
-    "phi4-mini",
     "deepseek-r1-0528-8b",
     "gemma4-26b-a4b",
-    "smollm3-3b",
     "gpt-oss-20b",
     "qwen36-35b-a3b",
 ]

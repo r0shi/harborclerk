@@ -7,9 +7,9 @@ String matching by prefix:
   anything else      -> LocalProvider (HC-hosted llama-server via chat API)
 
 The local fallback is intentional: local HC-hosted model ids vary widely
-(qwen3-8b, deepseek-r1-0528-8b, phi4-mini, gemma4-26b-a4b, ...) and don't
-share a stable prefix. The factory accepts them all and lets HC's chat
-model registry decide whether the activate call succeeds.
+(qwen3-8b, deepseek-r1-0528-8b, gemma4-26b-a4b, ...) and don't share a
+stable prefix. The factory accepts them all and lets HC's chat model
+registry decide whether the activate call succeeds.
 
 Cloud providers lazily construct their underlying client (anthropic.Anthropic()
 or openai.OpenAI()) inside the matched branch via the provider's own
