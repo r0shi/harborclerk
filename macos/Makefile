@@ -71,13 +71,15 @@ frontend:
 dev: frontend
 	@echo "==> Building Xcode project (Debug)"
 	cd HarborClerkServer && xcodebuild -project HarborClerkServer.xcodeproj \
-		-scheme HarborClerkServer -configuration Debug build
+		-scheme HarborClerkServer -configuration Debug \
+		-allowProvisioningUpdates build
 
 # ── Test ──
 
 test:
 	cd HarborClerkServer && xcodebuild -project HarborClerkServer.xcodeproj \
-		-scheme HarborClerkServer -configuration Debug test
+		-scheme HarborClerkServer -configuration Debug \
+		-allowProvisioningUpdates test
 
 # ── Apps ──
 
