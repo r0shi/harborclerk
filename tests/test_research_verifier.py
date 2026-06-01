@@ -323,36 +323,51 @@ def test_needs_revision_ignores_skipped():
     assert _needs_revision(verdicts) is False
 
 
-async def test_revise_with_feedback_filters_to_partial_and_unsupported_only(fake_client):
-    """The revision prompt should only include actionable feedback —
-    supported and skipped verdicts are dropped before the prompt is built."""
+async def _collect_revision(verdicts, draft="DRAFT", notes="NOTES", question="q?", llm_tokens=None):
+    """Test helper: call _revise_with_feedback with a mocked token stream
+    and collect the yielded tokens into a string."""
     from harbor_clerk.llm.research import _revise_with_feedback
 
+    if llm_tokens is None:
+        llm_tokens = ["REVISED ", "REPORT"]
+
+    async def fake_stream(client, url, messages, **kwargs):
+        for t in llm_tokens:
+            yield t
+
+    captured: dict = {}
+
+    async def fake_stream_with_capture(client, url, messages, **kwargs):
+        captured["messages"] = messages
+        async for t in fake_stream(client, url, messages, **kwargs):
+            yield t
+
+    out = []
+    with patch("harbor_clerk.llm.research._stream_llm_tokens", new=fake_stream_with_capture):
+        async for token in _revise_with_feedback(
+            client=AsyncMock(spec=httpx.AsyncClient),
+            llm_url="http://x",
+            user_question=question,
+            draft_report=draft,
+            notes=notes,
+            verdicts=verdicts,
+        ):
+            out.append(token)
+    return "".join(out), captured.get("messages")
+
+
+async def test_revise_with_feedback_filters_to_partial_and_unsupported_only():
+    """The revision prompt should only include actionable feedback —
+    supported and skipped verdicts are dropped before the prompt is built."""
     verdicts = [
         {"doc_title": "DocA", "page": "1", "verdict": "supported", "reason": "ok"},
         {"doc_title": "DocB", "page": "2", "verdict": "partial", "reason": "missing $X figure"},
         {"doc_title": "DocC", "page": "3", "verdict": "skipped", "reason": "not located"},
         {"doc_title": "DocD", "page": "4", "verdict": "unsupported", "reason": "fabricated"},
     ]
-
-    captured: dict = {}
-
-    async def fake_complete(client, url, messages, **kwargs):
-        captured["messages"] = messages
-        return "REVISED REPORT"
-
-    with patch("harbor_clerk.llm.research._llm_complete", new=AsyncMock(side_effect=fake_complete)):
-        result = await _revise_with_feedback(
-            client=fake_client,
-            llm_url="http://x",
-            user_question="q?",
-            draft_report="DRAFT",
-            notes="NOTES",
-            verdicts=verdicts,
-        )
-
-    assert result == "REVISED REPORT"
-    user_content = captured["messages"][1]["content"]
+    text, messages = await _collect_revision(verdicts)
+    assert text == "REVISED REPORT"
+    user_content = messages[1]["content"]
     assert "DocB" in user_content
     assert "DocD" in user_content
     # Supported and skipped verdicts must not appear in the feedback list
@@ -360,51 +375,27 @@ async def test_revise_with_feedback_filters_to_partial_and_unsupported_only(fake
     assert "DocC" not in user_content
 
 
-async def test_revise_with_feedback_returns_complete_text_from_llm(fake_client):
-    """Whatever the LLM emits as the revised report is what the function
-    returns. No post-processing or truncation in v1."""
-    from harbor_clerk.llm.research import _revise_with_feedback
-
+async def test_revise_with_feedback_yields_tokens_in_order():
+    """The streamed tokens come out in the exact order the LLM emits them
+    — concatenation reconstructs the full revised report."""
     verdicts = [{"doc_title": "DocB", "page": "2", "verdict": "partial", "reason": "x"}]
-
-    revised_text = "# Revised report\n\nFully revised content with corrected claims."
-    with patch("harbor_clerk.llm.research._llm_complete", new=AsyncMock(return_value=revised_text)):
-        out = await _revise_with_feedback(
-            client=fake_client,
-            llm_url="http://x",
-            user_question="q?",
-            draft_report="DRAFT",
-            notes="NOTES",
-            verdicts=verdicts,
-        )
-
-    assert out == revised_text
+    tokens = ["# ", "Revised ", "report\n\n", "Body."]
+    text, _ = await _collect_revision(verdicts, llm_tokens=tokens)
+    assert text == "# Revised report\n\nBody."
 
 
-async def test_revise_with_feedback_includes_original_question_and_draft(fake_client):
+async def test_revise_with_feedback_includes_original_question_and_draft():
     """The revision prompt must carry both the original question and the
     full previous draft so the model can produce a coherent rewrite, not a
     standalone new report."""
-    from harbor_clerk.llm.research import _revise_with_feedback
-
     verdicts = [{"doc_title": "DocB", "page": "2", "verdict": "partial", "reason": "x"}]
-    captured: dict = {}
-
-    async def fake_complete(client, url, messages, **kwargs):
-        captured["messages"] = messages
-        return "OUT"
-
-    with patch("harbor_clerk.llm.research._llm_complete", new=AsyncMock(side_effect=fake_complete)):
-        await _revise_with_feedback(
-            client=fake_client,
-            llm_url="http://x",
-            user_question="What were the Q3 board decisions?",
-            draft_report="DRAFT REPORT BODY",
-            notes="NOTES BODY",
-            verdicts=verdicts,
-        )
-
-    user_content = captured["messages"][1]["content"]
+    _, messages = await _collect_revision(
+        verdicts,
+        question="What were the Q3 board decisions?",
+        draft="DRAFT REPORT BODY",
+        notes="NOTES BODY",
+    )
+    user_content = messages[1]["content"]
     assert "What were the Q3 board decisions?" in user_content
     assert "DRAFT REPORT BODY" in user_content
     assert "NOTES BODY" in user_content

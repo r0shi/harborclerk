@@ -1115,12 +1115,14 @@ async def _revise_with_feedback(
     draft_report: str,
     notes: str,
     verdicts: list[dict],
-) -> str:
-    """Run the revision pass.
+) -> AsyncGenerator[str, None]:
+    """Run the revision pass, streaming tokens.
 
     Filters `verdicts` to the partial/unsupported subset and asks the model
-    to revise the draft based on that feedback. Returns the revised report
-    text. Single pass per the spec — caller does NOT loop on the result.
+    to revise the draft based on that feedback. Yields the revised report
+    one token at a time so the caller can stream them through SSE rather
+    than buffering a multi-KB body into a single event. Single LLM call
+    per the spec — caller does NOT loop on the result.
 
     The caller should gate on `_needs_revision(verdicts)` to skip when
     there is no feedback to act on.
@@ -1136,14 +1138,14 @@ async def _revise_with_feedback(
         {"role": "system", "content": REVISION_SYSTEM},
         {"role": "user", "content": user_content},
     ]
-    return await _llm_complete(
+    async for token in _stream_llm_tokens(
         client,
         llm_url,
         messages,
         timeout=_REVISION_TIMEOUT,
         max_tokens=_REVISION_MAX_TOKENS,
-        phase="revision",
-    )
+    ):
+        yield token
 
 
 def _needs_revision(verdicts: list[dict]) -> bool:
@@ -1658,32 +1660,38 @@ async def research_stream(
                             yield _sse({"type": "verifier_pass", **verdict})
                 except Exception:
                     # Verifier is best-effort. A failure here must not abort
-                    # a research run that already produced a report.
+                    # a research run that already produced a report. Discard
+                    # any partial verdicts: a half-collected set could
+                    # spuriously contain a partial/unsupported entry and
+                    # would trigger a revision against an incomplete picture
+                    # — the opposite of the fail-open posture we want.
                     logger.exception("Verifier loop failed; proceeding with unverified report")
+                    verifier_verdicts = []
 
                 if _needs_revision(verifier_verdicts):
                     flagged_count = sum(1 for v in verifier_verdicts if v.get("verdict") in _VERDICTS_NEEDING_REVISION)
                     yield _sse({"type": "revision_started", "flagged_count": flagged_count})
+                    revision_chunks: list[str] = []
                     try:
                         async with httpx.AsyncClient(timeout=httpx.Timeout(_REVISION_TIMEOUT)) as r_client:
-                            revised_content = await _revise_with_feedback(
+                            async for token in _revise_with_feedback(
                                 client=r_client,
                                 llm_url=llm_url,
                                 user_question=user_question,
                                 draft_report=original_draft,
                                 notes=notes,
                                 verdicts=verifier_verdicts,
-                            )
+                            ):
+                                revision_chunks.append(token)
+                                yield _sse({"type": "revision_token", "content": token})
+                        revised_content = "".join(revision_chunks)
                         if revised_content.strip():
                             report_content = revised_content
                             revised = True
-                            yield _sse(
-                                {
-                                    "type": "revision_complete",
-                                    "revised_content": report_content,
-                                    "flagged_count": flagged_count,
-                                }
-                            )
+                            # Sentinel only — no body. Listeners assemble the
+                            # full revised report from the streamed
+                            # `revision_token` events.
+                            yield _sse({"type": "revision_complete", "flagged_count": flagged_count})
                         else:
                             # Empty revision — keep the original draft and log.
                             logger.warning("Revision pass returned empty content; keeping original draft")
