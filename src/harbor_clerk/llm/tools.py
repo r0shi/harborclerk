@@ -1,10 +1,13 @@
 """Chat tool definitions and executor — delegates to MCP tool functions.
 
-Chat tools are simplified versions of the full MCP tools, tailored for
-small local LLMs (4-8B params). Not all MCP tools are exposed here:
+Chat tools are simplified versions of the full MCP tools, sized for the
+current curated local-LLM range (4B–35B). Not all MCP tools are exposed
+here:
 
   Omitted (MCP-only):
-    - kb_batch_search: multi-query patterns unlikely from small models
+    - kb_batch_search: original rationale was that small models don't
+      issue multi-query patterns. With 20B+ models now in the curated
+      set this is worth revisiting; today's omission is inertia.
     - kb_reprocess / kb_system_health: admin-only, not useful in chat
 
   Simplified:
