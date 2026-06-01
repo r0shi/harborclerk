@@ -22,6 +22,7 @@ xcodebuild -project HarborClerkServer.xcodeproj \
     -derivedDataPath "$BUILD_DIR/derived" \
     -arch arm64 \
     ONLY_ACTIVE_ARCH=NO \
+    -allowProvisioningUpdates \
     build
 
 echo "==> Building Harbor Clerk.app"
@@ -32,6 +33,7 @@ xcodebuild -project HarborClerk.xcodeproj \
     -derivedDataPath "$BUILD_DIR/derived" \
     -arch arm64 \
     ONLY_ACTIVE_ARCH=NO \
+    -allowProvisioningUpdates \
     build
 
 # ── Locate built apps ──

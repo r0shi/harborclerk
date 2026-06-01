@@ -43,7 +43,7 @@ Postgres backup credentials in your secrets manager.
 
 The Harbor Clerk Server menubar app generates the master key on first launch
 and stores it in your login Keychain under the service identifier
-`com.bitblot.harborclerk.master-key`. On every subsequent launch, Swift reads
+`com.harborclerk.master-key`. On every subsequent launch, Swift reads
 it from Keychain and exports it as `HARBOR_CLERK_MASTER_KEY` to all Python
 subprocesses (api, worker-io, worker-cpu, watcher).
 
@@ -53,7 +53,7 @@ into subprocesses automatically.
 **To inspect the key** (for backup or debugging):
 
 ```bash
-security find-generic-password -s 'com.bitblot.harborclerk.master-key' -w
+security find-generic-password -s 'com.harborclerk.master-key' -w
 ```
 
 This prints the 44-character base64 representation. Keep it somewhere safe if

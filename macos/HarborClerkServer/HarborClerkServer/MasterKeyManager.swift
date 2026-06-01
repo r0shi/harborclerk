@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import os
 
 /// Owns the master encryption key in the user's login Keychain.
 ///
@@ -11,25 +12,40 @@ import Security
 /// Stored under a unique Keychain service identifier so multiple installs
 /// (development, release) don't trample each other. Production uses
 /// `MasterKeyManager.production`; tests pass a unique id per run.
+///
+/// All items are written into the shared keychain access group
+/// `4HCL3BR49V.com.harborclerk.shared`, declared in both apps' entitlements.
+/// This anchors ACLs to the team identifier instead of the per-build
+/// designated requirement, so rebuilds (dev cert ↔ release cert, ad-hoc ↔
+/// signed) no longer trigger the "binary X wants to access your keychain"
+/// prompt.
 final class MasterKeyManager {
-    static let production = MasterKeyManager(serviceIdentifier: "com.bitblot.harborclerk.master-key")
+    static let production = MasterKeyManager(serviceIdentifier: "com.harborclerk.master-key")
 
     private let serviceIdentifier: String
     private let account = "master-key"
+    private let accessGroup: String?
 
-    init(serviceIdentifier: String) {
+    /// `accessGroup` defaults to the production shared group. Tests can pass
+    /// `nil` to bypass it when running in a signing environment that doesn't
+    /// honor the entitlement (e.g., ad-hoc CI).
+    init(serviceIdentifier: String, accessGroup: String? = "4HCL3BR49V.com.harborclerk.shared") {
         self.serviceIdentifier = serviceIdentifier
+        self.accessGroup = accessGroup
     }
 
     /// Read the stored key, or nil if no key is stored.
     func load() -> Data? {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceIdentifier,
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         guard status == errSecSuccess, let data = item as? Data else {
@@ -66,11 +82,14 @@ final class MasterKeyManager {
 
     /// Remove the stored key. Use only for testing or operator-initiated reset.
     func delete() {
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceIdentifier,
             kSecAttrAccount as String: account,
         ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
         SecItemDelete(query as CFDictionary)
     }
 
@@ -84,7 +103,7 @@ final class MasterKeyManager {
     private func store(_ data: Data) {
         // Delete-then-add is the standard idiom for "set a Keychain item".
         delete()
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: serviceIdentifier,
             kSecAttrAccount as String: account,
@@ -95,7 +114,22 @@ final class MasterKeyManager {
             // the key to this device is the right security tradeoff vs. WhenUnlocked.
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
         let status = SecItemAdd(query as CFDictionary, nil)
-        precondition(status == errSecSuccess, "Failed to store master key in Keychain: \(status)")
+        if status != errSecSuccess {
+            // Don't crash. A failed persist (e.g., errSecMissingEntitlement when the
+            // signing chain doesn't honor the keychain-access-groups entitlement, or
+            // errSecInteractionNotAllowed if the Keychain is locked) used to fire a
+            // precondition and SIGABRT on launch. Now we log loudly and let the
+            // caller proceed with the in-memory key. On next launch load() will
+            // return nil and a fresh key will be generated — previously-encrypted
+            // secrets become unreadable, which matches the spec's recovery story
+            // (re-enter mail-account passwords).
+            Log.logger("master-key").error(
+                "SecItemAdd failed for service \(self.serviceIdentifier, privacy: .public): OSStatus \(status, privacy: .public). Key is in memory but not persisted; data encrypted with it will not survive restart."
+            )
+        }
     }
 }
