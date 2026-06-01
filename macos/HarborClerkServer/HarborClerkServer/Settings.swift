@@ -177,7 +177,7 @@ final class AppSettings: @unchecked Sendable {
         let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
         let slots: [String: Int] = [
             "qwen3-8b": 2,             // mid (32K context)
-            "qwen3-4b": 4,             // small
+            "qwen3-4b": 1,             // small but -np 1 — 8K/slot under -np 4 too tight for tools schema + ambiguous results (v3 sweep, models.py)
             "deepseek-r1-0528-8b": 2,  // mid (32K context)
             "gpt-oss-20b": 1,          // heavy — MoE active params are small but 128K context → KV too big for 2 slots
             "gemma4-26b-a4b": 1,       // heavy
