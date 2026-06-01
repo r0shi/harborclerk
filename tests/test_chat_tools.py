@@ -140,3 +140,115 @@ def test_research_dispatch_inherits_verify_identifier():
 
     assert "verify_identifier" in _RESEARCH_TOOL_DISPATCH
     assert _RESEARCH_TOOL_DISPATCH["verify_identifier"][0] == "kb_verify_identifier"
+
+
+# ---------------------------------------------------------------------------
+# batch_search — gated by model size
+# ---------------------------------------------------------------------------
+
+
+def _mk_model(*, size_bytes: int, mid: str = "test-model"):
+    """Build a ModelInfo with a chosen size_bytes for gate tests."""
+    from harbor_clerk.llm.models import ModelInfo
+
+    return ModelInfo(
+        id=mid,
+        name=mid,
+        huggingface_repo="x",
+        filename="x.gguf",
+        size_bytes=size_bytes,
+        context_window=32768,
+        supports_tools=True,
+    )
+
+
+def test_batch_search_excluded_for_small_model():
+    """Small models (< 5 GB GGUF) get the chat surface without batch_search.
+    The v3 sweep showed multi-query result aggregation overwhelmed them."""
+    from harbor_clerk.llm.tools import get_chat_tools
+
+    small = _mk_model(size_bytes=2_500_000_000, mid="small")
+    tools = get_chat_tools(model=small)
+    names = {t["function"]["name"] for t in tools}
+    assert "batch_search" not in names
+    # And the existing tools are still there
+    assert "search_documents" in names
+
+
+def test_batch_search_included_for_mid_tier():
+    """Models at the threshold (5 GB) or above get batch_search added to
+    their chat surface for compare-and-contrast questions."""
+    from harbor_clerk.llm.tools import get_chat_tools
+
+    mid = _mk_model(size_bytes=5_000_000_000, mid="mid")
+    tools = get_chat_tools(model=mid)
+    names = {t["function"]["name"] for t in tools}
+    assert "batch_search" in names
+
+
+def test_batch_search_included_for_heavy():
+    from harbor_clerk.llm.tools import get_chat_tools
+
+    heavy = _mk_model(size_bytes=20_000_000_000, mid="heavy")
+    tools = get_chat_tools(model=heavy)
+    names = {t["function"]["name"] for t in tools}
+    assert "batch_search" in names
+
+
+def test_batch_search_omitted_when_model_is_none():
+    """No active model means no per-model surface decisions — fall back to
+    the base set without batch_search."""
+    from harbor_clerk.llm.tools import get_chat_tools
+
+    tools = get_chat_tools(model=None)
+    names = {t["function"]["name"] for t in tools}
+    assert "batch_search" not in names
+
+
+def test_batch_search_schema_requires_queries():
+    from harbor_clerk.llm.tools import _BATCH_SEARCH_TOOL
+
+    params = _BATCH_SEARCH_TOOL["function"]["parameters"]
+    assert params["required"] == ["queries"]
+    assert params["properties"]["queries"]["type"] == "array"
+    assert params["properties"]["queries"]["items"]["type"] == "string"
+
+
+def test_map_args_batch_search_chat_caps_queries_at_8():
+    """A misbehaving model issuing 50 queries shouldn't flood the search
+    backend. The chat mapper truncates at 8."""
+    from harbor_clerk.llm.tools import _map_args_batch_search_chat
+
+    out = _map_args_batch_search_chat({"queries": [f"q{i}" for i in range(50)]})
+    assert len(out["queries"]) == 8
+    assert out["queries"][0] == "q0"
+    assert out["queries"][7] == "q7"
+
+
+def test_map_args_batch_search_chat_clamps_k():
+    """k must be clamped to the chat-search settings cap, same as
+    single search_documents."""
+    from harbor_clerk.llm.tools import _map_args_batch_search_chat
+
+    out = _map_args_batch_search_chat({"queries": ["a", "b"], "k": 999})
+    # Cap is 50 in paginated mode, settings.chat_search_k otherwise.
+    # Either way, 999 must come back smaller.
+    assert out["k"] < 999
+
+
+def test_dispatch_routes_batch_search_to_kb_batch_search():
+    from harbor_clerk.llm.tools import _TOOL_DISPATCH
+
+    mcp_name, _ = _TOOL_DISPATCH["batch_search"]
+    assert mcp_name == "kb_batch_search"
+
+
+def test_research_dispatch_overrides_batch_search_with_research_mapper():
+    """Research mode has its own batch_search mapper (brief detail, larger
+    k cap). Verify the explicit override wins over the chat dispatch
+    inherited via spread."""
+    from harbor_clerk.llm.tools import _RESEARCH_TOOL_DISPATCH, _map_args_batch_search_chat
+
+    assert "batch_search" in _RESEARCH_TOOL_DISPATCH
+    _, mapper = _RESEARCH_TOOL_DISPATCH["batch_search"]
+    assert mapper is not _map_args_batch_search_chat
