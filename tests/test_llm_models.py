@@ -54,7 +54,6 @@ def test_curated_models_parallel_slots_tiered_by_size():
         "qwen3-4b": 1,
         # Mid (≤32K native context)
         "qwen3-8b": 2,
-        "deepseek-r1-0528-8b": 2,
         # Heavy
         "gpt-oss-20b": 1,  # 128K context → KV cache too big for 2 slots on 18 GB
         "gemma4-26b-a4b": 1,

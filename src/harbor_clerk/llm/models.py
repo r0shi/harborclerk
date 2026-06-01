@@ -97,17 +97,6 @@ MODELS: dict[str, ModelInfo] = {
             parallel_slots=1,
         ),
         ModelInfo(
-            id="deepseek-r1-0528-8b",
-            name="DeepSeek R1 0528 8B",
-            huggingface_repo="unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF",
-            filename="DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
-            size_bytes=5_400_000_000,
-            context_window=32768,
-            supports_tools=True,
-            yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768, attn_factor=0.8782),
-            parallel_slots=2,  # mid tier (5-12 GB)
-        ),
-        ModelInfo(
             id="gemma4-26b-a4b",
             name="Gemma 4 26B-A4B",
             huggingface_repo="bartowski/google_gemma-4-26B-A4B-it-GGUF",

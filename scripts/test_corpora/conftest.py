@@ -26,7 +26,6 @@ ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 ALL_MODELS = [
     "qwen3-8b",
     "qwen3-4b",
-    "deepseek-r1-0528-8b",
     "gemma4-26b-a4b",
     "gpt-oss-20b",
     "qwen36-35b-a3b",

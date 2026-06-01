@@ -126,7 +126,6 @@ final class AppSettingsTests: XCTestCase {
         let expected: [String: String] = [
             "qwen3-8b": "Qwen3-8B-Q4_K_M.gguf",
             "qwen3-4b": "Qwen3-4B-Q4_K_M.gguf",
-            "deepseek-r1-0528-8b": "DeepSeek-R1-0528-Qwen3-8B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
             "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
@@ -162,7 +161,6 @@ final class AppSettingsTests: XCTestCase {
     private static let knownModelIds: Set<String> = [
         "qwen3-8b",
         "qwen3-4b",
-        "deepseek-r1-0528-8b",
         "gpt-oss-20b",
         "qwen36-35b-a3b",
         "gemma4-26b-a4b",
@@ -182,7 +180,6 @@ final class AppSettingsTests: XCTestCase {
             "qwen3-4b": 1,
             // Mid (5-12 GB, ≤32K context) → 2 slots
             "qwen3-8b": 2,
-            "deepseek-r1-0528-8b": 2,
             // Heavy (>15 GB OR 128K+ context) → 1 slot
             "gpt-oss-20b": 1,  // 128K context → KV cache too big for 2 slots on 18 GB
             "gemma4-26b-a4b": 1,
