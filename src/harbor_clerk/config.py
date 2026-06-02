@@ -106,12 +106,27 @@ class Settings(BaseSettings):
     research_search_paginated: bool = Field(default=True)
     research_search_k: int = Field(default=20)
 
-    # Research verifier loop — staged in via PR series tracked under
+    # Research verifier loop — design spec at
     # docs/superpowers/specs/2026-06-01-verifier-loop-design.md.
-    # When enabled, after synthesis the model re-judges each cited source
-    # against the report and (in stage 2) revises if mismatches are found.
-    # Default off until the A/B clears the +0.30 groundedness bar.
+    #
+    # research_verifier_enabled: stage 1. When True, after synthesis the
+    # model re-judges each cited source against the report. Verdicts stream
+    # via `verifier_pass` SSE events and persist on `state.progress` for the
+    # eval harness. Default off; opt-in via config.json. The verifier itself
+    # was a real product feature in the 2026-06-01 A/B — it surfaced
+    # grounding problems that match the failure modes the design targets.
+    #
+    # research_verifier_revision_enabled: stage 2. When True (and the
+    # verifier is also enabled), partial/unsupported verdicts trigger a
+    # single revision pass that rewrites the report. The 2026-06-01 v3 A/B
+    # (3 models × 3 corpora × 5 questions, judged 0-10 by Sonnet 4.5)
+    # showed the revision pass net-NEGATIVE on overall groundedness: qwen36
+    # -0.93, gpt-oss -1.00, gemma +0.29. The mechanism is the documented
+    # "LLM-as-revisor degrades already-good reports" failure mode. Until
+    # there is a cleaner revision prompt or scoping (deferred), the
+    # revision pass is opt-in for users who want to experiment.
     research_verifier_enabled: bool = Field(default=False)
+    research_verifier_revision_enabled: bool = Field(default=False)
 
     # Chat history
     max_history_messages: int = Field(default=40)
@@ -204,6 +219,8 @@ def refresh_llm_settings() -> None:
             settings.summary_force_apple_intelligence = bool(data["summary_force_apple_intelligence"])
         if "research_verifier_enabled" in data:
             settings.research_verifier_enabled = bool(data["research_verifier_enabled"])
+        if "research_verifier_revision_enabled" in data:
+            settings.research_verifier_revision_enabled = bool(data["research_verifier_revision_enabled"])
     except Exception:
         logger.debug("Failed to refresh LLM settings from %s", path, exc_info=True)
 
