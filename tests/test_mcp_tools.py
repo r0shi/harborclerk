@@ -686,6 +686,36 @@ async def test_kb_search_faceted_output(
     assert result["documents"][1]["hit_count"] == 1
 
 
+async def test_kb_search_faceted_carries_continuation(
+    db_session,
+    admin_user,
+    mcp_principal,
+    mock_session_factory,
+    mock_hybrid_search,
+):
+    """The faceted response shape (grouped by doc) must still carry the
+    continuation nudge when more pages exist — pagination is chunk-offset
+    based regardless of grouping."""
+    captured, result_obj = mock_hybrid_search
+    d1 = str(uuid.uuid4())
+    # 3 hits returned at k=2 but total=30 → more pages exist.
+    _set_result(
+        result_obj,
+        [_make_hit(doc_id=d1, doc_title="Doc A", score=0.9)],
+        total=30,
+    )
+
+    raw = await kb_search("test", faceted=True, k=2, offset=0)
+    result = json.loads(raw)
+
+    assert "documents" in result
+    assert result["has_more"] is True
+    assert "continuation" in result
+    assert result["continuation"]["next_offset"] == 2
+    # Guidance must not assume a flat hit list (the faceted shape has none).
+    assert "hits" not in result["continuation"]["guidance"].lower()
+
+
 async def test_kb_search_faceted_detail_modes(
     db_session,
     admin_user,
