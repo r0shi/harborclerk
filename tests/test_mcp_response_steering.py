@@ -127,6 +127,18 @@ async def test_verify_identifier_ambiguous_has_no_instruction():
     assert "instruction" not in out
 
 
+async def test_verify_identifier_error_shape_gets_no_instruction():
+    """`verify_identifier` returns {"error": ...} for empty/whitespace input.
+    That shape has no `status` key — the guard must skip it, never attaching
+    the anti-hedge directive to an error response."""
+    fake = {"error": "identifier must be non-empty"}
+    with patch("harbor_clerk.mcp_server._verify_identifier_impl", new=AsyncMock(return_value=fake)):
+        raw = await kb_verify_identifier("   ")
+    out = json.loads(raw)
+    assert "error" in out
+    assert "instruction" not in out
+
+
 # ---------------------------------------------------------------------------
 # Stats — continuation_offered counter exists for drain-rate measurement
 # ---------------------------------------------------------------------------

@@ -638,13 +638,18 @@ def _format_search_response(
         # enumeration-heavy Enron corpus sits at 2.36/5). Putting the directive
         # in the response means it's in context at the exact moment the model
         # decides whether to conclude or paginate.
+        # seen/total/next_offset are in CHUNK units — pagination is chunk-offset
+        # based regardless of whether the response is hit-listed or doc-faceted,
+        # so the guidance is worded to hold for both shapes (it must not assume
+        # the model is looking at a flat `hits` list; the faceted path copies
+        # this block into a `documents`-shaped response).
         seen = offset + len(hits)
         resp["continuation"] = {
             "seen": seen,
             "total": result.total_candidates,
             "next_offset": offset + k,
             "guidance": (
-                f"You have retrieved {seen} of {result.total_candidates} matching chunks. "
+                f"{seen} of {result.total_candidates} matching chunks have been returned so far. "
                 f"If the task is to enumerate, or you do not yet have a complete answer, "
                 f"call this tool again with offset={offset + k} to retrieve the next page "
                 f"BEFORE concluding. Do not answer from a partial result set."
@@ -1295,6 +1300,8 @@ async def kb_batch_search(
             _search_stats["max_k"] = max(_search_stats["max_k"], k)
             if k >= settings.mcp_max_k:
                 _search_stats["cap_hits"] += 1
+            if resp.get("has_more"):
+                _search_stats["continuation_offered"] += 1
             _search_stats[f"detail_{detail}"] += 1
 
     if _search_stats["calls"] % _STATS_LOG_INTERVAL == 0 and _search_stats["calls"] > 0:
