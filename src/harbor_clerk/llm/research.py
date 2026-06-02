@@ -1637,12 +1637,16 @@ async def research_stream(
                 )
                 return
 
-            # Verifier loop. Stage 1: emit per-citation verdicts via SSE.
-            # Stage 2: if any verdict is partial/unsupported, run a single
-            # revision pass that consumes the feedback and replaces
-            # report_content with the revised text. Both are gated by
-            # `research_verifier_enabled` so the default research path is
-            # unchanged until the A/B clears.
+            # Verifier loop.
+            # Stage 1 — verdict emission. Gated by `research_verifier_enabled`.
+            # The 2026-06-01 A/B confirmed the verifier itself surfaces real
+            # grounding problems; it's a usable transparency feature today.
+            # Stage 2 — revision pass. Separately gated by
+            # `research_verifier_revision_enabled`. The same A/B showed the
+            # revision pass net-NEGATIVE on overall groundedness across the
+            # top three models (qwen36 -0.93, gpt-oss -1.00, gemma +0.29).
+            # Default off; opt-in via config.json for users who want to
+            # experiment with it.
             verifier_verdicts: list[dict] = []
             original_draft = report_content
             revised = False
@@ -1668,7 +1672,7 @@ async def research_stream(
                     logger.exception("Verifier loop failed; proceeding with unverified report")
                     verifier_verdicts = []
 
-                if _needs_revision(verifier_verdicts):
+                if settings.research_verifier_revision_enabled and _needs_revision(verifier_verdicts):
                     flagged_count = sum(1 for v in verifier_verdicts if v.get("verdict") in _VERDICTS_NEEDING_REVISION)
                     yield _sse({"type": "revision_started", "flagged_count": flagged_count})
                     revision_chunks: list[str] = []

@@ -399,3 +399,51 @@ async def test_revise_with_feedback_includes_original_question_and_draft():
     assert "What were the Q3 board decisions?" in user_content
     assert "DRAFT REPORT BODY" in user_content
     assert "NOTES BODY" in user_content
+
+
+# ---------------------------------------------------------------------------
+# Settings — revision pass is gated separately from verifier emission.
+# Regression coverage for the 2026-06-01 A/B finding that the revision
+# pass is net-negative on quality.
+# ---------------------------------------------------------------------------
+
+
+def test_research_verifier_settings_default_off():
+    """Both stage-1 and stage-2 flags default False so a fresh install gets
+    the unverified research path without surprise extra LLM calls."""
+    from harbor_clerk.config import Settings
+
+    s = Settings()
+    assert s.research_verifier_enabled is False
+    assert s.research_verifier_revision_enabled is False
+
+
+def test_research_verifier_revision_setting_is_separately_gated():
+    """The revision pass must be opt-in via its own flag, NOT bundled into
+    `research_verifier_enabled`. The A/B (2026-06-01) showed revision is
+    net-negative on overall groundedness; users who want verifier-only
+    transparency should not also get the revision degradation."""
+    from harbor_clerk.config import Settings
+
+    # Verifier on, revision off — the recommended config for shipping
+    s = Settings(research_verifier_enabled=True, research_verifier_revision_enabled=False)
+    assert s.research_verifier_enabled is True
+    assert s.research_verifier_revision_enabled is False
+
+
+def test_refresh_llm_settings_reads_research_verifier_revision_enabled(tmp_path, monkeypatch):
+    """Like the stage-1 setting, the revision flag must be runtime-mutable
+    via config.json so users can toggle it without a process restart."""
+    import json
+
+    from harbor_clerk.config import get_settings, refresh_llm_settings
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"research_verifier_revision_enabled": True}))
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "native_config_file", str(cfg))
+    settings.research_verifier_revision_enabled = False  # baseline before refresh
+
+    refresh_llm_settings()
+    assert settings.research_verifier_revision_enabled is True
