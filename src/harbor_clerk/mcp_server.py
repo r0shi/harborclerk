@@ -49,6 +49,13 @@ _search_stats = {
     "detail_full": 0,
     "detail_brief": 0,
     "detail_compact": 0,
+    # continuation_offered: responses where has_more was true (we nudged the
+    # model to paginate). drain_rate = pagination_calls / continuation_offered
+    # measures whether the active-continuation nudge actually gets models to
+    # come back for the next page vs concluding from a partial set. Without
+    # this denominator, pagination_rate alone can't tell over- from under-
+    # iteration.
+    "continuation_offered": 0,
 }
 _STATS_LOG_INTERVAL = 50
 
@@ -623,6 +630,26 @@ def _format_search_response(
         "total_candidates": result.total_candidates,
         "has_more": has_more,
     }
+    if has_more:
+        # Active continuation nudge in the response payload. `has_more: true`
+        # alone is a passive flag the model has to remember to act on via the
+        # tool docstring — and frontier models reliably ignore that docstring
+        # guidance (the find-iteration short-stop: cloud completeness on the
+        # enumeration-heavy Enron corpus sits at 2.36/5). Putting the directive
+        # in the response means it's in context at the exact moment the model
+        # decides whether to conclude or paginate.
+        seen = offset + len(hits)
+        resp["continuation"] = {
+            "seen": seen,
+            "total": result.total_candidates,
+            "next_offset": offset + k,
+            "guidance": (
+                f"You have retrieved {seen} of {result.total_candidates} matching chunks. "
+                f"If the task is to enumerate, or you do not yet have a complete answer, "
+                f"call this tool again with offset={offset + k} to retrieve the next page "
+                f"BEFORE concluding. Do not answer from a partial result set."
+            ),
+        }
     if result.possible_conflict:
         resp["possible_conflict"] = True
         resp["conflict_sources"] = [{"doc_id": cs.doc_id, "title": cs.title} for cs in result.conflict_sources]
@@ -655,6 +682,8 @@ async def kb_search(
       - `total_candidates`: how many chunks matched before pagination
       - `has_more`: true if more results exist beyond your window — paginate via `offset`
         or refine your query if you don't yet have the answer
+      - `continuation` (when `has_more` is true): an explicit `next_offset` plus a
+        `seen`/`total` count. Calling with that `next_offset` retrieves the next page.
       - `discriminator_hint` (when present): top hits span multiple docs that differ on
         a structured metadata field. Use `metadata_filter` with the suggested key/value
         to pin the right doc. The hint includes `ambiguous_doc_titles`,
@@ -842,6 +871,10 @@ async def kb_search(
             "total_candidates": result.total_candidates,
             "has_more": base_resp["has_more"],
         }
+        # Carry the continuation nudge into the faceted shape too — pagination
+        # semantics are identical, just grouped by document.
+        if "continuation" in base_resp:
+            resp["continuation"] = base_resp["continuation"]
     else:
         resp = base_resp
 
@@ -865,18 +898,27 @@ async def kb_search(
         _search_stats["pagination_calls"] += 1
     if faceted:
         _search_stats["faceted_calls"] += 1
+    if resp.get("has_more"):
+        _search_stats["continuation_offered"] += 1
     _search_stats[f"detail_{detail}"] += 1
 
     if _search_stats["calls"] % _STATS_LOG_INTERVAL == 0:
         n = _search_stats["calls"]
+        offered = _search_stats["continuation_offered"]
+        # drain_rate is only meaningful once we've offered at least one
+        # continuation; guard the divide.
+        drain_rate = (100 * _search_stats["pagination_calls"] / offered) if offered else 0.0
         logger.info(
             "kb_search stats (%d calls): avg_k=%.0f, max_k=%d, cap_hit_rate=%.0f%%, "
-            "pagination_rate=%.0f%%, faceted_rate=%.0f%%, detail: full=%d brief=%d compact=%d",
+            "pagination_rate=%.0f%%, continuation_offered=%d, drain_rate=%.0f%%, "
+            "faceted_rate=%.0f%%, detail: full=%d brief=%d compact=%d",
             n,
             _search_stats["total_k"] / n,
             _search_stats["max_k"],
             100 * _search_stats["cap_hits"] / n,
             100 * _search_stats["pagination_calls"] / n,
+            offered,
+            drain_rate,
             100 * _search_stats["faceted_calls"] / n,
             _search_stats["detail_full"],
             _search_stats["detail_brief"],
@@ -2554,6 +2596,19 @@ async def kb_verify_identifier(identifier: str) -> str:
     """
     async with async_session_factory() as session:
         result = await _verify_identifier_impl(session, identifier)
+    # Response-level anti-hedge directive for the not_found case. The docstring
+    # already says "do NOT fall back to closest match", but the BEFORE/AFTER on
+    # PR-J showed frontier models reproduce the exact padding the docstring
+    # forbids ("the closest proxy is..."). The directive lands harder when it's
+    # in the tool RESULT the model is reading at decision time, not in the
+    # tools/list description it saw at session start.
+    if isinstance(result, dict) and result.get("status") == "not_found":
+        result["instruction"] = (
+            "This identifier does not exist in the corpus. State that plainly to the user. "
+            "Do NOT search for, suggest, or substitute a similar or adjacent document, and "
+            "do NOT pad the decline with 'the closest match is...' or 'you may be interested "
+            "in...'. The correct answer is that the document is absent."
+        )
     return json.dumps(result, default=str)
 
 
