@@ -12,12 +12,19 @@ from harbor_clerk.api.deps import Principal
 from harbor_clerk.mcp_server import (
     _mcp_principal,
     kb_batch_search,
+    kb_corpus_overview,
+    kb_document_outline,
+    kb_documents_by_date,
     kb_expand_context,
     kb_find_all,
+    kb_find_related,
+    kb_get_document,
+    kb_list_recent,
     kb_read_passages,
     kb_search,
+    kb_verify_identifier,
 )
-from harbor_clerk.models import Chunk, Document
+from harbor_clerk.models import Chunk, Document, DocumentLink
 from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.search import FindAllHit, FindAllResult, SearchHit, SearchResult
@@ -222,3 +229,109 @@ async def test_kb_read_passages_and_expand_context_include_source_refs(
     assert target["source"]["relative_path"] == "runbooks/main.pdf"
     assert "/Users/alex" not in json.dumps(read_payload)
     assert "/Users/alex" not in json.dumps(expand_payload)
+
+
+async def test_kb_get_document_includes_source_ref(
+    db_session,
+    mcp_principal,
+    mock_session_factory,
+) -> None:
+    doc = _doc(title="Board Packet")
+    await _add_watched_doc(db_session, doc, relative_path="board/packet.pdf")
+
+    payload = json.loads(await kb_get_document(str(doc.doc_id)))
+
+    assert payload["citation"] == "Board Packet"
+    assert payload["source"]["doc_id"] == str(doc.doc_id)
+    assert payload["source"]["relative_path"] == "board/packet.pdf"
+    assert "source_path" not in payload
+    assert "/Users/alex" not in json.dumps(payload)
+
+
+async def test_kb_list_recent_and_corpus_overview_document_rows_include_source_refs(
+    db_session,
+    mcp_principal,
+    mock_session_factory,
+) -> None:
+    doc = _doc(title="Recent Contract")
+    await _add_watched_doc(db_session, doc, relative_path="recent/contract.pdf")
+
+    recent = json.loads(await kb_list_recent(limit=5))
+    recent_row = next(row for row in recent["documents"] if row["doc_id"] == str(doc.doc_id))
+    assert recent_row["citation"] == "Recent Contract"
+    assert recent_row["source"]["relative_path"] == "recent/contract.pdf"
+
+    overview = json.loads(await kb_corpus_overview(limit=5))
+    overview_row = next(row for row in overview["documents"] if row["doc_id"] == str(doc.doc_id))
+    assert overview_row["citation"] == "Recent Contract"
+    assert overview_row["source"]["relative_path"] == "recent/contract.pdf"
+    assert "/Users/alex" not in json.dumps(overview_row)
+
+
+async def test_kb_document_outline_includes_source_ref(
+    db_session,
+    mcp_principal,
+    mock_session_factory,
+) -> None:
+    doc = _doc(title="Manual")
+    await _add_watched_doc(db_session, doc, relative_path="manuals/main.pdf")
+
+    payload = json.loads(await kb_document_outline(str(doc.doc_id)))
+
+    assert payload["citation"] == "Manual"
+    assert payload["source"]["relative_path"] == "manuals/main.pdf"
+
+
+async def test_kb_find_related_preserves_legacy_source_and_adds_source_ref(
+    db_session,
+    mcp_principal,
+    mock_session_factory,
+) -> None:
+    source_doc = _doc(title="Source")
+    related_doc = _doc(title="Related", sha256=b"y" * 32)
+    await _add_watched_doc(db_session, source_doc, relative_path="source.pdf")
+    await _add_watched_doc(db_session, related_doc, relative_path="related.pdf")
+    db_session.add(
+        DocumentLink(
+            src_doc_id=source_doc.doc_id,
+            target_doc_id=related_doc.doc_id,
+            link_text="Related",
+            target_title="related",
+            resolved=True,
+        )
+    )
+    await db_session.flush()
+
+    payload = json.loads(await kb_find_related(str(source_doc.doc_id)))
+    related = payload["related"][0]
+
+    assert related["source"] == "linked"
+    assert related["citation"] == "Related"
+    assert related["source_ref"]["doc_id"] == str(related_doc.doc_id)
+    assert related["source_ref"]["relative_path"] == "related.pdf"
+
+
+async def test_kb_verify_identifier_and_documents_by_date_rows_include_source_refs(
+    db_session,
+    mcp_principal,
+    mock_session_factory,
+) -> None:
+    doc = _doc(
+        title="Pinnacle Contract",
+        canonical_filename="pinnacle.pdf",
+        doc_metadata={"tika": {"created_at": "2024-01-01T00:00:00Z"}},
+    )
+    await _add_watched_doc(db_session, doc, relative_path="contracts/pinnacle.pdf")
+    db_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="California contract", language="english"))
+    await db_session.flush()
+
+    verified = json.loads(await kb_verify_identifier("Pinnacle Contract"))
+    assert verified["status"] == "unique"
+    assert verified["match"]["citation"] == "Pinnacle Contract"
+    assert verified["match"]["source"]["relative_path"] == "contracts/pinnacle.pdf"
+
+    by_date = json.loads(await kb_documents_by_date(direction="earliest", query="California", limit=5))
+    row = next(row for row in by_date["results"] if row["doc_id"] == str(doc.doc_id))
+    assert row["citation"] == "Pinnacle Contract"
+    assert row["source"]["relative_path"] == "contracts/pinnacle.pdf"
+    assert "/Users/alex" not in json.dumps(row)

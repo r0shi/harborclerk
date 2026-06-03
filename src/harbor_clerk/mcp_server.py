@@ -734,6 +734,51 @@ def _source_ref_for_find_all_hit(hit: FindAllHit, source_context: SourceRefConte
     )
 
 
+def _valid_doc_ids_from_payloads(payloads: list[dict]) -> list[str]:
+    doc_ids = []
+    for payload in payloads:
+        doc_id = payload.get("doc_id")
+        if doc_id is None:
+            continue
+        try:
+            uuid.UUID(str(doc_id))
+        except ValueError:
+            continue
+        doc_ids.append(str(doc_id))
+    return doc_ids
+
+
+def _source_ref_for_doc_payload(payload: dict, source_context: SourceRefContext | None) -> SourceRef | None:
+    doc_id = payload.get("doc_id")
+    if doc_id is None:
+        return None
+    doc_id_text = str(doc_id)
+    if source_context is not None:
+        try:
+            source_ref = source_context.ref_for_doc(doc_id_text)
+        except ValueError:
+            source_ref = None
+        if source_ref is not None and source_ref.doc_id:
+            return source_ref
+    return _fallback_source_ref(
+        doc_id=doc_id_text,
+        doc_title=payload.get("title") or payload.get("doc_title") or payload.get("canonical_filename"),
+    )
+
+
+def _enrich_doc_payload_with_source(
+    payload: dict,
+    source_context: SourceRefContext | None,
+    *,
+    source_key: str = "source",
+) -> None:
+    source_ref = _source_ref_for_doc_payload(payload, source_context)
+    if source_ref is None:
+        return
+    payload[source_key] = source_ref.to_dict()
+    payload["citation"] = source_ref.citation
+
+
 @mcp.tool()
 async def kb_search(
     query: str,
@@ -1652,23 +1697,24 @@ async def kb_get_document(doc_id: str) -> str:
         jobs = [
             {"stage": j.stage.value, "status": j.status.value, "error": j.error} for j in jobs_result.scalars().all()
         ]
+        source_context = await load_source_ref_context(session, [did])
 
-    return json.dumps(
-        {
-            "doc_id": str(doc.doc_id),
-            "title": doc.title,
-            "status": doc.status,
-            "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
-            "summary": doc.summary,
-            "mime_type": doc.mime_type,
-            "size_bytes": doc.size_bytes,
-            "extracted_chars": doc.extracted_chars,
-            "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
-            "metadata": doc.doc_metadata,
-            "jobs": jobs,
-        },
-        indent=2,
-    )
+    payload = {
+        "doc_id": str(doc.doc_id),
+        "title": doc.title,
+        "status": doc.status,
+        "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
+        "summary": doc.summary,
+        "mime_type": doc.mime_type,
+        "size_bytes": doc.size_bytes,
+        "extracted_chars": doc.extracted_chars,
+        "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+        "metadata": doc.doc_metadata,
+        "jobs": jobs,
+    }
+    _enrich_doc_payload_with_source(payload, source_context)
+
+    return json.dumps(payload, indent=2)
 
 
 @mcp.tool()
@@ -1706,19 +1752,20 @@ async def kb_list_recent(limit: int = 20) -> str:
 
         result = await session.execute(list_q)
         docs = result.scalars().all()
+        source_context = await load_source_ref_context(session, [doc.doc_id for doc in docs])
 
     items = []
     for doc in docs:
-        items.append(
-            {
-                "doc_id": str(doc.doc_id),
-                "title": doc.title,
-                "summary": doc.summary,
-                "status": doc.status,
-                "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
-                "updated_at": doc.updated_at.isoformat(),
-            }
-        )
+        item = {
+            "doc_id": str(doc.doc_id),
+            "title": doc.title,
+            "summary": doc.summary,
+            "status": doc.status,
+            "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
+            "updated_at": doc.updated_at.isoformat(),
+        }
+        _enrich_doc_payload_with_source(item, source_context)
+        items.append(item)
 
     return json.dumps(
         {"total_count": total_count, "truncated": total_count > len(items), "documents": items},
@@ -1850,18 +1897,19 @@ async def kb_corpus_overview(limit: int = 50) -> str:
             list_q = list_q.where(Document.doc_id.in_(visible_ids))
         result = await session.execute(list_q)
         docs = result.scalars().all()
+        source_context = await load_source_ref_context(session, [doc.doc_id for doc in docs])
 
     items = []
     for doc in docs:
-        items.append(
-            {
-                "doc_id": str(doc.doc_id),
-                "title": doc.title,
-                "summary": doc.summary,
-                "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
-                "updated_at": doc.updated_at.isoformat(),
-            }
-        )
+        item = {
+            "doc_id": str(doc.doc_id),
+            "title": doc.title,
+            "summary": doc.summary,
+            "pipeline_status": doc.pipeline_status.value if doc.pipeline_status else None,
+            "updated_at": doc.updated_at.isoformat(),
+        }
+        _enrich_doc_payload_with_source(item, source_context)
+        items.append(item)
 
     return json.dumps(
         {
@@ -2009,24 +2057,25 @@ async def kb_document_outline(doc_id: str) -> str:
         chunk_count = (
             await session.execute(select(func.count()).select_from(Chunk).where(Chunk.doc_id == did))
         ).scalar_one()
+        source_context = await load_source_ref_context(session, [did])
 
-    return json.dumps(
-        {
-            "doc_id": str(doc.doc_id),
-            "title": doc.title,
-            "page_count": page_count,
-            "chunk_count": chunk_count,
-            "headings": [
-                {
-                    "level": h.level,
-                    "title": h.title,
-                    "page_num": h.page_num,
-                }
-                for h in headings
-            ],
-        },
-        indent=2,
-    )
+    payload = {
+        "doc_id": str(doc.doc_id),
+        "title": doc.title,
+        "page_count": page_count,
+        "chunk_count": chunk_count,
+        "headings": [
+            {
+                "level": h.level,
+                "title": h.title,
+                "page_num": h.page_num,
+            }
+            for h in headings
+        ],
+    }
+    _enrich_doc_payload_with_source(payload, source_context)
+
+    return json.dumps(payload, indent=2)
 
 
 @mcp.tool()
@@ -2157,6 +2206,7 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
             select(Document).where(Document.doc_id.in_(merged_ids), Document.status == "active")
         )
         related_docs = {d.doc_id: d for d in docs_result.scalars().all()}
+        source_context = await load_source_ref_context(session, merged_ids)
 
     items = []
     for rid in merged_ids:
@@ -2169,18 +2219,18 @@ async def kb_find_related(doc_id: str, k: int = 5) -> str:
         else:
             similarity = round(1.0 - distances[rid], 4)
             source = "embedding"
-        items.append(
-            {
-                "doc_id": str(rid),
-                "title": rdoc.title,
-                "summary": rdoc.summary,
-                "similarity": similarity,
-                "source": source,
-                "doc_type": rdoc.doc_type,
-                "mime_type": rdoc.mime_type,
-                "canonical_filename": rdoc.canonical_filename,
-            }
-        )
+        item = {
+            "doc_id": str(rid),
+            "title": rdoc.title,
+            "summary": rdoc.summary,
+            "similarity": similarity,
+            "source": source,
+            "doc_type": rdoc.doc_type,
+            "mime_type": rdoc.mime_type,
+            "canonical_filename": rdoc.canonical_filename,
+        }
+        _enrich_doc_payload_with_source(item, source_context, source_key="source_ref")
+        items.append(item)
 
     return json.dumps(
         {"doc_id": doc_id, "related": items},
@@ -2715,6 +2765,16 @@ async def kb_verify_identifier(identifier: str) -> str:
     """
     async with async_session_factory() as session:
         result = await _verify_identifier_impl(session, identifier)
+        payloads: list[dict] = []
+        if isinstance(result, dict):
+            if isinstance(result.get("match"), dict):
+                payloads.append(result["match"])
+            candidates = result.get("candidates")
+            if isinstance(candidates, list):
+                payloads.extend(candidate for candidate in candidates if isinstance(candidate, dict))
+        source_context = await load_source_ref_context(session, _valid_doc_ids_from_payloads(payloads))
+        for payload in payloads:
+            _enrich_doc_payload_with_source(payload, source_context)
     # Response-level anti-hedge directive for the not_found case. The docstring
     # already says "do NOT fall back to closest match", but the BEFORE/AFTER on
     # PR-J showed frontier models reproduce the exact padding the docstring
@@ -2807,6 +2867,15 @@ async def kb_documents_by_date(
             date_field=date_field,
             limit=limit,
         )
+        rows = result.get("results") if isinstance(result, dict) else None
+        if isinstance(rows, list):
+            source_context = await load_source_ref_context(
+                session,
+                _valid_doc_ids_from_payloads([row for row in rows if isinstance(row, dict)]),
+            )
+            for row in rows:
+                if isinstance(row, dict):
+                    _enrich_doc_payload_with_source(row, source_context)
     return json.dumps(result, default=str)
 
 
