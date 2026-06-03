@@ -33,7 +33,14 @@ from harbor_clerk.models import (
 )
 from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
-from harbor_clerk.search import FindAllResult, SearchHit, SearchResult, find_all, hybrid_search
+from harbor_clerk.search import FindAllHit, FindAllResult, SearchHit, SearchResult, find_all, hybrid_search
+from harbor_clerk.source_ref import (
+    SourceRef,
+    SourceRefContext,
+    format_document_citation,
+    format_pages,
+    load_source_ref_context,
+)
 from harbor_clerk.sql_escape import escape_ilike
 
 logger = logging.getLogger(__name__)
@@ -590,6 +597,7 @@ def _format_search_response(
     k: int,
     offset: int,
     heading_map: dict[tuple[str, int], str] | None = None,
+    source_context: SourceRefContext | None = None,
 ) -> dict:
     """Build the non-faceted search response dict from a SearchResult.
 
@@ -597,12 +605,15 @@ def _format_search_response(
     """
     hits = []
     for h in result.hits:
+        source_ref = _source_ref_for_search_hit(h, source_context, heading_map)
         hit: dict = {
             "chunk_id": h.chunk_id,
             "doc_id": h.doc_id,
             "doc_title": h.doc_title,
             "score": h.score,
             "language": h.language,
+            "source": source_ref.to_dict(),
+            "citation": source_ref.citation,
         }
         if h.page_start is not None:
             hit["pages"] = f"{h.page_start}-{h.page_end}" if h.page_end != h.page_start else str(h.page_start)
@@ -659,6 +670,68 @@ def _format_search_response(
         resp["possible_conflict"] = True
         resp["conflict_sources"] = [{"doc_id": cs.doc_id, "title": cs.title} for cs in result.conflict_sources]
     return resp
+
+
+def _fallback_source_ref(
+    *,
+    doc_id: str,
+    doc_title: str | None,
+    chunk_id: str | None = None,
+    pages: str | None = None,
+    section: str | None = None,
+) -> SourceRef:
+    title = doc_title or "Untitled document"
+    return SourceRef(
+        doc_id=doc_id,
+        doc_title=title,
+        chunk_id=chunk_id,
+        pages=pages,
+        section=section,
+        source_kind="unknown",
+        source_label=title,
+        citation=format_document_citation(title, pages),
+    )
+
+
+def _source_ref_for_search_hit(
+    hit: SearchHit,
+    source_context: SourceRefContext | None,
+    heading_map: dict[tuple[str, int], str] | None = None,
+) -> SourceRef:
+    pages = format_pages(hit.page_start, hit.page_end)
+    section = None
+    if heading_map and hit.page_start is not None:
+        section = heading_map.get((hit.doc_id, hit.page_start))
+    if source_context is not None:
+        source_ref = source_context.ref_for_doc(hit.doc_id, chunk_id=hit.chunk_id, pages=pages, section=section)
+        if source_ref.doc_id:
+            return source_ref
+    return _fallback_source_ref(
+        doc_id=hit.doc_id,
+        doc_title=hit.doc_title,
+        chunk_id=hit.chunk_id,
+        pages=pages,
+        section=section,
+    )
+
+
+def _source_ref_for_find_all_hit(hit: FindAllHit, source_context: SourceRefContext | None) -> SourceRef:
+    if source_context is not None:
+        source_ref = source_context.ref_for_doc(
+            hit.doc_id,
+            chunk_id=hit.top_chunk_id,
+            pages=hit.page_range,
+            section=hit.top_chunk_heading,
+        )
+        if source_ref.doc_id:
+            return source_ref
+    return _fallback_source_ref(
+        doc_id=hit.doc_id,
+        doc_title=hit.doc_title,
+        chunk_id=hit.top_chunk_id,
+        pages=hit.page_range,
+        section=hit.top_chunk_heading,
+    )
 
 
 @mcp.tool()
@@ -844,6 +917,7 @@ async def kb_search(
             text_contains=text_contains,
         )
         heading_map = await _resolve_headings(session, result.hits)
+        source_context = await load_source_ref_context(session, [h.doc_id for h in result.hits])
         # Compute discriminator_hint if applicable. Cheap post-processing:
         # one indexed SELECT for top-K candidate docs' metadata. Skips when
         # fewer than 2 hits.
@@ -852,7 +926,15 @@ async def kb_search(
     # Resolve brief_chars for brief mode
     effective_brief_chars = brief_chars if brief_chars > 0 else settings.mcp_brief_chars
 
-    base_resp = _format_search_response(result, detail, effective_brief_chars, k, offset, heading_map)
+    base_resp = _format_search_response(
+        result,
+        detail,
+        effective_brief_chars,
+        k,
+        offset,
+        heading_map,
+        source_context,
+    )
 
     if faceted:
         # Group hits by doc_id
@@ -1118,10 +1200,12 @@ async def kb_find_all(
             metadata_filter=metadata_filter,
             presentation=presentation,
         )
+        source_context = await load_source_ref_context(session, [h.doc_id for h in result.hits])
 
     # Build per-hit response dicts
     results = []
     for h in result.hits:
+        source_ref = _source_ref_for_find_all_hit(h, source_context)
         hit: dict = {
             "doc_id": h.doc_id,
             "doc_title": h.doc_title,
@@ -1130,6 +1214,8 @@ async def kb_find_all(
             "score": round(h.score, 4),
             "ingested_at": h.ingested_at.isoformat() if h.ingested_at is not None else None,
             "page_range": h.page_range,
+            "source": source_ref.to_dict(),
+            "citation": source_ref.citation,
         }
         if presentation == "full":
             hit["top_chunk"] = {
@@ -1287,7 +1373,16 @@ async def kb_batch_search(
                 metadata_filter=metadata_filter,
             )
             heading_map = await _resolve_headings(session, result.hits)
-            resp = _format_search_response(result, detail, effective_brief_chars, k, 0, heading_map)
+            source_context = await load_source_ref_context(session, [h.doc_id for h in result.hits])
+            resp = _format_search_response(
+                result,
+                detail,
+                effective_brief_chars,
+                k,
+                0,
+                heading_map,
+                source_context,
+            )
             resp["query"] = query
             hint = await _compute_discriminator_hint(result.hits, session)
             if hint is not None:
@@ -1364,6 +1459,7 @@ async def kb_read_passages(
         doc_ids = {c.doc_id for c in chunks.values()}
         docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
         docs = {d.doc_id: d for d in docs_result.scalars().all()}
+        source_context = await load_source_ref_context(session, doc_ids)
 
         # Snippet truncation limit from key scope, if any
         snippet_limit: int | None = None
@@ -1381,6 +1477,7 @@ async def kb_read_passages(
                 text = text[:snippet_limit]
             p: dict = {
                 "chunk_id": str(cid),
+                "doc_id": str(chunk.doc_id),
                 "doc_title": doc.title if doc else None,
                 "text": text,
                 "language": chunk.language,
@@ -1391,6 +1488,13 @@ async def kb_read_passages(
                     if chunk.page_end != chunk.page_start
                     else str(chunk.page_start)
                 )
+            source_ref = source_context.ref_for_doc(
+                chunk.doc_id,
+                chunk_id=cid,
+                pages=format_pages(chunk.page_start, chunk.page_end),
+            )
+            p["source"] = source_ref.to_dict()
+            p["citation"] = source_ref.citation
 
             if include_context:
                 prev = await session.execute(
@@ -1463,6 +1567,7 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
         neighbours = result.scalars().all()
 
         doc = (await session.execute(select(Document).where(Document.doc_id == target.doc_id))).scalar_one_or_none()
+        source_context = await load_source_ref_context(session, [target.doc_id])
 
         # Snippet truncation limit from key scope, if any
         snippet_limit: int | None = None
@@ -1482,6 +1587,13 @@ async def kb_expand_context(chunk_id: str, n: int = 2) -> str:
             }
             if c.page_start is not None:
                 entry["pages"] = f"{c.page_start}-{c.page_end}" if c.page_end != c.page_start else str(c.page_start)
+            source_ref = source_context.ref_for_doc(
+                c.doc_id,
+                chunk_id=c.chunk_id,
+                pages=format_pages(c.page_start, c.page_end),
+            )
+            entry["source"] = source_ref.to_dict()
+            entry["citation"] = source_ref.citation
             if c.chunk_id == target_id:
                 entry["is_target"] = True
             chunks.append(entry)
