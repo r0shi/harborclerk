@@ -24,12 +24,13 @@ from harbor_clerk.api.scope_validation import validate_scope_folders
 from harbor_clerk.db import get_session
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.search import hybrid_search
+from harbor_clerk.source_ref import SourceRef, format_pages, load_source_ref_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["search"])
 
 
-def _hit_to_out(h) -> SearchHitOut:
+def _hit_to_out(h, source_ref: SourceRef | None = None) -> SearchHitOut:
     return SearchHitOut(
         chunk_id=h.chunk_id,
         doc_id=h.doc_id,
@@ -42,6 +43,8 @@ def _hit_to_out(h) -> SearchHitOut:
         ocr_confidence=h.ocr_confidence,
         score=h.score,
         doc_title=h.doc_title,
+        source=source_ref.to_dict() if source_ref else None,
+        citation=source_ref.citation if source_ref else None,
     )
 
 
@@ -141,7 +144,18 @@ async def search(
     )
 
     has_more = body.offset + body.k < result.total_candidates
-    hits_out = [_hit_to_out(h) for h in result.hits]
+    source_context = await load_source_ref_context(session, [h.doc_id for h in result.hits])
+    hits_out = [
+        _hit_to_out(
+            h,
+            source_context.ref_for_doc(
+                h.doc_id,
+                chunk_id=h.chunk_id,
+                pages=format_pages(h.page_start, h.page_end),
+            ),
+        )
+        for h in result.hits
+    ]
 
     if body.faceted:
         groups: dict[str, list[SearchHitOut]] = {}
@@ -221,6 +235,7 @@ async def read_passages(
     doc_ids = {c.doc_id for c in chunks.values()}
     docs_result = await session.execute(select(Document).where(Document.doc_id.in_(list(doc_ids))))
     docs_by_id = {d.doc_id: d for d in docs_result.scalars().all()}
+    source_context = await load_source_ref_context(session, doc_ids)
 
     # Optionally load surrounding chunks for context
     context_before: dict[uuid.UUID, str] = {}
@@ -256,6 +271,11 @@ async def read_passages(
         if chunk is None:
             continue
         doc = docs_by_id.get(chunk.doc_id)
+        source_ref = source_context.ref_for_doc(
+            chunk.doc_id,
+            chunk_id=cid,
+            pages=format_pages(chunk.page_start, chunk.page_end),
+        )
         passages.append(
             PassageDetail(
                 chunk_id=str(cid),
@@ -270,6 +290,8 @@ async def read_passages(
                 doc_title=doc.title if doc else None,
                 context_before=context_before.get(cid),
                 context_after=context_after.get(cid),
+                source=source_ref.to_dict(),
+                citation=source_ref.citation,
             )
         )
 

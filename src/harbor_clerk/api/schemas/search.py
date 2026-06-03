@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from harbor_clerk.api.schemas.scope import ScopeSpec
+from harbor_clerk.api.schemas.source_ref import SourceRefOut
 
 
 class SearchRequest(BaseModel):
@@ -53,6 +54,8 @@ class SearchHitOut(BaseModel):
     score: float
     doc_title: str | None = None
     score_breakdown: ScoreBreakdown | None = None
+    source: SourceRefOut | None = None
+    citation: str | None = None
 
 
 class SearchResponse(BaseModel):
@@ -96,6 +99,8 @@ class PassageDetail(BaseModel):
     doc_title: str | None = None
     context_before: str | None = None
     context_after: str | None = None
+    source: SourceRefOut | None = None
+    citation: str | None = None
 
 
 class ReadPassagesResponse(BaseModel):
