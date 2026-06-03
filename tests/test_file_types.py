@@ -176,8 +176,6 @@ def test_guess_mime_type_unknown_falls_back_to_octet_stream():
         (b"\xff\xd8\xff\xe0\x00\x10JFIF", "image/jpeg"),
         (b"II*\x00\x08\x00", "image/tiff"),
         (b"MM\x00*\x00\x00", "image/tiff"),
-        (b"GIF89a....", "image/gif"),
-        (b"GIF87a....", "image/gif"),
         (b"{\\rtf1\\ansi", "text/rtf"),
         (b"PK\x03\x04\x14\x00", "application/zip"),
         (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "application/x-ole-storage"),
@@ -185,6 +183,14 @@ def test_guess_mime_type_unknown_falls_back_to_octet_stream():
 )
 def test_sniff_mime_recognizes_signatures(data, expected):
     assert sniff_mime(data) == expected
+
+
+def test_sniff_mime_does_not_detect_gif():
+    """GIF is deliberately not sniffed — it is not an accepted ingest format and
+    the OCR stage has no GIF dispatch, so detecting it would only let the
+    extract-stage corrector reroute a renamed GIF to a path that drops it."""
+    assert sniff_mime(b"GIF89a\x01\x00") is None
+    assert sniff_mime(b"GIF87a\x01\x00") is None
 
 
 def test_sniff_mime_returns_none_for_plain_text():

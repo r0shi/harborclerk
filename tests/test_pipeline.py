@@ -712,6 +712,102 @@ async def test_run_extract_markdown_writes_headings_and_overrides_title(db_sessi
 
 
 @pytest.mark.asyncio
+async def test_run_extract_image_renamed_as_office_persists_image_mime(db_session, tmp_path):
+    """A JPEG saved with a .docx extension must reroute to the image/OCR path
+    AND have doc.mime_type corrected to image/jpeg. The ocr stage dispatches on
+    doc.mime_type (not extract's local routing), so without the persisted
+    correction the doc would be flagged needs_ocr here but then dropped by
+    ocr's mime dispatch — empty page, no searchable text."""
+    from unittest.mock import patch
+
+    from harbor_clerk.worker.stages import extract as extract_mod
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    # Minimal JPEG header (SOI + APP0/JFIF). Extract only sniffs the leading
+    # bytes — it sets an empty page for images and ocr does the real work — so
+    # a valid signature is all this needs.
+    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+    path = tmp_path / "report.docx"
+    path.write_bytes(jpeg_bytes)
+
+    doc = Document(
+        title=path.stem,
+        canonical_filename=path.name,
+        status="active",
+        sha256=hashlib.sha256(jpeg_bytes).digest(),
+        source_path=str(path),
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        pipeline_status=PipelineStatus.queued,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
+    await db_session.commit()
+
+    with patch.object(extract_mod, "run_metadata_extractors", return_value={}):
+        run_extract(doc.doc_id)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed.mime_type == "image/jpeg"  # corrected so ocr will dispatch to the image branch
+        assert refreshed.needs_ocr is True
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_run_extract_office_renamed_as_pdf_routes_to_tika_autodetect(db_session, tmp_path):
+    """An .xlsx workbook saved with a .pdf extension declares application/pdf
+    but its bytes are a ZIP container. Extract must NOT send it down the PDF
+    path (PDFBox 422s on ZIP bytes); it reroutes to Tika with
+    application/octet-stream so Tika auto-detects the Office subtype from the
+    full stream."""
+    from unittest.mock import patch
+
+    from harbor_clerk.worker.stages import extract as extract_mod
+    from harbor_clerk.worker.stages.extract import run_extract
+
+    # ZIP local-file header — the prefix every modern Office / ODF / EPUB
+    # container starts with.
+    zip_bytes = b"PK\x03\x04\x14\x00\x06\x00" + b"\x00" * 64
+    path = tmp_path / "budget.pdf"
+    path.write_bytes(zip_bytes)
+
+    doc = Document(
+        title=path.stem,
+        canonical_filename=path.name,
+        status="active",
+        sha256=hashlib.sha256(zip_bytes).digest(),
+        source_path=str(path),
+        mime_type="application/pdf",
+        pipeline_status=PipelineStatus.queued,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    db_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
+    await db_session.commit()
+
+    with (
+        patch.object(extract_mod, "_extract_via_tika", return_value=[(1, "Sheet1 revenue 100")]) as mock_tika,
+        patch.object(extract_mod, "_extract_headings_via_tika", return_value=[]),
+        patch.object(extract_mod, "run_metadata_extractors", return_value={}),
+    ):
+        run_extract(doc.doc_id)
+
+    # Tika was asked to auto-detect (octet-stream), NOT to parse the bytes as PDF.
+    assert mock_tika.called
+    assert mock_tika.call_args.args[1] == "application/octet-stream"
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed.needs_ocr is False  # neither image nor PDF → ocr correctly skipped
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
 async def test_wikilink_graph_resolves_and_kb_find_related_returns_linked(db_session, _engine, tmp_path, monkeypatch):
     """Integration: doc A and doc B link to each other via [[…]]. After
     extract + finalize, the document_links rows resolve in both directions.

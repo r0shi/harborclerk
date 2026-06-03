@@ -149,6 +149,12 @@ def sniff_mime(data: bytes) -> str | None:
     (ZIP-based Office vs ODF vs EPUB; OLE2 .doc vs .xls vs .ppt) return the
     generic container type — the caller hands those to Tika, which does the
     fine-grained detection from the full byte stream.
+
+    Image detection is deliberately limited to the formats the OCR stage can
+    process (JPEG/PNG/TIFF — see ``IMAGE_MIMES`` in ``worker/stages/extract``).
+    Don't add a signature here (e.g. GIF, BMP) without also adding it to the
+    OCR dispatch, or the extract-stage corrector will route the file to a path
+    that silently drops it.
     """
     if len(data) < 4:
         return None
@@ -162,8 +168,6 @@ def sniff_mime(data: bytes) -> str | None:
         return "image/jpeg"
     if data[:4] in (b"II*\x00", b"MM\x00*"):
         return "image/tiff"
-    if data[:6] in (b"GIF87a", b"GIF89a"):
-        return "image/gif"
     if data[:5] == b"{\\rtf":
         return "text/rtf"
     if data[:4] == b"PK\x03\x04":

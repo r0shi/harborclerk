@@ -260,8 +260,9 @@ def run_extract(doc_id: uuid.UUID) -> None:
         is_image = mime in IMAGE_MIMES
 
         # Dispatch by type
-        # Extension-based image detection (covers .png, .tif, .tiff not in MIME)
-        if not is_image and obj_key.endswith((".png", ".tif", ".tiff")):
+        # Extension-based image detection (covers image extensions when MIME is
+        # absent — e.g. legacy rows with mime_type NULL). Mirror _IMAGE_EXTENSIONS.
+        if not is_image and obj_key.endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff")):
             is_image = True
 
         # Magic-bytes correction. A misnamed file — e.g. an Excel workbook saved
@@ -272,6 +273,12 @@ def run_extract(doc_id: uuid.UUID) -> None:
         # declared routing, trust the bytes. Conservative: only fires for
         # recognized binary signatures, and only when they disagree with the
         # current decision. RTF is already content-sniffed above.
+        #
+        # When we reroute to image or PDF we MUST persist the corrected MIME on
+        # the doc: the ocr stage re-derives image-vs-PDF from doc.mime_type
+        # (not from this local routing), so without the write a JPEG-renamed-as-
+        # .docx would be marked needs_ocr here but then fall through ocr's
+        # dispatch and get silently dropped (empty page, no text).
         sniffed = sniff_mime(data)
         if sniffed is not None and sniffed != "text/rtf":
             sniffed_is_image = sniffed in IMAGE_MIMES
@@ -283,6 +290,7 @@ def run_extract(doc_id: uuid.UUID) -> None:
                     sniffed,
                 )
                 is_image, is_pdf = True, False
+                mime = doc.mime_type = sniffed
             elif sniffed == "application/pdf" and not is_pdf and not is_image:
                 logger.warning(
                     "extract: doc %s declared %r but magic bytes are PDF — routing as PDF",
@@ -290,11 +298,14 @@ def run_extract(doc_id: uuid.UUID) -> None:
                     mime or obj_key,
                 )
                 is_pdf = True
+                mime = doc.mime_type = "application/pdf"
             elif (is_pdf and sniffed != "application/pdf") or (is_image and not sniffed_is_image):
                 # Declared PDF/image but the bytes say otherwise (Office/ZIP/OLE
                 # saved with the wrong extension). Hand it to Tika with
                 # auto-detect — passing octet-stream makes Tika detect the
-                # specific Office subtype from the full byte stream.
+                # specific Office subtype from the full byte stream. Leave
+                # doc.mime_type as declared: needs_ocr will be False (not image,
+                # not PDF) so ocr is skipped, and we can't name the subtype yet.
                 logger.warning(
                     "extract: doc %s declared %s but magic bytes are %s — routing to Tika auto-detect",
                     doc_id,
