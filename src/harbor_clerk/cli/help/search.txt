@@ -4,8 +4,9 @@ DESCRIPTION
   Runs a hybrid retrieval combining PostgreSQL full-text search (bilingual,
   English + French) and pgvector cosine similarity over the corpus. Scores
   are normalized and merged per-chunk with a small OCR-confidence boost.
-  Results include citation-ready fields (doc_id, doc_title, pages,
-  chunk_id) usable with `read-passages` and `expand-context`.
+  Results include `citation` and `source` fields alongside the legacy
+  doc_id, doc_title, pages, and chunk_id fields. Use `source` for structured
+  agent workflows and `citation` for human-readable output.
 
   If top hits have similar scores across multiple documents, the response
   includes `possible_conflict: true` and a `conflict_sources` array. Treat
@@ -42,6 +43,16 @@ RETURNS (JSON)
         "doc_title":  "string",      // document title
         "pages":      "42",          // page or page range (omitted when unavailable)
         "section":    "string",      // nearest heading, when available
+        "citation":   "Contract A, p. 42",
+        "source": {
+          "doc_id": "uuid",
+          "doc_title": "string",
+          "chunk_id": "uuid",
+          "pages": "42",
+          "source_kind": "document",
+          "source_label": "string",
+          "citation": "Contract A, p. 42"
+        },
         "text":       "string",      // matched chunk text; omitted with --detail=compact
         "score":      0.87,          // hybrid score, higher = better
         "language":   "english" | "french"
@@ -73,8 +84,8 @@ COMMON MISTAKES
   - Passing a chunk_id as --doc-id (chunk_id and doc_id are distinct UUIDs).
   - Forgetting --detail=brief on large k — default `full` returns the entire
     matching chunk text, which can be 1–2KB per result.
-  - Expecting a standalone `citation` field; cite with doc_title + pages +
-    chunk_id, or call `read-passages` to verify exact context.
+  - Treating `citation` as proof without reading the passage: use
+    `read-passages` to verify exact context before making a specific claim.
   - Using --after/--before with timestamps; only dates (YYYY-MM-DD) are accepted.
 
 SEE ALSO

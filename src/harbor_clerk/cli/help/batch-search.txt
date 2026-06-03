@@ -3,6 +3,8 @@ harbor-clerk batch-search — run multiple searches in one call
 DESCRIPTION
   Runs up to 5 hybrid searches in a single round-trip. Each query gets its
   own result set with the same hybrid FTS + pgvector scoring as `search`.
+  Hits include the same `citation` and structured `source` object returned
+  by `search`.
   All filter flags are shared across every query in the batch.
 
   Use this for comparative analysis — "do any of these contract files mention
@@ -48,6 +50,8 @@ RETURNS (JSON)
             "doc_id":     "uuid",      // document identifier
             "doc_title":  "string",    // document title
             "pages":      "42",        // page or page range (omitted when unavailable)
+            "citation":   "Contract A, p. 42",
+            "source":     { "...": "same SourceRef object as search" },
             "text":       "string",    // matched chunk text; omitted with --detail=compact
             "score":      0.87,        // hybrid score, higher = better
             "language":   "english"    // "english" or "french"
@@ -93,8 +97,8 @@ COMMON MISTAKES
     offsets. Use individual `search` calls with --offset when you need page 2.
   - Using --detail=full on large -k across 5 queries: full detail can return
     several KB per hit, 5 × 10 = 50 chunks of text. default `brief` is safer.
-  - Expecting a standalone `citation` field; cite with doc_title + pages +
-    chunk_id, or call `read-passages` to verify exact context.
+  - Treating `citation` as proof without reading the passage: use
+    `read-passages` to verify exact context before making a specific claim.
 
 SEE ALSO
   search, read-passages, expand-context

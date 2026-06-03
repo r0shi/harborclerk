@@ -11,8 +11,9 @@ DESCRIPTION
   Returns passages in the same order as the input chunk_ids, skipping any
   that are not found or are outside the API key's document scope.
 
-  Each passage includes the document title and language. Page numbers are
-  included when available (PDFs and other paginated formats); plain-text
+  Each passage includes the document id, document title, language, a
+  human-readable `citation`, and a structured `source` object. Page numbers
+  are included when available (PDFs and other paginated formats); plain-text
   documents may omit the `pages` field.
 
   Pass --include-context to also receive the immediately preceding and following
@@ -33,7 +34,10 @@ RETURNS (JSON)
     "passages": [
       {
         "chunk_id":  "uuid",       // same UUID you passed in
+        "doc_id":    "uuid",       // containing document
         "doc_title": "string",     // title of the containing document
+        "citation":  "Contract A, pp. 12-13",
+        "source":    { "...": "SourceRef object with doc/chunk/page identity" },
         "text":      "string",     // full chunk text (≈1000 chars)
         "language":  "en" | "fr",
         "pages":     "12-13"       // page range (omitted for non-paginated docs)
