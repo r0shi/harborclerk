@@ -15,6 +15,15 @@ async def test_setup_status_with_users(client, admin_user):
     assert resp.json()["needs_setup"] is False
 
 
+async def test_ping_liveness_is_unauthenticated_and_dependency_free(client):
+    """The liveness probe returns 200 {"status": "ok"} with no auth and without
+    touching Postgres/Tika/storage — the macOS HealthChecker relies on this to
+    distinguish a zombied API listener from a degraded backend."""
+    resp = await client.get("/api/system/ping")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
 async def test_health_check(client):
     resp = await client.get("/api/system/health")
     assert resp.status_code == 200
