@@ -1,9 +1,17 @@
 // frontend/src/components/SummaryChip.tsx
 
+import { useState } from 'react'
+
 export type SummaryState = 'generating' | 'pending' | 'extractive' | 'summarized' | 'failed' | 'none'
 
 interface SummaryChipProps {
   state: SummaryState
+  /**
+   * Optional retry handler. When provided AND state is 'failed', the chip
+   * becomes a clickable button that re-runs the summarize stage. No-op for
+   * every other state (the chip stays a passive label).
+   */
+  onRetry?: () => void | Promise<void>
 }
 
 const LABELS: Record<Exclude<SummaryState, 'none'>, string> = {
@@ -35,23 +43,52 @@ const STYLES: Record<Exclude<SummaryState, 'none'>, { bg: string; fg: string }> 
  * collapse naturally. The chip is left-anchored within its <td>, so the
  * dot's X position is constant across rows.
  */
-export default function SummaryChip({ state }: SummaryChipProps) {
+export default function SummaryChip({ state, onRetry }: SummaryChipProps) {
+  const [retrying, setRetrying] = useState(false)
   if (state === 'none') return null
   const { bg, fg } = STYLES[state]
-  const label = LABELS[state]
-  const tooltip = TOOLTIPS[state]
   const pulseDot = state === 'generating'
+  const canRetry = state === 'failed' && !!onRetry
+
+  if (canRetry) {
+    const handleClick = async () => {
+      if (retrying) return
+      setRetrying(true)
+      try {
+        await onRetry!()
+      } finally {
+        setRetrying(false)
+      }
+    }
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={retrying}
+        className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium whitespace-nowrap cursor-pointer transition-opacity hover:opacity-80 disabled:cursor-default disabled:opacity-60"
+        style={{ background: bg, color: fg }}
+        title="Click to re-run the summary for this document."
+      >
+        <span
+          className={`h-1.5 w-1.5 rounded-full ${retrying ? 'animate-pulse' : ''}`}
+          style={{ background: fg, flex: '0 0 auto' }}
+        />
+        {retrying ? 'Retrying…' : 'Summary Failed ↻'}
+      </button>
+    )
+  }
+
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium whitespace-nowrap"
       style={{ background: bg, color: fg }}
-      title={tooltip}
+      title={TOOLTIPS[state]}
     >
       <span
         className={`h-1.5 w-1.5 rounded-full ${pulseDot ? 'animate-pulse' : ''}`}
         style={{ background: fg, flex: '0 0 auto' }}
       />
-      {label}
+      {LABELS[state]}
     </span>
   )
 }
