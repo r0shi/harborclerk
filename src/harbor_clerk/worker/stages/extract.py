@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS
+from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, sniff_mime
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
 from harbor_clerk.models.enums import JobStage
@@ -260,9 +260,60 @@ def run_extract(doc_id: uuid.UUID) -> None:
         is_image = mime in IMAGE_MIMES
 
         # Dispatch by type
-        # Extension-based image detection (covers .png, .tif, .tiff not in MIME)
-        if not is_image and obj_key.endswith((".png", ".tif", ".tiff")):
+        # Extension-based image detection (covers image extensions when MIME is
+        # absent — e.g. legacy rows with mime_type NULL). Mirror _IMAGE_EXTENSIONS.
+        if not is_image and obj_key.endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff")):
             is_image = True
+
+        # Magic-bytes correction. A misnamed file — e.g. an Excel workbook saved
+        # with a .pdf extension, or a scanned image renamed to .docx — declares
+        # an extension/MIME that routes it to the wrong extractor, which then
+        # fails (Tika 422, or a PDF parser choking on ZIP bytes). When the
+        # leading bytes carry a recognized signature that contradicts the
+        # declared routing, trust the bytes. Conservative: only fires for
+        # recognized binary signatures, and only when they disagree with the
+        # current decision. RTF is already content-sniffed above.
+        #
+        # When we reroute to image or PDF we MUST persist the corrected MIME on
+        # the doc: the ocr stage re-derives image-vs-PDF from doc.mime_type
+        # (not from this local routing), so without the write a JPEG-renamed-as-
+        # .docx would be marked needs_ocr here but then fall through ocr's
+        # dispatch and get silently dropped (empty page, no text).
+        sniffed = sniff_mime(data)
+        if sniffed is not None and sniffed != "text/rtf":
+            sniffed_is_image = sniffed in IMAGE_MIMES
+            if sniffed_is_image and not is_image:
+                logger.warning(
+                    "extract: doc %s declared %r but magic bytes are %s — routing as image",
+                    doc_id,
+                    mime or obj_key,
+                    sniffed,
+                )
+                is_image, is_pdf = True, False
+                mime = doc.mime_type = sniffed
+            elif sniffed == "application/pdf" and not is_pdf and not is_image:
+                logger.warning(
+                    "extract: doc %s declared %r but magic bytes are PDF — routing as PDF",
+                    doc_id,
+                    mime or obj_key,
+                )
+                is_pdf = True
+                mime = doc.mime_type = "application/pdf"
+            elif (is_pdf and sniffed != "application/pdf") or (is_image and not sniffed_is_image):
+                # Declared PDF/image but the bytes say otherwise (Office/ZIP/OLE
+                # saved with the wrong extension). Hand it to Tika with
+                # auto-detect — passing octet-stream makes Tika detect the
+                # specific Office subtype from the full byte stream. Leave
+                # doc.mime_type as declared: needs_ocr will be False (not image,
+                # not PDF) so ocr is skipped, and we can't name the subtype yet.
+                logger.warning(
+                    "extract: doc %s declared %s but magic bytes are %s — routing to Tika auto-detect",
+                    doc_id,
+                    "PDF" if is_pdf else "image",
+                    sniffed,
+                )
+                is_pdf, is_image = False, False
+                mime = "application/octet-stream"
 
         # Sentinel that downstream code (heading-writing) checks to decide
         # whether to use Markdown-derived headings or fall back to Tika XHTML.

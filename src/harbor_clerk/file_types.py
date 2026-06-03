@@ -121,6 +121,7 @@ __all__ = [
     "ALLOWED_EXTENSIONS",
     "guess_mime_type",
     "is_excalidraw",
+    "sniff_mime",
 ]
 
 
@@ -132,3 +133,48 @@ def is_excalidraw(path: str) -> bool:
     every ingest entry point.
     """
     return path.lower().endswith(".excalidraw.md")
+
+
+def sniff_mime(data: bytes) -> str | None:
+    """Best-effort content-based MIME detection from a file's leading bytes.
+
+    Returns a canonical MIME string when the leading bytes carry a recognized
+    magic-number signature, else ``None`` (unknown / text / not enough bytes).
+    Pure-stdlib, no native dependency — covers the binary formats an office
+    routinely mis-extensions (an Excel workbook saved as ``.pdf``, a scanned
+    image renamed to ``.docx``, etc.). The extract stage uses this to correct
+    a misrouted file before handing it to the wrong extractor.
+
+    Container formats that magic bytes alone can't fully disambiguate
+    (ZIP-based Office vs ODF vs EPUB; OLE2 .doc vs .xls vs .ppt) return the
+    generic container type — the caller hands those to Tika, which does the
+    fine-grained detection from the full byte stream.
+
+    Image detection is deliberately limited to the formats the OCR stage can
+    process (JPEG/PNG/TIFF — see ``IMAGE_MIMES`` in ``worker/stages/extract``).
+    Don't add a signature here (e.g. GIF, BMP) without also adding it to the
+    OCR dispatch, or the extract-stage corrector will route the file to a path
+    that silently drops it.
+    """
+    if len(data) < 4:
+        return None
+
+    # Exact-prefix signatures, longest / most-specific first.
+    if data[:5] == b"%PDF-":
+        return "application/pdf"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:4] in (b"II*\x00", b"MM\x00*"):
+        return "image/tiff"
+    if data[:5] == b"{\\rtf":
+        return "text/rtf"
+    if data[:4] == b"PK\x03\x04":
+        # ZIP container — modern Office (docx/xlsx/pptx), ODF, EPUB, etc.
+        return "application/zip"
+    if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        # OLE2 compound document — legacy Office (.doc/.xls/.ppt), .msg.
+        return "application/x-ole-storage"
+
+    return None
