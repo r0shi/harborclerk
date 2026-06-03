@@ -100,6 +100,24 @@ async def setup_status(
     return {"needs_setup": count == 0}
 
 
+@router.get("/system/ping")
+async def ping() -> dict[str, str]:
+    """Liveness probe — no dependency checks, no DB session, no I/O.
+
+    Deliberately distinct from ``/system/health`` (which probes Postgres,
+    storage, Tika, and the reranker and is a *readiness/diagnostic* check). A
+    200 from this endpoint means exactly one thing: the uvicorn listener is
+    accepting connections and the asyncio event loop scheduled this handler.
+
+    The macOS menubar's HealthChecker probes this to detect a *zombied* API
+    listener — process alive but no longer serving HTTP, as observed after a
+    system sleep — and trip its auto-restart. Using the heavy health endpoint
+    for that would conflate API liveness with backend health: a slow or hung
+    Tika would fail the probe and needlessly bounce a perfectly healthy API.
+    """
+    return {"status": "ok"}
+
+
 @router.get("/system/health")
 async def health_check(
     session: AsyncSession = Depends(get_session),
