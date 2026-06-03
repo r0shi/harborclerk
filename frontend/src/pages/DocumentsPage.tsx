@@ -1019,6 +1019,14 @@ export default function DocumentsPage() {
                         <td className="px-4 py-3" style={{ width: 170 }}>
                           <SummaryChip
                             state={resolveSummaryState(doc.summary, doc.summary_model, doc.summarize_job_status)}
+                            onRetry={async () => {
+                              try {
+                                await post(`/api/docs/${doc.doc_id}/resummarize`)
+                                loadDocs(currentPage, pageSize, filter)
+                              } catch (e) {
+                                setError(e instanceof Error ? e.message : 'Re-summarize failed')
+                              }
+                            }}
                           />
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
