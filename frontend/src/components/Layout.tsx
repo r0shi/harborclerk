@@ -85,8 +85,7 @@ export default function Layout() {
           <div className="flex h-12 items-center justify-between">
             <div className="flex items-center space-x-1">
               <NavLink
-                to="/"
-                end
+                to="/ask"
                 className={({ isActive }) =>
                   `relative mr-2 flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[13px] font-semibold transition-colors ${
                     isActive

@@ -177,7 +177,7 @@ export default function ChatPage() {
         )
       })
       .catch(() => {
-        navigate('/')
+        navigate('/ask')
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId])
@@ -243,7 +243,7 @@ export default function ChatPage() {
   const handleNewChat = useCallback(() => {
     if (isStreaming) stopStreaming()
     loadMessages('', [])
-    navigate('/')
+    navigate('/ask')
     inputRef.current?.focus()
   }, [isStreaming, stopStreaming, loadMessages, navigate])
 
@@ -253,7 +253,7 @@ export default function ChatPage() {
       setConversations((prev) => prev.filter((c) => c.conversation_id !== convId))
       if (conversationId === convId) {
         loadMessages('', [])
-        navigate('/')
+        navigate('/ask')
       }
     },
     [conversationId, loadMessages, navigate],

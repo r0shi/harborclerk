@@ -41,6 +41,7 @@ export default function App() {
       <Route element={<ProtectedRoute />}>
         <Route element={<Layout />}>
           <Route path="/" element={<HomePage />} />
+          <Route path="/ask" element={<ChatPage />} />
           <Route path="/c/:conversationId" element={<ChatPage />} />
           <Route path="/folders" element={<FoldersPage />} />
           <Route path="/docs" element={<DocumentsPage />} />
@@ -49,7 +50,7 @@ export default function App() {
           <Route path="/explore" element={<ExplorePage />} />
           <Route path="/research/:researchId?" element={<ResearchPage />} />
           <Route path="/stats" element={<StatsPage />} />
-          <Route path="/chat" element={<Navigate to="/" replace />} />
+          <Route path="/chat" element={<Navigate to="/ask" replace />} />
           <Route path="/chat/:conversationId" element={<ChatRedirect />} />
           <Route path="/preferences" element={<PreferencesPage />} />
           <Route element={<AdminRoute />}>
