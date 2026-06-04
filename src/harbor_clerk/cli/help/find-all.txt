@@ -1,0 +1,79 @@
+harbor-clerk find-all - enumerate matching documents
+
+DESCRIPTION
+  Enumerates documents matching a query, deduped by document. Use this when
+  the task is to list every matching document rather than retrieve the single
+  best passage. This mirrors the MCP `kb_find_all` tool for shell-based agents.
+
+  Results preserve the MCP response shape in JSON, including `citation` and
+  structured `source` fields when available. Text output renders citations and,
+  with --presentation=full, the best matching chunk for each document.
+
+USAGE
+  harbor-clerk find-all <query> [options]
+  harbor-clerk find-all --query <query> [options]
+
+OPTIONS
+      --query TEXT             Relevance query; alternative to positional query
+      --text-contains TEXT     Require an exact substring in matching chunk text
+      --max-results INT        Max documents returned (default: 100)
+  -o, --offset INT             Pagination offset (default: 0)
+      --presentation brief|full
+                                brief omits chunk text; full includes best chunk
+      --sort-by relevance|date_desc|date_asc
+                                Sort order (default: relevance)
+      --doc-id UUID            Restrict to one document
+      --doc-ids UUID,UUID      Restrict to multiple documents
+      --after YYYY-MM-DD       Only docs after this date
+      --before YYYY-MM-DD      Only docs before this date
+      --language english|french|en|fr
+                                Restrict to one language
+      --mime-type MIME         Restrict by MIME type (e.g. application/pdf)
+      --metadata-filter-json JSON
+                                JSON metadata filter; --metadata-filter also works
+
+RETURNS (JSON)
+  {
+    "results": [
+      {
+        "doc_id": "uuid",
+        "doc_title": "Contract A",
+        "mime_type": "application/pdf",
+        "language": "english",
+        "score": 0.91,
+        "ingested_at": "2026-06-03T12:00:00+00:00",
+        "page_range": "4-5",
+        "citation": "Contract A, pp. 4-5",
+        "source": { "...": "SourceRef object" },
+        "top_chunk": {
+          "chunk_id": "uuid",
+          "text": "matching chunk text",
+          "page": 4,
+          "heading": "Termination"
+        }
+      }
+    ],
+    "total_matches": 42,
+    "returned": 25,
+    "offset": 0,
+    "truncated": true,
+    "sort_by": "relevance",
+    "presentation": "full"
+  }
+
+EXAMPLES
+  # Enumerate documents mentioning a concept
+  harbor-clerk find-all "force majeure"
+
+  # Require a literal phrase and include the best matching chunk
+  harbor-clerk find-all "contracts" \
+    --text-contains "termination for convenience" \
+    --presentation full
+
+  # Agent-friendly JSON with a raw metadata filter
+  harbor-clerk find-all --query "invoice" \
+    --metadata-filter-json '{"email.from_address": "alice@example.com"}' \
+    --json
+
+SEE ALSO
+  search, batch-search, read-passages, documents-by-date

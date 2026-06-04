@@ -107,6 +107,38 @@ def _render_search(payload: Any, stream: TextIO) -> None:
         stream.write("possible_conflict=true - top hits span multiple similarly scored documents\n")
 
 
+# --- Find all pretty-printer ---
+
+
+@register_text_renderer("find-all")
+def _render_find_all(payload: Any, stream: TextIO) -> None:
+    if not isinstance(payload, dict):
+        stream.write(repr(payload) + "\n")
+        return
+    if "error" in payload:
+        stream.write(f"error: {payload['error']}\n")
+        return
+    results = payload.get("results") or []
+    total = payload.get("total_matches", 0)
+    returned = payload.get("returned", len(results))
+    offset = payload.get("offset", 0)
+    truncated = " truncated" if payload.get("truncated") else ""
+    stream.write(f"{returned} of {total} matches (offset {offset}){truncated}\n")
+    if not results:
+        return
+    stream.write("\n")
+    for i, result in enumerate(results, 1):
+        record = dict(result)
+        top_chunk = record.get("top_chunk")
+        if isinstance(top_chunk, dict):
+            record.setdefault("chunk_id", top_chunk.get("chunk_id"))
+            record.setdefault("text", top_chunk.get("text"))
+            record.setdefault("page", top_chunk.get("page"))
+        if record.get("page_range") and not record.get("pages"):
+            record["pages"] = record["page_range"]
+        _render_hit_line(i, record, stream)
+
+
 # --- Batch search pretty-printer ---
 
 

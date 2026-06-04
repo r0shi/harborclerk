@@ -74,6 +74,32 @@ def test_render_text_search_prefers_citation():
     assert "chunk=c1" in out
 
 
+def test_render_text_find_all_uses_citations_and_top_chunk():
+    buf = io.StringIO()
+    payload = {
+        "results": [
+            {
+                "doc_id": "d1",
+                "doc_title": "Contract A",
+                "citation": "Contract A, p. 4",
+                "score": 0.87,
+                "page_range": "4",
+                "top_chunk": {"chunk_id": "c1", "text": "shall terminate"},
+            }
+        ],
+        "total_matches": 1,
+        "returned": 1,
+        "offset": 0,
+        "truncated": False,
+    }
+    render(payload, mode=OutputMode.TEXT, command="find-all", stream=buf)
+    out = buf.getvalue()
+    assert "1 of 1 matches" in out
+    assert "Contract A, p. 4" in out
+    assert "chunk=c1" in out
+    assert "shall terminate" in out
+
+
 def test_render_text_batch_search_uses_citations():
     buf = io.StringIO()
     payload = {

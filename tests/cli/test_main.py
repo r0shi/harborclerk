@@ -19,11 +19,12 @@ def test_cli_version_flag():
     assert "harbor-clerk-cli/" in out
 
 
-def test_cli_help_flag_lists_all_18_commands():
+def test_cli_help_flag_lists_all_19_commands():
     out, _err, rc = run_cli("--help")
     assert rc == 0
     for cmd in [
         "search",
+        "find-all",
         "batch-search",
         "read-passages",
         "expand-context",
