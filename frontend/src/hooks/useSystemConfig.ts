@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react'
 
 export interface SystemConfig {
   /**
+   * Readiness status reported by /api/system/health. This is a coarse
+   * at-a-glance signal; the Status page remains the detailed diagnostic view.
+   */
+  healthStatus: 'healthy' | 'degraded' | null
+  /**
    * True when the backend is configured to serve original document bytes
    * over /api/docs/{doc_id}/download. Defaults to false on every deployment;
    * macOS native does not expose any toggle to flip this on (use Reveal in
@@ -29,6 +34,7 @@ export interface SystemConfig {
 }
 
 const FALLBACK: SystemConfig = {
+  healthStatus: null,
   allowSourceDownload: false,
   enableCliAccess: false,
   cliShimInstallStatus: null,
@@ -55,6 +61,7 @@ export function useSystemConfig(): SystemConfig {
       .then((data) => {
         if (cancelled || !data) return
         setConfig({
+          healthStatus: data.status === 'healthy' || data.status === 'degraded' ? data.status : null,
           allowSourceDownload: Boolean(data.allow_source_download),
           enableCliAccess: Boolean(data.enable_cli_access),
           cliShimInstallStatus: data.cli_shim_install_status ?? null,

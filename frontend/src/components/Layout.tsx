@@ -6,6 +6,7 @@ import { LLMStatusBanner, LLMStatusProvider } from './LLMStatusBanner'
 import { QueueTray } from './queue-tray'
 import CorpusEmptyBanner from './CorpusEmptyBanner'
 import OnboardingWizard from './OnboardingWizard'
+import GlobalStatusPill from './GlobalStatusPill'
 import { useCorpusBannerState } from '../hooks/useCorpusBannerState'
 import { useAreaAccent } from '../hooks/useAreaAccent'
 
@@ -94,101 +95,102 @@ export default function Layout() {
 
   return (
     <div data-layout-root className="min-h-screen bg-(--color-bg-primary)">
-      <nav className="sticky top-0 z-40 border-b border-(--color-border) bg-(--bg-vibrancy) backdrop-blur-xl">
-        <div className="mx-auto max-w-7xl px-4">
-          <div className="flex h-12 items-center justify-between">
-            <div className="flex items-center space-x-1">
-              <NavLink
-                to="/"
-                className="relative mr-2 flex items-center rounded-lg px-2 py-1 transition-colors text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6"
-                aria-label="Harbor Clerk home"
-              >
-                <img src="/favicon.svg" alt="" className="h-6 w-6" />
-              </NavLink>
-              <TabLink to="/search" icon="🔍">
-                Search
-              </TabLink>
-              <TabLink to="/docs" icon="📄">
-                Documents
-              </TabLink>
-              <TabLink to="/ask" icon="💬" activeWhen={(pathname) => pathname.startsWith('/c/')}>
-                Ask
-              </TabLink>
-              <TabLink to="/research" icon="🐙">
-                Research
-              </TabLink>
-              <TabLink to="/folders" icon="📁">
-                Folders
-              </TabLink>
-              <TabLink to="/explore" icon="🌍">
-                Explore
-              </TabLink>
-            </div>
-            <div className="flex items-center space-x-1">
-              <TabLink to="/stats" icon="📊">
-                Observatory
-              </TabLink>
-              <TabLink
-                to="/settings"
-                icon="⚙️"
-                activeWhen={(pathname) =>
-                  pathname.startsWith('/admin') ||
-                  pathname.startsWith('/integrations') ||
-                  pathname.startsWith('/preferences')
-                }
-              >
-                Settings
-              </TabLink>
-              <div className="relative ml-2" ref={menuRef}>
-                <button
-                  onClick={() => setMenuOpen(!menuOpen)}
-                  className="flex items-center space-x-1 rounded-lg px-2.5 py-1.5 text-[13px] text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6 transition-colors"
+      <LLMStatusProvider>
+        <nav className="sticky top-0 z-40 border-b border-(--color-border) bg-(--bg-vibrancy) backdrop-blur-xl">
+          <div className="mx-auto max-w-7xl px-4">
+            <div className="flex h-12 items-center justify-between">
+              <div className="flex items-center space-x-1">
+                <NavLink
+                  to="/"
+                  className="relative mr-2 flex items-center rounded-lg px-2 py-1 transition-colors text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6"
+                  aria-label="Harbor Clerk home"
                 >
-                  <div className="flex flex-col items-end">
-                    <span>{user?.email}</span>
-                    {isAdmin && (
-                      <span className="text-[10px] leading-tight text-amber-600 dark:text-amber-400">admin</span>
-                    )}
-                  </div>
-                  <svg
-                    className={`h-3.5 w-3.5 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
+                  <img src="/favicon.svg" alt="" className="h-6 w-6" />
+                </NavLink>
+                <TabLink to="/search" icon="🔍">
+                  Search
+                </TabLink>
+                <TabLink to="/docs" icon="📄">
+                  Documents
+                </TabLink>
+                <TabLink to="/ask" icon="💬" activeWhen={(pathname) => pathname.startsWith('/c/')}>
+                  Ask
+                </TabLink>
+                <TabLink to="/research" icon="🐙">
+                  Research
+                </TabLink>
+                <TabLink to="/folders" icon="📁">
+                  Folders
+                </TabLink>
+                <TabLink to="/explore" icon="🌍">
+                  Explore
+                </TabLink>
+              </div>
+              <div className="flex items-center space-x-1">
+                <GlobalStatusPill />
+                <TabLink to="/stats" icon="📊">
+                  Observatory
+                </TabLink>
+                <TabLink
+                  to="/settings"
+                  icon="⚙️"
+                  activeWhen={(pathname) =>
+                    pathname.startsWith('/admin') ||
+                    pathname.startsWith('/integrations') ||
+                    pathname.startsWith('/preferences')
+                  }
+                >
+                  Settings
+                </TabLink>
+                <div className="relative ml-2" ref={menuRef}>
+                  <button
+                    onClick={() => setMenuOpen(!menuOpen)}
+                    className="flex items-center space-x-1 rounded-lg px-2.5 py-1.5 text-[13px] text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6 transition-colors"
                   >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {menuOpen && (
-                  <div className="absolute right-0 mt-1.5 w-48 rounded-xl bg-(--bg-vibrancy) backdrop-blur-xl py-1 shadow-mac-lg ring-1 ring-(--color-border) z-50">
-                    <button
-                      onClick={() => {
-                        setMenuOpen(false)
-                        navigate('/preferences')
-                      }}
-                      className="block w-full px-3.5 py-2 text-left text-[13px] text-(--color-text-primary) hover:bg-black/4 dark:hover:bg-white/6"
+                    <div className="flex flex-col items-end">
+                      <span>{user?.email}</span>
+                      {isAdmin && (
+                        <span className="text-[10px] leading-tight text-amber-600 dark:text-amber-400">admin</span>
+                      )}
+                    </div>
+                    <svg
+                      className={`h-3.5 w-3.5 transition-transform ${menuOpen ? 'rotate-180' : ''}`}
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
                     >
-                      Preferences
-                    </button>
-                    <div className="mx-3 my-1 border-t border-(--color-border)" />
-                    <button
-                      onClick={() => {
-                        setMenuOpen(false)
-                        logout()
-                      }}
-                      className="block w-full px-3.5 py-2 text-left text-[13px] text-(--color-text-primary) hover:bg-black/4 dark:hover:bg-white/6"
-                    >
-                      Logout
-                    </button>
-                  </div>
-                )}
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  {menuOpen && (
+                    <div className="absolute right-0 mt-1.5 w-48 rounded-xl bg-(--bg-vibrancy) backdrop-blur-xl py-1 shadow-mac-lg ring-1 ring-(--color-border) z-50">
+                      <button
+                        onClick={() => {
+                          setMenuOpen(false)
+                          navigate('/settings/preferences')
+                        }}
+                        className="block w-full px-3.5 py-2 text-left text-[13px] text-(--color-text-primary) hover:bg-black/4 dark:hover:bg-white/6"
+                      >
+                        Preferences
+                      </button>
+                      <div className="mx-3 my-1 border-t border-(--color-border)" />
+                      <button
+                        onClick={() => {
+                          setMenuOpen(false)
+                          logout()
+                        }}
+                        className="block w-full px-3.5 py-2 text-left text-[13px] text-(--color-text-primary) hover:bg-black/4 dark:hover:bg-white/6"
+                      >
+                        Logout
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </nav>
-      <LLMStatusProvider>
+        </nav>
         <main className="mx-auto max-w-7xl px-4 py-6">
           {showBanner && bannerState && <CorpusEmptyBanner state={bannerState} />}
           <BackButton />
