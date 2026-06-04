@@ -28,6 +28,7 @@ def _common_parser() -> argparse.ArgumentParser:
 
 _COMMAND_NAMES = [
     "search",
+    "find-all",
     "batch-search",
     "read-passages",
     "expand-context",

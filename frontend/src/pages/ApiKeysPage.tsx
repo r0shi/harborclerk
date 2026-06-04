@@ -47,13 +47,21 @@ interface ScopePreview {
 }
 
 // Mirrors src/harbor_clerk/api/scope.py — keep in sync
-const SEARCH_TIER_TOOLS = ['kb_search', 'kb_batch_search', 'kb_corpus_overview', 'kb_list_recent'] as const
+const SEARCH_TIER_TOOLS = [
+  'kb_search',
+  'kb_batch_search',
+  'kb_corpus_overview',
+  'kb_list_recent',
+  'kb_find_all',
+  'kb_documents_by_date',
+] as const
 const READ_TIER_TOOLS = [
   ...SEARCH_TIER_TOOLS,
   'kb_read_passages',
   'kb_expand_context',
   'kb_document_outline',
   'kb_get_document',
+  'kb_verify_identifier',
 ] as const
 const FULL_TIER_TOOLS = [
   ...READ_TIER_TOOLS,
@@ -309,7 +317,10 @@ export default function ApiKeysPage() {
             {keys.map((k) => (
               <tr key={k.key_id} className="hover:bg-black/3 dark:hover:bg-white/3">
                 <td className="px-4 py-3 text-sm font-medium">
-                  <Link to={`/admin/keys/${k.key_id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
+                  <Link
+                    to={`/settings/api-keys/${k.key_id}`}
+                    className="text-blue-600 dark:text-blue-400 hover:underline"
+                  >
                     {k.name}
                   </Link>
                 </td>

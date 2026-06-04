@@ -4,9 +4,9 @@
 
 # Harbor Clerk
 
-### Keep your data. Ask it anything.
+### Private document intelligence with search, citations, and local AI.
 
-Local-first document archive for non-technical offices. Point Harbor Clerk at a folder of PDFs, scans, notes, or research files; it OCRs, indexes, and lets you search, browse, and chat with everything — all on your own machine, all with citations.
+Harbor Clerk turns watched folders into a private, searchable document archive.
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Release](https://img.shields.io/badge/release-v0.9.1-blue)
@@ -15,13 +15,13 @@ Local-first document archive for non-technical offices. Point Harbor Clerk at a 
 
 ---
 
-Harbor Clerk is a safe harbor for your documents — and a capable clerk who knows where everything is. Tell it which folders to watch — contracts, scans, research, anything — and Harbor Clerk continuously reads what lands there and turns it into a searchable archive you can actually talk to.
+Harbor Clerk packages a serious local document intelligence stack into a Mac-native app: OCR for scans, hybrid lexical and semantic search, local embeddings and reranking, cited AI answers, and MCP/CLI access for agents. A technical operator could assemble pieces of this from open-source tools; Harbor Clerk makes that power available to small teams without turning document search into an infrastructure project.
 
 It reads your files in place, extracts text (including OCR for scanned documents), splits them into searchable passages, and indexes everything locally so you can search or ask questions across your entire collection. Results always come with clear citations so you can jump straight back to the original document and verify the source.
 
 Everything runs on your machine. No SaaS account. No background sync. No shared tenancy. Your originals never move — Harbor Clerk just reads them where they live.
 
-Harbor Clerk is designed for small offices, independent operators, and privacy-focused individuals. It runs comfortably on a Mac mini or similar hardware and includes a built-in chat assistant powered by a local LLM.
+Harbor Clerk is designed for document-heavy small teams, independent operators, researchers, and privacy-focused individuals. It runs comfortably on a Mac mini or similar hardware and includes cited answers powered by local AI models.
 
 If you want to connect external AI tools, Harbor Clerk exposes an MCP endpoint that allows them to search your knowledge base safely. They receive only the retrieved passages needed to answer a question — never your full documents.
 
@@ -34,7 +34,7 @@ It keeps your documents where they belong — and makes them useful.
 graph LR
     docs["Drop documents into a watched folder<br/>PDFs • Scans • Notes"]
     process["Harbor Clerk organizes them<br/>Text Extraction • OCR • Chunking • Hybrid Search + Embeddings"]
-    ask["Search or chat with your archive<br/>Answers include citations"]
+    ask["Search, ask, or research your archive<br/>Answers include citations"]
     docs --> process --> ask
 ```
 
@@ -46,7 +46,7 @@ External models can ask questions — they don't get your archive.
 graph LR
     subgraph local["Stays Local"]
         docs["Your Documents"]
-        harbor["Harbor Clerk<br/>OCR · Search · Chat"]
+        harbor["Harbor Clerk<br/>OCR · Search · Cited AI"]
     end
     subgraph external["Optional External Models"]
         models["Claude / GPT / other MCP clients"]
@@ -63,7 +63,7 @@ Once your documents are indexed, you can reach them three ways — pick whicheve
 ```mermaid
 graph LR
     corpus[("Your indexed corpus")]
-    web["Web UI<br/>Search · Chat · Research"]
+    web["Web UI<br/>Search · Ask · Research"]
     mcp["MCP endpoint<br/>Cloud LLMs · Claude · ChatGPT"]
     cli["harbor-clerk CLI<br/>Local agent harnesses<br/>OpenClaw · Claude Code · Codex · Aider"]
     web --> corpus
@@ -71,7 +71,7 @@ graph LR
     cli --> corpus
 ```
 
-**1. Web UI — search, chat, deep research.** Open Harbor Clerk in your browser (or the native Mac window) and search, browse, or chat with a local LLM. Deep Research runs structured plan→search→read→synthesize over the whole corpus and produces a cited report.
+**1. Web UI — search, cited answers, deep research.** Open Harbor Clerk in your browser (or the native Mac window) and search, browse, or ask questions with local AI models. Deep Research runs structured plan→search→read→synthesize over the whole corpus and produces a cited report.
 
 **2. MCP endpoint — for cloud LLMs.** Connect Claude, ChatGPT, Claude Desktop, Gemini CLI, or any MCP-compatible client. They authenticate with a scoped, read-only API key and receive only the cited snippets needed to answer a question — never your full corpus.
 
@@ -83,7 +83,7 @@ harbor-clerk --help                  # full subcommand list
 harbor-clerk search "termination clause" | jq '.hits[] | {title: .doc_title, pages, chunk_id}'
 ```
 
-A copy-pasteable agent skill for these harnesses is in **System Settings → Integrations**.
+A copy-pasteable agent skill for these harnesses is in **Settings → Integrations**.
 
 ## Why Harbor Clerk?
 
@@ -91,10 +91,10 @@ A copy-pasteable agent skill for these harnesses is in **System Settings → Int
 Everything runs locally. No uploads to SaaS services, no background syncing, and no shared infrastructure.
 
 **Your files become searchable knowledge**
-Harbor Clerk reads documents, performs OCR when needed, builds hybrid full-text and semantic search, and lets you explore everything through search or chat — always with citations.
+Harbor Clerk reads documents, performs OCR when needed, builds hybrid full-text and semantic search, and lets you explore everything through search, cited answers, or research — always with citations.
 
 **Use any model you trust**
-Chat locally with built-in models, connect external AI tools through MCP, or hand the CLI to a local agent harness. They see only the passages needed to answer a question — never your full corpus.
+Ask locally with built-in models, connect external AI tools through MCP, or hand the CLI to a local agent harness. They see only the passages needed to answer a question — never your full corpus.
 
 ## Quick Start (Mac)
 
@@ -104,7 +104,7 @@ Chat locally with built-in models, connect external AI tools through MCP, or han
 4. Click **Folders → Add Folder**, pick a directory full of documents, and let ingestion run
 5. Ask questions, browse the corpus, or kick off a deep research task
 
-That's it — everything runs locally. To wire in an external LLM or agent harness, head to **System Settings → Integrations** for MCP and CLI setup.
+That's it — everything runs locally. To wire in an external LLM or agent harness, head to **Settings → Integrations** for MCP and CLI setup.
 
 ## Quick Start (Docker)
 
@@ -122,7 +122,7 @@ To enable the `harbor-clerk` CLI for local agent harnesses, set `ENABLE_CLI_ACCE
 
 ## Who Harbor Clerk Is For
 
-- Small offices without a formal knowledge base
+- Document-heavy small teams without a formal knowledge base
 - Researchers with large document collections
 - Consultants, lawyers, and analysts managing private files
 - Anyone who wants LLM-style document search without uploading data to the cloud
@@ -151,7 +151,7 @@ Harbor Clerk can run in two ways:
 
 | | macOS Native | Docker Compose |
 |---|---|---|
-| **Best for** | Target audience — small offices with a Mac | DIY / Linux servers |
+| **Best for** | Small teams and independent operators with a Mac | DIY / Linux servers |
 | **Services** | Managed by menubar app as subprocesses | Eleven Docker containers |
 | **Folder picker** | Native folder picker in the UI | Operator mounts host paths into the watcher container |
 | **Originals** | Read in place from your filesystem | Read in place from bind-mounted volumes |
@@ -166,6 +166,8 @@ Both deployments use the same Python `watchdog`-based watcher under the hood (FS
 App data lives in `~/Library/Application Support/Harbor Clerk/` — PostgreSQL database, downloaded LLM models, logs, and settings. **Your source documents stay where you put them**; Harbor Clerk only references them by path.
 
 Open Preferences (Cmd+,) from the menubar to configure network access, worker preset, ports, and log level. Manage watched folders from the **Folders** tab in the web UI — the native folder picker dialog walks you through picking a directory, and macOS bookmark data keeps it tracked across renames and moves.
+
+For a basic backup, quit Harbor Clerk Server and copy `~/Library/Application Support/Harbor Clerk/` to backup storage. Keep the watched-folder source files backed up separately because Harbor Clerk reads those files in place. See [Backup and restore](docs/backup-and-restore.md) for the cautious initial guidance.
 
 ### Docker Compose
 
@@ -219,7 +221,7 @@ Drop a file into a watched folder and it flows through seven idempotent stages:
 6. **Summarize** — generate a document summary (local LLM, with extractive fallback)
 7. **Finalize** — mark ingestion complete
 
-Progress is streamed to the UI via server-sent events with a visual stage ring showing each step. Processing can be cancelled from the admin UI. Renames, edits, and deletions in the watched folder propagate automatically — Harbor Clerk reprocesses the file or soft-deletes the document, and a 30-day reaper purges originals that stay missing.
+Progress is streamed to the UI via server-sent events with a visual stage ring showing each step. Processing can be cancelled from the UI. Renames, edits, and deletions in the watched folder propagate automatically — Harbor Clerk reprocesses the file or soft-deletes the document, and a 30-day reaper purges originals that stay missing.
 
 ### Source Files: Reveal vs Download
 
@@ -238,11 +240,11 @@ The reason the download endpoint is locked down by default: it returns the *raw 
 
 Results combine PostgreSQL full-text search (bilingual English/French) and pgvector cosine similarity, normalized and merged into a single score with a small boost for higher-confidence OCR text. A cross-encoder re-ranking pass (`bge-reranker-v2-m3`, served by a dedicated `reranker` container/subprocess; on by default, gracefully degrades to merged-score ordering if unavailable) refines the top-K pool before returning results. All results include source citations with page numbers. Search supports filtering by document, date range, language, and MIME type, with faceted results grouping hits by document.
 
-### Local Chat
+### Local AI Answers
 
-A built-in chat assistant runs a local LLM (via llama-server) with access to the knowledge base through tool calls. Models can be downloaded and managed from the admin UI. No data leaves the machine.
+Ask runs a local AI model (via llama-server) with access to the knowledge base through tool calls. Models can be downloaded and managed from Settings. No data leaves the machine unless you deliberately connect an external model through MCP or another integration.
 
-The chat assistant uses tool calls to search, read passages, explore document structure, and query entities during the conversation. Results include source citations with page numbers so you can verify findings against the original documents.
+The local AI path uses tool calls to search, read passages, explore document structure, and query entities during the conversation. Results include source citations with page numbers so you can verify findings against the original documents.
 
 ### Deep Research
 
@@ -280,7 +282,7 @@ Connect ChatGPT, Claude Desktop, Claude Code, Gemini CLI, OpenClaw, or any MCP-c
 
 ### Agentic CLI — full surface
 
-The `harbor-clerk` CLI mirrors 18 of the 19 MCP tools as shell subcommands. See the [Three ways to use Harbor Clerk](#three-ways-to-use-harbor-clerk) overview above for the framing; this section is the operator detail.
+The `harbor-clerk` CLI mirrors the MCP tool surface as shell subcommands, including `find-all` for document enumeration. See the [Three ways to use Harbor Clerk](#three-ways-to-use-harbor-clerk) overview above for the framing; this section is the operator detail.
 
 **Enabling it:**
 
@@ -290,12 +292,12 @@ The `harbor-clerk` CLI mirrors 18 of the 19 MCP tools as shell subcommands. See 
 **Auth:** the CLI talks to the same `/mcp` endpoint as MCP clients do, using the same API key:
 
 ```bash
-export HARBOR_CLERK_API_KEY=hc_...   # mint in System Settings → API Keys
+export HARBOR_CLERK_API_KEY=hc_...   # mint in Settings → API Keys
 harbor-clerk --help                  # full subcommand list
 harbor-clerk <command> --help        # man-page-class help with JSON return shape + examples
 ```
 
-**Audit:** CLI traffic is logged as `request_type="cli_tool"` (distinct from `mcp_tool`) so you can split per-key dashboards by surface. **System Settings → Integrations** has a copy-pasteable agent skill markdown for OpenClaw, Claude Code, and similar runtimes — drop it into the harness's skill directory and the agent learns the corpus.
+**Audit:** CLI traffic is logged as `request_type="cli_tool"` (distinct from `mcp_tool`) so you can split per-key dashboards by surface. **Settings → Integrations** has a copy-pasteable agent skill markdown for OpenClaw, Claude Code, and similar runtimes — drop it into the harness's skill directory and the agent learns the corpus.
 
 ### Auth
 
@@ -337,6 +339,7 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 | `/api/stats/entity-network` | GET | Entity co-occurrence network graph |
 | `/api/docs/{id}/stats` | GET | Per-document statistics |
 | `/api/search` | POST | Hybrid search (with optional filtering and facets) |
+| `/api/search/find-all` | POST | Enumerate matching documents with filters and pagination |
 | `/api/passages/read` | POST | Read passages by chunk IDs |
 | `/api/chat/conversations` | GET/POST | List or create chat conversations |
 | `/api/chat/conversations/{id}/messages` | POST | Send a message (streamed response with RAG) |
@@ -356,13 +359,13 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 
 ### MCP
 
-`POST /mcp` — Streamable HTTP transport. Authenticate with `Authorization: Bearer <api_key>`. 19 tools available; the CLI mirrors all of them except `kb_find_all` (which is an enumeration shape that agents use less than search).
+`POST /mcp` — Streamable HTTP transport. Authenticate with `Authorization: Bearer <api_key>`. 19 tools available; the CLI mirrors the same practical tool surface, including `kb_find_all` via `harbor-clerk find-all`.
 
 | Tool | Description |
 |---|---|
 | `kb_search` | Hybrid search with pagination, detail modes, and optional filters |
 | `kb_batch_search` | Run up to 5 search queries in a single call |
-| `kb_find_all` | Unified enumeration: list, filter, and paginate documents without scoring (MCP-only) |
+| `kb_find_all` | Unified enumeration: list, filter, and paginate matching documents |
 | `kb_read_passages` | Read specific passages by chunk ID |
 | `kb_expand_context` | Get surrounding chunks for a given chunk |
 | `kb_get_document` | Document metadata and summary |

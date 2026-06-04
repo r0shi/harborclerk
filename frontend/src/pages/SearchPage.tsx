@@ -6,6 +6,33 @@ import { FolderPicker } from '../components/FolderPicker'
 import { PageHeader } from '../components/PageHeader'
 import { useWatchedFolders } from '../hooks/useWatchedFolders'
 
+type SearchMode = 'search' | 'find_all'
+
+interface SearchFilters {
+  textContains: string
+  after: string
+  before: string
+  language: string
+  mimeType: string
+  emailFrom: string
+  emailTo: string
+  emailCc: string
+  emailSubject: string
+}
+
+interface SourceRef {
+  doc_id: string
+  doc_title: string
+  chunk_id?: string
+  pages?: string
+  section?: string
+  source_kind: 'document' | 'email' | 'attachment' | 'unknown'
+  source_label: string
+  folder_label?: string
+  relative_path?: string
+  citation: string
+}
+
 interface SearchHit {
   chunk_id: string
   doc_id: string
@@ -18,6 +45,8 @@ interface SearchHit {
   ocr_confidence?: number
   score: number
   doc_title?: string
+  source?: SourceRef
+  citation?: string
 }
 
 interface ConflictSource {
@@ -33,17 +62,62 @@ interface SearchResponse {
   conflict_sources: ConflictSource[]
 }
 
+interface FindAllTopChunk {
+  chunk_id?: string
+  text?: string
+  page?: number
+  heading?: string
+}
+
+interface FindAllHit {
+  doc_id: string
+  doc_title: string
+  mime_type: string
+  language?: string
+  score: number
+  ingested_at?: string
+  page_range?: string
+  top_chunk?: FindAllTopChunk
+  source?: SourceRef
+  citation?: string
+}
+
+interface FindAllResponse {
+  results: FindAllHit[]
+  total_matches: number
+  returned: number
+  offset: number
+  truncated: boolean
+  sort_by: 'relevance' | 'date_desc' | 'date_asc'
+  presentation: 'brief' | 'full'
+}
+
+type SearchResults = SearchResponse | FindAllResponse
+
 const HISTORY_KEY = 'search_history'
 const STATE_KEY = 'search_state'
 const MAX_HISTORY = 10
 const PAGE_SIZES = [10, 25, 50]
+const EMPTY_FILTERS: SearchFilters = {
+  textContains: '',
+  after: '',
+  before: '',
+  language: '',
+  mimeType: '',
+  emailFrom: '',
+  emailTo: '',
+  emailCc: '',
+  emailSubject: '',
+}
 
 interface SearchState {
+  mode?: SearchMode
   query: string
-  results: SearchResponse | null
+  results: SearchResults | null
   currentPage: number
   pageSize: number
   lastQuery: string
+  filters?: SearchFilters
 }
 
 function saveSearchState(state: SearchState) {
@@ -85,6 +159,59 @@ function addToHistory(query: string) {
   const history = getHistory().filter((q) => q !== trimmed)
   history.unshift(trimmed)
   saveHistory(history.slice(0, MAX_HISTORY))
+}
+
+function isFindAllResponse(results: SearchResults | null): results is FindAllResponse {
+  return !!results && 'results' in results
+}
+
+function firstPageFromRange(pageRange?: string): number | null {
+  if (!pageRange) return null
+  const match = pageRange.match(/^\d+/)
+  return match ? Number(match[0]) : null
+}
+
+function normalizedFilters(filters?: Partial<SearchFilters>): SearchFilters {
+  return { ...EMPTY_FILTERS, ...filters }
+}
+
+function buildMetadataFilter(filters: SearchFilters): Record<string, string> {
+  const metadataFilter: Record<string, string> = {}
+  const emailFrom = filters.emailFrom.trim()
+  const emailTo = filters.emailTo.trim()
+  const emailCc = filters.emailCc.trim()
+  const emailSubject = filters.emailSubject.trim()
+  if (emailFrom) metadataFilter['email.from_address'] = emailFrom
+  if (emailTo) metadataFilter['email.to_addresses'] = emailTo
+  if (emailCc) metadataFilter['email.cc_addresses'] = emailCc
+  if (emailSubject) metadataFilter['email.subject_contains'] = emailSubject
+  return metadataFilter
+}
+
+function buildFilterPayload(filters: SearchFilters) {
+  const metadataFilter = buildMetadataFilter(filters)
+  return {
+    ...(filters.textContains.trim() && { text_contains: filters.textContains.trim() }),
+    ...(filters.after && { after: filters.after }),
+    ...(filters.before && { before: filters.before }),
+    ...(filters.language && { language: filters.language }),
+    ...(filters.mimeType.trim() && { mime_type: filters.mimeType.trim() }),
+    ...(Object.keys(metadataFilter).length > 0 && { metadata_filter: metadataFilter }),
+  }
+}
+
+function activeFilterLabels(filters: SearchFilters): string[] {
+  const labels: string[] = []
+  if (filters.textContains.trim()) labels.push(`Text: ${filters.textContains.trim()}`)
+  if (filters.after) labels.push(`After: ${filters.after}`)
+  if (filters.before) labels.push(`Before: ${filters.before}`)
+  if (filters.language) labels.push(`Language: ${filters.language}`)
+  if (filters.mimeType.trim()) labels.push(`Type: ${filters.mimeType.trim()}`)
+  if (filters.emailFrom.trim()) labels.push(`From: ${filters.emailFrom.trim()}`)
+  if (filters.emailTo.trim()) labels.push(`To: ${filters.emailTo.trim()}`)
+  if (filters.emailCc.trim()) labels.push(`Cc: ${filters.emailCc.trim()}`)
+  if (filters.emailSubject.trim()) labels.push(`Subject: ${filters.emailSubject.trim()}`)
+  return labels
 }
 
 function Pagination({
@@ -146,10 +273,13 @@ function Pagination({
 
 export default function SearchPage() {
   const [initial] = useState(loadSearchState)
+  const [mode, setMode] = useState<SearchMode>(initial?.mode === 'find_all' ? 'find_all' : 'search')
   const [query, setQuery] = useState(initial?.query || '')
-  const [results, setResults] = useState<SearchResponse | null>(initial?.results || null)
+  const [results, setResults] = useState<SearchResults | null>(initial?.results || null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [filters, setFilters] = useState<SearchFilters>(() => normalizedFilters(initial?.filters))
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [history, setHistory] = useState<string[]>(getHistory)
   const [showHistory, setShowHistory] = useState(false)
   const [pageSize, setPageSize] = useState(initial?.pageSize || 25)
@@ -161,8 +291,8 @@ export default function SearchPage() {
 
   // Persist search state to sessionStorage
   useEffect(() => {
-    saveSearchState({ query, results, currentPage, pageSize, lastQuery: lastQuery.current })
-  }, [query, results, currentPage, pageSize])
+    saveSearchState({ mode, query, results, currentPage, pageSize, lastQuery: lastQuery.current, filters })
+  }, [mode, query, results, currentPage, pageSize, filters])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -175,7 +305,13 @@ export default function SearchPage() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  async function doSearch(q: string, page: number, size: number, folderIds: string[] = scopeFolderIds) {
+  async function doSearch(
+    q: string,
+    page: number,
+    size: number,
+    folderIds: string[] = scopeFolderIds,
+    searchMode: SearchMode = mode,
+  ) {
     const trimmed = q.trim()
     if (!trimmed) return
     setError('')
@@ -185,15 +321,28 @@ export default function SearchPage() {
     lastQuery.current = trimmed
     try {
       const offset = (page - 1) * size
-      const data = await post<SearchResponse>('/api/search', {
-        query: trimmed,
-        k: size,
-        offset,
-        ...(folderIds.length > 0 && { scope: { folder_ids: folderIds } }),
-      })
+      const filterPayload = buildFilterPayload(filters)
+      const data =
+        searchMode === 'find_all'
+          ? await post<FindAllResponse>('/api/search/find-all', {
+              query: trimmed,
+              max_results: size,
+              offset,
+              presentation: 'full',
+              sort_by: 'relevance',
+              ...filterPayload,
+              ...(folderIds.length > 0 && { scope: { folder_ids: folderIds } }),
+            })
+          : await post<SearchResponse>('/api/search', {
+              query: trimmed,
+              k: size,
+              offset,
+              ...filterPayload,
+              ...(folderIds.length > 0 && { scope: { folder_ids: folderIds } }),
+            })
       setResults(data)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Search failed')
+      setError(e instanceof Error ? e.message : searchMode === 'find_all' ? 'Find All failed' : 'Search failed')
     } finally {
       setLoading(false)
     }
@@ -219,6 +368,14 @@ export default function SearchPage() {
     }
   }
 
+  function handleModeChange(nextMode: SearchMode) {
+    if (nextMode === mode) return
+    setMode(nextMode)
+    setResults(null)
+    setCurrentPage(1)
+    lastQuery.current = ''
+  }
+
   function selectHistoryItem(q: string) {
     setQuery(q)
     setShowHistory(false)
@@ -232,13 +389,55 @@ export default function SearchPage() {
     setShowHistory(false)
   }
 
-  const maxScore = results?.hits[0]?.score || 1
-  const totalPages = results ? Math.max(1, Math.ceil(results.total_candidates / pageSize)) : 1
+  function updateFilter(key: keyof SearchFilters, value: string) {
+    setFilters((current) => ({ ...current, [key]: value }))
+  }
+
+  function clearFilters() {
+    setFilters(EMPTY_FILTERS)
+  }
+
+  const searchResults = mode === 'search' && results && !isFindAllResponse(results) ? results : null
+  const findAllResults = mode === 'find_all' && isFindAllResponse(results) ? results : null
+  const metadataFilter = buildMetadataFilter(filters)
+  const activeFilters = activeFilterLabels(filters)
+  const activeFilterCount = activeFilters.length
+  const totalCount = findAllResults?.total_matches ?? searchResults?.total_candidates ?? 0
+  const maxScore = searchResults?.hits[0]?.score || findAllResults?.results[0]?.score || 1
+  const totalPages = results ? Math.max(1, Math.ceil(totalCount / pageSize)) : 1
   const startIdx = (currentPage - 1) * pageSize
 
   return (
     <div>
       <PageHeader title="Search" subtitle="Hybrid lexical + semantic retrieval" />
+      <div className="mb-4 inline-flex rounded-lg bg-(--color-bg-secondary) p-0.5 shadow-mac ring-1 ring-(--color-border)">
+        <button
+          type="button"
+          aria-label="Search mode"
+          aria-pressed={mode === 'search'}
+          onClick={() => handleModeChange('search')}
+          className={`min-w-24 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+            mode === 'search'
+              ? 'bg-white text-(--color-text-primary) shadow-mac dark:bg-[#3a3a3c]'
+              : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'
+          }`}
+        >
+          Search
+        </button>
+        <button
+          type="button"
+          aria-label="Find All mode"
+          aria-pressed={mode === 'find_all'}
+          onClick={() => handleModeChange('find_all')}
+          className={`min-w-24 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+            mode === 'find_all'
+              ? 'bg-white text-(--color-text-primary) shadow-mac dark:bg-[#3a3a3c]'
+              : 'text-(--color-text-secondary) hover:text-(--color-text-primary)'
+          }`}
+        >
+          Find All
+        </button>
+      </div>
       <form onSubmit={handleSearch} className="mb-6 flex items-center gap-2">
         <div className="relative flex-1" ref={wrapperRef}>
           <input
@@ -249,7 +448,7 @@ export default function SearchPage() {
             onKeyDown={(e) => {
               if (e.key === 'Escape') setShowHistory(false)
             }}
-            placeholder="Search documents..."
+            placeholder={mode === 'find_all' ? 'Find all matching documents...' : 'Search documents...'}
             autoFocus
             className="w-full rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac focus:ring-2 focus:ring-(--color-accent)/30 px-4 py-2 text-sm"
           />
@@ -296,6 +495,19 @@ export default function SearchPage() {
         </div>
         <FolderPicker value={scopeFolderIds} onChange={setScopeFolderIds} folders={folders} size="sm" />
         <button
+          type="button"
+          onClick={() => setFiltersOpen((open) => !open)}
+          aria-expanded={filtersOpen}
+          className="rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-3 py-1.5 text-sm font-medium text-(--color-text-primary) hover:bg-(--color-bg-tertiary)"
+        >
+          Filters
+          {activeFilterCount > 0 && (
+            <span className="ml-1.5 rounded-full bg-(--area-accent) px-1.5 py-0.5 text-[10px] font-semibold text-white">
+              {activeFilterCount}
+            </span>
+          )}
+        </button>
+        <button
           type="submit"
           disabled={loading}
           className="rounded-md px-4 py-1.5 text-sm font-medium disabled:opacity-50"
@@ -305,9 +517,135 @@ export default function SearchPage() {
             border: '1px solid var(--area-accent)',
           }}
         >
-          {loading ? 'Searching...' : 'Search'}
+          {loading
+            ? mode === 'find_all'
+              ? 'Finding...'
+              : 'Searching...'
+            : mode === 'find_all'
+              ? 'Find All'
+              : 'Search'}
         </button>
       </form>
+
+      {activeFilterCount > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          {activeFilters.map((label) => (
+            <span
+              key={label}
+              className="rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-2 py-1 text-xs font-medium text-(--color-text-primary)"
+            >
+              {label}
+            </span>
+          ))}
+          <button
+            type="button"
+            onClick={clearFilters}
+            className="rounded-md px-2 py-1 text-xs font-medium text-(--color-text-secondary) hover:bg-(--color-bg-secondary) hover:text-(--color-text-primary)"
+          >
+            Clear filters
+          </button>
+        </div>
+      )}
+
+      {filtersOpen && (
+        <Card className="mb-6 p-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Exact text</span>
+              <input
+                type="text"
+                value={filters.textContains}
+                onChange={(e) => updateFilter('textContains', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">After</span>
+              <input
+                type="date"
+                value={filters.after}
+                onChange={(e) => updateFilter('after', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Before</span>
+              <input
+                type="date"
+                value={filters.before}
+                onChange={(e) => updateFilter('before', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Language</span>
+              <select
+                value={filters.language}
+                onChange={(e) => updateFilter('language', e.target.value)}
+                className="input-base"
+              >
+                <option value="">Any</option>
+                <option value="en">English</option>
+                <option value="fr">French</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">MIME type</span>
+              <input
+                type="text"
+                value={filters.mimeType}
+                onChange={(e) => updateFilter('mimeType', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Email from</span>
+              <input
+                type="text"
+                value={filters.emailFrom}
+                onChange={(e) => updateFilter('emailFrom', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Email to</span>
+              <input
+                type="text"
+                value={filters.emailTo}
+                onChange={(e) => updateFilter('emailTo', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Email cc</span>
+              <input
+                type="text"
+                value={filters.emailCc}
+                onChange={(e) => updateFilter('emailCc', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block md:col-span-2 xl:col-span-2">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Email subject</span>
+              <input
+                type="text"
+                value={filters.emailSubject}
+                onChange={(e) => updateFilter('emailSubject', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <div className="md:col-span-2 xl:col-span-2">
+              <div className="mb-1 text-xs font-medium text-(--color-text-secondary)">Metadata JSON</div>
+              <pre
+                aria-label="Generated metadata JSON"
+                className="min-h-[38px] overflow-x-auto rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-2.5 py-2 text-xs text-(--color-text-primary)"
+              >
+                {JSON.stringify(metadataFilter, null, 2)}
+              </pre>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {error && (
         <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
@@ -315,12 +653,12 @@ export default function SearchPage() {
         </div>
       )}
 
-      {results && (
+      {searchResults && (
         <>
-          {results.possible_conflict && results.conflict_sources.length > 0 && (
+          {searchResults.possible_conflict && searchResults.conflict_sources.length > 0 && (
             <div className="mb-4 rounded-sm bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-400">
               <strong>Possible conflict:</strong> Similar content found across multiple sources:{' '}
-              {results.conflict_sources.map((s, i) => (
+              {searchResults.conflict_sources.map((s, i) => (
                 <span key={s.doc_id}>
                   {i > 0 && ', '}
                   <Link to={`/docs/${s.doc_id}`} className="font-medium text-amber-900 dark:text-amber-300 underline">
@@ -331,11 +669,11 @@ export default function SearchPage() {
             </div>
           )}
 
-          {results.hits.length === 0 && currentPage === 1 ? (
+          {searchResults.hits.length === 0 && currentPage === 1 ? (
             <p className="text-gray-500 dark:text-gray-400">No results found.</p>
           ) : (
             <div className="space-y-3">
-              {results.hits.map((hit) => {
+              {searchResults.hits.map((hit) => {
                 const linkTo =
                   hit.page_start != null
                     ? `/docs/${hit.doc_id}?showContent=true&page=${hit.page_start}`
@@ -370,6 +708,7 @@ export default function SearchPage() {
                     </div>
                     <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{hit.chunk_text}</p>
                     <div className="flex items-center space-x-3 text-xs text-gray-400">
+                      {hit.citation && <span>{hit.citation}</span>}
                       {hit.page_start != null && (
                         <span>
                           Page {hit.page_start}
@@ -377,6 +716,7 @@ export default function SearchPage() {
                         </span>
                       )}
                       <span>Lang: {hit.language}</span>
+                      {hit.source?.relative_path && <span>{hit.source.relative_path}</span>}
                       {hit.ocr_used && (
                         <span className="rounded-md text-[11px] font-medium bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5">
                           OCR
@@ -391,8 +731,96 @@ export default function SearchPage() {
               <div className="flex items-center justify-between pt-2">
                 <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
                   <span>
-                    Showing {results.total_candidates === 0 ? 0 : startIdx + 1}&ndash;
-                    {Math.min(startIdx + pageSize, results.total_candidates)} of {results.total_candidates} results
+                    Showing {searchResults.total_candidates === 0 ? 0 : startIdx + 1}&ndash;
+                    {Math.min(startIdx + pageSize, searchResults.total_candidates)} of {searchResults.total_candidates}{' '}
+                    results
+                  </span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                    className="rounded-md border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) py-0.5 pl-2 pr-6 text-sm"
+                  >
+                    {PAGE_SIZES.map((s) => (
+                      <option key={s} value={s}>
+                        {s} / page
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={handlePageChange} />
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {findAllResults && (
+        <>
+          {findAllResults.results.length === 0 && currentPage === 1 ? (
+            <p className="text-gray-500 dark:text-gray-400">No documents found.</p>
+          ) : (
+            <div className="space-y-3">
+              {findAllResults.results.map((hit) => {
+                const page = hit.top_chunk?.page ?? firstPageFromRange(hit.page_range)
+                const linkTo =
+                  page != null
+                    ? `/docs/${hit.doc_id}?showContent=true&page=${page}`
+                    : `/docs/${hit.doc_id}?showContent=true`
+                const linkState =
+                  hit.top_chunk?.text || hit.top_chunk?.chunk_id
+                    ? {
+                        highlightChunkText: hit.top_chunk?.text,
+                        highlightChunkId: hit.top_chunk?.chunk_id,
+                      }
+                    : undefined
+
+                return (
+                  <Card key={hit.doc_id} className="p-4">
+                    <div className="mb-2 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <Link
+                          to={linkTo}
+                          state={linkState}
+                          className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                        >
+                          {hit.doc_title || 'Untitled'}
+                        </Link>
+                        {hit.source?.folder_label && (
+                          <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{hit.source.folder_label}</div>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 items-center space-x-2">
+                        <div className="h-1.5 w-24 rounded-full bg-gray-200 dark:bg-gray-600">
+                          <div
+                            className="h-1.5 rounded-full bg-blue-500"
+                            style={{
+                              width: `${Math.round((hit.score / maxScore) * 100)}%`,
+                            }}
+                          />
+                        </div>
+                        <span className="text-xs text-gray-400">{hit.score.toFixed(3)}</span>
+                      </div>
+                    </div>
+                    {hit.top_chunk?.text && (
+                      <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{hit.top_chunk.text}</p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+                      {hit.citation && <span>{hit.citation}</span>}
+                      {hit.page_range && <span>Pages {hit.page_range}</span>}
+                      {hit.language && <span>Lang: {hit.language}</span>}
+                      {hit.mime_type && <span>{hit.mime_type}</span>}
+                      {hit.source?.relative_path && <span>{hit.source.relative_path}</span>}
+                    </div>
+                  </Card>
+                )
+              })}
+
+              <div className="flex items-center justify-between pt-2">
+                <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+                  <span>
+                    Showing {findAllResults.total_matches === 0 ? 0 : startIdx + 1}&ndash;
+                    {Math.min(startIdx + pageSize, findAllResults.total_matches)} of {findAllResults.total_matches}{' '}
+                    documents
                   </span>
                   <select
                     value={pageSize}

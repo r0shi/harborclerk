@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Harbor Clerk** — a single-tenant, watched-folder-first document archive for non-technical offices running on Mac mini/Studio. Local extraction, OCR (English/French), hybrid retrieval. Cloud LLMs query via MCP over HTTPS with read-only API keys, receiving only cited snippets (no full corpus upload). Local agent harnesses (OpenClaw, Claude Code, Codex, Aider) can use the `harbor-clerk` CLI as a parallel surface to MCP.
+**Harbor Clerk** — a single-tenant, watched-folder-first local document intelligence app for document-heavy small teams, independent operators, researchers, and privacy-focused individuals running on Mac mini/Studio or Docker. Local extraction, OCR (English/French), hybrid retrieval, local embeddings/reranking, cited local AI answers, and Research. Cloud LLMs query via MCP over HTTPS with read-only API keys, receiving only cited snippets (no full corpus upload). Local agent harnesses (OpenClaw, Claude Code, Codex, Aider) can use the `harbor-clerk` CLI as a parallel surface to MCP.
 
 Current state lives in this file plus `README.md` and `docs/architecture.md`.
 
@@ -114,12 +114,12 @@ Hybrid search: Postgres FTS (bilingual, queries both `fts_en` and `fts_fr` colum
 
 ## Key API Surface
 
-- REST: `/api/auth/login`, `/api/docs`, `/api/search`, `/api/passages/read`, `/api/system/health`
+- REST: `/api/auth/login`, `/api/docs`, `/api/search`, `/api/search/find-all`, `/api/passages/read`, `/api/system/health`
 - Watch: `/api/watch/system`, `/api/watch/folders` (CRUD; POST gated to macOS via `picker=ui`), `/api/watch/folders/{id}/progress`, `/api/watch/folders/stream`, `/api/watch/folders/{id}/rescan`, `/api/watch/ingest`, `/api/watch/remove`, `/api/watch/rename`, `/api/watch/allowed-extensions`
 - Source files: `/api/docs/{id}/download` (gated by `ALLOW_SOURCE_DOWNLOAD`, default off; macOS uses `window.harborclerk.revealInFinder` instead)
 - Legacy: `/api/uploads*` — endpoints retained for non-interactive ingest paths (planned email ingestion); no UI affordance
 - MCP: `POST /mcp` — 19 tools: `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_read_passages`, `kb_expand_context`, `kb_get_document`, `kb_list_recent`, `kb_corpus_overview`, `kb_document_outline`, `kb_find_related`, `kb_entity_search`, `kb_entity_overview`, `kb_entity_cooccurrence`, `kb_read_document`, `kb_verify_identifier`, `kb_documents_by_date`, `kb_ingest_status`, `kb_reprocess`, `kb_system_health`
-- CLI: `harbor-clerk <command>` — 18 subcommands mirroring the MCP tools (all except `kb_find_all`), for CLI-orchestrating agent harnesses (OpenClaw, Claude Code, Codex, Aider). Off by default. macOS: toggle in **Harbor Clerk Server → Preferences** — `MCPAuthMiddleware` re-reads the config file on every CLI request, so the change takes effect in seconds without a service restart. Docker: set `ENABLE_CLI_ACCESS=true` in the env and restart the API service. Audit-logged as `request_type="cli_tool"`. Auth via `HARBOR_CLERK_API_KEY`. Skill markdown at `skills/harbor-clerk/SKILL.md`; Integrations page surfaces a copy-paste block.
+- CLI: `harbor-clerk <command>` — 19 subcommands mirroring the MCP tools, including `find-all` for document enumeration, for CLI-orchestrating agent harnesses (OpenClaw, Claude Code, Codex, Aider). Off by default. macOS: toggle in **Harbor Clerk Server → Preferences** — `MCPAuthMiddleware` re-reads the config file on every CLI request, so the change takes effect in seconds without a service restart. Docker: set `ENABLE_CLI_ACCESS=true` in the env and restart the API service. Audit-logged as `request_type="cli_tool"`. Auth via `HARBOR_CLERK_API_KEY`. Skill markdown at `skills/harbor-clerk/SKILL.md`; Integrations page surfaces a copy-paste block.
 - SSE: `GET /api/jobs/stream` — streams job progress events (server→client only)
 
 ## Database

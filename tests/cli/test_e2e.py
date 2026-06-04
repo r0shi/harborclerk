@@ -291,6 +291,19 @@ def test_documents_by_date_help_loads(capsys):
     assert "earliest" in out and "latest" in out
 
 
+def test_find_all_help_loads(capsys):
+    """Test that find-all --help loads correctly from the .txt file."""
+    from harbor_clerk.cli import main as cli_main
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main.main(["find-all", "--help"])
+    assert exc.value.code == 0
+
+    out = capsys.readouterr().out
+    assert "find-all" in out
+    assert "Enumerate" in out or "enumerate" in out
+
+
 # ---------------------------------------------------------------------------
 # Test: top-level --help lists new commands
 # ---------------------------------------------------------------------------
@@ -305,5 +318,6 @@ def test_top_level_help_lists_new_commands(capsys):
     assert exc.value.code == 0
 
     out = capsys.readouterr().out
+    assert "find-all" in out
     assert "verify-identifier" in out
     assert "documents-by-date" in out

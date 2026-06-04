@@ -42,6 +42,70 @@ def test_extract_from_kb_search_hits() -> None:
     assert "pages" not in cites[1]
 
 
+def test_extract_from_kb_search_hit_with_source_ref_object() -> None:
+    raw = json.dumps(
+        {
+            "hits": [
+                {
+                    "score": 0.82,
+                    "source": {
+                        "doc_id": "22222222-2222-2222-2222-222222222222",
+                        "doc_title": "Vendor Agreement v3",
+                        "chunk_id": "11111111-1111-1111-1111-111111111111",
+                        "pages": "3-4",
+                        "source_kind": "document",
+                        "source_label": "Vendor Agreement v3",
+                        "citation": "Vendor Agreement v3, pp. 3-4",
+                    },
+                }
+            ]
+        }
+    )
+    cites = extract_citations_from_tool_result(raw)
+    assert cites == [
+        {
+            "doc_id": "22222222-2222-2222-2222-222222222222",
+            "source": {
+                "doc_id": "22222222-2222-2222-2222-222222222222",
+                "doc_title": "Vendor Agreement v3",
+                "chunk_id": "11111111-1111-1111-1111-111111111111",
+                "pages": "3-4",
+                "source_kind": "document",
+                "source_label": "Vendor Agreement v3",
+                "citation": "Vendor Agreement v3, pp. 3-4",
+            },
+            "doc_title": "Vendor Agreement v3",
+            "chunk_id": "11111111-1111-1111-1111-111111111111",
+            "pages": "3-4",
+            "citation": "Vendor Agreement v3, pp. 3-4",
+            "score": 0.82,
+        }
+    ]
+
+
+def test_extract_preserves_top_level_citation_when_source_also_has_citation() -> None:
+    raw = json.dumps(
+        {
+            "hits": [
+                {
+                    "doc_id": "d1",
+                    "citation": "Top level citation",
+                    "source": {
+                        "doc_id": "d1",
+                        "doc_title": "Doc 1",
+                        "source_kind": "document",
+                        "source_label": "Doc 1",
+                        "citation": "Source citation",
+                    },
+                }
+            ]
+        }
+    )
+    cites = extract_citations_from_tool_result(raw)
+    assert cites[0]["citation"] == "Top level citation"
+    assert cites[0]["source"]["citation"] == "Source citation"
+
+
 def test_extract_from_kb_batch_search() -> None:
     raw = json.dumps(
         {
@@ -124,6 +188,31 @@ def test_extract_from_kb_find_related() -> None:
     assert [c["doc_id"] for c in cites] == ["r1", "r2"]
 
 
+def test_extract_from_kb_find_related_source_ref_compat_field() -> None:
+    raw = json.dumps(
+        {
+            "doc_id": "ROOT",
+            "related": [
+                {
+                    "doc_id": "r1",
+                    "title": "Related 1",
+                    "source": "linked",
+                    "source_ref": {
+                        "doc_id": "r1",
+                        "doc_title": "Related 1",
+                        "source_kind": "document",
+                        "source_label": "Related 1",
+                        "citation": "Related 1",
+                    },
+                }
+            ],
+        }
+    )
+    cites = extract_citations_from_tool_result(raw)
+    assert cites[0]["source"]["doc_id"] == "r1"
+    assert cites[0]["citation"] == "Related 1"
+
+
 def test_extract_from_kb_get_document() -> None:
     raw = json.dumps(
         {
@@ -199,6 +288,31 @@ def test_dedupe_keeps_highest_score() -> None:
     out = dedupe_citations(cites)
     assert len(out) == 1
     assert out[0]["score"] == 0.9
+
+
+def test_dedupe_keeps_richer_source_when_higher_score_lacks_it() -> None:
+    cites = [
+        {
+            "doc_id": "a",
+            "chunk_id": "x",
+            "score": 0.5,
+            "source": {
+                "doc_id": "a",
+                "doc_title": "A",
+                "chunk_id": "x",
+                "source_kind": "document",
+                "source_label": "A",
+                "citation": "A",
+            },
+            "citation": "A",
+        },
+        {"doc_id": "a", "chunk_id": "x", "score": 0.9},
+    ]
+    out = dedupe_citations(cites)
+    assert len(out) == 1
+    assert out[0]["score"] == 0.9
+    assert out[0]["source"]["doc_id"] == "a"
+    assert out[0]["citation"] == "A"
 
 
 def test_dedupe_doc_only_vs_chunk() -> None:

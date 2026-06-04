@@ -316,7 +316,7 @@ export default function IntegrationsPage() {
             </p>
             <ol className="list-decimal list-inside space-y-3 text-sm text-(--color-text-primary)">
               <li>
-                <Link to="/admin/keys" className="text-blue-600 dark:text-blue-400 hover:underline">
+                <Link to="/settings/api-keys" className="text-blue-600 dark:text-blue-400 hover:underline">
                   Create an API key
                 </Link>{' '}
                 if you don&apos;t have one already.
@@ -357,7 +357,7 @@ export default function IntegrationsPage() {
           <>
             <ol className="list-decimal list-inside space-y-3 text-sm text-(--color-text-primary)">
               <li>
-                <Link to="/admin/keys" className="text-blue-600 dark:text-blue-400 hover:underline">
+                <Link to="/settings/api-keys" className="text-blue-600 dark:text-blue-400 hover:underline">
                   Create an API key
                 </Link>{' '}
                 if you don&apos;t have one already.
@@ -396,7 +396,7 @@ export default function IntegrationsPage() {
             </p>
             <ol className="list-decimal list-inside space-y-3 text-sm text-(--color-text-primary)">
               <li>
-                <Link to="/admin/keys" className="text-blue-600 dark:text-blue-400 hover:underline">
+                <Link to="/settings/api-keys" className="text-blue-600 dark:text-blue-400 hover:underline">
                   Create a scoped API key
                 </Link>{' '}
                 with the following recommended settings:
@@ -449,7 +449,10 @@ export default function IntegrationsPage() {
                 OpenClaw agents run autonomously and may make many tool calls in rapid succession. Always scope the API
                 key to only the documents and tools the agent needs, set rate limits to prevent runaway loops, and use
                 the{' '}
-                <Link to="/admin/keys" className="text-amber-800 dark:text-amber-200 underline hover:no-underline">
+                <Link
+                  to="/settings/api-keys"
+                  className="text-amber-800 dark:text-amber-200 underline hover:no-underline"
+                >
                   audit dashboard
                 </Link>{' '}
                 to monitor usage.

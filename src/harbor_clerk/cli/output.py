@@ -52,6 +52,41 @@ def render(payload: Any, *, mode: OutputMode, command: str, stream: TextIO | Non
 # --- Search results pretty-printer ---
 
 
+def _source_obj(record: dict) -> dict:
+    source = record.get("source")
+    if not isinstance(source, dict):
+        source = record.get("source_ref")
+    return source if isinstance(source, dict) else {}
+
+
+def _citation(record: dict) -> str:
+    source = _source_obj(record)
+    citation = record.get("citation") or source.get("citation")
+    if citation:
+        return str(citation)
+    title = record.get("doc_title") or record.get("title") or source.get("doc_title") or ""
+    pages = record.get("pages") or record.get("page") or source.get("pages")
+    if title and pages:
+        prefix = "pp." if "-" in str(pages) else "p."
+        return f"{title}, {prefix} {pages}"
+    return str(title)
+
+
+def _render_hit_line(index: int, record: dict, stream: TextIO) -> None:
+    label = _citation(record)
+    score = record.get("score")
+    text = (record.get("text") or record.get("snippet") or "").strip().replace("\n", " ")
+    if len(text) > 200:
+        text = text[:200] + "..."
+    score_str = f"{score:.2f}" if isinstance(score, (int, float)) else "?"
+    chunk_id = record.get("chunk_id") or _source_obj(record).get("chunk_id")
+    chunk_suffix = f"  chunk={chunk_id}" if chunk_id else ""
+    stream.write(f"{index}. {label}  [{score_str}]{chunk_suffix}\n")
+    if text:
+        stream.write(f"   {text}\n")
+    stream.write("\n")
+
+
 @register_text_renderer("search")
 def _render_search(payload: Any, stream: TextIO) -> None:
     if not isinstance(payload, dict):
@@ -67,22 +102,89 @@ def _render_search(payload: Any, stream: TextIO) -> None:
     if not hits:
         stream.write("0 results\n")
     for i, r in enumerate(hits, 1):
-        title = r.get("doc_title") or r.get("title") or ""
-        score = r.get("score")
-        text = (r.get("text") or r.get("snippet") or "").strip().replace("\n", " ")
-        if len(text) > 200:
-            text = text[:200] + "..."
-        score_str = f"{score:.2f}" if isinstance(score, (int, float)) else "?"
-        pages = r.get("pages") or r.get("page")
-        location = f" p. {pages}" if pages else ""
-        chunk_id = r.get("chunk_id")
-        chunk_suffix = f"  chunk={chunk_id}" if chunk_id else ""
-        stream.write(f"{i}. {title}{location}  [{score_str}]{chunk_suffix}\n")
-        if text:
-            stream.write(f"   {text}\n")
-        stream.write("\n")
+        _render_hit_line(i, r, stream)
     if payload.get("possible_conflict"):
         stream.write("possible_conflict=true - top hits span multiple similarly scored documents\n")
+
+
+# --- Find all pretty-printer ---
+
+
+@register_text_renderer("find-all")
+def _render_find_all(payload: Any, stream: TextIO) -> None:
+    if not isinstance(payload, dict):
+        stream.write(repr(payload) + "\n")
+        return
+    if "error" in payload:
+        stream.write(f"error: {payload['error']}\n")
+        return
+    results = payload.get("results") or []
+    total = payload.get("total_matches", 0)
+    returned = payload.get("returned", len(results))
+    offset = payload.get("offset", 0)
+    truncated = " truncated" if payload.get("truncated") else ""
+    stream.write(f"{returned} of {total} matches (offset {offset}){truncated}\n")
+    if not results:
+        return
+    stream.write("\n")
+    for i, result in enumerate(results, 1):
+        record = dict(result)
+        top_chunk = record.get("top_chunk")
+        if isinstance(top_chunk, dict):
+            record.setdefault("chunk_id", top_chunk.get("chunk_id"))
+            record.setdefault("text", top_chunk.get("text"))
+            record.setdefault("page", top_chunk.get("page"))
+        if record.get("page_range") and not record.get("pages"):
+            record["pages"] = record["page_range"]
+        _render_hit_line(i, record, stream)
+
+
+# --- Batch search pretty-printer ---
+
+
+@register_text_renderer("batch-search")
+def _render_batch_search(payload: Any, stream: TextIO) -> None:
+    if not isinstance(payload, dict):
+        stream.write(repr(payload) + "\n")
+        return
+    if "error" in payload:
+        stream.write(f"error: {payload['error']}\n")
+        return
+    for result in payload.get("results", []):
+        query = result.get("query") or ""
+        stream.write(f"query: {query}\n")
+        hits = result.get("hits") or []
+        if not hits:
+            stream.write("  0 results\n\n")
+            continue
+        for i, hit in enumerate(hits, 1):
+            stream.write("  ")
+            _render_hit_line(i, hit, stream)
+
+
+# --- Read passages pretty-printer ---
+
+
+@register_text_renderer("read-passages")
+def _render_read_passages(payload: Any, stream: TextIO) -> None:
+    if not isinstance(payload, dict):
+        stream.write(repr(payload) + "\n")
+        return
+    if "error" in payload:
+        stream.write(f"error: {payload['error']}\n")
+        return
+    passages = payload.get("passages") or []
+    if not passages:
+        stream.write("0 passages\n")
+        return
+    for i, passage in enumerate(passages, 1):
+        chunk_id = passage.get("chunk_id") or _source_obj(passage).get("chunk_id")
+        chunk_suffix = f"  chunk={chunk_id}" if chunk_id else ""
+        stream.write(f"{i}. {_citation(passage)}{chunk_suffix}\n")
+        text = (passage.get("text") or "").strip()
+        if text:
+            stream.write(f"{text}\n")
+        stream.write("\n")
 
 
 # --- Verify identifier pretty-printer ---
@@ -106,7 +208,7 @@ def _render_verify_identifier(payload: Any, stream: TextIO) -> None:
 
     if status == "unique":
         m = payload.get("match", {})
-        stream.write(f"unique: {m.get('title', '')}  [{m.get('doc_id', '')}]\n")
+        stream.write(f"unique: {_citation(m)}  [{m.get('doc_id', '')}]\n")
         if m.get("canonical_filename"):
             stream.write(f"  filename: {m['canonical_filename']}\n")
         return
@@ -116,7 +218,7 @@ def _render_verify_identifier(payload: Any, stream: TextIO) -> None:
         overflow = " (overflow)" if payload.get("overflow") else ""
         stream.write(f"ambiguous: {count} candidates{overflow}\n")
         for c in payload.get("candidates", []):
-            stream.write(f"  - {c.get('title', '')}  [{c.get('doc_id', '')}]\n")
+            stream.write(f"  - {_citation(c)}  [{c.get('doc_id', '')}]\n")
             for path, value in (c.get("discriminating_fields") or {}).items():
                 stream.write(f"      {path}={value!r}\n")
         suggestion = payload.get("suggestion")
@@ -150,6 +252,5 @@ def _render_documents_by_date(payload: Any, stream: TextIO) -> None:
         date = r.get("date") or ""
         date_short = date[:10] if isinstance(date, str) and len(date) >= 10 else date
         src = r.get("date_source") or ""
-        title = r.get("title") or ""
         doc_id = r.get("doc_id") or ""
-        stream.write(f"  {date_short} [{src}]  {title}  ({doc_id})\n")
+        stream.write(f"  {date_short} [{src}]  {_citation(r)}  ({doc_id})\n")

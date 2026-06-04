@@ -185,7 +185,7 @@ export default function ApiKeyDashboardPage() {
   if (!keyInfo) {
     return (
       <div className="animate-slide-in">
-        <Link to="/admin/keys" className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
+        <Link to="/settings/api-keys" className="text-sm text-blue-600 dark:text-blue-400 hover:underline">
           &larr; API Keys
         </Link>
         <p className="mt-4 text-gray-500 dark:text-gray-400">API key not found.</p>
@@ -214,7 +214,10 @@ export default function ApiKeyDashboardPage() {
     <div className="animate-slide-in space-y-6">
       {/* Header */}
       <div>
-        <Link to="/admin/keys" className="mb-2 inline-block text-sm text-blue-600 dark:text-blue-400 hover:underline">
+        <Link
+          to="/settings/api-keys"
+          className="mb-2 inline-block text-sm text-blue-600 dark:text-blue-400 hover:underline"
+        >
           &larr; API Keys
         </Link>
         <PageHeader

@@ -5,6 +5,7 @@ import { useLLMStatusContext } from '../components/LLMStatusBanner'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
 import { StatusPill } from '../components/StatusPill'
+import { modelGuidance } from '../utils/modelGuidance'
 
 interface ModelInfo {
   id: string
@@ -276,13 +277,26 @@ export default function ModelsPage() {
 
   return (
     <div className="animate-slide-in">
-      <PageHeader title="Models" subtitle="Download and manage local LLM models" />
+      <PageHeader
+        title="Models"
+        subtitle="Choose local AI models for cited answers, research, and document summaries."
+      />
 
       {error && (
         <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">
           {error}
         </div>
       )}
+
+      <Card className="mb-4 p-4">
+        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+          Local AI is useful, but model choice matters.
+        </div>
+        <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+          Larger models are better for research and synthesis. Smaller models are still useful for quick lookup, but
+          important answers should be checked against the citations.
+        </p>
+      </Card>
 
       <Card className="overflow-hidden">
         <table className="w-full text-sm">
@@ -324,11 +338,23 @@ export default function ModelsPage() {
                   </tr>
                   {tier.items.map((model) => {
                     const progress = downloadProgress.get(model.id)
+                    const guidance = modelGuidance(model)
                     return (
                       <tr key={model.id} className="bg-white dark:bg-[#2c2c2e]">
                         <td className="px-4 py-3">
                           <div className="font-medium text-gray-900 dark:text-gray-100">{model.name}</div>
                           <div className="text-xs text-gray-500 dark:text-gray-400">{model.id}</div>
+                          <div className="mt-1.5 inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/25 dark:text-blue-300">
+                            {guidance.label}
+                          </div>
+                          <div className="mt-1 max-w-xs text-xs leading-snug text-gray-500 dark:text-gray-400">
+                            {guidance.note}
+                          </div>
+                          {guidance.warning && (
+                            <div className="mt-1 max-w-xs text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                              {guidance.warning}
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{formatSize(model.size_bytes)}</td>
                         <td className="px-4 py-3 text-gray-700 dark:text-gray-300">

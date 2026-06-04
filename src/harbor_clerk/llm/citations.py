@@ -2,10 +2,10 @@
 
 The chat and research loops execute tools whose JSON output contains
 references back to corpus chunks and documents. This module pulls those
-references into a uniform ``{doc_id, doc_title?, chunk_id?, pages?, score?}``
-shape so that the chat ``done`` SSE event and ``ResearchDetail`` can expose a
-``citations`` list to clients (UI badges, test-harness ``citation_overlap``,
-etc.).
+references into a uniform ``{doc_id, doc_title?, chunk_id?, pages?, source?,
+citation?, score?}`` shape so that the chat ``done`` SSE event and
+``ResearchDetail`` can expose a ``citations`` list to clients (UI badges,
+test-harness ``citation_overlap``, etc.).
 
 The extractor is best-effort: tool results that don't look like citations
 (errors, status responses, free-form summaries) return an empty list. It
@@ -51,27 +51,35 @@ def extract_citations_from_tool_result(raw_result: str) -> list[dict]:
     parent_doc_title = data.get("doc_title") or data.get("title")
 
     def _record(d: dict, *, fallback_doc_id: Any = None, fallback_doc_title: Any = None) -> None:
-        doc_id = d.get("doc_id") or fallback_doc_id
+        source = _extract_source(d)
+        doc_id = d.get("doc_id") or (source.get("doc_id") if source else None) or fallback_doc_id
         if doc_id is None:
             # passages-only case: chunk_id present, no doc_id. Capture the
             # chunk so a chunk→doc join later can still resolve it; the
             # test harness will ignore entries with no doc_id when computing
             # citation_overlap.
-            if not d.get("chunk_id"):
+            if not (d.get("chunk_id") or (source.get("chunk_id") if source else None)):
                 return
             cite: dict = {}
         else:
             cite = {"doc_id": str(doc_id)}
 
-        title = d.get("doc_title") or d.get("title") or fallback_doc_title
+        if source:
+            cite["source"] = dict(source)
+
+        title = d.get("doc_title") or d.get("title") or (source.get("doc_title") if source else None)
+        title = title or fallback_doc_title
         if title:
             cite["doc_title"] = title
-        chunk_id = d.get("chunk_id")
+        chunk_id = d.get("chunk_id") or (source.get("chunk_id") if source else None)
         if chunk_id:
             cite["chunk_id"] = str(chunk_id)
-        pages = d.get("pages")
+        pages = d.get("pages") or (source.get("pages") if source else None)
         if pages:
             cite["pages"] = pages
+        citation = d.get("citation") or (source.get("citation") if source else None)
+        if citation:
+            cite["citation"] = citation
         score = d.get("score")
         if isinstance(score, (int, float)):
             cite["score"] = score
@@ -118,6 +126,17 @@ def extract_citations_from_tool_result(raw_result: str) -> list[dict]:
     return out
 
 
+def _extract_source(d: dict) -> dict | None:
+    """Return a copied SourceRef-like dict from a result row, if present."""
+    source = d.get("source")
+    if not isinstance(source, dict):
+        # kb_find_related already used "source" for linked/embedding before
+        # SourceRef existed, so that tool exposes the citation object under
+        # source_ref to preserve compatibility.
+        source = d.get("source_ref")
+    return dict(source) if isinstance(source, dict) else None
+
+
 def dedupe_citations(cites: list[dict]) -> list[dict]:
     """Dedupe by (doc_id, chunk_id), preserving first-seen order.
 
@@ -141,8 +160,19 @@ def dedupe_citations(cites: list[dict]) -> list[dict]:
             if isinstance(cur_score, (int, float)) and (
                 not isinstance(prev_score, (int, float)) or cur_score > prev_score
             ):
-                seen[key] = c
+                seen[key] = _merge_richer(prev, c)
+            else:
+                seen[key] = _merge_richer(c, prev)
         else:
             seen[key] = c
             order.append(key)
     return [seen[k] for k in order]
+
+
+def _merge_richer(old: dict, new: dict) -> dict:
+    """Prefer ``new`` while carrying rich source fields forward from ``old``."""
+    merged = dict(new)
+    for key in ("source", "citation", "doc_title", "pages"):
+        if key not in merged and key in old:
+            merged[key] = old[key]
+    return merged
