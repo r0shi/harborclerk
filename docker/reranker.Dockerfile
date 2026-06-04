@@ -13,10 +13,10 @@ COPY embedder /app/embedder
 RUN pip install --no-cache-dir /app/embedder
 
 # Pre-download the reranker weights at build time. ~1.2 GB.
-RUN python -c "from huggingface_hub import snapshot_download; \
-  snapshot_download(repo_id='BAAI/bge-reranker-v2-m3', \
-                    local_dir='/models/bge-reranker-v2-m3', \
-                    local_dir_use_symlinks=False)"
+COPY docker/download_hf_model.py /tmp/download_hf_model.py
+RUN python /tmp/download_hf_model.py \
+    --repo-id BAAI/bge-reranker-v2-m3 \
+    --local-dir /models/bge-reranker-v2-m3
 ENV RERANKER_MODEL=/models/bge-reranker-v2-m3
 
 ENV HOST=0.0.0.0
