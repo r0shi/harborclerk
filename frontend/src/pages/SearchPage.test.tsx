@@ -163,12 +163,16 @@ describe('SearchPage', () => {
     fireEvent.change(screen.getByLabelText('MIME type'), { target: { value: 'application/pdf' } })
     fireEvent.change(screen.getByLabelText('Email from'), { target: { value: 'alice@example.com' } })
     fireEvent.change(screen.getByLabelText('Email subject'), { target: { value: 'invoice' } })
+    fireEvent.change(screen.getByLabelText('Document ID'), {
+      target: { value: '11111111-1111-1111-1111-111111111111' },
+    })
 
     expect(screen.getByLabelText('Generated metadata JSON')).toHaveTextContent(
       '"email.from_address": "alice@example.com"',
     )
     expect(screen.getByText('Text: force majeure')).toBeInTheDocument()
     expect(screen.getByText('From: alice@example.com')).toBeInTheDocument()
+    expect(screen.getByText('Doc: 11111111-1111-1111-1111-111111111111')).toBeInTheDocument()
 
     const input = screen.getByPlaceholderText('Search documents...')
     fireEvent.change(input, { target: { value: 'contract' } })
@@ -179,6 +183,7 @@ describe('SearchPage', () => {
         query: 'contract',
         k: 25,
         offset: 0,
+        doc_id: '11111111-1111-1111-1111-111111111111',
         text_contains: 'force majeure',
         language: 'en',
         mime_type: 'application/pdf',
@@ -186,6 +191,85 @@ describe('SearchPage', () => {
           'email.from_address': 'alice@example.com',
           'email.subject_contains': 'invoice',
         },
+      })
+    })
+  })
+
+  it('lets users remove individual filter chips', async () => {
+    postMock.mockResolvedValueOnce({
+      hits: [],
+      total_candidates: 0,
+      has_more: false,
+      possible_conflict: false,
+      conflict_sources: [],
+    })
+
+    renderSearchPage()
+
+    fireEvent.click(screen.getByRole('button', { name: /Filters/ }))
+    fireEvent.change(screen.getByLabelText('Document ID'), {
+      target: { value: '11111111-1111-1111-1111-111111111111' },
+    })
+
+    expect(screen.getByText('Doc: 11111111-1111-1111-1111-111111111111')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Remove Doc:/ }))
+
+    expect(screen.queryByText('Doc: 11111111-1111-1111-1111-111111111111')).not.toBeInTheDocument()
+
+    const input = screen.getByPlaceholderText('Search documents...')
+    fireEvent.change(input, { target: { value: 'contract' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(postMock).toHaveBeenCalledWith('/api/search', {
+        query: 'contract',
+        k: 25,
+        offset: 0,
+      })
+    })
+  })
+
+  it('validates document id filters before submitting', () => {
+    renderSearchPage()
+
+    fireEvent.click(screen.getByRole('button', { name: /Filters/ }))
+    fireEvent.change(screen.getByLabelText('Document ID'), { target: { value: 'not-a-uuid' } })
+
+    const input = screen.getByPlaceholderText('Search documents...')
+    fireEvent.change(input, { target: { value: 'contract' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    expect(screen.getByText('Document ID filter must be a valid UUID.')).toBeInTheDocument()
+    expect(postMock).not.toHaveBeenCalled()
+  })
+
+  it('sends the selected find-all sort order', async () => {
+    postMock.mockResolvedValueOnce({
+      results: [],
+      total_matches: 0,
+      returned: 0,
+      offset: 0,
+      truncated: false,
+      sort_by: 'date_desc',
+      presentation: 'full',
+    })
+
+    renderSearchPage()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Find All mode' }))
+    fireEvent.change(screen.getByLabelText('Find All sort'), { target: { value: 'date_desc' } })
+    const input = screen.getByPlaceholderText('Find all matching documents...')
+    fireEvent.change(input, { target: { value: 'renewal' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(postMock).toHaveBeenCalledWith('/api/search/find-all', {
+        query: 'renewal',
+        max_results: 25,
+        offset: 0,
+        presentation: 'full',
+        sort_by: 'date_desc',
       })
     })
   })

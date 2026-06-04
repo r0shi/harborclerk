@@ -4,9 +4,12 @@ import { post } from '../api'
 import { Card } from '../components/Card'
 import { FolderPicker } from '../components/FolderPicker'
 import { PageHeader } from '../components/PageHeader'
+import { SourceCitation } from '../components/SourceCitation'
 import { useWatchedFolders } from '../hooks/useWatchedFolders'
+import type { SourceRef } from '../types/sourceRef'
 
 type SearchMode = 'search' | 'find_all'
+type FindAllSort = 'relevance' | 'date_desc' | 'date_asc'
 
 interface SearchFilters {
   textContains: string
@@ -18,19 +21,7 @@ interface SearchFilters {
   emailTo: string
   emailCc: string
   emailSubject: string
-}
-
-interface SourceRef {
-  doc_id: string
-  doc_title: string
-  chunk_id?: string
-  pages?: string
-  section?: string
-  source_kind: 'document' | 'email' | 'attachment' | 'unknown'
-  source_label: string
-  folder_label?: string
-  relative_path?: string
-  citation: string
+  docId: string
 }
 
 interface SearchHit {
@@ -88,7 +79,7 @@ interface FindAllResponse {
   returned: number
   offset: number
   truncated: boolean
-  sort_by: 'relevance' | 'date_desc' | 'date_asc'
+  sort_by: FindAllSort
   presentation: 'brief' | 'full'
 }
 
@@ -108,6 +99,7 @@ const EMPTY_FILTERS: SearchFilters = {
   emailTo: '',
   emailCc: '',
   emailSubject: '',
+  docId: '',
 }
 
 interface SearchState {
@@ -118,6 +110,7 @@ interface SearchState {
   pageSize: number
   lastQuery: string
   filters?: SearchFilters
+  sortBy?: FindAllSort
 }
 
 function saveSearchState(state: SearchState) {
@@ -175,6 +168,10 @@ function normalizedFilters(filters?: Partial<SearchFilters>): SearchFilters {
   return { ...EMPTY_FILTERS, ...filters }
 }
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+}
+
 function buildMetadataFilter(filters: SearchFilters): Record<string, string> {
   const metadataFilter: Record<string, string> = {}
   const emailFrom = filters.emailFrom.trim()
@@ -191,6 +188,7 @@ function buildMetadataFilter(filters: SearchFilters): Record<string, string> {
 function buildFilterPayload(filters: SearchFilters) {
   const metadataFilter = buildMetadataFilter(filters)
   return {
+    ...(filters.docId.trim() && { doc_id: filters.docId.trim() }),
     ...(filters.textContains.trim() && { text_contains: filters.textContains.trim() }),
     ...(filters.after && { after: filters.after }),
     ...(filters.before && { before: filters.before }),
@@ -200,18 +198,20 @@ function buildFilterPayload(filters: SearchFilters) {
   }
 }
 
-function activeFilterLabels(filters: SearchFilters): string[] {
-  const labels: string[] = []
-  if (filters.textContains.trim()) labels.push(`Text: ${filters.textContains.trim()}`)
-  if (filters.after) labels.push(`After: ${filters.after}`)
-  if (filters.before) labels.push(`Before: ${filters.before}`)
-  if (filters.language) labels.push(`Language: ${filters.language}`)
-  if (filters.mimeType.trim()) labels.push(`Type: ${filters.mimeType.trim()}`)
-  if (filters.emailFrom.trim()) labels.push(`From: ${filters.emailFrom.trim()}`)
-  if (filters.emailTo.trim()) labels.push(`To: ${filters.emailTo.trim()}`)
-  if (filters.emailCc.trim()) labels.push(`Cc: ${filters.emailCc.trim()}`)
-  if (filters.emailSubject.trim()) labels.push(`Subject: ${filters.emailSubject.trim()}`)
-  return labels
+function activeFilterEntries(filters: SearchFilters): Array<{ key: keyof SearchFilters; label: string }> {
+  const entries: Array<{ key: keyof SearchFilters; label: string }> = []
+  if (filters.textContains.trim()) entries.push({ key: 'textContains', label: `Text: ${filters.textContains.trim()}` })
+  if (filters.after) entries.push({ key: 'after', label: `After: ${filters.after}` })
+  if (filters.before) entries.push({ key: 'before', label: `Before: ${filters.before}` })
+  if (filters.language) entries.push({ key: 'language', label: `Language: ${filters.language}` })
+  if (filters.mimeType.trim()) entries.push({ key: 'mimeType', label: `Type: ${filters.mimeType.trim()}` })
+  if (filters.emailFrom.trim()) entries.push({ key: 'emailFrom', label: `From: ${filters.emailFrom.trim()}` })
+  if (filters.emailTo.trim()) entries.push({ key: 'emailTo', label: `To: ${filters.emailTo.trim()}` })
+  if (filters.emailCc.trim()) entries.push({ key: 'emailCc', label: `Cc: ${filters.emailCc.trim()}` })
+  if (filters.emailSubject.trim())
+    entries.push({ key: 'emailSubject', label: `Subject: ${filters.emailSubject.trim()}` })
+  if (filters.docId.trim()) entries.push({ key: 'docId', label: `Doc: ${filters.docId.trim()}` })
+  return entries
 }
 
 function Pagination({
@@ -285,14 +285,15 @@ export default function SearchPage() {
   const [pageSize, setPageSize] = useState(initial?.pageSize || 25)
   const [currentPage, setCurrentPage] = useState(initial?.currentPage || 1)
   const [scopeFolderIds, setScopeFolderIds] = useState<string[]>([])
+  const [sortBy, setSortBy] = useState<FindAllSort>(initial?.sortBy || 'relevance')
   const lastQuery = useRef(initial?.lastQuery || '')
   const wrapperRef = useRef<HTMLDivElement>(null)
   const { folders } = useWatchedFolders()
 
   // Persist search state to sessionStorage
   useEffect(() => {
-    saveSearchState({ mode, query, results, currentPage, pageSize, lastQuery: lastQuery.current, filters })
-  }, [mode, query, results, currentPage, pageSize, filters])
+    saveSearchState({ mode, query, results, currentPage, pageSize, lastQuery: lastQuery.current, filters, sortBy })
+  }, [mode, query, results, currentPage, pageSize, filters, sortBy])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -311,9 +312,15 @@ export default function SearchPage() {
     size: number,
     folderIds: string[] = scopeFolderIds,
     searchMode: SearchMode = mode,
+    findAllSort: FindAllSort = sortBy,
   ) {
     const trimmed = q.trim()
     if (!trimmed) return
+    const docId = filters.docId.trim()
+    if (docId && !isUuid(docId)) {
+      setError('Document ID filter must be a valid UUID.')
+      return
+    }
     setError('')
     setLoading(true)
     addToHistory(trimmed)
@@ -329,7 +336,7 @@ export default function SearchPage() {
               max_results: size,
               offset,
               presentation: 'full',
-              sort_by: 'relevance',
+              sort_by: findAllSort,
               ...filterPayload,
               ...(folderIds.length > 0 && { scope: { folder_ids: folderIds } }),
             })
@@ -376,6 +383,14 @@ export default function SearchPage() {
     lastQuery.current = ''
   }
 
+  function handleSortChange(nextSort: FindAllSort) {
+    setSortBy(nextSort)
+    setCurrentPage(1)
+    if (mode === 'find_all' && lastQuery.current) {
+      doSearch(lastQuery.current, 1, pageSize, scopeFolderIds, 'find_all', nextSort)
+    }
+  }
+
   function selectHistoryItem(q: string) {
     setQuery(q)
     setShowHistory(false)
@@ -393,6 +408,10 @@ export default function SearchPage() {
     setFilters((current) => ({ ...current, [key]: value }))
   }
 
+  function clearFilter(key: keyof SearchFilters) {
+    setFilters((current) => ({ ...current, [key]: '' }))
+  }
+
   function clearFilters() {
     setFilters(EMPTY_FILTERS)
   }
@@ -400,7 +419,7 @@ export default function SearchPage() {
   const searchResults = mode === 'search' && results && !isFindAllResponse(results) ? results : null
   const findAllResults = mode === 'find_all' && isFindAllResponse(results) ? results : null
   const metadataFilter = buildMetadataFilter(filters)
-  const activeFilters = activeFilterLabels(filters)
+  const activeFilters = activeFilterEntries(filters)
   const activeFilterCount = activeFilters.length
   const totalCount = findAllResults?.total_matches ?? searchResults?.total_candidates ?? 0
   const maxScore = searchResults?.hits[0]?.score || findAllResults?.results[0]?.score || 1
@@ -494,6 +513,18 @@ export default function SearchPage() {
           )}
         </div>
         <FolderPicker value={scopeFolderIds} onChange={setScopeFolderIds} folders={folders} size="sm" />
+        {mode === 'find_all' && (
+          <select
+            value={sortBy}
+            onChange={(e) => handleSortChange(e.target.value as FindAllSort)}
+            aria-label="Find All sort"
+            className="rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-2.5 py-1.5 text-sm text-(--color-text-primary)"
+          >
+            <option value="relevance">Relevance</option>
+            <option value="date_desc">Newest</option>
+            <option value="date_asc">Oldest</option>
+          </select>
+        )}
         <button
           type="button"
           onClick={() => setFiltersOpen((open) => !open)}
@@ -529,12 +560,20 @@ export default function SearchPage() {
 
       {activeFilterCount > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          {activeFilters.map((label) => (
+          {activeFilters.map(({ key, label }) => (
             <span
-              key={label}
-              className="rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-2 py-1 text-xs font-medium text-(--color-text-primary)"
+              key={key}
+              className="inline-flex items-center gap-1 rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-2 py-1 text-xs font-medium text-(--color-text-primary)"
             >
               {label}
+              <button
+                type="button"
+                onClick={() => clearFilter(key)}
+                aria-label={`Remove ${label}`}
+                className="ml-0.5 rounded-sm px-1 text-(--color-text-secondary) hover:bg-(--color-bg-tertiary) hover:text-(--color-text-primary)"
+              >
+                x
+              </button>
             </span>
           ))}
           <button
@@ -634,6 +673,15 @@ export default function SearchPage() {
                 className="input-base"
               />
             </label>
+            <label className="block md:col-span-2 xl:col-span-2">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Document ID</span>
+              <input
+                type="text"
+                value={filters.docId}
+                onChange={(e) => updateFilter('docId', e.target.value)}
+                className="input-base font-mono text-xs"
+              />
+            </label>
             <div className="md:col-span-2 xl:col-span-2">
               <div className="mb-1 text-xs font-medium text-(--color-text-secondary)">Metadata JSON</div>
               <pre
@@ -642,6 +690,9 @@ export default function SearchPage() {
               >
                 {JSON.stringify(metadataFilter, null, 2)}
               </pre>
+              <p className="mt-1 text-[11px] text-(--color-text-secondary)">
+                View-only for now. Friendly email filters generate this JSON.
+              </p>
             </div>
           </div>
         </Card>
@@ -708,7 +759,7 @@ export default function SearchPage() {
                     </div>
                     <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{hit.chunk_text}</p>
                     <div className="flex items-center space-x-3 text-xs text-gray-400">
-                      {hit.citation && <span>{hit.citation}</span>}
+                      <SourceCitation source={hit.source} citation={hit.citation} />
                       {hit.page_start != null && (
                         <span>
                           Page {hit.page_start}
@@ -716,7 +767,6 @@ export default function SearchPage() {
                         </span>
                       )}
                       <span>Lang: {hit.language}</span>
-                      {hit.source?.relative_path && <span>{hit.source.relative_path}</span>}
                       {hit.ocr_used && (
                         <span className="rounded-md text-[11px] font-medium bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5">
                           OCR
@@ -805,11 +855,10 @@ export default function SearchPage() {
                       <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{hit.top_chunk.text}</p>
                     )}
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
-                      {hit.citation && <span>{hit.citation}</span>}
+                      <SourceCitation source={hit.source} citation={hit.citation} />
                       {hit.page_range && <span>Pages {hit.page_range}</span>}
                       {hit.language && <span>Lang: {hit.language}</span>}
                       {hit.mime_type && <span>{hit.mime_type}</span>}
-                      {hit.source?.relative_path && <span>{hit.source.relative_path}</span>}
                     </div>
                   </Card>
                 )
