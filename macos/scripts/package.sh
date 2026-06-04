@@ -9,6 +9,9 @@ BUILD_DIR="${BUILD_DIR:-$MACOS_DIR/build}"
 mkdir -p "$BUILD_DIR"
 BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
 
+# Avoid propagating Finder/provenance extended attributes into assembled bundles.
+export COPYFILE_DISABLE=1
+
 echo "==> Packaging Harbor Clerk apps"
 
 FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
