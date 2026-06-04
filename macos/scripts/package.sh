@@ -15,8 +15,17 @@ export COPYFILE_DISABLE=1
 copy_bundle() {
     local src="$1"
     local dest="$2"
-    rm -rf "$dest"
+    remove_tree "$dest"
     ditto --norsrc --noextattr --noqtn --noacl "$src" "$dest"
+}
+
+remove_tree() {
+    local path="$1"
+    if [ -e "$path" ]; then
+        xattr -cr "$path" 2>/dev/null || true
+        chmod -R u+w "$path" 2>/dev/null || true
+        rm -rf "$path"
+    fi
 }
 
 echo "==> Packaging Harbor Clerk apps"
@@ -58,7 +67,7 @@ fi
 # ── Copy resources into server app bundle ──
 RESOURCES="$SERVER_APP/Contents/Resources"
 # Clean previous resources to avoid permission errors and nested dirs
-rm -rf "$RESOURCES"
+remove_tree "$RESOURCES"
 mkdir -p "$RESOURCES"
 echo "==> Copying resources to server app bundle"
 
@@ -117,7 +126,7 @@ cp "$PROJECT_ROOT/art/logo-favicon.png" "$RESOURCES/menubar_icon.png"
 
 # ── Copy to output ──
 OUTPUT_DIR="$BUILD_DIR/output"
-rm -rf "$OUTPUT_DIR"
+remove_tree "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 copy_bundle "$SERVER_APP" "$OUTPUT_DIR/HarborClerkServer.app"
 copy_bundle "$CLIENT_APP" "$OUTPUT_DIR/HarborClerk.app"
