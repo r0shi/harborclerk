@@ -9,20 +9,33 @@ import OnboardingWizard from './OnboardingWizard'
 import { useCorpusBannerState } from '../hooks/useCorpusBannerState'
 import { useAreaAccent } from '../hooks/useAreaAccent'
 
-function TabLink({ to, end, icon, children }: { to: string; end?: boolean; icon?: string; children: React.ReactNode }) {
+function TabLink({
+  to,
+  end,
+  icon,
+  activeWhen,
+  children,
+}: {
+  to: string
+  end?: boolean
+  icon?: string
+  activeWhen?: (pathname: string) => boolean
+  children: React.ReactNode
+}) {
+  const location = useLocation()
   return (
     <NavLink
       to={to}
       end={end}
       className={({ isActive }) =>
         `relative inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors ${
-          isActive
+          isActive || activeWhen?.(location.pathname)
             ? 'text-(--area-accent-text)'
             : 'text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6 hover:text-(--color-text-primary)'
         }`
       }
       style={({ isActive }) =>
-        isActive
+        isActive || activeWhen?.(location.pathname)
           ? {
               backgroundColor: 'var(--area-accent-tint)',
               boxShadow: 'inset 0 0 0 1px var(--area-accent)',
@@ -98,7 +111,7 @@ export default function Layout() {
               <TabLink to="/docs" icon="📄">
                 Documents
               </TabLink>
-              <TabLink to="/ask" icon="💬">
+              <TabLink to="/ask" icon="💬" activeWhen={(pathname) => pathname.startsWith('/c/')}>
                 Ask
               </TabLink>
               <TabLink to="/research" icon="🐙">
@@ -115,7 +128,15 @@ export default function Layout() {
               <TabLink to="/stats" icon="📊">
                 Observatory
               </TabLink>
-              <TabLink to="/settings" icon="⚙️">
+              <TabLink
+                to="/settings"
+                icon="⚙️"
+                activeWhen={(pathname) =>
+                  pathname.startsWith('/admin') ||
+                  pathname.startsWith('/integrations') ||
+                  pathname.startsWith('/preferences')
+                }
+              >
                 Settings
               </TabLink>
               <div className="relative ml-2" ref={menuRef}>

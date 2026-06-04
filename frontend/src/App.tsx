@@ -53,7 +53,7 @@ export default function App() {
           <Route path="/chat" element={<Navigate to="/ask" replace />} />
           <Route path="/chat/:conversationId" element={<ChatRedirect />} />
           <Route path="/settings" element={<SystemSettingsPage />} />
-          <Route path="/settings/preferences" element={<Navigate to="/preferences" replace />} />
+          <Route path="/settings/preferences" element={<PreferencesPage />} />
           <Route path="/preferences" element={<PreferencesPage />} />
           <Route element={<AdminRoute />}>
             <Route path="/integrations" element={<IntegrationsPage />} />

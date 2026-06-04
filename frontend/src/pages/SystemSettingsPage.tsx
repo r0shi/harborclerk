@@ -18,7 +18,7 @@ const SECTIONS: { label: string; items: SettingsItem[] }[] = [
     label: 'Personal',
     items: [
       {
-        to: '/preferences',
+        to: '/settings/preferences',
         label: 'Preferences',
         sub: 'Theme, page size, and account settings',
         icon: '👤',
