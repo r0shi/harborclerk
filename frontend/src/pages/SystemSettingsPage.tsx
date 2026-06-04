@@ -127,7 +127,12 @@ export default function SystemSettingsPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
-      <PageHeader title="Settings" subtitle="Preferences, integrations, models, status, and diagnostics." />
+      <PageHeader
+        title="Settings"
+        subtitle={
+          isAdmin ? 'Preferences, integrations, models, status, and diagnostics.' : 'Preferences and account settings.'
+        }
+      />
       {!isAdmin && (
         <p className="mb-5 rounded-lg bg-(--color-bg-secondary) px-3 py-2 text-sm text-(--color-text-secondary)">
           Admin-only settings are hidden for this account.
