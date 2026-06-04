@@ -74,6 +74,27 @@ async def test_list_documents_filter(client, admin_user, admin_token, db_session
     assert data["items"][0]["title"] == "Budget Report 2024"
 
 
+async def test_list_documents_filter_pipeline_status(client, admin_user, admin_token, db_session):
+    db_session.add_all(
+        [
+            Document(title="Ready Doc", status="active", pipeline_status=PipelineStatus.ready, sha256=b"r" * 32),
+            Document(title="Failed Doc", status="active", pipeline_status=PipelineStatus.error, sha256=b"f" * 32),
+        ]
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/docs?pipeline_status=error", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["title"] == "Failed Doc"
+
+
+async def test_list_documents_filter_pipeline_status_rejects_unknown(client, admin_user, admin_token):
+    resp = await client.get("/api/docs?pipeline_status=made_up", headers=auth_header(admin_token))
+    assert resp.status_code == 422
+
+
 async def test_list_documents_pagination(client, admin_user, admin_token, db_session):
     for i in range(5):
         db_session.add(Document(title=f"Doc {i}", status="active", **_DOC_DEFAULTS))

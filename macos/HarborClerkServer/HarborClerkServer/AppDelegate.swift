@@ -139,10 +139,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusWindowItem.target = self
         menu.addItem(statusWindowItem)
 
-        let consoleItem = NSMenuItem(title: "View Logs in Console...", action: #selector(openConsole), keyEquivalent: "l")
-        consoleItem.target = self
-        menu.addItem(consoleItem)
-
         let preferencesItem = NSMenuItem(title: "Preferences...", action: #selector(showPreferences), keyEquivalent: ",")
         preferencesItem.target = self
         menu.addItem(preferencesItem)
@@ -316,14 +312,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusWindowController?.showWindow(nil)
         statusWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc private func openConsole() {
-        if let consoleURL = NSWorkspace.shared.urlForApplication(
-            withBundleIdentifier: "com.apple.Console"
-        ) {
-            NSWorkspace.shared.openApplication(at: consoleURL, configuration: .init())
-        }
     }
 
     @objc private func showPreferences() {

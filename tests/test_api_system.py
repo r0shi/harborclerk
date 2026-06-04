@@ -1,5 +1,10 @@
 """Tests for /api/system/* endpoints."""
 
+from datetime import UTC, datetime, timedelta
+
+from harbor_clerk.models import Document, IngestionJob
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
+from harbor_clerk.models.watched import WatchedFolder
 from tests.conftest import auth_header
 
 
@@ -86,6 +91,113 @@ async def test_health_check_cli_shim_absent_on_docker(client):
         assert data.get("cli_shim_install_status") is None
     finally:
         s.native_config_file = original
+
+
+async def test_status_summary_surfaces_recovery_attention(client, admin_user, admin_token, db_session):
+    now = datetime.now(UTC)
+    failed_doc = Document(
+        title="Broken scan",
+        status="active",
+        sha256=b"f" * 32,
+        pipeline_status=PipelineStatus.error,
+        error="Tika failed",
+    )
+    processing_doc = Document(
+        title="Still embedding",
+        status="active",
+        sha256=b"p" * 32,
+        pipeline_status=PipelineStatus.embedding,
+    )
+    ner_doc = Document(
+        title="No entities",
+        status="active",
+        sha256=b"n" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add_all([failed_doc, processing_doc, ner_doc])
+    await db_session.flush()
+
+    db_session.add_all(
+        [
+            IngestionJob(
+                doc_id=failed_doc.doc_id,
+                stage=JobStage.extract,
+                status=JobStatus.error,
+                error="Tika failed",
+            ),
+            IngestionJob(
+                doc_id=processing_doc.doc_id,
+                stage=JobStage.embed,
+                status=JobStatus.running,
+                started_at=now - timedelta(hours=3),
+            ),
+            IngestionJob(
+                doc_id=ner_doc.doc_id,
+                stage=JobStage.entities,
+                status=JobStatus.done,
+                metrics={"skipped": True, "reason": "spacy_unavailable"},
+            ),
+        ]
+    )
+    db_session.add(WatchedFolder(path="/missing", unavailable_reason="permission denied"))
+    await db_session.flush()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "needs_attention"
+    assert data["counts"]["failed_documents"] == 1
+    assert data["counts"]["processing_documents"] == 1
+    assert data["counts"]["stuck_jobs"] == 1
+    assert data["counts"]["unavailable_folders"] == 1
+    assert data["counts"]["ner_skipped_documents"] == 1
+
+    issue_kinds = {issue["kind"] for issue in data["needs_attention"]}
+    assert {
+        "failed_documents",
+        "stuck_jobs",
+        "folder_access",
+        "entity_extraction_skipped",
+    }.issubset(issue_kinds)
+    assert data["recent_failed_documents"][0]["title"] == "Broken scan"
+    assert data["recent_failed_documents"][0]["failed_stage"] == "extract"
+    assert data["recent_processing_documents"][0]["title"] == "Still embedding"
+
+
+async def test_status_summary_ready_when_no_attention_items(client, admin_user, admin_token, db_session):
+    ready_doc = Document(
+        title="Ready",
+        status="active",
+        sha256=b"r" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    deleted_failed_doc = Document(
+        title="Deleted failure",
+        status="deleted",
+        sha256=b"d" * 32,
+        pipeline_status=PipelineStatus.error,
+    )
+    db_session.add_all([ready_doc, deleted_failed_doc])
+    db_session.add(WatchedFolder(path="/docs"))
+    await db_session.flush()
+    db_session.add(
+        IngestionJob(
+            doc_id=deleted_failed_doc.doc_id,
+            stage=JobStage.extract,
+            status=JobStatus.error,
+            error="old failure",
+        )
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "ready"
+    assert data["counts"]["ready_documents"] == 1
+    assert data["counts"]["failed_documents"] == 0
+    assert data["counts"]["failed_jobs"] == 0
+    assert data["needs_attention"] == []
 
 
 # ---------------------------------------------------------------------------
