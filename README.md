@@ -280,7 +280,7 @@ Connect ChatGPT, Claude Desktop, Claude Code, Gemini CLI, OpenClaw, or any MCP-c
 
 ### Agentic CLI — full surface
 
-The `harbor-clerk` CLI mirrors 18 of the 19 MCP tools as shell subcommands. See the [Three ways to use Harbor Clerk](#three-ways-to-use-harbor-clerk) overview above for the framing; this section is the operator detail.
+The `harbor-clerk` CLI mirrors the MCP tool surface as shell subcommands, including `find-all` for document enumeration. See the [Three ways to use Harbor Clerk](#three-ways-to-use-harbor-clerk) overview above for the framing; this section is the operator detail.
 
 **Enabling it:**
 
@@ -337,6 +337,7 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 | `/api/stats/entity-network` | GET | Entity co-occurrence network graph |
 | `/api/docs/{id}/stats` | GET | Per-document statistics |
 | `/api/search` | POST | Hybrid search (with optional filtering and facets) |
+| `/api/search/find-all` | POST | Enumerate matching documents with filters and pagination |
 | `/api/passages/read` | POST | Read passages by chunk IDs |
 | `/api/chat/conversations` | GET/POST | List or create chat conversations |
 | `/api/chat/conversations/{id}/messages` | POST | Send a message (streamed response with RAG) |
@@ -356,13 +357,13 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 
 ### MCP
 
-`POST /mcp` — Streamable HTTP transport. Authenticate with `Authorization: Bearer <api_key>`. 19 tools available; the CLI mirrors all of them except `kb_find_all` (which is an enumeration shape that agents use less than search).
+`POST /mcp` — Streamable HTTP transport. Authenticate with `Authorization: Bearer <api_key>`. 19 tools available; the CLI mirrors the same practical tool surface, including `kb_find_all` via `harbor-clerk find-all`.
 
 | Tool | Description |
 |---|---|
 | `kb_search` | Hybrid search with pagination, detail modes, and optional filters |
 | `kb_batch_search` | Run up to 5 search queries in a single call |
-| `kb_find_all` | Unified enumeration: list, filter, and paginate documents without scoring (MCP-only) |
+| `kb_find_all` | Unified enumeration: list, filter, and paginate matching documents |
 | `kb_read_passages` | Read specific passages by chunk ID |
 | `kb_expand_context` | Get surrounding chunks for a given chunk |
 | `kb_get_document` | Document metadata and summary |

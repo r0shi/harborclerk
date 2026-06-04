@@ -47,13 +47,21 @@ interface ScopePreview {
 }
 
 // Mirrors src/harbor_clerk/api/scope.py — keep in sync
-const SEARCH_TIER_TOOLS = ['kb_search', 'kb_batch_search', 'kb_corpus_overview', 'kb_list_recent'] as const
+const SEARCH_TIER_TOOLS = [
+  'kb_search',
+  'kb_batch_search',
+  'kb_corpus_overview',
+  'kb_list_recent',
+  'kb_find_all',
+  'kb_documents_by_date',
+] as const
 const READ_TIER_TOOLS = [
   ...SEARCH_TIER_TOOLS,
   'kb_read_passages',
   'kb_expand_context',
   'kb_document_outline',
   'kb_get_document',
+  'kb_verify_identifier',
 ] as const
 const FULL_TIER_TOOLS = [
   ...READ_TIER_TOOLS,
