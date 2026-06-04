@@ -1,5 +1,7 @@
 FROM python:3.12-slim AS builder
 
+ARG PRELOAD_MODEL=1
+
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
@@ -18,12 +20,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Pre-download the Granite-R2 weights at build time so the container
 # starts immediately. ~700 MB to image size; acceptable per project policy.
 COPY docker/download_hf_model.py /tmp/download_hf_model.py
-RUN /app/.venv/bin/python /tmp/download_hf_model.py \
-    --repo-id ibm-granite/granite-embedding-311m-multilingual-r2 \
-    --local-dir /models/granite-embedding-311m-multilingual-r2 \
-    --ignore-pattern 'onnx/*' \
-    --ignore-pattern 'openvino/*' \
-    --ignore-pattern 'openvino_model.*'
+RUN if [ "$PRELOAD_MODEL" = "1" ]; then \
+        /app/.venv/bin/python /tmp/download_hf_model.py \
+            --repo-id ibm-granite/granite-embedding-311m-multilingual-r2 \
+            --local-dir /models/granite-embedding-311m-multilingual-r2 \
+            --ignore-pattern 'onnx/*' \
+            --ignore-pattern 'openvino/*' \
+            --ignore-pattern 'openvino_model.*'; \
+    else \
+        mkdir -p /models/granite-embedding-311m-multilingual-r2; \
+    fi
 
 # ── Runtime ──
 FROM python:3.12-slim

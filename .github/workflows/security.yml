@@ -52,10 +52,14 @@ jobs:
         run: docker build -f docker/app.Dockerfile -t harborclerk-app:ci .
 
       - name: Build embedder image
-        run: docker build -f docker/embedder.Dockerfile -t harborclerk-embedder:ci .
+        # CI scans OS/dependency layers; model blobs are preloaded in normal
+        # builds but skipped here to avoid unauthenticated Hugging Face 429s.
+        run: docker build -f docker/embedder.Dockerfile --build-arg PRELOAD_MODEL=0 -t harborclerk-embedder:ci .
 
       - name: Build reranker image
-        run: docker build -f docker/reranker.Dockerfile -t harborclerk-reranker:ci .
+        # CI scans OS/dependency layers; model blobs are preloaded in normal
+        # builds but skipped here to avoid unauthenticated Hugging Face 429s.
+        run: docker build -f docker/reranker.Dockerfile --build-arg PRELOAD_MODEL=0 -t harborclerk-reranker:ci .
 
       - name: Install Trivy
         run: |

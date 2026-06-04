@@ -3,6 +3,8 @@
 
 FROM python:3.12-slim
 
+ARG PRELOAD_MODEL=1
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,9 +16,13 @@ RUN pip install --no-cache-dir /app/embedder
 
 # Pre-download the reranker weights at build time. ~1.2 GB.
 COPY docker/download_hf_model.py /tmp/download_hf_model.py
-RUN python /tmp/download_hf_model.py \
-    --repo-id BAAI/bge-reranker-v2-m3 \
-    --local-dir /models/bge-reranker-v2-m3
+RUN if [ "$PRELOAD_MODEL" = "1" ]; then \
+        python /tmp/download_hf_model.py \
+            --repo-id BAAI/bge-reranker-v2-m3 \
+            --local-dir /models/bge-reranker-v2-m3; \
+    else \
+        mkdir -p /models/bge-reranker-v2-m3; \
+    fi
 ENV RERANKER_MODEL=/models/bge-reranker-v2-m3
 
 ENV HOST=0.0.0.0
