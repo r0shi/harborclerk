@@ -57,6 +57,7 @@ async def list_documents(
     doc_type: str | None = Query(default=None, description="Filter by doc type"),
     doc_ids: str | None = Query(default=None, description="Comma-separated document IDs"),
     topic_id: int | None = Query(default=None, description="Filter by topic cluster ID"),
+    pipeline_status: str | None = Query(default=None, description="Filter by pipeline status; comma-separated"),
     sort: str = Query(default="updated", pattern="^(updated|created|title)$"),
     sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     principal: Principal = Depends(require_read_access),
@@ -79,6 +80,23 @@ async def list_documents(
 
     if topic_id is not None:
         base = base.where(Document.topic_id == topic_id)
+
+    if pipeline_status:
+        statuses: list[PipelineStatus] = []
+        for raw_status in pipeline_status.split(","):
+            value = raw_status.strip()
+            if not value:
+                continue
+            try:
+                statuses.append(PipelineStatus(value))
+            except ValueError:
+                allowed = ", ".join(s.value for s in PipelineStatus)
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid pipeline_status {value!r}. Expected one of: {allowed}",
+                )
+        if statuses:
+            base = base.where(Document.pipeline_status.in_(statuses))
 
     if q:
         escaped = escape_ilike(q)

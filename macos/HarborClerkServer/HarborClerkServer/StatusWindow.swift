@@ -197,18 +197,6 @@ struct StatusWindow: View {
             .buttonStyle(.bordered)
 
             Spacer()
-
-            Button {
-                if let url = NSWorkspace.shared.urlForApplication(
-                    withBundleIdentifier: "com.apple.Console"
-                ) {
-                    NSWorkspace.shared.openApplication(at: url, configuration: .init())
-                }
-            } label: {
-                Label("View Logs in Console", systemImage: "terminal")
-            }
-            .controlSize(.large)
-            .buttonStyle(.bordered)
         }
     }
 

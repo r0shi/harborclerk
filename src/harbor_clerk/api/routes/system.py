@@ -28,6 +28,7 @@ from harbor_clerk.models import (
     User,
 )
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
+from harbor_clerk.models.watched import WatchedFolder
 from harbor_clerk.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -183,6 +184,254 @@ async def health_check(
         # (None → omitted by frontend) on Docker/Linux where the shim concept
         # doesn't apply.
         "cli_shim_install_status": _cli_shim_install_status(),
+    }
+
+
+_PROCESSING_STATUSES: tuple[PipelineStatus, ...] = tuple(
+    status for status in PipelineStatus if status not in (PipelineStatus.ready, PipelineStatus.error)
+)
+
+
+def _job_age_seconds(now: datetime, job: IngestionJob) -> float | None:
+    started_at = job.started_at or job.created_at
+    if started_at is None:
+        return None
+    return (now - started_at).total_seconds()
+
+
+def _is_stuck_running_job(now: datetime, job: IngestionJob) -> bool:
+    if job.heartbeat_at is not None:
+        return (now - job.heartbeat_at).total_seconds() >= 90
+
+    from harbor_clerk.worker.pipeline import STAGE_CONFIG
+
+    _, timeout, _ = STAGE_CONFIG.get(job.stage, ("io", 600, PipelineStatus.error))
+    age = _job_age_seconds(now, job)
+    return age is not None and age >= timeout * 2
+
+
+@router.get("/system/status-summary")
+async def status_summary(
+    _admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """User-facing readiness and recovery summary for the Status page.
+
+    This endpoint intentionally stays one layer above raw service diagnostics.
+    It answers: what needs attention, what is processing, and where should the
+    operator go next?
+    """
+    status_rows = (
+        await session.execute(
+            select(Document.pipeline_status, func.count())
+            .where(Document.status == "active")
+            .group_by(Document.pipeline_status)
+        )
+    ).all()
+    pipeline_counts = {
+        (row[0].value if isinstance(row[0], PipelineStatus) else str(row[0])): int(row[1]) for row in status_rows
+    }
+    active_documents = sum(pipeline_counts.values())
+    ready_documents = pipeline_counts.get(PipelineStatus.ready.value, 0)
+    failed_documents = pipeline_counts.get(PipelineStatus.error.value, 0)
+    processing_documents = sum(pipeline_counts.get(status.value, 0) for status in _PROCESSING_STATUSES)
+
+    job_rows = (
+        await session.execute(
+            select(IngestionJob.status, func.count())
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(Document.status == "active")
+            .group_by(IngestionJob.status)
+        )
+    ).all()
+    job_counts = {
+        (row[0].value if isinstance(row[0], JobStatus) else str(row[0])): int(row[1])
+        for row in job_rows
+        if row[0] is not None
+    }
+
+    folder_rows = (
+        await session.execute(
+            select(
+                func.count(WatchedFolder.folder_id),
+                func.count(WatchedFolder.folder_id).filter(WatchedFolder.unavailable_reason.is_not(None)),
+            )
+        )
+    ).one()
+    watched_folders = int(folder_rows[0] or 0)
+    unavailable_folders = int(folder_rows[1] or 0)
+
+    ner_skipped_documents = (
+        await session.execute(
+            select(func.count(func.distinct(IngestionJob.doc_id)))
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.entities,
+                IngestionJob.metrics["reason"].astext == "spacy_unavailable",
+            )
+        )
+    ).scalar() or 0
+
+    now = datetime.now(UTC)
+    running_jobs = (
+        (
+            await session.execute(
+                select(IngestionJob)
+                .join(Document, Document.doc_id == IngestionJob.doc_id)
+                .where(Document.status == "active", IngestionJob.status == JobStatus.running)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    stuck_jobs = [job for job in running_jobs if _is_stuck_running_job(now, job)]
+
+    failed_docs = (
+        (
+            await session.execute(
+                select(Document)
+                .where(Document.status == "active", Document.pipeline_status == PipelineStatus.error)
+                .order_by(Document.updated_at.desc())
+                .limit(8)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    failed_doc_ids = [doc.doc_id for doc in failed_docs]
+    failed_jobs_by_doc: dict[uuid.UUID, IngestionJob] = {}
+    if failed_doc_ids:
+        error_jobs = (
+            (
+                await session.execute(
+                    select(IngestionJob)
+                    .where(IngestionJob.doc_id.in_(failed_doc_ids), IngestionJob.status == JobStatus.error)
+                    .order_by(IngestionJob.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for job in error_jobs:
+            failed_jobs_by_doc.setdefault(job.doc_id, job)
+
+    recent_failed_documents = []
+    for doc in failed_docs:
+        failed_job = failed_jobs_by_doc.get(doc.doc_id)
+        recent_failed_documents.append(
+            {
+                "doc_id": str(doc.doc_id),
+                "title": doc.title,
+                "canonical_filename": doc.canonical_filename,
+                "pipeline_status": doc.pipeline_status.value,
+                "error": doc.error or (failed_job.error if failed_job else None),
+                "failed_stage": failed_job.stage.value if failed_job else None,
+                "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+            }
+        )
+
+    processing_docs = (
+        (
+            await session.execute(
+                select(Document)
+                .where(Document.status == "active", Document.pipeline_status.in_(_PROCESSING_STATUSES))
+                .order_by(Document.updated_at.desc())
+                .limit(5)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    recent_processing_documents = [
+        {
+            "doc_id": str(doc.doc_id),
+            "title": doc.title,
+            "pipeline_status": doc.pipeline_status.value,
+            "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+        }
+        for doc in processing_docs
+    ]
+
+    needs_attention: list[dict[str, Any]] = []
+    if failed_documents:
+        needs_attention.append(
+            {
+                "kind": "failed_documents",
+                "severity": "error",
+                "title": "Documents failed ingest",
+                "detail": f"{failed_documents} active document{'s' if failed_documents != 1 else ''} need review.",
+                "count": failed_documents,
+                "action_label": "Review failed documents",
+                "action_href": "/docs?pipeline_status=error",
+            }
+        )
+    if stuck_jobs:
+        needs_attention.append(
+            {
+                "kind": "stuck_jobs",
+                "severity": "error",
+                "title": "Processing jobs may be stuck",
+                "detail": f"{len(stuck_jobs)} running job{'s' if len(stuck_jobs) != 1 else ''} appear stale.",
+                "count": len(stuck_jobs),
+                "action_label": "Recover stuck jobs",
+                "action_kind": "reaper",
+            }
+        )
+    if unavailable_folders:
+        needs_attention.append(
+            {
+                "kind": "folder_access",
+                "severity": "error",
+                "title": "Folder access needs repair",
+                "detail": f"{unavailable_folders} watched folder{'s' if unavailable_folders != 1 else ''} are unavailable.",
+                "count": unavailable_folders,
+                "action_label": "Open Folders",
+                "action_href": "/folders",
+            }
+        )
+    if ner_skipped_documents:
+        needs_attention.append(
+            {
+                "kind": "entity_extraction_skipped",
+                "severity": "warning",
+                "title": "Entity extraction was skipped",
+                "detail": (
+                    f"{ner_skipped_documents} document{'s' if ner_skipped_documents != 1 else ''} "
+                    "were processed while spaCy NER models were unavailable."
+                ),
+                "count": int(ner_skipped_documents),
+                "action_label": "Review diagnostics",
+                "action_href": "/settings/diagnostics",
+            }
+        )
+
+    state = "ready"
+    if needs_attention:
+        state = "needs_attention"
+    elif (
+        processing_documents or job_counts.get(JobStatus.queued.value, 0) or job_counts.get(JobStatus.running.value, 0)
+    ):
+        state = "processing"
+
+    return {
+        "state": state,
+        "counts": {
+            "active_documents": active_documents,
+            "ready_documents": ready_documents,
+            "processing_documents": processing_documents,
+            "failed_documents": failed_documents,
+            "queued_jobs": job_counts.get(JobStatus.queued.value, 0),
+            "running_jobs": job_counts.get(JobStatus.running.value, 0),
+            "failed_jobs": job_counts.get(JobStatus.error.value, 0),
+            "watched_folders": watched_folders,
+            "unavailable_folders": unavailable_folders,
+            "ner_skipped_documents": int(ner_skipped_documents),
+            "stuck_jobs": len(stuck_jobs),
+        },
+        "needs_attention": needs_attention,
+        "recent_failed_documents": recent_failed_documents,
+        "recent_processing_documents": recent_processing_documents,
     }
 
 

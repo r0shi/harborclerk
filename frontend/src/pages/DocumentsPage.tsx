@@ -25,6 +25,7 @@ interface SavedDocsState {
   entityTypeFilter: string
   entityInput: string
   folderFilter: string
+  pipelineStatusFilter: string
   sortField: 'updated' | 'created' | 'title'
   sortDir: 'asc' | 'desc'
   scrollY: number
@@ -208,7 +209,8 @@ export default function DocumentsPage() {
     searchParams.has('mime_type') ||
     searchParams.has('language') ||
     searchParams.has('doc_type') ||
-    searchParams.has('entity_type')
+    searchParams.has('entity_type') ||
+    searchParams.has('pipeline_status')
 
   // Helper: read a field from saved state or URL params
   function initField<K extends keyof SavedDocsState>(
@@ -248,6 +250,9 @@ export default function DocumentsPage() {
   const [entityFilter, setEntityFilter] = useState(() => initField('entityFilter', '', 'entity'))
   const [entityTypeFilter, setEntityTypeFilter] = useState(() => initField('entityTypeFilter', '', 'entity_type'))
   const [folderFilter, setFolderFilter] = useState<string>(() => initField('folderFilter', '', 'folder'))
+  const [pipelineStatusFilter, setPipelineStatusFilter] = useState<string>(() =>
+    initField('pipelineStatusFilter', '', 'pipeline_status'),
+  )
   const [folderOptions, setFolderOptions] = useState<
     { folder_id: string; display_name: string | null; path: string }[]
   >([])
@@ -319,6 +324,7 @@ export default function DocumentsPage() {
       entityTypeFilter,
       entityInput,
       folderFilter,
+      pipelineStatusFilter,
       sortField,
       sortDir,
       scrollY: window.scrollY,
@@ -337,6 +343,7 @@ export default function DocumentsPage() {
     entityTypeFilter,
     entityInput,
     folderFilter,
+    pipelineStatusFilter,
     sortField,
     sortDir,
     expanded,
@@ -411,6 +418,7 @@ export default function DocumentsPage() {
       if (docTypeFilter) params.doc_type = docTypeFilter
       if (entityFilter) params.entity = entityFilter
       if (entityTypeFilter) params.entity_type = entityTypeFilter
+      if (pipelineStatusFilter) params.pipeline_status = pipelineStatusFilter
       return get<PaginatedDocs>('/api/docs', params)
         .then((data) => {
           setDocs(data.items)
@@ -426,7 +434,7 @@ export default function DocumentsPage() {
           }
         })
     },
-    [sortField, sortDir, mimeFilter, langFilter, docTypeFilter, entityFilter, entityTypeFilter],
+    [sortField, sortDir, mimeFilter, langFilter, docTypeFilter, entityFilter, entityTypeFilter, pipelineStatusFilter],
   )
 
   useEffect(() => {
@@ -585,7 +593,16 @@ export default function DocumentsPage() {
   const visibleDocs = folderFilter ? docs.filter((d) => d.folder_name === folderFilter) : docs
   const visibleDocIds = new Set(visibleDocs.map((d) => d.doc_id))
   const startIdx = (currentPage - 1) * pageSize
-  const hasFilters = !!(filter || mimeFilter || langFilter || docTypeFilter || entityFilter)
+  const hasFilters = !!(
+    filter ||
+    mimeFilter ||
+    langFilter ||
+    docTypeFilter ||
+    entityFilter ||
+    entityTypeFilter ||
+    folderFilter ||
+    pipelineStatusFilter
+  )
 
   let lastDoc: { doc_id: string; title: string } | null = null
   try {
@@ -648,7 +665,9 @@ export default function DocumentsPage() {
         </div>
       )}
       {/* Filter bar */}
-      {(filterOptions.mime_types.length > 0 ||
+      {(total > 0 ||
+        pipelineStatusFilter ||
+        filterOptions.mime_types.length > 0 ||
         filterOptions.doc_types.length > 0 ||
         filterOptions.languages.length > 0) && (
         <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -773,6 +792,22 @@ export default function DocumentsPage() {
             </select>
           )}
 
+          <select
+            value={pipelineStatusFilter}
+            onChange={(e) => {
+              setPipelineStatusFilter(e.target.value)
+              setCurrentPage(1)
+            }}
+            className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+          >
+            <option value="">All statuses</option>
+            <option value="ready">Ready</option>
+            <option value="queued,extracting,extracted,ocr_running,ocr_done,chunking,chunked,extracting_entities,entities_done,embedding,embedded,summarizing,summarized,finalizing">
+              Processing
+            </option>
+            <option value="error">Failed</option>
+          </select>
+
           {/* Sort controls */}
           <div className="ml-auto flex items-center gap-1 text-xs text-gray-400">
             <span>Sort:</span>
@@ -801,13 +836,20 @@ export default function DocumentsPage() {
           </div>
 
           {/* Clear all filters */}
-          {(mimeFilter || langFilter || docTypeFilter || entityFilter || entityTypeFilter || folderFilter) && (
+          {(mimeFilter ||
+            langFilter ||
+            docTypeFilter ||
+            entityFilter ||
+            entityTypeFilter ||
+            folderFilter ||
+            pipelineStatusFilter) && (
             <button
               onClick={() => {
                 setMimeFilter('')
                 setLangFilter('')
                 setDocTypeFilter('')
                 setFolderFilter('')
+                setPipelineStatusFilter('')
                 clearEntityFilter()
                 setCurrentPage(1)
               }}
