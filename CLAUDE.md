@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Harbor Clerk** — a single-tenant, watched-folder-first document archive for non-technical offices running on Mac mini/Studio. Local extraction, OCR (English/French), hybrid retrieval. Cloud LLMs query via MCP over HTTPS with read-only API keys, receiving only cited snippets (no full corpus upload). Local agent harnesses (OpenClaw, Claude Code, Codex, Aider) can use the `harbor-clerk` CLI as a parallel surface to MCP.
+**Harbor Clerk** — a single-tenant, watched-folder-first local document intelligence app for document-heavy small teams, independent operators, researchers, and privacy-focused individuals running on Mac mini/Studio or Docker. Local extraction, OCR (English/French), hybrid retrieval, local embeddings/reranking, cited local AI answers, and Research. Cloud LLMs query via MCP over HTTPS with read-only API keys, receiving only cited snippets (no full corpus upload). Local agent harnesses (OpenClaw, Claude Code, Codex, Aider) can use the `harbor-clerk` CLI as a parallel surface to MCP.
 
 Current state lives in this file plus `README.md` and `docs/architecture.md`.
 

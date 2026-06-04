@@ -14,7 +14,7 @@ lose it.
   identifies which key was used without revealing the key itself.
 - On decrypt, the fingerprint is compared to the active key's fingerprint
   before any decryption is attempted. A mismatch raises `KeyMismatch`, which
-  the application surfaces in System Status as "reconnect mail accounts".
+  the application surfaces in Status as "reconnect mail accounts".
 
 ## Where the master key lives
 
@@ -66,7 +66,7 @@ iCloud Keychain and cross-machine moves require manual export.
 
 ## What happens if you lose the master key
 
-You'll see "X mail accounts need reconnecting" in System Status. The encrypted
+You'll see "X mail accounts need reconnecting" in Status. The encrypted
 secrets are unrecoverable, but everything else is intact (documents, chunks,
 embeddings, search history, audit logs are all unencrypted).
 
