@@ -130,18 +130,23 @@ async def search(
                 conflict_sources=[],
             )
 
-    result = await hybrid_search(
-        session,
-        body.query,
-        k=body.k,
-        doc_id=doc_id,
-        offset=body.offset,
-        doc_ids=doc_ids,
-        after=body.after,
-        before=body.before,
-        language=body.language,
-        mime_type=body.mime_type,
-    )
+    try:
+        result = await hybrid_search(
+            session,
+            body.query,
+            k=body.k,
+            doc_id=doc_id,
+            offset=body.offset,
+            doc_ids=doc_ids,
+            after=body.after,
+            before=body.before,
+            language=body.language,
+            mime_type=body.mime_type,
+            metadata_filter=body.metadata_filter,
+            text_contains=body.text_contains,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     has_more = body.offset + body.k < result.total_candidates
     source_context = await load_source_ref_context(session, [h.doc_id for h in result.hits])

@@ -1,7 +1,7 @@
 """Search and passage-reading schemas."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -19,6 +19,8 @@ class SearchRequest(BaseModel):
     before: datetime | None = None
     language: str | None = None
     mime_type: str | None = None
+    metadata_filter: dict[str, Any] | None = None
+    text_contains: str | None = None
     faceted: bool = False
     scope: ScopeSpec | None = None
 
