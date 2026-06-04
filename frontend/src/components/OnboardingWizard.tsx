@@ -111,7 +111,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
         await patch('/api/me/preferences', { enabled_languages: installed })
       } catch (e) {
         // Pref-save failed but packs are on disk. Surface so the
-        // operator can flip the toggle in System Settings → Languages.
+        // operator can flip the toggle in Settings → Languages.
         failures.push(`preferences save (${e instanceof Error ? e.message : 'unknown'})`)
       }
     }
@@ -121,7 +121,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
     if (failures.length > 0) {
       setError(
         `Some languages failed to install: ${failures.join(', ')}. ` +
-          `Successfully installed languages are still available — manage them under System Settings → Languages.`,
+          `Successfully installed languages are still available — manage them under Settings → Languages.`,
       )
       // Stay on this page so the user sees the error; they can click
       // Skip to advance once they've read it.

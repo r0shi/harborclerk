@@ -8,6 +8,7 @@ const TOP_LEVEL = new Set([
   '/explore',
   '/stats',
   '/admin',
+  '/settings',
   '/preferences',
   '/login',
   '/setup',

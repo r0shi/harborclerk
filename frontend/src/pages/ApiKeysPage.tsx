@@ -317,7 +317,10 @@ export default function ApiKeysPage() {
             {keys.map((k) => (
               <tr key={k.key_id} className="hover:bg-black/3 dark:hover:bg-white/3">
                 <td className="px-4 py-3 text-sm font-medium">
-                  <Link to={`/admin/keys/${k.key_id}`} className="text-blue-600 dark:text-blue-400 hover:underline">
+                  <Link
+                    to={`/settings/api-keys/${k.key_id}`}
+                    className="text-blue-600 dark:text-blue-400 hover:underline"
+                  >
                     {k.name}
                   </Link>
                 </td>

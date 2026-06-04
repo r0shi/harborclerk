@@ -13,7 +13,11 @@ const ROUTE_TO_AREA: { test: (path: string) => boolean; area: AreaHue }[] = [
   { test: (p) => p.startsWith('/search'), area: 'search' },
   { test: (p) => p.startsWith('/stats'), area: 'observatory' },
   {
-    test: (p) => p.startsWith('/admin') || p.startsWith('/integrations') || p.startsWith('/preferences'),
+    test: (p) =>
+      p.startsWith('/admin') ||
+      p.startsWith('/settings') ||
+      p.startsWith('/integrations') ||
+      p.startsWith('/preferences'),
     area: 'settings',
   },
   // Ask is the default — matches '/' and '/c/:conversationId'.

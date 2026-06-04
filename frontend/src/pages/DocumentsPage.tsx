@@ -640,10 +640,10 @@ export default function DocumentsPage() {
             summaries, activate a model.
           </span>
           <Link
-            to="/admin/models"
+            to="/settings/models"
             className="ml-3 shrink-0 rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700"
           >
-            System Settings → Models
+            Settings → Models
           </Link>
         </div>
       )}

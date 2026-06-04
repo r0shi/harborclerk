@@ -15,52 +15,103 @@ interface SettingsItem {
 
 const SECTIONS: { label: string; items: SettingsItem[] }[] = [
   {
+    label: 'Personal',
+    items: [
+      {
+        to: '/preferences',
+        label: 'Preferences',
+        sub: 'Theme, page size, and account settings',
+        icon: '👤',
+        hue: 'settings',
+      },
+    ],
+  },
+]
+
+const ADMIN_SECTIONS: { label: string; items: SettingsItem[] }[] = [
+  {
+    label: 'Integrations',
+    items: [
+      {
+        to: '/settings/integrations',
+        label: 'Integrations',
+        sub: 'MCP, CLI, and external AI tool setup',
+        icon: '🔌',
+        hue: 'research',
+      },
+    ],
+  },
+  {
     label: 'Access & identity',
     items: [
-      { to: '/admin/users', label: 'Users', sub: 'Manage accounts and roles', icon: '👥', hue: 'docs' },
-      { to: '/admin/keys', label: 'API Keys', sub: 'Create and revoke API keys', icon: '🔑', hue: 'research' },
+      { to: '/settings/users', label: 'Users', sub: 'Manage accounts and roles', icon: '👥', hue: 'docs' },
+      {
+        to: '/settings/api-keys',
+        label: 'API Keys',
+        sub: 'Create, scope, and revoke API keys',
+        icon: '🔑',
+        hue: 'research',
+      },
     ],
   },
   {
     label: 'Models & languages',
     items: [
-      { to: '/admin/models', label: 'Models', sub: 'Download and manage LLM models', icon: '🧠', hue: 'observatory' },
-      { to: '/admin/languages', label: 'Languages', sub: 'OCR & entity language packs', icon: '🌐', hue: 'explore' },
+      {
+        to: '/settings/models',
+        label: 'Models',
+        sub: 'Download and manage local AI models',
+        icon: '🧠',
+        hue: 'observatory',
+      },
+      {
+        to: '/settings/languages',
+        label: 'Languages',
+        sub: 'OCR and entity language packs',
+        icon: '🌐',
+        hue: 'explore',
+      },
     ],
   },
   {
     label: 'Behavior & limits',
     items: [
-      { to: '/admin/retrieval', label: 'Retrieval', sub: 'Chat & MCP search behavior', icon: '🔍', hue: 'search' },
-      { to: '/admin/rate-limits', label: 'Rate Limits', sub: 'Default API key rate limits', icon: '⏱', hue: 'ask' },
+      {
+        to: '/settings/retrieval',
+        label: 'Retrieval',
+        sub: 'Ask, Research, MCP, and search behavior',
+        icon: '🔍',
+        hue: 'search',
+      },
+      { to: '/settings/rate-limits', label: 'Rate Limits', sub: 'Default API key rate limits', icon: '⏱', hue: 'ask' },
     ],
   },
   {
     label: 'Operations',
     items: [
       {
-        to: '/admin/system/status',
-        label: 'System Status',
-        sub: 'Health checks and statistics',
+        to: '/settings/status',
+        label: 'Status',
+        sub: 'Readiness, service health, and mail account state',
         icon: '💚',
         hue: 'observatory',
       },
       {
-        to: '/admin/system/logs',
-        label: 'Service Logs',
-        sub: 'View log files and tail commands',
+        to: '/settings/diagnostics',
+        label: 'Diagnostics',
+        sub: 'Logs and advanced troubleshooting detail',
         icon: '📜',
         hue: 'settings',
       },
       {
-        to: '/admin/system/maintenance',
-        label: 'System Maintenance',
+        to: '/settings/maintenance',
+        label: 'Maintenance',
         sub: 'Purge, reaper, and cleanup',
         icon: '🧹',
         hue: 'ask',
       },
       {
-        to: '/admin/system/security',
+        to: '/settings/security',
         label: 'Security',
         sub: 'Encryption status and master key management',
         icon: '🔒',
@@ -71,20 +122,18 @@ const SECTIONS: { label: string; items: SettingsItem[] }[] = [
 ]
 
 export default function SystemSettingsPage() {
-  const { user } = useAuth()
-  if (user?.role !== 'admin') {
-    return (
-      <div className="mx-auto max-w-4xl px-4 py-8">
-        <PageHeader title="System Settings" />
-        <p className="text-sm text-(--color-text-secondary)">Admins only.</p>
-      </div>
-    )
-  }
+  const { isAdmin } = useAuth()
+  const sections = isAdmin ? [...SECTIONS, ...ADMIN_SECTIONS] : SECTIONS
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8">
-      <PageHeader title="System Settings" />
-      {SECTIONS.map((section) => (
+      <PageHeader title="Settings" subtitle="Preferences, integrations, models, status, and diagnostics." />
+      {!isAdmin && (
+        <p className="mb-5 rounded-lg bg-(--color-bg-secondary) px-3 py-2 text-sm text-(--color-text-secondary)">
+          Admin-only settings are hidden for this account.
+        </p>
+      )}
+      {sections.map((section) => (
         <div key={section.label} className="mb-6">
           <h2 className="mb-2 font-serif text-base font-semibold tracking-tight text-(--color-text-primary)">
             {section.label}

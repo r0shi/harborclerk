@@ -597,7 +597,7 @@ function ModelNudge() {
           — strong reasoning, tool use, and bilingual support.
         </p>
         <Link
-          to="/admin/models"
+          to="/settings/models"
           className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 transition-colors"
         >
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

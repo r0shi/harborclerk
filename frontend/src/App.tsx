@@ -52,9 +52,23 @@ export default function App() {
           <Route path="/stats" element={<StatsPage />} />
           <Route path="/chat" element={<Navigate to="/ask" replace />} />
           <Route path="/chat/:conversationId" element={<ChatRedirect />} />
+          <Route path="/settings" element={<SystemSettingsPage />} />
+          <Route path="/settings/preferences" element={<Navigate to="/preferences" replace />} />
           <Route path="/preferences" element={<PreferencesPage />} />
           <Route element={<AdminRoute />}>
             <Route path="/integrations" element={<IntegrationsPage />} />
+            <Route path="/settings/integrations" element={<IntegrationsPage />} />
+            <Route path="/settings/users" element={<UsersPage />} />
+            <Route path="/settings/api-keys" element={<ApiKeysPage />} />
+            <Route path="/settings/api-keys/:keyId" element={<ApiKeyDashboardPage />} />
+            <Route path="/settings/models" element={<ModelsPage />} />
+            <Route path="/settings/languages" element={<LanguagesPage />} />
+            <Route path="/settings/retrieval" element={<RetrievalSettingsPage />} />
+            <Route path="/settings/rate-limits" element={<RateLimitSettingsPage />} />
+            <Route path="/settings/status" element={<SystemStatusPage />} />
+            <Route path="/settings/diagnostics" element={<ServiceLogsPage />} />
+            <Route path="/settings/maintenance" element={<SystemMaintenancePage />} />
+            <Route path="/settings/security" element={<SecuritySettingsPage />} />
             <Route path="/admin" element={<SystemSettingsPage />} />
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/keys" element={<ApiKeysPage />} />

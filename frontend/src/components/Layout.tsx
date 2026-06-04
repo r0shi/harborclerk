@@ -47,6 +47,7 @@ export default function Layout() {
   const bannerSuppressedPath =
     location.pathname === '/folders' ||
     location.pathname.startsWith('/admin') ||
+    location.pathname.startsWith('/settings') ||
     location.pathname.startsWith('/preferences')
   const showBanner = bannerState !== null && !bannerSuppressedPath
   const showWizard = !!user && !user.preferences?.onboardingComplete
@@ -85,48 +86,38 @@ export default function Layout() {
           <div className="flex h-12 items-center justify-between">
             <div className="flex items-center space-x-1">
               <NavLink
-                to="/ask"
-                className={({ isActive }) =>
-                  `relative mr-2 flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[13px] font-semibold transition-colors ${
-                    isActive
-                      ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 ring-1 ring-amber-200/60 dark:ring-amber-700/40'
-                      : 'text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6'
-                  }`
-                }
+                to="/"
+                className="relative mr-2 flex items-center rounded-lg px-2 py-1 transition-colors text-(--color-text-secondary) hover:bg-black/4 dark:hover:bg-white/6"
+                aria-label="Harbor Clerk home"
               >
                 <img src="/favicon.svg" alt="" className="h-6 w-6" />
-                <span>Ask</span>
               </NavLink>
+              <TabLink to="/search" icon="🔍">
+                Search
+              </TabLink>
+              <TabLink to="/docs" icon="📄">
+                Documents
+              </TabLink>
+              <TabLink to="/ask" icon="💬">
+                Ask
+              </TabLink>
               <TabLink to="/research" icon="🐙">
                 Research
               </TabLink>
               <TabLink to="/folders" icon="📁">
                 Folders
               </TabLink>
-              <TabLink to="/docs" icon="📄">
-                Documents
-              </TabLink>
               <TabLink to="/explore" icon="🌍">
                 Explore
-              </TabLink>
-              <TabLink to="/search" icon="🔍">
-                Search
               </TabLink>
             </div>
             <div className="flex items-center space-x-1">
               <TabLink to="/stats" icon="📊">
                 Observatory
               </TabLink>
-              {isAdmin && (
-                <TabLink to="/integrations" icon="🔌">
-                  Integrations
-                </TabLink>
-              )}
-              {isAdmin && (
-                <TabLink to="/admin" icon="⚙️">
-                  System Settings
-                </TabLink>
-              )}
+              <TabLink to="/settings" icon="⚙️">
+                Settings
+              </TabLink>
               <div className="relative ml-2" ref={menuRef}>
                 <button
                   onClick={() => setMenuOpen(!menuOpen)}

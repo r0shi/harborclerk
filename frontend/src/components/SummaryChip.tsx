@@ -24,7 +24,7 @@ const LABELS: Record<Exclude<SummaryState, 'none'>, string> = {
 
 const TOOLTIPS: Partial<Record<Exclude<SummaryState, 'none'>, string>> = {
   extractive:
-    'No language model was active when this summary was generated, so the system fell back to an extractive heuristic. Configure an LLM in System Settings → Models for higher-quality summaries on future documents.',
+    'No language model was active when this summary was generated, so the system fell back to an extractive heuristic. Configure a local AI model in Settings → Models for higher-quality summaries on future documents.',
   failed: 'The summarize stage errored. The document is otherwise fully ingested and searchable.',
 }
 

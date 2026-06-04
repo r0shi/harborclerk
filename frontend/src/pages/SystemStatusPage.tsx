@@ -96,8 +96,8 @@ export default function SystemStatusPage() {
   return (
     <div className="animate-slide-in">
       <PageHeader
-        title="System Status"
-        subtitle="Health checks and service statistics"
+        title="Status"
+        subtitle="System readiness, service health, and account state"
         actions={
           <button
             onClick={handleRefresh}
@@ -114,7 +114,7 @@ export default function SystemStatusPage() {
         </div>
       )}
 
-      <h2 className="mb-3 text-lg font-semibold">Health Checks</h2>
+      <h2 className="mb-3 text-lg font-semibold">Service Health</h2>
       {health && (
         <div className="mb-6 grid grid-cols-3 gap-4">
           <HealthCard
