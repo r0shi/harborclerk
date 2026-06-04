@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import CitedMarkdown from '../components/CitedMarkdown'
 import { FolderPicker } from '../components/FolderPicker'
+import { LocalModelChip } from '../components/LocalModelChip'
 import { PageHeader } from '../components/PageHeader'
 import { ScopeChip } from '../components/ScopeChip'
 import ToolResultDisplay from '../components/ToolResultDisplay'
@@ -44,6 +45,13 @@ interface ResearchDetail extends ResearchSummary {
   report: string | null
   model_id: string | null
   messages?: ResearchMessage[]
+}
+
+interface ModelInfo {
+  id: string
+  name: string
+  size_bytes: number
+  supports_research: boolean
 }
 
 /**
@@ -110,6 +118,7 @@ export default function ResearchPage() {
   const hasActiveModel = llmStatus.state === 'ready' && llmStatus.model_id !== null
   const { folders } = useWatchedFolders()
   const [history, setHistory] = useState<ResearchSummary[]>([])
+  const [models, setModels] = useState<ModelInfo[]>([])
   const [selectedTask, setSelectedTask] = useState<ResearchDetail | null>(null)
   const [question, setQuestionRaw] = useState(() => sessionStorage.getItem('research_draft') ?? '')
   const setQuestion = useCallback((v: string) => {
@@ -161,6 +170,12 @@ export default function ResearchPage() {
   useEffect(() => {
     fetchHistory()
   }, [fetchHistory])
+
+  useEffect(() => {
+    get<ModelInfo[]>('/api/chat/models')
+      .then(setModels)
+      .catch(() => {})
+  }, [])
 
   // Load task detail when researchId changes
   useEffect(() => {
@@ -330,6 +345,17 @@ export default function ResearchPage() {
     (selectedTask?.status === 'completed' || (!selectedTask && !!report && !!conversationId))
   const isViewingInterrupted = !isRunning && !showNewForm && selectedTask?.status === 'interrupted'
   const isIdle = (!isRunning && !selectedTask && !error && !isViewingCompleted) || (showNewForm && !error)
+  const activeModel =
+    llmStatus.model_id === null
+      ? null
+      : (models.find((model) => model.id === llmStatus.model_id) ?? {
+          id: llmStatus.model_id,
+          name: llmStatus.model_name ?? llmStatus.model_id,
+        })
+
+  function modelLabel(modelId: string): string {
+    return models.find((model) => model.id === modelId)?.name ?? modelId
+  }
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] -mx-4 -my-6 overflow-hidden">
@@ -497,6 +523,12 @@ export default function ResearchPage() {
                   </div>
                 ) : (
                   <div className="max-w-md mx-auto space-y-4">
+                    {activeModel && (
+                      <div className="flex justify-center">
+                        <LocalModelChip model={activeModel} />
+                      </div>
+                    )}
+
                     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-xs focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
                       <textarea
                         value={question}
@@ -742,7 +774,7 @@ export default function ResearchPage() {
               {/* Metadata */}
               {selectedTask && (
                 <div className="mt-4 flex flex-wrap items-center gap-3 text-[11px] text-gray-400 dark:text-gray-500">
-                  {selectedTask.model_id && <span>Model: {selectedTask.model_id}</span>}
+                  {selectedTask.model_id && <span>Model: {modelLabel(selectedTask.model_id)}</span>}
                   <span className="capitalize">Strategy: {selectedTask.strategy}</span>
                   {selectedTask.depth && <span className="capitalize">Depth: {selectedTask.depth}</span>}
                   <span>Rounds: {selectedTask.current_round}</span>
@@ -985,7 +1017,8 @@ function ModelNudge() {
         Choose a model to research with
       </h3>
       <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mb-5">
-        Deep Research drives a local LLM through many tool calls — pick a model first.
+        Deep Research drives a local AI model through many tool calls. Larger models are better for long synthesis;
+        smaller models are best for quick lookup.
       </p>
       <Link
         to="/settings/models"

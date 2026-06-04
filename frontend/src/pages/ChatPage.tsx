@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import CitedMarkdown from '../components/CitedMarkdown'
 import { IconTile } from '../components/IconTile'
 import { FolderPicker } from '../components/FolderPicker'
+import { LocalModelChip } from '../components/LocalModelChip'
 import { ScopeChip } from '../components/ScopeChip'
 import { del, get, post } from '../api'
 import { useAuth } from '../auth'
@@ -43,6 +44,7 @@ interface ModelInfo {
   active: boolean
   downloaded: boolean
   size_bytes: number
+  supports_research: boolean
 }
 
 export default function ChatPage() {
@@ -77,6 +79,7 @@ export default function ChatPage() {
   const [modelNames, setModelNames] = useState<Record<string, string>>({})
   const [hasActiveModel, setHasActiveModel] = useState(true) // optimistic default
   const [activeModelId, setActiveModelId] = useState<string | null>(null)
+  const [activeModel, setActiveModel] = useState<ModelInfo | null>(null)
   const [researchActive, setResearchActive] = useState(false)
   // Folder scope for next new conversation (reset when conversation is created)
   const [newConvFolderIds, setNewConvFolderIds] = useState<string[]>([])
@@ -115,12 +118,17 @@ export default function ChatPage() {
       .then((models) => {
         const map: Record<string, string> = {}
         let activeId: string | null = null
+        let active: ModelInfo | null = null
         for (const m of models) {
           map[m.id] = m.name
-          if (m.active) activeId = m.id
+          if (m.active) {
+            activeId = m.id
+            active = m
+          }
         }
         setModelNames(map)
         setActiveModelId(activeId)
+        setActiveModel(active)
         setHasActiveModel(activeId !== null)
       })
       .catch(() => {})
@@ -486,12 +494,12 @@ export default function ChatPage() {
         <div className="border-t border-gray-100 dark:border-gray-800 bg-white dark:bg-gray-900">
           <div className="mx-auto px-6 py-3" style={{ maxWidth: 'min(100%, 72rem)' }}>
             <form onSubmit={handleSubmit} className="relative">
+              {activeModel && (
+                <div className="mb-2 flex justify-end">
+                  <LocalModelChip model={activeModel} />
+                </div>
+              )}
               <div className="chat-input-container relative rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 shadow-xs focus-within:shadow-md focus-within:border-gray-300 dark:focus-within:border-gray-600 transition-all duration-200">
-                {activeModelId && modelNames[activeModelId] && (
-                  <div className="absolute top-1.5 right-3 text-[10px] text-gray-300 dark:text-gray-600 select-none pointer-events-none">
-                    {modelNames[activeModelId]}
-                  </div>
-                )}
                 <textarea
                   ref={inputRef}
                   value={input}
@@ -499,7 +507,7 @@ export default function ChatPage() {
                   onKeyDown={handleKeyDown}
                   placeholder={
                     !hasActiveModel
-                      ? 'Download and activate a model to start chatting'
+                      ? 'Choose a local AI model to ask questions'
                       : contextFull
                         ? 'Context is nearly full — start a new conversation'
                         : researchActive
@@ -589,12 +597,12 @@ function ModelNudge() {
         </div>
         <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-2">Set up your local AI model</h3>
         <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mb-2">
-          Harbor Clerk runs a local LLM to chat with your documents. Download a model to get started — everything stays
-          on this machine.
+          Harbor Clerk uses a local AI model to answer questions over your documents. Choose a model to get started —
+          everything stays on this machine.
         </p>
         <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mb-6">
-          We recommend <strong className="text-gray-700 dark:text-gray-300">Qwen3 8B</strong> as a great starting point
-          — strong reasoning, tool use, and bilingual support.
+          Larger models are better for research and synthesis. Smaller models are useful for quick lookup, but important
+          answers should be checked against the citations.
         </p>
         <Link
           to="/settings/models"
@@ -632,7 +640,7 @@ function EmptyState() {
             Ask your documents
           </h2>
           <p className="mt-2 text-sm text-(--color-text-secondary)">
-            Start a conversation to search, read, and reason over your library using a local LLM.
+            Start a conversation to search, read, and reason over your library using local AI.
           </p>
         </div>
         <div className="flex flex-wrap justify-center gap-2">
