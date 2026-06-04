@@ -179,6 +179,23 @@ def test_absolute_relative_path_degrades_to_filename() -> None:
     assert "/Users/alex" not in str(payload)
 
 
+def test_windows_absolute_relative_path_degrades_to_filename() -> None:
+    doc = _doc(title="")
+    watched_file = WatchedFile(
+        folder_id=uuid4(),
+        relative_path=r"C:\Users\alex\private\secret.pdf",
+        bookmark_data=b"",
+        sha256=b"x" * 32,
+        doc_id=doc.doc_id,
+    )
+
+    payload = build_source_ref(doc=doc, watched_file=watched_file).to_dict()
+
+    assert payload["relative_path"] == "secret.pdf"
+    assert "C:" not in str(payload)
+    assert "Users" not in str(payload)
+
+
 def test_to_dict_omits_empty_optional_fields() -> None:
     payload = build_source_ref(doc=_doc()).to_dict()
 

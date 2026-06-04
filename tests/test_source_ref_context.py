@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.enums import PipelineStatus
@@ -96,6 +97,27 @@ async def test_context_handles_missing_watched_rows(db_session) -> None:
     assert payload["citation"] == "Loose Document"
     assert "folder_label" not in payload
     assert "relative_path" not in payload
+
+
+@pytest.mark.asyncio
+async def test_context_soft_fails_watched_lookup_without_poisoning_session(db_session) -> None:
+    doc = _doc(title="Loose Document")
+    db_session.add(doc)
+    await db_session.flush()
+
+    original_name = WatchedFile.__table__.name
+    WatchedFile.__table__.name = "watched_files_missing_for_source_ref_test"
+    try:
+        ctx = await load_source_ref_context(db_session, [doc.doc_id])
+        ref = ctx.ref_for_doc(doc.doc_id)
+
+        assert ref.citation == "Loose Document"
+        # The optional watched-folder lookup failed, but the caller's session
+        # must remain usable for later route/tool queries.
+        loaded_doc_id = await db_session.scalar(select(Document.doc_id).where(Document.doc_id == doc.doc_id))
+        assert loaded_doc_id == doc.doc_id
+    finally:
+        WatchedFile.__table__.name = original_name
 
 
 @pytest.mark.asyncio

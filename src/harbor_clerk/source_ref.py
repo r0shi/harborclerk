@@ -138,20 +138,23 @@ async def load_source_ref_context(
     watched_files_by_doc: dict[uuid.UUID, WatchedFile] = {}
     watched_folders_by_id: dict[uuid.UUID, WatchedFolder] = {}
     try:
-        wf_result = await session.execute(
-            select(WatchedFile).where(
-                WatchedFile.doc_id.in_(unique_ids),
-                WatchedFile.status == WatchedFileStatus.active,
+        async with session.begin_nested():
+            wf_result = await session.execute(
+                select(WatchedFile).where(
+                    WatchedFile.doc_id.in_(unique_ids),
+                    WatchedFile.status == WatchedFileStatus.active,
+                )
             )
-        )
-        for watched_file in wf_result.scalars().all():
-            if watched_file.doc_id is not None and watched_file.doc_id not in watched_files_by_doc:
-                watched_files_by_doc[watched_file.doc_id] = watched_file
+            for watched_file in wf_result.scalars().all():
+                if watched_file.doc_id is not None and watched_file.doc_id not in watched_files_by_doc:
+                    watched_files_by_doc[watched_file.doc_id] = watched_file
 
-        folder_ids = list({wf.folder_id for wf in watched_files_by_doc.values()})
-        if folder_ids:
-            folder_result = await session.execute(select(WatchedFolder).where(WatchedFolder.folder_id.in_(folder_ids)))
-            watched_folders_by_id = {folder.folder_id: folder for folder in folder_result.scalars().all()}
+            folder_ids = list({wf.folder_id for wf in watched_files_by_doc.values()})
+            if folder_ids:
+                folder_result = await session.execute(
+                    select(WatchedFolder).where(WatchedFolder.folder_id.in_(folder_ids))
+                )
+                watched_folders_by_id = {folder.folder_id: folder for folder in folder_result.scalars().all()}
     except (sa_exc.OperationalError, sa_exc.ProgrammingError):
         logger.debug("Failed to load watched-folder context for SourceRef", exc_info=True)
 
@@ -310,7 +313,13 @@ def _safe_relative_path(relative_path: str | None) -> str | None:
     normalized = clean.replace("\\", "/")
     if posixpath.isabs(normalized):
         return posixpath.basename(normalized)
+    if _looks_windows_drive_path(normalized):
+        return posixpath.basename(normalized[2:].lstrip("/")) or None
     return normalized
+
+
+def _looks_windows_drive_path(path: str) -> bool:
+    return len(path) >= 2 and path[0].isalpha() and path[1] == ":"
 
 
 def _page_label(pages: str | None) -> str | None:
