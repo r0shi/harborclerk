@@ -1109,6 +1109,7 @@ class ServiceManager: ObservableObject {
 
         return [
             "BUILD_HASH": buildHash,
+            "PYTHONDONTWRITEBYTECODE": "1",
             "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
             "STORAGE_BACKEND": "filesystem",
             "STORAGE_PATH": settings.originalsDir.path,

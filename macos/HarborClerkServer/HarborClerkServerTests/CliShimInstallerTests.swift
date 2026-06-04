@@ -63,6 +63,12 @@ final class CliShimInstallerTests: XCTestCase {
                       "Shim must exec python with the correct module and forward args")
     }
 
+    func testShimDisablesBytecodeWrites() {
+        let content = CliShimInstaller.makeShimContent(bundleResources: "/x", apiPort: 8100)
+        XCTAssertTrue(content.contains("export PYTHONDONTWRITEBYTECODE=1"),
+                      "Shim must not let Python write .pyc files into the signed app bundle")
+    }
+
     // MARK: - HARBOR_CLERK_URL default
 
     func testShimContentEmbedsApiUrlAsDefault() {

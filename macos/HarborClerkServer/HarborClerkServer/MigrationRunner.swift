@@ -16,6 +16,7 @@ struct MigrationRunner {
             "DATABASE_URL": "postgresql+asyncpg://lka@localhost:\(settings.postgresPort)/lka",
             "PATH": bundle.appendingPathComponent("venv/bin").path + ":/usr/bin:/bin",
             "PYTHONPATH": bundle.appendingPathComponent("venv/lib").path,
+            "PYTHONDONTWRITEBYTECODE": "1",
         ]
 
         var lastError: Error?

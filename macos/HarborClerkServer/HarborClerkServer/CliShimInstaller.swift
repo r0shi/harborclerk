@@ -139,6 +139,7 @@ final class CliShimInstaller {
         BUNDLE_RESOURCES="\(bundleResources)"
         export PATH="$BUNDLE_RESOURCES/venv/bin:/usr/bin:/bin"
         export PYTHONPATH="$BUNDLE_RESOURCES/venv/lib"
+        export PYTHONDONTWRITEBYTECODE=1
         export HARBOR_CLERK_URL="${HARBOR_CLERK_URL:-http://localhost:\(apiPort)}"
         exec "$BUNDLE_RESOURCES/venv/bin/python" -m harbor_clerk.cli.main "$@"
         """
