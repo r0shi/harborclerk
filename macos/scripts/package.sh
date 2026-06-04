@@ -28,6 +28,10 @@ remove_tree() {
     fi
 }
 
+signing_identity_for() {
+    codesign -dvv "$1" 2>&1 | sed -n 's/^Authority=//p' | head -n 1
+}
+
 echo "==> Packaging Harbor Clerk apps"
 
 FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
@@ -63,6 +67,10 @@ if [ -z "$SERVER_APP" ] || [ -z "$CLIENT_APP" ]; then
     echo "ERROR: Could not find built apps"
     exit 1
 fi
+
+SERVER_SIGN_IDENTITY="${SIGN_IDENTITY:-$(signing_identity_for "$SERVER_APP")}"
+SERVER_ENTITLEMENTS="$BUILD_DIR/HarborClerkServer.expanded.entitlements.plist"
+codesign -d --entitlements :- "$SERVER_APP" > "$SERVER_ENTITLEMENTS" 2>/dev/null
 
 # ── Copy resources into server app bundle ──
 RESOURCES="$SERVER_APP/Contents/Resources"
@@ -130,6 +138,13 @@ remove_tree "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 copy_bundle "$SERVER_APP" "$OUTPUT_DIR/HarborClerkServer.app"
 copy_bundle "$CLIENT_APP" "$OUTPUT_DIR/HarborClerk.app"
+
+if [ -n "$SERVER_SIGN_IDENTITY" ]; then
+    echo "==> Re-signing HarborClerkServer.app after resource assembly"
+    codesign --force --sign "$SERVER_SIGN_IDENTITY" \
+        --entitlements "$SERVER_ENTITLEMENTS" \
+        "$OUTPUT_DIR/HarborClerkServer.app"
+fi
 
 echo "==> Apps assembled in ${OUTPUT_DIR}"
 echo "==> Server app: $(du -sh "$OUTPUT_DIR/HarborClerkServer.app" | cut -f1)"
