@@ -8,6 +8,18 @@ import { useWatchedFolders } from '../hooks/useWatchedFolders'
 
 type SearchMode = 'search' | 'find_all'
 
+interface SearchFilters {
+  textContains: string
+  after: string
+  before: string
+  language: string
+  mimeType: string
+  emailFrom: string
+  emailTo: string
+  emailCc: string
+  emailSubject: string
+}
+
 interface SourceRef {
   doc_id: string
   doc_title: string
@@ -86,6 +98,17 @@ const HISTORY_KEY = 'search_history'
 const STATE_KEY = 'search_state'
 const MAX_HISTORY = 10
 const PAGE_SIZES = [10, 25, 50]
+const EMPTY_FILTERS: SearchFilters = {
+  textContains: '',
+  after: '',
+  before: '',
+  language: '',
+  mimeType: '',
+  emailFrom: '',
+  emailTo: '',
+  emailCc: '',
+  emailSubject: '',
+}
 
 interface SearchState {
   mode?: SearchMode
@@ -94,6 +117,7 @@ interface SearchState {
   currentPage: number
   pageSize: number
   lastQuery: string
+  filters?: SearchFilters
 }
 
 function saveSearchState(state: SearchState) {
@@ -145,6 +169,49 @@ function firstPageFromRange(pageRange?: string): number | null {
   if (!pageRange) return null
   const match = pageRange.match(/^\d+/)
   return match ? Number(match[0]) : null
+}
+
+function normalizedFilters(filters?: Partial<SearchFilters>): SearchFilters {
+  return { ...EMPTY_FILTERS, ...filters }
+}
+
+function buildMetadataFilter(filters: SearchFilters): Record<string, string> {
+  const metadataFilter: Record<string, string> = {}
+  const emailFrom = filters.emailFrom.trim()
+  const emailTo = filters.emailTo.trim()
+  const emailCc = filters.emailCc.trim()
+  const emailSubject = filters.emailSubject.trim()
+  if (emailFrom) metadataFilter['email.from_address'] = emailFrom
+  if (emailTo) metadataFilter['email.to_addresses'] = emailTo
+  if (emailCc) metadataFilter['email.cc_addresses'] = emailCc
+  if (emailSubject) metadataFilter['email.subject_contains'] = emailSubject
+  return metadataFilter
+}
+
+function buildFilterPayload(filters: SearchFilters) {
+  const metadataFilter = buildMetadataFilter(filters)
+  return {
+    ...(filters.textContains.trim() && { text_contains: filters.textContains.trim() }),
+    ...(filters.after && { after: filters.after }),
+    ...(filters.before && { before: filters.before }),
+    ...(filters.language && { language: filters.language }),
+    ...(filters.mimeType.trim() && { mime_type: filters.mimeType.trim() }),
+    ...(Object.keys(metadataFilter).length > 0 && { metadata_filter: metadataFilter }),
+  }
+}
+
+function activeFilterLabels(filters: SearchFilters): string[] {
+  const labels: string[] = []
+  if (filters.textContains.trim()) labels.push(`Text: ${filters.textContains.trim()}`)
+  if (filters.after) labels.push(`After: ${filters.after}`)
+  if (filters.before) labels.push(`Before: ${filters.before}`)
+  if (filters.language) labels.push(`Language: ${filters.language}`)
+  if (filters.mimeType.trim()) labels.push(`Type: ${filters.mimeType.trim()}`)
+  if (filters.emailFrom.trim()) labels.push(`From: ${filters.emailFrom.trim()}`)
+  if (filters.emailTo.trim()) labels.push(`To: ${filters.emailTo.trim()}`)
+  if (filters.emailCc.trim()) labels.push(`Cc: ${filters.emailCc.trim()}`)
+  if (filters.emailSubject.trim()) labels.push(`Subject: ${filters.emailSubject.trim()}`)
+  return labels
 }
 
 function Pagination({
@@ -211,6 +278,8 @@ export default function SearchPage() {
   const [results, setResults] = useState<SearchResults | null>(initial?.results || null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [filters, setFilters] = useState<SearchFilters>(() => normalizedFilters(initial?.filters))
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const [history, setHistory] = useState<string[]>(getHistory)
   const [showHistory, setShowHistory] = useState(false)
   const [pageSize, setPageSize] = useState(initial?.pageSize || 25)
@@ -222,8 +291,8 @@ export default function SearchPage() {
 
   // Persist search state to sessionStorage
   useEffect(() => {
-    saveSearchState({ mode, query, results, currentPage, pageSize, lastQuery: lastQuery.current })
-  }, [mode, query, results, currentPage, pageSize])
+    saveSearchState({ mode, query, results, currentPage, pageSize, lastQuery: lastQuery.current, filters })
+  }, [mode, query, results, currentPage, pageSize, filters])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -252,6 +321,7 @@ export default function SearchPage() {
     lastQuery.current = trimmed
     try {
       const offset = (page - 1) * size
+      const filterPayload = buildFilterPayload(filters)
       const data =
         searchMode === 'find_all'
           ? await post<FindAllResponse>('/api/search/find-all', {
@@ -260,12 +330,14 @@ export default function SearchPage() {
               offset,
               presentation: 'full',
               sort_by: 'relevance',
+              ...filterPayload,
               ...(folderIds.length > 0 && { scope: { folder_ids: folderIds } }),
             })
           : await post<SearchResponse>('/api/search', {
               query: trimmed,
               k: size,
               offset,
+              ...filterPayload,
               ...(folderIds.length > 0 && { scope: { folder_ids: folderIds } }),
             })
       setResults(data)
@@ -317,8 +389,19 @@ export default function SearchPage() {
     setShowHistory(false)
   }
 
+  function updateFilter(key: keyof SearchFilters, value: string) {
+    setFilters((current) => ({ ...current, [key]: value }))
+  }
+
+  function clearFilters() {
+    setFilters(EMPTY_FILTERS)
+  }
+
   const searchResults = mode === 'search' && results && !isFindAllResponse(results) ? results : null
   const findAllResults = mode === 'find_all' && isFindAllResponse(results) ? results : null
+  const metadataFilter = buildMetadataFilter(filters)
+  const activeFilters = activeFilterLabels(filters)
+  const activeFilterCount = activeFilters.length
   const totalCount = findAllResults?.total_matches ?? searchResults?.total_candidates ?? 0
   const maxScore = searchResults?.hits[0]?.score || findAllResults?.results[0]?.score || 1
   const totalPages = results ? Math.max(1, Math.ceil(totalCount / pageSize)) : 1
@@ -412,6 +495,19 @@ export default function SearchPage() {
         </div>
         <FolderPicker value={scopeFolderIds} onChange={setScopeFolderIds} folders={folders} size="sm" />
         <button
+          type="button"
+          onClick={() => setFiltersOpen((open) => !open)}
+          aria-expanded={filtersOpen}
+          className="rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-3 py-1.5 text-sm font-medium text-(--color-text-primary) hover:bg-(--color-bg-tertiary)"
+        >
+          Filters
+          {activeFilterCount > 0 && (
+            <span className="ml-1.5 rounded-full bg-(--area-accent) px-1.5 py-0.5 text-[10px] font-semibold text-white">
+              {activeFilterCount}
+            </span>
+          )}
+        </button>
+        <button
           type="submit"
           disabled={loading}
           className="rounded-md px-4 py-1.5 text-sm font-medium disabled:opacity-50"
@@ -430,6 +526,126 @@ export default function SearchPage() {
               : 'Search'}
         </button>
       </form>
+
+      {activeFilterCount > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          {activeFilters.map((label) => (
+            <span
+              key={label}
+              className="rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-2 py-1 text-xs font-medium text-(--color-text-primary)"
+            >
+              {label}
+            </span>
+          ))}
+          <button
+            type="button"
+            onClick={clearFilters}
+            className="rounded-md px-2 py-1 text-xs font-medium text-(--color-text-secondary) hover:bg-(--color-bg-secondary) hover:text-(--color-text-primary)"
+          >
+            Clear filters
+          </button>
+        </div>
+      )}
+
+      {filtersOpen && (
+        <Card className="mb-6 p-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Exact text</span>
+              <input
+                type="text"
+                value={filters.textContains}
+                onChange={(e) => updateFilter('textContains', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">After</span>
+              <input
+                type="date"
+                value={filters.after}
+                onChange={(e) => updateFilter('after', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Before</span>
+              <input
+                type="date"
+                value={filters.before}
+                onChange={(e) => updateFilter('before', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Language</span>
+              <select
+                value={filters.language}
+                onChange={(e) => updateFilter('language', e.target.value)}
+                className="input-base"
+              >
+                <option value="">Any</option>
+                <option value="en">English</option>
+                <option value="fr">French</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">MIME type</span>
+              <input
+                type="text"
+                value={filters.mimeType}
+                onChange={(e) => updateFilter('mimeType', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Email from</span>
+              <input
+                type="text"
+                value={filters.emailFrom}
+                onChange={(e) => updateFilter('emailFrom', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Email to</span>
+              <input
+                type="text"
+                value={filters.emailTo}
+                onChange={(e) => updateFilter('emailTo', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Email cc</span>
+              <input
+                type="text"
+                value={filters.emailCc}
+                onChange={(e) => updateFilter('emailCc', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <label className="block md:col-span-2 xl:col-span-2">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Email subject</span>
+              <input
+                type="text"
+                value={filters.emailSubject}
+                onChange={(e) => updateFilter('emailSubject', e.target.value)}
+                className="input-base"
+              />
+            </label>
+            <div className="md:col-span-2 xl:col-span-2">
+              <div className="mb-1 text-xs font-medium text-(--color-text-secondary)">Metadata JSON</div>
+              <pre
+                aria-label="Generated metadata JSON"
+                className="min-h-[38px] overflow-x-auto rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-2.5 py-2 text-xs text-(--color-text-primary)"
+              >
+                {JSON.stringify(metadataFilter, null, 2)}
+              </pre>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {error && (
         <div className="mb-4 rounded-sm bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm text-red-700 dark:text-red-400">

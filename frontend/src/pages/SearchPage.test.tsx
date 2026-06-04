@@ -145,4 +145,48 @@ describe('SearchPage', () => {
     expect(screen.getByText('Vendor Contract, p. 2')).toBeInTheDocument()
     expect(screen.getByText('vendors/contract.pdf')).toBeInTheDocument()
   })
+
+  it('serializes friendly filters into search request fields', async () => {
+    postMock.mockResolvedValueOnce({
+      hits: [],
+      total_candidates: 0,
+      has_more: false,
+      possible_conflict: false,
+      conflict_sources: [],
+    })
+
+    renderSearchPage()
+
+    fireEvent.click(screen.getByRole('button', { name: /Filters/ }))
+    fireEvent.change(screen.getByLabelText('Exact text'), { target: { value: 'force majeure' } })
+    fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'en' } })
+    fireEvent.change(screen.getByLabelText('MIME type'), { target: { value: 'application/pdf' } })
+    fireEvent.change(screen.getByLabelText('Email from'), { target: { value: 'alice@example.com' } })
+    fireEvent.change(screen.getByLabelText('Email subject'), { target: { value: 'invoice' } })
+
+    expect(screen.getByLabelText('Generated metadata JSON')).toHaveTextContent(
+      '"email.from_address": "alice@example.com"',
+    )
+    expect(screen.getByText('Text: force majeure')).toBeInTheDocument()
+    expect(screen.getByText('From: alice@example.com')).toBeInTheDocument()
+
+    const input = screen.getByPlaceholderText('Search documents...')
+    fireEvent.change(input, { target: { value: 'contract' } })
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(postMock).toHaveBeenCalledWith('/api/search', {
+        query: 'contract',
+        k: 25,
+        offset: 0,
+        text_contains: 'force majeure',
+        language: 'en',
+        mime_type: 'application/pdf',
+        metadata_filter: {
+          'email.from_address': 'alice@example.com',
+          'email.subject_contains': 'invoice',
+        },
+      })
+    })
+  })
 })
