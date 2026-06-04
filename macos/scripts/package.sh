@@ -12,6 +12,13 @@ BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
 # Avoid propagating Finder/provenance extended attributes into assembled bundles.
 export COPYFILE_DISABLE=1
 
+copy_bundle() {
+    local src="$1"
+    local dest="$2"
+    rm -rf "$dest"
+    ditto --norsrc --noextattr --noqtn --noacl "$src" "$dest"
+}
+
 echo "==> Packaging Harbor Clerk apps"
 
 FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
@@ -112,8 +119,8 @@ cp "$PROJECT_ROOT/art/logo-favicon.png" "$RESOURCES/menubar_icon.png"
 OUTPUT_DIR="$BUILD_DIR/output"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
-cp -R "$SERVER_APP" "$OUTPUT_DIR/"
-cp -R "$CLIENT_APP" "$OUTPUT_DIR/"
+copy_bundle "$SERVER_APP" "$OUTPUT_DIR/HarborClerkServer.app"
+copy_bundle "$CLIENT_APP" "$OUTPUT_DIR/HarborClerk.app"
 
 echo "==> Apps assembled in ${OUTPUT_DIR}"
 echo "==> Server app: $(du -sh "$OUTPUT_DIR/HarborClerkServer.app" | cut -f1)"
