@@ -152,4 +152,31 @@ describe('DocumentDetailPage', () => {
     expect(screen.getByText('skipped by maintenance')).toBeInTheDocument()
     expect(screen.queryByText('pending')).not.toBeInTheDocument()
   })
+
+  it('uses document artifacts over stale optional-stage pending jobs', async () => {
+    getMock.mockImplementation((url) => {
+      if (url === '/api/docs/doc-1') {
+        return Promise.resolve({
+          ...READY_DOC,
+          summary: 'A valid summary exists.',
+          jobs: READY_DOC.jobs.map((job) => {
+            if (job.stage === 'ocr') return { ...job, status: 'queued', finished_at: null }
+            if (job.stage === 'summarize') return { ...job, status: 'queued', finished_at: null }
+            return job
+          }),
+        })
+      }
+      if (url === '/api/docs/doc-1/related') return Promise.resolve({ related: [] })
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+
+    renderDocumentDetail()
+
+    expect(await screen.findByText('Ingestion complete')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Ingestion Jobs/ }))
+
+    expect(screen.getByText('not needed')).toBeInTheDocument()
+    expect(screen.getByText('summary available')).toBeInTheDocument()
+    expect(screen.queryByText('pending')).not.toBeInTheDocument()
+  })
 })

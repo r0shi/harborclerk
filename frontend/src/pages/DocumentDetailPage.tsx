@@ -136,27 +136,47 @@ function jobPillState(status: string): PillState {
   return 'pending'
 }
 
-function jobProgressLabel(job: JobInfo): string {
+function hasPersistedSummary(doc: DocumentDetail): boolean {
+  return Boolean(doc.summary?.trim())
+}
+
+function effectiveJobStatus(job: JobInfo, doc: DocumentDetail): string {
+  if (job.stage === 'ocr' && doc.needs_ocr === false) return 'skipped'
+  if (job.stage === 'summarize' && hasPersistedSummary(doc)) return 'done'
+  return job.status
+}
+
+function jobProgressLabel(job: JobInfo, doc: DocumentDetail, status = effectiveJobStatus(job, doc)): string {
+  if (job.stage === 'summarize' && hasPersistedSummary(doc)) return 'summary available'
   if (job.progress_total) return `${job.progress_current || 0}/${job.progress_total}`
-  if (job.status !== 'skipped') return '—'
+  if (status !== 'skipped') return '—'
   if (job.error) return job.error
   if (job.stage === 'ocr') return 'not needed'
   if (job.stage === 'summarize') return 'skipped by maintenance'
   return 'skipped'
 }
 
-function jobTimeLabel(job: JobInfo): string {
+function jobTimeLabel(job: JobInfo, status = job.status): string {
   if (job.finished_at) return new Date(job.finished_at).toLocaleTimeString()
-  if (job.status === 'skipped') return 'skipped'
+  if (status === 'done') return 'complete'
+  if (status === 'skipped') return 'skipped'
   if (job.started_at) return 'running...'
   return 'queued'
 }
 
 function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
   const hasJobs = doc.jobs.length > 0
-  const allDone = hasJobs && doc.jobs.every((j) => j.status === 'done' || j.status === 'skipped')
-  const hasError = doc.jobs.some((j) => j.status === 'error')
-  const runningJob = doc.jobs.find((j) => j.status === 'running' || j.status === 'queued')
+  const allDone =
+    hasJobs &&
+    doc.jobs.every((j) => {
+      const status = effectiveJobStatus(j, doc)
+      return status === 'done' || status === 'skipped'
+    })
+  const hasError = doc.jobs.some((j) => effectiveJobStatus(j, doc) === 'error')
+  const runningJob = doc.jobs.find((j) => {
+    const status = effectiveJobStatus(j, doc)
+    return status === 'running' || status === 'queued'
+  })
 
   if (doc.pipeline_status === 'ready' || allDone) {
     return (
@@ -183,7 +203,10 @@ function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
   }
 
   if (runningJob) {
-    const doneCount = doc.jobs.filter((j) => j.status === 'done' || j.status === 'skipped').length
+    const doneCount = doc.jobs.filter((j) => {
+      const status = effectiveJobStatus(j, doc)
+      return status === 'done' || status === 'skipped'
+    }).length
     return (
       <div className="mb-3 flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
         <div className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
@@ -878,13 +901,14 @@ export default function DocumentDetailPage() {
                 </thead>
                 <tbody>
                   {doc.jobs.map((j) => {
-                    const pillState = jobPillState(j.status)
-                    const progressLabel = jobProgressLabel(j)
+                    const status = effectiveJobStatus(j, doc)
+                    const pillState = jobPillState(status)
+                    const progressLabel = jobProgressLabel(j, doc, status)
                     return (
                       <tr key={j.job_id || j.stage} className="border-b border-gray-100 dark:border-gray-700">
                         <td className="py-1 pr-3 font-medium">{stageName(j.stage)}</td>
                         <td className="py-1 pr-3">
-                          <StatusPill state={pillState} label={j.status} />
+                          <StatusPill state={pillState} label={status} />
                         </td>
                         <td
                           className="py-1 pr-3 text-gray-500 dark:text-gray-400"
@@ -892,7 +916,7 @@ export default function DocumentDetailPage() {
                         >
                           {progressLabel}
                         </td>
-                        <td className="py-1 text-xs text-gray-400">{jobTimeLabel(j)}</td>
+                        <td className="py-1 text-xs text-gray-400">{jobTimeLabel(j, status)}</td>
                       </tr>
                     )
                   })}
