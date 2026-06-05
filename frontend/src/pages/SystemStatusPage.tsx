@@ -88,14 +88,18 @@ function formatStatValue(key: string, value: number | string | null | undefined)
   return value.toLocaleString()
 }
 
-function stateLabel(state?: StatusSummary['state']): string {
-  if (state === 'needs_attention') return 'Needs attention'
+function hasErrorIssue(items: StatusIssue[]): boolean {
+  return items.some((item) => item.severity === 'error')
+}
+
+function stateLabel(state: StatusSummary['state'] | undefined, attentionItems: StatusIssue[] = []): string {
+  if (state === 'needs_attention') return hasErrorIssue(attentionItems) ? 'Needs attention' : 'Review'
   if (state === 'processing') return 'Processing'
   return 'Ready'
 }
 
-function statePill(state?: StatusSummary['state']): PillState {
-  if (state === 'needs_attention') return 'error'
+function statePill(state: StatusSummary['state'] | undefined, attentionItems: StatusIssue[] = []): PillState {
+  if (state === 'needs_attention') return hasErrorIssue(attentionItems) ? 'error' : 'pending'
   if (state === 'processing') return 'running'
   return 'active'
 }
@@ -268,7 +272,10 @@ export default function SystemStatusPage() {
                 The short version of whether Harbor Clerk is ready to search, ingest, and answer.
               </p>
             </div>
-            <StatusPill state={statePill(displayState)} label={stateLabel(displayState)} />
+            <StatusPill
+              state={statePill(displayState, attentionItems)}
+              label={stateLabel(displayState, attentionItems)}
+            />
           </div>
           <ReadinessChecklist summary={summary} health={health} llmState={llmStatus.state} />
         </Card>

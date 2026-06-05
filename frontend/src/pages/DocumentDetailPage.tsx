@@ -107,6 +107,51 @@ function JobStatusBadge({ status }: { status: string }) {
   return <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>{status}</span>
 }
 
+function stageName(stage: string): string {
+  switch (stage) {
+    case 'extract':
+      return 'Extract'
+    case 'ocr':
+      return 'OCR'
+    case 'chunk':
+      return 'Chunk'
+    case 'entities':
+      return 'Entities'
+    case 'embed':
+      return 'Embed'
+    case 'summarize':
+      return 'Summarize'
+    case 'finalize':
+      return 'Finalize'
+    default:
+      return stage
+  }
+}
+
+function jobPillState(status: string): PillState {
+  if (status === 'done') return 'active'
+  if (status === 'running') return 'running'
+  if (status === 'error') return 'error'
+  if (status === 'skipped') return 'idle'
+  return 'pending'
+}
+
+function jobProgressLabel(job: JobInfo): string {
+  if (job.progress_total) return `${job.progress_current || 0}/${job.progress_total}`
+  if (job.status !== 'skipped') return '—'
+  if (job.error) return job.error
+  if (job.stage === 'ocr') return 'not needed'
+  if (job.stage === 'summarize') return 'skipped by maintenance'
+  return 'skipped'
+}
+
+function jobTimeLabel(job: JobInfo): string {
+  if (job.finished_at) return new Date(job.finished_at).toLocaleTimeString()
+  if (job.status === 'skipped') return 'skipped'
+  if (job.started_at) return 'running...'
+  return 'queued'
+}
+
 function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
   const hasJobs = doc.jobs.length > 0
   const allDone = hasJobs && doc.jobs.every((j) => j.status === 'done' || j.status === 'skipped')
@@ -833,31 +878,21 @@ export default function DocumentDetailPage() {
                 </thead>
                 <tbody>
                   {doc.jobs.map((j) => {
-                    const pillState: PillState =
-                      j.status === 'done'
-                        ? 'active'
-                        : j.status === 'running'
-                          ? 'running'
-                          : j.status === 'error'
-                            ? 'error'
-                            : 'pending'
-                    const pillLabel = j.status === 'done' ? 'done' : j.status === 'queued' ? 'queued' : undefined
+                    const pillState = jobPillState(j.status)
+                    const progressLabel = jobProgressLabel(j)
                     return (
                       <tr key={j.job_id || j.stage} className="border-b border-gray-100 dark:border-gray-700">
-                        <td className="py-1 pr-3 font-medium">{j.stage}</td>
+                        <td className="py-1 pr-3 font-medium">{stageName(j.stage)}</td>
                         <td className="py-1 pr-3">
-                          <StatusPill state={pillState} label={pillLabel} />
+                          <StatusPill state={pillState} label={j.status} />
                         </td>
-                        <td className="py-1 pr-3 text-gray-500 dark:text-gray-400">
-                          {j.progress_total ? `${j.progress_current || 0}/${j.progress_total}` : '—'}
+                        <td
+                          className="py-1 pr-3 text-gray-500 dark:text-gray-400"
+                          title={progressLabel.length > 48 ? progressLabel : undefined}
+                        >
+                          {progressLabel}
                         </td>
-                        <td className="py-1 text-xs text-gray-400">
-                          {j.finished_at
-                            ? new Date(j.finished_at).toLocaleTimeString()
-                            : j.started_at
-                              ? 'running...'
-                              : 'queued'}
-                        </td>
+                        <td className="py-1 text-xs text-gray-400">{jobTimeLabel(j)}</td>
                       </tr>
                     )
                   })}

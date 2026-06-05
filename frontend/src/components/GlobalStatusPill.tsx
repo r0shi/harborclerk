@@ -86,7 +86,7 @@ function attentionView(summary: StatusSummary): PillView {
 
   if (firstIssue?.kind === 'entity_extraction_skipped') {
     return {
-      label: 'Entity check',
+      label: 'Entities skipped',
       glyph: '◐',
       state,
       title: firstIssue.detail,

@@ -159,6 +159,11 @@ async def test_status_summary_surfaces_recovery_attention(client, admin_user, ad
         "folder_access",
         "entity_extraction_skipped",
     }.issubset(issue_kinds)
+    entity_issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "entity_extraction_skipped")
+    assert entity_issue["title"] == "Entity extraction skipped some documents"
+    assert "open Maintenance and reprocess" in entity_issue["detail"]
+    assert entity_issue["action_label"] == "Open maintenance"
+    assert entity_issue["action_href"] == "/settings/maintenance"
     assert data["recent_failed_documents"][0]["title"] == "Broken scan"
     assert data["recent_failed_documents"][0]["failed_stage"] == "extract"
     assert data["recent_processing_documents"][0]["title"] == "Still embedding"

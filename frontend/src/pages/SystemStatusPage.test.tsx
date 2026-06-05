@@ -142,4 +142,39 @@ describe('SystemStatusPage', () => {
     await waitFor(() => expect(postMock).toHaveBeenCalledWith('/api/system/reaper-run'))
     expect(await screen.findByText('Recovered 1 stale job.')).toBeInTheDocument()
   })
+
+  it('shows warning-only entity issues as review items with maintenance CTA', async () => {
+    mockRequests({
+      state: 'needs_attention',
+      counts: {
+        ...SUMMARY.counts,
+        processing_documents: 0,
+        failed_documents: 0,
+        queued_jobs: 0,
+        running_jobs: 0,
+        failed_jobs: 0,
+        ner_skipped_documents: 12,
+        stuck_jobs: 0,
+      },
+      needs_attention: [
+        {
+          kind: 'entity_extraction_skipped',
+          severity: 'warning',
+          title: 'Entity extraction skipped some documents',
+          detail: '12 documents were processed while spaCy NER models were unavailable.',
+          count: 12,
+          action_label: 'Open maintenance',
+          action_href: '/settings/maintenance',
+        },
+      ],
+      recent_failed_documents: [],
+      recent_processing_documents: [],
+    })
+
+    renderStatusPage()
+
+    expect(await screen.findByText('Entity extraction skipped some documents')).toBeInTheDocument()
+    expect(screen.getAllByText('Review').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByRole('link', { name: 'Open maintenance' })).toHaveAttribute('href', '/settings/maintenance')
+  })
 })

@@ -166,6 +166,34 @@ describe('GlobalStatusPill', () => {
     expect(link).toHaveAttribute('title', '3 active documents need review.')
   })
 
+  it('names entity-only warning as skipped entities', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'needs_attention',
+        counts: {
+          ...READY_SUMMARY.counts,
+          ner_skipped_documents: 12,
+        },
+        needs_attention: [
+          {
+            kind: 'entity_extraction_skipped',
+            severity: 'warning',
+            title: 'Entity extraction skipped some documents',
+            detail: '12 documents need reprocessing before entity filters are complete.',
+            count: 12,
+          },
+        ],
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Entities skipped' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute('title', '12 documents need reprocessing before entity filters are complete.')
+  })
+
   it('shows document processing before local AI ready state', async () => {
     mockPill({
       summary: {

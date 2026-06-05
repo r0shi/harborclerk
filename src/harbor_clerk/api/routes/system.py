@@ -395,14 +395,16 @@ async def status_summary(
             {
                 "kind": "entity_extraction_skipped",
                 "severity": "warning",
-                "title": "Entity extraction was skipped",
+                "title": "Entity extraction skipped some documents",
                 "detail": (
                     f"{ner_skipped_documents} document{'s' if ner_skipped_documents != 1 else ''} "
-                    "were processed while spaCy NER models were unavailable."
+                    "were processed while spaCy NER models were unavailable. Search still works, "
+                    "but entity filters and Explore may be incomplete. If NER models are installed now, "
+                    "open Maintenance and reprocess to populate entities."
                 ),
                 "count": int(ner_skipped_documents),
-                "action_label": "Review diagnostics",
-                "action_href": "/settings/diagnostics",
+                "action_label": "Open maintenance",
+                "action_href": "/settings/maintenance",
             }
         )
 
