@@ -866,23 +866,276 @@ async def run_migrations(
     return {"status": "ok", "schema_version": version}
 
 
+async def _notify_bulk_queue(session: AsyncSession, queue_name: str, count: int) -> None:
+    if count <= 0:
+        return
+    await session.execute(
+        text("SELECT pg_notify(:channel, :payload)"),
+        {"channel": f"job_enqueued_{queue_name}", "payload": "bulk"},
+    )
+
+
+async def _bulk_queue_reprocess_all(session: AsyncSession) -> int:
+    """Reset all active docs and queue extract with set-based DB work."""
+    result = await session.execute(
+        text(
+            """
+            WITH target_docs AS (
+                UPDATE documents
+                SET pipeline_status = 'extracting'::pipeline_status,
+                    pipeline_seq = COALESCE(pipeline_seq, 0) + 1,
+                    error = NULL
+                WHERE status = 'active'
+                RETURNING doc_id
+            ),
+            deleted_other_jobs AS (
+                DELETE FROM ingestion_jobs AS job
+                USING target_docs
+                WHERE job.doc_id = target_docs.doc_id
+                  AND job.stage <> 'extract'::job_stage
+                RETURNING job.job_id
+            ),
+            queued_extract AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'extract'::job_stage,
+                    'queued'::job_status,
+                    0,
+                    0,
+                    '{}'::jsonb,
+                    0,
+                    NULL,
+                    now(),
+                    NULL,
+                    NULL,
+                    NULL
+                FROM target_docs
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'queued'::job_status,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{}'::jsonb,
+                    priority = 0,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    heartbeat_at = NULL
+                RETURNING doc_id
+            )
+            SELECT
+                (SELECT count(*) FROM target_docs) AS target_count,
+                (SELECT count(*) FROM deleted_other_jobs) AS deleted_count,
+                (SELECT count(*) FROM queued_extract) AS queued_count
+            """
+        )
+    )
+    row = result.mappings().one()
+    return int(row["target_count"] or 0)
+
+
+async def _bulk_queue_reprocess_all_skip_summarize(session: AsyncSession) -> int:
+    """Reset all active docs, queue extract, and pre-mark summarize skipped."""
+    result = await session.execute(
+        text(
+            """
+            WITH target_docs AS (
+                UPDATE documents
+                SET pipeline_status = 'extracting'::pipeline_status,
+                    pipeline_seq = COALESCE(pipeline_seq, 0) + 1,
+                    error = NULL
+                WHERE status = 'active'
+                RETURNING doc_id
+            ),
+            deleted_other_jobs AS (
+                DELETE FROM ingestion_jobs AS job
+                USING target_docs
+                WHERE job.doc_id = target_docs.doc_id
+                  AND job.stage NOT IN ('extract'::job_stage, 'summarize'::job_stage)
+                RETURNING job.job_id
+            ),
+            skipped_summarize AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'summarize'::job_stage,
+                    'done'::job_status,
+                    0,
+                    0,
+                    '{"skipped": true, "reason": "reprocess_all_skip_summarize"}'::jsonb,
+                    0,
+                    NULL,
+                    now(),
+                    now(),
+                    now(),
+                    NULL
+                FROM target_docs
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'done'::job_status,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{"skipped": true, "reason": "reprocess_all_skip_summarize"}'::jsonb,
+                    priority = 0,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = now(),
+                    finished_at = now(),
+                    heartbeat_at = NULL
+                RETURNING doc_id
+            ),
+            queued_extract AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'extract'::job_stage,
+                    'queued'::job_status,
+                    0,
+                    0,
+                    '{}'::jsonb,
+                    0,
+                    NULL,
+                    now(),
+                    NULL,
+                    NULL,
+                    NULL
+                FROM target_docs
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'queued'::job_status,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{}'::jsonb,
+                    priority = 0,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    heartbeat_at = NULL
+                RETURNING doc_id
+            )
+            SELECT
+                (SELECT count(*) FROM target_docs) AS target_count,
+                (SELECT count(*) FROM deleted_other_jobs) AS deleted_count,
+                (SELECT count(*) FROM skipped_summarize) AS skipped_count,
+                (SELECT count(*) FROM queued_extract) AS queued_count
+            """
+        )
+    )
+    row = result.mappings().one()
+    return int(row["target_count"] or 0)
+
+
+async def _bulk_queue_resummarize_all(session: AsyncSession) -> int:
+    """Queue summarize for every active ready document without per-doc sync calls."""
+    result = await session.execute(
+        text(
+            """
+            WITH target_docs AS (
+                UPDATE documents
+                SET error = NULL
+                WHERE status = 'active'
+                  AND pipeline_status = 'ready'::pipeline_status
+                RETURNING doc_id
+            ),
+            queued_summarize AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'summarize'::job_stage,
+                    'queued'::job_status,
+                    0,
+                    0,
+                    '{}'::jsonb,
+                    0,
+                    NULL,
+                    now(),
+                    NULL,
+                    NULL,
+                    NULL
+                FROM target_docs
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'queued'::job_status,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{}'::jsonb,
+                    priority = 0,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    heartbeat_at = NULL
+                WHERE ingestion_jobs.status NOT IN ('queued'::job_status, 'running'::job_status)
+                RETURNING doc_id
+            )
+            SELECT
+                (SELECT count(*) FROM target_docs) AS target_count,
+                (SELECT count(*) FROM queued_summarize) AS queued_count
+            """
+        )
+    )
+    row = result.mappings().one()
+    return int(row["target_count"] or 0)
+
+
 @router.post("/system/reprocess-all")
 async def reprocess_all(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Re-run ingestion pipeline on every active document's latest version."""
-    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
-
-    result = await session.execute(select(Document).where(Document.status == "active"))
-    docs = result.scalars().all()
-
-    count = 0
-    for doc in docs:
-        doc.pipeline_status = PipelineStatus.queued
-        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
-        doc.error = None
-        count += 1
+    count = await _bulk_queue_reprocess_all(session)
 
     await log_audit(
         session,
@@ -890,12 +1143,8 @@ async def reprocess_all(
         action="reprocess_all",
         detail={"reprocessed_count": count},
     )
+    await _notify_bulk_queue(session, "io", count)
     await session.commit()
-
-    # Reset and re-enqueue outside the async session (sync calls)
-    for doc in docs:
-        reset_jobs(doc.doc_id)
-        enqueue_stage(doc.doc_id, JobStage.extract)
 
     logger.info("Reprocess-all: %d documents queued", count)
     return {"reprocessed": count}
@@ -917,24 +1166,11 @@ async def reprocess_all_skip_summarize(
     summaries once the iteration is done.
 
     Mechanism: pre-inserts a "done with skipped=True" IngestionJob row for
-    summarize on each doc immediately after reset_jobs. The cascade in
+    summarize on each doc as part of the bulk reset. The cascade in
     `advance_pipeline` then sees an existing summarize row and won't enqueue
     a new one.
     """
-    from harbor_clerk.db_sync import get_sync_session
-    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
-
-    result = await session.execute(select(Document).where(Document.status == "active"))
-    docs = result.scalars().all()
-
-    count = 0
-    doc_ids: list[uuid.UUID] = []
-    for doc in docs:
-        doc.pipeline_status = PipelineStatus.queued
-        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
-        doc.error = None
-        doc_ids.append(doc.doc_id)
-        count += 1
+    count = await _bulk_queue_reprocess_all_skip_summarize(session)
 
     await log_audit(
         session,
@@ -942,31 +1178,8 @@ async def reprocess_all_skip_summarize(
         action="reprocess_all_skip_summarize",
         detail={"reprocessed_count": count, "skipped_stages": ["summarize"]},
     )
+    await _notify_bulk_queue(session, "io", count)
     await session.commit()
-
-    # Reset jobs, then pre-insert the summarize "skip marker" row, then
-    # enqueue extract. Order matters: reset_jobs deletes prior job rows
-    # (including any summarize), so the skip marker must come after it.
-    for doc_id in doc_ids:
-        reset_jobs(doc_id)
-        sync_session = get_sync_session()
-        try:
-            now = datetime.now(UTC)
-            sync_session.add(
-                IngestionJob(
-                    doc_id=doc_id,
-                    stage=JobStage.summarize,
-                    status=JobStatus.done,
-                    started_at=now,
-                    finished_at=now,
-                    metrics={"skipped": True, "reason": "reprocess_all_skip_summarize"},
-                    priority=0,
-                )
-            )
-            sync_session.commit()
-        finally:
-            sync_session.close()
-        enqueue_stage(doc_id, JobStage.extract)
 
     logger.info("Reprocess-all-skip-summarize: %d documents queued", count)
     return {"reprocessed": count, "skipped_stages": ["summarize"]}
@@ -982,30 +1195,16 @@ async def resummarize_all(
     Useful after upgrading the LLM model or changing summary settings.
     Skips documents that have no chunks (not yet fully ingested).
     """
-    from harbor_clerk.worker.pipeline import enqueue_stage
-
-    # Find active documents that are ready (pipeline complete)
-    result = await session.execute(
-        select(Document.doc_id).where(
-            Document.status == "active",
-            Document.pipeline_status == PipelineStatus.ready,
-        )
-    )
-    doc_ids_ready = [row[0] for row in result.all()]
+    count = await _bulk_queue_resummarize_all(session)
 
     await log_audit(
         session,
         user_id=admin.id,
         action="resummarize_all",
-        detail={"resummarized_count": len(doc_ids_ready)},
+        detail={"resummarized_count": count},
     )
+    await _notify_bulk_queue(session, "llm", count)
     await session.commit()
-
-    # Enqueue summarize jobs outside the async session (sync calls)
-    count = 0
-    for did in doc_ids_ready:
-        enqueue_stage(did, JobStage.summarize)
-        count += 1
 
     logger.info("Resummarize-all: %d documents queued", count)
     return {"resummarized": count}

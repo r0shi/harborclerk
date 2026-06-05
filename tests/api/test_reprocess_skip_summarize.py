@@ -42,14 +42,13 @@ async def test_reprocess_all_skip_summarize_marks_summarize_as_done_with_skip_me
     assert body["skipped_stages"] == ["summarize"]
 
     # Doc was reset (pipeline_seq incremented; error cleared). pipeline_status
-    # is `extracting` rather than `queued` because enqueue_stage(extract) flips
-    # it to the stage's running_status immediately — same as production
-    # reprocess_all behavior; the prior `ready` state is gone, which is what
-    # matters for the reset semantics.
+    # is `extracting` rather than `queued` because the bulk path preserves
+    # enqueue_stage(extract)'s visible running-status behavior; the prior
+    # `ready` state is gone, which is what matters for the reset semantics.
     await db_session.refresh(doc)
     assert doc.pipeline_seq == 2
     assert doc.error is None
-    assert doc.pipeline_status != PipelineStatus.ready
+    assert doc.pipeline_status == PipelineStatus.extracting
 
     # Summarize job row exists, marked done with the skip metric
     jobs = (await db_session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc_id))).scalars().all()
