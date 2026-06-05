@@ -190,6 +190,13 @@ async def health_check(
 _PROCESSING_STATUSES: tuple[PipelineStatus, ...] = tuple(
     status for status in PipelineStatus if status not in (PipelineStatus.ready, PipelineStatus.error)
 )
+_COMPLETED_READY_STAGES: tuple[JobStage, ...] = (
+    JobStage.extract,
+    JobStage.chunk,
+    JobStage.entities,
+    JobStage.embed,
+    JobStage.finalize,
+)
 
 
 def _job_age_seconds(now: datetime, job: IngestionJob) -> float | None:
@@ -262,10 +269,11 @@ async def status_summary(
     live_job_doc_ids = (
         select(IngestionJob.doc_id).where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running))).distinct()
     )
-    finalized_doc_ids = (
+    completed_pipeline_doc_ids = (
         select(IngestionJob.doc_id)
-        .where(IngestionJob.stage == JobStage.finalize, IngestionJob.status == JobStatus.done)
-        .distinct()
+        .where(IngestionJob.stage.in_(_COMPLETED_READY_STAGES), IngestionJob.status == JobStatus.done)
+        .group_by(IngestionJob.doc_id)
+        .having(func.count(func.distinct(IngestionJob.stage)) == len(_COMPLETED_READY_STAGES))
     )
     completed_status_stale_documents = (
         await session.execute(
@@ -273,7 +281,7 @@ async def status_summary(
                 Document.status == "active",
                 Document.pipeline_status.in_(_PROCESSING_STATUSES),
                 Document.doc_id.not_in(live_job_doc_ids),
-                Document.doc_id.in_(finalized_doc_ids),
+                Document.doc_id.in_(completed_pipeline_doc_ids),
             )
         )
     ).scalar() or 0
@@ -283,7 +291,7 @@ async def status_summary(
                 Document.status == "active",
                 Document.pipeline_status.in_(_PROCESSING_STATUSES),
                 Document.doc_id.not_in(live_job_doc_ids),
-                Document.doc_id.not_in(finalized_doc_ids),
+                Document.doc_id.not_in(completed_pipeline_doc_ids),
             )
         )
     ).scalar() or 0
@@ -716,10 +724,11 @@ async def repair_completed_statuses(
         select(IngestionJob.doc_id).where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running))).distinct()
     )
 
-    finalized_doc_ids = (
+    completed_pipeline_doc_ids = (
         select(IngestionJob.doc_id)
-        .where(IngestionJob.stage == JobStage.finalize, IngestionJob.status == JobStatus.done)
-        .distinct()
+        .where(IngestionJob.stage.in_(_COMPLETED_READY_STAGES), IngestionJob.status == JobStatus.done)
+        .group_by(IngestionJob.doc_id)
+        .having(func.count(func.distinct(IngestionJob.stage)) == len(_COMPLETED_READY_STAGES))
     )
     docs = (
         (
@@ -728,7 +737,7 @@ async def repair_completed_statuses(
                     Document.status == "active",
                     Document.pipeline_status.in_(_PROCESSING_STATUSES),
                     Document.doc_id.not_in(live_job_doc_ids),
-                    Document.doc_id.in_(finalized_doc_ids),
+                    Document.doc_id.in_(completed_pipeline_doc_ids),
                 )
             )
         )

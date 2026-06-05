@@ -7,6 +7,23 @@ from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFolder
 from tests.conftest import auth_header
 
+_READY_GATE_STAGES = (JobStage.extract, JobStage.chunk, JobStage.entities, JobStage.embed, JobStage.finalize)
+
+
+def _add_done_gate_jobs(db_session, doc_id, *, exclude: set[JobStage] | None = None):
+    exclude = exclude or set()
+    db_session.add_all(
+        [
+            IngestionJob(
+                doc_id=doc_id,
+                stage=stage,
+                status=JobStatus.done,
+            )
+            for stage in _READY_GATE_STAGES
+            if stage not in exclude
+        ]
+    )
+
 
 async def test_setup_status_no_users(client):
     resp = await client.get("/api/system/setup-status")
@@ -207,13 +224,7 @@ async def test_status_summary_surfaces_completed_status_cleanup(client, admin_us
     )
     db_session.add(stale_doc)
     await db_session.flush()
-    db_session.add(
-        IngestionJob(
-            doc_id=stale_doc.doc_id,
-            stage=JobStage.finalize,
-            status=JobStatus.done,
-        )
-    )
+    _add_done_gate_jobs(db_session, stale_doc.doc_id)
     await db_session.flush()
 
     resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
@@ -256,24 +267,27 @@ async def test_repair_completed_statuses_marks_finalized_stale_docs_ready(client
         sha256=b"c" * 32,
         pipeline_status=PipelineStatus.chunking,
     )
-    db_session.add_all([repairable_doc, still_running_doc, unfinished_doc])
+    finalize_only_doc = Document(
+        title="Finalize row only",
+        status="active",
+        sha256=b"d" * 32,
+        pipeline_status=PipelineStatus.chunking,
+    )
+    db_session.add_all([repairable_doc, still_running_doc, unfinished_doc, finalize_only_doc])
     await db_session.flush()
+    _add_done_gate_jobs(db_session, repairable_doc.doc_id)
+    _add_done_gate_jobs(db_session, still_running_doc.doc_id, exclude={JobStage.embed})
     db_session.add_all(
         [
-            IngestionJob(
-                doc_id=repairable_doc.doc_id,
-                stage=JobStage.finalize,
-                status=JobStatus.done,
-            ),
-            IngestionJob(
-                doc_id=still_running_doc.doc_id,
-                stage=JobStage.finalize,
-                status=JobStatus.done,
-            ),
             IngestionJob(
                 doc_id=still_running_doc.doc_id,
                 stage=JobStage.embed,
                 status=JobStatus.running,
+            ),
+            IngestionJob(
+                doc_id=finalize_only_doc.doc_id,
+                stage=JobStage.finalize,
+                status=JobStatus.done,
             ),
         ]
     )
@@ -286,10 +300,12 @@ async def test_repair_completed_statuses_marks_finalized_stale_docs_ready(client
     await db_session.refresh(repairable_doc)
     await db_session.refresh(still_running_doc)
     await db_session.refresh(unfinished_doc)
+    await db_session.refresh(finalize_only_doc)
     assert repairable_doc.pipeline_status == PipelineStatus.ready
     assert repairable_doc.error is None
     assert still_running_doc.pipeline_status == PipelineStatus.chunking
     assert unfinished_doc.pipeline_status == PipelineStatus.chunking
+    assert finalize_only_doc.pipeline_status == PipelineStatus.chunking
 
 
 async def test_status_summary_ready_when_no_attention_items(client, admin_user, admin_token, db_session):
