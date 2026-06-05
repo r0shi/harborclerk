@@ -148,6 +148,8 @@ async def test_status_summary_surfaces_recovery_attention(client, admin_user, ad
     assert data["state"] == "needs_attention"
     assert data["counts"]["failed_documents"] == 1
     assert data["counts"]["processing_documents"] == 1
+    assert data["counts"]["pipeline_processing_documents"] == 1
+    assert data["counts"]["stranded_documents"] == 0
     assert data["counts"]["stuck_jobs"] == 1
     assert data["counts"]["unavailable_folders"] == 1
     assert data["counts"]["ner_skipped_documents"] == 1
@@ -159,9 +161,41 @@ async def test_status_summary_surfaces_recovery_attention(client, admin_user, ad
         "folder_access",
         "entity_extraction_skipped",
     }.issubset(issue_kinds)
+    entity_issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "entity_extraction_skipped")
+    assert entity_issue["title"] == "Entity extraction skipped some documents"
+    assert "open Maintenance and reprocess" in entity_issue["detail"]
+    assert entity_issue["action_label"] == "Open maintenance"
+    assert entity_issue["action_href"] == "/settings/maintenance"
     assert data["recent_failed_documents"][0]["title"] == "Broken scan"
     assert data["recent_failed_documents"][0]["failed_stage"] == "extract"
     assert data["recent_processing_documents"][0]["title"] == "Still embedding"
+    assert data["recent_processing_documents"][0]["processing_stage"] == "embed"
+    assert data["recent_processing_documents"][0]["job_status"] == "running"
+
+
+async def test_status_summary_separates_stranded_pipeline_state(client, admin_user, admin_token, db_session):
+    stranded_doc = Document(
+        title="Marked chunking",
+        status="active",
+        sha256=b"s" * 32,
+        pipeline_status=PipelineStatus.chunking,
+    )
+    db_session.add(stranded_doc)
+    await db_session.flush()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "needs_attention"
+    assert data["counts"]["processing_documents"] == 0
+    assert data["counts"]["pipeline_processing_documents"] == 1
+    assert data["counts"]["stranded_documents"] == 1
+    assert data["recent_processing_documents"] == []
+
+    issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "stranded_pipeline_state")
+    assert issue["severity"] == "warning"
+    assert issue["count"] == 1
+    assert "no queued or running ingest job" in issue["detail"]
 
 
 async def test_status_summary_ready_when_no_attention_items(client, admin_user, admin_token, db_session):

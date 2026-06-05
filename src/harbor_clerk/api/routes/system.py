@@ -234,7 +234,7 @@ async def status_summary(
     active_documents = sum(pipeline_counts.values())
     ready_documents = pipeline_counts.get(PipelineStatus.ready.value, 0)
     failed_documents = pipeline_counts.get(PipelineStatus.error.value, 0)
-    processing_documents = sum(pipeline_counts.get(status.value, 0) for status in _PROCESSING_STATUSES)
+    pipeline_processing_documents = sum(pipeline_counts.get(status.value, 0) for status in _PROCESSING_STATUSES)
 
     job_rows = (
         await session.execute(
@@ -249,6 +249,28 @@ async def status_summary(
         for row in job_rows
         if row[0] is not None
     }
+    live_processing_documents = (
+        await session.execute(
+            select(func.count(func.distinct(IngestionJob.doc_id)))
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+            )
+        )
+    ).scalar() or 0
+    live_job_doc_ids = (
+        select(IngestionJob.doc_id).where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running))).distinct()
+    )
+    stranded_documents = (
+        await session.execute(
+            select(func.count(Document.doc_id)).where(
+                Document.status == "active",
+                Document.pipeline_status.in_(_PROCESSING_STATUSES),
+                Document.doc_id.not_in(live_job_doc_ids),
+            )
+        )
+    ).scalar() or 0
 
     folder_rows = (
         await session.execute(
@@ -332,25 +354,32 @@ async def status_summary(
         )
 
     processing_docs = (
-        (
-            await session.execute(
-                select(Document)
-                .where(Document.status == "active", Document.pipeline_status.in_(_PROCESSING_STATUSES))
-                .order_by(Document.updated_at.desc())
-                .limit(5)
+        await session.execute(
+            select(
+                Document,
+                IngestionJob.stage,
+                IngestionJob.status,
             )
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+            )
+            .order_by(IngestionJob.started_at.desc().nullslast(), IngestionJob.created_at.desc())
+            .limit(5)
         )
-        .scalars()
-        .all()
-    )
+    ).all()
     recent_processing_documents = [
         {
             "doc_id": str(doc.doc_id),
             "title": doc.title,
+            "canonical_filename": doc.canonical_filename,
             "pipeline_status": doc.pipeline_status.value,
+            "processing_stage": stage.value,
+            "job_status": status.value,
             "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
         }
-        for doc in processing_docs
+        for doc, stage, status in processing_docs
     ]
 
     needs_attention: list[dict[str, Any]] = []
@@ -390,19 +419,37 @@ async def status_summary(
                 "action_href": "/folders",
             }
         )
+    if stranded_documents:
+        needs_attention.append(
+            {
+                "kind": "stranded_pipeline_state",
+                "severity": "warning",
+                "title": "Some documents are marked processing without active jobs",
+                "detail": (
+                    f"{stranded_documents} active document{'s' if stranded_documents != 1 else ''} "
+                    "have an in-progress pipeline state but no queued or running ingest job. "
+                    "They may need reprocessing or cleanup if they do not clear after the current queue finishes."
+                ),
+                "count": int(stranded_documents),
+                "action_label": "Open maintenance",
+                "action_href": "/settings/maintenance",
+            }
+        )
     if ner_skipped_documents:
         needs_attention.append(
             {
                 "kind": "entity_extraction_skipped",
                 "severity": "warning",
-                "title": "Entity extraction was skipped",
+                "title": "Entity extraction skipped some documents",
                 "detail": (
                     f"{ner_skipped_documents} document{'s' if ner_skipped_documents != 1 else ''} "
-                    "were processed while spaCy NER models were unavailable."
+                    "were processed while spaCy NER models were unavailable. Search still works, "
+                    "but entity filters and Explore may be incomplete. If NER models are installed now, "
+                    "open Maintenance and reprocess to populate entities."
                 ),
                 "count": int(ner_skipped_documents),
-                "action_label": "Review diagnostics",
-                "action_href": "/settings/diagnostics",
+                "action_label": "Open maintenance",
+                "action_href": "/settings/maintenance",
             }
         )
 
@@ -410,7 +457,9 @@ async def status_summary(
     if needs_attention:
         state = "needs_attention"
     elif (
-        processing_documents or job_counts.get(JobStatus.queued.value, 0) or job_counts.get(JobStatus.running.value, 0)
+        live_processing_documents
+        or job_counts.get(JobStatus.queued.value, 0)
+        or job_counts.get(JobStatus.running.value, 0)
     ):
         state = "processing"
 
@@ -419,7 +468,9 @@ async def status_summary(
         "counts": {
             "active_documents": active_documents,
             "ready_documents": ready_documents,
-            "processing_documents": processing_documents,
+            "processing_documents": int(live_processing_documents),
+            "pipeline_processing_documents": pipeline_processing_documents,
+            "stranded_documents": int(stranded_documents),
             "failed_documents": failed_documents,
             "queued_jobs": job_counts.get(JobStatus.queued.value, 0),
             "running_jobs": job_counts.get(JobStatus.running.value, 0),

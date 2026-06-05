@@ -43,6 +43,8 @@ interface StatusDoc {
   title: string
   canonical_filename?: string | null
   pipeline_status: string
+  processing_stage?: string | null
+  job_status?: string | null
   error?: string | null
   failed_stage?: string | null
   updated_at?: string | null
@@ -54,6 +56,8 @@ interface StatusSummary {
     active_documents: number
     ready_documents: number
     processing_documents: number
+    pipeline_processing_documents?: number
+    stranded_documents: number
     failed_documents: number
     queued_jobs: number
     running_jobs: number
@@ -88,14 +92,28 @@ function formatStatValue(key: string, value: number | string | null | undefined)
   return value.toLocaleString()
 }
 
-function stateLabel(state?: StatusSummary['state']): string {
-  if (state === 'needs_attention') return 'Needs attention'
+function hasErrorIssue(items: StatusIssue[]): boolean {
+  return items.some((item) => item.severity === 'error')
+}
+
+function stateLabel(state: StatusSummary['state'] | undefined, attentionItems: StatusIssue[] = []): string {
+  if (state === 'needs_attention') {
+    const errorItems = attentionItems.filter((item) => item.severity === 'error')
+    if (errorItems.length === 0) return 'Review'
+    if (errorItems.length > 1) return 'Action needed'
+    const issue = errorItems[0]
+    if (issue.kind === 'stuck_jobs') return issue.count === 1 ? 'Stuck job' : 'Stuck jobs'
+    if (issue.kind === 'failed_documents') return issue.count === 1 ? 'Failed doc' : 'Failed docs'
+    if (issue.kind === 'folder_access') return issue.count === 1 ? 'Folder issue' : 'Folder issues'
+    if (issue.kind === 'service_health') return 'Service issue'
+    return 'Action needed'
+  }
   if (state === 'processing') return 'Processing'
   return 'Ready'
 }
 
-function statePill(state?: StatusSummary['state']): PillState {
-  if (state === 'needs_attention') return 'error'
+function statePill(state: StatusSummary['state'] | undefined, attentionItems: StatusIssue[] = []): PillState {
+  if (state === 'needs_attention') return hasErrorIssue(attentionItems) ? 'error' : 'pending'
   if (state === 'processing') return 'running'
   return 'active'
 }
@@ -227,6 +245,7 @@ export default function SystemStatusPage() {
   const attentionItems = [...serviceIssues, ...(summary?.needs_attention ?? [])]
   const displayState: StatusSummary['state'] =
     attentionItems.length > 0 ? 'needs_attention' : summary?.state === 'processing' ? 'processing' : 'ready'
+  const attentionHeading = hasErrorIssue(attentionItems) ? 'Action needed' : 'Review'
 
   if (loading && !health && !summary) {
     return <div className="text-gray-500 dark:text-gray-400">Loading status...</div>
@@ -236,7 +255,7 @@ export default function SystemStatusPage() {
     <div className="animate-slide-in">
       <PageHeader
         title="Status"
-        subtitle="Readiness, needs-attention items, and recovery actions"
+        subtitle="Readiness, active processing, and recovery actions"
         actions={
           <button
             onClick={handleRefresh}
@@ -268,7 +287,10 @@ export default function SystemStatusPage() {
                 The short version of whether Harbor Clerk is ready to search, ingest, and answer.
               </p>
             </div>
-            <StatusPill state={statePill(displayState)} label={stateLabel(displayState)} />
+            <StatusPill
+              state={statePill(displayState, attentionItems)}
+              label={stateLabel(displayState, attentionItems)}
+            />
           </div>
           <ReadinessChecklist summary={summary} health={health} llmState={llmStatus.state} />
         </Card>
@@ -279,6 +301,9 @@ export default function SystemStatusPage() {
             <MetricTile label="Documents" value={summary?.counts.active_documents ?? 0} />
             <MetricTile label="Ready" value={summary?.counts.ready_documents ?? 0} />
             <MetricTile label="Processing" value={summary?.counts.processing_documents ?? 0} />
+            {(summary?.counts.stranded_documents ?? 0) > 0 && (
+              <MetricTile label="Stale state" value={summary?.counts.stranded_documents ?? 0} tone="warning" />
+            )}
             <MetricTile label="Failed" value={summary?.counts.failed_documents ?? 0} tone="error" />
             <MetricTile label="Queued jobs" value={summary?.counts.queued_jobs ?? 0} />
             <MetricTile label="Running jobs" value={summary?.counts.running_jobs ?? 0} />
@@ -288,7 +313,9 @@ export default function SystemStatusPage() {
 
       <section className="mb-6">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold text-(--color-text-primary)">Needs attention</h2>
+          <h2 className="text-lg font-semibold text-(--color-text-primary)">
+            {attentionItems.length > 0 ? attentionHeading : 'Action needed'}
+          </h2>
           {attentionItems.length > 0 && (
             <Link to="/settings/maintenance" className="text-sm text-(--color-accent) hover:underline">
               Advanced maintenance
@@ -301,7 +328,8 @@ export default function SystemStatusPage() {
             <div className="flex items-center gap-3">
               <StatusPill state="active" label="No action needed" />
               <p className="text-sm text-(--color-text-secondary)">
-                No failed documents, stuck jobs, unavailable folders, or degraded service checks are currently reported.
+                No failed documents, stuck jobs, stale pipeline states, unavailable folders, or degraded service checks
+                are currently reported.
               </p>
             </div>
           </Card>
@@ -366,7 +394,8 @@ function ReadinessChecklist({
   const healthOk = health ? Object.values(health.checks).every(serviceIsOk) : false
   const foldersReady = (summary?.counts.watched_folders ?? 0) > 0 && (summary?.counts.unavailable_folders ?? 0) === 0
   const docsOk = (summary?.counts.failed_documents ?? 0) === 0
-  const processing = (summary?.counts.processing_documents ?? 0) > 0 || (summary?.counts.running_jobs ?? 0) > 0
+  const activeJobs = (summary?.counts.queued_jobs ?? 0) + (summary?.counts.running_jobs ?? 0)
+  const processing = (summary?.counts.processing_documents ?? 0) > 0 || activeJobs > 0
   const localAiLabel =
     llmState === 'ready'
       ? 'ready'
@@ -410,7 +439,11 @@ function ReadinessChecklist({
       <CheckRow
         label="Ingestion"
         state={processing ? 'running' : 'active'}
-        detail={processing ? 'Documents are processing' : 'No active processing'}
+        detail={
+          processing
+            ? `${activeJobs.toLocaleString()} active job${activeJobs === 1 ? '' : 's'}`
+            : 'No active processing'
+        }
       />
       <CheckRow label="Local AI" state={localAiState} detail={localAiLabel} />
     </div>
@@ -429,14 +462,25 @@ function CheckRow({ label, state, detail }: { label: string; state: PillState; d
   )
 }
 
-function MetricTile({ label, value, tone = 'normal' }: { label: string; value: number; tone?: 'normal' | 'error' }) {
+function MetricTile({
+  label,
+  value,
+  tone = 'normal',
+}: {
+  label: string
+  value: number
+  tone?: 'normal' | 'error' | 'warning'
+}) {
+  const valueClass =
+    tone === 'error' && value > 0
+      ? 'text-red-600 dark:text-red-400'
+      : tone === 'warning' && value > 0
+        ? 'text-amber-600 dark:text-amber-400'
+        : ''
+
   return (
     <div className="rounded-lg bg-(--color-bg-secondary) px-3 py-3">
-      <div
-        className={`text-2xl font-semibold ${tone === 'error' && value > 0 ? 'text-red-600 dark:text-red-400' : ''}`}
-      >
-        {value.toLocaleString()}
-      </div>
+      <div className={`text-2xl font-semibold ${valueClass}`}>{value.toLocaleString()}</div>
       <div className="mt-1 text-xs text-(--color-text-secondary)">{label}</div>
     </div>
   )
@@ -506,7 +550,11 @@ function RecentActivity({ summary }: { summary: StatusSummary | null }) {
           <h2 className="mb-3 text-lg font-semibold text-(--color-text-primary)">Processing now</h2>
           <div className="space-y-2">
             {processing.map((doc) => (
-              <DocumentStatusRow key={doc.doc_id} doc={doc} tone="running" />
+              <DocumentStatusRow
+                key={`${doc.doc_id}-${doc.processing_stage ?? doc.pipeline_status}`}
+                doc={doc}
+                tone="running"
+              />
             ))}
           </div>
         </div>
@@ -516,6 +564,12 @@ function RecentActivity({ summary }: { summary: StatusSummary | null }) {
 }
 
 function DocumentStatusRow({ doc, tone }: { doc: StatusDoc; tone: 'error' | 'running' }) {
+  const processingDetail =
+    tone === 'running' && doc.processing_stage && doc.job_status
+      ? `${doc.processing_stage} ${doc.job_status}`
+      : doc.pipeline_status
+  const detail = tone === 'running' ? processingDetail : doc.error || doc.canonical_filename || doc.pipeline_status
+
   return (
     <Card interactive className="p-3">
       <div className="flex items-start justify-between gap-3">
@@ -525,10 +579,10 @@ function DocumentStatusRow({ doc, tone }: { doc: StatusDoc; tone: 'error' | 'run
           </Link>
           <div className="mt-0.5 truncate text-xs text-(--color-text-secondary)">
             {doc.failed_stage ? `${doc.failed_stage}: ` : ''}
-            {doc.error || doc.canonical_filename || doc.pipeline_status}
+            {detail}
           </div>
         </div>
-        <StatusPill state={tone === 'error' ? 'error' : 'running'} label={doc.pipeline_status} />
+        <StatusPill state={tone === 'error' ? 'error' : 'running'} label={doc.job_status ?? doc.pipeline_status} />
       </div>
     </Card>
   )

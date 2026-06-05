@@ -107,11 +107,76 @@ function JobStatusBadge({ status }: { status: string }) {
   return <span className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>{status}</span>
 }
 
+function stageName(stage: string): string {
+  switch (stage) {
+    case 'extract':
+      return 'Extract'
+    case 'ocr':
+      return 'OCR'
+    case 'chunk':
+      return 'Chunk'
+    case 'entities':
+      return 'Entities'
+    case 'embed':
+      return 'Embed'
+    case 'summarize':
+      return 'Summarize'
+    case 'finalize':
+      return 'Finalize'
+    default:
+      return stage
+  }
+}
+
+function jobPillState(status: string): PillState {
+  if (status === 'done') return 'active'
+  if (status === 'running') return 'running'
+  if (status === 'error') return 'error'
+  if (status === 'skipped') return 'idle'
+  return 'pending'
+}
+
+function hasPersistedSummary(doc: DocumentDetail): boolean {
+  return Boolean(doc.summary?.trim())
+}
+
+function effectiveJobStatus(job: JobInfo, doc: DocumentDetail): string {
+  if (job.stage === 'ocr' && doc.needs_ocr === false) return 'skipped'
+  if (job.stage === 'summarize' && hasPersistedSummary(doc)) return 'done'
+  return job.status
+}
+
+function jobProgressLabel(job: JobInfo, doc: DocumentDetail, status = effectiveJobStatus(job, doc)): string {
+  if (job.stage === 'summarize' && hasPersistedSummary(doc)) return 'summary available'
+  if (job.progress_total) return `${job.progress_current || 0}/${job.progress_total}`
+  if (status !== 'skipped') return '—'
+  if (job.error) return job.error
+  if (job.stage === 'ocr') return 'not needed'
+  if (job.stage === 'summarize') return 'skipped by maintenance'
+  return 'skipped'
+}
+
+function jobTimeLabel(job: JobInfo, status = job.status): string {
+  if (job.finished_at) return new Date(job.finished_at).toLocaleTimeString()
+  if (status === 'done') return 'complete'
+  if (status === 'skipped') return 'skipped'
+  if (job.started_at) return 'running...'
+  return 'queued'
+}
+
 function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
   const hasJobs = doc.jobs.length > 0
-  const allDone = hasJobs && doc.jobs.every((j) => j.status === 'done' || j.status === 'skipped')
-  const hasError = doc.jobs.some((j) => j.status === 'error')
-  const runningJob = doc.jobs.find((j) => j.status === 'running' || j.status === 'queued')
+  const allDone =
+    hasJobs &&
+    doc.jobs.every((j) => {
+      const status = effectiveJobStatus(j, doc)
+      return status === 'done' || status === 'skipped'
+    })
+  const hasError = doc.jobs.some((j) => effectiveJobStatus(j, doc) === 'error')
+  const runningJob = doc.jobs.find((j) => {
+    const status = effectiveJobStatus(j, doc)
+    return status === 'running' || status === 'queued'
+  })
 
   if (doc.pipeline_status === 'ready' || allDone) {
     return (
@@ -138,7 +203,10 @@ function DocStatusBanner({ doc }: { doc: DocumentDetail }) {
   }
 
   if (runningJob) {
-    const doneCount = doc.jobs.filter((j) => j.status === 'done' || j.status === 'skipped').length
+    const doneCount = doc.jobs.filter((j) => {
+      const status = effectiveJobStatus(j, doc)
+      return status === 'done' || status === 'skipped'
+    }).length
     return (
       <div className="mb-3 flex items-center gap-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
         <div className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
@@ -833,31 +901,22 @@ export default function DocumentDetailPage() {
                 </thead>
                 <tbody>
                   {doc.jobs.map((j) => {
-                    const pillState: PillState =
-                      j.status === 'done'
-                        ? 'active'
-                        : j.status === 'running'
-                          ? 'running'
-                          : j.status === 'error'
-                            ? 'error'
-                            : 'pending'
-                    const pillLabel = j.status === 'done' ? 'done' : j.status === 'queued' ? 'queued' : undefined
+                    const status = effectiveJobStatus(j, doc)
+                    const pillState = jobPillState(status)
+                    const progressLabel = jobProgressLabel(j, doc, status)
                     return (
                       <tr key={j.job_id || j.stage} className="border-b border-gray-100 dark:border-gray-700">
-                        <td className="py-1 pr-3 font-medium">{j.stage}</td>
+                        <td className="py-1 pr-3 font-medium">{stageName(j.stage)}</td>
                         <td className="py-1 pr-3">
-                          <StatusPill state={pillState} label={pillLabel} />
+                          <StatusPill state={pillState} label={status} />
                         </td>
-                        <td className="py-1 pr-3 text-gray-500 dark:text-gray-400">
-                          {j.progress_total ? `${j.progress_current || 0}/${j.progress_total}` : '—'}
+                        <td
+                          className="py-1 pr-3 text-gray-500 dark:text-gray-400"
+                          title={progressLabel.length > 48 ? progressLabel : undefined}
+                        >
+                          {progressLabel}
                         </td>
-                        <td className="py-1 text-xs text-gray-400">
-                          {j.finished_at
-                            ? new Date(j.finished_at).toLocaleTimeString()
-                            : j.started_at
-                              ? 'running...'
-                              : 'queued'}
-                        </td>
+                        <td className="py-1 text-xs text-gray-400">{jobTimeLabel(j, status)}</td>
                       </tr>
                     )
                   })}

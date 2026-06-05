@@ -95,20 +95,21 @@ export default function SummaryChip({ state, onRetry }: SummaryChipProps) {
 
 /**
  * Resolve the SummaryState from the doc's persisted fields + latest
- * job status. Order matters — running/queued/error take precedence
- * over terminal-state inferences from `summary` / `summary_model`.
+ * job status. Persisted summary text wins over job rows because
+ * reprocess/resummarize jobs can be stale while the existing summary is
+ * still valid and usable.
  */
 export function resolveSummaryState(
   summary: string | null | undefined,
   summary_model: string | null | undefined,
   summarize_job_status: string | null | undefined,
 ): SummaryState {
-  if (summarize_job_status === 'running') return 'generating'
-  if (summarize_job_status === 'queued') return 'pending'
-  if (summarize_job_status === 'error') return 'failed'
   if (summary && summary.trim()) {
     if (summary_model === 'extractive') return 'extractive'
     return 'summarized'
   }
+  if (summarize_job_status === 'running') return 'generating'
+  if (summarize_job_status === 'queued') return 'pending'
+  if (summarize_job_status === 'error') return 'failed'
   return 'none'
 }
