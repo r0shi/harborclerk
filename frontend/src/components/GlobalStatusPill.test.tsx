@@ -40,6 +40,7 @@ interface TestStatusSummary {
   state: 'ready' | 'processing' | 'needs_attention'
   counts: {
     processing_documents: number
+    stranded_documents?: number
     queued_jobs: number
     running_jobs: number
     failed_documents: number
@@ -60,6 +61,7 @@ const READY_SUMMARY: TestStatusSummary = {
   state: 'ready',
   counts: {
     processing_documents: 0,
+    stranded_documents: 0,
     queued_jobs: 0,
     running_jobs: 0,
     failed_documents: 0,
@@ -211,6 +213,37 @@ describe('GlobalStatusPill', () => {
     expect(await screen.findByRole('link', { name: 'Status: 2 processing' })).toHaveAttribute(
       'href',
       '/settings/status',
+    )
+  })
+
+  it('names stranded pipeline-state warnings as stale state', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'needs_attention',
+        counts: {
+          ...READY_SUMMARY.counts,
+          stranded_documents: 7,
+        },
+        needs_attention: [
+          {
+            kind: 'stranded_pipeline_state',
+            severity: 'warning',
+            title: 'Some documents are marked processing without active jobs',
+            detail: '7 active documents have an in-progress pipeline state but no queued or running ingest job.',
+            count: 7,
+          },
+        ],
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Stale state' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute(
+      'title',
+      '7 active documents have an in-progress pipeline state but no queued or running ingest job.',
     )
   })
 

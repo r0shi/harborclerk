@@ -40,6 +40,8 @@ const SUMMARY = {
     active_documents: 3,
     ready_documents: 1,
     processing_documents: 1,
+    pipeline_processing_documents: 1,
+    stranded_documents: 0,
     failed_documents: 1,
     queued_jobs: 2,
     running_jobs: 1,
@@ -84,6 +86,8 @@ const SUMMARY = {
       doc_id: 'doc-2',
       title: 'Still embedding',
       pipeline_status: 'embedding',
+      processing_stage: 'embed',
+      job_status: 'running',
       updated_at: '2026-06-04T12:01:00Z',
     },
   ],
@@ -149,6 +153,8 @@ describe('SystemStatusPage', () => {
       counts: {
         ...SUMMARY.counts,
         processing_documents: 0,
+        pipeline_processing_documents: 0,
+        stranded_documents: 0,
         failed_documents: 0,
         queued_jobs: 0,
         running_jobs: 0,
@@ -176,5 +182,42 @@ describe('SystemStatusPage', () => {
     expect(await screen.findByText('Entity extraction skipped some documents')).toBeInTheDocument()
     expect(screen.getAllByText('Review').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByRole('link', { name: 'Open maintenance' })).toHaveAttribute('href', '/settings/maintenance')
+  })
+
+  it('separates stale pipeline state from live processing', async () => {
+    mockRequests({
+      state: 'needs_attention',
+      counts: {
+        ...SUMMARY.counts,
+        processing_documents: 0,
+        pipeline_processing_documents: 12,
+        stranded_documents: 12,
+        failed_documents: 0,
+        queued_jobs: 0,
+        running_jobs: 0,
+        failed_jobs: 0,
+        stuck_jobs: 0,
+      },
+      needs_attention: [
+        {
+          kind: 'stranded_pipeline_state',
+          severity: 'warning',
+          title: 'Some documents are marked processing without active jobs',
+          detail: '12 active documents have an in-progress pipeline state but no queued or running ingest job.',
+          count: 12,
+          action_label: 'Open maintenance',
+          action_href: '/settings/maintenance',
+        },
+      ],
+      recent_failed_documents: [],
+      recent_processing_documents: [],
+    })
+
+    renderStatusPage()
+
+    expect(await screen.findByText('Some documents are marked processing without active jobs')).toBeInTheDocument()
+    expect(screen.getByText('Stale state')).toBeInTheDocument()
+    expect(screen.getByText('12')).toBeInTheDocument()
+    expect(screen.queryByText('Processing now')).not.toBeInTheDocument()
   })
 })

@@ -94,6 +94,16 @@ function attentionView(summary: StatusSummary): PillView {
     }
   }
 
+  if (firstIssue?.kind === 'stranded_pipeline_state') {
+    return {
+      label: 'Stale state',
+      glyph: '◐',
+      state,
+      title: firstIssue.detail,
+      to: '/settings/status',
+    }
+  }
+
   return {
     label: 'Needs attention',
     glyph: errorIssue ? '⚠' : '◐',
