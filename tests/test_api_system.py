@@ -198,6 +198,100 @@ async def test_status_summary_separates_stranded_pipeline_state(client, admin_us
     assert "no queued or running ingest job" in issue["detail"]
 
 
+async def test_status_summary_surfaces_completed_status_cleanup(client, admin_user, admin_token, db_session):
+    stale_doc = Document(
+        title="Finished but marked queued",
+        status="active",
+        sha256=b"q" * 32,
+        pipeline_status=PipelineStatus.queued,
+    )
+    db_session.add(stale_doc)
+    await db_session.flush()
+    db_session.add(
+        IngestionJob(
+            doc_id=stale_doc.doc_id,
+            stage=JobStage.finalize,
+            status=JobStatus.done,
+        )
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "needs_attention"
+    assert data["counts"]["ready_documents"] == 1
+    assert data["counts"]["stored_ready_documents"] == 0
+    assert data["counts"]["processing_documents"] == 0
+    assert data["counts"]["pipeline_processing_documents"] == 1
+    assert data["counts"]["stranded_documents"] == 0
+    assert data["counts"]["completed_status_stale_documents"] == 1
+    assert data["recent_processing_documents"] == []
+
+    issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "completed_status_stale")
+    assert issue["severity"] == "warning"
+    assert issue["count"] == 1
+    assert issue["action_label"] == "Repair statuses"
+    assert issue["action_kind"] == "repair_completed_statuses"
+    assert "completed ingest" in issue["detail"]
+
+
+async def test_repair_completed_statuses_marks_finalized_stale_docs_ready(client, admin_user, admin_token, db_session):
+    repairable_doc = Document(
+        title="Repairable",
+        status="active",
+        sha256=b"a" * 32,
+        pipeline_status=PipelineStatus.chunking,
+        error="old transient state",
+    )
+    still_running_doc = Document(
+        title="Still running",
+        status="active",
+        sha256=b"b" * 32,
+        pipeline_status=PipelineStatus.chunking,
+    )
+    unfinished_doc = Document(
+        title="Unfinished",
+        status="active",
+        sha256=b"c" * 32,
+        pipeline_status=PipelineStatus.chunking,
+    )
+    db_session.add_all([repairable_doc, still_running_doc, unfinished_doc])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            IngestionJob(
+                doc_id=repairable_doc.doc_id,
+                stage=JobStage.finalize,
+                status=JobStatus.done,
+            ),
+            IngestionJob(
+                doc_id=still_running_doc.doc_id,
+                stage=JobStage.finalize,
+                status=JobStatus.done,
+            ),
+            IngestionJob(
+                doc_id=still_running_doc.doc_id,
+                stage=JobStage.embed,
+                status=JobStatus.running,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    resp = await client.post("/api/system/repair-completed-statuses", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json() == {"repaired": 1}
+
+    await db_session.refresh(repairable_doc)
+    await db_session.refresh(still_running_doc)
+    await db_session.refresh(unfinished_doc)
+    assert repairable_doc.pipeline_status == PipelineStatus.ready
+    assert repairable_doc.error is None
+    assert still_running_doc.pipeline_status == PipelineStatus.chunking
+    assert unfinished_doc.pipeline_status == PipelineStatus.chunking
+
+
 async def test_status_summary_ready_when_no_attention_items(client, admin_user, admin_token, db_session):
     ready_doc = Document(
         title="Ready",

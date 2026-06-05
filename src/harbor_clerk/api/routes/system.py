@@ -232,7 +232,7 @@ async def status_summary(
         (row[0].value if isinstance(row[0], PipelineStatus) else str(row[0])): int(row[1]) for row in status_rows
     }
     active_documents = sum(pipeline_counts.values())
-    ready_documents = pipeline_counts.get(PipelineStatus.ready.value, 0)
+    stored_ready_documents = pipeline_counts.get(PipelineStatus.ready.value, 0)
     failed_documents = pipeline_counts.get(PipelineStatus.error.value, 0)
     pipeline_processing_documents = sum(pipeline_counts.get(status.value, 0) for status in _PROCESSING_STATUSES)
 
@@ -262,15 +262,32 @@ async def status_summary(
     live_job_doc_ids = (
         select(IngestionJob.doc_id).where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running))).distinct()
     )
+    finalized_doc_ids = (
+        select(IngestionJob.doc_id)
+        .where(IngestionJob.stage == JobStage.finalize, IngestionJob.status == JobStatus.done)
+        .distinct()
+    )
+    completed_status_stale_documents = (
+        await session.execute(
+            select(func.count(Document.doc_id)).where(
+                Document.status == "active",
+                Document.pipeline_status.in_(_PROCESSING_STATUSES),
+                Document.doc_id.not_in(live_job_doc_ids),
+                Document.doc_id.in_(finalized_doc_ids),
+            )
+        )
+    ).scalar() or 0
     stranded_documents = (
         await session.execute(
             select(func.count(Document.doc_id)).where(
                 Document.status == "active",
                 Document.pipeline_status.in_(_PROCESSING_STATUSES),
                 Document.doc_id.not_in(live_job_doc_ids),
+                Document.doc_id.not_in(finalized_doc_ids),
             )
         )
     ).scalar() or 0
+    ready_documents = stored_ready_documents + int(completed_status_stale_documents)
 
     folder_rows = (
         await session.execute(
@@ -435,6 +452,23 @@ async def status_summary(
                 "action_href": "/settings/maintenance",
             }
         )
+    if completed_status_stale_documents:
+        needs_attention.append(
+            {
+                "kind": "completed_status_stale",
+                "severity": "warning",
+                "title": "Completed documents need status cleanup",
+                "detail": (
+                    f"{completed_status_stale_documents} active document"
+                    f"{'s' if completed_status_stale_documents != 1 else ''} completed ingest but still "
+                    "show an in-progress document status. Search is available; repair statuses to normalize "
+                    "the document list and queue counters."
+                ),
+                "count": int(completed_status_stale_documents),
+                "action_label": "Repair statuses",
+                "action_kind": "repair_completed_statuses",
+            }
+        )
     if ner_skipped_documents:
         needs_attention.append(
             {
@@ -468,9 +502,11 @@ async def status_summary(
         "counts": {
             "active_documents": active_documents,
             "ready_documents": ready_documents,
+            "stored_ready_documents": stored_ready_documents,
             "processing_documents": int(live_processing_documents),
             "pipeline_processing_documents": pipeline_processing_documents,
             "stranded_documents": int(stranded_documents),
+            "completed_status_stale_documents": int(completed_status_stale_documents),
             "failed_documents": failed_documents,
             "queued_jobs": job_counts.get(JobStatus.queued.value, 0),
             "running_jobs": job_counts.get(JobStatus.running.value, 0),
@@ -668,6 +704,52 @@ async def reaper_run(
 
     logger.info("Reaped %d orphan jobs", len(orphans))
     return {"reaped": len(orphans)}
+
+
+@router.post("/system/repair-completed-statuses")
+async def repair_completed_statuses(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Mark finalized active documents ready when only the document status is stale."""
+    live_job_doc_ids = (
+        select(IngestionJob.doc_id).where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running))).distinct()
+    )
+
+    finalized_doc_ids = (
+        select(IngestionJob.doc_id)
+        .where(IngestionJob.stage == JobStage.finalize, IngestionJob.status == JobStatus.done)
+        .distinct()
+    )
+    docs = (
+        (
+            await session.execute(
+                select(Document).where(
+                    Document.status == "active",
+                    Document.pipeline_status.in_(_PROCESSING_STATUSES),
+                    Document.doc_id.not_in(live_job_doc_ids),
+                    Document.doc_id.in_(finalized_doc_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    for doc in docs:
+        doc.pipeline_status = PipelineStatus.ready
+        doc.error = None
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="repair_completed_statuses",
+        detail={"repaired_count": len(docs)},
+    )
+    await session.commit()
+
+    logger.info("Repaired %d completed document statuses", len(docs))
+    return {"repaired": len(docs)}
 
 
 @router.post("/system/recompute-topics")

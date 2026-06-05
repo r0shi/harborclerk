@@ -39,9 +39,11 @@ const SUMMARY = {
   counts: {
     active_documents: 3,
     ready_documents: 1,
+    stored_ready_documents: 1,
     processing_documents: 1,
     pipeline_processing_documents: 1,
     stranded_documents: 0,
+    completed_status_stale_documents: 0,
     failed_documents: 1,
     queued_jobs: 2,
     running_jobs: 1,
@@ -216,8 +218,51 @@ describe('SystemStatusPage', () => {
     renderStatusPage()
 
     expect(await screen.findByText('Some documents are marked processing without active jobs')).toBeInTheDocument()
-    expect(screen.getByText('Stale state')).toBeInTheDocument()
+    expect(screen.getByText('Needs recovery')).toBeInTheDocument()
     expect(screen.getByText('12')).toBeInTheDocument()
     expect(screen.queryByText('Processing now')).not.toBeInTheDocument()
+  })
+
+  it('repairs completed documents with stale document status', async () => {
+    mockRequests({
+      state: 'needs_attention',
+      counts: {
+        ...SUMMARY.counts,
+        ready_documents: 13,
+        stored_ready_documents: 10,
+        processing_documents: 0,
+        pipeline_processing_documents: 3,
+        stranded_documents: 0,
+        completed_status_stale_documents: 3,
+        failed_documents: 0,
+        queued_jobs: 0,
+        running_jobs: 0,
+        failed_jobs: 0,
+        stuck_jobs: 0,
+      },
+      needs_attention: [
+        {
+          kind: 'completed_status_stale',
+          severity: 'warning',
+          title: 'Completed documents need status cleanup',
+          detail: '3 active documents completed ingest but still show an in-progress document status.',
+          count: 3,
+          action_label: 'Repair statuses',
+          action_kind: 'repair_completed_statuses',
+        },
+      ],
+      recent_failed_documents: [],
+      recent_processing_documents: [],
+    })
+    postMock.mockResolvedValueOnce({ repaired: 3 })
+
+    renderStatusPage()
+
+    expect(await screen.findByText('Completed documents need status cleanup')).toBeInTheDocument()
+    expect(screen.getByText('Status cleanup')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Repair statuses' }))
+
+    await waitFor(() => expect(postMock).toHaveBeenCalledWith('/api/system/repair-completed-statuses'))
+    expect(await screen.findByText('Repaired 3 completed document statuses.')).toBeInTheDocument()
   })
 })

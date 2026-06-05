@@ -35,7 +35,7 @@ interface StatusIssue {
   count?: number
   action_label?: string
   action_href?: string
-  action_kind?: 'reaper'
+  action_kind?: 'reaper' | 'repair_completed_statuses'
 }
 
 interface StatusDoc {
@@ -55,9 +55,11 @@ interface StatusSummary {
   counts: {
     active_documents: number
     ready_documents: number
+    stored_ready_documents?: number
     processing_documents: number
     pipeline_processing_documents?: number
     stranded_documents: number
+    completed_status_stale_documents?: number
     failed_documents: number
     queued_jobs: number
     running_jobs: number
@@ -132,6 +134,7 @@ export default function SystemStatusPage() {
   const [error, setError] = useState('')
   const [actionResult, setActionResult] = useState('')
   const [reaperRunning, setReaperRunning] = useState(false)
+  const [statusRepairRunning, setStatusRepairRunning] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
 
   async function loadHealth() {
@@ -225,6 +228,21 @@ export default function SystemStatusPage() {
     }
   }
 
+  async function handleRepairCompletedStatuses() {
+    setError('')
+    setActionResult('')
+    setStatusRepairRunning(true)
+    try {
+      const data = await post<{ repaired: number }>('/api/system/repair-completed-statuses')
+      setActionResult(`Repaired ${data.repaired} completed document status${data.repaired === 1 ? '' : 'es'}.`)
+      await loadSummary()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to repair completed document statuses')
+    } finally {
+      setStatusRepairRunning(false)
+    }
+  }
+
   const serviceIssues = useMemo<StatusIssue[]>(() => {
     if (!health) return []
     const failed = Object.entries(health.checks).filter(([, status]) => !serviceIsOk(status))
@@ -301,8 +319,15 @@ export default function SystemStatusPage() {
             <MetricTile label="Documents" value={summary?.counts.active_documents ?? 0} />
             <MetricTile label="Ready" value={summary?.counts.ready_documents ?? 0} />
             <MetricTile label="Processing" value={summary?.counts.processing_documents ?? 0} />
+            {(summary?.counts.completed_status_stale_documents ?? 0) > 0 && (
+              <MetricTile
+                label="Status cleanup"
+                value={summary?.counts.completed_status_stale_documents ?? 0}
+                tone="warning"
+              />
+            )}
             {(summary?.counts.stranded_documents ?? 0) > 0 && (
-              <MetricTile label="Stale state" value={summary?.counts.stranded_documents ?? 0} tone="warning" />
+              <MetricTile label="Needs recovery" value={summary?.counts.stranded_documents ?? 0} tone="warning" />
             )}
             <MetricTile label="Failed" value={summary?.counts.failed_documents ?? 0} tone="error" />
             <MetricTile label="Queued jobs" value={summary?.counts.queued_jobs ?? 0} />
@@ -336,7 +361,14 @@ export default function SystemStatusPage() {
         ) : (
           <div className="grid gap-3">
             {attentionItems.map((issue) => (
-              <IssueCard key={issue.kind} issue={issue} reaperRunning={reaperRunning} onRunReaper={handleReaperRun} />
+              <IssueCard
+                key={issue.kind}
+                issue={issue}
+                reaperRunning={reaperRunning}
+                statusRepairRunning={statusRepairRunning}
+                onRunReaper={handleReaperRun}
+                onRepairCompletedStatuses={handleRepairCompletedStatuses}
+              />
             ))}
           </div>
         )}
@@ -489,11 +521,15 @@ function MetricTile({
 function IssueCard({
   issue,
   reaperRunning,
+  statusRepairRunning,
   onRunReaper,
+  onRepairCompletedStatuses,
 }: {
   issue: StatusIssue
   reaperRunning: boolean
+  statusRepairRunning: boolean
   onRunReaper: () => void
+  onRepairCompletedStatuses: () => void
 }) {
   const pillState: PillState = issue.severity === 'error' ? 'error' : 'pending'
   return (
@@ -513,6 +549,14 @@ function IssueCard({
             className="rounded-lg bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
           >
             {reaperRunning ? 'Recovering...' : issue.action_label || 'Recover'}
+          </button>
+        ) : issue.action_kind === 'repair_completed_statuses' ? (
+          <button
+            onClick={onRepairCompletedStatuses}
+            disabled={statusRepairRunning}
+            className="rounded-lg bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+          >
+            {statusRepairRunning ? 'Repairing...' : issue.action_label || 'Repair statuses'}
           </button>
         ) : issue.action_href && issue.action_label ? (
           <Link

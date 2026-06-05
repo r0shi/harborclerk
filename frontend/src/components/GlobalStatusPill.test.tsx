@@ -41,6 +41,7 @@ interface TestStatusSummary {
   counts: {
     processing_documents: number
     stranded_documents?: number
+    completed_status_stale_documents?: number
     queued_jobs: number
     running_jobs: number
     failed_documents: number
@@ -62,6 +63,7 @@ const READY_SUMMARY: TestStatusSummary = {
   counts: {
     processing_documents: 0,
     stranded_documents: 0,
+    completed_status_stale_documents: 0,
     queued_jobs: 0,
     running_jobs: 0,
     failed_documents: 0,
@@ -244,6 +246,37 @@ describe('GlobalStatusPill', () => {
     expect(link).toHaveAttribute(
       'title',
       '7 active documents have an in-progress pipeline state but no queued or running ingest job.',
+    )
+  })
+
+  it('names completed stale-status warnings as status cleanup', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'needs_attention',
+        counts: {
+          ...READY_SUMMARY.counts,
+          completed_status_stale_documents: 7,
+        },
+        needs_attention: [
+          {
+            kind: 'completed_status_stale',
+            severity: 'warning',
+            title: 'Completed documents need status cleanup',
+            detail: '7 active documents completed ingest but still show an in-progress document status.',
+            count: 7,
+          },
+        ],
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Status cleanup' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute(
+      'title',
+      '7 active documents completed ingest but still show an in-progress document status.',
     )
   })
 

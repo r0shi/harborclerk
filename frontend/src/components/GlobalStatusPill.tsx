@@ -10,6 +10,8 @@ interface StatusSummary {
   state: 'ready' | 'processing' | 'needs_attention'
   counts: {
     processing_documents: number
+    completed_status_stale_documents?: number
+    stranded_documents?: number
     queued_jobs: number
     running_jobs: number
     failed_documents: number
@@ -97,6 +99,16 @@ function attentionView(summary: StatusSummary): PillView {
   if (firstIssue?.kind === 'stranded_pipeline_state') {
     return {
       label: 'Stale state',
+      glyph: '◐',
+      state,
+      title: firstIssue.detail,
+      to: '/settings/status',
+    }
+  }
+
+  if (firstIssue?.kind === 'completed_status_stale') {
+    return {
+      label: 'Status cleanup',
       glyph: '◐',
       state,
       title: firstIssue.detail,
