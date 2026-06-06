@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from harbor_clerk.llm.summarize import (
+    AppleIntelligenceUnavailableError,
     _compute_max_input_chars,
     _extractive_fallback,
     _group_chunks_for_mapreduce,
@@ -525,8 +526,8 @@ class TestGenerateSummary:
             assert model == "apple-intelligence"
             mock_call.assert_not_called()
 
-    def test_force_afm_falls_back_to_extractive_when_afm_unavailable(self):
-        """If AFM is unavailable while forced, fall through to extractive — not the LLM."""
+    def test_force_afm_errors_when_afm_unavailable(self):
+        """If AFM is unavailable while forced, fail closed instead of writing extractive summaries."""
         mock_call = MagicMock()
         with (
             patch(
@@ -535,11 +536,11 @@ class TestGenerateSummary:
             ),
             patch("harbor_clerk.llm.summarize._call_llm", mock_call),
             patch("harbor_clerk.llm.summarize._apple_intelligence_summary", return_value=None),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_disabled_reason", return_value="daemon timed out"),
         ):
             chunks = ["A" * 100]
-            summary, model = generate_summary(chunks)
-            assert model == "extractive"
-            assert summary
+            with pytest.raises(AppleIntelligenceUnavailableError, match="daemon timed out"):
+                generate_summary(chunks)
             mock_call.assert_not_called()
 
 

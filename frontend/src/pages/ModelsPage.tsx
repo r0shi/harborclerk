@@ -530,7 +530,8 @@ export default function ModelsPage() {
             </div>
             <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
               Skips the local LLM for the summarize stage and uses Apple Intelligence instead. Faster and lower-power on
-              Apple Silicon. Chat, research, and document-type classification still use the active model.
+              Apple Silicon. Chat and research still use the active model; document-type classification uses Apple
+              Intelligence or file-type fallback.
             </p>
           </div>
           <button

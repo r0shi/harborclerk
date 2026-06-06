@@ -453,9 +453,9 @@ async def llm_status(
             summarize = {"backend": "apple-intelligence", "name": "Apple Intelligence", "state": "ready"}
         else:
             summarize = {
-                "backend": "extractive",
-                "name": "Extractive (Apple Intelligence unavailable)",
-                "state": "ready",
+                "backend": "apple-intelligence",
+                "name": "Apple Intelligence unavailable",
+                "state": "loading",
             }
     elif model_id:
         summarize = {"backend": model_id, "name": model_name, "state": state}

@@ -192,6 +192,42 @@ async def test_status_summary_surfaces_recovery_attention(client, admin_user, ad
     assert data["recent_processing_documents"][0]["job_status"] == "running"
 
 
+async def test_status_summary_surfaces_failed_summarize_jobs(client, admin_user, admin_token, db_session):
+    doc = Document(
+        title="Searchable but unsummarized",
+        status="active",
+        sha256=b"s" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+
+    db_session.add(
+        IngestionJob(
+            doc_id=doc.doc_id,
+            stage=JobStage.summarize,
+            status=JobStatus.error,
+            error="AppleIntelligenceUnavailableError: Apple Intelligence summaries are enabled but unavailable",
+        )
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "needs_attention"
+    assert data["counts"]["failed_documents"] == 0
+    assert data["counts"]["failed_jobs"] == 1
+    assert data["counts"]["failed_summarize_jobs"] == 1
+
+    issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "summary_generation_failed")
+    assert issue["severity"] == "warning"
+    assert issue["title"] == "Summaries failed to generate"
+    assert issue["count"] == 1
+    assert "Documents remain searchable" in issue["detail"]
+    assert issue["action_href"] == "/settings/maintenance"
+
+
 async def test_status_summary_separates_stranded_pipeline_state(client, admin_user, admin_token, db_session):
     stranded_doc = Document(
         title="Marked chunking",

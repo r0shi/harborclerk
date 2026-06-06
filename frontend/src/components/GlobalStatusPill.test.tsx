@@ -48,6 +48,7 @@ interface TestStatusSummary {
     summarizing_queued_jobs?: number
     summarizing_running_jobs?: number
     failed_documents: number
+    failed_summarize_jobs?: number
     unavailable_folders: number
     ner_skipped_documents: number
     stuck_jobs: number
@@ -202,6 +203,34 @@ describe('GlobalStatusPill', () => {
     const link = await screen.findByRole('link', { name: 'Status: Entities skipped' })
     expect(link).toHaveAttribute('href', '/settings/status')
     expect(link).toHaveAttribute('title', '12 documents need reprocessing before entity filters are complete.')
+  })
+
+  it('names summary-only warning as summary failures', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'needs_attention',
+        counts: {
+          ...READY_SUMMARY.counts,
+          failed_summarize_jobs: 8,
+        },
+        needs_attention: [
+          {
+            kind: 'summary_generation_failed',
+            severity: 'warning',
+            title: 'Summaries failed to generate',
+            detail: '8 document summaries failed to generate. Documents remain searchable.',
+            count: 8,
+          },
+        ],
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Summary failures' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute('title', '8 document summaries failed to generate. Documents remain searchable.')
   })
 
   it('shows document processing before local AI ready state', async () => {

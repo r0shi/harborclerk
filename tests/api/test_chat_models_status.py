@@ -174,17 +174,18 @@ async def test_summarize_backend_is_afm_when_force_afm_and_binary_available(
     assert body["summarize"] == {"backend": "apple-intelligence", "name": "Apple Intelligence", "state": "ready"}
 
 
-async def test_summarize_backend_falls_back_to_extractive_when_force_afm_but_binary_missing(
+async def test_summarize_backend_reports_unavailable_when_force_afm_but_binary_missing(
     client, admin_user, admin_token, _set_llm_model_id, _force_afm, _afm_binary
 ):
-    """force-AFM on + binary missing → extractive label (matches generate_summary's runtime behavior)."""
+    """force-AFM on + binary missing reports the configured backend as unavailable."""
     _set_llm_model_id(None)
     _force_afm(True)
     _afm_binary(False)
     resp = await client.get("/api/chat/models/status", headers=auth_header(admin_token))
 
     body = resp.json()
-    assert body["summarize"]["backend"] == "extractive"
+    assert body["summarize"]["backend"] == "apple-intelligence"
+    assert body["summarize"]["state"] == "loading"
     assert "unavailable" in body["summarize"]["name"].lower()
 
 

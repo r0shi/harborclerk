@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 
 from harbor_clerk.config import refresh_llm_settings
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.llm.summarize import classify_doc_type, generate_summary
+from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError, classify_doc_type, generate_summary
 from harbor_clerk.models import ChatMessage, Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage
 from harbor_clerk.models.research_state import ResearchState
@@ -134,6 +134,9 @@ def run_summarize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
                     yield_check=_wait_for_idle_llm,
                     progress_callback=_progress,
                 )
+            except AppleIntelligenceUnavailableError:
+                logger.warning("Summary generation blocked for %s because Apple Intelligence is unavailable", doc_id)
+                raise
             except Exception:
                 logger.warning("Summary generation failed for %s", doc_id, exc_info=True)
                 summary, model_used = None, None

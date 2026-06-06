@@ -53,6 +53,7 @@ const SUMMARY = {
     total_queued_jobs: 2,
     total_running_jobs: 1,
     failed_jobs: 1,
+    failed_summarize_jobs: 0,
     watched_folders: 1,
     unavailable_folders: 0,
     ner_skipped_documents: 0,
@@ -188,6 +189,45 @@ describe('SystemStatusPage', () => {
 
     expect(await screen.findByText('Entity extraction skipped some documents')).toBeInTheDocument()
     expect(screen.getAllByText('Review').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByRole('link', { name: 'Open maintenance' })).toHaveAttribute('href', '/settings/maintenance')
+  })
+
+  it('shows summary generation failures without failed documents', async () => {
+    mockRequests({
+      state: 'needs_attention',
+      counts: {
+        ...SUMMARY.counts,
+        processing_documents: 0,
+        pipeline_processing_documents: 0,
+        stranded_documents: 0,
+        failed_documents: 0,
+        failed_summarize_jobs: 11,
+        queued_jobs: 0,
+        running_jobs: 0,
+        failed_jobs: 11,
+        ner_skipped_documents: 0,
+        stuck_jobs: 0,
+      },
+      needs_attention: [
+        {
+          kind: 'summary_generation_failed',
+          severity: 'warning',
+          title: 'Summaries failed to generate',
+          detail: '11 document summaries failed to generate. Documents remain searchable.',
+          count: 11,
+          action_label: 'Open maintenance',
+          action_href: '/settings/maintenance',
+        },
+      ],
+      recent_failed_documents: [],
+      recent_processing_documents: [],
+    })
+
+    renderStatusPage()
+
+    expect(await screen.findByText('Summaries failed to generate')).toBeInTheDocument()
+    expect(screen.getByText('Summary failures')).toBeInTheDocument()
+    expect(screen.getByText('11')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open maintenance' })).toHaveAttribute('href', '/settings/maintenance')
   })
 

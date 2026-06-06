@@ -34,6 +34,10 @@ _MAX_INPUT_CHARS = 80_000  # hard cap per LLM call
 _DEFAULT_CONTEXT_WINDOW = 32_768
 
 
+class AppleIntelligenceUnavailableError(RuntimeError):
+    """Raised when forced Apple Intelligence summaries cannot be produced."""
+
+
 class _Tier(Enum):
     SHORT = "short"
     MEDIUM = "medium"
@@ -444,6 +448,15 @@ def _apple_intelligence_disabled_reason() -> str | None:
     return _afm_disabled_reason or "temporarily disabled"
 
 
+def _apple_intelligence_unavailable_reason() -> str:
+    disabled_reason = _apple_intelligence_disabled_reason()
+    if disabled_reason:
+        return disabled_reason
+    if _find_apple_summarize_binary() is None:
+        return "apple-summarize helper not found"
+    return "no summary returned"
+
+
 def _disable_apple_intelligence(reason: str) -> None:
     global _afm_disabled_until_monotonic, _afm_disabled_reason
     _afm_disabled_until_monotonic = time.monotonic() + _AFM_CIRCUIT_BREAKER_SECONDS
@@ -832,8 +845,9 @@ def generate_summary(
     - Medium (20-100 chunks): strategic sampling + single LLM call
     - Long (100+ chunks): map-reduce (group summaries → final)
 
-    Falls back to extractive heuristic when no LLM is available.
-    Never raises — returns best-effort summary.
+    Falls back to extractive heuristic when no LLM is available. Raises
+    AppleIntelligenceUnavailableError only when the operator explicitly
+    forced Apple Intelligence summaries and AFM cannot produce one.
 
     `yield_check`, if provided, is called between map-reduce sub-calls in
     the long tier so the caller can yield to interactive workloads.
@@ -859,14 +873,16 @@ def generate_summary(
     # User has opted to skip the local LLM for summaries entirely
     # (Models page → "Always use Apple Intelligence for summaries"). Skip
     # straight to AFM. If AFM is unavailable for any reason (binary not
-    # found, macOS version too old, timeout), fall through to extractive.
+    # found, macOS version too old, timeout), fail closed instead of silently
+    # generating a corpus-sized batch of extractive summaries.
     if settings.summary_force_apple_intelligence:
         logger.info("Summarize forced to Apple Intelligence by setting (skipping local LLM)")
         ai_summary = _apple_intelligence_summary(chunks, max_chars)
         if _has_visible_content(ai_summary):
             return ai_summary, "apple-intelligence"  # type: ignore[return-value]
-        logger.warning("Apple Intelligence unavailable while forced; falling back to extractive")
-        return _extractive_fallback(chunks, max_chars), "extractive"
+        reason = _apple_intelligence_unavailable_reason()
+        logger.error("Apple Intelligence unavailable while forced; refusing extractive fallback (%s)", reason)
+        raise AppleIntelligenceUnavailableError(f"Apple Intelligence summaries are enabled but unavailable: {reason}")
 
     # Try LLM if a model is active
     if settings.llm_model_id:

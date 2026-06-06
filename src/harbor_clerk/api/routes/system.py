@@ -357,6 +357,18 @@ async def status_summary(
             )
         )
     ).scalar() or 0
+    failed_summarize_jobs = (
+        await session.execute(
+            select(func.count(func.distinct(IngestionJob.doc_id)))
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.status == JobStatus.error,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+            )
+        )
+    ).scalar() or 0
 
     now = datetime.now(UTC)
     running_jobs = (
@@ -526,6 +538,22 @@ async def status_summary(
                 "action_kind": "repair_completed_statuses",
             }
         )
+    if failed_summarize_jobs:
+        summary_label = "document summary" if failed_summarize_jobs == 1 else "document summaries"
+        needs_attention.append(
+            {
+                "kind": "summary_generation_failed",
+                "severity": "warning",
+                "title": "Summaries failed to generate",
+                "detail": (
+                    f"{failed_summarize_jobs} {summary_label} failed to generate. "
+                    "Documents remain searchable; check the summary backend, then retry summaries."
+                ),
+                "count": int(failed_summarize_jobs),
+                "action_label": "Open maintenance",
+                "action_href": "/settings/maintenance",
+            }
+        )
     if ner_skipped_documents:
         needs_attention.append(
             {
@@ -579,6 +607,7 @@ async def status_summary(
             "watched_folders": watched_folders,
             "unavailable_folders": unavailable_folders,
             "ner_skipped_documents": int(ner_skipped_documents),
+            "failed_summarize_jobs": int(failed_summarize_jobs),
             "stuck_jobs": len(stuck_jobs),
         },
         "needs_attention": needs_attention,

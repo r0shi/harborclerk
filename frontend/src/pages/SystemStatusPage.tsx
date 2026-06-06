@@ -62,6 +62,7 @@ interface StatusSummary {
     stranded_documents: number
     completed_status_stale_documents?: number
     failed_documents: number
+    failed_summarize_jobs?: number
     queued_jobs: number
     running_jobs: number
     summarizing_queued_jobs?: number
@@ -346,6 +347,9 @@ export default function SystemStatusPage() {
             )}
             {(summary?.counts.stranded_documents ?? 0) > 0 && (
               <MetricTile label="Needs recovery" value={summary?.counts.stranded_documents ?? 0} tone="warning" />
+            )}
+            {(summary?.counts.failed_summarize_jobs ?? 0) > 0 && (
+              <MetricTile label="Summary failures" value={summary?.counts.failed_summarize_jobs ?? 0} tone="warning" />
             )}
             <MetricTile label="Failed" value={summary?.counts.failed_documents ?? 0} tone="error" />
             <MetricTile label="Queued jobs" value={summary?.counts.queued_jobs ?? 0} />

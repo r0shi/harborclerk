@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import Document, IngestionJob
+from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 from harbor_clerk.worker.stages.finalize import run_finalize
@@ -599,6 +599,60 @@ async def test_background_stage_error_does_not_poison_pipeline_status(db_session
         ).scalar_one()
         assert job.status == JobStatus.error
         assert "ChatMessage" in (job.error or "")
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_forced_afm_unavailable_marks_summarize_job_error(db_session, monkeypatch):
+    """Forced Apple Intelligence failures must be visible as summarize job
+    errors instead of silently completing with no generated summary."""
+    from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError
+    from harbor_clerk.worker.entry import execute_job
+    from harbor_clerk.worker.stages import summarize as summarize_stage
+
+    doc = Document(
+        title="AFM unavailable",
+        canonical_filename="afm.pdf",
+        status="active",
+        sha256=b"a" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="A substantial document body."))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(summarize_stage, "_wait_for_idle_llm", lambda *args, **kwargs: None)
+
+    def _afm_unavailable(*args, **kwargs):
+        raise AppleIntelligenceUnavailableError(
+            "Apple Intelligence summaries are enabled but unavailable: daemon timed out"
+        )
+
+    monkeypatch.setattr(summarize_stage, "generate_summary", _afm_unavailable)
+
+    execute_job(doc.doc_id, JobStage.summarize)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed.pipeline_status == PipelineStatus.ready
+        assert refreshed.summary is None
+
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.error
+        assert "AppleIntelligenceUnavailableError" in (job.error or "")
+        assert "daemon timed out" in (job.error or "")
     finally:
         sync_session.close()
 
