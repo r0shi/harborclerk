@@ -57,12 +57,17 @@ interface StatusSummary {
     ready_documents: number
     stored_ready_documents?: number
     processing_documents: number
+    summarizing_documents?: number
     pipeline_processing_documents?: number
     stranded_documents: number
     completed_status_stale_documents?: number
     failed_documents: number
     queued_jobs: number
     running_jobs: number
+    summarizing_queued_jobs?: number
+    summarizing_running_jobs?: number
+    total_queued_jobs?: number
+    total_running_jobs?: number
     failed_jobs: number
     watched_folders: number
     unavailable_folders: number
@@ -98,7 +103,11 @@ function hasErrorIssue(items: StatusIssue[]): boolean {
   return items.some((item) => item.severity === 'error')
 }
 
-function stateLabel(state: StatusSummary['state'] | undefined, attentionItems: StatusIssue[] = []): string {
+function stateLabel(
+  state: StatusSummary['state'] | undefined,
+  attentionItems: StatusIssue[] = [],
+  summary: StatusSummary | null = null,
+): string {
   if (state === 'needs_attention') {
     const errorItems = attentionItems.filter((item) => item.severity === 'error')
     if (errorItems.length === 0) return 'Review'
@@ -110,7 +119,13 @@ function stateLabel(state: StatusSummary['state'] | undefined, attentionItems: S
     if (issue.kind === 'service_health') return 'Service issue'
     return 'Action needed'
   }
-  if (state === 'processing') return 'Processing'
+  if (state === 'processing') {
+    const foregroundProcessing = (summary?.counts.processing_documents ?? 0) > 0
+    const foregroundJobs = (summary?.counts.queued_jobs ?? 0) + (summary?.counts.running_jobs ?? 0)
+    const summarizing = (summary?.counts.summarizing_documents ?? 0) > 0
+    if (!foregroundProcessing && foregroundJobs === 0 && summarizing) return 'Summarizing'
+    return 'Processing'
+  }
   return 'Ready'
 }
 
@@ -307,7 +322,7 @@ export default function SystemStatusPage() {
             </div>
             <StatusPill
               state={statePill(displayState, attentionItems)}
-              label={stateLabel(displayState, attentionItems)}
+              label={stateLabel(displayState, attentionItems, summary)}
             />
           </div>
           <ReadinessChecklist summary={summary} health={health} llmState={llmStatus.state} />
@@ -319,6 +334,9 @@ export default function SystemStatusPage() {
             <MetricTile label="Documents" value={summary?.counts.active_documents ?? 0} />
             <MetricTile label="Ready" value={summary?.counts.ready_documents ?? 0} />
             <MetricTile label="Processing" value={summary?.counts.processing_documents ?? 0} />
+            {(summary?.counts.summarizing_documents ?? 0) > 0 && (
+              <MetricTile label="Summarizing" value={summary?.counts.summarizing_documents ?? 0} />
+            )}
             {(summary?.counts.completed_status_stale_documents ?? 0) > 0 && (
               <MetricTile
                 label="Status cleanup"
@@ -427,7 +445,20 @@ function ReadinessChecklist({
   const foldersReady = (summary?.counts.watched_folders ?? 0) > 0 && (summary?.counts.unavailable_folders ?? 0) === 0
   const docsOk = (summary?.counts.failed_documents ?? 0) === 0
   const activeJobs = (summary?.counts.queued_jobs ?? 0) + (summary?.counts.running_jobs ?? 0)
-  const processing = (summary?.counts.processing_documents ?? 0) > 0 || activeJobs > 0
+  const processingDocs = summary?.counts.processing_documents ?? 0
+  const summarizingDocs = summary?.counts.summarizing_documents ?? 0
+  const summarizingJobs =
+    (summary?.counts.summarizing_queued_jobs ?? 0) + (summary?.counts.summarizing_running_jobs ?? 0)
+  const processing = processingDocs > 0 || activeJobs > 0 || summarizingDocs > 0 || summarizingJobs > 0
+  const ingestionDetail = processingDocs
+    ? `${processingDocs.toLocaleString()} document${processingDocs === 1 ? '' : 's'} processing`
+    : activeJobs
+      ? `${activeJobs.toLocaleString()} active job${activeJobs === 1 ? '' : 's'}`
+      : summarizingDocs
+        ? `${summarizingDocs.toLocaleString()} summarizing`
+        : summarizingJobs
+          ? `${summarizingJobs.toLocaleString()} summary job${summarizingJobs === 1 ? '' : 's'}`
+          : 'No active processing'
   const localAiLabel =
     llmState === 'ready'
       ? 'ready'
@@ -468,15 +499,7 @@ function ReadinessChecklist({
         state={docsOk ? 'active' : 'error'}
         detail={docsOk ? 'No ingest failures' : 'Failures need review'}
       />
-      <CheckRow
-        label="Ingestion"
-        state={processing ? 'running' : 'active'}
-        detail={
-          processing
-            ? `${activeJobs.toLocaleString()} active job${activeJobs === 1 ? '' : 's'}`
-            : 'No active processing'
-        }
-      />
+      <CheckRow label="Ingestion" state={processing ? 'running' : 'active'} detail={ingestionDetail} />
       <CheckRow label="Local AI" state={localAiState} detail={localAiLabel} />
     </div>
   )

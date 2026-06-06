@@ -41,12 +41,17 @@ const SUMMARY = {
     ready_documents: 1,
     stored_ready_documents: 1,
     processing_documents: 1,
+    summarizing_documents: 0,
     pipeline_processing_documents: 1,
     stranded_documents: 0,
     completed_status_stale_documents: 0,
     failed_documents: 1,
     queued_jobs: 2,
     running_jobs: 1,
+    summarizing_queued_jobs: 0,
+    summarizing_running_jobs: 0,
+    total_queued_jobs: 2,
+    total_running_jobs: 1,
     failed_jobs: 1,
     watched_folders: 1,
     unavailable_folders: 0,
@@ -220,6 +225,40 @@ describe('SystemStatusPage', () => {
     expect(await screen.findByText('Some documents are marked processing without active jobs')).toBeInTheDocument()
     expect(screen.getByText('Needs recovery')).toBeInTheDocument()
     expect(screen.getByText('12')).toBeInTheDocument()
+    expect(screen.queryByText('Processing now')).not.toBeInTheDocument()
+  })
+
+  it('shows summarize-only backlog without inflating foreground processing', async () => {
+    mockRequests({
+      state: 'processing',
+      counts: {
+        ...SUMMARY.counts,
+        ready_documents: 4,
+        processing_documents: 0,
+        summarizing_documents: 4,
+        pipeline_processing_documents: 0,
+        stranded_documents: 0,
+        completed_status_stale_documents: 0,
+        failed_documents: 0,
+        queued_jobs: 0,
+        running_jobs: 0,
+        summarizing_queued_jobs: 3,
+        summarizing_running_jobs: 1,
+        total_queued_jobs: 3,
+        total_running_jobs: 1,
+        failed_jobs: 0,
+        stuck_jobs: 0,
+      },
+      needs_attention: [],
+      recent_failed_documents: [],
+      recent_processing_documents: [],
+    })
+
+    renderStatusPage()
+
+    expect(await screen.findByText('4 summarizing')).toBeInTheDocument()
+    expect(screen.getAllByText('Summarizing').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('Processing')).toBeInTheDocument()
     expect(screen.queryByText('Processing now')).not.toBeInTheDocument()
   })
 

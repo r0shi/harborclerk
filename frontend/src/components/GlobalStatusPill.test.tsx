@@ -40,10 +40,13 @@ interface TestStatusSummary {
   state: 'ready' | 'processing' | 'needs_attention'
   counts: {
     processing_documents: number
+    summarizing_documents?: number
     stranded_documents?: number
     completed_status_stale_documents?: number
     queued_jobs: number
     running_jobs: number
+    summarizing_queued_jobs?: number
+    summarizing_running_jobs?: number
     failed_documents: number
     unavailable_folders: number
     ner_skipped_documents: number
@@ -62,10 +65,13 @@ const READY_SUMMARY: TestStatusSummary = {
   state: 'ready',
   counts: {
     processing_documents: 0,
+    summarizing_documents: 0,
     stranded_documents: 0,
     completed_status_stale_documents: 0,
     queued_jobs: 0,
     running_jobs: 0,
+    summarizing_queued_jobs: 0,
+    summarizing_running_jobs: 0,
     failed_documents: 0,
     unavailable_folders: 0,
     ner_skipped_documents: 0,
@@ -216,6 +222,27 @@ describe('GlobalStatusPill', () => {
       'href',
       '/settings/status',
     )
+  })
+
+  it('names summarize-only background work separately from foreground processing', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'processing',
+        counts: {
+          ...READY_SUMMARY.counts,
+          summarizing_documents: 9,
+          summarizing_queued_jobs: 8,
+          summarizing_running_jobs: 1,
+        },
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Summarizing 9' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute('title', 'Document summaries are being generated')
   })
 
   it('names stranded pipeline-state warnings as stale state', async () => {

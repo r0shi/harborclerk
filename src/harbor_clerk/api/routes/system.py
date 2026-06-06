@@ -197,6 +197,7 @@ _COMPLETED_READY_STAGES: tuple[JobStage, ...] = (
     JobStage.embed,
     JobStage.finalize,
 )
+_BACKGROUND_JOB_STAGES: tuple[JobStage, ...] = (JobStage.summarize,)
 
 
 def _job_age_seconds(now: datetime, job: IngestionJob) -> float | None:
@@ -245,18 +246,25 @@ async def status_summary(
 
     job_rows = (
         await session.execute(
-            select(IngestionJob.status, func.count())
+            select(IngestionJob.stage, IngestionJob.status, func.count())
             .join(Document, Document.doc_id == IngestionJob.doc_id)
             .where(Document.status == "active")
             .where(IngestionJob.pipeline_seq == Document.pipeline_seq)
-            .group_by(IngestionJob.status)
+            .group_by(IngestionJob.stage, IngestionJob.status)
         )
     ).all()
-    job_counts = {
-        (row[0].value if isinstance(row[0], JobStatus) else str(row[0])): int(row[1])
-        for row in job_rows
-        if row[0] is not None
-    }
+    job_counts: dict[str, int] = {}
+    foreground_job_counts: dict[str, int] = {}
+    summarizing_job_counts: dict[str, int] = {}
+    for stage, status, count in job_rows:
+        if status is None:
+            continue
+        status_key = status.value if isinstance(status, JobStatus) else str(status)
+        stage_key = stage.value if isinstance(stage, JobStage) else str(stage)
+        count_int = int(count)
+        job_counts[status_key] = job_counts.get(status_key, 0) + count_int
+        target_counts = summarizing_job_counts if stage_key == JobStage.summarize.value else foreground_job_counts
+        target_counts[status_key] = target_counts.get(status_key, 0) + count_int
     live_processing_documents = (
         await session.execute(
             select(func.count(func.distinct(IngestionJob.doc_id)))
@@ -264,16 +272,30 @@ async def status_summary(
             .where(
                 Document.status == "active",
                 IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+                IngestionJob.stage.not_in(_BACKGROUND_JOB_STAGES),
                 IngestionJob.pipeline_seq == Document.pipeline_seq,
             )
         )
     ).scalar() or 0
-    live_job_doc_ids = (
+    live_summarizing_documents = (
+        await session.execute(
+            select(func.count(func.distinct(IngestionJob.doc_id)))
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+            )
+        )
+    ).scalar() or 0
+    live_foreground_job_doc_ids = (
         select(IngestionJob.doc_id)
         .join(Document, Document.doc_id == IngestionJob.doc_id)
         .where(
             Document.status == "active",
             IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+            IngestionJob.stage.not_in(_BACKGROUND_JOB_STAGES),
             IngestionJob.pipeline_seq == Document.pipeline_seq,
         )
         .distinct()
@@ -295,7 +317,7 @@ async def status_summary(
             select(func.count(Document.doc_id)).where(
                 Document.status == "active",
                 Document.pipeline_status.in_(_PROCESSING_STATUSES),
-                Document.doc_id.not_in(live_job_doc_ids),
+                Document.doc_id.not_in(live_foreground_job_doc_ids),
                 Document.doc_id.in_(completed_pipeline_doc_ids),
             )
         )
@@ -305,7 +327,7 @@ async def status_summary(
             select(func.count(Document.doc_id)).where(
                 Document.status == "active",
                 Document.pipeline_status.in_(_PROCESSING_STATUSES),
-                Document.doc_id.not_in(live_job_doc_ids),
+                Document.doc_id.not_in(live_foreground_job_doc_ids),
                 Document.doc_id.not_in(completed_pipeline_doc_ids),
             )
         )
@@ -414,6 +436,7 @@ async def status_summary(
             .where(
                 Document.status == "active",
                 IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+                IngestionJob.stage.not_in(_BACKGROUND_JOB_STAGES),
                 IngestionJob.pipeline_seq == Document.pipeline_seq,
             )
             .order_by(IngestionJob.started_at.desc().nullslast(), IngestionJob.created_at.desc())
@@ -526,8 +549,11 @@ async def status_summary(
         state = "needs_attention"
     elif (
         live_processing_documents
-        or job_counts.get(JobStatus.queued.value, 0)
-        or job_counts.get(JobStatus.running.value, 0)
+        or live_summarizing_documents
+        or foreground_job_counts.get(JobStatus.queued.value, 0)
+        or foreground_job_counts.get(JobStatus.running.value, 0)
+        or summarizing_job_counts.get(JobStatus.queued.value, 0)
+        or summarizing_job_counts.get(JobStatus.running.value, 0)
     ):
         state = "processing"
 
@@ -538,12 +564,17 @@ async def status_summary(
             "ready_documents": ready_documents,
             "stored_ready_documents": stored_ready_documents,
             "processing_documents": int(live_processing_documents),
+            "summarizing_documents": int(live_summarizing_documents),
             "pipeline_processing_documents": pipeline_processing_documents,
             "stranded_documents": int(stranded_documents),
             "completed_status_stale_documents": int(completed_status_stale_documents),
             "failed_documents": failed_documents,
-            "queued_jobs": job_counts.get(JobStatus.queued.value, 0),
-            "running_jobs": job_counts.get(JobStatus.running.value, 0),
+            "queued_jobs": foreground_job_counts.get(JobStatus.queued.value, 0),
+            "running_jobs": foreground_job_counts.get(JobStatus.running.value, 0),
+            "summarizing_queued_jobs": summarizing_job_counts.get(JobStatus.queued.value, 0),
+            "summarizing_running_jobs": summarizing_job_counts.get(JobStatus.running.value, 0),
+            "total_queued_jobs": job_counts.get(JobStatus.queued.value, 0),
+            "total_running_jobs": job_counts.get(JobStatus.running.value, 0),
             "failed_jobs": job_counts.get(JobStatus.error.value, 0),
             "watched_folders": watched_folders,
             "unavailable_folders": unavailable_folders,

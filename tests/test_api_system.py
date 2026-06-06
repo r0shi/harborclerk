@@ -249,6 +249,79 @@ async def test_status_summary_surfaces_completed_status_cleanup(client, admin_us
     assert "completed ingest" in issue["detail"]
 
 
+async def test_status_summary_reports_summarize_backlog_separately(client, admin_user, admin_token, db_session):
+    ready_doc = Document(
+        title="Ready but summarizing",
+        status="active",
+        sha256=b"z" * 32,
+        pipeline_status=PipelineStatus.ready,
+        pipeline_seq=2,
+    )
+    db_session.add(ready_doc)
+    await db_session.flush()
+    db_session.add(
+        IngestionJob(
+            doc_id=ready_doc.doc_id,
+            stage=JobStage.summarize,
+            status=JobStatus.queued,
+            pipeline_seq=ready_doc.pipeline_seq,
+        )
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "processing"
+    assert data["counts"]["processing_documents"] == 0
+    assert data["counts"]["summarizing_documents"] == 1
+    assert data["counts"]["queued_jobs"] == 0
+    assert data["counts"]["running_jobs"] == 0
+    assert data["counts"]["summarizing_queued_jobs"] == 1
+    assert data["counts"]["summarizing_running_jobs"] == 0
+    assert data["counts"]["total_queued_jobs"] == 1
+    assert data["recent_processing_documents"] == []
+    assert data["needs_attention"] == []
+
+
+async def test_status_summary_summarize_jobs_do_not_hide_completed_status_cleanup(
+    client, admin_user, admin_token, db_session
+):
+    stale_doc = Document(
+        title="Foreground complete with background summary",
+        status="active",
+        sha256=b"u" * 32,
+        pipeline_status=PipelineStatus.finalizing,
+        pipeline_seq=0,
+    )
+    db_session.add(stale_doc)
+    await db_session.flush()
+    _add_done_gate_jobs(db_session, stale_doc.doc_id)
+    db_session.add(
+        IngestionJob(
+            doc_id=stale_doc.doc_id,
+            stage=JobStage.summarize,
+            status=JobStatus.running,
+            pipeline_seq=stale_doc.pipeline_seq,
+        )
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "needs_attention"
+    assert data["counts"]["processing_documents"] == 0
+    assert data["counts"]["summarizing_documents"] == 1
+    assert data["counts"]["completed_status_stale_documents"] == 1
+    assert data["counts"]["stranded_documents"] == 0
+    assert data["counts"]["running_jobs"] == 0
+    assert data["counts"]["summarizing_running_jobs"] == 1
+
+    issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "completed_status_stale")
+    assert issue["count"] == 1
+
+
 async def test_repair_completed_statuses_marks_finalized_stale_docs_ready(client, admin_user, admin_token, db_session):
     repairable_doc = Document(
         title="Repairable",
