@@ -44,9 +44,6 @@ async def test_observer_runs_initial_sync_for_active_label(
     db_session, mock_aioimap, observer_session_factory, monkeypatch
 ):
     """Observer started against a label with no cursor → runs initial sync."""
-    # Patch enqueue_stage so it doesn't try to open a sync DB session in test context
-    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", lambda *a, **kw: None)
-
     cipher = get_cipher()
     ct, fp = cipher.encrypt(b"app-pw")
     account = MailAccount(
@@ -196,9 +193,6 @@ async def test_observer_creates_documents_after_sync(db_session, mock_aioimap, o
     """End-to-end: sync produces watched_messages, ingest produces Documents."""
     from harbor_clerk.models import Document
     from tests.mail.fixtures.build_eml import build_email_with_attachments
-
-    # Patch enqueue_stage so it doesn't try to open a sync DB session in test context
-    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", lambda *a, **kw: None)
 
     cipher = get_cipher()
     ct, fp = cipher.encrypt(b"app-pw")

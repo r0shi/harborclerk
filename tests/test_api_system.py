@@ -398,23 +398,39 @@ async def test_resummarize_all_bulk_upserts_ready_docs_only(client, admin_user, 
         pipeline_status=PipelineStatus.chunking,
         pipeline_seq=1,
     )
-    db_session.add_all([ready_doc, processing_doc])
+    stale_queued_doc = Document(
+        title="Stale queued",
+        status="active",
+        sha256=b"s" * 32,
+        pipeline_status=PipelineStatus.ready,
+        pipeline_seq=3,
+    )
+    db_session.add_all([ready_doc, processing_doc, stale_queued_doc])
     await db_session.flush()
-    db_session.add(
-        IngestionJob(
-            doc_id=ready_doc.doc_id,
-            stage=JobStage.summarize,
-            status=JobStatus.done,
-            metrics={"skipped": True},
-            started_at=datetime.now(UTC),
-            finished_at=datetime.now(UTC),
-        )
+    db_session.add_all(
+        [
+            IngestionJob(
+                doc_id=ready_doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.done,
+                metrics={"skipped": True},
+                started_at=datetime.now(UTC),
+                finished_at=datetime.now(UTC),
+            ),
+            IngestionJob(
+                doc_id=stale_queued_doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                pipeline_seq=2,
+                metrics={"old": True},
+            ),
+        ]
     )
     await db_session.flush()
 
     resp = await client.post("/api/system/resummarize-all", headers=auth_header(admin_token))
     assert resp.status_code == 200
-    assert resp.json() == {"resummarized": 1}
+    assert resp.json() == {"resummarized": 2}
 
     await db_session.refresh(ready_doc)
     await db_session.refresh(processing_doc)
@@ -429,9 +445,22 @@ async def test_resummarize_all_bulk_upserts_ready_docs_only(client, admin_user, 
     summarize_job = ready_jobs[0]
     assert summarize_job.stage == JobStage.summarize
     assert summarize_job.status == JobStatus.queued
+    assert summarize_job.pipeline_seq == ready_doc.pipeline_seq
     assert summarize_job.metrics == {}
     assert summarize_job.started_at is None
     assert summarize_job.finished_at is None
+
+    stale_jobs = (
+        (await db_session.execute(select(IngestionJob).where(IngestionJob.doc_id == stale_queued_doc.doc_id)))
+        .scalars()
+        .all()
+    )
+    assert len(stale_jobs) == 1
+    stale_job = stale_jobs[0]
+    assert stale_job.stage == JobStage.summarize
+    assert stale_job.status == JobStatus.queued
+    assert stale_job.pipeline_seq == stale_queued_doc.pipeline_seq
+    assert stale_job.metrics == {}
 
     processing_jobs = (
         (await db_session.execute(select(IngestionJob).where(IngestionJob.doc_id == processing_doc.doc_id)))

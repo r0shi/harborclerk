@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 64
 
 
-def run_embed(doc_id: uuid.UUID) -> None:
+def run_embed(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     """Generate embeddings for all chunks of a doc."""
-    if not mark_stage_running(doc_id, JobStage.embed):
+    if not mark_stage_running(doc_id, JobStage.embed, worker_seq=worker_seq):
         return
 
     settings = get_settings()
@@ -31,7 +31,8 @@ def run_embed(doc_id: uuid.UUID) -> None:
         if doc is None:
             logger.info("embed: doc %s no longer exists, skipping", doc_id)
             return
-        worker_seq = doc.pipeline_seq
+        if worker_seq is None:
+            worker_seq = doc.pipeline_seq
 
         # Load chunks missing embeddings
         chunks = (
@@ -53,6 +54,7 @@ def run_embed(doc_id: uuid.UUID) -> None:
             select(IngestionJob).where(
                 IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == JobStage.embed,
+                IngestionJob.pipeline_seq == worker_seq,
             )
         ).scalar_one()
         job.progress_total = len(chunks)

@@ -57,15 +57,16 @@ def _pdf_to_images(data: bytes) -> list[Image.Image]:
     return images
 
 
-def run_ocr(doc_id: uuid.UUID) -> None:
+def run_ocr(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     """Run OCR on pages that need it."""
-    if not mark_stage_running(doc_id, JobStage.ocr):
+    if not mark_stage_running(doc_id, JobStage.ocr, worker_seq=worker_seq):
         return
 
     session = get_sync_session()
     try:
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        worker_seq = doc.pipeline_seq
+        if worker_seq is None:
+            worker_seq = doc.pipeline_seq
 
         # If OCR not needed, just mark done
         if not doc.needs_ocr:
@@ -98,6 +99,7 @@ def run_ocr(doc_id: uuid.UUID) -> None:
             select(IngestionJob).where(
                 IngestionJob.doc_id == doc_id,
                 IngestionJob.stage == JobStage.ocr,
+                IngestionJob.pipeline_seq == worker_seq,
             )
         ).scalar_one()
 

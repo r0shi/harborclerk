@@ -15,15 +15,16 @@ from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, ma
 logger = logging.getLogger(__name__)
 
 
-def run_entities(doc_id: uuid.UUID) -> None:
+def run_entities(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     """Extract named entities from all chunks for this doc."""
-    if not mark_stage_running(doc_id, JobStage.entities):
+    if not mark_stage_running(doc_id, JobStage.entities, worker_seq=worker_seq):
         return
 
     session = get_sync_session()
     try:
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        worker_seq = doc.pipeline_seq
+        if worker_seq is None:
+            worker_seq = doc.pipeline_seq
 
         chunks = session.execute(select(Chunk).where(Chunk.doc_id == doc_id).order_by(Chunk.chunk_num)).scalars().all()
 

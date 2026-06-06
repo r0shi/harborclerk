@@ -156,13 +156,17 @@ async def _session_reaper_loop() -> None:
                     rs.error = "Research task stalled — no progress for 5+ minutes"
 
                 # Re-queue orphaned ingestion jobs (running with stale heartbeat >90s)
-                from harbor_clerk.models import IngestionJob
+                from harbor_clerk.models import Document, IngestionJob
                 from harbor_clerk.models.enums import JobStatus
 
                 heartbeat_cutoff = now - timedelta(seconds=90)
                 orphan_result = await db.execute(
-                    select(IngestionJob).where(
+                    select(IngestionJob)
+                    .join(Document, Document.doc_id == IngestionJob.doc_id)
+                    .where(
+                        Document.status == "active",
                         IngestionJob.status == JobStatus.running,
+                        IngestionJob.pipeline_seq == Document.pipeline_seq,
                         IngestionJob.heartbeat_at < heartbeat_cutoff,
                     )
                 )

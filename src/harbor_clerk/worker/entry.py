@@ -122,7 +122,7 @@ def _wait_for_notify(conn, timeout=30):
             conn.notifies.pop(0)
 
 
-def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, stop_event: threading.Event):
+def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, stop_event: threading.Event):
     """Update heartbeat_at every HEARTBEAT_INTERVAL seconds until stop_event is set."""
     while not stop_event.wait(timeout=HEARTBEAT_INTERVAL):
         session = get_sync_session()
@@ -132,6 +132,7 @@ def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, stop_event: threading.Ev
                 .where(
                     IngestionJob.doc_id == doc_id,
                     IngestionJob.stage == stage,
+                    IngestionJob.pipeline_seq == pipeline_seq,
                 )
                 .values(heartbeat_at=datetime.now(UTC))
             )
@@ -142,7 +143,7 @@ def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, stop_event: threading.Ev
             session.close()
 
 
-def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
+def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int] | None:
     """Atomically claim the next queued job using SELECT ... FOR UPDATE SKIP LOCKED."""
     session = get_sync_session()
     try:
@@ -158,9 +159,12 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
         )
         row = session.execute(
             select(IngestionJob)
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
             .where(
                 IngestionJob.status == JobStatus.queued,
                 IngestionJob.stage.in_(stages),
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+                Document.status == "active",
             )
             .order_by(IngestionJob.priority, stage_priority, IngestionJob.created_at)
             .limit(1)
@@ -176,8 +180,9 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
         row.heartbeat_at = now
         doc_id = row.doc_id
         stage = row.stage
+        pipeline_seq = row.pipeline_seq
         session.commit()
-        return (doc_id, stage)
+        return (doc_id, stage, pipeline_seq)
     except Exception:
         session.rollback()
         raise
@@ -203,11 +208,18 @@ def _lookup_filename(doc_id: uuid.UUID) -> str | None:
         session.close()
 
 
-def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
+def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = None) -> None:
     """Run a stage function with timeout enforcement via signal.alarm() and heartbeat."""
     _, timeout, _ = STAGE_CONFIG[stage]
     func = STAGE_FUNCTIONS[stage]
     filename = _lookup_filename(doc_id)
+    if pipeline_seq is None:
+        session = get_sync_session()
+        try:
+            pipeline_seq = session.execute(select(Document.pipeline_seq).where(Document.doc_id == doc_id)).scalar()
+            pipeline_seq = pipeline_seq or 0
+        finally:
+            session.close()
 
     logger.info("Starting %s for doc %s (timeout=%ds)", stage.value, doc_id, timeout)
     publish_job_event(doc_id, stage.value, "running", filename=filename)
@@ -216,7 +228,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
     stop_heartbeat = threading.Event()
     hb_thread = threading.Thread(
         target=_heartbeat_loop,
-        args=(doc_id, stage, stop_heartbeat),
+        args=(doc_id, stage, pipeline_seq, stop_heartbeat),
         daemon=True,
     )
     hb_thread.start()
@@ -227,7 +239,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(timeout)
     try:
-        func(doc_id)
+        func(doc_id, worker_seq=pipeline_seq)
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
         logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
@@ -240,7 +252,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
                     IngestionJob.stage == stage,
                 )
             ).scalar_one_or_none()
-            if job:
+            if job and job.pipeline_seq == pipeline_seq:
                 job.status = JobStatus.error
                 job.error = error_msg
                 job.finished_at = datetime.now(UTC)
@@ -254,7 +266,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
             # already enforce this for the success path; the error path
             # missed the memo when PR #327 moved summarize to background.
             doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
-            if doc and stage not in _BACKGROUND_STAGES:
+            if doc and doc.pipeline_seq == pipeline_seq and stage not in _BACKGROUND_STAGES:
                 doc.pipeline_status = PipelineStatus.error
                 doc.error = error_msg
 

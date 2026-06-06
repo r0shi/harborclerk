@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.deps import get_session, require_human_user, require_user
@@ -25,7 +25,7 @@ from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.upload import Upload
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
 from harbor_clerk.watcher.notify import notify_folder_change_async
-from harbor_clerk.worker.pipeline import enqueue_stage
+from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,20 @@ async def _folder_progress_event_generator(session_factory=None):
                         .label("in_flight"),
                     )
                     .outerjoin(WatchedFile, WatchedFile.folder_id == WatchedFolder.folder_id)
-                    .outerjoin(IngestionJob, IngestionJob.doc_id == WatchedFile.doc_id)
+                    .outerjoin(
+                        Document,
+                        and_(
+                            Document.doc_id == WatchedFile.doc_id,
+                            Document.status == "active",
+                        ),
+                    )
+                    .outerjoin(
+                        IngestionJob,
+                        and_(
+                            IngestionJob.doc_id == WatchedFile.doc_id,
+                            IngestionJob.pipeline_seq == Document.pipeline_seq,
+                        ),
+                    )
                     .group_by(WatchedFolder.folder_id, WatchedFolder.last_scan_at)
                 )
                 rows = (await sess.execute(stmt)).all()
@@ -293,9 +306,12 @@ async def get_folder_progress(
     result = await session.execute(
         select(IngestionJob.stage, IngestionJob.status, func.count())
         .join(WatchedFile, WatchedFile.doc_id == IngestionJob.doc_id)
+        .join(Document, Document.doc_id == WatchedFile.doc_id)
         .where(
             WatchedFile.folder_id == folder_id,
             WatchedFile.status == WatchedFileStatus.active,
+            Document.status == "active",
+            IngestionJob.pipeline_seq == Document.pipeline_seq,
         )
         .group_by(IngestionJob.stage, IngestionJob.status)
     )
@@ -548,12 +564,10 @@ async def ingest_file(
                 doc = doc_result.scalar_one_or_none()
                 if doc:
                     doc.sha256 = sha256_bytes
-                    doc.pipeline_status = PipelineStatus.queued
-                    doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
                     doc.source_path = body.source_path
                     doc.mime_type = body.mime_type
+                    await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
                     await session.commit()
-                    await asyncio.to_thread(enqueue_stage, doc.doc_id, JobStage.extract, priority=10)
                     return {"action": "updated", "doc_id": str(doc.doc_id)}
 
         await session.commit()
@@ -568,12 +582,10 @@ async def ingest_file(
             doc = doc_result.scalar_one_or_none()
             if doc:
                 doc.sha256 = sha256_bytes
-                doc.pipeline_status = PipelineStatus.queued
-                doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
                 doc.source_path = body.source_path
                 doc.mime_type = body.mime_type
+                await reset_and_queue_extract_for_doc(session, doc.doc_id, priority=10)
                 await session.commit()
-                await asyncio.to_thread(enqueue_stage, doc.doc_id, JobStage.extract, priority=10)
                 return {"action": "updated", "doc_id": str(doc.doc_id)}
 
     # Case 4: new file
@@ -612,9 +624,8 @@ async def ingest_file(
         status=WatchedFileStatus.active,
     )
     session.add(new_wf)
+    await queue_extract_for_current_pipeline(session, doc.doc_id, priority=10)
     await session.commit()
-
-    await asyncio.to_thread(enqueue_stage, doc.doc_id, JobStage.extract, priority=10)
     return {"action": "created", "doc_id": str(doc.doc_id)}
 
 

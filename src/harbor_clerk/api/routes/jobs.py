@@ -92,6 +92,8 @@ async def active_jobs(
             )
             .join(Document, IngestionJob.doc_id == Document.doc_id)
             .where(IngestionJob.status.in_(["queued", "running"]))
+            .where(IngestionJob.pipeline_seq == Document.pipeline_seq)
+            .where(Document.status == "active")
             .order_by(IngestionJob.created_at)
         )
     ).all()
@@ -140,18 +142,21 @@ async def jobs_snapshot(
             "throughput_window_seconds": 30,
         }
 
-    `recent_completed` is the count of jobs that finished at each stage
+    `recent_completed` is the count of current-generation jobs that finished at each stage
     in the last `throughput_window_seconds`. Drives the Observatory
     pipeline-flow visualisation (edge thickness, particle spawn rate).
 
-    Polled by the frontend every few seconds. Cheap: two indexed
-    aggregations on `ingestion_jobs`, no joins.
+    Polled by the frontend every few seconds. Cheap: indexed aggregations
+    over current-generation jobs.
     """
     # Counts of currently-queued / currently-running jobs by stage.
     rows = (
         await session.execute(
             select(IngestionJob.stage, IngestionJob.status, func.count())
+            .join(Document, IngestionJob.doc_id == Document.doc_id)
             .where(IngestionJob.status.in_([JobStatus.queued, JobStatus.running]))
+            .where(IngestionJob.pipeline_seq == Document.pipeline_seq)
+            .where(Document.status == "active")
             .group_by(IngestionJob.stage, IngestionJob.status)
         )
     ).all()
@@ -165,7 +170,10 @@ async def jobs_snapshot(
     completion_rows = (
         await session.execute(
             select(IngestionJob.stage, func.count())
+            .join(Document, IngestionJob.doc_id == Document.doc_id)
             .where(IngestionJob.status == JobStatus.done, IngestionJob.finished_at >= cutoff)
+            .where(IngestionJob.pipeline_seq == Document.pipeline_seq)
+            .where(Document.status == "active")
             .group_by(IngestionJob.stage)
         )
     ).all()
@@ -215,6 +223,8 @@ async def jobs_snapshot(
             .join(Document, IngestionJob.doc_id == Document.doc_id)
             .where(IngestionJob.stage == JobStage.summarize)
             .where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running)))
+            .where(IngestionJob.pipeline_seq == Document.pipeline_seq)
+            .where(Document.status == "active")
             .order_by(IngestionJob.created_at)
         )
     ).all()

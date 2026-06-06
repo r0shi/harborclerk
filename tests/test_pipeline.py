@@ -162,7 +162,7 @@ async def test_mark_stage_done_skips_when_seq_bumped(db_session):
     # (In production _reprocess_doc deletes the old job first; here we just create the
     # fresh one — the seq mismatch alone is enough to trigger the guard.)
     doc.pipeline_seq = 1
-    fresh_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued)
+    fresh_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued, pipeline_seq=1)
     db_session.add(fresh_job)
     await db_session.commit()
 
@@ -199,7 +199,9 @@ async def test_mark_stage_done_proceeds_when_seq_matches(db_session):
     await db_session.commit()
     await db_session.refresh(doc)
 
-    job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.running)
+    job = IngestionJob(
+        doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.running, pipeline_seq=doc.pipeline_seq
+    )
     db_session.add(job)
     await db_session.commit()
 
@@ -259,13 +261,13 @@ async def test_mark_stage_running_returns_false_when_seq_bumped(db_session):
     await db_session.commit()
     await db_session.refresh(doc)
 
-    job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.running)
+    job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.running, pipeline_seq=2)
     db_session.add(job)
     await db_session.commit()
 
     # Worker thinks seq is 1 (it's actually 2) — should refuse to run
     assert mark_stage_running(doc.doc_id, JobStage.extract, worker_seq=1) is False
-    # No worker_seq passed → no race check, succeeds (back-compat path)
+    # No worker_seq passed → resolves the current generation, succeeds.
     assert mark_stage_running(doc.doc_id, JobStage.extract) is True
 
 
@@ -306,7 +308,7 @@ async def test_run_finalize_aborts_when_seq_bumped_mid_stage(db_session):
     await db_session.refresh(doc)
 
     # Old job that the worker is "processing"
-    old_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.running)
+    old_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.running, pipeline_seq=0)
     db_session.add(old_job)
     await db_session.commit()
 
@@ -316,26 +318,20 @@ async def test_run_finalize_aborts_when_seq_bumped_mid_stage(db_session):
     await db_session.delete(old_job)
     await db_session.flush()
     doc.pipeline_seq = 1
-    fresh_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.queued)
+    fresh_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.queued, pipeline_seq=1)
     db_session.add(fresh_job)
     await db_session.commit()
 
-    # Old worker now calls run_finalize. Its internal load of doc.pipeline_seq
-    # will read the *new* value (1), so finalize will run to completion against
-    # the fresh job — that's correct behavior. The race-protection test that
-    # matters most is mark_stage_done_skips_when_seq_bumped (above), which
-    # simulates the more dangerous TOCTOU window between data-write commit and
-    # mark_stage_done call.
-    run_finalize(doc.doc_id)
+    # Old worker now calls run_finalize with the generation it claimed. It must
+    # not run to completion against the fresh job for pipeline_seq=1.
+    run_finalize(doc.doc_id, worker_seq=0)
 
     sync_session = get_sync_session()
     try:
-        # The fresh job should be marked done because the worker's effective
-        # seq matched at run_finalize time.
         refreshed_job = sync_session.execute(
             select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.finalize)
         ).scalar_one()
-        assert refreshed_job.status == JobStatus.done
+        assert refreshed_job.status == JobStatus.queued
     finally:
         sync_session.close()
 
@@ -529,7 +525,7 @@ async def test_background_stage_error_does_not_poison_pipeline_status(db_session
         sync_session.close()
 
     # Make the summarize stage raise so we exercise the error branch.
-    def _boom(_doc_id):
+    def _boom(_doc_id, *, worker_seq=None):
         raise AttributeError("type object 'ChatMessage' has no attribute 'id'")
 
     from harbor_clerk.worker import entry as entry_mod

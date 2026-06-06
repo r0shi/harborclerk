@@ -231,15 +231,16 @@ def _extract_headings_via_tika(
         return []
 
 
-def run_extract(doc_id: uuid.UUID) -> None:
+def run_extract(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     """Download file from storage, extract text, store pages."""
-    if not mark_stage_running(doc_id, JobStage.extract):
+    if not mark_stage_running(doc_id, JobStage.extract, worker_seq=worker_seq):
         return
 
     session = get_sync_session()
     try:
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        worker_seq = doc.pipeline_seq
+        if worker_seq is None:
+            worker_seq = doc.pipeline_seq
 
         # Read from storage if available; fall back to source_path for watched folder docs
         if doc.original_object_key:

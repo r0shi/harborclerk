@@ -67,7 +67,7 @@ def _wait_for_idle_llm(budget_sec: int = _YIELD_BUDGET_SEC) -> None:
         elapsed += _YIELD_POLL_SEC
 
 
-def run_summarize(doc_id: uuid.UUID) -> None:
+def run_summarize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     """Generate a summary for the document from all its chunks."""
     # Yield-to-interactive: if the user is chatting or researching right
     # now, wait up to _YIELD_BUDGET_SEC before claiming the LLM slot. This
@@ -76,7 +76,7 @@ def run_summarize(doc_id: uuid.UUID) -> None:
     # yield_check passed to generate_summary).
     _wait_for_idle_llm()
 
-    if not mark_stage_running(doc_id, JobStage.summarize):
+    if not mark_stage_running(doc_id, JobStage.summarize, worker_seq=worker_seq):
         return
 
     # Re-read LLM model from config.json in case user changed it via API
@@ -91,7 +91,8 @@ def run_summarize(doc_id: uuid.UUID) -> None:
         )
 
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        worker_seq = doc.pipeline_seq
+        if worker_seq is None:
+            worker_seq = doc.pipeline_seq
 
         if chunks:
             # Update the IngestionJob row's progress counters between map calls
@@ -112,6 +113,7 @@ def run_summarize(doc_id: uuid.UUID) -> None:
                         update(IngestionJob)
                         .where(IngestionJob.doc_id == doc_id)
                         .where(IngestionJob.stage == JobStage.summarize)
+                        .where(IngestionJob.pipeline_seq == worker_seq)
                         .values(progress_current=current, progress_total=total)
                     )
                     inner_session.commit()

@@ -14,8 +14,8 @@ from harbor_clerk.mail.ingest import (
     ingest_pending_messages,
 )
 from harbor_clerk.mail.parser import AttachmentSpec, EmailParseResult
-from harbor_clerk.models import Document, WatchedMessage
-from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.models import Document, IngestionJob, WatchedMessage
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from tests.mail.fixtures.build_eml import build_email_with_attachments
 
 
@@ -145,9 +145,6 @@ async def test_create_attachment_documents_links_to_parent(db_session, watched_l
 
 
 async def test_ingest_creates_email_and_attachment_docs(db_session, watched_label, mock_aioimap, monkeypatch):
-    # Patch enqueue_stage so it doesn't try to open a sync DB session in test context
-    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", lambda *a, **kw: None)
-
     from harbor_clerk.mail.ingest import ingest_pending_messages
     from harbor_clerk.models import WatchedMessage
 
@@ -218,8 +215,6 @@ async def test_ingest_creates_email_and_attachment_docs(db_session, watched_labe
 async def test_ingest_dedupes_across_labels_via_sha(db_session, mail_account, mock_aioimap, monkeypatch):
     """Same email already ingested via another label → reuse the existing
     email_doc_id without creating a new Document."""
-    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", lambda *a, **kw: None)
-
     from harbor_clerk.mail.ingest import ingest_pending_messages
     from harbor_clerk.models import WatchedLabel, WatchedMessage
 
@@ -317,7 +312,6 @@ async def test_ingest_rolls_back_email_doc_when_attachment_creation_fails(
     this iteration. When create_attachment_documents raises, both the
     email Document and any partial attachments roll back together.
     """
-    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", lambda *a, **kw: None)
 
     # Patch create_attachment_documents to always raise — simulates a
     # storage backend failure after the email .eml was successfully put.
@@ -378,14 +372,7 @@ async def test_ingest_rolls_back_email_doc_when_attachment_creation_fails(
 
 
 async def test_ingest_enqueues_extract_for_each_new_doc(db_session, watched_label, mock_aioimap, monkeypatch):
-    """ingest_pending_messages should call enqueue_stage(extract) for the
-    email Document and each attachment Document."""
-    enqueued: list[tuple] = []
-
-    def _capture_enqueue(doc_id, stage, *, priority=0):
-        enqueued.append((doc_id, stage, priority))
-
-    monkeypatch.setattr("harbor_clerk.mail.ingest.enqueue_stage", _capture_enqueue)
+    """ingest_pending_messages should queue extract for the email document and each attachment document."""
 
     eml = build_email_with_attachments(
         message_id="<enq@example.com>",
@@ -426,7 +413,17 @@ async def test_ingest_enqueues_extract_for_each_new_doc(db_session, watched_labe
     assert summary.new_email_doc_count == 1
     assert summary.new_attachment_doc_count == 2
 
-    from harbor_clerk.models.enums import JobStage
-
-    assert len(enqueued) == 3  # email + 2 attachments
-    assert all(stage == JobStage.extract for _, stage, _ in enqueued)
+    jobs = (
+        (
+            await db_session.execute(
+                select(IngestionJob).where(
+                    IngestionJob.stage == JobStage.extract,
+                    IngestionJob.status == JobStatus.queued,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(jobs) == 3  # email + 2 attachments
+    assert {job.pipeline_seq for job in jobs} == {0}
