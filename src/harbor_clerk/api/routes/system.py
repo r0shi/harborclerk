@@ -1227,6 +1227,40 @@ async def _bulk_queue_resummarize_all(session: AsyncSession) -> int:
     return int(row["target_count"] or 0)
 
 
+async def _clear_redundant_summary_backlog(session: AsyncSession) -> int:
+    """Skip queued summarize jobs for docs that already have summaries.
+
+    This is a recovery action for accidental summary-only backlogs, not a
+    replacement for explicit resummarization. It deliberately leaves running
+    jobs untouched and only updates the current document pipeline generation.
+    """
+    result = await session.execute(
+        text(
+            """
+            UPDATE ingestion_jobs AS job
+            SET status = 'done'::job_status,
+                progress_current = 0,
+                progress_total = 0,
+                error = NULL,
+                started_at = COALESCE(job.started_at, now()),
+                finished_at = now(),
+                heartbeat_at = NULL,
+                metrics = COALESCE(job.metrics, '{}'::jsonb)
+                    || '{"skipped": true, "reason": "existing_summary_cleanup"}'::jsonb
+            FROM documents AS doc
+            WHERE doc.doc_id = job.doc_id
+              AND doc.status = 'active'
+              AND doc.pipeline_seq = job.pipeline_seq
+              AND job.stage = 'summarize'::job_stage
+              AND job.status = 'queued'::job_status
+              AND length(trim(COALESCE(doc.summary, ''))) > 0
+            RETURNING job.job_id
+            """
+        )
+    )
+    return len(result.fetchall())
+
+
 @router.post("/system/reprocess-all")
 async def reprocess_all(
     admin: Principal = Depends(require_admin),
@@ -1306,6 +1340,26 @@ async def resummarize_all(
 
     logger.info("Resummarize-all: %d documents queued", count)
     return {"resummarized": count}
+
+
+@router.post("/system/clear-redundant-summary-backlog")
+async def clear_redundant_summary_backlog(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Clear queued summarize jobs for documents that already have summaries."""
+    cleared = await _clear_redundant_summary_backlog(session)
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="clear_redundant_summary_backlog",
+        detail={"cleared": cleared},
+    )
+    await session.commit()
+
+    logger.info("Cleared %d redundant queued summarize jobs", cleared)
+    return {"cleared": cleared}
 
 
 @router.post("/system/delete-all-documents")

@@ -433,6 +433,21 @@ _daemon: subprocess.Popen | None = None
 # subprocess.run; the daemon's session-init is amortized, so an individual
 # inference taking >120 s here would be a hang, not slow startup.
 _DAEMON_READ_TIMEOUT_S = 120.0
+_AFM_CIRCUIT_BREAKER_SECONDS = 3600.0
+_afm_disabled_until_monotonic = 0.0
+_afm_disabled_reason = ""
+
+
+def _apple_intelligence_disabled_reason() -> str | None:
+    if _afm_disabled_until_monotonic <= time.monotonic():
+        return None
+    return _afm_disabled_reason or "temporarily disabled"
+
+
+def _disable_apple_intelligence(reason: str) -> None:
+    global _afm_disabled_until_monotonic, _afm_disabled_reason
+    _afm_disabled_until_monotonic = time.monotonic() + _AFM_CIRCUIT_BREAKER_SECONDS
+    _afm_disabled_reason = reason
 
 
 def _stop_daemon() -> None:
@@ -512,13 +527,19 @@ def _atexit_stop_daemon() -> None:
 def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str | None:
     """Send a single request to the cached apple-summarize daemon. Returns
     None on any failure (binary not present, daemon died mid-request, parse
-    error, AFM error response, read timeout). The daemon is respawned on
-    next call after a failure."""
+    error, AFM error response, read timeout). Transport failures trip a
+    process-local cooldown so a wedged AFM daemon cannot stall every document
+    in a corpus-sized summarize backlog."""
     # Cap at 12,000 chars for ~4K token context
     text = text[:12_000]
     request_line = json.dumps({"prompt": text, "max_chars": max_chars, "mode": mode}) + "\n"
 
     with _daemon_lock:
+        disabled_reason = _apple_intelligence_disabled_reason()
+        if disabled_reason:
+            logger.info("Apple Intelligence skipped: %s", disabled_reason)
+            return None
+
         daemon = _get_or_start_daemon()
         if daemon is None:
             logger.debug("apple-summarize binary not found — skipping Apple Intelligence")
@@ -528,7 +549,8 @@ def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str 
             daemon.stdin.write(request_line)
             daemon.stdin.flush()
         except (BrokenPipeError, OSError) as exc:
-            logger.warning("apple-summarize daemon stdin broken (%s); will respawn next call", exc)
+            logger.warning("apple-summarize daemon stdin broken (%s); disabling temporarily", exc)
+            _disable_apple_intelligence("daemon stdin broken")
             _stop_daemon()
             return None
 
@@ -538,21 +560,26 @@ def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str 
         # capped at 120 s and we preserve that contract.
         ready, _, _ = select.select([daemon.stdout], [], [], _DAEMON_READ_TIMEOUT_S)
         if not ready:
-            logger.warning("apple-summarize daemon timed out after %.0fs; respawning", _DAEMON_READ_TIMEOUT_S)
+            logger.warning(
+                "apple-summarize daemon timed out after %.0fs; disabling temporarily", _DAEMON_READ_TIMEOUT_S
+            )
+            _disable_apple_intelligence("daemon timed out")
             _stop_daemon()
             return None
         try:
             line = daemon.stdout.readline()
         except (BrokenPipeError, OSError) as exc:
-            logger.warning("apple-summarize daemon stdout broken (%s); will respawn next call", exc)
+            logger.warning("apple-summarize daemon stdout broken (%s); disabling temporarily", exc)
+            _disable_apple_intelligence("daemon stdout broken")
             _stop_daemon()
             return None
 
     # JSON parsing happens outside the lock — the wire I/O is complete and
     # subsequent callers can proceed in parallel against the daemon.
     if not line:
-        logger.debug("apple-summarize daemon closed stdout; will respawn next call")
+        logger.debug("apple-summarize daemon closed stdout; disabling temporarily")
         with _daemon_lock:
+            _disable_apple_intelligence("daemon closed stdout")
             _stop_daemon()
         return None
     try:

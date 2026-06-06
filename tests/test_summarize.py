@@ -342,6 +342,57 @@ def _mock_settings(llm_model_id="test-model", summary_force_apple_intelligence=F
     return s
 
 
+class TestAppleIntelligenceCircuitBreaker:
+    def test_timeout_disables_followup_daemon_calls(self, monkeypatch):
+        from harbor_clerk.llm import summarize as sum_mod
+
+        class FakePipe:
+            def write(self, _value):
+                return None
+
+            def flush(self):
+                return None
+
+            def readline(self):
+                return '{"result": "too late"}\n'
+
+        class FakeDaemon:
+            stdin = FakePipe()
+            stdout = FakePipe()
+
+        start_daemon = MagicMock(return_value=FakeDaemon())
+        stop_daemon = MagicMock()
+
+        monkeypatch.setattr(sum_mod, "_afm_disabled_until_monotonic", 0.0)
+        monkeypatch.setattr(sum_mod, "_afm_disabled_reason", "")
+        monkeypatch.setattr(sum_mod, "_AFM_CIRCUIT_BREAKER_SECONDS", 60.0)
+        monkeypatch.setattr(sum_mod, "_DAEMON_READ_TIMEOUT_S", 0.01)
+        monkeypatch.setattr(sum_mod, "_get_or_start_daemon", start_daemon)
+        monkeypatch.setattr(sum_mod, "_stop_daemon", stop_daemon)
+        monkeypatch.setattr(sum_mod.select, "select", lambda *_args: ([], [], []))
+
+        assert sum_mod._apple_intelligence_call("hello", mode="summary") is None
+        assert start_daemon.call_count == 1
+        assert stop_daemon.call_count == 1
+        assert sum_mod._apple_intelligence_disabled_reason() == "daemon timed out"
+
+        assert sum_mod._apple_intelligence_call("hello again", mode="doc_type") is None
+        assert start_daemon.call_count == 1
+
+    def test_disabled_apple_intelligence_falls_back_to_mime_type(self, monkeypatch):
+        from harbor_clerk.llm import summarize as sum_mod
+
+        monkeypatch.setattr(sum_mod, "_afm_disabled_until_monotonic", sum_mod.time.monotonic() + 60.0)
+        monkeypatch.setattr(sum_mod, "_afm_disabled_reason", "daemon timed out")
+        monkeypatch.setattr(sum_mod, "_get_or_start_daemon", MagicMock(side_effect=AssertionError("daemon called")))
+
+        with (
+            patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings(llm_model_id="")),
+            patch("harbor_clerk.llm.summarize._call_llm", return_value=None),
+        ):
+            assert sum_mod.classify_doc_type(["Some text content"], mime_type="application/pdf") == "PDF Document"
+
+
 class TestGenerateSummary:
     def test_empty_chunks(self):
         with patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()):
