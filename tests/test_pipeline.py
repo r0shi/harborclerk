@@ -433,6 +433,57 @@ async def test_summarize_not_in_finalize_gate(db_session):
 
 
 @pytest.mark.asyncio
+async def test_reprocess_regenerates_existing_summary_after_chunk(db_session, monkeypatch):
+    """A full reprocess keeps the old summary text until summarize finishes,
+    but the new pipeline generation must still enqueue summarize again.
+    """
+    from harbor_clerk.worker import pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "_is_ner_available", lambda: True)
+
+    doc = Document(
+        title="Existing summary reprocess",
+        canonical_filename="old-summary.pdf",
+        status="active",
+        sha256=b"s" * 32,
+        needs_ocr=False,
+        pipeline_status=PipelineStatus.chunked,
+        pipeline_seq=3,
+        summary="Old summary that should be regenerated after full reprocess.",
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.done, pipeline_seq=3))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.ocr, status=JobStatus.done, pipeline_seq=3))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.chunk, status=JobStatus.done, pipeline_seq=3))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    pipeline_mod.advance_pipeline(doc.doc_id)
+
+    sync_session = get_sync_session()
+    try:
+        jobs = {
+            job.stage: job
+            for job in sync_session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id)).scalars()
+        }
+        summarize_job = jobs[JobStage.summarize]
+        assert summarize_job.status == JobStatus.queued
+        assert summarize_job.pipeline_seq == doc.pipeline_seq
+        assert summarize_job.metrics == {}
+
+        refreshed_doc = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed_doc.summary == "Old summary that should be regenerated after full reprocess."
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
 async def test_advance_pipeline_does_not_re_enqueue_errored_background_stage(db_session):
     """Regression: previously advance_pipeline would re-enqueue an errored
     summarize on every tick because the check was 'not in (done, queued,
