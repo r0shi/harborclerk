@@ -659,8 +659,42 @@ class TestClassifyDocType:
 
         with patch("harbor_clerk.llm.summarize.get_settings") as mock_settings:
             mock_settings.return_value.llm_model_id = ""
+            mock_settings.return_value.summary_force_apple_intelligence = False
             result = classify_doc_type(["Some text content"], mime_type="application/pdf")
             assert result == "PDF Document"
+
+    def test_classify_force_apple_skips_local_llm_when_apple_unavailable(self):
+        """The forced-Apple summary mode must not pay local LLM doc_type latency."""
+        from harbor_clerk.llm.summarize import classify_doc_type
+
+        mock_call = MagicMock()
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.get_settings",
+                return_value=_mock_settings(summary_force_apple_intelligence=True),
+            ),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_doc_type", return_value=None),
+            patch("harbor_clerk.llm.summarize._call_llm", mock_call),
+        ):
+            result = classify_doc_type(["Some text content"], mime_type="application/pdf")
+            assert result == "PDF Document"
+            mock_call.assert_not_called()
+
+    def test_classify_force_apple_uses_apple_doc_type(self):
+        from harbor_clerk.llm.summarize import classify_doc_type
+
+        mock_call = MagicMock()
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.get_settings",
+                return_value=_mock_settings(summary_force_apple_intelligence=True),
+            ),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_doc_type", return_value="Meeting Notes"),
+            patch("harbor_clerk.llm.summarize._call_llm", mock_call),
+        ):
+            result = classify_doc_type(["Some text content"], mime_type="application/pdf")
+            assert result == "Meeting Notes"
+            mock_call.assert_not_called()
 
 
 class TestUserLLMActiveQueriesChatMessage:

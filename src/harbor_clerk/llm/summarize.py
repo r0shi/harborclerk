@@ -429,11 +429,11 @@ def _find_apple_summarize_binary() -> str | None:
 # parallel call would interleave the JSON lines).
 _daemon_lock = threading.Lock()
 _daemon: subprocess.Popen | None = None
-# Per-request read timeout. The old one-shot path used 120 s for the whole
-# subprocess.run; the daemon's session-init is amortized, so an individual
-# inference taking >120 s here would be a hang, not slow startup.
-_DAEMON_READ_TIMEOUT_S = 120.0
-_AFM_CIRCUIT_BREAKER_SECONDS = 3600.0
+# Per-request read timeout. Historical successful AFM summaries were usually
+# ~8-10 s; when AFM hangs, falling back quickly matters more than preserving a
+# very long wait for a single best-effort stage.
+_DAEMON_READ_TIMEOUT_S = 30.0
+_AFM_CIRCUIT_BREAKER_SECONDS = 300.0
 _afm_disabled_until_monotonic = 0.0
 _afm_disabled_reason = ""
 
@@ -774,6 +774,13 @@ def _mime_to_doc_type(mime_type: str) -> str:
 def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
     """Classify document type. Fallback chain: local LLM → Apple Intelligence → MIME type."""
     settings = get_settings()
+
+    if settings.summary_force_apple_intelligence:
+        ai_type = _apple_intelligence_doc_type(chunks)
+        if ai_type:
+            return ai_type
+        logger.info("Apple Intelligence unavailable while forced for doc_type — using MIME fallback")
+        return _mime_to_doc_type(mime_type)
 
     # Try local LLM first (if a model is active)
     if settings.llm_model_id:
