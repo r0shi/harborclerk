@@ -437,6 +437,7 @@ class HarborClerkClient:
         abort_reason: dict[str, str] = {}
         conv_id_holder: list[str | None] = [None]
         response_holder: list[Any] = [None]
+        verifier_verdicts: list[dict[str, Any]] = []
         # Last-event timestamp; updated by the main loop on every parsed SSE
         # event. The watchdog reads it to detect the "zombie llama" case where
         # the model_status keeps reporting `ready` but no events flow.
@@ -502,6 +503,8 @@ class HarborClerkClient:
                     # quiet (not just when we're slow to drain a buffer).
                     last_event_at[0] = time.time()
                     etype = event.get("type")
+                    if etype == "verifier_pass":
+                        verifier_verdicts.append(event)
                     if etype in ("done", "error"):
                         break
             except Exception:
@@ -516,6 +519,8 @@ class HarborClerkClient:
 
         # Fetch the final state (status, report, citations, messages).
         final = self.poll_research(conv_id)
+        if verifier_verdicts:
+            final["verifier_verdicts"] = verifier_verdicts
         if abort_reason:
             final = {
                 **final,

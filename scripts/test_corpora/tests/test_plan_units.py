@@ -3,7 +3,7 @@ and --corpora filter interaction with phase ranges."""
 
 from __future__ import annotations
 
-from scripts.test_corpora.runner.sweep import _plan_units
+from scripts.test_corpora.runner.sweep import _plan_units, _verifier_counts
 
 
 def _qbc(corpora: list[str]) -> dict[str, dict]:
@@ -127,3 +127,25 @@ def test_phase_planning_is_additive_after_prior_phase(tmp_path):
     sf2.load()
     phases_seen = {u.phase for u in sf2.units()}
     assert phases_seen == {0, 1, 4}, f"expected phases {{0,1,4}}, got {phases_seen}"
+
+
+def test_verifier_counts_summarizes_research_verdicts():
+    result = {
+        "verifier_verdicts": [
+            {"verdict": "supported"},
+            {"verdict": "partial"},
+            {"verdict": "unsupported"},
+            {"verdict": "skipped"},
+            {"verdict": "supported"},
+            {"verdict": "unknown"},
+            "bad-event",
+        ]
+    }
+
+    assert _verifier_counts(result) == {
+        "total": 6,
+        "supported": 2,
+        "partial": 1,
+        "unsupported": 1,
+        "skipped": 1,
+    }
