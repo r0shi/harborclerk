@@ -367,7 +367,19 @@ async def test_summarize_done_after_finalize_does_not_regress_status(db_session)
             JobStage.finalize,
         ):
             sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=stage, status=JobStatus.done))
-        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                metrics={
+                    "blocked": True,
+                    "reason": "apple_intelligence_unavailable",
+                    "retry_after": "2026-01-01T00:00:00+00:00",
+                    "retry_attempts": 2,
+                },
+            )
+        )
         sync_session.commit()
     finally:
         sync_session.close()
@@ -734,7 +746,19 @@ async def test_forced_afm_content_rejection_errors_only_that_summary(db_session,
     sync_session = get_sync_session()
     try:
         sync_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="A substantial document body."))
-        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                metrics={
+                    "blocked": True,
+                    "reason": "apple_intelligence_unavailable",
+                    "retry_after": "2026-01-01T00:00:00+00:00",
+                    "retry_attempts": 2,
+                },
+            )
+        )
         sync_session.commit()
     finally:
         sync_session.close()

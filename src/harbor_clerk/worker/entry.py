@@ -499,6 +499,8 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
                 job.status = JobStatus.error
                 job.error = error_msg
                 job.finished_at = datetime.now(UTC)
+                if stage == JobStage.summarize and (job.metrics or {}).get("reason") == AFM_RETRY_REASON:
+                    job.metrics = {}
 
             # Background stages (summarize) must not touch pipeline_status —
             # it reflects the gating-stage progression only. The doc may
