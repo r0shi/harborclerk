@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { post } from '../api'
+import { get, post } from '../api'
 import SearchPage from './SearchPage'
 
 vi.mock('../api', () => ({
+  get: vi.fn(),
   post: vi.fn(),
 }))
 
@@ -19,6 +20,7 @@ vi.mock('../hooks/useWatchedFolders', () => ({
 }))
 
 const postMock = vi.mocked(post)
+const getMock = vi.mocked(get)
 
 function storageMock(): Storage {
   const store = new Map<string, string>()
@@ -56,6 +58,10 @@ function renderSearchPage() {
 describe('SearchPage', () => {
   beforeEach(() => {
     resetStorage()
+    getMock.mockReset()
+    getMock.mockResolvedValue({
+      mime_types: [{ value: 'application/pdf', count: 3 }],
+    })
     postMock.mockReset()
   })
 
@@ -143,7 +149,10 @@ describe('SearchPage', () => {
     expect(await screen.findByText('Vendor Contract')).toBeInTheDocument()
     expect(screen.getByText('Force majeure clause excerpt.')).toBeInTheDocument()
     expect(screen.getByText('Vendor Contract, p. 2')).toBeInTheDocument()
-    expect(screen.getByText('vendors/contract.pdf')).toBeInTheDocument()
+    expect(screen.getByText('Filename')).toBeInTheDocument()
+    expect(screen.getByText('contract.pdf')).toBeInTheDocument()
+    expect(screen.getByTitle('vendors/contract.pdf')).toBeInTheDocument()
+    expect(screen.getByLabelText(/Relevance score 0.870/)).toBeInTheDocument()
   })
 
   it('serializes friendly filters into search request fields', async () => {
@@ -158,12 +167,14 @@ describe('SearchPage', () => {
     renderSearchPage()
 
     fireEvent.click(screen.getByRole('button', { name: /Filters/ }))
+    await screen.findByRole('option', { name: 'PDF (3)' })
     fireEvent.change(screen.getByLabelText('Exact text'), { target: { value: 'force majeure' } })
     fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'en' } })
     fireEvent.change(screen.getByLabelText('MIME type'), { target: { value: 'application/pdf' } })
     fireEvent.change(screen.getByLabelText('Email from'), { target: { value: 'alice@example.com' } })
     fireEvent.change(screen.getByLabelText('Email subject'), { target: { value: 'invoice' } })
-    fireEvent.change(screen.getByLabelText('Document ID'), {
+    fireEvent.click(screen.getByText('Advanced identifier filter'))
+    fireEvent.change(screen.getByLabelText('Document UUID'), {
       target: { value: '11111111-1111-1111-1111-111111111111' },
     })
 
@@ -171,8 +182,9 @@ describe('SearchPage', () => {
       '"email.from_address": "alice@example.com"',
     )
     expect(screen.getByText('Text: force majeure')).toBeInTheDocument()
+    expect(screen.getByText('Type: PDF')).toBeInTheDocument()
     expect(screen.getByText('From: alice@example.com')).toBeInTheDocument()
-    expect(screen.getByText('Doc: 11111111-1111-1111-1111-111111111111')).toBeInTheDocument()
+    expect(screen.getByText('Document UUID: 11111111-1111-1111-1111-111111111111')).toBeInTheDocument()
 
     const input = screen.getByPlaceholderText('Search documents...')
     fireEvent.change(input, { target: { value: 'contract' } })
@@ -207,15 +219,16 @@ describe('SearchPage', () => {
     renderSearchPage()
 
     fireEvent.click(screen.getByRole('button', { name: /Filters/ }))
-    fireEvent.change(screen.getByLabelText('Document ID'), {
+    fireEvent.click(screen.getByText('Advanced identifier filter'))
+    fireEvent.change(screen.getByLabelText('Document UUID'), {
       target: { value: '11111111-1111-1111-1111-111111111111' },
     })
 
-    expect(screen.getByText('Doc: 11111111-1111-1111-1111-111111111111')).toBeInTheDocument()
+    expect(screen.getByText('Document UUID: 11111111-1111-1111-1111-111111111111')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /Remove Doc:/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Remove Document UUID:/ }))
 
-    expect(screen.queryByText('Doc: 11111111-1111-1111-1111-111111111111')).not.toBeInTheDocument()
+    expect(screen.queryByText('Document UUID: 11111111-1111-1111-1111-111111111111')).not.toBeInTheDocument()
 
     const input = screen.getByPlaceholderText('Search documents...')
     fireEvent.change(input, { target: { value: 'contract' } })
@@ -234,13 +247,14 @@ describe('SearchPage', () => {
     renderSearchPage()
 
     fireEvent.click(screen.getByRole('button', { name: /Filters/ }))
-    fireEvent.change(screen.getByLabelText('Document ID'), { target: { value: 'not-a-uuid' } })
+    fireEvent.click(screen.getByText('Advanced identifier filter'))
+    fireEvent.change(screen.getByLabelText('Document UUID'), { target: { value: 'not-a-uuid' } })
 
     const input = screen.getByPlaceholderText('Search documents...')
     fireEvent.change(input, { target: { value: 'contract' } })
     fireEvent.submit(input.closest('form') as HTMLFormElement)
 
-    expect(screen.getByText('Document ID filter must be a valid UUID.')).toBeInTheDocument()
+    expect(screen.getByText('Document UUID filter must be a valid UUID.')).toBeInTheDocument()
     expect(postMock).not.toHaveBeenCalled()
   })
 

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { post } from '../api'
+import { get, post } from '../api'
 import { Card } from '../components/Card'
 import { FolderPicker } from '../components/FolderPicker'
 import { PageHeader } from '../components/PageHeader'
@@ -10,6 +10,15 @@ import type { SourceRef } from '../types/sourceRef'
 
 type SearchMode = 'search' | 'find_all'
 type FindAllSort = 'relevance' | 'date_desc' | 'date_asc'
+
+interface FilterOption {
+  value: string
+  count: number
+}
+
+interface SearchFilterOptions {
+  mime_types: FilterOption[]
+}
 
 interface SearchFilters {
   textContains: string
@@ -102,6 +111,21 @@ const EMPTY_FILTERS: SearchFilters = {
   docId: '',
 }
 
+const MIME_TYPE_LABELS: Record<string, string> = {
+  'application/pdf': 'PDF',
+  'application/rtf': 'RTF',
+  'application/vnd.ms-excel': 'Excel',
+  'application/vnd.ms-powerpoint': 'PowerPoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Excel',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word',
+  'application/msword': 'Word',
+  'message/rfc822': 'Email',
+  'text/html': 'HTML',
+  'text/markdown': 'Markdown',
+  'text/plain': 'Plain text',
+}
+
 interface SearchState {
   mode?: SearchMode
   query: string
@@ -164,6 +188,21 @@ function firstPageFromRange(pageRange?: string): number | null {
   return match ? Number(match[0]) : null
 }
 
+function mimeTypeLabel(value: string): string {
+  if (MIME_TYPE_LABELS[value]) return MIME_TYPE_LABELS[value]
+  const subtype = value.split('/').pop()
+  if (!subtype) return value
+  return subtype
+    .replace(/^vnd\./, '')
+    .replace(/\./g, ' ')
+    .replace(/[-_]/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function mimeTypeOptionLabel(option: FilterOption): string {
+  return `${mimeTypeLabel(option.value)} (${option.count})`
+}
+
 function normalizedFilters(filters?: Partial<SearchFilters>): SearchFilters {
   return { ...EMPTY_FILTERS, ...filters }
 }
@@ -204,14 +243,37 @@ function activeFilterEntries(filters: SearchFilters): Array<{ key: keyof SearchF
   if (filters.after) entries.push({ key: 'after', label: `After: ${filters.after}` })
   if (filters.before) entries.push({ key: 'before', label: `Before: ${filters.before}` })
   if (filters.language) entries.push({ key: 'language', label: `Language: ${filters.language}` })
-  if (filters.mimeType.trim()) entries.push({ key: 'mimeType', label: `Type: ${filters.mimeType.trim()}` })
+  if (filters.mimeType.trim())
+    entries.push({ key: 'mimeType', label: `Type: ${mimeTypeLabel(filters.mimeType.trim())}` })
   if (filters.emailFrom.trim()) entries.push({ key: 'emailFrom', label: `From: ${filters.emailFrom.trim()}` })
   if (filters.emailTo.trim()) entries.push({ key: 'emailTo', label: `To: ${filters.emailTo.trim()}` })
   if (filters.emailCc.trim()) entries.push({ key: 'emailCc', label: `Cc: ${filters.emailCc.trim()}` })
   if (filters.emailSubject.trim())
     entries.push({ key: 'emailSubject', label: `Subject: ${filters.emailSubject.trim()}` })
-  if (filters.docId.trim()) entries.push({ key: 'docId', label: `Doc: ${filters.docId.trim()}` })
+  if (filters.docId.trim()) entries.push({ key: 'docId', label: `Document UUID: ${filters.docId.trim()}` })
   return entries
+}
+
+function RelevanceScore({ score, maxScore }: { score: number; maxScore: number }) {
+  const safeMax = maxScore > 0 ? maxScore : 1
+  const width = Math.max(0, Math.min(100, Math.round((score / safeMax) * 100)))
+  const formatted = score.toFixed(3)
+  const tooltip = `Relevance score ${formatted}. Higher is a stronger match for this query; compare scores within this search, not across different searches.`
+
+  return (
+    <div className="flex shrink-0 items-center gap-1.5" title={tooltip} aria-label={tooltip}>
+      <span className="text-[11px] font-medium text-gray-500 dark:text-gray-400">Relevance</span>
+      <div className="h-1.5 w-24 rounded-full bg-gray-200 dark:bg-gray-600" aria-hidden="true">
+        <div
+          className="h-1.5 rounded-full bg-blue-500"
+          style={{
+            width: `${width}%`,
+          }}
+        />
+      </div>
+      <span className="text-xs text-gray-400">{formatted}</span>
+    </div>
+  )
 }
 
 function Pagination({
@@ -282,6 +344,7 @@ export default function SearchPage() {
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [history, setHistory] = useState<string[]>(getHistory)
   const [showHistory, setShowHistory] = useState(false)
+  const [filterOptions, setFilterOptions] = useState<SearchFilterOptions>({ mime_types: [] })
   const [pageSize, setPageSize] = useState(initial?.pageSize || 25)
   const [currentPage, setCurrentPage] = useState(initial?.currentPage || 1)
   const [scopeFolderIds, setScopeFolderIds] = useState<string[]>([])
@@ -294,6 +357,20 @@ export default function SearchPage() {
   useEffect(() => {
     saveSearchState({ mode, query, results, currentPage, pageSize, lastQuery: lastQuery.current, filters, sortBy })
   }, [mode, query, results, currentPage, pageSize, filters, sortBy])
+
+  useEffect(() => {
+    let cancelled = false
+    get<SearchFilterOptions>('/api/docs/filters')
+      .then((data) => {
+        if (!cancelled) setFilterOptions({ mime_types: data.mime_types || [] })
+      })
+      .catch(() => {
+        if (!cancelled) setFilterOptions({ mime_types: [] })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -318,7 +395,7 @@ export default function SearchPage() {
     if (!trimmed) return
     const docId = filters.docId.trim()
     if (docId && !isUuid(docId)) {
-      setError('Document ID filter must be a valid UUID.')
+      setError('Document UUID filter must be a valid UUID.')
       return
     }
     setError('')
@@ -421,6 +498,8 @@ export default function SearchPage() {
   const metadataFilter = buildMetadataFilter(filters)
   const activeFilters = activeFilterEntries(filters)
   const activeFilterCount = activeFilters.length
+  const mimeOptions = filterOptions.mime_types
+  const selectedMimeMissing = !!filters.mimeType && !mimeOptions.some((option) => option.value === filters.mimeType)
   const totalCount = findAllResults?.total_matches ?? searchResults?.total_candidates ?? 0
   const maxScore = searchResults?.hits[0]?.score || findAllResults?.results[0]?.score || 1
   const totalPages = results ? Math.max(1, Math.ceil(totalCount / pageSize)) : 1
@@ -630,12 +709,19 @@ export default function SearchPage() {
             </label>
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">MIME type</span>
-              <input
-                type="text"
+              <select
                 value={filters.mimeType}
                 onChange={(e) => updateFilter('mimeType', e.target.value)}
                 className="input-base"
-              />
+              >
+                <option value="">Any type</option>
+                {selectedMimeMissing && <option value={filters.mimeType}>{filters.mimeType}</option>}
+                {mimeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {mimeTypeOptionLabel(option)}
+                  </option>
+                ))}
+              </select>
             </label>
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Email from</span>
@@ -673,15 +759,6 @@ export default function SearchPage() {
                 className="input-base"
               />
             </label>
-            <label className="block md:col-span-2 xl:col-span-2">
-              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Document ID</span>
-              <input
-                type="text"
-                value={filters.docId}
-                onChange={(e) => updateFilter('docId', e.target.value)}
-                className="input-base font-mono text-xs"
-              />
-            </label>
             <div className="md:col-span-2 xl:col-span-2">
               <div className="mb-1 text-xs font-medium text-(--color-text-secondary)">Metadata JSON</div>
               <pre
@@ -694,6 +771,26 @@ export default function SearchPage() {
                 View-only for now. Friendly email filters generate this JSON.
               </p>
             </div>
+            <details className="md:col-span-2 xl:col-span-4 rounded-md border border-(--color-border) bg-(--color-bg-secondary)/60 px-3 py-2">
+              <summary className="cursor-pointer text-xs font-medium text-(--color-text-secondary)">
+                Advanced identifier filter
+              </summary>
+              <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(16rem,24rem)]">
+                <p className="text-[11px] leading-5 text-(--color-text-secondary)">
+                  Use this when you already have a document UUID from an API or CLI result, or from the document page
+                  URL.
+                </p>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Document UUID</span>
+                  <input
+                    type="text"
+                    value={filters.docId}
+                    onChange={(e) => updateFilter('docId', e.target.value)}
+                    className="input-base font-mono text-xs"
+                  />
+                </label>
+              </div>
+            </details>
           </div>
         </Card>
       )}
@@ -737,25 +834,15 @@ export default function SearchPage() {
 
                 return (
                   <Card key={hit.chunk_id} className="p-4">
-                    <div className="mb-2 flex items-center justify-between">
+                    <div className="mb-2 flex items-start justify-between gap-3">
                       <Link
                         to={linkTo}
                         state={linkState}
-                        className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                        className="min-w-0 font-medium text-blue-600 dark:text-blue-400 hover:underline"
                       >
                         {hit.doc_title || 'Untitled'}
                       </Link>
-                      <div className="flex items-center space-x-2">
-                        <div className="h-1.5 w-24 rounded-full bg-gray-200 dark:bg-gray-600">
-                          <div
-                            className="h-1.5 rounded-full bg-blue-500"
-                            style={{
-                              width: `${Math.round((hit.score / maxScore) * 100)}%`,
-                            }}
-                          />
-                        </div>
-                        <span className="text-xs text-gray-400">{hit.score.toFixed(3)}</span>
-                      </div>
+                      <RelevanceScore score={hit.score} maxScore={maxScore} />
                     </div>
                     <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{hit.chunk_text}</p>
                     <div className="flex flex-wrap items-start gap-x-3 gap-y-1 text-xs text-gray-400">
@@ -839,17 +926,7 @@ export default function SearchPage() {
                           <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{hit.source.folder_label}</div>
                         )}
                       </div>
-                      <div className="flex shrink-0 items-center space-x-2">
-                        <div className="h-1.5 w-24 rounded-full bg-gray-200 dark:bg-gray-600">
-                          <div
-                            className="h-1.5 rounded-full bg-blue-500"
-                            style={{
-                              width: `${Math.round((hit.score / maxScore) * 100)}%`,
-                            }}
-                          />
-                        </div>
-                        <span className="text-xs text-gray-400">{hit.score.toFixed(3)}</span>
-                      </div>
+                      <RelevanceScore score={hit.score} maxScore={maxScore} />
                     </div>
                     {hit.top_chunk?.text && (
                       <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{hit.top_chunk.text}</p>
