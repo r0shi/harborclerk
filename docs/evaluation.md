@@ -153,6 +153,8 @@ leaving `research_verifier_revision_enabled` off. The sweep harness preserves
 per-citation verifier verdicts in response artifacts and aggregates them in
 `metrics.csv` so the release decision can be made from observed grounding
 signal quality rather than from the existence of the mechanism alone.
+Use `scripts.test_corpora.runner.verifier_report` to turn those columns into a
+Markdown/JSON validation artifact for the citation-support default-on decision.
 
 Public reports should summarize results instead of dumping raw partial sweeps
 into the README. Raw artifacts are useful for technical readers, but the
