@@ -7,6 +7,7 @@ import pytest
 
 from harbor_clerk.llm.summarize import (
     AppleIntelligenceContentRejectedError,
+    AppleIntelligenceContextWindowError,
     AppleIntelligenceUnavailableError,
     _compute_max_input_chars,
     _extractive_fallback,
@@ -566,6 +567,28 @@ class TestGenerateSummary:
             mock_call.assert_not_called()
             disable_afm.assert_not_called()
 
+    def test_force_afm_context_window_is_not_unavailable(self):
+        """A too-large AFM prompt should fail one document, not pause the whole queue."""
+        mock_call = MagicMock()
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.get_settings",
+                return_value=_mock_settings(summary_force_apple_intelligence=True),
+            ),
+            patch("harbor_clerk.llm.summarize._call_llm", mock_call),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_summary", return_value=None),
+            patch(
+                "harbor_clerk.llm.summarize._apple_intelligence_unavailable_reason",
+                return_value="Exceeded model context window size",
+            ),
+            patch("harbor_clerk.llm.summarize._disable_apple_intelligence") as disable_afm,
+        ):
+            chunks = ["A" * 100]
+            with pytest.raises(AppleIntelligenceContextWindowError, match="context window"):
+                generate_summary(chunks)
+            mock_call.assert_not_called()
+            disable_afm.assert_not_called()
+
 
 def test_summarize_long_calls_progress_callback_per_map_step(monkeypatch):
     """Map-reduce summarize must report progress between sub-calls so the
@@ -604,6 +627,26 @@ def test_summarize_long_calls_progress_callback_per_map_step(monkeypatch):
     n_total = totals.pop()
     assert n_total == len(progress_calls), f"expected total={len(progress_calls)} (groups+reduce), got {n_total}"
     assert currents[-1] == n_total - 1, "reduce step must fire as the final progress event"
+
+
+def test_apple_summary_retries_shorter_input_on_context_window(monkeypatch):
+    from harbor_clerk.llm import summarize as sum_mod
+
+    requested_lengths: list[int] = []
+
+    def fake_apple_call(text, *, mode, max_chars=500):
+        requested_lengths.append(len(text))
+        if len(requested_lengths) == 1:
+            sum_mod._remember_apple_intelligence_failure("Exceeded model context window size")
+            return None
+        return "Shorter AFM summary."
+
+    monkeypatch.setattr(sum_mod, "_apple_intelligence_call", fake_apple_call)
+
+    result = sum_mod._apple_intelligence_summary(["A" * 15_000], max_chars=500)
+
+    assert result == "Shorter AFM summary."
+    assert requested_lengths == [12_000, 8_000]
 
 
 class TestTruncateAtSentence:
