@@ -65,11 +65,12 @@ call remote MCP servers.
 2. Create a scoped API key in **Settings -> API Keys**.
 3. Use the MCP URL shown in the Integrations page.
 
-For clients that cannot attach bearer headers, Harbor Clerk supports the
-URL-token form:
+Use `/mcp` for OAuth or clients that can send `Authorization: Bearer
+YOUR_API_KEY`. For clients that cannot attach bearer headers, Harbor Clerk
+supports the URL-token path form:
 
 ```text
-https://your-server.example.com/mcp?key=YOUR_API_KEY
+https://your-server.example.com/t/YOUR_API_KEY
 ```
 
 Do not reuse a broad admin key for autonomous tools. Create a separate scoped
@@ -158,7 +159,7 @@ Claude Desktop usually uses MCP:
 {
   "mcpServers": {
     "harbor-clerk": {
-      "url": "https://your-server.example.com/mcp?key=YOUR_API_KEY"
+      "url": "https://your-server.example.com/t/YOUR_API_KEY"
     }
   }
 }
@@ -167,7 +168,7 @@ Claude Desktop usually uses MCP:
 Claude Code can use MCP if configured for it:
 
 ```bash
-claude mcp add harbor-clerk "https://your-server.example.com/mcp?key=YOUR_API_KEY"
+claude mcp add harbor-clerk "https://your-server.example.com/t/YOUR_API_KEY"
 ```
 
 For shell-first coding sessions, the CLI path is often simpler. Enable CLI

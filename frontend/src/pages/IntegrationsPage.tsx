@@ -131,9 +131,9 @@ export default function IntegrationsPage() {
     }
   }
 
-  const mcpUrl = settings.public_url
-    ? `${settings.public_url.replace(/\/$/, '')}/mcp`
-    : 'https://your-server.example.com/mcp'
+  const publicBaseUrl = settings.public_url ? settings.public_url.replace(/\/$/, '') : 'https://your-server.example.com'
+  const mcpUrl = `${publicBaseUrl}/mcp`
+  const mcpTokenUrl = `${publicBaseUrl}/t/YOUR_API_KEY`
   const appOrigin = typeof window !== 'undefined' ? window.location.origin : ''
   const cliBaseUrl = settings.public_url || appOrigin || 'https://your-server.example.com'
   const cliEnvBlock = `export HARBOR_CLERK_URL="${cliBaseUrl.replace(/\/$/, '')}"
@@ -380,7 +380,7 @@ export PATH="$HOME/.local/bin:$PATH"`
                 {
                   mcpServers: {
                     'harbor-clerk': {
-                      url: `${mcpUrl}?key=YOUR_API_KEY`,
+                      url: mcpTokenUrl,
                     },
                   },
                 },
@@ -391,7 +391,7 @@ export PATH="$HOME/.local/bin:$PATH"`
             <p className="mt-4 text-sm text-(--color-text-primary)">
               For <strong>Claude Code</strong> MCP setup, run:
             </p>
-            <CodeBlock>{`claude mcp add harbor-clerk "${mcpUrl}?key=YOUR_API_KEY"`}</CodeBlock>
+            <CodeBlock>{`claude mcp add harbor-clerk "${mcpTokenUrl}"`}</CodeBlock>
             <p className="mt-4 text-sm text-(--color-text-primary)">
               For shell-first Claude Code sessions, enable the CLI below, export the environment variables, and copy the
               Harbor Clerk skill markdown into your local skill directory.
@@ -452,7 +452,7 @@ export PATH="$HOME/.local/bin:$PATH"`
                 {
                   mcpServers: {
                     'harbor-clerk': {
-                      uri: `${mcpUrl}?key=YOUR_API_KEY`,
+                      uri: mcpTokenUrl,
                     },
                   },
                 },
@@ -505,9 +505,7 @@ export PATH="$HOME/.local/bin:$PATH"`
             <p className="mt-4 text-sm text-(--color-text-primary)">
               If your OpenClaw setup is using MCP instead, add Harbor Clerk as an MCP server in your OpenClaw config:
             </p>
-            <CodeBlock>
-              {`openclaw mcp set harbor-clerk '${JSON.stringify({ url: `${mcpUrl}?key=YOUR_API_KEY` })}'`}
-            </CodeBlock>
+            <CodeBlock>{`openclaw mcp set harbor-clerk '${JSON.stringify({ url: mcpTokenUrl })}'`}</CodeBlock>
             <p className="mt-3 text-sm text-(--color-text-primary)">
               Or add it directly to your{' '}
               <code className="rounded bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs">openclaw.json</code>:
@@ -517,7 +515,7 @@ export PATH="$HOME/.local/bin:$PATH"`
                 {
                   mcpServers: {
                     'harbor-clerk': {
-                      url: `${mcpUrl}?key=YOUR_API_KEY`,
+                      url: mcpTokenUrl,
                     },
                   },
                 },
