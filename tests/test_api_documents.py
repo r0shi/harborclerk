@@ -95,6 +95,59 @@ async def test_list_documents_filter_pipeline_status_rejects_unknown(client, adm
     assert resp.status_code == 422
 
 
+async def test_list_documents_filter_summary_state(client, admin_user, admin_token, db_session):
+    has_summary = Document(title="Has Summary", status="active", summary="Brief summary.", **_DOC_DEFAULTS)
+    missing_summary = Document(title="Missing Summary", status="active", summary=None, **_DOC_DEFAULTS)
+    failed_summary = Document(title="Failed Summary", status="active", summary=None, **_DOC_DEFAULTS)
+    pending_summary = Document(title="Pending Summary", status="active", summary=None, **_DOC_DEFAULTS)
+    db_session.add_all([has_summary, missing_summary, failed_summary, pending_summary])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            IngestionJob(
+                doc_id=failed_summary.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.error,
+                pipeline_seq=failed_summary.pipeline_seq,
+            ),
+            IngestionJob(
+                doc_id=pending_summary.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                pipeline_seq=pending_summary.pipeline_seq,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/docs?summary_state=has", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["title"] == "Has Summary"
+
+    resp = await client.get("/api/docs?summary_state=missing", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert {item["title"] for item in resp.json()["items"]} == {
+        "Missing Summary",
+        "Failed Summary",
+        "Pending Summary",
+    }
+
+    resp = await client.get("/api/docs?summary_state=failed", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["items"][0]["title"] == "Failed Summary"
+
+    resp = await client.get("/api/docs?summary_state=pending", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["items"][0]["title"] == "Pending Summary"
+
+
+async def test_list_documents_filter_summary_state_rejects_unknown(client, admin_user, admin_token):
+    resp = await client.get("/api/docs?summary_state=wat", headers=auth_header(admin_token))
+    assert resp.status_code == 422
+
+
 async def test_list_documents_pagination(client, admin_user, admin_token, db_session):
     for i in range(5):
         db_session.add(Document(title=f"Doc {i}", status="active", **_DOC_DEFAULTS))

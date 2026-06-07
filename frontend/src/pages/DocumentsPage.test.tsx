@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { get, post, del, downloadBlob } from '../api'
@@ -52,6 +52,7 @@ const SAVED_STATE = {
   entityInput: '',
   folderFilter: '',
   pipelineStatusFilter: '',
+  summaryStateFilter: '',
   sortField: 'updated',
   sortDir: 'desc',
   scrollY: 0,
@@ -148,5 +149,53 @@ describe('DocumentsPage', () => {
     expect(await screen.findByText('Expanded doc')).toBeInTheDocument()
     expect(await screen.findByText('Acme Corp')).toBeInTheDocument()
     expect(getMock).toHaveBeenCalledWith('/api/docs/doc-1/entities')
+  })
+
+  it('sends summary state filters to the documents endpoint', async () => {
+    const docsCalls: Array<Record<string, string | number> | undefined> = []
+    getMock.mockImplementation((url, params) => {
+      if (url === '/api/docs/filters') {
+        return Promise.resolve({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
+      }
+      if (url === '/api/stats/topics') return Promise.resolve({ clusters: [] })
+      if (url === '/api/watch/folders') return Promise.resolve([])
+      if (url === '/api/docs') {
+        docsCalls.push(params)
+        return Promise.resolve({
+          items: [
+            {
+              doc_id: 'doc-1',
+              title: 'Missing summary doc',
+              canonical_filename: 'missing.pdf',
+              status: 'active',
+              pipeline_status: 'ready',
+              created_at: '2026-06-04T12:00:00Z',
+              updated_at: '2026-06-04T12:30:00Z',
+              summary: null,
+              summary_model: null,
+              summarize_job_status: 'error',
+              doc_type: 'contract',
+            },
+          ],
+          total: 1,
+          limit: 10,
+          offset: 0,
+        })
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+
+    renderDocumentsPage()
+
+    expect(await screen.findByText('Missing summary doc')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Summary state'), { target: { value: 'failed' } })
+
+    await waitFor(() => {
+      expect(docsCalls).toContainEqual(
+        expect.objectContaining({
+          summary_state: 'failed',
+        }),
+      )
+    })
   })
 })

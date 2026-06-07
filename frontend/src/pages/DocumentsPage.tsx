@@ -26,6 +26,7 @@ interface SavedDocsState {
   entityInput: string
   folderFilter: string
   pipelineStatusFilter: string
+  summaryStateFilter: string
   sortField: 'updated' | 'created' | 'title'
   sortDir: 'asc' | 'desc'
   scrollY: number
@@ -216,7 +217,8 @@ export default function DocumentsPage() {
     searchParams.has('language') ||
     searchParams.has('doc_type') ||
     searchParams.has('entity_type') ||
-    searchParams.has('pipeline_status')
+    searchParams.has('pipeline_status') ||
+    searchParams.has('summary_state')
 
   // Helper: read a field from saved state or URL params
   function initField<K extends keyof SavedDocsState>(
@@ -258,6 +260,9 @@ export default function DocumentsPage() {
   const [folderFilter, setFolderFilter] = useState<string>(() => initField('folderFilter', '', 'folder'))
   const [pipelineStatusFilter, setPipelineStatusFilter] = useState<string>(() =>
     initField('pipelineStatusFilter', '', 'pipeline_status'),
+  )
+  const [summaryStateFilter, setSummaryStateFilter] = useState<string>(() =>
+    initField('summaryStateFilter', '', 'summary_state'),
   )
   const [folderOptions, setFolderOptions] = useState<
     { folder_id: string; display_name: string | null; path: string }[]
@@ -331,6 +336,7 @@ export default function DocumentsPage() {
       entityInput,
       folderFilter,
       pipelineStatusFilter,
+      summaryStateFilter,
       sortField,
       sortDir,
       scrollY: window.scrollY,
@@ -350,6 +356,7 @@ export default function DocumentsPage() {
     entityInput,
     folderFilter,
     pipelineStatusFilter,
+    summaryStateFilter,
     sortField,
     sortDir,
     expanded,
@@ -425,6 +432,7 @@ export default function DocumentsPage() {
       if (entityFilter) params.entity = entityFilter
       if (entityTypeFilter) params.entity_type = entityTypeFilter
       if (pipelineStatusFilter) params.pipeline_status = pipelineStatusFilter
+      if (summaryStateFilter) params.summary_state = summaryStateFilter
       return get<PaginatedDocs>('/api/docs', params)
         .then((data) => {
           setDocs(data.items)
@@ -440,7 +448,17 @@ export default function DocumentsPage() {
           }
         })
     },
-    [sortField, sortDir, mimeFilter, langFilter, docTypeFilter, entityFilter, entityTypeFilter, pipelineStatusFilter],
+    [
+      sortField,
+      sortDir,
+      mimeFilter,
+      langFilter,
+      docTypeFilter,
+      entityFilter,
+      entityTypeFilter,
+      pipelineStatusFilter,
+      summaryStateFilter,
+    ],
   )
 
   useEffect(() => {
@@ -630,7 +648,8 @@ export default function DocumentsPage() {
     entityFilter ||
     entityTypeFilter ||
     folderFilter ||
-    pipelineStatusFilter
+    pipelineStatusFilter ||
+    summaryStateFilter
   )
 
   let lastDoc: { doc_id: string; title: string } | null = null
@@ -696,6 +715,7 @@ export default function DocumentsPage() {
       {/* Filter bar */}
       {(total > 0 ||
         pipelineStatusFilter ||
+        summaryStateFilter ||
         filterOptions.mime_types.length > 0 ||
         filterOptions.doc_types.length > 0 ||
         filterOptions.languages.length > 0) && (
@@ -837,6 +857,22 @@ export default function DocumentsPage() {
             <option value="error">Failed</option>
           </select>
 
+          <select
+            value={summaryStateFilter}
+            onChange={(e) => {
+              setSummaryStateFilter(e.target.value)
+              setCurrentPage(1)
+            }}
+            aria-label="Summary state"
+            className="rounded-lg border-0 bg-(--color-bg-secondary) dark:bg-(--color-bg-tertiary) shadow-mac px-2 py-1 text-xs text-(--color-text-primary) focus:outline-hidden focus:ring-2 focus:ring-(--color-accent)/30"
+          >
+            <option value="">All summaries</option>
+            <option value="has">Has summary</option>
+            <option value="missing">Missing summary</option>
+            <option value="failed">Summary failed</option>
+            <option value="pending">Summary queued/running</option>
+          </select>
+
           {/* Sort controls */}
           <div className="ml-auto flex items-center gap-1 text-xs text-gray-400">
             <span>Sort:</span>
@@ -871,7 +907,8 @@ export default function DocumentsPage() {
             entityFilter ||
             entityTypeFilter ||
             folderFilter ||
-            pipelineStatusFilter) && (
+            pipelineStatusFilter ||
+            summaryStateFilter) && (
             <button
               onClick={() => {
                 setMimeFilter('')
@@ -879,6 +916,7 @@ export default function DocumentsPage() {
                 setDocTypeFilter('')
                 setFolderFilter('')
                 setPipelineStatusFilter('')
+                setSummaryStateFilter('')
                 clearEntityFilter()
                 setCurrentPage(1)
               }}
