@@ -38,8 +38,16 @@ class AppleIntelligenceUnavailableError(RuntimeError):
     """Raised when forced Apple Intelligence summaries cannot be produced."""
 
 
-class AppleIntelligenceContentRejectedError(RuntimeError):
+class AppleIntelligenceDocumentError(RuntimeError):
+    """Raised when Apple Intelligence refuses a specific document/request."""
+
+
+class AppleIntelligenceContentRejectedError(AppleIntelligenceDocumentError):
     """Raised when Apple Intelligence refuses a specific document's content."""
+
+
+class AppleIntelligenceContextWindowError(AppleIntelligenceDocumentError):
+    """Raised when a document is too large for Apple Intelligence after shrinking."""
 
 
 class _Tier(Enum):
@@ -488,9 +496,20 @@ def _remember_apple_intelligence_failure(reason: str) -> None:
     _afm_last_failure_reason = reason
 
 
+def _clear_apple_intelligence_failure() -> None:
+    global _afm_last_failure_until_monotonic, _afm_last_failure_reason
+    _afm_last_failure_until_monotonic = 0.0
+    _afm_last_failure_reason = ""
+
+
 def _is_apple_intelligence_content_rejection(reason: str) -> bool:
     normalized = reason.lower()
     return "unsafe" in normalized or "safety" in normalized
+
+
+def _is_apple_intelligence_context_window_error(reason: str) -> bool:
+    normalized = reason.lower()
+    return "context window" in normalized or "context size" in normalized
 
 
 def _disable_apple_intelligence(reason: str) -> None:
@@ -647,6 +666,7 @@ def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str 
     if not result:
         _remember_apple_intelligence_failure("helper returned an empty summary")
         return None
+    _clear_apple_intelligence_failure()
     logger.info("Apple Intelligence %s: %d chars", mode, len(result))
     return result
 
@@ -666,7 +686,15 @@ def _apple_intelligence_summary(chunks: list[str], max_chars: int) -> str | None
         sampled += chunks[-2:]
         text = "\n\n".join(sampled)
 
-    return _apple_intelligence_call(text, mode="summary", max_chars=max_chars)
+    for limit in (12_000, 8_000, 5_000, 3_000):
+        result = _apple_intelligence_call(text[:limit], mode="summary", max_chars=max_chars)
+        if result:
+            return result
+        reason = _recent_apple_intelligence_failure_reason() or ""
+        if not _is_apple_intelligence_context_window_error(reason):
+            return None
+        logger.info("Apple Intelligence summary exceeded context at %d chars; retrying with shorter input", limit)
+    return None
 
 
 def _apple_intelligence_doc_type(chunks: list[str]) -> str | None:
@@ -928,6 +956,14 @@ def generate_summary(
             )
             raise AppleIntelligenceContentRejectedError(
                 f"Apple Intelligence refused to summarize this document: {reason}"
+            )
+        if _is_apple_intelligence_context_window_error(reason):
+            logger.error(
+                "Apple Intelligence exceeded context for this document while forced; refusing extractive fallback (%s)",
+                reason,
+            )
+            raise AppleIntelligenceContextWindowError(
+                f"Apple Intelligence could not summarize this document within its context window: {reason}"
             )
         if _apple_intelligence_disabled_reason() is None:
             _disable_apple_intelligence(reason)
