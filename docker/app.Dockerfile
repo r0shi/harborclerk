@@ -4,6 +4,7 @@ WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json* frontend/.npmrc ./
 RUN npm ci
 COPY frontend/ .
+COPY skills/ /skills/
 RUN npm run build
 
 # ── Python build ──

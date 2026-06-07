@@ -21,6 +21,21 @@ interface OAuthConnection {
 
 const TOKEN_LIFETIME_OPTIONS = [30, 60, 90, 120, 365]
 
+type GuideTab = 'chatgpt' | 'claude' | 'codex' | 'gemini' | 'openclaw'
+
+const GUIDE_TABS: Array<{
+  id: GuideTab
+  label: string
+  desc: string
+  icon: string
+}> = [
+  { id: 'chatgpt', label: 'ChatGPT', desc: 'OAuth · cloud MCP', icon: '🌐' },
+  { id: 'claude', label: 'Claude', desc: 'Desktop & Code', icon: '💻' },
+  { id: 'codex', label: 'Codex', desc: 'CLI skill · local', icon: '⌘' },
+  { id: 'gemini', label: 'Gemini CLI', desc: 'API key · terminal', icon: '⌨️' },
+  { id: 'openclaw', label: 'OpenClaw', desc: 'CLI or MCP · agentic', icon: '🧠' },
+]
+
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
 
@@ -59,7 +74,7 @@ export default function IntegrationsPage() {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [urlDraft, setUrlDraft] = useState('')
-  const [guideTab, setGuideTab] = useState<'chatgpt' | 'claude' | 'gemini' | 'openclaw'>('chatgpt')
+  const [guideTab, setGuideTab] = useState<GuideTab>('chatgpt')
 
   const loadData = useCallback(async () => {
     try {
@@ -119,6 +134,11 @@ export default function IntegrationsPage() {
   const mcpUrl = settings.public_url
     ? `${settings.public_url.replace(/\/$/, '')}/mcp`
     : 'https://your-server.example.com/mcp'
+  const appOrigin = typeof window !== 'undefined' ? window.location.origin : ''
+  const cliBaseUrl = settings.public_url || appOrigin || 'https://your-server.example.com'
+  const cliEnvBlock = `export HARBOR_CLERK_URL="${cliBaseUrl.replace(/\/$/, '')}"
+export HARBOR_CLERK_API_KEY="YOUR_API_KEY"
+export PATH="$HOME/.local/bin:$PATH"`
 
   if (loading) return <div className="text-gray-500 dark:text-gray-400">Loading...</div>
 
@@ -247,16 +267,31 @@ export default function IntegrationsPage() {
         </Card>
       )}
 
+      <Card className="p-6">
+        <h2 className="text-lg font-semibold mb-3">Choose a Surface</h2>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-(--color-border) bg-(--color-bg-secondary) p-4">
+            <p className="text-sm font-semibold text-(--color-text-primary)">MCP for cloud and connector clients</p>
+            <p className="mt-1 text-sm text-(--color-text-secondary)">
+              Use MCP when the tool can call structured remote tools directly. Cloud models receive retrieved snippets,
+              citations, and metadata from scoped tool calls, not the full archive.
+            </p>
+          </div>
+          <div className="rounded-lg border border-(--color-border) bg-(--color-bg-secondary) p-4">
+            <p className="text-sm font-semibold text-(--color-text-primary)">CLI for shell-first local agents</p>
+            <p className="mt-1 text-sm text-(--color-text-secondary)">
+              Use the <code className="rounded bg-(--color-bg-primary) px-1 py-0.5 text-xs">harbor-clerk</code> CLI for
+              Codex, Claude Code, OpenClaw, Aider, and other harnesses that compose shell commands.
+            </p>
+          </div>
+        </div>
+      </Card>
+
       {/* Connection Guides */}
       <Card className="p-6">
-        <div className="grid grid-cols-4 gap-3 mb-6">
-          {(['chatgpt', 'claude', 'gemini', 'openclaw'] as const).map((tab) => {
-            const info = {
-              chatgpt: { label: 'ChatGPT', desc: 'OAuth \u00b7 browser-based', icon: '\ud83c\udf10' },
-              claude: { label: 'Claude', desc: 'API key \u00b7 desktop & CLI', icon: '\ud83d\udcbb' },
-              gemini: { label: 'Gemini CLI', desc: 'API key \u00b7 terminal', icon: '\u2328\ufe0f' },
-              openclaw: { label: 'OpenClaw', desc: 'API key \u00b7 agentic', icon: '\ud83e\udde0' },
-            }[tab]
+        <div className="grid grid-cols-2 gap-3 mb-6 md:grid-cols-5">
+          {GUIDE_TABS.map((info) => {
+            const tab = info.id
             const active = guideTab === tab
             return (
               <button
@@ -278,6 +313,16 @@ export default function IntegrationsPage() {
               </button>
             )
           })}
+        </div>
+
+        <div className="mb-6 rounded-lg border border-(--color-border) bg-(--color-bg-secondary) px-4 py-3">
+          <p className="text-sm font-medium text-(--color-text-primary)">Data boundary</p>
+          <p className="mt-1 text-xs text-(--color-text-secondary)">
+            MCP and URL-token connector clients can send retrieved snippets, citations, titles, folder labels, relative
+            paths, and tool arguments to the model provider. CLI usage stays on this machine unless the agent harness
+            itself sends command output elsewhere. Use scoped API keys and review the audit dashboard for autonomous
+            agents.
+          </p>
         </div>
 
         {guideTab === 'chatgpt' && (
@@ -312,7 +357,8 @@ export default function IntegrationsPage() {
         {guideTab === 'claude' && (
           <>
             <p className="mb-3 text-sm text-(--color-text-primary)">
-              Claude Desktop and Claude Code use API key authentication instead of OAuth.
+              Claude Desktop is usually best through MCP. Claude Code can use MCP when configured for it, but the CLI
+              skill below is often simpler for shell-first coding workflows.
             </p>
             <ol className="list-decimal list-inside space-y-3 text-sm text-(--color-text-primary)">
               <li>
@@ -343,12 +389,45 @@ export default function IntegrationsPage() {
               )}
             </CodeBlock>
             <p className="mt-4 text-sm text-(--color-text-primary)">
-              For <strong>Claude Code</strong>, run:
+              For <strong>Claude Code</strong> MCP setup, run:
             </p>
             <CodeBlock>{`claude mcp add harbor-clerk "${mcpUrl}?key=YOUR_API_KEY"`}</CodeBlock>
+            <p className="mt-4 text-sm text-(--color-text-primary)">
+              For shell-first Claude Code sessions, enable the CLI below, export the environment variables, and copy the
+              Harbor Clerk skill markdown into your local skill directory.
+            </p>
+            <CodeBlock>{cliEnvBlock}</CodeBlock>
             <p className="mt-3 text-xs text-(--color-text-secondary)">
               Replace <code className="rounded bg-(--color-bg-secondary) px-1 py-0.5">YOUR_API_KEY</code> with the key
               you created.
+            </p>
+          </>
+        )}
+
+        {guideTab === 'codex' && (
+          <>
+            <p className="mb-3 text-sm text-(--color-text-primary)">
+              Codex works best with Harbor Clerk as a local CLI skill: the agent can search, enumerate, read passages,
+              and cite documents while staying inside the same shell workflow.
+            </p>
+            <ol className="list-decimal list-inside space-y-3 text-sm text-(--color-text-primary)">
+              <li>
+                <Link to="/settings/api-keys" className="text-blue-600 dark:text-blue-400 hover:underline">
+                  Create a scoped API key
+                </Link>
+                . Use <strong>Read</strong> for search and passage access, or <strong>Full</strong> when the local agent
+                also needs full-document reads, entity tools, or ingest-status checks.
+              </li>
+              <li>Enable CLI access and install the CLI shim from Harbor Clerk Server Preferences.</li>
+              <li>Set these environment variables in the shell where Codex runs:</li>
+            </ol>
+            <CodeBlock>{cliEnvBlock}</CodeBlock>
+            <p className="mt-4 text-sm text-(--color-text-primary)">Smoke test from the same shell:</p>
+            <CodeBlock>{`harbor-clerk search "contract renewal" --json`}</CodeBlock>
+            <p className="mt-3 text-xs text-(--color-text-secondary)">
+              Copy the Harbor Clerk skill markdown below into the Codex skill location you use for local project skills.
+              The skill tells Codex when to call <code>search</code>, <code>find-all</code>, <code>read-passages</code>,
+              and <code>expand-context</code>.
             </p>
           </>
         )}
@@ -391,8 +470,9 @@ export default function IntegrationsPage() {
         {guideTab === 'openclaw' && (
           <>
             <p className="mb-3 text-sm text-(--color-text-primary)">
-              OpenClaw is an agentic AI harness that can autonomously browse, research, and act on your behalf. Because
-              it operates with significant autonomy, <strong>always use a scoped API key with rate limits</strong>.
+              OpenClaw is a strong fit for Harbor Clerk&apos;s cited memory layer. Prefer the CLI skill for local
+              shell-first OpenClaw runs; use MCP when your OpenClaw setup can call remote MCP tools directly. Because it
+              operates with significant autonomy, <strong>always use a scoped API key with rate limits</strong>.
             </p>
             <ol className="list-decimal list-inside space-y-3 text-sm text-(--color-text-primary)">
               <li>
@@ -402,7 +482,8 @@ export default function IntegrationsPage() {
                 with the following recommended settings:
                 <ul className="ml-6 mt-1 list-disc text-xs text-(--color-text-secondary) space-y-1">
                   <li>
-                    <strong>Permission tier:</strong> Read (not Full — OpenClaw doesn&apos;t need entity tools)
+                    <strong>Permission tier:</strong> Read for normal citation workflows; Full only for local runs that
+                    need <code>read-document</code>, entity tools, or ingest-status checks
                   </li>
                   <li>
                     <strong>Document scope:</strong> limit to relevant topic(s) or folder(s)
@@ -416,13 +497,14 @@ export default function IntegrationsPage() {
                 </ul>
               </li>
               <li>
-                Add Harbor Clerk as an MCP server in your OpenClaw config (
-                <code className="rounded bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs">
-                  ~/.openclaw/openclaw.json
-                </code>
-                ):
+                For local CLI mode, enable CLI access below, install the CLI shim, export the environment variables, and
+                copy the Harbor Clerk skill markdown into OpenClaw&apos;s local skills directory.
               </li>
             </ol>
+            <CodeBlock>{cliEnvBlock}</CodeBlock>
+            <p className="mt-4 text-sm text-(--color-text-primary)">
+              If your OpenClaw setup is using MCP instead, add Harbor Clerk as an MCP server in your OpenClaw config:
+            </p>
             <CodeBlock>
               {`openclaw mcp set harbor-clerk '${JSON.stringify({ url: `${mcpUrl}?key=YOUR_API_KEY` })}'`}
             </CodeBlock>
