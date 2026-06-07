@@ -116,6 +116,21 @@ Research response artifacts preserve per-citation SSE verdicts under
 only as validation data for a "citation support" or "grounding check" UI; do
 not present them as answer-correctness percentages.
 
+Generate a report from the verifier columns:
+
+```bash
+uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.verifier_report \
+    --run-dir "$HOME/Library/Application Support/Harbor Clerk/test-corpora/results/verifier-smoke-YYYYMMDD-HHMM" \
+    --output verifier-report.md \
+    --json-output verifier-report.json
+```
+
+The report labels the run `candidate`, `review-required`, or
+`insufficient-data`. Treat `candidate` as permission to spot-check examples
+before a UI default-on decision, not as an automatic product verdict. Treat
+`review-required` as a prompt to inspect examples and decide whether the
+answers were weak, the citations were thin, or the verifier itself was noisy.
+
 ## Troubleshooting
 
 - **API unreachable:** check `curl "$HC_API_BASE/api/system/health"`. The default `HC_API_BASE` is `https://localhost` (Docker); on macOS native, set it to `http://localhost:8100` (or whatever port your Harbor Clerk Server is configured for).
