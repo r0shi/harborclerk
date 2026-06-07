@@ -7,6 +7,7 @@ import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
 import { StatusPill, type PillState } from '../components/StatusPill'
 import { useLLMStatusContext } from '../components/LLMStatusBanner'
+import type { LLMStatus } from '../hooks/useLLMStatus'
 
 interface HealthCheck {
   status: string
@@ -14,6 +15,7 @@ interface HealthCheck {
     postgres: string
     storage: string
     tika: string
+    embedder?: string
     reranker?: string
   }
 }
@@ -25,6 +27,7 @@ interface ServiceStats {
 interface StatsResponse {
   postgres?: ServiceStats
   storage?: ServiceStats
+  queues?: ServiceStats
 }
 
 interface StatusIssue {
@@ -87,8 +90,12 @@ const STAT_LABELS: Record<string, string> = {
   cache_hit_ratio: 'Cache Hit Ratio',
   total_chunks: 'Total Chunks',
   dead_tuples: 'Dead Tuples',
-  io_queue_depth: 'IO Queue',
-  cpu_queue_depth: 'CPU Queue',
+  io_queued: 'IO Queued',
+  io_running: 'IO Running',
+  cpu_queued: 'CPU Queued',
+  cpu_running: 'CPU Running',
+  llm_queued: 'LLM Queued',
+  llm_running: 'LLM Running',
   object_count: 'Objects',
   total_size_mb: 'Total Size',
 }
@@ -416,7 +423,7 @@ export default function SystemStatusPage() {
         </div>
 
         {health && (
-          <div className="mb-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="mb-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <HealthCard
               name="PostgreSQL"
               status={health.checks.postgres}
@@ -430,7 +437,10 @@ export default function SystemStatusPage() {
               statsLoading={statsLoading}
             />
             <HealthCard name="Tika" status={health.checks.tika} statsLoading={false} />
+            <HealthCard name="Embedder" status={health.checks.embedder ?? 'unknown'} statsLoading={false} />
             <HealthCard name="Reranker" status={health.checks.reranker ?? 'not configured'} statsLoading={false} />
+            <LocalAICard status={llmStatus} />
+            <WorkerQueuesCard stats={stats?.queues} statsLoading={statsLoading} />
           </div>
         )}
       </section>
@@ -689,6 +699,96 @@ function HealthCard({
             <div key={key} className="flex justify-between gap-3 text-xs">
               <dt className="text-gray-500 dark:text-gray-400">{STAT_LABELS[key] || key}</dt>
               <dd className="font-medium text-gray-700 dark:text-gray-300">{formatStatValue(key, value)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </Card>
+  )
+}
+
+function localAIState(state: string): PillState {
+  if (state === 'ready') return 'active'
+  if (state === 'loading') return 'running'
+  if (state === 'deactivated') return 'idle'
+  return 'pending'
+}
+
+function localAILabel(status: LLMStatus): string {
+  if (status.state === 'ready') return 'Ready'
+  if (status.state === 'loading') return 'Loading'
+  if (status.state === 'deactivated') return 'Not configured'
+  return 'Unknown'
+}
+
+function LocalAICard({ status }: { status: LLMStatus }) {
+  const summarize = status.summarize
+  const modelName = status.model_name || status.model_id || 'No active model'
+
+  return (
+    <Card className="p-4">
+      <div className="mb-1 text-sm font-medium text-gray-700 dark:text-gray-300">Local AI</div>
+      <StatusPill state={localAIState(status.state)} label={localAILabel(status)} />
+      <dl className="mt-3 space-y-1 border-t border-gray-200 dark:border-gray-700 pt-2">
+        <div className="flex justify-between gap-3 text-xs">
+          <dt className="text-gray-500 dark:text-gray-400">Chat model</dt>
+          <dd className="max-w-[11rem] truncate font-medium text-gray-700 dark:text-gray-300">{modelName}</dd>
+        </div>
+        {summarize && (
+          <div className="flex justify-between gap-3 text-xs">
+            <dt className="text-gray-500 dark:text-gray-400">Summaries</dt>
+            <dd className="max-w-[11rem] truncate font-medium text-gray-700 dark:text-gray-300">
+              {summarize.name || summarize.backend}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </Card>
+  )
+}
+
+function statNumber(stats: ServiceStats | undefined, key: string): number {
+  const value = stats?.[key]
+  return typeof value === 'number' ? value : 0
+}
+
+function WorkerQueuesCard({ stats, statsLoading }: { stats?: ServiceStats; statsLoading: boolean }) {
+  const queueRows = [
+    {
+      label: 'IO workers',
+      queued: statNumber(stats, 'io_queued'),
+      running: statNumber(stats, 'io_running'),
+    },
+    {
+      label: 'CPU workers',
+      queued: statNumber(stats, 'cpu_queued'),
+      running: statNumber(stats, 'cpu_running'),
+    },
+    {
+      label: 'LLM worker',
+      queued: statNumber(stats, 'llm_queued'),
+      running: statNumber(stats, 'llm_running'),
+    },
+  ]
+  const activeCount = queueRows.reduce((total, row) => total + row.queued + row.running, 0)
+
+  return (
+    <Card className="p-4">
+      <div className="mb-1 text-sm font-medium text-gray-700 dark:text-gray-300">Workers / queues</div>
+      <StatusPill
+        state={activeCount > 0 ? 'running' : 'active'}
+        label={activeCount > 0 ? `${activeCount.toLocaleString()} active` : 'Idle'}
+      />
+      {statsLoading && !stats && <div className="mt-2 text-xs text-gray-400">Loading stats...</div>}
+      {stats?.error && <div className="mt-2 text-xs text-red-500">{String(stats.error)}</div>}
+      {!stats?.error && (
+        <dl className="mt-3 space-y-1 border-t border-gray-200 dark:border-gray-700 pt-2">
+          {queueRows.map((row) => (
+            <div key={row.label} className="flex justify-between gap-3 text-xs">
+              <dt className="text-gray-500 dark:text-gray-400">{row.label}</dt>
+              <dd className="font-medium text-gray-700 dark:text-gray-300">
+                {row.queued.toLocaleString()} queued, {row.running.toLocaleString()} running
+              </dd>
             </div>
           ))}
         </dl>

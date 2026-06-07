@@ -30,7 +30,30 @@ const HEALTHY = {
     postgres: 'ok',
     storage: 'ok',
     tika: 'ok',
+    embedder: 'ok',
     reranker: 'ok',
+  },
+}
+
+const STATS = {
+  postgres: {
+    db_size_mb: 12.4,
+    active_connections: 3,
+    cache_hit_ratio: 0.99,
+    total_chunks: 40,
+    dead_tuples: 0,
+  },
+  storage: {
+    object_count: 2,
+    total_size_mb: 5.5,
+  },
+  queues: {
+    io_queued: 2,
+    io_running: 1,
+    cpu_queued: 0,
+    cpu_running: 1,
+    llm_queued: 3,
+    llm_running: 1,
   },
 }
 
@@ -106,13 +129,18 @@ function mockRequests(summary = SUMMARY) {
   getMock.mockImplementation((url) => {
     if (url === '/api/system/health') return Promise.resolve(HEALTHY)
     if (url === '/api/system/status-summary') return Promise.resolve(summary)
-    if (url === '/api/system/stats') return Promise.resolve({})
+    if (url === '/api/system/stats') return Promise.resolve(STATS)
     return Promise.reject(new Error(`Unexpected URL: ${url}`))
   })
   postMock.mockResolvedValue({ reaped: 1 })
   listMailAccountsMock.mockResolvedValue([])
   useLLMStatusContextMock.mockReturnValue({
-    status: { state: 'ready', model_id: 'qwen3', model_name: 'Qwen3' },
+    status: {
+      state: 'ready',
+      model_id: 'qwen3',
+      model_name: 'Qwen3',
+      summarize: { backend: 'apple-intelligence', name: 'Apple Intelligence', state: 'ready' },
+    },
     markTransitioning: vi.fn(),
   })
 }
@@ -143,6 +171,23 @@ describe('SystemStatusPage', () => {
     expect(reviewLink).toHaveAttribute('href', '/docs?pipeline_status=error')
     expect(screen.getByText('Broken scan')).toBeInTheDocument()
     expect(screen.getByText('Still embedding')).toBeInTheDocument()
+  })
+
+  it('renders service and worker diagnostics', async () => {
+    mockRequests()
+
+    renderStatusPage()
+
+    expect(await screen.findByText('Diagnostics')).toBeInTheDocument()
+    expect(screen.getByText('Embedder')).toBeInTheDocument()
+    expect(screen.getAllByText('Local AI').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('Workers / queues')).toBeInTheDocument()
+    expect(screen.getByText('Qwen3')).toBeInTheDocument()
+    expect(screen.getByText('Apple Intelligence')).toBeInTheDocument()
+    expect(screen.getByText('IO workers')).toBeInTheDocument()
+    expect(screen.getByText('2 queued, 1 running')).toBeInTheDocument()
+    expect(screen.getByText('LLM worker')).toBeInTheDocument()
+    expect(screen.getByText('3 queued, 1 running')).toBeInTheDocument()
   })
 
   it('runs the reaper action from a stuck-job issue', async () => {

@@ -144,9 +144,10 @@ async def health_check(
         logger.error("Storage health check failed: %s", e)
         checks["storage"] = f"error: {e}"
 
+    settings = get_settings()
+
     # Tika
     try:
-        settings = get_settings()
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{settings.tika_url}/tika", timeout=5)
             checks["tika"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
@@ -154,8 +155,16 @@ async def health_check(
         logger.error("Tika health check failed: %s", e)
         checks["tika"] = f"error: {e}"
 
+    # Embedder
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{settings.embedder_url}/health", timeout=5)
+            checks["embedder"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
+    except Exception as e:
+        logger.error("Embedder health check failed: %s", e)
+        checks["embedder"] = f"error: {e}"
+
     # Reranker — only probed when enabled; disabled is not a degraded state
-    settings = get_settings()
     if settings.reranker_enabled:
         try:
             async with httpx.AsyncClient() as client:
@@ -696,14 +705,36 @@ async def system_stats(
 
     # ── Queue stats (from ingestion_jobs table) ──
     try:
-        rows = await session.execute(
-            text("SELECT stage, count(*) FROM ingestion_jobs WHERE status = 'queued' GROUP BY stage")
-        )
-        queue_depths = {row[0]: row[1] for row in rows}
-        result["queues"] = {
-            "io_queued": sum(queue_depths.get(s, 0) for s in ("extract", "chunk", "finalize")),
-            "cpu_queued": sum(queue_depths.get(s, 0) for s in ("ocr", "embed")),
+        from harbor_clerk.worker.pipeline import STAGE_CONFIG
+
+        rows = (
+            await session.execute(
+                select(IngestionJob.stage, IngestionJob.status, func.count())
+                .join(Document, IngestionJob.doc_id == Document.doc_id)
+                .where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running)))
+                .where(IngestionJob.pipeline_seq == Document.pipeline_seq)
+                .where(Document.status == "active")
+                .group_by(IngestionJob.stage, IngestionJob.status)
+            )
+        ).all()
+        queue_stats = {
+            "io_queued": 0,
+            "io_running": 0,
+            "cpu_queued": 0,
+            "cpu_running": 0,
+            "llm_queued": 0,
+            "llm_running": 0,
         }
+        for stage, status, count in rows:
+            stage_enum = stage if isinstance(stage, JobStage) else JobStage(str(stage))
+            status_key = status.value if isinstance(status, JobStatus) else str(status)
+            if status_key not in ("queued", "running"):
+                continue
+            queue_name = STAGE_CONFIG[stage_enum][0]
+            stat_key = f"{queue_name}_{status_key}"
+            if stat_key in queue_stats:
+                queue_stats[stat_key] += int(count)
+        result["queues"] = queue_stats
     except Exception as e:
         logger.error("Failed to collect queue stats: %s", e)
         result["queues"] = {"error": str(e)}
