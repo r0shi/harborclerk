@@ -29,6 +29,12 @@ By default, agent-visible paths should avoid absolute local filesystem paths.
 Use relative paths and folder aliases unless a local-only workflow explicitly
 needs more detail.
 
+Cloud access through MCP is the supported release path for external models.
+Direct provider-backed Ask/Research inside the Harbor Clerk app is a separate
+fast-follow surface and should ship only after citation preservation, provider
+key storage, disclosure, path policy, and failure-mode tests are stable. See
+[Cloud model boundaries](cloud-model-boundaries.md) for the release gate.
+
 ## API Key Guidance
 
 Create a dedicated API key for each external tool or harness.
@@ -187,6 +193,11 @@ Make the data boundary explicit when helping users set this up:
 - Retrieved snippets and citation metadata can be sent to the provider.
 - API keys should be scoped.
 - Audit logs should be reviewed if an autonomous agent may call tools in loops.
+
+This is different from future in-app cloud Ask/Research. In the current release,
+cloud models use Harbor Clerk as a cited retrieval tool through MCP; the app's
+own Ask and Research surfaces remain local-AI-first unless an explicit cloud
+mode is later added.
 
 ## Troubleshooting
 

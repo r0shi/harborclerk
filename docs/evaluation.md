@@ -80,6 +80,18 @@ Use qualitative tiers in user-facing UI and docs:
 If numeric scores are published, keep them in dated eval reports with corpus,
 commit, model, and methodology details.
 
+## Cloud model boundary
+
+Cloud LLMs are part of the release story through MCP and connector-style access:
+they can call scoped Harbor Clerk tools and receive cited snippets. Direct
+provider-backed Ask/Research inside the Harbor Clerk app is a different surface
+and should remain a fast-follow unless the checklist in
+[Cloud model boundaries](cloud-model-boundaries.md) is satisfied.
+
+This keeps the public claim honest: local AI runs locally, MCP/cloud connectors
+receive scoped tool responses, and future in-app cloud mode would send selected
+prompt/context to the chosen provider.
+
 ## Agent memory and OpenClaw
 
 The current release-safe agent claim is:
@@ -107,6 +119,9 @@ comparison for outcome improvement.
   enterprise platform.
 - Advanced integrations such as MCP, CLI, cloud LLMs, OpenClaw, and Docker
   require operator setup.
+- Direct cloud-backed Ask/Research inside the app is not part of the initial
+  release unless citation preservation, provider-key storage, disclosure, path
+  policy, and failure-mode tests are stable.
 - Backup and restore are documented but not yet a polished in-app workflow.
 - The verifier/revision loop should not be marketed as a default quality
   improvement. Display-only citation support may become useful, but it should
