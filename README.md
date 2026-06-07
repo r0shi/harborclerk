@@ -107,6 +107,8 @@ See [Evaluation and release claims](docs/evaluation.md) for the current claim
 posture, eval methodology pointers, and the OpenClaw claim ladder.
 [Cloud model boundaries](docs/cloud-model-boundaries.md) explains the current
 MCP/cloud connector path and the go/no-go bar for future in-app cloud mode.
+[Release smoke test](docs/release-smoke-test.md) is the manual QA matrix for
+release-candidate builds.
 
 Known limitations for the initial release:
 

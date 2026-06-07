@@ -147,6 +147,8 @@ Useful entry points:
   split-machine wall-time plan.
 - [`docs/agent-memory-eval.md`](agent-memory-eval.md): OpenClaw and agent-memory
   claim ladder.
+- [`docs/release-smoke-test.md`](release-smoke-test.md): manual release smoke
+  matrix for the app, Search, local AI, MCP/CLI, scopes, recovery, and docs.
 
 Verifier validation runs should enable `research_verifier_enabled` while
 leaving `research_verifier_revision_enabled` off. The sweep harness preserves
