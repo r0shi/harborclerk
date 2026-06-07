@@ -5,7 +5,7 @@ three structurally-different corpora (CUAD legal contracts, Enron email
 subset, synthetic bilingual small-business). Six sequential phases, fully
 restartable.
 
-> **⚠️  Destructive.** This sweep wipes the Harbor Clerk instance's documents,
+> **⚠️ Destructive.** This sweep wipes the Harbor Clerk instance's documents,
 > watch folders, and storage objects between every corpus ingest. Use a
 > dedicated HC instance — never run it against one that holds documents you
 > care about. See [RUNBOOK.md](RUNBOOK.md#%EF%B8%8F--this-sweep-is-destructive) for the full impact list.
@@ -16,10 +16,10 @@ See [`docs/superpowers/specs/2026-05-04-test-corpora-execution-design.md`](../..
 
 Prerequisite: Harbor Clerk is running locally — either the macOS Server menubar app or `docker compose up`.
 
-| Setup | URL | TLS? |
-| --- | --- | --- |
-| **macOS native** | `http://localhost:8100` (default; check Preferences if changed) | no |
-| **Docker Compose** | `https://localhost:443` (Caddy + self-signed) | yes — pass `--insecure` |
+| Setup              | URL                                                             | TLS?                    |
+| ------------------ | --------------------------------------------------------------- | ----------------------- |
+| **macOS native**   | `http://localhost:8100` (default; check Preferences if changed) | no                      |
+| **Docker Compose** | `https://localhost:443` (Caddy + self-signed)                   | yes — pass `--insecure` |
 
 The harness has its own `pyproject.toml` and venv (separate from Harbor
 Clerk's main venv, since it needs different deps — `anthropic`, `mcp`,
@@ -83,14 +83,38 @@ uv run python -m scripts.test_corpora.runner.sweep \
 
 `<workdir>/results/<run-id>/`:
 
-| Path | What |
-| --- | --- |
-| `state.json` | resumable state — every (phase, corpus, model, q, depth) cell |
-| `baselines/<corpus>/<question_id>.json` | Claude Sonnet 4.6 baseline output |
-| `responses/<corpus>/<model>/<question_id>__<depth>.json` | local-model response |
-| `judge/<corpus>/<model>/<question_id>__<depth>.json` | Phase-5 judge verdict |
-| `metrics.csv` | one row per completion |
-| `log.txt` | full run log |
+| Path                                                     | What                                                          |
+| -------------------------------------------------------- | ------------------------------------------------------------- |
+| `state.json`                                             | resumable state — every (phase, corpus, model, q, depth) cell |
+| `baselines/<corpus>/<question_id>.json`                  | Claude Sonnet 4.6 baseline output                             |
+| `responses/<corpus>/<model>/<question_id>__<depth>.json` | local-model response                                          |
+| `judge/<corpus>/<model>/<question_id>__<depth>.json`     | Phase-5 judge verdict                                         |
+| `metrics.csv`                                            | one row per completion                                        |
+| `log.txt`                                                | full run log                                                  |
+
+## Verifier validation runs
+
+Harbor Clerk's citation verifier is off by default. To validate it as a
+display-only grounding signal, enable verifier emission without enabling the
+revision pass, then run a focused Research sweep:
+
+```bash
+jq '.research_verifier_enabled = true | .research_verifier_revision_enabled = false' \
+    "$HOME/Library/Application Support/Harbor Clerk/config.json" > /tmp/hc-config.json
+mv /tmp/hc-config.json "$HOME/Library/Application Support/Harbor Clerk/config.json"
+
+uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
+    --run-id verifier-smoke-$(date +%Y%m%d-%H%M) \
+    --workdir ~/Library/Application\ Support/Harbor\ Clerk/test-corpora \
+    --phases 4 --models qwen36-35b-a3b --corpora cuad
+```
+
+Research response artifacts preserve per-citation SSE verdicts under
+`result.verifier_verdicts`. `metrics.csv` also includes aggregate
+`verifier_total`, `verifier_supported`, `verifier_partial`,
+`verifier_unsupported`, and `verifier_skipped` columns. Use those aggregates
+only as validation data for a "citation support" or "grounding check" UI; do
+not present them as answer-correctness percentages.
 
 ## Troubleshooting
 

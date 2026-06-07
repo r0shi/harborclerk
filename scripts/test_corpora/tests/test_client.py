@@ -549,6 +549,40 @@ def test_run_research_drains_sse_stream_until_done():
     assert result["report"] == "hello world"
 
 
+def test_run_research_preserves_verifier_pass_events():
+    """Verifier validation runs need the per-citation verdicts. The server
+    emits them as SSE events before ``done``; the harness should persist them
+    in the final ResearchDetail artifact rather than discarding the stream."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/research":
+            body = (
+                'data: {"type":"started"}\n\n'
+                'data: {"type":"verifier_pass","doc_id":"D1","doc_title":"Contract A",'
+                '"verdict":"supported","reason":"matches","index":0,"total":2}\n\n'
+                'data: {"type":"verifier_pass","doc_id":"D2","doc_title":"Contract B",'
+                '"verdict":"partial","reason":"thin support","index":1,"total":2}\n\n'
+                'data: {"type":"done","conversation_id":"conv-verifier"}\n\n'
+            )
+            return httpx.Response(
+                200,
+                headers={"X-Research-Id": "conv-verifier", "Content-Type": "text/event-stream"},
+                content=body,
+            )
+        if request.method == "GET" and request.url.path == "/api/research/conv-verifier":
+            return httpx.Response(
+                200,
+                json={"status": "completed", "report": "done", "conversation_id": "conv-verifier"},
+            )
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    _, result = c.run_research("Q?", depth="standard", time_limit_minutes=1)
+
+    assert [v["verdict"] for v in result["verifier_verdicts"]] == ["supported", "partial"]
+    assert result["verifier_verdicts"][0]["doc_title"] == "Contract A"
+
+
 def test_evaluate_health_no_abort_when_model_ready_and_research_running():
     state = _WatchdogState()
     kind, detail = _evaluate_health("ready", "running", state)

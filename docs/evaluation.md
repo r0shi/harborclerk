@@ -133,6 +133,12 @@ Useful entry points:
 - [`docs/agent-memory-eval.md`](agent-memory-eval.md): OpenClaw and agent-memory
   claim ladder.
 
+Verifier validation runs should enable `research_verifier_enabled` while
+leaving `research_verifier_revision_enabled` off. The sweep harness preserves
+per-citation verifier verdicts in response artifacts and aggregates them in
+`metrics.csv` so the release decision can be made from observed grounding
+signal quality rather than from the existence of the mechanism alone.
+
 Public reports should summarize results instead of dumping raw partial sweeps
 into the README. Raw artifacts are useful for technical readers, but the
 release page should explain what was tested, what passed, what failed, and

@@ -377,6 +377,32 @@ def _is_retryable_research_failure(out: dict) -> bool:
     return result.get("status") in ("failed", "interrupted")
 
 
+def _verifier_counts(result: dict) -> dict[str, int]:
+    """Count display-only citation verifier verdicts in a Research result.
+
+    The verifier is intentionally off by default. When an operator enables it
+    for validation, `HarborClerkClient.run_research()` preserves each
+    `verifier_pass` SSE payload under `verifier_verdicts`. These counts make
+    metrics.csv useful for deciding whether the signal is release-worthy
+    without opening every response artifact.
+    """
+    counts = {
+        "total": 0,
+        "supported": 0,
+        "partial": 0,
+        "unsupported": 0,
+        "skipped": 0,
+    }
+    for item in result.get("verifier_verdicts") or []:
+        if not isinstance(item, dict):
+            continue
+        counts["total"] += 1
+        verdict = item.get("verdict")
+        if verdict in counts:
+            counts[verdict] += 1
+    return counts
+
+
 # ── argparse ──
 
 
@@ -987,26 +1013,39 @@ def main(argv: list[str] | None = None) -> int:
 
         # CSV metrics
         metrics_path = run_dir / "metrics.csv"
-        new_csv = not metrics_path.exists()
+        metrics_header = [
+            "phase",
+            "corpus",
+            "model",
+            "question_id",
+            "depth",
+            "status",
+            "citation_overlap",
+            "citation_extra",
+            "entity_overlap",
+            "latency_seconds",
+            "judge_verdict",
+            "judge_completeness",
+            "verifier_total",
+            "verifier_supported",
+            "verifier_partial",
+            "verifier_unsupported",
+            "verifier_skipped",
+        ]
+        new_csv = not metrics_path.exists() or metrics_path.stat().st_size == 0
+        include_verifier_metrics = True
+        if not new_csv:
+            existing_header = metrics_path.read_text().splitlines()[0].split(",")
+            include_verifier_metrics = "verifier_total" in existing_header
+            if not include_verifier_metrics:
+                log.warning(
+                    "metrics.csv lacks verifier columns; preserving legacy row shape for this resumed run. "
+                    "Use a fresh --run-id for verifier validation metrics."
+                )
         metrics_f = metrics_path.open("a", newline="")
         metrics_writer = csv.writer(metrics_f)
         if new_csv:
-            metrics_writer.writerow(
-                [
-                    "phase",
-                    "corpus",
-                    "model",
-                    "question_id",
-                    "depth",
-                    "status",
-                    "citation_overlap",
-                    "citation_extra",
-                    "entity_overlap",
-                    "latency_seconds",
-                    "judge_verdict",
-                    "judge_completeness",
-                ]
-            )
+            metrics_writer.writerow(metrics_header)
 
         sampler = Sampler(every_n=cfg.SAMPLE_EVERY_N)
         sweep_started = time.time()
@@ -1543,6 +1582,7 @@ def main(argv: list[str] | None = None) -> int:
                 co = ce = eo = 0.0
                 judge_verdict = ""
                 judge_completeness = 0
+                verifier_counts = _verifier_counts(out.get("result", {}) or {})
                 if phase in (4, 5):
                     baseline_path = run_dir / "baselines" / u.corpus / f"{u.question_id}.json"
                     # Cross-language ids resolve their baseline to the canonical EN id
@@ -1636,22 +1676,31 @@ def main(argv: list[str] | None = None) -> int:
                         )
 
                 row_unit = sf.get(u.phase, u.corpus, u.model, u.question_id, u.depth)
-                metrics_writer.writerow(
-                    [
-                        phase,
-                        u.corpus,
-                        u.model,
-                        u.question_id,
-                        u.depth,
-                        row_unit.status.value if row_unit else "unknown",
-                        f"{co:.3f}",
-                        ce,
-                        f"{eo:.3f}",
-                        f"{latency:.1f}",
-                        judge_verdict,
-                        judge_completeness,
-                    ]
-                )
+                metrics_row = [
+                    phase,
+                    u.corpus,
+                    u.model,
+                    u.question_id,
+                    u.depth,
+                    row_unit.status.value if row_unit else "unknown",
+                    f"{co:.3f}",
+                    ce,
+                    f"{eo:.3f}",
+                    f"{latency:.1f}",
+                    judge_verdict,
+                    judge_completeness,
+                ]
+                if include_verifier_metrics:
+                    metrics_row.extend(
+                        [
+                            verifier_counts["total"],
+                            verifier_counts["supported"],
+                            verifier_counts["partial"],
+                            verifier_counts["unsupported"],
+                            verifier_counts["skipped"],
+                        ]
+                    )
+                metrics_writer.writerow(metrics_row)
                 metrics_f.flush()
 
                 # Closing marker for this unit — pairs with the "Starting"
