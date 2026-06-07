@@ -28,6 +28,11 @@ class IngestionJob(Base):
         nullable=False,
         server_default="queued",
     )
+    pipeline_seq: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+    )
     progress_current: Mapped[int | None] = mapped_column(
         Integer,
         server_default=text("0"),

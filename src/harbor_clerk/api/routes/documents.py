@@ -149,8 +149,10 @@ async def list_documents(
         doc_ids_for_jobs = [d.doc_id for d in docs]
         rows = await session.execute(
             select(IngestionJob.doc_id, IngestionJob.status)
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
             .where(IngestionJob.doc_id.in_(doc_ids_for_jobs))
             .where(IngestionJob.stage == JobStage.summarize)
+            .where(IngestionJob.pipeline_seq == Document.pipeline_seq)
         )
         for did, jst in rows.all():
             sum_job_status_by_doc[str(did)] = jst.value
@@ -440,7 +442,12 @@ async def get_document(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     # Load jobs for this doc
-    jobs_result = await session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc_id))
+    jobs_result = await session.execute(
+        select(IngestionJob).where(
+            IngestionJob.doc_id == doc_id,
+            IngestionJob.pipeline_seq == doc.pipeline_seq,
+        )
+    )
     job_rows = jobs_result.scalars().all()
 
     jobs = []
@@ -838,10 +845,9 @@ async def reprocess_document(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    # Bump pipeline_seq to invalidate any in-flight workers
-    doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
-    doc.pipeline_status = PipelineStatus.queued
-    doc.error = None
+    from harbor_clerk.worker.pipeline import reset_and_queue_extract_for_doc
+
+    await reset_and_queue_extract_for_doc(session, doc_id)
 
     await log_audit(
         session,
@@ -851,11 +857,6 @@ async def reprocess_document(
         target_id=doc_id,
     )
     await session.commit()
-
-    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
-
-    reset_jobs(doc_id)
-    enqueue_stage(doc_id, JobStage.extract)
 
     return {
         "doc_id": str(doc_id),

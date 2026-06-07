@@ -40,10 +40,16 @@ interface TestStatusSummary {
   state: 'ready' | 'processing' | 'needs_attention'
   counts: {
     processing_documents: number
+    summarizing_documents?: number
     stranded_documents?: number
+    completed_status_stale_documents?: number
     queued_jobs: number
     running_jobs: number
+    summarizing_queued_jobs?: number
+    summarizing_running_jobs?: number
     failed_documents: number
+    failed_summarize_jobs?: number
+    blocked_summarize_jobs?: number
     unavailable_folders: number
     ner_skipped_documents: number
     stuck_jobs: number
@@ -61,9 +67,13 @@ const READY_SUMMARY: TestStatusSummary = {
   state: 'ready',
   counts: {
     processing_documents: 0,
+    summarizing_documents: 0,
     stranded_documents: 0,
+    completed_status_stale_documents: 0,
     queued_jobs: 0,
     running_jobs: 0,
+    summarizing_queued_jobs: 0,
+    summarizing_running_jobs: 0,
     failed_documents: 0,
     unavailable_folders: 0,
     ner_skipped_documents: 0,
@@ -196,6 +206,62 @@ describe('GlobalStatusPill', () => {
     expect(link).toHaveAttribute('title', '12 documents need reprocessing before entity filters are complete.')
   })
 
+  it('names summary-only warning as summary failures', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'needs_attention',
+        counts: {
+          ...READY_SUMMARY.counts,
+          failed_summarize_jobs: 8,
+        },
+        needs_attention: [
+          {
+            kind: 'summary_generation_failed',
+            severity: 'warning',
+            title: 'Summaries failed to generate',
+            detail: '8 document summaries failed to generate. Documents remain searchable.',
+            count: 8,
+          },
+        ],
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Summary failures' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute('title', '8 document summaries failed to generate. Documents remain searchable.')
+  })
+
+  it('names blocked summary retries as summary paused', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'needs_attention',
+        counts: {
+          ...READY_SUMMARY.counts,
+          blocked_summarize_jobs: 8,
+        },
+        needs_attention: [
+          {
+            kind: 'summary_generation_blocked',
+            severity: 'warning',
+            title: 'Apple Intelligence summaries are paused',
+            detail: '8 summary jobs are waiting because Apple Intelligence is unavailable.',
+            count: 8,
+          },
+        ],
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Summary paused' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute('title', '8 summary jobs are waiting because Apple Intelligence is unavailable.')
+  })
+
   it('shows document processing before local AI ready state', async () => {
     mockPill({
       summary: {
@@ -214,6 +280,27 @@ describe('GlobalStatusPill', () => {
       'href',
       '/settings/status',
     )
+  })
+
+  it('names summarize-only background work separately from foreground processing', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'processing',
+        counts: {
+          ...READY_SUMMARY.counts,
+          summarizing_documents: 9,
+          summarizing_queued_jobs: 8,
+          summarizing_running_jobs: 1,
+        },
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Summarizing 9' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute('title', 'Document summaries are being generated')
   })
 
   it('names stranded pipeline-state warnings as stale state', async () => {
@@ -244,6 +331,37 @@ describe('GlobalStatusPill', () => {
     expect(link).toHaveAttribute(
       'title',
       '7 active documents have an in-progress pipeline state but no queued or running ingest job.',
+    )
+  })
+
+  it('names completed stale-status warnings as status cleanup', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'needs_attention',
+        counts: {
+          ...READY_SUMMARY.counts,
+          completed_status_stale_documents: 7,
+        },
+        needs_attention: [
+          {
+            kind: 'completed_status_stale',
+            severity: 'warning',
+            title: 'Completed documents need status cleanup',
+            detail: '7 active documents completed ingest but still show an in-progress document status.',
+            count: 7,
+          },
+        ],
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Status cleanup' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute(
+      'title',
+      '7 active documents completed ingest but still show an in-progress document status.',
     )
   })
 

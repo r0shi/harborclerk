@@ -88,6 +88,17 @@ export default function SystemMaintenancePage() {
     }
   }
 
+  async function handleClearSummaryBacklog() {
+    setError('')
+    setActionResult('')
+    try {
+      const data = await post<{ cleared: number }>('/api/system/clear-redundant-summary-backlog')
+      setActionResult(`Summary backlog cleanup complete: ${data.cleared} queued jobs skipped`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Summary backlog cleanup failed')
+    }
+  }
+
   const topicsBaselineRef = useRef<number>(-1)
 
   async function handleRecomputeTopics() {
@@ -252,6 +263,18 @@ export default function SystemMaintenancePage() {
               </button>
             )}
           </div>
+        </div>
+        <div className="px-5 py-4">
+          <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">
+            Clear queued summary work for documents that already have summaries. This is a recovery cleanup for
+            accidental backlogs; Reprocess All and Resummarize All still regenerate summaries.
+          </p>
+          <button
+            onClick={handleClearSummaryBacklog}
+            className="rounded-lg bg-(--color-bg-tertiary) px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"
+          >
+            Clear Summary Backlog
+          </button>
         </div>
         <div className="px-5 py-4">
           <p className="mb-1.5 text-sm text-gray-600 dark:text-gray-400">

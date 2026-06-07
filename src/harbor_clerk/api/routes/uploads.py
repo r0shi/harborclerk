@@ -33,8 +33,9 @@ from harbor_clerk.config import Settings, get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
 from harbor_clerk.models import Document, Upload, UploadSession
-from harbor_clerk.models.enums import JobStage, PipelineStatus
+from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.storage import get_storage
+from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline, reset_and_queue_extract_for_doc
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["uploads"])
@@ -242,6 +243,7 @@ async def _confirm_single(
         session.add(doc)
         await session.flush()
         doc_id = doc.doc_id
+        await queue_extract_for_current_pipeline(session, doc_id)
 
     elif action == "new_version":
         # In the flat schema "new version" means replacing the content of the existing document.
@@ -283,8 +285,7 @@ async def _confirm_single(
         doc.source_path = source_path
         doc.original_bucket = settings.minio_bucket
         doc.original_object_key = canonical_key
-        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
-        doc.error = None
+        await reset_and_queue_extract_for_doc(session, doc_id)
 
     else:
         raise HTTPException(status_code=422, detail="action must be 'new_document' or 'new_version'")
@@ -325,10 +326,6 @@ async def confirm_upload(
     )
     await session.commit()
 
-    from harbor_clerk.worker.pipeline import enqueue_stage
-
-    enqueue_stage(uuid.UUID(result.doc_id), JobStage.extract)
-
     return result
 
 
@@ -340,7 +337,6 @@ async def confirm_upload_batch(
 ):
     settings = get_settings()
     results: list[BatchConfirmResultItem] = []
-    doc_ids_to_enqueue: list[uuid.UUID] = []
 
     for item in body.items:
         try:
@@ -360,7 +356,6 @@ async def confirm_upload_batch(
                     status=confirm_result.status,
                 )
             )
-            doc_ids_to_enqueue.append(uuid.UUID(confirm_result.doc_id))
         except HTTPException as exc:
             results.append(
                 BatchConfirmResultItem(
@@ -371,16 +366,6 @@ async def confirm_upload_batch(
             )
 
     await session.commit()
-
-    from harbor_clerk.worker.pipeline import enqueue_stage
-
-    loop = asyncio.get_running_loop()
-
-    def _enqueue_all():
-        for did in doc_ids_to_enqueue:
-            enqueue_stage(did, JobStage.extract)
-
-    await loop.run_in_executor(None, _enqueue_all)
 
     # Trigger topic recompute in background with its own session
     async def _recompute_topics_bg():
@@ -612,6 +597,7 @@ async def upload_file_to_session(
             status="processing",
         )
         db.add(upload_row)
+        await queue_extract_for_current_pipeline(db, doc.doc_id)
         await _increment_session_counters(db, us.session_id, uploaded=1, confirmed=1)
 
         await log_audit(
@@ -623,11 +609,6 @@ async def upload_file_to_session(
             detail={"action": "new_document", "doc_id": str(doc.doc_id), "session_id": str(us.session_id)},
         )
         await db.commit()
-
-        # Enqueue extraction outside the session
-        from harbor_clerk.worker.pipeline import enqueue_stage
-
-        await loop.run_in_executor(None, enqueue_stage, doc.doc_id, JobStage.extract)
 
         return SessionFileUploadResponse(
             upload_id=str(upload_row.upload_id),
@@ -697,7 +678,6 @@ async def confirm_session(
 
     settings = get_settings()
     results: list[BatchConfirmResultItem] = []
-    doc_ids_to_enqueue: list[uuid.UUID] = []
 
     confirmed_count = 0
     failed_count = 0
@@ -719,7 +699,6 @@ async def confirm_session(
                     status=confirm_result.status,
                 )
             )
-            doc_ids_to_enqueue.append(uuid.UUID(confirm_result.doc_id))
             confirmed_count += 1
         except HTTPException as exc:
             results.append(
@@ -742,16 +721,6 @@ async def confirm_session(
         )
     )
     await db.commit()
-
-    from harbor_clerk.worker.pipeline import enqueue_stage
-
-    loop = asyncio.get_running_loop()
-
-    def _enqueue_all():
-        for did in doc_ids_to_enqueue:
-            enqueue_stage(did, JobStage.extract)
-
-    await loop.run_in_executor(None, _enqueue_all)
 
     # Trigger topic recompute in background with its own session
     async def _recompute_topics_bg2():

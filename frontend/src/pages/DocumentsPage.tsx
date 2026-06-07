@@ -52,6 +52,11 @@ interface DocSummary {
   folder_name?: string
 }
 
+interface DocEntity {
+  entity_text: string
+  entity_type: string
+}
+
 interface PaginatedDocs {
   items: DocSummary[]
   total: number
@@ -201,7 +206,8 @@ export default function DocumentsPage() {
     }
     return new Set()
   })
-  const [docEntities, setDocEntities] = useState<Record<string, { entity_text: string; entity_type: string }[]>>({})
+  const [docEntities, setDocEntities] = useState<Record<string, DocEntity[]>>({})
+  const entityFetchesRef = useRef<Set<string>>(new Set())
 
   // Restore saved state from sessionStorage (URL params override)
   const hasUrlParams =
@@ -440,6 +446,29 @@ export default function DocumentsPage() {
   useEffect(() => {
     loadDocs(currentPage, pageSize, filter)
   }, [loadDocs, currentPage, pageSize, filter])
+
+  const fetchDocEntities = useCallback((docId: string) => {
+    if (entityFetchesRef.current.has(docId)) return
+    entityFetchesRef.current.add(docId)
+    get<{ entities: DocEntity[] }>(`/api/docs/${docId}/entities`)
+      .then((data) => {
+        setDocEntities((prev) => {
+          if (prev[docId]) return prev
+          return { ...prev, [docId]: data.entities || [] }
+        })
+      })
+      .catch(() => {
+        entityFetchesRef.current.delete(docId)
+      })
+  }, [])
+
+  useEffect(() => {
+    for (const doc of docs) {
+      if (expanded.has(doc.doc_id) && (!folderFilter || doc.folder_name === folderFilter)) {
+        fetchDocEntities(doc.doc_id)
+      }
+    }
+  }, [docs, expanded, folderFilter, fetchDocEntities])
 
   // Debounce filter input. (filterInput state itself is declared higher up
   // alongside entityInput so the save useEffect can include it in its deps.)
@@ -949,16 +978,7 @@ export default function DocumentsPage() {
                                   if (next.has(doc.doc_id)) next.delete(doc.doc_id)
                                   else {
                                     next.add(doc.doc_id)
-                                    // Lazy-fetch entities for this doc
-                                    if (!docEntities[doc.doc_id]) {
-                                      get<{ entities: { entity_text: string; entity_type: string }[] }>(
-                                        `/api/docs/${doc.doc_id}/entities`,
-                                      )
-                                        .then((data) =>
-                                          setDocEntities((prev) => ({ ...prev, [doc.doc_id]: data.entities || [] })),
-                                        )
-                                        .catch(() => {})
-                                    }
+                                    fetchDocEntities(doc.doc_id)
                                   }
                                   return next
                                 })

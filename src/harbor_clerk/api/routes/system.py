@@ -190,6 +190,14 @@ async def health_check(
 _PROCESSING_STATUSES: tuple[PipelineStatus, ...] = tuple(
     status for status in PipelineStatus if status not in (PipelineStatus.ready, PipelineStatus.error)
 )
+_COMPLETED_READY_STAGES: tuple[JobStage, ...] = (
+    JobStage.extract,
+    JobStage.chunk,
+    JobStage.entities,
+    JobStage.embed,
+    JobStage.finalize,
+)
+_BACKGROUND_JOB_STAGES: tuple[JobStage, ...] = (JobStage.summarize,)
 
 
 def _job_age_seconds(now: datetime, job: IngestionJob) -> float | None:
@@ -232,23 +240,31 @@ async def status_summary(
         (row[0].value if isinstance(row[0], PipelineStatus) else str(row[0])): int(row[1]) for row in status_rows
     }
     active_documents = sum(pipeline_counts.values())
-    ready_documents = pipeline_counts.get(PipelineStatus.ready.value, 0)
+    stored_ready_documents = pipeline_counts.get(PipelineStatus.ready.value, 0)
     failed_documents = pipeline_counts.get(PipelineStatus.error.value, 0)
     pipeline_processing_documents = sum(pipeline_counts.get(status.value, 0) for status in _PROCESSING_STATUSES)
 
     job_rows = (
         await session.execute(
-            select(IngestionJob.status, func.count())
+            select(IngestionJob.stage, IngestionJob.status, func.count())
             .join(Document, Document.doc_id == IngestionJob.doc_id)
             .where(Document.status == "active")
-            .group_by(IngestionJob.status)
+            .where(IngestionJob.pipeline_seq == Document.pipeline_seq)
+            .group_by(IngestionJob.stage, IngestionJob.status)
         )
     ).all()
-    job_counts = {
-        (row[0].value if isinstance(row[0], JobStatus) else str(row[0])): int(row[1])
-        for row in job_rows
-        if row[0] is not None
-    }
+    job_counts: dict[str, int] = {}
+    foreground_job_counts: dict[str, int] = {}
+    summarizing_job_counts: dict[str, int] = {}
+    for stage, status, count in job_rows:
+        if status is None:
+            continue
+        status_key = status.value if isinstance(status, JobStatus) else str(status)
+        stage_key = stage.value if isinstance(stage, JobStage) else str(stage)
+        count_int = int(count)
+        job_counts[status_key] = job_counts.get(status_key, 0) + count_int
+        target_counts = summarizing_job_counts if stage_key == JobStage.summarize.value else foreground_job_counts
+        target_counts[status_key] = target_counts.get(status_key, 0) + count_int
     live_processing_documents = (
         await session.execute(
             select(func.count(func.distinct(IngestionJob.doc_id)))
@@ -256,21 +272,67 @@ async def status_summary(
             .where(
                 Document.status == "active",
                 IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+                IngestionJob.stage.not_in(_BACKGROUND_JOB_STAGES),
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
             )
         )
     ).scalar() or 0
-    live_job_doc_ids = (
-        select(IngestionJob.doc_id).where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running))).distinct()
+    live_summarizing_documents = (
+        await session.execute(
+            select(func.count(func.distinct(IngestionJob.doc_id)))
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+            )
+        )
+    ).scalar() or 0
+    live_foreground_job_doc_ids = (
+        select(IngestionJob.doc_id)
+        .join(Document, Document.doc_id == IngestionJob.doc_id)
+        .where(
+            Document.status == "active",
+            IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+            IngestionJob.stage.not_in(_BACKGROUND_JOB_STAGES),
+            IngestionJob.pipeline_seq == Document.pipeline_seq,
+        )
+        .distinct()
     )
+    completed_pipeline_doc_ids = (
+        select(IngestionJob.doc_id)
+        .join(Document, Document.doc_id == IngestionJob.doc_id)
+        .where(
+            Document.status == "active",
+            IngestionJob.stage.in_(_COMPLETED_READY_STAGES),
+            IngestionJob.status == JobStatus.done,
+            IngestionJob.pipeline_seq == Document.pipeline_seq,
+        )
+        .group_by(IngestionJob.doc_id)
+        .having(func.count(func.distinct(IngestionJob.stage)) == len(_COMPLETED_READY_STAGES))
+    )
+    completed_status_stale_documents = (
+        await session.execute(
+            select(func.count(Document.doc_id)).where(
+                Document.status == "active",
+                Document.pipeline_status.in_(_PROCESSING_STATUSES),
+                Document.doc_id.not_in(live_foreground_job_doc_ids),
+                Document.doc_id.in_(completed_pipeline_doc_ids),
+            )
+        )
+    ).scalar() or 0
     stranded_documents = (
         await session.execute(
             select(func.count(Document.doc_id)).where(
                 Document.status == "active",
                 Document.pipeline_status.in_(_PROCESSING_STATUSES),
-                Document.doc_id.not_in(live_job_doc_ids),
+                Document.doc_id.not_in(live_foreground_job_doc_ids),
+                Document.doc_id.not_in(completed_pipeline_doc_ids),
             )
         )
     ).scalar() or 0
+    ready_documents = stored_ready_documents + int(completed_status_stale_documents)
 
     folder_rows = (
         await session.execute(
@@ -290,10 +352,41 @@ async def status_summary(
             .where(
                 Document.status == "active",
                 IngestionJob.stage == JobStage.entities,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
                 IngestionJob.metrics["reason"].astext == "spacy_unavailable",
             )
         )
     ).scalar() or 0
+    failed_summarize_jobs = (
+        await session.execute(
+            select(func.count(func.distinct(IngestionJob.doc_id)))
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.status == JobStatus.error,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+            )
+        )
+    ).scalar() or 0
+    blocked_summarize_row = (
+        await session.execute(
+            select(
+                func.count(func.distinct(IngestionJob.doc_id)),
+                func.min(IngestionJob.metrics["retry_after"].astext),
+            )
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.status == JobStatus.queued,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+                IngestionJob.metrics["reason"].astext == "apple_intelligence_unavailable",
+            )
+        )
+    ).one()
+    blocked_summarize_jobs = int(blocked_summarize_row[0] or 0)
+    next_summarize_retry_at = blocked_summarize_row[1]
 
     now = datetime.now(UTC)
     running_jobs = (
@@ -301,7 +394,11 @@ async def status_summary(
             await session.execute(
                 select(IngestionJob)
                 .join(Document, Document.doc_id == IngestionJob.doc_id)
-                .where(Document.status == "active", IngestionJob.status == JobStatus.running)
+                .where(
+                    Document.status == "active",
+                    IngestionJob.status == JobStatus.running,
+                    IngestionJob.pipeline_seq == Document.pipeline_seq,
+                )
             )
         )
         .scalars()
@@ -328,7 +425,12 @@ async def status_summary(
             (
                 await session.execute(
                     select(IngestionJob)
-                    .where(IngestionJob.doc_id.in_(failed_doc_ids), IngestionJob.status == JobStatus.error)
+                    .join(Document, Document.doc_id == IngestionJob.doc_id)
+                    .where(
+                        IngestionJob.doc_id.in_(failed_doc_ids),
+                        IngestionJob.status == JobStatus.error,
+                        IngestionJob.pipeline_seq == Document.pipeline_seq,
+                    )
                     .order_by(IngestionJob.created_at.desc())
                 )
             )
@@ -364,6 +466,8 @@ async def status_summary(
             .where(
                 Document.status == "active",
                 IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+                IngestionJob.stage.not_in(_BACKGROUND_JOB_STAGES),
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
             )
             .order_by(IngestionJob.started_at.desc().nullslast(), IngestionJob.created_at.desc())
             .limit(5)
@@ -435,6 +539,56 @@ async def status_summary(
                 "action_href": "/settings/maintenance",
             }
         )
+    if completed_status_stale_documents:
+        needs_attention.append(
+            {
+                "kind": "completed_status_stale",
+                "severity": "warning",
+                "title": "Completed documents need status cleanup",
+                "detail": (
+                    f"{completed_status_stale_documents} active document"
+                    f"{'s' if completed_status_stale_documents != 1 else ''} completed ingest but still "
+                    "show an in-progress document status. Search is available; repair statuses to normalize "
+                    "the document list and queue counters."
+                ),
+                "count": int(completed_status_stale_documents),
+                "action_label": "Repair statuses",
+                "action_kind": "repair_completed_statuses",
+            }
+        )
+    if failed_summarize_jobs:
+        summary_label = "document summary" if failed_summarize_jobs == 1 else "document summaries"
+        needs_attention.append(
+            {
+                "kind": "summary_generation_failed",
+                "severity": "warning",
+                "title": "Summaries failed to generate",
+                "detail": (
+                    f"{failed_summarize_jobs} {summary_label} failed to generate. "
+                    "Documents remain searchable; check the summary backend, then retry summaries."
+                ),
+                "count": int(failed_summarize_jobs),
+                "action_label": "Open maintenance",
+                "action_href": "/settings/maintenance",
+            }
+        )
+    if blocked_summarize_jobs:
+        summary_label = "summary job" if blocked_summarize_jobs == 1 else "summary jobs"
+        retry_detail = f" Next retry is scheduled around {next_summarize_retry_at}." if next_summarize_retry_at else ""
+        needs_attention.append(
+            {
+                "kind": "summary_generation_blocked",
+                "severity": "warning",
+                "title": "Apple Intelligence summaries are paused",
+                "detail": (
+                    f"{blocked_summarize_jobs} {summary_label} are waiting because Apple Intelligence is unavailable. "
+                    f"Harbor Clerk will retry automatically with backoff.{retry_detail}"
+                ),
+                "count": blocked_summarize_jobs,
+                "action_label": "Open Models",
+                "action_href": "/settings/models",
+            }
+        )
     if ner_skipped_documents:
         needs_attention.append(
             {
@@ -458,8 +612,11 @@ async def status_summary(
         state = "needs_attention"
     elif (
         live_processing_documents
-        or job_counts.get(JobStatus.queued.value, 0)
-        or job_counts.get(JobStatus.running.value, 0)
+        or live_summarizing_documents
+        or foreground_job_counts.get(JobStatus.queued.value, 0)
+        or foreground_job_counts.get(JobStatus.running.value, 0)
+        or summarizing_job_counts.get(JobStatus.queued.value, 0)
+        or summarizing_job_counts.get(JobStatus.running.value, 0)
     ):
         state = "processing"
 
@@ -468,16 +625,25 @@ async def status_summary(
         "counts": {
             "active_documents": active_documents,
             "ready_documents": ready_documents,
+            "stored_ready_documents": stored_ready_documents,
             "processing_documents": int(live_processing_documents),
+            "summarizing_documents": int(live_summarizing_documents),
             "pipeline_processing_documents": pipeline_processing_documents,
             "stranded_documents": int(stranded_documents),
+            "completed_status_stale_documents": int(completed_status_stale_documents),
             "failed_documents": failed_documents,
-            "queued_jobs": job_counts.get(JobStatus.queued.value, 0),
-            "running_jobs": job_counts.get(JobStatus.running.value, 0),
+            "queued_jobs": foreground_job_counts.get(JobStatus.queued.value, 0),
+            "running_jobs": foreground_job_counts.get(JobStatus.running.value, 0),
+            "summarizing_queued_jobs": summarizing_job_counts.get(JobStatus.queued.value, 0),
+            "summarizing_running_jobs": summarizing_job_counts.get(JobStatus.running.value, 0),
+            "total_queued_jobs": job_counts.get(JobStatus.queued.value, 0),
+            "total_running_jobs": job_counts.get(JobStatus.running.value, 0),
             "failed_jobs": job_counts.get(JobStatus.error.value, 0),
             "watched_folders": watched_folders,
             "unavailable_folders": unavailable_folders,
             "ner_skipped_documents": int(ner_skipped_documents),
+            "failed_summarize_jobs": int(failed_summarize_jobs),
+            "blocked_summarize_jobs": blocked_summarize_jobs,
             "stuck_jobs": len(stuck_jobs),
         },
         "needs_attention": needs_attention,
@@ -622,7 +788,15 @@ async def reaper_run(
     from harbor_clerk.worker.pipeline import STAGE_CONFIG, enqueue_stage
 
     # Get all currently running jobs from DB
-    result = await session.execute(select(IngestionJob).where(IngestionJob.status == JobStatus.running))
+    result = await session.execute(
+        select(IngestionJob)
+        .join(Document, Document.doc_id == IngestionJob.doc_id)
+        .where(
+            Document.status == "active",
+            IngestionJob.status == JobStatus.running,
+            IngestionJob.pipeline_seq == Document.pipeline_seq,
+        )
+    )
     running_jobs = result.scalars().all()
 
     if not running_jobs:
@@ -670,6 +844,66 @@ async def reaper_run(
     return {"reaped": len(orphans)}
 
 
+@router.post("/system/repair-completed-statuses")
+async def repair_completed_statuses(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Mark finalized active documents ready when only the document status is stale."""
+    live_job_doc_ids = (
+        select(IngestionJob.doc_id)
+        .join(Document, Document.doc_id == IngestionJob.doc_id)
+        .where(
+            Document.status == "active",
+            IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+            IngestionJob.pipeline_seq == Document.pipeline_seq,
+        )
+        .distinct()
+    )
+
+    completed_pipeline_doc_ids = (
+        select(IngestionJob.doc_id)
+        .join(Document, Document.doc_id == IngestionJob.doc_id)
+        .where(
+            Document.status == "active",
+            IngestionJob.stage.in_(_COMPLETED_READY_STAGES),
+            IngestionJob.status == JobStatus.done,
+            IngestionJob.pipeline_seq == Document.pipeline_seq,
+        )
+        .group_by(IngestionJob.doc_id)
+        .having(func.count(func.distinct(IngestionJob.stage)) == len(_COMPLETED_READY_STAGES))
+    )
+    docs = (
+        (
+            await session.execute(
+                select(Document).where(
+                    Document.status == "active",
+                    Document.pipeline_status.in_(_PROCESSING_STATUSES),
+                    Document.doc_id.not_in(live_job_doc_ids),
+                    Document.doc_id.in_(completed_pipeline_doc_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    for doc in docs:
+        doc.pipeline_status = PipelineStatus.ready
+        doc.error = None
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="repair_completed_statuses",
+        detail={"repaired_count": len(docs)},
+    )
+    await session.commit()
+
+    logger.info("Repaired %d completed document statuses", len(docs))
+    return {"repaired": len(docs)}
+
+
 @router.post("/system/recompute-topics")
 async def recompute_topics_endpoint(
     admin: Principal = Depends(require_admin),
@@ -699,7 +933,13 @@ async def clear_queue(
     """
     # Cancel all queued/running jobs
     result = await session.execute(
-        select(IngestionJob).where(IngestionJob.status.in_([JobStatus.queued, JobStatus.running]))
+        select(IngestionJob)
+        .join(Document, Document.doc_id == IngestionJob.doc_id)
+        .where(
+            Document.status == "active",
+            IngestionJob.status.in_([JobStatus.queued, JobStatus.running]),
+            IngestionJob.pipeline_seq == Document.pipeline_seq,
+        )
     )
     jobs = result.scalars().all()
     cancelled = 0
@@ -719,6 +959,7 @@ async def clear_queue(
                     IngestionJob.doc_id == did,
                     IngestionJob.stage == JobStage.finalize,
                     IngestionJob.status == JobStatus.done,
+                    IngestionJob.pipeline_seq == doc.pipeline_seq,
                 )
             )
             if fin_result.scalar_one_or_none():
@@ -775,23 +1016,323 @@ async def run_migrations(
     return {"status": "ok", "schema_version": version}
 
 
+async def _notify_bulk_queue(session: AsyncSession, queue_name: str, count: int) -> None:
+    if count <= 0:
+        return
+    await session.execute(
+        text("SELECT pg_notify(:channel, :payload)"),
+        {"channel": f"job_enqueued_{queue_name}", "payload": "bulk"},
+    )
+
+
+async def _bulk_queue_reprocess_all(session: AsyncSession) -> int:
+    """Reset all active docs and queue extract with set-based DB work."""
+    result = await session.execute(
+        text(
+            """
+            WITH target_docs AS (
+                UPDATE documents
+                SET pipeline_status = 'extracting'::pipeline_status,
+                    pipeline_seq = COALESCE(pipeline_seq, 0) + 1,
+                    error = NULL
+                WHERE status = 'active'
+                RETURNING doc_id, pipeline_seq
+            ),
+            deleted_other_jobs AS (
+                DELETE FROM ingestion_jobs AS job
+                USING target_docs
+                WHERE job.doc_id = target_docs.doc_id
+                  AND job.stage <> 'extract'::job_stage
+                RETURNING job.job_id
+            ),
+            queued_extract AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    pipeline_seq,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'extract'::job_stage,
+                    'queued'::job_status,
+                    pipeline_seq,
+                    0,
+                    0,
+                    '{}'::jsonb,
+                    0,
+                    NULL,
+                    now(),
+                    NULL,
+                    NULL,
+                    NULL
+                FROM target_docs
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'queued'::job_status,
+                    pipeline_seq = EXCLUDED.pipeline_seq,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{}'::jsonb,
+                    priority = 0,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    heartbeat_at = NULL
+                RETURNING doc_id
+            )
+            SELECT
+                (SELECT count(*) FROM target_docs) AS target_count,
+                (SELECT count(*) FROM deleted_other_jobs) AS deleted_count,
+                (SELECT count(*) FROM queued_extract) AS queued_count
+            """
+        )
+    )
+    row = result.mappings().one()
+    return int(row["target_count"] or 0)
+
+
+async def _bulk_queue_reprocess_all_skip_summarize(session: AsyncSession) -> int:
+    """Reset all active docs, queue extract, and pre-mark summarize skipped."""
+    result = await session.execute(
+        text(
+            """
+            WITH target_docs AS (
+                UPDATE documents
+                SET pipeline_status = 'extracting'::pipeline_status,
+                    pipeline_seq = COALESCE(pipeline_seq, 0) + 1,
+                    error = NULL
+                WHERE status = 'active'
+                RETURNING doc_id, pipeline_seq
+            ),
+            deleted_other_jobs AS (
+                DELETE FROM ingestion_jobs AS job
+                USING target_docs
+                WHERE job.doc_id = target_docs.doc_id
+                  AND job.stage NOT IN ('extract'::job_stage, 'summarize'::job_stage)
+                RETURNING job.job_id
+            ),
+            skipped_summarize AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    pipeline_seq,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'summarize'::job_stage,
+                    'done'::job_status,
+                    pipeline_seq,
+                    0,
+                    0,
+                    '{"skipped": true, "reason": "reprocess_all_skip_summarize"}'::jsonb,
+                    0,
+                    NULL,
+                    now(),
+                    now(),
+                    now(),
+                    NULL
+                FROM target_docs
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'done'::job_status,
+                    pipeline_seq = EXCLUDED.pipeline_seq,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{"skipped": true, "reason": "reprocess_all_skip_summarize"}'::jsonb,
+                    priority = 0,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = now(),
+                    finished_at = now(),
+                    heartbeat_at = NULL
+                RETURNING doc_id
+            ),
+            queued_extract AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    pipeline_seq,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'extract'::job_stage,
+                    'queued'::job_status,
+                    pipeline_seq,
+                    0,
+                    0,
+                    '{}'::jsonb,
+                    0,
+                    NULL,
+                    now(),
+                    NULL,
+                    NULL,
+                    NULL
+                FROM target_docs
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'queued'::job_status,
+                    pipeline_seq = EXCLUDED.pipeline_seq,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{}'::jsonb,
+                    priority = 0,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    heartbeat_at = NULL
+                RETURNING doc_id
+            )
+            SELECT
+                (SELECT count(*) FROM target_docs) AS target_count,
+                (SELECT count(*) FROM deleted_other_jobs) AS deleted_count,
+                (SELECT count(*) FROM skipped_summarize) AS skipped_count,
+                (SELECT count(*) FROM queued_extract) AS queued_count
+            """
+        )
+    )
+    row = result.mappings().one()
+    return int(row["target_count"] or 0)
+
+
+async def _bulk_queue_resummarize_all(session: AsyncSession) -> int:
+    """Queue summarize for every active ready document without per-doc sync calls."""
+    result = await session.execute(
+        text(
+            """
+            WITH target_docs AS (
+                UPDATE documents
+                SET error = NULL
+                WHERE status = 'active'
+                  AND pipeline_status = 'ready'::pipeline_status
+                RETURNING doc_id, pipeline_seq
+            ),
+            queued_summarize AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    pipeline_seq,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'summarize'::job_stage,
+                    'queued'::job_status,
+                    pipeline_seq,
+                    0,
+                    0,
+                    '{}'::jsonb,
+                    0,
+                    NULL,
+                    now(),
+                    NULL,
+                    NULL,
+                    NULL
+                FROM target_docs
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'queued'::job_status,
+                    pipeline_seq = EXCLUDED.pipeline_seq,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{}'::jsonb,
+                    priority = 0,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    heartbeat_at = NULL
+                WHERE ingestion_jobs.pipeline_seq <> EXCLUDED.pipeline_seq
+                   OR ingestion_jobs.status NOT IN ('queued'::job_status, 'running'::job_status)
+                RETURNING doc_id
+            )
+            SELECT
+                (SELECT count(*) FROM target_docs) AS target_count,
+                (SELECT count(*) FROM queued_summarize) AS queued_count
+            """
+        )
+    )
+    row = result.mappings().one()
+    return int(row["target_count"] or 0)
+
+
+async def _clear_redundant_summary_backlog(session: AsyncSession) -> int:
+    """Skip queued summarize jobs for docs that already have summaries.
+
+    This is a recovery action for accidental summary-only backlogs, not a
+    replacement for explicit resummarization. It deliberately leaves running
+    jobs untouched and only updates the current document pipeline generation.
+    """
+    result = await session.execute(
+        text(
+            """
+            UPDATE ingestion_jobs AS job
+            SET status = 'done'::job_status,
+                progress_current = 0,
+                progress_total = 0,
+                error = NULL,
+                started_at = COALESCE(job.started_at, now()),
+                finished_at = now(),
+                heartbeat_at = NULL,
+                metrics = COALESCE(job.metrics, '{}'::jsonb)
+                    || '{"skipped": true, "reason": "existing_summary_cleanup"}'::jsonb
+            FROM documents AS doc
+            WHERE doc.doc_id = job.doc_id
+              AND doc.status = 'active'
+              AND doc.pipeline_seq = job.pipeline_seq
+              AND job.stage = 'summarize'::job_stage
+              AND job.status = 'queued'::job_status
+              AND length(trim(COALESCE(doc.summary, ''))) > 0
+            RETURNING job.job_id
+            """
+        )
+    )
+    return len(result.fetchall())
+
+
 @router.post("/system/reprocess-all")
 async def reprocess_all(
     admin: Principal = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Re-run ingestion pipeline on every active document's latest version."""
-    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
-
-    result = await session.execute(select(Document).where(Document.status == "active"))
-    docs = result.scalars().all()
-
-    count = 0
-    for doc in docs:
-        doc.pipeline_status = PipelineStatus.queued
-        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
-        doc.error = None
-        count += 1
+    count = await _bulk_queue_reprocess_all(session)
 
     await log_audit(
         session,
@@ -799,12 +1340,8 @@ async def reprocess_all(
         action="reprocess_all",
         detail={"reprocessed_count": count},
     )
+    await _notify_bulk_queue(session, "io", count)
     await session.commit()
-
-    # Reset and re-enqueue outside the async session (sync calls)
-    for doc in docs:
-        reset_jobs(doc.doc_id)
-        enqueue_stage(doc.doc_id, JobStage.extract)
 
     logger.info("Reprocess-all: %d documents queued", count)
     return {"reprocessed": count}
@@ -826,24 +1363,11 @@ async def reprocess_all_skip_summarize(
     summaries once the iteration is done.
 
     Mechanism: pre-inserts a "done with skipped=True" IngestionJob row for
-    summarize on each doc immediately after reset_jobs. The cascade in
+    summarize on each doc as part of the bulk reset. The cascade in
     `advance_pipeline` then sees an existing summarize row and won't enqueue
     a new one.
     """
-    from harbor_clerk.db_sync import get_sync_session
-    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
-
-    result = await session.execute(select(Document).where(Document.status == "active"))
-    docs = result.scalars().all()
-
-    count = 0
-    doc_ids: list[uuid.UUID] = []
-    for doc in docs:
-        doc.pipeline_status = PipelineStatus.queued
-        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
-        doc.error = None
-        doc_ids.append(doc.doc_id)
-        count += 1
+    count = await _bulk_queue_reprocess_all_skip_summarize(session)
 
     await log_audit(
         session,
@@ -851,31 +1375,8 @@ async def reprocess_all_skip_summarize(
         action="reprocess_all_skip_summarize",
         detail={"reprocessed_count": count, "skipped_stages": ["summarize"]},
     )
+    await _notify_bulk_queue(session, "io", count)
     await session.commit()
-
-    # Reset jobs, then pre-insert the summarize "skip marker" row, then
-    # enqueue extract. Order matters: reset_jobs deletes prior job rows
-    # (including any summarize), so the skip marker must come after it.
-    for doc_id in doc_ids:
-        reset_jobs(doc_id)
-        sync_session = get_sync_session()
-        try:
-            now = datetime.now(UTC)
-            sync_session.add(
-                IngestionJob(
-                    doc_id=doc_id,
-                    stage=JobStage.summarize,
-                    status=JobStatus.done,
-                    started_at=now,
-                    finished_at=now,
-                    metrics={"skipped": True, "reason": "reprocess_all_skip_summarize"},
-                    priority=0,
-                )
-            )
-            sync_session.commit()
-        finally:
-            sync_session.close()
-        enqueue_stage(doc_id, JobStage.extract)
 
     logger.info("Reprocess-all-skip-summarize: %d documents queued", count)
     return {"reprocessed": count, "skipped_stages": ["summarize"]}
@@ -891,33 +1392,39 @@ async def resummarize_all(
     Useful after upgrading the LLM model or changing summary settings.
     Skips documents that have no chunks (not yet fully ingested).
     """
-    from harbor_clerk.worker.pipeline import enqueue_stage
-
-    # Find active documents that are ready (pipeline complete)
-    result = await session.execute(
-        select(Document.doc_id).where(
-            Document.status == "active",
-            Document.pipeline_status == PipelineStatus.ready,
-        )
-    )
-    doc_ids_ready = [row[0] for row in result.all()]
+    count = await _bulk_queue_resummarize_all(session)
 
     await log_audit(
         session,
         user_id=admin.id,
         action="resummarize_all",
-        detail={"resummarized_count": len(doc_ids_ready)},
+        detail={"resummarized_count": count},
     )
+    await _notify_bulk_queue(session, "llm", count)
     await session.commit()
-
-    # Enqueue summarize jobs outside the async session (sync calls)
-    count = 0
-    for did in doc_ids_ready:
-        enqueue_stage(did, JobStage.summarize)
-        count += 1
 
     logger.info("Resummarize-all: %d documents queued", count)
     return {"resummarized": count}
+
+
+@router.post("/system/clear-redundant-summary-backlog")
+async def clear_redundant_summary_backlog(
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Clear queued summarize jobs for documents that already have summaries."""
+    cleared = await _clear_redundant_summary_backlog(session)
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="clear_redundant_summary_backlog",
+        detail={"cleared": cleared},
+    )
+    await session.commit()
+
+    logger.info("Cleared %d redundant queued summarize jobs", cleared)
+    return {"cleared": cleared}
 
 
 @router.post("/system/delete-all-documents")
@@ -1107,8 +1614,13 @@ async def get_summary_backlog(
         await session.execute(
             select(func.count())
             .select_from(IngestionJob)
-            .where(IngestionJob.stage == JobStage.summarize)
-            .where(IngestionJob.status.in_((JobStatus.queued, JobStatus.running)))
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.status.in_((JobStatus.queued, JobStatus.running)),
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+            )
         )
     ).scalar() or 0
 
@@ -1117,9 +1629,14 @@ async def get_summary_backlog(
         await session.execute(
             select(func.count())
             .select_from(IngestionJob)
-            .where(IngestionJob.stage == JobStage.summarize)
-            .where(IngestionJob.status == JobStatus.done)
-            .where(IngestionJob.finished_at >= ten_min_ago)
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.status == JobStatus.done,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+                IngestionJob.finished_at >= ten_min_ago,
+            )
         )
     ).scalar() or 0
     throughput_per_min = round(completed_in_window / 10.0, 2)
@@ -1129,10 +1646,15 @@ async def get_summary_backlog(
         (
             await session.execute(
                 select(func.extract("epoch", IngestionJob.finished_at - IngestionJob.started_at).label("dur"))
-                .where(IngestionJob.stage == JobStage.summarize)
-                .where(IngestionJob.status == JobStatus.done)
-                .where(IngestionJob.started_at.is_not(None))
-                .where(IngestionJob.finished_at.is_not(None))
+                .join(Document, Document.doc_id == IngestionJob.doc_id)
+                .where(
+                    Document.status == "active",
+                    IngestionJob.stage == JobStage.summarize,
+                    IngestionJob.status == JobStatus.done,
+                    IngestionJob.pipeline_seq == Document.pipeline_seq,
+                    IngestionJob.started_at.is_not(None),
+                    IngestionJob.finished_at.is_not(None),
+                )
                 .order_by(IngestionJob.finished_at.desc())
                 .limit(100)
             )
@@ -1156,7 +1678,7 @@ async def get_summary_backlog(
         text(
             """
             SELECT gs.ts AS ts,
-                   COUNT(j.job_id) AS depth
+                   COUNT(d.doc_id) AS depth
             FROM generate_series(
                 CAST(:start_ts AS timestamptz),
                 CAST(:end_ts AS timestamptz),
@@ -1166,6 +1688,10 @@ async def get_summary_backlog(
                 ON j.stage = 'summarize'
                AND j.created_at <= gs.ts
                AND (j.finished_at IS NULL OR j.finished_at > gs.ts)
+            LEFT JOIN documents d
+                ON d.doc_id = j.doc_id
+               AND d.status = 'active'
+               AND j.pipeline_seq = d.pipeline_seq
             GROUP BY gs.ts
             ORDER BY gs.ts
             """

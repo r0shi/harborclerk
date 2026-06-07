@@ -7,22 +7,25 @@ Usage:
 
 import argparse
 import logging
+import math
 import os
 import select as select_mod
 import signal
 import threading
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import NamedTuple
 
 import psycopg2
 import psycopg2.extensions
-from sqlalchemy import case, select, update
+from sqlalchemy import and_, case, or_, select, update
 
-from harbor_clerk.config import get_settings
+from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.db_health import panic_on_sentinel_mismatch
 from harbor_clerk.db_sync import _make_sync_url, get_sync_session
 from harbor_clerk.events import publish_job_event
+from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError
 from harbor_clerk.models import Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.worker.pipeline import _BACKGROUND_STAGES, STAGE_CONFIG
@@ -48,8 +51,18 @@ QUEUE_STAGES: dict[str, list[JobStage]] = {
 }
 
 HEARTBEAT_INTERVAL = 30  # seconds
+AFM_RETRY_DELAYS_SECONDS = (1, 5, 10, 30, 60, 120, 300, 600)
+AFM_RETRY_MAX_ATTEMPTS = len(AFM_RETRY_DELAYS_SECONDS) + 1
+AFM_RETRY_REASON = "apple_intelligence_unavailable"
 
 _shutdown = False
+
+
+class _AfmUnavailableJobResult(NamedTuple):
+    disposition: str
+    attempts: int
+    delay_seconds: int | None
+    retry_after: datetime | None
 
 
 def _resolve_tmpdir_symlinks() -> None:
@@ -122,7 +135,69 @@ def _wait_for_notify(conn, timeout=30):
             conn.notifies.pop(0)
 
 
-def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, stop_event: threading.Event):
+def _afm_retry_delay_seconds(attempt: int) -> int:
+    """Exponential retry delay for forced-AFM summarize outages."""
+    bounded_attempt = max(1, attempt)
+    index = min(bounded_attempt - 1, len(AFM_RETRY_DELAYS_SECONDS) - 1)
+    return AFM_RETRY_DELAYS_SECONDS[index]
+
+
+def _summarize_afm_claim_state(stages: list[JobStage]) -> tuple[bool, tuple[float, str] | None]:
+    """Return whether forced AFM is active and any current cooldown."""
+    if JobStage.summarize not in stages:
+        return False, None
+    refresh_llm_settings()
+    if not get_settings().summary_force_apple_intelligence:
+        return False, None
+    from harbor_clerk.llm.summarize import apple_intelligence_cooldown
+
+    return True, apple_intelligence_cooldown()
+
+
+def _parse_retry_after(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _next_afm_retry_wait_seconds(stages: list[JobStage], *, default: int = 30) -> int:
+    """Return an idle wait that wakes when the next forced-AFM retry is due."""
+    forced_afm_summaries, _ = _summarize_afm_claim_state(stages)
+    if not forced_afm_summaries:
+        return default
+
+    session = get_sync_session()
+    try:
+        retry_after = session.execute(
+            select(IngestionJob.metrics["retry_after"].astext)
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.status == JobStatus.queued,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+                IngestionJob.metrics["reason"].astext == AFM_RETRY_REASON,
+            )
+            .order_by(IngestionJob.metrics["retry_after"].astext.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+    finally:
+        session.close()
+
+    parsed = _parse_retry_after(retry_after)
+    if parsed is None:
+        return default
+    remaining = (parsed - datetime.now(UTC)).total_seconds()
+    return max(1, min(default, math.ceil(remaining)))
+
+
+def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, stop_event: threading.Event):
     """Update heartbeat_at every HEARTBEAT_INTERVAL seconds until stop_event is set."""
     while not stop_event.wait(timeout=HEARTBEAT_INTERVAL):
         session = get_sync_session()
@@ -132,6 +207,7 @@ def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, stop_event: threading.Ev
                 .where(
                     IngestionJob.doc_id == doc_id,
                     IngestionJob.stage == stage,
+                    IngestionJob.pipeline_seq == pipeline_seq,
                 )
                 .values(heartbeat_at=datetime.now(UTC))
             )
@@ -142,10 +218,70 @@ def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, stop_event: threading.Ev
             session.close()
 
 
-def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
+def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int] | None:
     """Atomically claim the next queued job using SELECT ... FOR UPDATE SKIP LOCKED."""
+    stages_to_claim = list(stages)
+    forced_afm_summaries, afm_cooldown = _summarize_afm_claim_state(stages_to_claim)
+    if afm_cooldown is not None:
+        remaining, reason = afm_cooldown
+        stages_to_claim = [stage for stage in stages_to_claim if stage != JobStage.summarize]
+        logger.info(
+            "Skipping summarize claims while Apple Intelligence is cooling down (%.0fs remaining: %s)",
+            remaining,
+            reason,
+        )
+        if not stages_to_claim:
+            return None
+
+    now_iso = datetime.now(UTC).isoformat()
+    filters = [
+        IngestionJob.status == JobStatus.queued,
+        IngestionJob.stage.in_(stages_to_claim),
+        IngestionJob.pipeline_seq == Document.pipeline_seq,
+        Document.status == "active",
+    ]
+
     session = get_sync_session()
     try:
+        afm_retry_pending = False
+        if forced_afm_summaries and JobStage.summarize in stages_to_claim:
+            afm_retry_pending = (
+                session.execute(
+                    select(IngestionJob.job_id)
+                    .join(Document, Document.doc_id == IngestionJob.doc_id)
+                    .where(
+                        Document.status == "active",
+                        IngestionJob.stage == JobStage.summarize,
+                        IngestionJob.status == JobStatus.queued,
+                        IngestionJob.pipeline_seq == Document.pipeline_seq,
+                        IngestionJob.metrics["reason"].astext == AFM_RETRY_REASON,
+                    )
+                    .limit(1)
+                ).first()
+                is not None
+            )
+            if afm_retry_pending:
+                filters.append(
+                    or_(
+                        IngestionJob.stage != JobStage.summarize,
+                        and_(
+                            IngestionJob.metrics["reason"].astext == AFM_RETRY_REASON,
+                            or_(
+                                IngestionJob.metrics["retry_after"].astext.is_(None),
+                                IngestionJob.metrics["retry_after"].astext <= now_iso,
+                            ),
+                        ),
+                    )
+                )
+            else:
+                filters.append(
+                    or_(
+                        IngestionJob.stage != JobStage.summarize,
+                        IngestionJob.metrics["retry_after"].astext.is_(None),
+                        IngestionJob.metrics["retry_after"].astext <= now_iso,
+                    )
+                )
+
         # Prioritise stages closest to completion so fast final stages
         # (finalize, entities) aren't starved by slow ones (summarize).
         stage_priority = case(
@@ -156,13 +292,21 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
             (IngestionJob.stage == JobStage.summarize, 4),
             else_=5,
         )
+        retry_probe_priority = case(
+            (
+                and_(
+                    IngestionJob.stage == JobStage.summarize,
+                    IngestionJob.metrics["reason"].astext == AFM_RETRY_REASON,
+                ),
+                0,
+            ),
+            else_=1,
+        )
         row = session.execute(
             select(IngestionJob)
-            .where(
-                IngestionJob.status == JobStatus.queued,
-                IngestionJob.stage.in_(stages),
-            )
-            .order_by(IngestionJob.priority, stage_priority, IngestionJob.created_at)
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(*filters)
+            .order_by(IngestionJob.priority, retry_probe_priority, stage_priority, IngestionJob.created_at)
             .limit(1)
             .with_for_update(skip_locked=True)
         ).scalar_one_or_none()
@@ -176,8 +320,9 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage] | None:
         row.heartbeat_at = now
         doc_id = row.doc_id
         stage = row.stage
+        pipeline_seq = row.pipeline_seq
         session.commit()
-        return (doc_id, stage)
+        return (doc_id, stage, pipeline_seq)
     except Exception:
         session.rollback()
         raise
@@ -198,16 +343,91 @@ def _lookup_filename(doc_id: uuid.UUID) -> str | None:
             if doc.source_path:
                 return posixpath.basename(doc.source_path)
             return "unknown"
-        return None
     finally:
         session.close()
 
 
-def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
+def _record_afm_unavailable_job(
+    doc_id: uuid.UUID,
+    stage: JobStage,
+    pipeline_seq: int,
+    error_msg: str,
+) -> _AfmUnavailableJobResult | None:
+    if stage != JobStage.summarize:
+        return None
+
+    now = datetime.now(UTC)
+    session = get_sync_session()
+    try:
+        job = session.execute(
+            select(IngestionJob).where(
+                IngestionJob.doc_id == doc_id,
+                IngestionJob.stage == stage,
+            )
+        ).scalar_one_or_none()
+        if job is None or job.pipeline_seq != pipeline_seq:
+            return None
+
+        metrics = dict(job.metrics or {})
+        attempts = int(metrics.get("retry_attempts") or 0) + 1
+        metrics.update(
+            {
+                "reason": AFM_RETRY_REASON,
+                "retry_attempts": attempts,
+                "last_error": error_msg,
+                "last_failed_at": now.isoformat(),
+            }
+        )
+        if attempts >= AFM_RETRY_MAX_ATTEMPTS:
+            metrics["blocked"] = False
+            metrics["retry_exhausted"] = True
+            metrics.pop("retry_after", None)
+            job.status = JobStatus.error
+            job.error = error_msg
+            job.metrics = metrics
+            job.finished_at = now
+            job.heartbeat_at = None
+            session.commit()
+            return _AfmUnavailableJobResult("error", attempts, None, None)
+
+        delay_seconds = _afm_retry_delay_seconds(attempts)
+        retry_after = now + timedelta(seconds=delay_seconds)
+        metrics.update(
+            {
+                "blocked": True,
+                "retry_after": retry_after.isoformat(),
+            }
+        )
+
+        job.status = JobStatus.queued
+        job.error = None
+        job.metrics = metrics
+        job.started_at = None
+        job.finished_at = None
+        job.heartbeat_at = None
+        job.progress_current = 0
+        job.progress_total = 0
+        session.commit()
+        return _AfmUnavailableJobResult("retry", attempts, delay_seconds, retry_after)
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = None) -> None:
     """Run a stage function with timeout enforcement via signal.alarm() and heartbeat."""
     _, timeout, _ = STAGE_CONFIG[stage]
     func = STAGE_FUNCTIONS[stage]
     filename = _lookup_filename(doc_id)
+    if pipeline_seq is None:
+        session = get_sync_session()
+        try:
+            pipeline_seq = session.execute(select(Document.pipeline_seq).where(Document.doc_id == doc_id)).scalar()
+            pipeline_seq = pipeline_seq or 0
+        finally:
+            session.close()
 
     logger.info("Starting %s for doc %s (timeout=%ds)", stage.value, doc_id, timeout)
     publish_job_event(doc_id, stage.value, "running", filename=filename)
@@ -216,7 +436,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
     stop_heartbeat = threading.Event()
     hb_thread = threading.Thread(
         target=_heartbeat_loop,
-        args=(doc_id, stage, stop_heartbeat),
+        args=(doc_id, stage, pipeline_seq, stop_heartbeat),
         daemon=True,
     )
     hb_thread.start()
@@ -227,7 +447,42 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(timeout)
     try:
-        func(doc_id)
+        func(doc_id, worker_seq=pipeline_seq)
+    except AppleIntelligenceUnavailableError as e:
+        error_msg = f"{type(e).__name__}: {e}"
+        disposition = _record_afm_unavailable_job(doc_id, stage, pipeline_seq, error_msg)
+        if disposition is None:
+            logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
+            publish_job_event(doc_id, stage.value, "error", error=error_msg, filename=filename)
+        elif disposition.disposition == "error":
+            logger.error(
+                "Job %s/%s failed after %d Apple Intelligence retry attempts: %s",
+                doc_id,
+                stage.value,
+                disposition.attempts,
+                error_msg,
+            )
+            publish_job_event(doc_id, stage.value, "error", error=error_msg, filename=filename)
+        else:
+            assert disposition.delay_seconds is not None
+            assert disposition.retry_after is not None
+            logger.warning(
+                "Job %s/%s blocked by Apple Intelligence; retry attempt %d/%d in %ds at %s",
+                doc_id,
+                stage.value,
+                disposition.attempts,
+                AFM_RETRY_MAX_ATTEMPTS,
+                disposition.delay_seconds,
+                disposition.retry_after.isoformat(),
+            )
+            publish_job_event(
+                doc_id,
+                stage.value,
+                "queued",
+                filename=filename,
+                error=error_msg,
+                retry_after=disposition.retry_after.isoformat(),
+            )
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
         logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
@@ -240,10 +495,12 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
                     IngestionJob.stage == stage,
                 )
             ).scalar_one_or_none()
-            if job:
+            if job and job.pipeline_seq == pipeline_seq:
                 job.status = JobStatus.error
                 job.error = error_msg
                 job.finished_at = datetime.now(UTC)
+                if stage == JobStage.summarize and (job.metrics or {}).get("reason") == AFM_RETRY_REASON:
+                    job.metrics = {}
 
             # Background stages (summarize) must not touch pipeline_status —
             # it reflects the gating-stage progression only. The doc may
@@ -254,7 +511,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage) -> None:
             # already enforce this for the success path; the error path
             # missed the memo when PR #327 moved summarize to background.
             doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
-            if doc and stage not in _BACKGROUND_STAGES:
+            if doc and doc.pipeline_seq == pipeline_seq and stage not in _BACKGROUND_STAGES:
                 doc.pipeline_status = PipelineStatus.error
                 doc.error = error_msg
 
@@ -346,7 +603,7 @@ def main():
             if result:
                 execute_job(*result)
             else:
-                _wait_for_notify(listen_conn, timeout=30)
+                _wait_for_notify(listen_conn, timeout=_next_afm_retry_wait_seconds(stages))
     finally:
         listen_conn.close()
         logger.info("Worker shut down")

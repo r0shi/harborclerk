@@ -35,7 +35,7 @@ interface StatusIssue {
   count?: number
   action_label?: string
   action_href?: string
-  action_kind?: 'reaper'
+  action_kind?: 'reaper' | 'repair_completed_statuses'
 }
 
 interface StatusDoc {
@@ -55,12 +55,21 @@ interface StatusSummary {
   counts: {
     active_documents: number
     ready_documents: number
+    stored_ready_documents?: number
     processing_documents: number
+    summarizing_documents?: number
     pipeline_processing_documents?: number
     stranded_documents: number
+    completed_status_stale_documents?: number
     failed_documents: number
+    failed_summarize_jobs?: number
+    blocked_summarize_jobs?: number
     queued_jobs: number
     running_jobs: number
+    summarizing_queued_jobs?: number
+    summarizing_running_jobs?: number
+    total_queued_jobs?: number
+    total_running_jobs?: number
     failed_jobs: number
     watched_folders: number
     unavailable_folders: number
@@ -96,7 +105,11 @@ function hasErrorIssue(items: StatusIssue[]): boolean {
   return items.some((item) => item.severity === 'error')
 }
 
-function stateLabel(state: StatusSummary['state'] | undefined, attentionItems: StatusIssue[] = []): string {
+function stateLabel(
+  state: StatusSummary['state'] | undefined,
+  attentionItems: StatusIssue[] = [],
+  summary: StatusSummary | null = null,
+): string {
   if (state === 'needs_attention') {
     const errorItems = attentionItems.filter((item) => item.severity === 'error')
     if (errorItems.length === 0) return 'Review'
@@ -108,7 +121,13 @@ function stateLabel(state: StatusSummary['state'] | undefined, attentionItems: S
     if (issue.kind === 'service_health') return 'Service issue'
     return 'Action needed'
   }
-  if (state === 'processing') return 'Processing'
+  if (state === 'processing') {
+    const foregroundProcessing = (summary?.counts.processing_documents ?? 0) > 0
+    const foregroundJobs = (summary?.counts.queued_jobs ?? 0) + (summary?.counts.running_jobs ?? 0)
+    const summarizing = (summary?.counts.summarizing_documents ?? 0) > 0
+    if (!foregroundProcessing && foregroundJobs === 0 && summarizing) return 'Summarizing'
+    return 'Processing'
+  }
   return 'Ready'
 }
 
@@ -132,6 +151,7 @@ export default function SystemStatusPage() {
   const [error, setError] = useState('')
   const [actionResult, setActionResult] = useState('')
   const [reaperRunning, setReaperRunning] = useState(false)
+  const [statusRepairRunning, setStatusRepairRunning] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
 
   async function loadHealth() {
@@ -225,6 +245,21 @@ export default function SystemStatusPage() {
     }
   }
 
+  async function handleRepairCompletedStatuses() {
+    setError('')
+    setActionResult('')
+    setStatusRepairRunning(true)
+    try {
+      const data = await post<{ repaired: number }>('/api/system/repair-completed-statuses')
+      setActionResult(`Repaired ${data.repaired} completed document status${data.repaired === 1 ? '' : 'es'}.`)
+      await loadSummary()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to repair completed document statuses')
+    } finally {
+      setStatusRepairRunning(false)
+    }
+  }
+
   const serviceIssues = useMemo<StatusIssue[]>(() => {
     if (!health) return []
     const failed = Object.entries(health.checks).filter(([, status]) => !serviceIsOk(status))
@@ -289,7 +324,7 @@ export default function SystemStatusPage() {
             </div>
             <StatusPill
               state={statePill(displayState, attentionItems)}
-              label={stateLabel(displayState, attentionItems)}
+              label={stateLabel(displayState, attentionItems, summary)}
             />
           </div>
           <ReadinessChecklist summary={summary} health={health} llmState={llmStatus.state} />
@@ -301,8 +336,24 @@ export default function SystemStatusPage() {
             <MetricTile label="Documents" value={summary?.counts.active_documents ?? 0} />
             <MetricTile label="Ready" value={summary?.counts.ready_documents ?? 0} />
             <MetricTile label="Processing" value={summary?.counts.processing_documents ?? 0} />
+            {(summary?.counts.summarizing_documents ?? 0) > 0 && (
+              <MetricTile label="Summarizing" value={summary?.counts.summarizing_documents ?? 0} />
+            )}
+            {(summary?.counts.completed_status_stale_documents ?? 0) > 0 && (
+              <MetricTile
+                label="Status cleanup"
+                value={summary?.counts.completed_status_stale_documents ?? 0}
+                tone="warning"
+              />
+            )}
             {(summary?.counts.stranded_documents ?? 0) > 0 && (
-              <MetricTile label="Stale state" value={summary?.counts.stranded_documents ?? 0} tone="warning" />
+              <MetricTile label="Needs recovery" value={summary?.counts.stranded_documents ?? 0} tone="warning" />
+            )}
+            {(summary?.counts.failed_summarize_jobs ?? 0) > 0 && (
+              <MetricTile label="Summary failures" value={summary?.counts.failed_summarize_jobs ?? 0} tone="warning" />
+            )}
+            {(summary?.counts.blocked_summarize_jobs ?? 0) > 0 && (
+              <MetricTile label="Summary paused" value={summary?.counts.blocked_summarize_jobs ?? 0} tone="warning" />
             )}
             <MetricTile label="Failed" value={summary?.counts.failed_documents ?? 0} tone="error" />
             <MetricTile label="Queued jobs" value={summary?.counts.queued_jobs ?? 0} />
@@ -336,7 +387,14 @@ export default function SystemStatusPage() {
         ) : (
           <div className="grid gap-3">
             {attentionItems.map((issue) => (
-              <IssueCard key={issue.kind} issue={issue} reaperRunning={reaperRunning} onRunReaper={handleReaperRun} />
+              <IssueCard
+                key={issue.kind}
+                issue={issue}
+                reaperRunning={reaperRunning}
+                statusRepairRunning={statusRepairRunning}
+                onRunReaper={handleReaperRun}
+                onRepairCompletedStatuses={handleRepairCompletedStatuses}
+              />
             ))}
           </div>
         )}
@@ -395,7 +453,20 @@ function ReadinessChecklist({
   const foldersReady = (summary?.counts.watched_folders ?? 0) > 0 && (summary?.counts.unavailable_folders ?? 0) === 0
   const docsOk = (summary?.counts.failed_documents ?? 0) === 0
   const activeJobs = (summary?.counts.queued_jobs ?? 0) + (summary?.counts.running_jobs ?? 0)
-  const processing = (summary?.counts.processing_documents ?? 0) > 0 || activeJobs > 0
+  const processingDocs = summary?.counts.processing_documents ?? 0
+  const summarizingDocs = summary?.counts.summarizing_documents ?? 0
+  const summarizingJobs =
+    (summary?.counts.summarizing_queued_jobs ?? 0) + (summary?.counts.summarizing_running_jobs ?? 0)
+  const processing = processingDocs > 0 || activeJobs > 0 || summarizingDocs > 0 || summarizingJobs > 0
+  const ingestionDetail = processingDocs
+    ? `${processingDocs.toLocaleString()} document${processingDocs === 1 ? '' : 's'} processing`
+    : activeJobs
+      ? `${activeJobs.toLocaleString()} active job${activeJobs === 1 ? '' : 's'}`
+      : summarizingDocs
+        ? `${summarizingDocs.toLocaleString()} summarizing`
+        : summarizingJobs
+          ? `${summarizingJobs.toLocaleString()} summary job${summarizingJobs === 1 ? '' : 's'}`
+          : 'No active processing'
   const localAiLabel =
     llmState === 'ready'
       ? 'ready'
@@ -436,15 +507,7 @@ function ReadinessChecklist({
         state={docsOk ? 'active' : 'error'}
         detail={docsOk ? 'No ingest failures' : 'Failures need review'}
       />
-      <CheckRow
-        label="Ingestion"
-        state={processing ? 'running' : 'active'}
-        detail={
-          processing
-            ? `${activeJobs.toLocaleString()} active job${activeJobs === 1 ? '' : 's'}`
-            : 'No active processing'
-        }
-      />
+      <CheckRow label="Ingestion" state={processing ? 'running' : 'active'} detail={ingestionDetail} />
       <CheckRow label="Local AI" state={localAiState} detail={localAiLabel} />
     </div>
   )
@@ -489,11 +552,15 @@ function MetricTile({
 function IssueCard({
   issue,
   reaperRunning,
+  statusRepairRunning,
   onRunReaper,
+  onRepairCompletedStatuses,
 }: {
   issue: StatusIssue
   reaperRunning: boolean
+  statusRepairRunning: boolean
   onRunReaper: () => void
+  onRepairCompletedStatuses: () => void
 }) {
   const pillState: PillState = issue.severity === 'error' ? 'error' : 'pending'
   return (
@@ -513,6 +580,14 @@ function IssueCard({
             className="rounded-lg bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
           >
             {reaperRunning ? 'Recovering...' : issue.action_label || 'Recover'}
+          </button>
+        ) : issue.action_kind === 'repair_completed_statuses' ? (
+          <button
+            onClick={onRepairCompletedStatuses}
+            disabled={statusRepairRunning}
+            className="rounded-lg bg-(--color-accent) px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+          >
+            {statusRepairRunning ? 'Repairing...' : issue.action_label || 'Repair statuses'}
           </button>
         ) : issue.action_href && issue.action_label ? (
           <Link

@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.db_sync import get_sync_session
 from harbor_clerk.events import publish_job_event
@@ -113,12 +114,184 @@ STAGE_DONE_STATUS: dict[JobStage, PipelineStatus] = {
 }
 
 
+async def _notify_queue_async(session: AsyncSession, queue_name: str) -> None:
+    await session.execute(
+        text("SELECT pg_notify(:channel, :payload)"),
+        {"channel": f"job_enqueued_{queue_name}", "payload": "bulk"},
+    )
+
+
+async def queue_extract_for_current_pipeline(
+    session: AsyncSession,
+    doc_id: uuid.UUID,
+    *,
+    priority: int = 0,
+) -> int | None:
+    """Queue extract for the document's current generation in one transaction.
+
+    Used by create/confirm paths where the caller has already created or
+    updated the Document row in the same async session.
+    """
+    result = await session.execute(
+        text(
+            """
+            WITH target_doc AS (
+                UPDATE documents
+                SET pipeline_status = 'extracting'::pipeline_status,
+                    error = NULL
+                WHERE doc_id = :doc_id
+                  AND status = 'active'
+                RETURNING doc_id, pipeline_seq
+            ),
+            queued_extract AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    pipeline_seq,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'extract'::job_stage,
+                    'queued'::job_status,
+                    pipeline_seq,
+                    0,
+                    0,
+                    '{}'::jsonb,
+                    :priority,
+                    NULL,
+                    now(),
+                    NULL,
+                    NULL,
+                    NULL
+                FROM target_doc
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'queued'::job_status,
+                    pipeline_seq = EXCLUDED.pipeline_seq,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{}'::jsonb,
+                    priority = EXCLUDED.priority,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    heartbeat_at = NULL
+                RETURNING pipeline_seq
+            )
+            SELECT pipeline_seq FROM queued_extract
+            """
+        ),
+        {"doc_id": doc_id, "priority": priority},
+    )
+    row = result.first()
+    if row is None:
+        return None
+    await _notify_queue_async(session, "io")
+    return int(row[0])
+
+
+async def reset_and_queue_extract_for_doc(
+    session: AsyncSession,
+    doc_id: uuid.UUID,
+    *,
+    priority: int = 0,
+) -> int | None:
+    """Bump a document generation, reset jobs, and queue extract atomically."""
+    result = await session.execute(
+        text(
+            """
+            WITH target_doc AS (
+                UPDATE documents
+                SET pipeline_status = 'extracting'::pipeline_status,
+                    pipeline_seq = COALESCE(pipeline_seq, 0) + 1,
+                    error = NULL
+                WHERE doc_id = :doc_id
+                  AND status = 'active'
+                RETURNING doc_id, pipeline_seq
+            ),
+            deleted_other_jobs AS (
+                DELETE FROM ingestion_jobs AS job
+                USING target_doc
+                WHERE job.doc_id = target_doc.doc_id
+                  AND job.stage <> 'extract'::job_stage
+                RETURNING job.job_id
+            ),
+            queued_extract AS (
+                INSERT INTO ingestion_jobs (
+                    doc_id,
+                    stage,
+                    status,
+                    pipeline_seq,
+                    progress_current,
+                    progress_total,
+                    metrics,
+                    priority,
+                    error,
+                    created_at,
+                    started_at,
+                    finished_at,
+                    heartbeat_at
+                )
+                SELECT
+                    doc_id,
+                    'extract'::job_stage,
+                    'queued'::job_status,
+                    pipeline_seq,
+                    0,
+                    0,
+                    '{}'::jsonb,
+                    :priority,
+                    NULL,
+                    now(),
+                    NULL,
+                    NULL,
+                    NULL
+                FROM target_doc
+                ON CONFLICT (doc_id, stage) DO UPDATE SET
+                    status = 'queued'::job_status,
+                    pipeline_seq = EXCLUDED.pipeline_seq,
+                    progress_current = 0,
+                    progress_total = 0,
+                    metrics = '{}'::jsonb,
+                    priority = EXCLUDED.priority,
+                    error = NULL,
+                    created_at = now(),
+                    started_at = NULL,
+                    finished_at = NULL,
+                    heartbeat_at = NULL
+                RETURNING pipeline_seq
+            )
+            SELECT pipeline_seq FROM queued_extract
+            """
+        ),
+        {"doc_id": doc_id, "priority": priority},
+    )
+    row = result.first()
+    if row is None:
+        return None
+    await _notify_queue_async(session, "io")
+    return int(row[0])
+
+
 def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> None:
     """Upsert IngestionJob row as queued and notify workers."""
     queue_name, timeout, running_status = STAGE_CONFIG[stage]
 
     session = get_sync_session()
     try:
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+        current_seq = doc.pipeline_seq or 0
+
         # Upsert ingestion job
         existing = session.execute(
             select(IngestionJob).where(
@@ -128,16 +301,18 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
         ).scalar_one_or_none()
 
         if existing is not None:
-            if existing.status in (JobStatus.queued, JobStatus.running):
+            if existing.status in (JobStatus.queued, JobStatus.running) and existing.pipeline_seq == current_seq:
                 # Already enqueued or running (e.g. concurrent advance_pipeline calls) — skip
                 session.close()
                 return
             existing.status = JobStatus.queued
+            existing.pipeline_seq = current_seq
             existing.error = None
             existing.progress_current = 0
             existing.progress_total = 0
             existing.started_at = None
             existing.finished_at = None
+            existing.heartbeat_at = None
             # Re-enqueue is logically a fresh cycle; the depth-history query
             # in /system/summary-backlog uses created_at <= ts AND
             # (finished_at IS NULL OR finished_at > ts) to estimate
@@ -152,6 +327,7 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
                 doc_id=doc_id,
                 stage=stage,
                 status=JobStatus.queued,
+                pipeline_seq=current_seq,
                 priority=priority,
             )
             session.add(job)
@@ -160,7 +336,6 @@ def enqueue_stage(doc_id: uuid.UUID, stage: JobStage, *, priority: int = 0) -> N
         # touch it. The doc may already be `ready` when summarize is
         # enqueued, and we don't want the badge to regress. See the
         # matching guard in mark_stage_done.
-        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
         if stage not in _BACKGROUND_STAGES:
             doc.pipeline_status = running_status
         doc.error = None
@@ -211,6 +386,9 @@ def _mark_skipped(
     if reason:
         metrics["reason"] = reason
 
+    doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
+    current_seq = doc.pipeline_seq or 0
+
     existing = session.execute(
         select(IngestionJob).where(
             IngestionJob.doc_id == doc_id,
@@ -223,6 +401,7 @@ def _mark_skipped(
                 doc_id=doc_id,
                 stage=stage,
                 status=JobStatus.done,
+                pipeline_seq=current_seq,
                 started_at=now,
                 finished_at=now,
                 metrics=metrics,
@@ -231,11 +410,11 @@ def _mark_skipped(
         )
     else:
         existing.status = JobStatus.done
+        existing.pipeline_seq = current_seq
         existing.finished_at = now
         existing.metrics = metrics
         existing.priority = priority
 
-    doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
     doc.pipeline_status = pipeline_status
     session.commit()
     publish_job_event(doc_id, stage.value, "done", filename=filename)
@@ -254,9 +433,19 @@ def advance_pipeline(doc_id: uuid.UUID) -> None:
     try:
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
         filename = _doc_filename(doc)
+        current_seq = doc.pipeline_seq or 0
 
         # Gather completed and in-flight stages
-        all_jobs = session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc_id)).scalars().all()
+        all_jobs = (
+            session.execute(
+                select(IngestionJob).where(
+                    IngestionJob.doc_id == doc_id,
+                    IngestionJob.pipeline_seq == current_seq,
+                )
+            )
+            .scalars()
+            .all()
+        )
         # Propagate priority from completed jobs
         priority = max((j.priority for j in all_jobs if j.priority), default=0)
         completed = {j.stage for j in all_jobs if j.status == JobStatus.done}
@@ -378,28 +567,29 @@ def mark_stage_done(
     session = get_sync_session()
     filename = ""
     try:
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
+        if doc is None:
+            logger.warning(
+                "mark_stage_done: doc %s no longer exists, skipping mark-done for %s",
+                doc_id,
+                stage.value,
+            )
+            return
+        current_seq = doc.pipeline_seq or 0
+        if worker_seq is None:
+            worker_seq = current_seq
+
         # Race check: did pipeline_seq bump while we were running?
-        if worker_seq is not None:
-            current_seq = session.execute(
-                select(Document.pipeline_seq).where(Document.doc_id == doc_id)
-            ).scalar_one_or_none()
-            if current_seq is None:
-                logger.warning(
-                    "mark_stage_done: doc %s no longer exists, skipping mark-done for %s",
-                    doc_id,
-                    stage.value,
-                )
-                return
-            if current_seq != worker_seq:
-                logger.info(
-                    "mark_stage_done: pipeline_seq bumped during %s for %s "
-                    "(worker=%s, current=%s) — skipping mark-done; new pipeline owns it",
-                    stage.value,
-                    doc_id,
-                    worker_seq,
-                    current_seq,
-                )
-                return
+        if current_seq != worker_seq:
+            logger.info(
+                "mark_stage_done: pipeline_seq bumped during %s for %s "
+                "(worker=%s, current=%s) — skipping mark-done; new pipeline owns it",
+                stage.value,
+                doc_id,
+                worker_seq,
+                current_seq,
+            )
+            return
 
         job = session.execute(
             select(IngestionJob).where(
@@ -416,10 +606,20 @@ def mark_stage_done(
                 stage.value,
             )
             return
+        if job.pipeline_seq != worker_seq:
+            logger.info(
+                "mark_stage_done: job generation mismatch for doc=%s stage=%s (worker=%s, job=%s)",
+                doc_id,
+                stage.value,
+                worker_seq,
+                job.pipeline_seq,
+            )
+            return
         job.status = JobStatus.done
         job.finished_at = datetime.now(UTC)
+        if stage == JobStage.summarize and (job.metrics or {}).get("reason") == "apple_intelligence_unavailable":
+            job.metrics = {}
 
-        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
         # Background stages (summarize) never touch pipeline_status — that
         # field reflects the gating-stage progression only. A summarize-
         # before-finalize finish would otherwise prematurely set
@@ -459,26 +659,26 @@ def mark_stage_running(
     session = get_sync_session()
     filename = None
     try:
-        if worker_seq is not None:
-            current_seq = session.execute(
-                select(Document.pipeline_seq).where(Document.doc_id == doc_id)
-            ).scalar_one_or_none()
-            if current_seq is None:
-                logger.info(
-                    "Skipping %s for doc %s — doc no longer exists",
-                    stage.value,
-                    doc_id,
-                )
-                return False
-            if current_seq != worker_seq:
-                logger.info(
-                    "Skipping %s for doc %s — pipeline_seq bumped (worker=%s, current=%s)",
-                    stage.value,
-                    doc_id,
-                    worker_seq,
-                    current_seq,
-                )
-                return False
+        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one_or_none()
+        if doc is None:
+            logger.info(
+                "Skipping %s for doc %s — doc no longer exists",
+                stage.value,
+                doc_id,
+            )
+            return False
+        current_seq = doc.pipeline_seq or 0
+        if worker_seq is None:
+            worker_seq = current_seq
+        if current_seq != worker_seq:
+            logger.info(
+                "Skipping %s for doc %s — pipeline_seq bumped (worker=%s, current=%s)",
+                stage.value,
+                doc_id,
+                worker_seq,
+                current_seq,
+            )
+            return False
 
         job = session.execute(
             select(IngestionJob).where(
@@ -493,6 +693,15 @@ def mark_stage_running(
                 doc_id,
             )
             return False
+        if job.pipeline_seq != worker_seq:
+            logger.info(
+                "Skipping %s for doc %s — job generation mismatch (worker=%s, job=%s)",
+                stage.value,
+                doc_id,
+                worker_seq,
+                job.pipeline_seq,
+            )
+            return False
         if job.status == JobStatus.error:
             logger.info(
                 "Skipping %s for doc %s — already cancelled/errored",
@@ -500,7 +709,6 @@ def mark_stage_running(
                 doc_id,
             )
             return False
-        doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
         filename = _doc_filename(doc)
         session.commit()
     finally:

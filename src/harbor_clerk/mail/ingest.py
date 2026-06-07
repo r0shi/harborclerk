@@ -32,9 +32,9 @@ from harbor_clerk.config import get_settings
 from harbor_clerk.mail.imap_client import IMAPConnection
 from harbor_clerk.mail.parser import EmailParseResult, parse_eml, sanitize_subject_for_filename
 from harbor_clerk.models import Document, WatchedLabel, WatchedMessage
-from harbor_clerk.models.enums import JobStage, PipelineStatus
+from harbor_clerk.models.enums import PipelineStatus
 from harbor_clerk.storage import get_storage
-from harbor_clerk.worker.pipeline import enqueue_stage
+from harbor_clerk.worker.pipeline import queue_extract_for_current_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,6 @@ async def create_email_document(
 
     # storage.put_object is sync (blocking I/O). Wrap in run_in_executor so
     # large attachments don't stall the mail observer's shared event loop.
-    # Same pattern as uploads.py:619 and the enqueue_stage call below.
     storage = get_storage()
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(
@@ -312,13 +311,8 @@ async def ingest_pending_messages(
 
                 msg.email_doc_id = email_doc.doc_id
 
-            # enqueue_stage is sync (uses psycopg2). Run in the default thread executor
-            # so the event loop stays responsive — the mail observer's per-label tasks
-            # all share one event loop, and a large ingest batch could otherwise stall
-            # IMAP IDLE handling for other labels.
-            loop = asyncio.get_running_loop()
             for d in [email_doc, *attachment_docs]:
-                await loop.run_in_executor(None, enqueue_stage, d.doc_id, JobStage.extract)
+                await queue_extract_for_current_pipeline(session, d.doc_id)
 
             new_email_doc_count += 1
             new_attachment_doc_count += len(attachment_docs)

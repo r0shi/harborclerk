@@ -40,9 +40,9 @@ def _resolve_link(target_title: str, candidates_by_name: dict[str, list[uuid.UUI
     return None
 
 
-def run_finalize(doc_id: uuid.UUID) -> None:
+def run_finalize(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     """Complete ingestion: set doc ready, mark upload done."""
-    if not mark_stage_running(doc_id, JobStage.finalize):
+    if not mark_stage_running(doc_id, JobStage.finalize, worker_seq=worker_seq):
         return
 
     page_count = 0
@@ -51,7 +51,8 @@ def run_finalize(doc_id: uuid.UUID) -> None:
     session = get_sync_session()
     try:
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        worker_seq = doc.pipeline_seq
+        if worker_seq is None:
+            worker_seq = doc.pipeline_seq
 
         page_count = session.execute(
             select(func.count()).select_from(DocumentPage).where(DocumentPage.doc_id == doc_id)

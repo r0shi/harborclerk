@@ -213,7 +213,14 @@ def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path:
     session.query(DocumentPage).filter_by(doc_id=doc_id).delete()
     session.query(DocumentHeading).filter_by(doc_id=doc_id).delete()
     session.query(IngestionJob).filter_by(doc_id=doc_id).delete()
-    session.add(IngestionJob(doc_id=doc_id, stage=JobStage.extract, status=JobStatus.queued))
+    session.add(
+        IngestionJob(
+            doc_id=doc_id,
+            stage=JobStage.extract,
+            status=JobStatus.queued,
+            pipeline_seq=doc.pipeline_seq,
+        )
+    )
 
 
 def _try_parse_eml(absolute_path: str) -> EmailParseResult | None:
@@ -307,4 +314,11 @@ def _create_doc_and_enqueue(session: Session, event: FileEvent, sha: bytes) -> N
             status=WatchedFileStatus.active,
         )
     )
-    session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued))
+    session.add(
+        IngestionJob(
+            doc_id=doc.doc_id,
+            stage=JobStage.extract,
+            status=JobStatus.queued,
+            pipeline_seq=doc.pipeline_seq or 0,
+        )
+    )

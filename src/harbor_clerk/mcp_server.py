@@ -31,7 +31,6 @@ from harbor_clerk.models import (
     Entity,
     IngestionJob,
 )
-from harbor_clerk.models.enums import JobStage, PipelineStatus
 from harbor_clerk.oauth import validate_access_token as validate_oauth_access_token
 from harbor_clerk.search import FindAllHit, FindAllResult, SearchHit, SearchResult, find_all, hybrid_search
 from harbor_clerk.source_ref import (
@@ -1692,7 +1691,12 @@ async def kb_get_document(doc_id: str) -> str:
             return json.dumps({"error": "Document not found"})
 
         jobs_result = await session.execute(
-            select(IngestionJob).where(IngestionJob.doc_id == did).order_by(IngestionJob.created_at)
+            select(IngestionJob)
+            .where(
+                IngestionJob.doc_id == did,
+                IngestionJob.pipeline_seq == doc.pipeline_seq,
+            )
+            .order_by(IngestionJob.created_at)
         )
         jobs = [
             {"stage": j.stage.value, "status": j.status.value, "error": j.error} for j in jobs_result.scalars().all()
@@ -1952,7 +1956,12 @@ async def kb_ingest_status(doc_id: str) -> str:
             return json.dumps({"error": "Document not found"})
 
         jobs_result = await session.execute(
-            select(IngestionJob).where(IngestionJob.doc_id == did).order_by(IngestionJob.created_at)
+            select(IngestionJob)
+            .where(
+                IngestionJob.doc_id == did,
+                IngestionJob.pipeline_seq == doc.pipeline_seq,
+            )
+            .order_by(IngestionJob.created_at)
         )
         jobs = [
             {
@@ -1996,15 +2005,10 @@ async def kb_reprocess(doc_id: str) -> str:
         if doc is None:
             return json.dumps({"error": "Document not found"})
 
-        doc.pipeline_status = PipelineStatus.queued
-        doc.pipeline_seq = (doc.pipeline_seq or 0) + 1
-        doc.error = None
+        from harbor_clerk.worker.pipeline import reset_and_queue_extract_for_doc
+
+        await reset_and_queue_extract_for_doc(session, did)
         await session.commit()
-
-    from harbor_clerk.worker.pipeline import enqueue_stage, reset_jobs
-
-    reset_jobs(did)
-    enqueue_stage(did, JobStage.extract)
 
     return json.dumps(
         {

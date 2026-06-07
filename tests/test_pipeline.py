@@ -1,12 +1,13 @@
 """Tests for the worker pipeline orchestrator + pipeline_seq race protection."""
 
 import hashlib
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
 from harbor_clerk.db_sync import get_sync_session
-from harbor_clerk.models import Document, IngestionJob
+from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.worker.pipeline import check_pipeline_seq, mark_stage_done, mark_stage_running
 from harbor_clerk.worker.stages.finalize import run_finalize
@@ -162,7 +163,7 @@ async def test_mark_stage_done_skips_when_seq_bumped(db_session):
     # (In production _reprocess_doc deletes the old job first; here we just create the
     # fresh one — the seq mismatch alone is enough to trigger the guard.)
     doc.pipeline_seq = 1
-    fresh_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued)
+    fresh_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.queued, pipeline_seq=1)
     db_session.add(fresh_job)
     await db_session.commit()
 
@@ -199,7 +200,9 @@ async def test_mark_stage_done_proceeds_when_seq_matches(db_session):
     await db_session.commit()
     await db_session.refresh(doc)
 
-    job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.running)
+    job = IngestionJob(
+        doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.running, pipeline_seq=doc.pipeline_seq
+    )
     db_session.add(job)
     await db_session.commit()
 
@@ -259,13 +262,13 @@ async def test_mark_stage_running_returns_false_when_seq_bumped(db_session):
     await db_session.commit()
     await db_session.refresh(doc)
 
-    job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.running)
+    job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.running, pipeline_seq=2)
     db_session.add(job)
     await db_session.commit()
 
     # Worker thinks seq is 1 (it's actually 2) — should refuse to run
     assert mark_stage_running(doc.doc_id, JobStage.extract, worker_seq=1) is False
-    # No worker_seq passed → no race check, succeeds (back-compat path)
+    # No worker_seq passed → resolves the current generation, succeeds.
     assert mark_stage_running(doc.doc_id, JobStage.extract) is True
 
 
@@ -306,7 +309,7 @@ async def test_run_finalize_aborts_when_seq_bumped_mid_stage(db_session):
     await db_session.refresh(doc)
 
     # Old job that the worker is "processing"
-    old_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.running)
+    old_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.running, pipeline_seq=0)
     db_session.add(old_job)
     await db_session.commit()
 
@@ -316,26 +319,20 @@ async def test_run_finalize_aborts_when_seq_bumped_mid_stage(db_session):
     await db_session.delete(old_job)
     await db_session.flush()
     doc.pipeline_seq = 1
-    fresh_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.queued)
+    fresh_job = IngestionJob(doc_id=doc.doc_id, stage=JobStage.finalize, status=JobStatus.queued, pipeline_seq=1)
     db_session.add(fresh_job)
     await db_session.commit()
 
-    # Old worker now calls run_finalize. Its internal load of doc.pipeline_seq
-    # will read the *new* value (1), so finalize will run to completion against
-    # the fresh job — that's correct behavior. The race-protection test that
-    # matters most is mark_stage_done_skips_when_seq_bumped (above), which
-    # simulates the more dangerous TOCTOU window between data-write commit and
-    # mark_stage_done call.
-    run_finalize(doc.doc_id)
+    # Old worker now calls run_finalize with the generation it claimed. It must
+    # not run to completion against the fresh job for pipeline_seq=1.
+    run_finalize(doc.doc_id, worker_seq=0)
 
     sync_session = get_sync_session()
     try:
-        # The fresh job should be marked done because the worker's effective
-        # seq matched at run_finalize time.
         refreshed_job = sync_session.execute(
             select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.finalize)
         ).scalar_one()
-        assert refreshed_job.status == JobStatus.done
+        assert refreshed_job.status == JobStatus.queued
     finally:
         sync_session.close()
 
@@ -370,7 +367,19 @@ async def test_summarize_done_after_finalize_does_not_regress_status(db_session)
             JobStage.finalize,
         ):
             sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=stage, status=JobStatus.done))
-        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                metrics={
+                    "blocked": True,
+                    "reason": "apple_intelligence_unavailable",
+                    "retry_after": "2026-01-01T00:00:00+00:00",
+                    "retry_attempts": 2,
+                },
+            )
+        )
         sync_session.commit()
     finally:
         sync_session.close()
@@ -388,6 +397,54 @@ async def test_summarize_done_after_finalize_does_not_regress_status(db_session)
             select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
         ).scalar_one()
         assert job.status == JobStatus.done
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_summarize_clears_afm_retry_metadata(db_session):
+    """A recovered AFM retry should not leave done jobs looking blocked."""
+    doc = Document(
+        title="AFM recovered",
+        canonical_filename="afm-recovered.pdf",
+        status="active",
+        sha256=b"r" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.running,
+                pipeline_seq=doc.pipeline_seq,
+                metrics={
+                    "blocked": True,
+                    "reason": "apple_intelligence_unavailable",
+                    "retry_after": "2026-01-01T00:00:00+00:00",
+                    "retry_attempts": 3,
+                    "last_error": "AppleIntelligenceUnavailableError: daemon timed out",
+                },
+            )
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    mark_stage_done(doc.doc_id, JobStage.summarize, worker_seq=doc.pipeline_seq)
+
+    sync_session = get_sync_session()
+    try:
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.done
+        assert job.metrics == {}
     finally:
         sync_session.close()
 
@@ -432,6 +489,57 @@ async def test_summarize_not_in_finalize_gate(db_session):
             select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.finalize)
         ).scalar_one()
         assert finalize_job.status == JobStatus.queued
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_reprocess_regenerates_existing_summary_after_chunk(db_session, monkeypatch):
+    """A full reprocess keeps the old summary text until summarize finishes,
+    but the new pipeline generation must still enqueue summarize again.
+    """
+    from harbor_clerk.worker import pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "_is_ner_available", lambda: True)
+
+    doc = Document(
+        title="Existing summary reprocess",
+        canonical_filename="old-summary.pdf",
+        status="active",
+        sha256=b"s" * 32,
+        needs_ocr=False,
+        pipeline_status=PipelineStatus.chunked,
+        pipeline_seq=3,
+        summary="Old summary that should be regenerated after full reprocess.",
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.extract, status=JobStatus.done, pipeline_seq=3))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.ocr, status=JobStatus.done, pipeline_seq=3))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.chunk, status=JobStatus.done, pipeline_seq=3))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    pipeline_mod.advance_pipeline(doc.doc_id)
+
+    sync_session = get_sync_session()
+    try:
+        jobs = {
+            job.stage: job
+            for job in sync_session.execute(select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id)).scalars()
+        }
+        summarize_job = jobs[JobStage.summarize]
+        assert summarize_job.status == JobStatus.queued
+        assert summarize_job.pipeline_seq == doc.pipeline_seq
+        assert summarize_job.metrics == {}
+
+        refreshed_doc = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed_doc.summary == "Old summary that should be regenerated after full reprocess."
     finally:
         sync_session.close()
 
@@ -529,7 +637,7 @@ async def test_background_stage_error_does_not_poison_pipeline_status(db_session
         sync_session.close()
 
     # Make the summarize stage raise so we exercise the error branch.
-    def _boom(_doc_id):
+    def _boom(_doc_id, *, worker_seq=None):
         raise AttributeError("type object 'ChatMessage' has no attribute 'id'")
 
     from harbor_clerk.worker import entry as entry_mod
@@ -554,6 +662,424 @@ async def test_background_stage_error_does_not_poison_pipeline_status(db_session
         assert "ChatMessage" in (job.error or "")
     finally:
         sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_forced_afm_unavailable_requeues_summarize_with_retry(db_session, monkeypatch):
+    """Forced Apple Intelligence failures should pause summary generation
+    instead of converting every queued summary into a document-level failure."""
+    from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError
+    from harbor_clerk.worker.entry import execute_job
+    from harbor_clerk.worker.stages import summarize as summarize_stage
+
+    doc = Document(
+        title="AFM unavailable",
+        canonical_filename="afm.pdf",
+        status="active",
+        sha256=b"a" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="A substantial document body."))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(summarize_stage, "_wait_for_idle_llm", lambda *args, **kwargs: None)
+
+    def _afm_unavailable(*args, **kwargs):
+        raise AppleIntelligenceUnavailableError(
+            "Apple Intelligence summaries are enabled but unavailable: daemon timed out"
+        )
+
+    monkeypatch.setattr(summarize_stage, "generate_summary", _afm_unavailable)
+
+    execute_job(doc.doc_id, JobStage.summarize)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed.pipeline_status == PipelineStatus.ready
+        assert refreshed.summary is None
+
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.queued
+        assert job.error is None
+        assert job.started_at is None
+        assert job.heartbeat_at is None
+        assert job.metrics["blocked"] is True
+        assert job.metrics["reason"] == "apple_intelligence_unavailable"
+        assert job.metrics["retry_attempts"] == 1
+        assert "AppleIntelligenceUnavailableError" in job.metrics["last_error"]
+        assert "daemon timed out" in job.metrics["last_error"]
+        assert job.metrics["retry_after"]
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_forced_afm_content_rejection_errors_only_that_summary(db_session, monkeypatch):
+    """A per-document Apple safety refusal should not pause the whole summary queue."""
+    from harbor_clerk.llm.summarize import AppleIntelligenceContentRejectedError
+    from harbor_clerk.worker.entry import execute_job
+    from harbor_clerk.worker.stages import summarize as summarize_stage
+
+    doc = Document(
+        title="AFM rejected",
+        canonical_filename="afm-rejected.pdf",
+        status="active",
+        sha256=b"j" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="A substantial document body."))
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                metrics={
+                    "blocked": True,
+                    "reason": "apple_intelligence_unavailable",
+                    "retry_after": "2026-01-01T00:00:00+00:00",
+                    "retry_attempts": 2,
+                },
+            )
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(summarize_stage, "_wait_for_idle_llm", lambda *args, **kwargs: None)
+
+    def _afm_rejected(*args, **kwargs):
+        raise AppleIntelligenceContentRejectedError(
+            "Apple Intelligence refused to summarize this document: Detected content likely to be unsafe"
+        )
+
+    monkeypatch.setattr(summarize_stage, "generate_summary", _afm_rejected)
+
+    execute_job(doc.doc_id, JobStage.summarize)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed.pipeline_status == PipelineStatus.ready
+        assert refreshed.summary is None
+
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.error
+        assert "AppleIntelligenceContentRejectedError" in (job.error or "")
+        assert job.metrics == {}
+        assert job.finished_at is not None
+    finally:
+        sync_session.close()
+
+
+def test_afm_retry_delay_sequence_starts_fast():
+    from harbor_clerk.worker import entry as entry_mod
+
+    delays = [entry_mod._afm_retry_delay_seconds(attempt) for attempt in range(1, 9)]
+    assert delays == [1, 5, 10, 30, 60, 120, 300, 600]
+
+
+@pytest.mark.asyncio
+async def test_forced_afm_unavailable_marks_single_job_error_after_retry_budget(db_session, monkeypatch):
+    """The AFM retry loop eventually declares one job futile without
+    stampeding through the whole summary backlog."""
+    from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError
+    from harbor_clerk.worker import entry as entry_mod
+    from harbor_clerk.worker.stages import summarize as summarize_stage
+
+    doc = Document(
+        title="AFM futile",
+        canonical_filename="afm-futile.pdf",
+        status="active",
+        sha256=b"f" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="A substantial document body."))
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                metrics={
+                    "blocked": True,
+                    "reason": "apple_intelligence_unavailable",
+                    "retry_attempts": entry_mod.AFM_RETRY_MAX_ATTEMPTS - 1,
+                    "retry_after": "2026-01-01T00:00:00+00:00",
+                },
+            )
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(summarize_stage, "_wait_for_idle_llm", lambda *args, **kwargs: None)
+
+    def _afm_unavailable(*args, **kwargs):
+        raise AppleIntelligenceUnavailableError(
+            "Apple Intelligence summaries are enabled but unavailable: daemon timed out"
+        )
+
+    monkeypatch.setattr(summarize_stage, "generate_summary", _afm_unavailable)
+
+    entry_mod.execute_job(doc.doc_id, JobStage.summarize)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed.pipeline_status == PipelineStatus.ready
+
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.error
+        assert "AppleIntelligenceUnavailableError" in (job.error or "")
+        assert job.metrics["retry_attempts"] == entry_mod.AFM_RETRY_MAX_ATTEMPTS
+        assert job.metrics["retry_exhausted"] is True
+        assert job.metrics["blocked"] is False
+        assert "retry_after" not in job.metrics
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_job_skips_summarize_during_afm_cooldown(db_session, monkeypatch):
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc = Document(
+        title="AFM cooldown",
+        canonical_filename="cooldown.pdf",
+        status="active",
+        sha256=b"c" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(entry_mod, "refresh_llm_settings", lambda: None)
+    monkeypatch.setattr(entry_mod, "get_settings", lambda: SimpleNamespace(summary_force_apple_intelligence=True))
+    monkeypatch.setattr("harbor_clerk.llm.summarize.apple_intelligence_cooldown", lambda: (300.0, "daemon timed out"))
+
+    assert entry_mod.claim_next_job([JobStage.summarize]) is None
+
+    sync_session = get_sync_session()
+    try:
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.queued
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_job_prefers_due_afm_retry_probe(db_session, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    normal_doc = Document(
+        title="Normal summary",
+        canonical_filename="normal.pdf",
+        status="active",
+        sha256=b"n" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    retry_doc = Document(
+        title="Due AFM retry",
+        canonical_filename="due-retry.pdf",
+        status="active",
+        sha256=b"d" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add_all([normal_doc, retry_doc])
+    await db_session.commit()
+    await db_session.refresh(normal_doc)
+    await db_session.refresh(retry_doc)
+
+    retry_after = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    sync_session = get_sync_session()
+    try:
+        sync_session.add_all(
+            [
+                IngestionJob(doc_id=normal_doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued),
+                IngestionJob(
+                    doc_id=retry_doc.doc_id,
+                    stage=JobStage.summarize,
+                    status=JobStatus.queued,
+                    metrics={"reason": "apple_intelligence_unavailable", "retry_after": retry_after},
+                ),
+            ]
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(entry_mod, "refresh_llm_settings", lambda: None)
+    monkeypatch.setattr(entry_mod, "get_settings", lambda: SimpleNamespace(summary_force_apple_intelligence=True))
+    monkeypatch.setattr("harbor_clerk.llm.summarize.apple_intelligence_cooldown", lambda: None)
+
+    result = entry_mod.claim_next_job([JobStage.summarize])
+    assert result is not None
+    claimed_doc_id, claimed_stage, _ = result
+    assert claimed_doc_id == retry_doc.doc_id
+    assert claimed_stage == JobStage.summarize
+
+    sync_session = get_sync_session()
+    try:
+        retry_job = sync_session.execute(
+            select(IngestionJob).where(
+                IngestionJob.doc_id == retry_doc.doc_id, IngestionJob.stage == JobStage.summarize
+            )
+        ).scalar_one()
+        normal_job = sync_session.execute(
+            select(IngestionJob).where(
+                IngestionJob.doc_id == normal_doc.doc_id,
+                IngestionJob.stage == JobStage.summarize,
+            )
+        ).scalar_one()
+        assert retry_job.status == JobStatus.running
+        assert normal_job.status == JobStatus.queued
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_job_skips_summarize_until_retry_after(db_session, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc = Document(
+        title="AFM retry later",
+        canonical_filename="retry.pdf",
+        status="active",
+        sha256=b"r" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    fresh_doc = Document(
+        title="Fresh summary should wait",
+        canonical_filename="fresh.pdf",
+        status="active",
+        sha256=b"w" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add_all([doc, fresh_doc])
+    await db_session.commit()
+    await db_session.refresh(doc)
+    await db_session.refresh(fresh_doc)
+
+    retry_after = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+    sync_session = get_sync_session()
+    try:
+        sync_session.add_all(
+            [
+                IngestionJob(
+                    doc_id=doc.doc_id,
+                    stage=JobStage.summarize,
+                    status=JobStatus.queued,
+                    metrics={"reason": "apple_intelligence_unavailable", "retry_after": retry_after},
+                ),
+                IngestionJob(doc_id=fresh_doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued),
+            ]
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(entry_mod, "refresh_llm_settings", lambda: None)
+    monkeypatch.setattr(entry_mod, "get_settings", lambda: SimpleNamespace(summary_force_apple_intelligence=True))
+    monkeypatch.setattr("harbor_clerk.llm.summarize.apple_intelligence_cooldown", lambda: None)
+
+    assert entry_mod.claim_next_job([JobStage.summarize]) is None
+
+    sync_session = get_sync_session()
+    try:
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        fresh_job = sync_session.execute(
+            select(IngestionJob).where(
+                IngestionJob.doc_id == fresh_doc.doc_id,
+                IngestionJob.stage == JobStage.summarize,
+            )
+        ).scalar_one()
+        assert job.status == JobStatus.queued
+        assert fresh_job.status == JobStatus.queued
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_afm_idle_wait_wakes_for_next_retry(db_session, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc = Document(
+        title="Retry wakeup",
+        canonical_filename="retry-wakeup.pdf",
+        status="active",
+        sha256=b"u" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    retry_after = (datetime.now(UTC) + timedelta(seconds=1)).isoformat()
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                metrics={"reason": "apple_intelligence_unavailable", "retry_after": retry_after},
+            )
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(entry_mod, "refresh_llm_settings", lambda: None)
+    monkeypatch.setattr(entry_mod, "get_settings", lambda: SimpleNamespace(summary_force_apple_intelligence=True))
+    monkeypatch.setattr("harbor_clerk.llm.summarize.apple_intelligence_cooldown", lambda: None)
+
+    wait_seconds = entry_mod._next_afm_retry_wait_seconds([JobStage.summarize], default=30)
+    assert 1 <= wait_seconds <= 2
 
 
 @pytest.mark.asyncio

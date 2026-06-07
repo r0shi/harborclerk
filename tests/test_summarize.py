@@ -6,6 +6,8 @@ import httpx
 import pytest
 
 from harbor_clerk.llm.summarize import (
+    AppleIntelligenceContentRejectedError,
+    AppleIntelligenceUnavailableError,
     _compute_max_input_chars,
     _extractive_fallback,
     _group_chunks_for_mapreduce,
@@ -342,6 +344,57 @@ def _mock_settings(llm_model_id="test-model", summary_force_apple_intelligence=F
     return s
 
 
+class TestAppleIntelligenceCircuitBreaker:
+    def test_timeout_disables_followup_daemon_calls(self, monkeypatch):
+        from harbor_clerk.llm import summarize as sum_mod
+
+        class FakePipe:
+            def write(self, _value):
+                return None
+
+            def flush(self):
+                return None
+
+            def readline(self):
+                return '{"result": "too late"}\n'
+
+        class FakeDaemon:
+            stdin = FakePipe()
+            stdout = FakePipe()
+
+        start_daemon = MagicMock(return_value=FakeDaemon())
+        stop_daemon = MagicMock()
+
+        monkeypatch.setattr(sum_mod, "_afm_disabled_until_monotonic", 0.0)
+        monkeypatch.setattr(sum_mod, "_afm_disabled_reason", "")
+        monkeypatch.setattr(sum_mod, "_AFM_CIRCUIT_BREAKER_SECONDS", 60.0)
+        monkeypatch.setattr(sum_mod, "_DAEMON_READ_TIMEOUT_S", 0.01)
+        monkeypatch.setattr(sum_mod, "_get_or_start_daemon", start_daemon)
+        monkeypatch.setattr(sum_mod, "_stop_daemon", stop_daemon)
+        monkeypatch.setattr(sum_mod.select, "select", lambda *_args: ([], [], []))
+
+        assert sum_mod._apple_intelligence_call("hello", mode="summary") is None
+        assert start_daemon.call_count == 1
+        assert stop_daemon.call_count == 1
+        assert sum_mod._apple_intelligence_disabled_reason() == "daemon timed out"
+
+        assert sum_mod._apple_intelligence_call("hello again", mode="doc_type") is None
+        assert start_daemon.call_count == 1
+
+    def test_disabled_apple_intelligence_falls_back_to_mime_type(self, monkeypatch):
+        from harbor_clerk.llm import summarize as sum_mod
+
+        monkeypatch.setattr(sum_mod, "_afm_disabled_until_monotonic", sum_mod.time.monotonic() + 60.0)
+        monkeypatch.setattr(sum_mod, "_afm_disabled_reason", "daemon timed out")
+        monkeypatch.setattr(sum_mod, "_get_or_start_daemon", MagicMock(side_effect=AssertionError("daemon called")))
+
+        with (
+            patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings(llm_model_id="")),
+            patch("harbor_clerk.llm.summarize._call_llm", return_value=None),
+        ):
+            assert sum_mod.classify_doc_type(["Some text content"], mime_type="application/pdf") == "PDF Document"
+
+
 class TestGenerateSummary:
     def test_empty_chunks(self):
         with patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()):
@@ -474,8 +527,8 @@ class TestGenerateSummary:
             assert model == "apple-intelligence"
             mock_call.assert_not_called()
 
-    def test_force_afm_falls_back_to_extractive_when_afm_unavailable(self):
-        """If AFM is unavailable while forced, fall through to extractive — not the LLM."""
+    def test_force_afm_errors_when_afm_unavailable(self):
+        """If AFM is unavailable while forced, fail closed instead of writing extractive summaries."""
         mock_call = MagicMock()
         with (
             patch(
@@ -484,12 +537,34 @@ class TestGenerateSummary:
             ),
             patch("harbor_clerk.llm.summarize._call_llm", mock_call),
             patch("harbor_clerk.llm.summarize._apple_intelligence_summary", return_value=None),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_disabled_reason", return_value="daemon timed out"),
         ):
             chunks = ["A" * 100]
-            summary, model = generate_summary(chunks)
-            assert model == "extractive"
-            assert summary
+            with pytest.raises(AppleIntelligenceUnavailableError, match="daemon timed out"):
+                generate_summary(chunks)
             mock_call.assert_not_called()
+
+    def test_force_afm_content_rejection_is_not_unavailable(self):
+        """A document-specific safety refusal should not become a global AFM outage retry."""
+        mock_call = MagicMock()
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.get_settings",
+                return_value=_mock_settings(summary_force_apple_intelligence=True),
+            ),
+            patch("harbor_clerk.llm.summarize._call_llm", mock_call),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_summary", return_value=None),
+            patch(
+                "harbor_clerk.llm.summarize._apple_intelligence_unavailable_reason",
+                return_value="Detected content likely to be unsafe",
+            ),
+            patch("harbor_clerk.llm.summarize._disable_apple_intelligence") as disable_afm,
+        ):
+            chunks = ["A" * 100]
+            with pytest.raises(AppleIntelligenceContentRejectedError, match="unsafe"):
+                generate_summary(chunks)
+            mock_call.assert_not_called()
+            disable_afm.assert_not_called()
 
 
 def test_summarize_long_calls_progress_callback_per_map_step(monkeypatch):
@@ -608,8 +683,42 @@ class TestClassifyDocType:
 
         with patch("harbor_clerk.llm.summarize.get_settings") as mock_settings:
             mock_settings.return_value.llm_model_id = ""
+            mock_settings.return_value.summary_force_apple_intelligence = False
             result = classify_doc_type(["Some text content"], mime_type="application/pdf")
             assert result == "PDF Document"
+
+    def test_classify_force_apple_skips_local_llm_when_apple_unavailable(self):
+        """The forced-Apple summary mode must not pay local LLM doc_type latency."""
+        from harbor_clerk.llm.summarize import classify_doc_type
+
+        mock_call = MagicMock()
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.get_settings",
+                return_value=_mock_settings(summary_force_apple_intelligence=True),
+            ),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_doc_type", return_value=None),
+            patch("harbor_clerk.llm.summarize._call_llm", mock_call),
+        ):
+            result = classify_doc_type(["Some text content"], mime_type="application/pdf")
+            assert result == "PDF Document"
+            mock_call.assert_not_called()
+
+    def test_classify_force_apple_uses_apple_doc_type(self):
+        from harbor_clerk.llm.summarize import classify_doc_type
+
+        mock_call = MagicMock()
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.get_settings",
+                return_value=_mock_settings(summary_force_apple_intelligence=True),
+            ),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_doc_type", return_value="Meeting Notes"),
+            patch("harbor_clerk.llm.summarize._call_llm", mock_call),
+        ):
+            result = classify_doc_type(["Some text content"], mime_type="application/pdf")
+            assert result == "Meeting Notes"
+            mock_call.assert_not_called()
 
 
 class TestUserLLMActiveQueriesChatMessage:

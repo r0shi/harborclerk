@@ -10,9 +10,16 @@ interface StatusSummary {
   state: 'ready' | 'processing' | 'needs_attention'
   counts: {
     processing_documents: number
+    summarizing_documents?: number
+    completed_status_stale_documents?: number
+    stranded_documents?: number
     queued_jobs: number
     running_jobs: number
+    summarizing_queued_jobs?: number
+    summarizing_running_jobs?: number
     failed_documents: number
+    failed_summarize_jobs?: number
+    blocked_summarize_jobs?: number
     unavailable_folders: number
     ner_skipped_documents: number
     stuck_jobs: number
@@ -94,9 +101,39 @@ function attentionView(summary: StatusSummary): PillView {
     }
   }
 
+  if (firstIssue?.kind === 'summary_generation_failed') {
+    return {
+      label: 'Summary failures',
+      glyph: '◐',
+      state,
+      title: firstIssue.detail,
+      to: '/settings/status',
+    }
+  }
+
+  if (firstIssue?.kind === 'summary_generation_blocked') {
+    return {
+      label: 'Summary paused',
+      glyph: '◐',
+      state,
+      title: firstIssue.detail,
+      to: '/settings/status',
+    }
+  }
+
   if (firstIssue?.kind === 'stranded_pipeline_state') {
     return {
       label: 'Stale state',
+      glyph: '◐',
+      state,
+      title: firstIssue.detail,
+      to: '/settings/status',
+    }
+  }
+
+  if (firstIssue?.kind === 'completed_status_stale') {
+    return {
+      label: 'Status cleanup',
       glyph: '◐',
       state,
       title: firstIssue.detail,
@@ -158,11 +195,22 @@ function statusView({
   }
 
   if (summary?.state === 'processing') {
-    const count = summary.counts.processing_documents || summary.counts.running_jobs || summary.counts.queued_jobs || 0
+    const processingCount =
+      summary.counts.processing_documents || summary.counts.running_jobs || summary.counts.queued_jobs || 0
+    const summarizingCount =
+      summary.counts.summarizing_documents ||
+      summary.counts.summarizing_running_jobs ||
+      summary.counts.summarizing_queued_jobs ||
+      0
+    const label = processingCount
+      ? `${processingCount.toLocaleString()} processing`
+      : summarizingCount
+        ? `Summarizing ${summarizingCount.toLocaleString()}`
+        : 'Processing'
     return {
-      label: count ? `${count.toLocaleString()} processing` : 'Processing',
+      label,
       state: 'running',
-      title: 'Documents are being processed',
+      title: processingCount ? 'Documents are being processed' : 'Document summaries are being generated',
       to: '/settings/status',
     }
   }

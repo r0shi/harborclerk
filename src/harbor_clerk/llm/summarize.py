@@ -34,6 +34,14 @@ _MAX_INPUT_CHARS = 80_000  # hard cap per LLM call
 _DEFAULT_CONTEXT_WINDOW = 32_768
 
 
+class AppleIntelligenceUnavailableError(RuntimeError):
+    """Raised when forced Apple Intelligence summaries cannot be produced."""
+
+
+class AppleIntelligenceContentRejectedError(RuntimeError):
+    """Raised when Apple Intelligence refuses a specific document's content."""
+
+
 class _Tier(Enum):
     SHORT = "short"
     MEDIUM = "medium"
@@ -421,18 +429,75 @@ def _find_apple_summarize_binary() -> str | None:
     return None
 
 
-# Module-level state for the long-running apple-summarize daemon. The
-# previous one-shot CLI fork+session-init was ~600 ms per call; the daemon
-# pays that once at first use and reuses the session for subsequent calls.
+# Module-level state for the long-running apple-summarize daemon. The daemon
+# keeps process startup out of the per-document path; the Swift helper still
+# creates a fresh LanguageModelSession per request so transcript state cannot
+# leak across unrelated documents in a corpus-sized batch.
 # `_daemon_lock` serializes both daemon-startup AND request/response on
 # stdin/stdout (the daemon processes requests strictly sequentially; a
 # parallel call would interleave the JSON lines).
 _daemon_lock = threading.Lock()
 _daemon: subprocess.Popen | None = None
-# Per-request read timeout. The old one-shot path used 120 s for the whole
-# subprocess.run; the daemon's session-init is amortized, so an individual
-# inference taking >120 s here would be a hang, not slow startup.
-_DAEMON_READ_TIMEOUT_S = 120.0
+# Per-request read timeout. Historical successful AFM summaries were usually
+# ~8-10 s; when AFM hangs, falling back quickly matters more than preserving a
+# very long wait for a single best-effort stage.
+_DAEMON_READ_TIMEOUT_S = 30.0
+_AFM_CIRCUIT_BREAKER_SECONDS = 1.0
+_AFM_LAST_FAILURE_REASON_SECONDS = 60.0
+_afm_disabled_until_monotonic = 0.0
+_afm_disabled_reason = ""
+_afm_last_failure_until_monotonic = 0.0
+_afm_last_failure_reason = ""
+
+
+def _apple_intelligence_disabled_reason() -> str | None:
+    if _afm_disabled_until_monotonic <= time.monotonic():
+        return None
+    return _afm_disabled_reason or "temporarily disabled"
+
+
+def apple_intelligence_cooldown() -> tuple[float, str] | None:
+    """Return remaining AFM cooldown seconds and reason, if active."""
+    remaining = _afm_disabled_until_monotonic - time.monotonic()
+    if remaining <= 0:
+        return None
+    return remaining, _afm_disabled_reason or "temporarily disabled"
+
+
+def _recent_apple_intelligence_failure_reason() -> str | None:
+    if _afm_last_failure_until_monotonic <= time.monotonic():
+        return None
+    return _afm_last_failure_reason or None
+
+
+def _apple_intelligence_unavailable_reason() -> str:
+    disabled_reason = _apple_intelligence_disabled_reason()
+    if disabled_reason:
+        return disabled_reason
+    recent_reason = _recent_apple_intelligence_failure_reason()
+    if recent_reason:
+        return recent_reason
+    if _find_apple_summarize_binary() is None:
+        return "apple-summarize helper not found"
+    return "no summary returned"
+
+
+def _remember_apple_intelligence_failure(reason: str) -> None:
+    global _afm_last_failure_until_monotonic, _afm_last_failure_reason
+    _afm_last_failure_until_monotonic = time.monotonic() + _AFM_LAST_FAILURE_REASON_SECONDS
+    _afm_last_failure_reason = reason
+
+
+def _is_apple_intelligence_content_rejection(reason: str) -> bool:
+    normalized = reason.lower()
+    return "unsafe" in normalized or "safety" in normalized
+
+
+def _disable_apple_intelligence(reason: str) -> None:
+    global _afm_disabled_until_monotonic, _afm_disabled_reason
+    _afm_disabled_until_monotonic = time.monotonic() + _AFM_CIRCUIT_BREAKER_SECONDS
+    _afm_disabled_reason = reason
+    _remember_apple_intelligence_failure(reason)
 
 
 def _stop_daemon() -> None:
@@ -512,13 +577,19 @@ def _atexit_stop_daemon() -> None:
 def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str | None:
     """Send a single request to the cached apple-summarize daemon. Returns
     None on any failure (binary not present, daemon died mid-request, parse
-    error, AFM error response, read timeout). The daemon is respawned on
-    next call after a failure."""
+    error, AFM error response, read timeout). Transport failures trip a
+    process-local cooldown so a wedged AFM daemon cannot stall every document
+    in a corpus-sized summarize backlog."""
     # Cap at 12,000 chars for ~4K token context
     text = text[:12_000]
     request_line = json.dumps({"prompt": text, "max_chars": max_chars, "mode": mode}) + "\n"
 
     with _daemon_lock:
+        disabled_reason = _apple_intelligence_disabled_reason()
+        if disabled_reason:
+            logger.info("Apple Intelligence skipped: %s", disabled_reason)
+            return None
+
         daemon = _get_or_start_daemon()
         if daemon is None:
             logger.debug("apple-summarize binary not found — skipping Apple Intelligence")
@@ -528,7 +599,8 @@ def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str 
             daemon.stdin.write(request_line)
             daemon.stdin.flush()
         except (BrokenPipeError, OSError) as exc:
-            logger.warning("apple-summarize daemon stdin broken (%s); will respawn next call", exc)
+            logger.warning("apple-summarize daemon stdin broken (%s); disabling temporarily", exc)
+            _disable_apple_intelligence("daemon stdin broken")
             _stop_daemon()
             return None
 
@@ -538,33 +610,42 @@ def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str 
         # capped at 120 s and we preserve that contract.
         ready, _, _ = select.select([daemon.stdout], [], [], _DAEMON_READ_TIMEOUT_S)
         if not ready:
-            logger.warning("apple-summarize daemon timed out after %.0fs; respawning", _DAEMON_READ_TIMEOUT_S)
+            logger.warning(
+                "apple-summarize daemon timed out after %.0fs; disabling temporarily", _DAEMON_READ_TIMEOUT_S
+            )
+            _disable_apple_intelligence("daemon timed out")
             _stop_daemon()
             return None
         try:
             line = daemon.stdout.readline()
         except (BrokenPipeError, OSError) as exc:
-            logger.warning("apple-summarize daemon stdout broken (%s); will respawn next call", exc)
+            logger.warning("apple-summarize daemon stdout broken (%s); disabling temporarily", exc)
+            _disable_apple_intelligence("daemon stdout broken")
             _stop_daemon()
             return None
 
     # JSON parsing happens outside the lock — the wire I/O is complete and
     # subsequent callers can proceed in parallel against the daemon.
     if not line:
-        logger.debug("apple-summarize daemon closed stdout; will respawn next call")
+        logger.debug("apple-summarize daemon closed stdout; disabling temporarily")
         with _daemon_lock:
+            _disable_apple_intelligence("daemon closed stdout")
             _stop_daemon()
         return None
     try:
         response = json.loads(line)
     except ValueError:
         logger.debug("apple-summarize returned non-JSON line: %.200s", line)
+        _remember_apple_intelligence_failure("helper returned invalid JSON")
         return None
     if "error" in response:
-        logger.debug("apple-summarize error response: %.200s", str(response.get("error", ""))[:200])
+        error = str(response.get("error", ""))[:200] or "helper returned an error"
+        logger.debug("apple-summarize error response: %.200s", error)
+        _remember_apple_intelligence_failure(error)
         return None
     result = (response.get("result") or "").strip()
     if not result:
+        _remember_apple_intelligence_failure("helper returned an empty summary")
         return None
     logger.info("Apple Intelligence %s: %d chars", mode, len(result))
     return result
@@ -748,6 +829,13 @@ def classify_doc_type(chunks: list[str], mime_type: str = "") -> str:
     """Classify document type. Fallback chain: local LLM → Apple Intelligence → MIME type."""
     settings = get_settings()
 
+    if settings.summary_force_apple_intelligence:
+        ai_type = _apple_intelligence_doc_type(chunks)
+        if ai_type:
+            return ai_type
+        logger.info("Apple Intelligence unavailable while forced for doc_type — using MIME fallback")
+        return _mime_to_doc_type(mime_type)
+
     # Try local LLM first (if a model is active)
     if settings.llm_model_id:
         sample = "\n\n".join(chunks)[:2000]
@@ -798,8 +886,9 @@ def generate_summary(
     - Medium (20-100 chunks): strategic sampling + single LLM call
     - Long (100+ chunks): map-reduce (group summaries → final)
 
-    Falls back to extractive heuristic when no LLM is available.
-    Never raises — returns best-effort summary.
+    Falls back to extractive heuristic when no LLM is available. Raises
+    AppleIntelligenceUnavailableError only when the operator explicitly
+    forced Apple Intelligence summaries and AFM cannot produce one.
 
     `yield_check`, if provided, is called between map-reduce sub-calls in
     the long tier so the caller can yield to interactive workloads.
@@ -825,14 +914,25 @@ def generate_summary(
     # User has opted to skip the local LLM for summaries entirely
     # (Models page → "Always use Apple Intelligence for summaries"). Skip
     # straight to AFM. If AFM is unavailable for any reason (binary not
-    # found, macOS version too old, timeout), fall through to extractive.
+    # found, macOS version too old, timeout), fail closed instead of silently
+    # generating a corpus-sized batch of extractive summaries.
     if settings.summary_force_apple_intelligence:
         logger.info("Summarize forced to Apple Intelligence by setting (skipping local LLM)")
         ai_summary = _apple_intelligence_summary(chunks, max_chars)
         if _has_visible_content(ai_summary):
             return ai_summary, "apple-intelligence"  # type: ignore[return-value]
-        logger.warning("Apple Intelligence unavailable while forced; falling back to extractive")
-        return _extractive_fallback(chunks, max_chars), "extractive"
+        reason = _apple_intelligence_unavailable_reason()
+        if _is_apple_intelligence_content_rejection(reason):
+            logger.error(
+                "Apple Intelligence refused this document while forced; refusing extractive fallback (%s)", reason
+            )
+            raise AppleIntelligenceContentRejectedError(
+                f"Apple Intelligence refused to summarize this document: {reason}"
+            )
+        if _apple_intelligence_disabled_reason() is None:
+            _disable_apple_intelligence(reason)
+        logger.error("Apple Intelligence unavailable while forced; refusing extractive fallback (%s)", reason)
+        raise AppleIntelligenceUnavailableError(f"Apple Intelligence summaries are enabled but unavailable: {reason}")
 
     # Try LLM if a model is active
     if settings.llm_model_id:

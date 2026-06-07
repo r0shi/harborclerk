@@ -210,15 +210,16 @@ def _find_page_range(
     return page_start, page_end
 
 
-def run_chunk(doc_id: uuid.UUID) -> None:
+def run_chunk(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     """Split extracted text into overlapping chunks."""
-    if not mark_stage_running(doc_id, JobStage.chunk):
+    if not mark_stage_running(doc_id, JobStage.chunk, worker_seq=worker_seq):
         return
 
     session = get_sync_session()
     try:
         doc = session.execute(select(Document).where(Document.doc_id == doc_id)).scalar_one()
-        worker_seq = doc.pipeline_seq
+        if worker_seq is None:
+            worker_seq = doc.pipeline_seq
 
         pages = (
             session.execute(select(DocumentPage).where(DocumentPage.doc_id == doc_id).order_by(DocumentPage.page_num))
