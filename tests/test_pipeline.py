@@ -1,6 +1,7 @@
 """Tests for the worker pipeline orchestrator + pipeline_seq race protection."""
 
 import hashlib
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -604,9 +605,9 @@ async def test_background_stage_error_does_not_poison_pipeline_status(db_session
 
 
 @pytest.mark.asyncio
-async def test_forced_afm_unavailable_marks_summarize_job_error(db_session, monkeypatch):
-    """Forced Apple Intelligence failures must be visible as summarize job
-    errors instead of silently completing with no generated summary."""
+async def test_forced_afm_unavailable_requeues_summarize_with_retry(db_session, monkeypatch):
+    """Forced Apple Intelligence failures should pause summary generation
+    instead of converting every queued summary into a document-level failure."""
     from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError
     from harbor_clerk.worker.entry import execute_job
     from harbor_clerk.worker.stages import summarize as summarize_stage
@@ -650,9 +651,242 @@ async def test_forced_afm_unavailable_marks_summarize_job_error(db_session, monk
         job = sync_session.execute(
             select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
         ).scalar_one()
+        assert job.status == JobStatus.queued
+        assert job.error is None
+        assert job.started_at is None
+        assert job.heartbeat_at is None
+        assert job.metrics["blocked"] is True
+        assert job.metrics["reason"] == "apple_intelligence_unavailable"
+        assert job.metrics["retry_attempts"] == 1
+        assert "AppleIntelligenceUnavailableError" in job.metrics["last_error"]
+        assert "daemon timed out" in job.metrics["last_error"]
+        assert job.metrics["retry_after"]
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_forced_afm_unavailable_marks_single_job_error_after_retry_budget(db_session, monkeypatch):
+    """The AFM retry loop eventually declares one job futile without
+    stampeding through the whole summary backlog."""
+    from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError
+    from harbor_clerk.worker import entry as entry_mod
+    from harbor_clerk.worker.stages import summarize as summarize_stage
+
+    doc = Document(
+        title="AFM futile",
+        canonical_filename="afm-futile.pdf",
+        status="active",
+        sha256=b"f" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="A substantial document body."))
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                metrics={
+                    "blocked": True,
+                    "reason": "apple_intelligence_unavailable",
+                    "retry_attempts": entry_mod.AFM_RETRY_MAX_ATTEMPTS - 1,
+                    "retry_after": "2026-01-01T00:00:00+00:00",
+                },
+            )
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(summarize_stage, "_wait_for_idle_llm", lambda *args, **kwargs: None)
+
+    def _afm_unavailable(*args, **kwargs):
+        raise AppleIntelligenceUnavailableError(
+            "Apple Intelligence summaries are enabled but unavailable: daemon timed out"
+        )
+
+    monkeypatch.setattr(summarize_stage, "generate_summary", _afm_unavailable)
+
+    entry_mod.execute_job(doc.doc_id, JobStage.summarize)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed.pipeline_status == PipelineStatus.ready
+
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
         assert job.status == JobStatus.error
         assert "AppleIntelligenceUnavailableError" in (job.error or "")
-        assert "daemon timed out" in (job.error or "")
+        assert job.metrics["retry_attempts"] == entry_mod.AFM_RETRY_MAX_ATTEMPTS
+        assert job.metrics["retry_exhausted"] is True
+        assert job.metrics["blocked"] is False
+        assert "retry_after" not in job.metrics
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_job_skips_summarize_during_afm_cooldown(db_session, monkeypatch):
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc = Document(
+        title="AFM cooldown",
+        canonical_filename="cooldown.pdf",
+        status="active",
+        sha256=b"c" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(entry_mod, "refresh_llm_settings", lambda: None)
+    monkeypatch.setattr(entry_mod, "get_settings", lambda: SimpleNamespace(summary_force_apple_intelligence=True))
+    monkeypatch.setattr("harbor_clerk.llm.summarize.apple_intelligence_cooldown", lambda: (300.0, "daemon timed out"))
+
+    assert entry_mod.claim_next_job([JobStage.summarize]) is None
+
+    sync_session = get_sync_session()
+    try:
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.queued
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_job_prefers_due_afm_retry_probe(db_session, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    normal_doc = Document(
+        title="Normal summary",
+        canonical_filename="normal.pdf",
+        status="active",
+        sha256=b"n" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    retry_doc = Document(
+        title="Due AFM retry",
+        canonical_filename="due-retry.pdf",
+        status="active",
+        sha256=b"d" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add_all([normal_doc, retry_doc])
+    await db_session.commit()
+    await db_session.refresh(normal_doc)
+    await db_session.refresh(retry_doc)
+
+    retry_after = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    sync_session = get_sync_session()
+    try:
+        sync_session.add_all(
+            [
+                IngestionJob(doc_id=normal_doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued),
+                IngestionJob(
+                    doc_id=retry_doc.doc_id,
+                    stage=JobStage.summarize,
+                    status=JobStatus.queued,
+                    metrics={"reason": "apple_intelligence_unavailable", "retry_after": retry_after},
+                ),
+            ]
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(entry_mod, "refresh_llm_settings", lambda: None)
+    monkeypatch.setattr(entry_mod, "get_settings", lambda: SimpleNamespace(summary_force_apple_intelligence=True))
+    monkeypatch.setattr("harbor_clerk.llm.summarize.apple_intelligence_cooldown", lambda: None)
+
+    result = entry_mod.claim_next_job([JobStage.summarize])
+    assert result is not None
+    claimed_doc_id, claimed_stage, _ = result
+    assert claimed_doc_id == retry_doc.doc_id
+    assert claimed_stage == JobStage.summarize
+
+    sync_session = get_sync_session()
+    try:
+        retry_job = sync_session.execute(
+            select(IngestionJob).where(
+                IngestionJob.doc_id == retry_doc.doc_id, IngestionJob.stage == JobStage.summarize
+            )
+        ).scalar_one()
+        normal_job = sync_session.execute(
+            select(IngestionJob).where(
+                IngestionJob.doc_id == normal_doc.doc_id,
+                IngestionJob.stage == JobStage.summarize,
+            )
+        ).scalar_one()
+        assert retry_job.status == JobStatus.running
+        assert normal_job.status == JobStatus.queued
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_job_skips_summarize_until_retry_after(db_session, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc = Document(
+        title="AFM retry later",
+        canonical_filename="retry.pdf",
+        status="active",
+        sha256=b"r" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    retry_after = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                metrics={"reason": "apple_intelligence_unavailable", "retry_after": retry_after},
+            )
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(entry_mod, "refresh_llm_settings", lambda: None)
+    monkeypatch.setattr(entry_mod, "get_settings", lambda: SimpleNamespace(summary_force_apple_intelligence=True))
+    monkeypatch.setattr("harbor_clerk.llm.summarize.apple_intelligence_cooldown", lambda: None)
+
+    assert entry_mod.claim_next_job([JobStage.summarize]) is None
+
+    sync_session = get_sync_session()
+    try:
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.queued
     finally:
         sync_session.close()
 

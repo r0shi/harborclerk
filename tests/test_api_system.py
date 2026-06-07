@@ -228,6 +228,50 @@ async def test_status_summary_surfaces_failed_summarize_jobs(client, admin_user,
     assert issue["action_href"] == "/settings/maintenance"
 
 
+async def test_status_summary_surfaces_blocked_summarize_jobs(client, admin_user, admin_token, db_session):
+    retry_at = datetime.now(UTC) + timedelta(minutes=10)
+    doc = Document(
+        title="Waiting on Apple Intelligence",
+        status="active",
+        sha256=b"b" * 32,
+        pipeline_status=PipelineStatus.ready,
+        pipeline_seq=3,
+    )
+    db_session.add(doc)
+    await db_session.flush()
+
+    db_session.add(
+        IngestionJob(
+            doc_id=doc.doc_id,
+            stage=JobStage.summarize,
+            status=JobStatus.queued,
+            pipeline_seq=doc.pipeline_seq,
+            metrics={
+                "blocked": True,
+                "reason": "apple_intelligence_unavailable",
+                "retry_attempts": 2,
+                "retry_after": retry_at.isoformat(),
+            },
+        )
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/system/status-summary", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["state"] == "needs_attention"
+    assert data["counts"]["failed_documents"] == 0
+    assert data["counts"]["failed_summarize_jobs"] == 0
+    assert data["counts"]["blocked_summarize_jobs"] == 1
+
+    issue = next(issue for issue in data["needs_attention"] if issue["kind"] == "summary_generation_blocked")
+    assert issue["severity"] == "warning"
+    assert issue["title"] == "Apple Intelligence summaries are paused"
+    assert issue["count"] == 1
+    assert "retry automatically with backoff" in issue["detail"]
+    assert issue["action_href"] == "/settings/models"
+
+
 async def test_status_summary_separates_stranded_pipeline_state(client, admin_user, admin_token, db_session):
     stranded_doc = Document(
         title="Marked chunking",

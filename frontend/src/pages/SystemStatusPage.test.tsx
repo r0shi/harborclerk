@@ -54,6 +54,7 @@ const SUMMARY = {
     total_running_jobs: 1,
     failed_jobs: 1,
     failed_summarize_jobs: 0,
+    blocked_summarize_jobs: 0,
     watched_folders: 1,
     unavailable_folders: 0,
     ner_skipped_documents: 0,
@@ -229,6 +230,46 @@ describe('SystemStatusPage', () => {
     expect(screen.getByText('Summary failures')).toBeInTheDocument()
     expect(screen.getByText('11')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open maintenance' })).toHaveAttribute('href', '/settings/maintenance')
+  })
+
+  it('shows blocked summary retries without failed documents', async () => {
+    mockRequests({
+      state: 'needs_attention',
+      counts: {
+        ...SUMMARY.counts,
+        processing_documents: 0,
+        pipeline_processing_documents: 0,
+        stranded_documents: 0,
+        failed_documents: 0,
+        failed_summarize_jobs: 0,
+        blocked_summarize_jobs: 11,
+        queued_jobs: 0,
+        running_jobs: 0,
+        failed_jobs: 0,
+        ner_skipped_documents: 0,
+        stuck_jobs: 0,
+      },
+      needs_attention: [
+        {
+          kind: 'summary_generation_blocked',
+          severity: 'warning',
+          title: 'Apple Intelligence summaries are paused',
+          detail: '11 summary jobs are waiting because Apple Intelligence is unavailable.',
+          count: 11,
+          action_label: 'Open Models',
+          action_href: '/settings/models',
+        },
+      ],
+      recent_failed_documents: [],
+      recent_processing_documents: [],
+    })
+
+    renderStatusPage()
+
+    expect(await screen.findByText('Apple Intelligence summaries are paused')).toBeInTheDocument()
+    expect(screen.getByText('Summary paused')).toBeInTheDocument()
+    expect(screen.getByText('11')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open Models' })).toHaveAttribute('href', '/settings/models')
   })
 
   it('separates stale pipeline state from live processing', async () => {

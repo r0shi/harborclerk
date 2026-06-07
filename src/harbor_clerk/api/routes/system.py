@@ -369,6 +369,24 @@ async def status_summary(
             )
         )
     ).scalar() or 0
+    blocked_summarize_row = (
+        await session.execute(
+            select(
+                func.count(func.distinct(IngestionJob.doc_id)),
+                func.min(IngestionJob.metrics["retry_after"].astext),
+            )
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.status == JobStatus.queued,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+                IngestionJob.metrics["reason"].astext == "apple_intelligence_unavailable",
+            )
+        )
+    ).one()
+    blocked_summarize_jobs = int(blocked_summarize_row[0] or 0)
+    next_summarize_retry_at = blocked_summarize_row[1]
 
     now = datetime.now(UTC)
     running_jobs = (
@@ -554,6 +572,23 @@ async def status_summary(
                 "action_href": "/settings/maintenance",
             }
         )
+    if blocked_summarize_jobs:
+        summary_label = "summary job" if blocked_summarize_jobs == 1 else "summary jobs"
+        retry_detail = f" Next retry is scheduled around {next_summarize_retry_at}." if next_summarize_retry_at else ""
+        needs_attention.append(
+            {
+                "kind": "summary_generation_blocked",
+                "severity": "warning",
+                "title": "Apple Intelligence summaries are paused",
+                "detail": (
+                    f"{blocked_summarize_jobs} {summary_label} are waiting because Apple Intelligence is unavailable. "
+                    f"Harbor Clerk will retry automatically with backoff.{retry_detail}"
+                ),
+                "count": blocked_summarize_jobs,
+                "action_label": "Open Models",
+                "action_href": "/settings/models",
+            }
+        )
     if ner_skipped_documents:
         needs_attention.append(
             {
@@ -608,6 +643,7 @@ async def status_summary(
             "unavailable_folders": unavailable_folders,
             "ner_skipped_documents": int(ner_skipped_documents),
             "failed_summarize_jobs": int(failed_summarize_jobs),
+            "blocked_summarize_jobs": blocked_summarize_jobs,
             "stuck_jobs": len(stuck_jobs),
         },
         "needs_attention": needs_attention,

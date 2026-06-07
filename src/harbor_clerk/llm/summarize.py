@@ -448,6 +448,14 @@ def _apple_intelligence_disabled_reason() -> str | None:
     return _afm_disabled_reason or "temporarily disabled"
 
 
+def apple_intelligence_cooldown() -> tuple[float, str] | None:
+    """Return remaining AFM cooldown seconds and reason, if active."""
+    remaining = _afm_disabled_until_monotonic - time.monotonic()
+    if remaining <= 0:
+        return None
+    return remaining, _afm_disabled_reason or "temporarily disabled"
+
+
 def _apple_intelligence_unavailable_reason() -> str:
     disabled_reason = _apple_intelligence_disabled_reason()
     if disabled_reason:
@@ -881,6 +889,8 @@ def generate_summary(
         if _has_visible_content(ai_summary):
             return ai_summary, "apple-intelligence"  # type: ignore[return-value]
         reason = _apple_intelligence_unavailable_reason()
+        if _apple_intelligence_disabled_reason() is None:
+            _disable_apple_intelligence(reason)
         logger.error("Apple Intelligence unavailable while forced; refusing extractive fallback (%s)", reason)
         raise AppleIntelligenceUnavailableError(f"Apple Intelligence summaries are enabled but unavailable: {reason}")
 

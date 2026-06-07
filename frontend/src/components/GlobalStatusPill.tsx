@@ -19,6 +19,7 @@ interface StatusSummary {
     summarizing_running_jobs?: number
     failed_documents: number
     failed_summarize_jobs?: number
+    blocked_summarize_jobs?: number
     unavailable_folders: number
     ner_skipped_documents: number
     stuck_jobs: number
@@ -103,6 +104,16 @@ function attentionView(summary: StatusSummary): PillView {
   if (firstIssue?.kind === 'summary_generation_failed') {
     return {
       label: 'Summary failures',
+      glyph: '◐',
+      state,
+      title: firstIssue.detail,
+      to: '/settings/status',
+    }
+  }
+
+  if (firstIssue?.kind === 'summary_generation_blocked') {
+    return {
+      label: 'Summary paused',
       glyph: '◐',
       state,
       title: firstIssue.detail,

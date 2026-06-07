@@ -49,6 +49,7 @@ interface TestStatusSummary {
     summarizing_running_jobs?: number
     failed_documents: number
     failed_summarize_jobs?: number
+    blocked_summarize_jobs?: number
     unavailable_folders: number
     ner_skipped_documents: number
     stuck_jobs: number
@@ -231,6 +232,34 @@ describe('GlobalStatusPill', () => {
     const link = await screen.findByRole('link', { name: 'Status: Summary failures' })
     expect(link).toHaveAttribute('href', '/settings/status')
     expect(link).toHaveAttribute('title', '8 document summaries failed to generate. Documents remain searchable.')
+  })
+
+  it('names blocked summary retries as summary paused', async () => {
+    mockPill({
+      summary: {
+        ...READY_SUMMARY,
+        state: 'needs_attention',
+        counts: {
+          ...READY_SUMMARY.counts,
+          blocked_summarize_jobs: 8,
+        },
+        needs_attention: [
+          {
+            kind: 'summary_generation_blocked',
+            severity: 'warning',
+            title: 'Apple Intelligence summaries are paused',
+            detail: '8 summary jobs are waiting because Apple Intelligence is unavailable.',
+            count: 8,
+          },
+        ],
+      },
+    })
+
+    renderPill()
+
+    const link = await screen.findByRole('link', { name: 'Status: Summary paused' })
+    expect(link).toHaveAttribute('href', '/settings/status')
+    expect(link).toHaveAttribute('title', '8 summary jobs are waiting because Apple Intelligence is unavailable.')
   })
 
   it('shows document processing before local AI ready state', async () => {

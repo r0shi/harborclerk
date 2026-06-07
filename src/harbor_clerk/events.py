@@ -24,6 +24,7 @@ def publish_job_event(
     page_count: int | None = None,
     chunk_count: int | None = None,
     entity_count: int | None = None,
+    retry_after: str | None = None,
 ) -> None:
     """Publish a job progress event via PostgreSQL NOTIFY (sync, for workers)."""
     payload = {
@@ -45,6 +46,8 @@ def publish_job_event(
         payload["chunk_count"] = chunk_count
     if entity_count is not None:
         payload["entity_count"] = entity_count
+    if retry_after is not None:
+        payload["retry_after"] = retry_after
 
     try:
         session = get_sync_session()
