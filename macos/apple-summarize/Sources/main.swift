@@ -3,8 +3,10 @@ import FoundationModels
 
 // Daemon mode: read JSON request lines from stdin, write JSON response lines
 // to stdout. The Python caller in src/harbor_clerk/llm/summarize.py caches a
-// single Popen handle so the ~500ms `LanguageModelSession` construction cost
-// is paid once at process startup instead of on every summarize call.
+// single Popen handle so process startup is paid once per worker process.
+// Each request uses a fresh LanguageModelSession because sessions retain a
+// transcript; corpus-sized batch summarization must not accumulate unrelated
+// documents into one long model context.
 //
 // Wire protocol (one JSON object per line, no trailing whitespace):
 //   request:          {"prompt": "...", "max_chars": 500, "mode": "summary"|"doc_type"}
@@ -16,45 +18,48 @@ import FoundationModels
 // requests are processed strictly sequentially, so EOF after the last
 // readLine() means the last in-flight response has already been written.
 
-let session = LanguageModelSession()
-let runLoopBlocker = DispatchSemaphore(value: 0)
+@main
+struct AppleSummarize {
+    static func main() async {
+        while let line = readLine() {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
 
-Task {
-    while let line = readLine() {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { continue }
-
-        guard let data = trimmed.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let prompt = json["prompt"] as? String, !prompt.isEmpty
-        else {
-            writeJSON(["error": "Invalid request: expected {prompt, max_chars, mode}"])
-            continue
-        }
-
-        let maxChars = (json["max_chars"] as? Int) ?? 500
-        let mode = (json["mode"] as? String) ?? "summary"
-        // Cap input to ~12,000 chars for the ~4K token context window
-        let cappedText = String(prompt.prefix(12_000))
-        let fullPrompt = buildPrompt(mode: mode, maxChars: maxChars, text: cappedText)
-
-        do {
-            let response = try await session.respond(to: fullPrompt)
-            let result = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if result.isEmpty {
-                writeJSON(["error": "Empty response from Foundation Models"])
-            } else {
-                writeJSON(["result": result])
+            guard let data = trimmed.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let prompt = json["prompt"] as? String, !prompt.isEmpty
+            else {
+                writeJSON(["error": "Invalid request: expected {prompt, max_chars, mode}"])
+                continue
             }
-        } catch {
-            writeJSON(["error": error.localizedDescription])
+
+            let maxChars = (json["max_chars"] as? Int) ?? 500
+            let mode = (json["mode"] as? String) ?? "summary"
+            // Cap input to ~12,000 chars for the ~4K token context window
+            let cappedText = String(prompt.prefix(12_000))
+            let fullPrompt = buildPrompt(mode: mode, maxChars: maxChars, text: cappedText)
+            let model = SystemLanguageModel.default
+
+            guard model.isAvailable else {
+                writeJSON(["error": "Foundation Models unavailable: \(model.availability)"])
+                continue
+            }
+
+            do {
+                let session = LanguageModelSession()
+                let response = try await session.respond(to: fullPrompt)
+                let result = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                if result.isEmpty {
+                    writeJSON(["error": "Empty response from Foundation Models"])
+                } else {
+                    writeJSON(["result": result])
+                }
+            } catch {
+                writeJSON(["error": error.localizedDescription])
+            }
         }
     }
-    runLoopBlocker.signal()
 }
-
-runLoopBlocker.wait()
-exit(0)
 
 // MARK: - Helpers
 

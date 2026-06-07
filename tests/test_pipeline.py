@@ -390,6 +390,54 @@ async def test_summarize_done_after_finalize_does_not_regress_status(db_session)
 
 
 @pytest.mark.asyncio
+async def test_successful_summarize_clears_afm_retry_metadata(db_session):
+    """A recovered AFM retry should not leave done jobs looking blocked."""
+    doc = Document(
+        title="AFM recovered",
+        canonical_filename="afm-recovered.pdf",
+        status="active",
+        sha256=b"r" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(
+            IngestionJob(
+                doc_id=doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.running,
+                pipeline_seq=doc.pipeline_seq,
+                metrics={
+                    "blocked": True,
+                    "reason": "apple_intelligence_unavailable",
+                    "retry_after": "2026-01-01T00:00:00+00:00",
+                    "retry_attempts": 3,
+                    "last_error": "AppleIntelligenceUnavailableError: daemon timed out",
+                },
+            )
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    mark_stage_done(doc.doc_id, JobStage.summarize, worker_seq=doc.pipeline_seq)
+
+    sync_session = get_sync_session()
+    try:
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.done
+        assert job.metrics == {}
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
 async def test_summarize_not_in_finalize_gate(db_session):
     """advance_pipeline must enqueue finalize once {entities, embed} are done,
     even if summarize is still running. This is the core fan-in change —
@@ -661,6 +709,60 @@ async def test_forced_afm_unavailable_requeues_summarize_with_retry(db_session, 
         assert "AppleIntelligenceUnavailableError" in job.metrics["last_error"]
         assert "daemon timed out" in job.metrics["last_error"]
         assert job.metrics["retry_after"]
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_forced_afm_content_rejection_errors_only_that_summary(db_session, monkeypatch):
+    """A per-document Apple safety refusal should not pause the whole summary queue."""
+    from harbor_clerk.llm.summarize import AppleIntelligenceContentRejectedError
+    from harbor_clerk.worker.entry import execute_job
+    from harbor_clerk.worker.stages import summarize as summarize_stage
+
+    doc = Document(
+        title="AFM rejected",
+        canonical_filename="afm-rejected.pdf",
+        status="active",
+        sha256=b"j" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add(doc)
+    await db_session.commit()
+    await db_session.refresh(doc)
+
+    sync_session = get_sync_session()
+    try:
+        sync_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="A substantial document body."))
+        sync_session.add(IngestionJob(doc_id=doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued))
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(summarize_stage, "_wait_for_idle_llm", lambda *args, **kwargs: None)
+
+    def _afm_rejected(*args, **kwargs):
+        raise AppleIntelligenceContentRejectedError(
+            "Apple Intelligence refused to summarize this document: Detected content likely to be unsafe"
+        )
+
+    monkeypatch.setattr(summarize_stage, "generate_summary", _afm_rejected)
+
+    execute_job(doc.doc_id, JobStage.summarize)
+
+    sync_session = get_sync_session()
+    try:
+        refreshed = sync_session.execute(select(Document).where(Document.doc_id == doc.doc_id)).scalar_one()
+        assert refreshed.pipeline_status == PipelineStatus.ready
+        assert refreshed.summary is None
+
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        assert job.status == JobStatus.error
+        assert "AppleIntelligenceContentRejectedError" in (job.error or "")
+        assert job.metrics == {}
+        assert job.finished_at is not None
     finally:
         sync_session.close()
 

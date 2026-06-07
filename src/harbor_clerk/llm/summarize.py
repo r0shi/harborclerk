@@ -38,6 +38,10 @@ class AppleIntelligenceUnavailableError(RuntimeError):
     """Raised when forced Apple Intelligence summaries cannot be produced."""
 
 
+class AppleIntelligenceContentRejectedError(RuntimeError):
+    """Raised when Apple Intelligence refuses a specific document's content."""
+
+
 class _Tier(Enum):
     SHORT = "short"
     MEDIUM = "medium"
@@ -425,9 +429,10 @@ def _find_apple_summarize_binary() -> str | None:
     return None
 
 
-# Module-level state for the long-running apple-summarize daemon. The
-# previous one-shot CLI fork+session-init was ~600 ms per call; the daemon
-# pays that once at first use and reuses the session for subsequent calls.
+# Module-level state for the long-running apple-summarize daemon. The daemon
+# keeps process startup out of the per-document path; the Swift helper still
+# creates a fresh LanguageModelSession per request so transcript state cannot
+# leak across unrelated documents in a corpus-sized batch.
 # `_daemon_lock` serializes both daemon-startup AND request/response on
 # stdin/stdout (the daemon processes requests strictly sequentially; a
 # parallel call would interleave the JSON lines).
@@ -438,8 +443,11 @@ _daemon: subprocess.Popen | None = None
 # very long wait for a single best-effort stage.
 _DAEMON_READ_TIMEOUT_S = 30.0
 _AFM_CIRCUIT_BREAKER_SECONDS = 1.0
+_AFM_LAST_FAILURE_REASON_SECONDS = 60.0
 _afm_disabled_until_monotonic = 0.0
 _afm_disabled_reason = ""
+_afm_last_failure_until_monotonic = 0.0
+_afm_last_failure_reason = ""
 
 
 def _apple_intelligence_disabled_reason() -> str | None:
@@ -456,19 +464,40 @@ def apple_intelligence_cooldown() -> tuple[float, str] | None:
     return remaining, _afm_disabled_reason or "temporarily disabled"
 
 
+def _recent_apple_intelligence_failure_reason() -> str | None:
+    if _afm_last_failure_until_monotonic <= time.monotonic():
+        return None
+    return _afm_last_failure_reason or None
+
+
 def _apple_intelligence_unavailable_reason() -> str:
     disabled_reason = _apple_intelligence_disabled_reason()
     if disabled_reason:
         return disabled_reason
+    recent_reason = _recent_apple_intelligence_failure_reason()
+    if recent_reason:
+        return recent_reason
     if _find_apple_summarize_binary() is None:
         return "apple-summarize helper not found"
     return "no summary returned"
+
+
+def _remember_apple_intelligence_failure(reason: str) -> None:
+    global _afm_last_failure_until_monotonic, _afm_last_failure_reason
+    _afm_last_failure_until_monotonic = time.monotonic() + _AFM_LAST_FAILURE_REASON_SECONDS
+    _afm_last_failure_reason = reason
+
+
+def _is_apple_intelligence_content_rejection(reason: str) -> bool:
+    normalized = reason.lower()
+    return "unsafe" in normalized or "safety" in normalized
 
 
 def _disable_apple_intelligence(reason: str) -> None:
     global _afm_disabled_until_monotonic, _afm_disabled_reason
     _afm_disabled_until_monotonic = time.monotonic() + _AFM_CIRCUIT_BREAKER_SECONDS
     _afm_disabled_reason = reason
+    _remember_apple_intelligence_failure(reason)
 
 
 def _stop_daemon() -> None:
@@ -607,12 +636,16 @@ def _apple_intelligence_call(text: str, mode: str, max_chars: int = 500) -> str 
         response = json.loads(line)
     except ValueError:
         logger.debug("apple-summarize returned non-JSON line: %.200s", line)
+        _remember_apple_intelligence_failure("helper returned invalid JSON")
         return None
     if "error" in response:
-        logger.debug("apple-summarize error response: %.200s", str(response.get("error", ""))[:200])
+        error = str(response.get("error", ""))[:200] or "helper returned an error"
+        logger.debug("apple-summarize error response: %.200s", error)
+        _remember_apple_intelligence_failure(error)
         return None
     result = (response.get("result") or "").strip()
     if not result:
+        _remember_apple_intelligence_failure("helper returned an empty summary")
         return None
     logger.info("Apple Intelligence %s: %d chars", mode, len(result))
     return result
@@ -889,6 +922,13 @@ def generate_summary(
         if _has_visible_content(ai_summary):
             return ai_summary, "apple-intelligence"  # type: ignore[return-value]
         reason = _apple_intelligence_unavailable_reason()
+        if _is_apple_intelligence_content_rejection(reason):
+            logger.error(
+                "Apple Intelligence refused this document while forced; refusing extractive fallback (%s)", reason
+            )
+            raise AppleIntelligenceContentRejectedError(
+                f"Apple Intelligence refused to summarize this document: {reason}"
+            )
         if _apple_intelligence_disabled_reason() is None:
             _disable_apple_intelligence(reason)
         logger.error("Apple Intelligence unavailable while forced; refusing extractive fallback (%s)", reason)

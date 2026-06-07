@@ -617,6 +617,8 @@ def mark_stage_done(
             return
         job.status = JobStatus.done
         job.finished_at = datetime.now(UTC)
+        if stage == JobStage.summarize and (job.metrics or {}).get("reason") == "apple_intelligence_unavailable":
+            job.metrics = {}
 
         # Background stages (summarize) never touch pipeline_status — that
         # field reflects the gating-stage progression only. A summarize-

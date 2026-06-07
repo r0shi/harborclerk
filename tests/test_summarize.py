@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from harbor_clerk.llm.summarize import (
+    AppleIntelligenceContentRejectedError,
     AppleIntelligenceUnavailableError,
     _compute_max_input_chars,
     _extractive_fallback,
@@ -542,6 +543,28 @@ class TestGenerateSummary:
             with pytest.raises(AppleIntelligenceUnavailableError, match="daemon timed out"):
                 generate_summary(chunks)
             mock_call.assert_not_called()
+
+    def test_force_afm_content_rejection_is_not_unavailable(self):
+        """A document-specific safety refusal should not become a global AFM outage retry."""
+        mock_call = MagicMock()
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.get_settings",
+                return_value=_mock_settings(summary_force_apple_intelligence=True),
+            ),
+            patch("harbor_clerk.llm.summarize._call_llm", mock_call),
+            patch("harbor_clerk.llm.summarize._apple_intelligence_summary", return_value=None),
+            patch(
+                "harbor_clerk.llm.summarize._apple_intelligence_unavailable_reason",
+                return_value="Detected content likely to be unsafe",
+            ),
+            patch("harbor_clerk.llm.summarize._disable_apple_intelligence") as disable_afm,
+        ):
+            chunks = ["A" * 100]
+            with pytest.raises(AppleIntelligenceContentRejectedError, match="unsafe"):
+                generate_summary(chunks)
+            mock_call.assert_not_called()
+            disable_afm.assert_not_called()
 
 
 def test_summarize_long_calls_progress_callback_per_map_step(monkeypatch):
