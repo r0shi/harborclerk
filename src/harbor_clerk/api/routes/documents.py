@@ -36,7 +36,7 @@ from harbor_clerk.models import (
     Entity,
     IngestionJob,
 )
-from harbor_clerk.models.enums import JobStage, PipelineStatus
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.watched import WatchedFile, WatchedFolder
 from harbor_clerk.sql_escape import escape_ilike
 from harbor_clerk.storage import get_storage
@@ -58,6 +58,10 @@ async def list_documents(
     doc_ids: str | None = Query(default=None, description="Comma-separated document IDs"),
     topic_id: int | None = Query(default=None, description="Filter by topic cluster ID"),
     pipeline_status: str | None = Query(default=None, description="Filter by pipeline status; comma-separated"),
+    summary_state: str | None = Query(
+        default=None,
+        description="Filter by summary state: has, missing, failed, or pending",
+    ),
     sort: str = Query(default="updated", pattern="^(updated|created|title)$"),
     sort_dir: str = Query(default="desc", pattern="^(asc|desc)$"),
     principal: Principal = Depends(require_read_access),
@@ -97,6 +101,28 @@ async def list_documents(
                 )
         if statuses:
             base = base.where(Document.pipeline_status.in_(statuses))
+
+    if summary_state:
+        if summary_state == "has":
+            base = base.where(func.length(func.trim(func.coalesce(Document.summary, ""))) > 0)
+        elif summary_state == "missing":
+            base = base.where(func.length(func.trim(func.coalesce(Document.summary, ""))) == 0)
+        elif summary_state in {"failed", "pending"}:
+            statuses = [JobStatus.error] if summary_state == "failed" else [JobStatus.queued, JobStatus.running]
+            summary_job_exists = (
+                select(IngestionJob.job_id)
+                .where(IngestionJob.doc_id == Document.doc_id)
+                .where(IngestionJob.stage == JobStage.summarize)
+                .where(IngestionJob.pipeline_seq == Document.pipeline_seq)
+                .where(IngestionJob.status.in_(statuses))
+                .exists()
+            )
+            base = base.where(summary_job_exists)
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid summary_state. Expected one of: has, missing, failed, pending",
+            )
 
     if q:
         escaped = escape_ilike(q)
