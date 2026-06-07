@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { get, patch, post, ApiError } from '../api'
 import { Card } from './Card'
 
@@ -33,7 +34,7 @@ interface Props {
  * paths (X, Skip, backdrop click, Get Started) call onComplete, which
  * writes preferences.onboardingComplete = true via updatePreferences().
  *
- * Three pages, structured so adding more (with screenshots) is additive.
+ * Four pages, structured so adding more (with screenshots) is additive.
  *
  * Page 1: welcome + platform-aware folder CTA.
  *   - macOS: "Pick a folder to watch" → window.harborclerk.pickFolder() →
@@ -47,9 +48,11 @@ interface Props {
  * each) — selected ones get installed AND added to enabled_languages
  * preferences in one go. Skip-friendly.
  *
- * Page 3: where-to-watch-progress (menubar status window + Observatory tab).
+ * Page 3: optional local AI model setup prompt.
+ * Page 4: where-to-watch-progress (menubar status window + Observatory tab).
  */
 export default function OnboardingWizard({ onComplete }: Props) {
+  const navigate = useNavigate()
   const [page, setPage] = useState(1)
   const [system, setSystem] = useState<SystemInfo | null>(null)
   const [error, setError] = useState('')
@@ -130,6 +133,11 @@ export default function OnboardingWizard({ onComplete }: Props) {
 
     setPage(3)
   }, [selectedLangs, languages])
+
+  function openModelSettings() {
+    onComplete()
+    navigate('/settings/models')
+  }
 
   async function handlePickFolder() {
     if (system?.picker !== 'native' || !window.harborclerk) return
@@ -317,6 +325,52 @@ export default function OnboardingWizard({ onComplete }: Props) {
         {page === 3 && (
           <>
             <h2 id="onboarding-title" className="mb-3 text-lg font-bold">
+              Set up local AI (optional)
+            </h2>
+            <p className="mb-3 text-sm text-(--color-text-secondary)">
+              Ask and Research need one downloaded and active local AI model. Search, Documents, and Folders work
+              without a model, so you can skip this and come back later.
+            </p>
+            <div className="mb-5 border-l-2 border-blue-500/70 pl-3 text-sm text-(--color-text-secondary)">
+              <div className="font-medium text-(--color-text-primary)">Setup path</div>
+              <ol className="mt-2 list-decimal space-y-1 pl-4">
+                <li>Download a model that fits this Mac.</li>
+                <li>Activate it after the download completes.</li>
+                <li>Return to Ask or Research when the local AI status is ready.</li>
+              </ol>
+            </div>
+            <p className="mb-6 text-xs leading-relaxed text-(--color-text-secondary)">
+              Larger models are better for synthesis; smaller models are useful for quick lookup. Citations remain the
+              source of truth either way.
+            </p>
+            <div className="flex items-center justify-between">
+              <button
+                onClick={() => setPage(2)}
+                className="text-xs text-(--color-text-secondary) underline hover:no-underline"
+              >
+                ← Back
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage(4)}
+                  className="text-xs text-(--color-text-secondary) underline hover:no-underline"
+                >
+                  Skip
+                </button>
+                <button
+                  onClick={openModelSettings}
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-xs hover:bg-blue-700"
+                >
+                  Choose a model
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {page === 4 && (
+          <>
+            <h2 id="onboarding-title" className="mb-3 text-lg font-bold">
               Track ingestion progress
             </h2>
             <p className="mb-3 text-sm text-(--color-text-secondary)">
@@ -335,7 +389,7 @@ export default function OnboardingWizard({ onComplete }: Props) {
             </ul>
             <div className="flex items-center justify-between">
               <button
-                onClick={() => setPage(2)}
+                onClick={() => setPage(3)}
                 className="text-xs text-(--color-text-secondary) underline hover:no-underline"
               >
                 ← Back
