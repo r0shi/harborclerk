@@ -289,13 +289,24 @@ export default function ModelsPage() {
       )}
 
       <Card className="mb-4 p-4">
-        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-          Local AI is useful, but model choice matters.
+        <div className="text-sm font-medium text-gray-900 dark:text-gray-100">Download, then activate one model.</div>
+        <div className="mt-2 grid gap-3 text-xs leading-relaxed text-gray-500 dark:text-gray-400 md:grid-cols-[minmax(0,1fr)_minmax(220px,0.45fr)]">
+          <div className="space-y-2">
+            <p>
+              Ask and Research need one active local AI model. Larger models are better for research and synthesis;
+              smaller models are still useful for quick lookup.
+            </p>
+            <p>
+              You can skip this setup and still use Search, Documents, Folders, and Integrations. Important AI answers
+              should be checked against citations.
+            </p>
+          </div>
+          <ol className="space-y-1 border-l-2 border-blue-500/70 pl-4 text-gray-600 dark:text-gray-300">
+            <li>1. Pick a model for this Mac.</li>
+            <li>2. Download it.</li>
+            <li>3. Activate it when ready.</li>
+          </ol>
         </div>
-        <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-          Larger models are better for research and synthesis. Smaller models are still useful for quick lookup, but
-          important answers should be checked against the citations.
-        </p>
       </Card>
 
       <Card className="overflow-hidden">

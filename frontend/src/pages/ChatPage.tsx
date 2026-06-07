@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import CitedMarkdown from '../components/CitedMarkdown'
 import { IconTile } from '../components/IconTile'
 import { FolderPicker } from '../components/FolderPicker'
+import { LocalAISetupPrompt } from '../components/LocalAISetupPrompt'
 import { LocalModelChip } from '../components/LocalModelChip'
 import { ScopeChip } from '../components/ScopeChip'
 import { del, get, post } from '../api'
@@ -440,7 +441,9 @@ export default function ChatPage() {
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto chat-messages-scroll">
           {messages.length === 0 ? (
             !hasActiveModel ? (
-              <ModelNudge />
+              <div className="flex h-full items-center justify-center p-8">
+                <LocalAISetupPrompt variant="ask" />
+              </div>
             ) : researchActive ? (
               <div className="flex h-full items-center justify-center p-8">
                 <div className="text-center max-w-md empty-state-appear">
@@ -569,54 +572,6 @@ export default function ChatPage() {
             </form>
           </div>
         </div>
-      </div>
-    </div>
-  )
-}
-
-/* ---- Model onboarding nudge ---- */
-
-function ModelNudge() {
-  return (
-    <div className="flex h-full items-center justify-center p-8">
-      <div className="text-center max-w-lg empty-state-appear">
-        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-50 dark:bg-amber-900/30 ring-1 ring-amber-200/60 dark:ring-amber-700/40">
-          <svg
-            className="h-8 w-8 text-amber-500 dark:text-amber-400"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={1.5}
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"
-            />
-          </svg>
-        </div>
-        <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-2">Set up your local AI model</h3>
-        <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mb-2">
-          Harbor Clerk uses a local AI model to answer questions over your documents. Choose a model to get started —
-          everything stays on this machine.
-        </p>
-        <p className="text-[13px] text-gray-500 dark:text-gray-400 leading-relaxed mb-6">
-          Larger models are better for research and synthesis. Smaller models are useful for quick lookup, but important
-          answers should be checked against the citations.
-        </p>
-        <Link
-          to="/settings/models"
-          className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-xs hover:bg-blue-700 transition-colors"
-        >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
-            />
-          </svg>
-          Choose a model
-        </Link>
       </div>
     </div>
   )
