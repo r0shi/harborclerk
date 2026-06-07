@@ -83,7 +83,9 @@ harbor-clerk --help                  # full subcommand list
 harbor-clerk search "termination clause" | jq '.hits[] | {title: .doc_title, pages, chunk_id}'
 ```
 
-A copy-pasteable agent skill for these harnesses is in **Settings → Integrations**.
+A copy-pasteable agent skill for these harnesses is in **Settings → Integrations**. See
+[Integrations](docs/integrations.md) for setup details and
+[Agent memory eval plan](docs/agent-memory-eval.md) for the evidence needed before stronger OpenClaw claims.
 
 ## Why Harbor Clerk?
 
@@ -270,7 +272,7 @@ Beyond basic search, Harbor Clerk builds a navigable knowledge graph:
 
 ### External LLM Connections
 
-Connect ChatGPT, Claude Desktop, Claude Code, Gemini CLI, OpenClaw, or any MCP-compatible tool. ChatGPT connects via OAuth (requires a public URL); all others use API key authentication. Connection guides are available in the Integrations settings page.
+Connect ChatGPT, Claude Desktop, Claude Code, Gemini CLI, OpenClaw, or any MCP-compatible tool. ChatGPT connects via OAuth (requires a public URL); all others use API key authentication. Connection guides are available in the Integrations settings page and in [docs/integrations.md](docs/integrations.md).
 
 **Scoped API keys** control what each external tool can access: permission tiers (search / read / full), document scope (by topic or watched folder), snippet size limits, tool overrides, and expiry dates.
 
