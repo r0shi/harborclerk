@@ -758,7 +758,7 @@ export default function SearchPage() {
                       </div>
                     </div>
                     <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{hit.chunk_text}</p>
-                    <div className="flex items-center space-x-3 text-xs text-gray-400">
+                    <div className="flex flex-wrap items-start gap-x-3 gap-y-1 text-xs text-gray-400">
                       <SourceCitation source={hit.source} citation={hit.citation} />
                       {hit.page_start != null && (
                         <span>
@@ -854,7 +854,7 @@ export default function SearchPage() {
                     {hit.top_chunk?.text && (
                       <p className="mb-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{hit.top_chunk.text}</p>
                     )}
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+                    <div className="flex flex-wrap items-start gap-x-3 gap-y-1 text-xs text-gray-400">
                       <SourceCitation source={hit.source} citation={hit.citation} />
                       {hit.page_range && <span>Pages {hit.page_range}</span>}
                       {hit.language && <span>Lang: {hit.language}</span>}
