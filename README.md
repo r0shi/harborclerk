@@ -23,7 +23,15 @@ Everything runs on your machine. No SaaS account. No background sync. No shared 
 
 Harbor Clerk is designed for document-heavy small teams, independent operators, researchers, and privacy-focused individuals. It runs comfortably on a Mac mini or similar hardware and includes cited answers powered by local AI models.
 
-If you want to connect external AI tools, Harbor Clerk exposes an MCP endpoint that allows them to search your knowledge base safely. They receive only the retrieved passages needed to answer a question — never your full documents.
+If you want to connect external AI tools, Harbor Clerk exposes an MCP endpoint
+that allows them to search your knowledge base safely. With the recommended
+cloud-connector scope, they receive retrieved passages and citations rather
+than the whole corpus.
+
+Cloud models are supported through scoped MCP/connectors in the current release.
+Direct cloud-backed Ask or Research inside the app is a separate fast-follow,
+not a requirement for the initial release; see
+[Cloud model boundaries](docs/cloud-model-boundaries.md) for the release gate.
 
 This isn't a platform. It's a tool.
 It keeps your documents where they belong — and makes them useful.
@@ -97,6 +105,8 @@ from current, reproducible eval runs.
 
 See [Evaluation and release claims](docs/evaluation.md) for the current claim
 posture, eval methodology pointers, and the OpenClaw claim ladder.
+[Cloud model boundaries](docs/cloud-model-boundaries.md) explains the current
+MCP/cloud connector path and the go/no-go bar for future in-app cloud mode.
 
 Known limitations for the initial release:
 
@@ -110,6 +120,9 @@ Known limitations for the initial release:
   enterprise platform.
 - Advanced integrations such as MCP, CLI, cloud LLMs, OpenClaw, and Docker
   require operator setup.
+- Direct cloud-backed Ask/Research inside the app is a fast-follow unless the
+  citation, key-storage, disclosure, path-policy, and failure-mode checklist is
+  satisfied.
 - Backup and restore are documented but not yet a polished in-app workflow.
 
 ## Why Harbor Clerk?
