@@ -87,6 +87,31 @@ A copy-pasteable agent skill for these harnesses is in **Settings → Integratio
 [Integrations](docs/integrations.md) for setup details and
 [Agent memory eval plan](docs/agent-memory-eval.md) for the evidence needed before stronger OpenClaw claims.
 
+## Evidence and Limitations
+
+Harbor Clerk includes evaluation tooling for retrieval quality, cited answers,
+and agent-memory workflows. The safe release claim is that Harbor Clerk
+provides local document search, cited local AI answers, and controlled MCP/CLI
+access for external models and agent harnesses. Stronger claims should come
+from current, reproducible eval runs.
+
+See [Evaluation and release claims](docs/evaluation.md) for the current claim
+posture, eval methodology pointers, and the OpenClaw claim ladder.
+
+Known limitations for the initial release:
+
+- Local AI quality varies by model, corpus, prompt, and task.
+- Messy email corpora and exhaustive "find every instance" questions remain
+  difficult, especially when completeness matters.
+- OCR quality depends on scan quality, layout, and installed language packs.
+- Citations ground answers, but important outputs should still be checked
+  against source documents.
+- Harbor Clerk is local-first and single-tenant, not a hosted multi-tenant
+  enterprise platform.
+- Advanced integrations such as MCP, CLI, cloud LLMs, OpenClaw, and Docker
+  require operator setup.
+- Backup and restore are documented but not yet a polished in-app workflow.
+
 ## Why Harbor Clerk?
 
 **Your documents stay private**
