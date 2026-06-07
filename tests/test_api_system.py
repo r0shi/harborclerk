@@ -55,6 +55,24 @@ async def test_health_check(client):
     assert data["checks"]["postgres"] == "ok"
 
 
+async def test_health_check_reports_embedder(client, monkeypatch):
+    import httpx
+
+    real_get = httpx.AsyncClient.get
+
+    async def _selective_get(self, url, *args, **kwargs):
+        if str(url) == "http://embedder:8000/health":
+            return httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", str(url)))
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+
+    resp = await client.get("/api/system/health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["checks"]["embedder"] == "ok"
+
+
 async def test_health_check_exposes_allow_source_download_default_false(client):
     """The health endpoint surfaces the allow_source_download capability so the
     frontend can decide whether to render the Download button. Default must be
@@ -362,6 +380,93 @@ async def test_status_summary_reports_summarize_backlog_separately(client, admin
     assert data["counts"]["total_queued_jobs"] == 1
     assert data["recent_processing_documents"] == []
     assert data["needs_attention"] == []
+
+
+async def test_system_stats_reports_worker_queue_rollups(client, admin_user, admin_token, db_session):
+    io_doc = Document(
+        title="IO queued",
+        status="active",
+        sha256=b"i" * 32,
+        pipeline_status=PipelineStatus.extracting,
+        pipeline_seq=1,
+    )
+    cpu_doc = Document(
+        title="CPU running",
+        status="active",
+        sha256=b"c" * 32,
+        pipeline_status=PipelineStatus.embedding,
+        pipeline_seq=1,
+    )
+    llm_doc = Document(
+        title="LLM queued",
+        status="active",
+        sha256=b"l" * 32,
+        pipeline_status=PipelineStatus.ready,
+        pipeline_seq=1,
+    )
+    stale_doc = Document(
+        title="Stale job",
+        status="active",
+        sha256=b"s" * 32,
+        pipeline_status=PipelineStatus.chunking,
+        pipeline_seq=2,
+    )
+    inactive_doc = Document(
+        title="Inactive job",
+        status="inactive",
+        sha256=b"x" * 32,
+        pipeline_status=PipelineStatus.ocr_running,
+        pipeline_seq=1,
+    )
+    db_session.add_all([io_doc, cpu_doc, llm_doc, stale_doc, inactive_doc])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            IngestionJob(
+                doc_id=io_doc.doc_id,
+                stage=JobStage.extract,
+                status=JobStatus.queued,
+                pipeline_seq=io_doc.pipeline_seq,
+            ),
+            IngestionJob(
+                doc_id=cpu_doc.doc_id,
+                stage=JobStage.embed,
+                status=JobStatus.running,
+                pipeline_seq=cpu_doc.pipeline_seq,
+            ),
+            IngestionJob(
+                doc_id=llm_doc.doc_id,
+                stage=JobStage.summarize,
+                status=JobStatus.queued,
+                pipeline_seq=llm_doc.pipeline_seq,
+            ),
+            IngestionJob(
+                doc_id=stale_doc.doc_id,
+                stage=JobStage.chunk,
+                status=JobStatus.queued,
+                pipeline_seq=1,
+            ),
+            IngestionJob(
+                doc_id=inactive_doc.doc_id,
+                stage=JobStage.ocr,
+                status=JobStatus.queued,
+                pipeline_seq=inactive_doc.pipeline_seq,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    resp = await client.get("/api/system/stats", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    queues = resp.json()["queues"]
+    assert queues == {
+        "io_queued": 1,
+        "io_running": 0,
+        "cpu_queued": 0,
+        "cpu_running": 1,
+        "llm_queued": 1,
+        "llm_running": 0,
+    }
 
 
 async def test_status_summary_summarize_jobs_do_not_hide_completed_status_cleanup(
