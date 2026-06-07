@@ -665,6 +665,13 @@ async def test_forced_afm_unavailable_requeues_summarize_with_retry(db_session, 
         sync_session.close()
 
 
+def test_afm_retry_delay_sequence_starts_fast():
+    from harbor_clerk.worker import entry as entry_mod
+
+    delays = [entry_mod._afm_retry_delay_seconds(attempt) for attempt in range(1, 9)]
+    assert delays == [1, 5, 10, 30, 60, 120, 300, 600]
+
+
 @pytest.mark.asyncio
 async def test_forced_afm_unavailable_marks_single_job_error_after_retry_budget(db_session, monkeypatch):
     """The AFM retry loop eventually declares one job futile without
@@ -856,11 +863,77 @@ async def test_claim_next_job_skips_summarize_until_retry_after(db_session, monk
         sha256=b"r" * 32,
         pipeline_status=PipelineStatus.ready,
     )
+    fresh_doc = Document(
+        title="Fresh summary should wait",
+        canonical_filename="fresh.pdf",
+        status="active",
+        sha256=b"w" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add_all([doc, fresh_doc])
+    await db_session.commit()
+    await db_session.refresh(doc)
+    await db_session.refresh(fresh_doc)
+
+    retry_after = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+    sync_session = get_sync_session()
+    try:
+        sync_session.add_all(
+            [
+                IngestionJob(
+                    doc_id=doc.doc_id,
+                    stage=JobStage.summarize,
+                    status=JobStatus.queued,
+                    metrics={"reason": "apple_intelligence_unavailable", "retry_after": retry_after},
+                ),
+                IngestionJob(doc_id=fresh_doc.doc_id, stage=JobStage.summarize, status=JobStatus.queued),
+            ]
+        )
+        sync_session.commit()
+    finally:
+        sync_session.close()
+
+    monkeypatch.setattr(entry_mod, "refresh_llm_settings", lambda: None)
+    monkeypatch.setattr(entry_mod, "get_settings", lambda: SimpleNamespace(summary_force_apple_intelligence=True))
+    monkeypatch.setattr("harbor_clerk.llm.summarize.apple_intelligence_cooldown", lambda: None)
+
+    assert entry_mod.claim_next_job([JobStage.summarize]) is None
+
+    sync_session = get_sync_session()
+    try:
+        job = sync_session.execute(
+            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
+        ).scalar_one()
+        fresh_job = sync_session.execute(
+            select(IngestionJob).where(
+                IngestionJob.doc_id == fresh_doc.doc_id,
+                IngestionJob.stage == JobStage.summarize,
+            )
+        ).scalar_one()
+        assert job.status == JobStatus.queued
+        assert fresh_job.status == JobStatus.queued
+    finally:
+        sync_session.close()
+
+
+@pytest.mark.asyncio
+async def test_afm_idle_wait_wakes_for_next_retry(db_session, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from harbor_clerk.worker import entry as entry_mod
+
+    doc = Document(
+        title="Retry wakeup",
+        canonical_filename="retry-wakeup.pdf",
+        status="active",
+        sha256=b"u" * 32,
+        pipeline_status=PipelineStatus.ready,
+    )
     db_session.add(doc)
     await db_session.commit()
     await db_session.refresh(doc)
 
-    retry_after = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
+    retry_after = (datetime.now(UTC) + timedelta(seconds=1)).isoformat()
     sync_session = get_sync_session()
     try:
         sync_session.add(
@@ -879,16 +952,8 @@ async def test_claim_next_job_skips_summarize_until_retry_after(db_session, monk
     monkeypatch.setattr(entry_mod, "get_settings", lambda: SimpleNamespace(summary_force_apple_intelligence=True))
     monkeypatch.setattr("harbor_clerk.llm.summarize.apple_intelligence_cooldown", lambda: None)
 
-    assert entry_mod.claim_next_job([JobStage.summarize]) is None
-
-    sync_session = get_sync_session()
-    try:
-        job = sync_session.execute(
-            select(IngestionJob).where(IngestionJob.doc_id == doc.doc_id, IngestionJob.stage == JobStage.summarize)
-        ).scalar_one()
-        assert job.status == JobStatus.queued
-    finally:
-        sync_session.close()
+    wait_seconds = entry_mod._next_afm_retry_wait_seconds([JobStage.summarize], default=30)
+    assert 1 <= wait_seconds <= 2
 
 
 @pytest.mark.asyncio

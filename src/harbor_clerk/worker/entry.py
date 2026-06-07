@@ -7,6 +7,7 @@ Usage:
 
 import argparse
 import logging
+import math
 import os
 import select as select_mod
 import signal
@@ -50,9 +51,8 @@ QUEUE_STAGES: dict[str, list[JobStage]] = {
 }
 
 HEARTBEAT_INTERVAL = 30  # seconds
-AFM_RETRY_BASE_SECONDS = 300
-AFM_RETRY_MAX_SECONDS = 3600
-AFM_RETRY_MAX_ATTEMPTS = 6
+AFM_RETRY_DELAYS_SECONDS = (1, 5, 10, 30, 60, 120, 300, 600)
+AFM_RETRY_MAX_ATTEMPTS = len(AFM_RETRY_DELAYS_SECONDS) + 1
 AFM_RETRY_REASON = "apple_intelligence_unavailable"
 
 _shutdown = False
@@ -138,7 +138,8 @@ def _wait_for_notify(conn, timeout=30):
 def _afm_retry_delay_seconds(attempt: int) -> int:
     """Exponential retry delay for forced-AFM summarize outages."""
     bounded_attempt = max(1, attempt)
-    return min(AFM_RETRY_BASE_SECONDS * (2 ** (bounded_attempt - 1)), AFM_RETRY_MAX_SECONDS)
+    index = min(bounded_attempt - 1, len(AFM_RETRY_DELAYS_SECONDS) - 1)
+    return AFM_RETRY_DELAYS_SECONDS[index]
 
 
 def _summarize_afm_claim_state(stages: list[JobStage]) -> tuple[bool, tuple[float, str] | None]:
@@ -151,6 +152,49 @@ def _summarize_afm_claim_state(stages: list[JobStage]) -> tuple[bool, tuple[floa
     from harbor_clerk.llm.summarize import apple_intelligence_cooldown
 
     return True, apple_intelligence_cooldown()
+
+
+def _parse_retry_after(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _next_afm_retry_wait_seconds(stages: list[JobStage], *, default: int = 30) -> int:
+    """Return an idle wait that wakes when the next forced-AFM retry is due."""
+    forced_afm_summaries, _ = _summarize_afm_claim_state(stages)
+    if not forced_afm_summaries:
+        return default
+
+    session = get_sync_session()
+    try:
+        retry_after = session.execute(
+            select(IngestionJob.metrics["retry_after"].astext)
+            .join(Document, Document.doc_id == IngestionJob.doc_id)
+            .where(
+                Document.status == "active",
+                IngestionJob.stage == JobStage.summarize,
+                IngestionJob.status == JobStatus.queued,
+                IngestionJob.pipeline_seq == Document.pipeline_seq,
+                IngestionJob.metrics["reason"].astext == AFM_RETRY_REASON,
+            )
+            .order_by(IngestionJob.metrics["retry_after"].astext.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+    finally:
+        session.close()
+
+    parsed = _parse_retry_after(retry_after)
+    if parsed is None:
+        return default
+    remaining = (parsed - datetime.now(UTC)).total_seconds()
+    return max(1, min(default, math.ceil(remaining)))
 
 
 def _heartbeat_loop(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int, stop_event: threading.Event):
@@ -196,17 +240,48 @@ def claim_next_job(stages: list[JobStage]) -> tuple[uuid.UUID, JobStage, int] | 
         IngestionJob.pipeline_seq == Document.pipeline_seq,
         Document.status == "active",
     ]
-    if forced_afm_summaries:
-        filters.append(
-            or_(
-                IngestionJob.stage != JobStage.summarize,
-                IngestionJob.metrics["retry_after"].astext.is_(None),
-                IngestionJob.metrics["retry_after"].astext <= now_iso,
-            )
-        )
 
     session = get_sync_session()
     try:
+        afm_retry_pending = False
+        if forced_afm_summaries and JobStage.summarize in stages_to_claim:
+            afm_retry_pending = (
+                session.execute(
+                    select(IngestionJob.job_id)
+                    .join(Document, Document.doc_id == IngestionJob.doc_id)
+                    .where(
+                        Document.status == "active",
+                        IngestionJob.stage == JobStage.summarize,
+                        IngestionJob.status == JobStatus.queued,
+                        IngestionJob.pipeline_seq == Document.pipeline_seq,
+                        IngestionJob.metrics["reason"].astext == AFM_RETRY_REASON,
+                    )
+                    .limit(1)
+                ).first()
+                is not None
+            )
+            if afm_retry_pending:
+                filters.append(
+                    or_(
+                        IngestionJob.stage != JobStage.summarize,
+                        and_(
+                            IngestionJob.metrics["reason"].astext == AFM_RETRY_REASON,
+                            or_(
+                                IngestionJob.metrics["retry_after"].astext.is_(None),
+                                IngestionJob.metrics["retry_after"].astext <= now_iso,
+                            ),
+                        ),
+                    )
+                )
+            else:
+                filters.append(
+                    or_(
+                        IngestionJob.stage != JobStage.summarize,
+                        IngestionJob.metrics["retry_after"].astext.is_(None),
+                        IngestionJob.metrics["retry_after"].astext <= now_iso,
+                    )
+                )
+
         # Prioritise stages closest to completion so fast final stages
         # (finalize, entities) aren't starved by slow ones (summarize).
         stage_priority = case(
@@ -526,7 +601,7 @@ def main():
             if result:
                 execute_job(*result)
             else:
-                _wait_for_notify(listen_conn, timeout=30)
+                _wait_for_notify(listen_conn, timeout=_next_afm_retry_wait_seconds(stages))
     finally:
         listen_conn.close()
         logger.info("Worker shut down")

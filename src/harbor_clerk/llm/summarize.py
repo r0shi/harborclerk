@@ -437,7 +437,7 @@ _daemon: subprocess.Popen | None = None
 # ~8-10 s; when AFM hangs, falling back quickly matters more than preserving a
 # very long wait for a single best-effort stage.
 _DAEMON_READ_TIMEOUT_S = 30.0
-_AFM_CIRCUIT_BREAKER_SECONDS = 300.0
+_AFM_CIRCUIT_BREAKER_SECONDS = 1.0
 _afm_disabled_until_monotonic = 0.0
 _afm_disabled_reason = ""
 
