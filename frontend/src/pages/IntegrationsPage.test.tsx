@@ -29,6 +29,14 @@ function renderPage() {
   )
 }
 
+function expectPreContains(text: string) {
+  expect(
+    screen.getByText((content, element) => {
+      return element?.tagName.toLowerCase() === 'pre' && content.includes(text)
+    }),
+  ).toBeInTheDocument()
+}
+
 describe('IntegrationsPage', () => {
   beforeEach(() => {
     getMock.mockReset()
@@ -69,5 +77,32 @@ describe('IntegrationsPage', () => {
     expect(await screen.findByText('Skill markdown')).toBeInTheDocument()
     expect(screen.getByText(/Find every matching document/)).toBeInTheDocument()
     expect(screen.getByText(/harbor-clerk find-all/)).toBeInTheDocument()
+  })
+
+  it('renders authless MCP examples with token-path URLs', async () => {
+    getMock.mockImplementation((path: string) => {
+      if (path === '/api/integrations/settings') {
+        return Promise.resolve({ public_url: 'https://clerk.example/', oauth_refresh_token_days: 90 })
+      }
+      if (path === '/api/integrations/connections') {
+        return Promise.resolve([])
+      }
+      return Promise.reject(new Error(`Unexpected path ${path}`))
+    })
+
+    renderPage()
+
+    expect(await screen.findByText('Choose a Surface')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
+    expectPreContains('"url": "https://clerk.example/t/YOUR_API_KEY"')
+    expectPreContains('claude mcp add harbor-clerk "https://clerk.example/t/YOUR_API_KEY"')
+
+    fireEvent.click(screen.getByRole('button', { name: /Gemini/ }))
+    expectPreContains('"uri": "https://clerk.example/t/YOUR_API_KEY"')
+
+    fireEvent.click(screen.getByRole('button', { name: /OpenClaw/ }))
+    expectPreContains(`openclaw mcp set harbor-clerk '{"url":"https://clerk.example/t/YOUR_API_KEY"}'`)
+    expectPreContains('"url": "https://clerk.example/t/YOUR_API_KEY"')
   })
 })
