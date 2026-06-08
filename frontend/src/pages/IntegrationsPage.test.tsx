@@ -69,6 +69,8 @@ describe('IntegrationsPage', () => {
 
     expect(screen.getByText(/Prefer the CLI skill for local/)).toBeInTheDocument()
     expect(screen.getByText(/Full only for local runs/)).toBeInTheDocument()
+    expect(screen.getByText(/macOS native currently exposes local MCP over HTTP/)).toBeInTheDocument()
+    expectPreContains(`openclaw mcp set harbor-clerk '{"url":"${window.location.origin}/t/YOUR_API_KEY"}'`)
   })
 
   it('renders the checked-in CLI skill markdown with find-all guidance', async () => {
@@ -79,7 +81,7 @@ describe('IntegrationsPage', () => {
     expect(screen.getByText(/harbor-clerk find-all/)).toBeInTheDocument()
   })
 
-  it('renders authless MCP examples with token-path URLs', async () => {
+  it('keeps cloud MCP examples public and same-machine MCP examples local', async () => {
     getMock.mockImplementation((path: string) => {
       if (path === '/api/integrations/settings') {
         return Promise.resolve({ public_url: 'https://clerk.example/', oauth_refresh_token_days: 90 })
@@ -93,16 +95,19 @@ describe('IntegrationsPage', () => {
     renderPage()
 
     expect(await screen.findByText('Choose a Surface')).toBeInTheDocument()
+    expectPreContains('https://clerk.example/mcp')
+
+    const localTokenUrl = `${window.location.origin}/t/YOUR_API_KEY`
 
     fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
-    expectPreContains('"url": "https://clerk.example/t/YOUR_API_KEY"')
-    expectPreContains('claude mcp add harbor-clerk "https://clerk.example/t/YOUR_API_KEY"')
+    expectPreContains(`"url": "${localTokenUrl}"`)
+    expectPreContains(`claude mcp add harbor-clerk "${localTokenUrl}"`)
 
     fireEvent.click(screen.getByRole('button', { name: /Gemini/ }))
-    expectPreContains('"uri": "https://clerk.example/t/YOUR_API_KEY"')
+    expectPreContains(`"uri": "${localTokenUrl}"`)
 
     fireEvent.click(screen.getByRole('button', { name: /OpenClaw/ }))
-    expectPreContains(`openclaw mcp set harbor-clerk '{"url":"https://clerk.example/t/YOUR_API_KEY"}'`)
-    expectPreContains('"url": "https://clerk.example/t/YOUR_API_KEY"')
+    expectPreContains(`openclaw mcp set harbor-clerk '{"url":"${localTokenUrl}"}'`)
+    expectPreContains(`"url": "${localTokenUrl}"`)
   })
 })
