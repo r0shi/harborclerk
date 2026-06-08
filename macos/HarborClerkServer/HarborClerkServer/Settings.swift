@@ -25,6 +25,47 @@ final class AppSettings: @unchecked Sendable {
         set { lock.withLock { data["api_port"] = newValue }; save() }
     }
 
+    var gatewayPort: Int {
+        get { lock.withLock { data["gateway_port"] as? Int ?? GatewayConfig.defaultPort } }
+        set { lock.withLock { data["gateway_port"] = newValue }; save() }
+    }
+
+    var gatewayHostname: String {
+        get { lock.withLock { data["gateway_hostname"] as? String ?? GatewayConfig.defaultHostname } }
+        set { lock.withLock { data["gateway_hostname"] = GatewayConfig.normalizedHostname(newValue) }; save() }
+    }
+
+    var gatewayBindAddresses: [String] {
+        get { lock.withLock { data["gateway_bind_addresses"] as? [String] ?? GatewayConfig.defaultBindAddresses } }
+        set { lock.withLock { data["gateway_bind_addresses"] = GatewayConfig.normalizedBindAddresses(newValue) }; save() }
+    }
+
+    var gatewayCertificateMode: GatewayCertificateMode {
+        get {
+            let raw = lock.withLock { data["gateway_certificate_mode"] as? String ?? GatewayCertificateMode.internal.rawValue }
+            return GatewayCertificateMode(rawValue: raw) ?? .internal
+        }
+        set { lock.withLock { data["gateway_certificate_mode"] = newValue.rawValue }; save() }
+    }
+
+    var gatewayCertificatePath: String {
+        get { lock.withLock { data["gateway_certificate_path"] as? String ?? "" } }
+        set { lock.withLock { data["gateway_certificate_path"] = newValue.trimmingCharacters(in: .whitespacesAndNewlines) }; save() }
+    }
+
+    var gatewayPrivateKeyPath: String {
+        get { lock.withLock { data["gateway_private_key_path"] as? String ?? "" } }
+        set { lock.withLock { data["gateway_private_key_path"] = newValue.trimmingCharacters(in: .whitespacesAndNewlines) }; save() }
+    }
+
+    var gatewayExposesFullApp: Bool {
+        GatewayConfig.exposesFullApp(bindAddresses: gatewayBindAddresses)
+    }
+
+    var localMCPBaseURL: String {
+        GatewayConfig.localBaseURL(hostname: gatewayHostname, gatewayPort: gatewayPort)
+    }
+
     var embedderPort: Int {
         get { lock.withLock { data["embedder_port"] as? Int ?? 8101 } }
         set { lock.withLock { data["embedder_port"] = newValue }; save() }

@@ -101,6 +101,7 @@ describe('DocumentsPage', () => {
       allowSourceDownload: false,
       enableCliAccess: false,
       cliShimInstallStatus: null,
+      localMcpUrl: null,
       loaded: true,
     })
     useLLMStatusContextMock.mockReturnValue({

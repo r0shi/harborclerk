@@ -89,6 +89,25 @@ def test_enable_cli_access_reads_env(monkeypatch):
     assert s.enable_cli_access is True
 
 
+def test_local_mcp_url_defaults_empty(monkeypatch):
+    monkeypatch.delenv("LOCAL_MCP_URL", raising=False)
+    from harbor_clerk.config import Settings
+
+    s = Settings()
+    assert s.gateway_port == 8443
+    assert s.local_mcp_url == ""
+
+
+def test_local_mcp_url_reads_env_and_strips_trailing_slash(monkeypatch):
+    monkeypatch.setenv("GATEWAY_PORT", "9443")
+    monkeypatch.setenv("LOCAL_MCP_URL", "https://localhost:9443/")
+    from harbor_clerk.config import Settings
+
+    s = Settings()
+    assert s.gateway_port == 9443
+    assert s.local_mcp_url == "https://localhost:9443"
+
+
 def test_refresh_cli_access_setting_no_native_config(monkeypatch):
     """refresh_cli_access_setting is a no-op when native_config_file is unset."""
     monkeypatch.delenv("ENABLE_CLI_ACCESS", raising=False)

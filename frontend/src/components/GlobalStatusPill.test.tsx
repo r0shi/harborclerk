@@ -33,6 +33,7 @@ const READY_CONFIG: SystemConfig = {
   allowSourceDownload: false,
   enableCliAccess: false,
   cliShimInstallStatus: null,
+  localMcpUrl: null,
   loaded: true,
 }
 

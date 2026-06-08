@@ -117,6 +117,11 @@ if [ -d "$BUILD_DIR/llama" ]; then
     cp -R "$BUILD_DIR/llama" "$RESOURCES/llama"
 fi
 
+# Caddy HTTPS gateway
+if [ -d "$BUILD_DIR/caddy" ]; then
+    cp -R "$BUILD_DIR/caddy" "$RESOURCES/caddy"
+fi
+
 # apple-summarize (Apple Intelligence CLI tool — optional, macOS 26+ only)
 if [ -f "$BUILD_DIR/apple-summarize/apple-summarize" ]; then
     cp "$BUILD_DIR/apple-summarize/apple-summarize" "$RESOURCES/apple-summarize"

@@ -26,6 +26,14 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.postgresPort, 5433)
         XCTAssertEqual(settings.tikaPort, 9998)
         XCTAssertEqual(settings.apiPort, 8100)
+        XCTAssertEqual(settings.gatewayPort, 8443)
+        XCTAssertEqual(settings.gatewayHostname, "localhost")
+        XCTAssertEqual(settings.gatewayBindAddresses, ["127.0.0.1", "::1"])
+        XCTAssertEqual(settings.gatewayCertificateMode, .internal)
+        XCTAssertEqual(settings.gatewayCertificatePath, "")
+        XCTAssertEqual(settings.gatewayPrivateKeyPath, "")
+        XCTAssertTrue(settings.gatewayExposesFullApp)
+        XCTAssertEqual(settings.localMCPBaseURL, "https://localhost:8443")
         XCTAssertEqual(settings.embedderPort, 8101)
         XCTAssertEqual(settings.llamaPort, 8102)
         XCTAssertEqual(settings.workerPreset, "balanced")
@@ -54,6 +62,8 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.logLevel, "DEBUG")
         // Other fields keep defaults
         XCTAssertEqual(settings.apiPort, 8100)
+        XCTAssertEqual(settings.gatewayPort, 8443)
+        XCTAssertEqual(settings.gatewayHostname, "localhost")
     }
 
     // MARK: - Save and reload
@@ -61,10 +71,24 @@ final class AppSettingsTests: XCTestCase {
     func testSaveAndReload() {
         let settings = AppSettings(configURL: configURL)
         settings.postgresPort = 6000
+        settings.gatewayPort = 9443
+        settings.gatewayHostname = "harbor.tailnet.ts.net"
+        settings.gatewayBindAddresses = ["100.80.1.2"]
+        settings.gatewayCertificateMode = .custom
+        settings.gatewayCertificatePath = "/tmp/harbor.pem"
+        settings.gatewayPrivateKeyPath = "/tmp/harbor-key.pem"
         settings.workerPreset = "quiet"
 
         let reloaded = AppSettings(configURL: configURL)
         XCTAssertEqual(reloaded.postgresPort, 6000)
+        XCTAssertEqual(reloaded.gatewayPort, 9443)
+        XCTAssertEqual(reloaded.gatewayHostname, "harbor.tailnet.ts.net")
+        XCTAssertEqual(reloaded.gatewayBindAddresses, ["100.80.1.2"])
+        XCTAssertEqual(reloaded.gatewayCertificateMode, .custom)
+        XCTAssertEqual(reloaded.gatewayCertificatePath, "/tmp/harbor.pem")
+        XCTAssertEqual(reloaded.gatewayPrivateKeyPath, "/tmp/harbor-key.pem")
+        XCTAssertFalse(reloaded.gatewayExposesFullApp)
+        XCTAssertEqual(reloaded.localMCPBaseURL, "https://harbor.tailnet.ts.net:9443")
         XCTAssertEqual(reloaded.workerPreset, "quiet")
     }
 

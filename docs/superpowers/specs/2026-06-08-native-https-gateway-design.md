@@ -1,8 +1,8 @@
 # Native HTTPS Gateway - Design Spec
 
 **Date:** 2026-06-08
-**Status:** Draft for release-gate planning
-**Scope:** macOS native HTTPS parity with Docker for local UI, MCP, CLI, and local agent harness setup. Includes manual real-certificate support planning. Excludes ACME/Let's Encrypt automation.
+**Status:** Implemented in the native HTTPS gateway PR; manual certificate-file support is included; ACME/Let's Encrypt and app-over-HTTPS remain deferred
+**Scope:** macOS native HTTPS parity for MCP, CLI, and local agent harness setup. Includes configurable hostname, bind addresses, self-signed/default certificates, custom certificate files, and Tailscale bind detection. Excludes ACME/Let's Encrypt automation and loading Harbor Clerk.app itself over HTTPS.
 
 ## Overview
 
@@ -38,6 +38,8 @@ different one for macOS, and a third one for public cloud connectors.
 - No public exposure by default.
 - No redesign of MCP auth, API keys, or OAuth.
 - No replacing FastAPI/uvicorn for this scope.
+- No external exposure of the web app, setup/status API, or OAuth endpoints
+  through the native gateway in this release.
 
 ## Current behavior
 
@@ -47,7 +49,7 @@ Docker:
 - Caddy uses an internal/self-signed local cert for `localhost`.
 - Caddy proxies `/`, `/api/*`, `/mcp/*`, and `/t/*` to the app container.
 
-macOS native:
+macOS native before this PR:
 
 - Harbor Clerk Server starts the API on `http://127.0.0.1:<apiPort>`.
 - Harbor Clerk.app loads `http://localhost:<apiPort>` in WKWebView.
@@ -80,12 +82,24 @@ Default ports:
 Default bind behavior:
 
 - Gateway binds to loopback only by default.
-- Existing "Allow remote browser connections" and "Allow remote model
-  connections (MCP)" should control whether the gateway can bind beyond
-  loopback.
-- Direct API binding to `0.0.0.0` should be reconsidered once the gateway
-  exists; the safer release posture is public traffic through the gateway, not
-  straight to uvicorn.
+- FastAPI remains bound to `127.0.0.1`.
+- Preferences let the operator choose loopback, all interfaces, or a detected
+  Tailscale address for the gateway.
+- When the gateway binds beyond loopback, Caddy proxies only `/mcp*` and `/t*`
+  to FastAPI and returns 404 for everything else.
+- This preserves remote/local agent MCP while keeping the SPA, setup/status
+  endpoints, and OAuth off the external native listener.
+
+Authentication/exposure audit:
+
+- `/mcp` and `/t` are the intended remote-capable surfaces and require API key
+  auth through the MCP middleware/token path.
+- Static SPA routes, setup-status, ping/health, login/logout/refresh, and OAuth
+  discovery/authorization/token routes are not appropriate to expose via the
+  quick native gateway remote-bind control.
+- Public OAuth/cloud connector hosting should remain a separate trusted-public
+  URL design, not an accidental consequence of binding the local gateway to
+  `0.0.0.0`.
 
 Why Caddy:
 
@@ -132,26 +146,29 @@ Open issue:
   how cleanly local agent clients trust the certificate. That must be tested
   against OpenClaw before considering the release gate satisfied.
 
-### Mode 2: Manual real cert and hostname
+### Mode 2: Manual cert files and hostname
 
-Fast follow or same release only if the local gateway lands cleanly.
+Included as a release-gate add-on for operators who already have certificate
+material or a Tailscale/MagicDNS name.
 
 Inputs:
 
 - Hostname.
-- Certificate chain path or uploaded certificate.
-- Private key path or uploaded key.
-- Optional bind address.
-- Optional public URL override.
+- Certificate chain path.
+- Private key path.
+- Bind address list, including loopback, all interfaces, or detected Tailscale
+  interface shortcuts.
 
 Requirements:
 
-- Validate certificate and private key match.
-- Validate hostname coverage and expiry.
+- Require both certificate and private key paths before restart.
+- Let Caddy reject invalid or mismatched files at gateway startup.
+- Future hardening: validate certificate/private-key match, hostname coverage,
+  and expiry before restart.
 - Warn if the gateway is configured for remote access.
-- Store paths or key material safely.
+- Store paths, not key material.
 - Reload/restart the gateway when settings change.
-- Reflect the effective URL on the Integrations page.
+- Reflect the effective local MCP URL on the Integrations page.
 
 ### Mode 3: ACME/Let's Encrypt
 
@@ -169,14 +186,16 @@ Reason:
 
 Add a "Local HTTPS Gateway" section near Network Access:
 
-- Enable local HTTPS gateway.
 - Gateway URL: `https://localhost:8443`.
 - Gateway port.
-- Certificate mode: local certificate or manual certificate.
-- Certificate trust status.
-- Real hostname/cert controls when manual mode is enabled.
-- Copy local MCP URL.
-- Link to Integrations.
+- Hostname.
+- Bind addresses, with loopback, all interfaces, and detected Tailscale
+  shortcuts.
+- Certificate mode: generated/self-signed local certificate or manual
+  certificate files.
+- Certificate and private-key file pickers when manual mode is enabled.
+- Copy/read local MCP URL.
+- Warning copy that external binds expose only `/mcp` and `/t`.
 
 Changing gateway port or certificate mode should mark that a restart/reload is
 needed, then perform a targeted gateway restart when applied.
@@ -224,16 +243,13 @@ After local HTTPS is stable:
 
 ## Implementation plan
 
-### PR 1: Copy and URL split
+### PR 1: Native localhost HTTPS gateway and URL split
 
-Status: in progress in this planning branch.
+Status: implemented in this branch, then expanded to cover hostname, bind,
+Tailscale, and manual certificate-file settings.
 
 - Make Integrations copy distinguish local clients from cloud clients.
-- Use current app origin for local-capable MCP examples.
-- Document that macOS native is currently HTTP and Docker is HTTPS.
-
-### PR 2: Native gateway service
-
+- Use the local gateway URL for local-capable MCP examples.
 - Add `gateway_port` and gateway enable/cert-mode settings.
 - Bundle or locate a Caddy binary in the macOS Server resources.
 - Add `GatewayService` as a managed service.
@@ -242,17 +258,20 @@ Status: in progress in this planning branch.
 - Health-check the gateway over HTTPS.
 - Add tests for settings persistence, config generation, and stale-port
   detection.
+- Keep FastAPI bound to loopback even when the gateway binds to external
+  interfaces.
+- Restrict external native gateway binds to `/mcp` and `/t`.
+- Mark non-loopback gateway health as "not probed" from the unauthenticated
+  health endpoint, avoiding a remote-probe/SSRF-shaped diagnostic.
 
-### PR 3: Native app and CLI routing
+### PR 2: Native app routing
 
 - Decide whether Harbor Clerk.app loads the SPA through HTTPS by default.
 - Update `BackendDetector`, `AuthManager`, and WKWebView certificate handling
   if the app moves to HTTPS.
-- Update CLI shim defaults to the gateway URL.
-- Update Integrations snippets to prefer the gateway URL.
 - Add fallback behavior if the gateway is disabled or unhealthy.
 
-### PR 4: Certificate trust and smoke tests
+### PR 3: Certificate trust and smoke tests
 
 - Implement or document the trust workflow.
 - Verify curl, `harbor-clerk` CLI, OpenClaw MCP, Claude Code MCP, and browser
@@ -260,20 +279,22 @@ Status: in progress in this planning branch.
 - Add a release smoke section covering local HTTPS setup.
 - Decide whether any client-specific insecure flag is acceptable for release.
 
-### PR 5: Manual hostname/cert support
+### PR 4: Manual hostname/cert hardening
 
-- Add Preferences UI for hostname, cert chain, private key, bind address, and
-  effective public URL.
 - Validate cert/key pair, hostname coverage, and expiry.
-- Store paths or key material safely.
-- Reload gateway on changes.
-- Update Status and Integrations with the effective public URL and warnings.
+- Add certificate trust/status display.
+- Decide whether to copy cert/key material into Application Support or continue
+  storing operator-managed paths only.
+- Add public URL/OAuth guidance only after the public trusted HTTPS flow is
+  designed.
 
 ## Release gates
 
 Minimum gate:
 
 - macOS native exposes a working same-machine HTTPS URL for MCP.
+- macOS native exposes a configurable remote/tailnet MCP URL when explicitly
+  requested, with only `/mcp` and `/t` reachable externally.
 - OpenClaw can complete a documented MCP smoke task against that URL, or the
   docs clearly route OpenClaw through CLI until trust is solved.
 - Docker and macOS snippets no longer contradict actual listener behavior.

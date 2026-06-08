@@ -14,6 +14,7 @@ vi.mock('../hooks/useSystemConfig', () => ({
   useSystemConfig: () => ({
     enableCliAccess: true,
     cliShimInstallStatus: 'installed',
+    localMcpUrl: 'https://localhost:8443',
   }),
 }))
 
@@ -69,8 +70,8 @@ describe('IntegrationsPage', () => {
 
     expect(screen.getByText(/Prefer the CLI skill for local/)).toBeInTheDocument()
     expect(screen.getByText(/Full only for local runs/)).toBeInTheDocument()
-    expect(screen.getByText(/macOS native currently exposes local MCP over HTTP/)).toBeInTheDocument()
-    expectPreContains(`openclaw mcp set harbor-clerk '{"url":"${window.location.origin}/t/YOUR_API_KEY"}'`)
+    expect(screen.getByText(/self-signed localhost certificate/)).toBeInTheDocument()
+    expectPreContains(`openclaw mcp set harbor-clerk '{"url":"https://localhost:8443/t/YOUR_API_KEY"}'`)
   })
 
   it('renders the checked-in CLI skill markdown with find-all guidance', async () => {
@@ -97,7 +98,7 @@ describe('IntegrationsPage', () => {
     expect(await screen.findByText('Choose a Surface')).toBeInTheDocument()
     expectPreContains('https://clerk.example/mcp')
 
-    const localTokenUrl = `${window.location.origin}/t/YOUR_API_KEY`
+    const localTokenUrl = 'https://localhost:8443/t/YOUR_API_KEY'
 
     fireEvent.click(screen.getByRole('button', { name: /Claude/ }))
     expectPreContains(`"url": "${localTokenUrl}"`)

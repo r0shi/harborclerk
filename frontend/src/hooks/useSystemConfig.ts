@@ -25,6 +25,11 @@ export interface SystemConfig {
    */
   cliShimInstallStatus: 'installed' | 'installed_outdated' | 'not_installed' | null
   /**
+   * Local base URL for same-machine MCP/API clients. On macOS native this is
+   * the managed HTTPS gateway; Docker/Linux may omit it.
+   */
+  localMcpUrl: string | null
+  /**
    * True once the system config has been fetched at least once. While false
    * the UI should treat capability flags conservatively (e.g. hide buttons
    * rather than show them only to have them flicker off when the response
@@ -38,6 +43,7 @@ const FALLBACK: SystemConfig = {
   allowSourceDownload: false,
   enableCliAccess: false,
   cliShimInstallStatus: null,
+  localMcpUrl: null,
   loaded: false,
 }
 
@@ -65,6 +71,7 @@ export function useSystemConfig(): SystemConfig {
           allowSourceDownload: Boolean(data.allow_source_download),
           enableCliAccess: Boolean(data.enable_cli_access),
           cliShimInstallStatus: data.cli_shim_install_status ?? null,
+          localMcpUrl: data.local_mcp_url ?? null,
           loaded: true,
         })
       })

@@ -1,9 +1,11 @@
+import asyncio
 import logging
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -88,8 +90,38 @@ def _cli_shim_install_status(_shim: Path | None = None) -> str | None:
         return "installed"
 
     if embedded_bundle == current_bundle:
+        embedded_url = _extract_shim_default_url(contents)
+        local_mcp_url = get_settings().local_mcp_url
+        if local_mcp_url and embedded_url != local_mcp_url:
+            return "installed_outdated"
         return "installed"
     return "installed_outdated"
+
+
+def _extract_shim_default_url(contents: str) -> str | None:
+    """Extract the default HARBOR_CLERK_URL from the native CLI shim."""
+    for line in contents.splitlines():
+        if not line.startswith("export HARBOR_CLERK_URL="):
+            continue
+        marker = ":-"
+        start = line.find(marker)
+        if start == -1:
+            return None
+        start += len(marker)
+        end = line.find("}", start)
+        if end == -1:
+            return None
+        return line[start:end]
+    return None
+
+
+def _local_gateway_addr(base_url: str) -> tuple[str, int] | str | None:
+    parsed = urlparse(base_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return "not_probed"
+    return (parsed.hostname, parsed.port or 443)
 
 
 @router.get("/system/setup-status")
@@ -176,9 +208,25 @@ async def health_check(
     else:
         checks["reranker"] = "disabled"
 
+    if settings.local_mcp_url:
+        gateway_addr = _local_gateway_addr(settings.local_mcp_url)
+        if gateway_addr is None:
+            checks["local_https_gateway"] = "error: local_mcp_url must be HTTPS"
+        elif gateway_addr == "not_probed":
+            checks["local_https_gateway"] = "not_probed"
+        else:
+            try:
+                _, writer = await asyncio.wait_for(asyncio.open_connection(*gateway_addr), timeout=2)
+                writer.close()
+                await writer.wait_closed()
+                checks["local_https_gateway"] = "ok"
+            except Exception as e:
+                logger.error("Local HTTPS gateway health check failed: %s", e)
+                checks["local_https_gateway"] = f"error: {e}"
+
     from harbor_clerk.api.app import BUILD_HASH
 
-    overall = all(v in ("ok", "disabled") for v in checks.values())
+    overall = all(v in ("ok", "disabled", "not_probed") for v in checks.values())
     return {
         "status": "healthy" if overall else "degraded",
         "build": BUILD_HASH,
@@ -188,6 +236,7 @@ async def health_check(
         # separate round-trip — see frontend/src/hooks/useSystemConfig.ts.
         "allow_source_download": get_settings().allow_source_download,
         "enable_cli_access": get_settings().enable_cli_access,
+        "local_mcp_url": settings.local_mcp_url or None,
         # Only present on macOS native (native_config_file is set). Returns
         # one of "installed", "installed_outdated", "not_installed". Absent
         # (None → omitted by frontend) on Docker/Linux where the shim concept
