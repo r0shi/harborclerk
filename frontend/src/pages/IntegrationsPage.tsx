@@ -66,6 +66,10 @@ function CodeBlock({ children }: { children: string }) {
   )
 }
 
+function trimTrailingSlash(value: string) {
+  return value.replace(/\/$/, '')
+}
+
 export default function IntegrationsPage() {
   const { enableCliAccess, cliShimInstallStatus } = useSystemConfig()
   const [settings, setSettings] = useState<IntegrationSettings>({ public_url: '', oauth_refresh_token_days: 90 })
@@ -131,12 +135,12 @@ export default function IntegrationsPage() {
     }
   }
 
-  const publicBaseUrl = settings.public_url ? settings.public_url.replace(/\/$/, '') : 'https://your-server.example.com'
+  const appOrigin = typeof window !== 'undefined' ? trimTrailingSlash(window.location.origin) : ''
+  const localBaseUrl = appOrigin || 'http://localhost:8100'
+  const publicBaseUrl = settings.public_url ? trimTrailingSlash(settings.public_url) : 'https://your-server.example.com'
   const mcpUrl = `${publicBaseUrl}/mcp`
-  const mcpTokenUrl = `${publicBaseUrl}/t/YOUR_API_KEY`
-  const appOrigin = typeof window !== 'undefined' ? window.location.origin : ''
-  const cliBaseUrl = settings.public_url || appOrigin || 'https://your-server.example.com'
-  const cliEnvBlock = `export HARBOR_CLERK_URL="${cliBaseUrl.replace(/\/$/, '')}"
+  const localMcpTokenUrl = `${localBaseUrl}/t/YOUR_API_KEY`
+  const cliEnvBlock = `export HARBOR_CLERK_URL="${localBaseUrl}"
 export HARBOR_CLERK_API_KEY="YOUR_API_KEY"
 export PATH="$HOME/.local/bin:$PATH"`
 
@@ -274,7 +278,8 @@ export PATH="$HOME/.local/bin:$PATH"`
             <p className="text-sm font-semibold text-(--color-text-primary)">MCP for cloud and connector clients</p>
             <p className="mt-1 text-sm text-(--color-text-secondary)">
               Use MCP when the tool can call structured remote tools directly. Cloud models receive retrieved snippets,
-              citations, and metadata from scoped tool calls, not the full archive.
+              citations, and metadata from scoped tool calls, not the full archive. Cloud clients require a public,
+              trusted HTTPS URL; same-machine clients can use the current app origin.
             </p>
           </div>
           <div className="rounded-lg border border-(--color-border) bg-(--color-bg-secondary) p-4">
@@ -380,7 +385,7 @@ export PATH="$HOME/.local/bin:$PATH"`
                 {
                   mcpServers: {
                     'harbor-clerk': {
-                      url: mcpTokenUrl,
+                      url: localMcpTokenUrl,
                     },
                   },
                 },
@@ -391,7 +396,7 @@ export PATH="$HOME/.local/bin:$PATH"`
             <p className="mt-4 text-sm text-(--color-text-primary)">
               For <strong>Claude Code</strong> MCP setup, run:
             </p>
-            <CodeBlock>{`claude mcp add harbor-clerk "${mcpTokenUrl}"`}</CodeBlock>
+            <CodeBlock>{`claude mcp add harbor-clerk "${localMcpTokenUrl}"`}</CodeBlock>
             <p className="mt-4 text-sm text-(--color-text-primary)">
               For shell-first Claude Code sessions, enable the CLI below, export the environment variables, and copy the
               Harbor Clerk skill markdown into your local skill directory.
@@ -452,7 +457,7 @@ export PATH="$HOME/.local/bin:$PATH"`
                 {
                   mcpServers: {
                     'harbor-clerk': {
-                      uri: mcpTokenUrl,
+                      uri: localMcpTokenUrl,
                     },
                   },
                 },
@@ -505,7 +510,7 @@ export PATH="$HOME/.local/bin:$PATH"`
             <p className="mt-4 text-sm text-(--color-text-primary)">
               If your OpenClaw setup is using MCP instead, add Harbor Clerk as an MCP server in your OpenClaw config:
             </p>
-            <CodeBlock>{`openclaw mcp set harbor-clerk '${JSON.stringify({ url: mcpTokenUrl })}'`}</CodeBlock>
+            <CodeBlock>{`openclaw mcp set harbor-clerk '${JSON.stringify({ url: localMcpTokenUrl })}'`}</CodeBlock>
             <p className="mt-3 text-sm text-(--color-text-primary)">
               Or add it directly to your{' '}
               <code className="rounded bg-(--color-bg-secondary) px-1.5 py-0.5 text-xs">openclaw.json</code>:
@@ -515,7 +520,7 @@ export PATH="$HOME/.local/bin:$PATH"`
                 {
                   mcpServers: {
                     'harbor-clerk': {
-                      url: mcpTokenUrl,
+                      url: localMcpTokenUrl,
                     },
                   },
                 },
@@ -538,6 +543,11 @@ export PATH="$HOME/.local/bin:$PATH"`
                 to monitor usage.
               </p>
             </div>
+            <p className="mt-3 text-xs text-(--color-text-secondary)">
+              Local MCP examples use the current app origin. macOS native currently exposes local MCP over HTTP; Docker
+              defaults to HTTPS on <code>https://localhost</code>. Cloud clients still need a public URL with a
+              certificate they trust.
+            </p>
           </>
         )}
       </Card>

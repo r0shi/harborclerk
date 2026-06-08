@@ -66,8 +66,8 @@ reads, then tell the operator which broader capability was denied.
 Use MCP for ChatGPT, Claude Desktop, Gemini CLI, and any other client that can
 call remote MCP servers.
 
-1. Set a public HTTPS URL in **Settings -> Integrations** if the client is not
-   running on the same machine.
+1. Set a public HTTPS URL in **Settings -> Integrations** if the client is a
+   cloud connector or is not running on the same machine.
 2. Create a scoped API key in **Settings -> API Keys**.
 3. Use the MCP URL shown in the Integrations page.
 
@@ -78,6 +78,15 @@ supports the URL-token path form:
 ```text
 https://your-server.example.com/t/YOUR_API_KEY
 ```
+
+For same-machine local MCP clients, use the current local app origin instead of
+a public placeholder. Today that means:
+
+- macOS native app: `http://localhost:8100/t/YOUR_API_KEY`
+- Docker default: `https://localhost/t/YOUR_API_KEY`
+
+The macOS HTTPS gateway is a release gate for parity with Docker. Until it
+lands, do not tell local macOS users that the native app listens on HTTPS.
 
 Do not reuse a broad admin key for autonomous tools. Create a separate scoped
 key per connector.
@@ -119,6 +128,9 @@ Release-safe claim:
 Prefer CLI for local OpenClaw runs because it matches OpenClaw's shell-first
 workflow and lets the agent use the checked-in Harbor Clerk skill markdown.
 Use MCP when your OpenClaw setup is already configured for MCP servers.
+For local macOS native testing, use `http://localhost:8100/t/YOUR_API_KEY`
+unless you have configured a separate HTTPS proxy. Docker users can use
+`https://localhost/t/YOUR_API_KEY`.
 
 Minimum setup:
 
