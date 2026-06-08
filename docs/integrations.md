@@ -79,14 +79,24 @@ supports the URL-token path form:
 https://your-server.example.com/t/YOUR_API_KEY
 ```
 
-For same-machine local MCP clients, use the current local app origin instead of
-a public placeholder. Today that means:
+For same-machine local MCP clients, use the local gateway URL instead of a
+public placeholder. Today that means:
 
-- macOS native app: `http://localhost:8100/t/YOUR_API_KEY`
+- macOS native app: `https://localhost:8443/t/YOUR_API_KEY`
 - Docker default: `https://localhost/t/YOUR_API_KEY`
 
-The macOS HTTPS gateway is a release gate for parity with Docker. Until it
-lands, do not tell local macOS users that the native app listens on HTTPS.
+The macOS native gateway uses a self-signed certificate by default. The bundled
+CLI shim handles that by default; MCP clients that enforce system trust may
+need a trusted certificate or a public HTTPS URL. Native Preferences also let
+operators set the gateway hostname, choose loopback / all interfaces / a
+detected Tailscale bind address, or point Caddy at certificate and private-key
+files they manage themselves.
+
+When the native gateway binds beyond loopback, it only proxies MCP API-key
+paths (`/mcp` and `/t`). The web app, setup/status API, and OAuth endpoints stay
+off that external listener for the first release. Use an API key for local
+network or Tailscale MCP clients; cloud OAuth connector setup still needs the
+separate public trusted HTTPS path.
 
 Do not reuse a broad admin key for autonomous tools. Create a separate scoped
 key per connector.
@@ -103,8 +113,9 @@ Use the CLI for shell-first agent harnesses.
 3. Export connection settings in the shell where the agent runs:
 
 ```bash
-export HARBOR_CLERK_URL="http://localhost:8100"
+export HARBOR_CLERK_URL="https://localhost:8443"
 export HARBOR_CLERK_API_KEY="YOUR_API_KEY"
+export HARBOR_CLERK_INSECURE_SKIP_VERIFY=1
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
@@ -128,9 +139,12 @@ Release-safe claim:
 Prefer CLI for local OpenClaw runs because it matches OpenClaw's shell-first
 workflow and lets the agent use the checked-in Harbor Clerk skill markdown.
 Use MCP when your OpenClaw setup is already configured for MCP servers.
-For local macOS native testing, use `http://localhost:8100/t/YOUR_API_KEY`
-unless you have configured a separate HTTPS proxy. Docker users can use
-`https://localhost/t/YOUR_API_KEY`.
+For local macOS native testing, use `https://localhost:8443/t/YOUR_API_KEY`.
+For Tailscale or LAN testing, configure the native gateway hostname and bind
+address in Preferences and keep using the `/t/YOUR_API_KEY` URL form. Docker
+users can use `https://localhost/t/YOUR_API_KEY`. If the MCP client rejects the
+self-signed certificate, use the CLI path or a certificate trusted by that
+client.
 
 Minimum setup:
 

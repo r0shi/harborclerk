@@ -95,6 +95,66 @@ async def test_health_check_exposes_enable_cli_access_default_false(client):
     assert data["enable_cli_access"] is False
 
 
+async def test_health_check_exposes_and_probes_local_mcp_url_when_set(client, monkeypatch):
+    import asyncio
+
+    from harbor_clerk.config import get_settings
+
+    class _Writer:
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            pass
+
+    async def _fake_open_connection(host, port):
+        assert host == "localhost"
+        assert port == 8443
+        return object(), _Writer()
+
+    monkeypatch.setattr(asyncio, "open_connection", _fake_open_connection)
+
+    s = get_settings()
+    original = s.local_mcp_url
+    s.local_mcp_url = "https://localhost:8443"
+    try:
+        resp = await client.get("/api/system/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["local_mcp_url"] == "https://localhost:8443"
+        assert data["checks"]["local_https_gateway"] == "ok"
+    finally:
+        s.local_mcp_url = original
+
+
+async def test_health_check_marks_non_loopback_local_mcp_url_not_probed(client, monkeypatch):
+    import asyncio
+
+    from harbor_clerk.config import get_settings
+
+    opened_gateway_socket = False
+
+    async def _fake_open_connection(host, port):
+        nonlocal opened_gateway_socket
+        opened_gateway_socket = True
+        raise AssertionError(f"unexpected gateway socket probe for {host}:{port}")
+
+    monkeypatch.setattr(asyncio, "open_connection", _fake_open_connection)
+
+    s = get_settings()
+    original = s.local_mcp_url
+    s.local_mcp_url = "https://example.com"
+    try:
+        resp = await client.get("/api/system/health")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["local_mcp_url"] == "https://example.com"
+        assert data["checks"]["local_https_gateway"] == "not_probed"
+        assert opened_gateway_socket is False
+    finally:
+        s.local_mcp_url = original
+
+
 async def test_health_check_reflects_allow_source_download_when_set(client):
     """Toggling the setting at runtime should be visible immediately on the
     next health fetch. Tests use the same Settings singleton; mutating it on
@@ -894,11 +954,12 @@ async def test_status_summary_ready_when_no_attention_items(client, admin_user, 
 _SHIM_MARKER = "# harbor-clerk — installed by Harbor Clerk Server"
 
 
-def _make_shim(bundle: str) -> str:
+def _make_shim(bundle: str, default_url: str = "https://localhost:8443") -> str:
     return (
         "#!/bin/sh\n"
         f"{_SHIM_MARKER}\n"
         f'BUNDLE_RESOURCES="{bundle}"\n'
+        f'export HARBOR_CLERK_URL="${{HARBOR_CLERK_URL:-{default_url}}}"\n'
         'exec "$BUNDLE_RESOURCES/venv/bin/python" -m harbor_clerk.cli.main "$@"\n'
     )
 
@@ -910,14 +971,41 @@ def test_cli_shim_not_installed_when_file_absent(tmp_path):
 
     s = get_settings()
     original = s.native_config_file
+    original_local_url = s.local_mcp_url
     config_file = tmp_path / "config.json"
     config_file.write_text("{}")
     s.native_config_file = str(config_file)
+    s.local_mcp_url = "https://localhost:8443"
     try:
         absent = tmp_path / "harbor-clerk"  # does not exist
         assert _cli_shim_install_status(_shim=absent) == "not_installed"
     finally:
         s.native_config_file = original
+        s.local_mcp_url = original_local_url
+
+
+def test_cli_shim_installed_outdated_when_url_differs(tmp_path, monkeypatch):
+    """When shim URL doesn't match local_mcp_url, return 'installed_outdated'."""
+    from harbor_clerk.api.routes.system import _cli_shim_install_status
+    from harbor_clerk.config import get_settings
+
+    s = get_settings()
+    original = s.native_config_file
+    original_local_url = s.local_mcp_url
+    config_file = tmp_path / "config.json"
+    config_file.write_text("{}")
+    s.native_config_file = str(config_file)
+    s.local_mcp_url = "https://localhost:8443"
+
+    fake_bundle = "/fake/Harbor Clerk Server.app/Contents/Resources"
+    shim_file = tmp_path / "harbor-clerk"
+    shim_file.write_text(_make_shim(fake_bundle, default_url="http://localhost:8100"))
+    monkeypatch.setenv("BUNDLE_RESOURCES", fake_bundle)
+    try:
+        assert _cli_shim_install_status(_shim=shim_file) == "installed_outdated"
+    finally:
+        s.native_config_file = original
+        s.local_mcp_url = original_local_url
 
 
 def test_cli_shim_installed_when_bundle_matches(tmp_path, monkeypatch):
@@ -927,9 +1015,11 @@ def test_cli_shim_installed_when_bundle_matches(tmp_path, monkeypatch):
 
     s = get_settings()
     original = s.native_config_file
+    original_local_url = s.local_mcp_url
     config_file = tmp_path / "config.json"
     config_file.write_text("{}")
     s.native_config_file = str(config_file)
+    s.local_mcp_url = "https://localhost:8443"
 
     fake_bundle = "/fake/Harbor Clerk Server.app/Contents/Resources"
     shim_file = tmp_path / "harbor-clerk"
@@ -939,6 +1029,7 @@ def test_cli_shim_installed_when_bundle_matches(tmp_path, monkeypatch):
         assert _cli_shim_install_status(_shim=shim_file) == "installed"
     finally:
         s.native_config_file = original
+        s.local_mcp_url = original_local_url
 
 
 def test_cli_shim_installed_outdated_when_bundle_differs(tmp_path, monkeypatch):
@@ -948,9 +1039,11 @@ def test_cli_shim_installed_outdated_when_bundle_differs(tmp_path, monkeypatch):
 
     s = get_settings()
     original = s.native_config_file
+    original_local_url = s.local_mcp_url
     config_file = tmp_path / "config.json"
     config_file.write_text("{}")
     s.native_config_file = str(config_file)
+    s.local_mcp_url = "https://localhost:8443"
 
     stale_bundle = "/old/Harbor Clerk Server.app/Contents/Resources"
     current_bundle = "/new/Harbor Clerk Server.app/Contents/Resources"
@@ -961,6 +1054,7 @@ def test_cli_shim_installed_outdated_when_bundle_differs(tmp_path, monkeypatch):
         assert _cli_shim_install_status(_shim=shim_file) == "installed_outdated"
     finally:
         s.native_config_file = original
+        s.local_mcp_url = original_local_url
 
 
 def test_cli_shim_foreign_script_treated_as_not_installed(tmp_path):

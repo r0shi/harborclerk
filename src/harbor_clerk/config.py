@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     # API server
     api_host: str = Field(default="127.0.0.1")
     api_port: int = Field(default=8000)
+    gateway_port: int = Field(default=8443)
+    local_mcp_url: str = Field(default="")
     static_dir: str = Field(default="/app/static")
 
     # App
@@ -161,7 +163,7 @@ class Settings(BaseSettings):
         ),
     )
 
-    @field_validator("public_url")
+    @field_validator("public_url", "local_mcp_url")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
         return v.rstrip("/")

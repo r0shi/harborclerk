@@ -13,13 +13,13 @@
 SCRIPTS := scripts
 BUILD   := build
 
-.PHONY: all deps postgres tika tools venv spacy-models model llama frontend apple-summarize dev test apps sign clean
+.PHONY: all deps postgres tika tools caddy venv spacy-models model llama frontend apple-summarize dev test apps sign clean
 
 all: deps venv spacy-models model llama apps
 
 # ── Dependencies ──
 
-deps: postgres tika tools
+deps: postgres tika tools caddy
 
 postgres:
 	@echo "==> Building PostgreSQL + pgvector"
@@ -32,6 +32,10 @@ tika:
 tools:
 	@echo "==> Extracting Tesseract"
 	DEST_DIR=$(BUILD) bash $(SCRIPTS)/build-deps.sh
+
+caddy:
+	@echo "==> Bundling Caddy HTTPS gateway"
+	DEST_DIR=$(BUILD)/caddy bash $(SCRIPTS)/build-caddy.sh
 
 # ── Python ──
 

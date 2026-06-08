@@ -17,6 +17,7 @@ interface HealthCheck {
     tika: string
     embedder?: string
     reranker?: string
+    local_https_gateway?: string
   }
 }
 
@@ -145,7 +146,12 @@ function statePill(state: StatusSummary['state'] | undefined, attentionItems: St
 }
 
 function serviceIsOk(status?: string): boolean {
-  return status === 'ok' || status === 'disabled'
+  return status === 'ok' || status === 'disabled' || status === 'not_probed'
+}
+
+function serviceLabel(status: string): string {
+  if (status === 'not_probed') return 'Not probed'
+  return serviceIsOk(status) ? 'OK' : status
 }
 
 export default function SystemStatusPage() {
@@ -439,6 +445,9 @@ export default function SystemStatusPage() {
             <HealthCard name="Tika" status={health.checks.tika} statsLoading={false} />
             <HealthCard name="Embedder" status={health.checks.embedder ?? 'unknown'} statsLoading={false} />
             <HealthCard name="Reranker" status={health.checks.reranker ?? 'not configured'} statsLoading={false} />
+            {health.checks.local_https_gateway && (
+              <HealthCard name="Local HTTPS Gateway" status={health.checks.local_https_gateway} statsLoading={false} />
+            )}
             <LocalAICard status={llmStatus} />
             <WorkerQueuesCard stats={stats?.queues} statsLoading={statsLoading} />
           </div>
@@ -690,7 +699,7 @@ function HealthCard({
   return (
     <Card className={`p-4 ${ok ? 'bg-green-50 dark:bg-green-900/20' : 'bg-red-50 dark:bg-red-900/20'}`}>
       <div className="mb-1 text-sm font-medium text-gray-700 dark:text-gray-300">{name}</div>
-      <StatusPill state={ok ? 'active' : 'error'} label={ok ? 'OK' : status} />
+      <StatusPill state={ok ? 'active' : 'error'} label={serviceLabel(status)} />
       {statsLoading && !stats && <div className="mt-2 text-xs text-gray-400">Loading stats...</div>}
       {stats?.error && <div className="mt-2 text-xs text-red-500">{String(stats.error)}</div>}
       {statEntries.length > 0 && (

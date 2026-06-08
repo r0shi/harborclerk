@@ -130,6 +130,7 @@ describe('DocumentDetailPage', () => {
       allowSourceDownload: false,
       enableCliAccess: false,
       cliShimInstallStatus: null,
+      localMcpUrl: null,
       loaded: true,
     })
     useJobEventsMock.mockReturnValue(undefined)

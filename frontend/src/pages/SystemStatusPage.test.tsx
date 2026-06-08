@@ -32,6 +32,7 @@ const HEALTHY = {
     tika: 'ok',
     embedder: 'ok',
     reranker: 'ok',
+    local_https_gateway: 'ok',
   },
 }
 
@@ -167,6 +168,7 @@ describe('SystemStatusPage', () => {
     renderStatusPage()
 
     expect(await screen.findByText('Documents failed ingest')).toBeInTheDocument()
+    expect(screen.getByText('Local HTTPS Gateway')).toBeInTheDocument()
     const reviewLink = screen.getByRole('link', { name: 'Review failed documents' })
     expect(reviewLink).toHaveAttribute('href', '/docs?pipeline_status=error')
     expect(screen.getByText('Broken scan')).toBeInTheDocument()

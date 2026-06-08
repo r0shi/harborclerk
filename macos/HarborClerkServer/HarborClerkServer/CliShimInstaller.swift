@@ -15,8 +15,8 @@ enum CliShimStatus: Equatable {
 ///
 /// The shim is a small shell script that delegates to the bundled Python venv.
 /// `BUNDLE_RESOURCES` and `HARBOR_CLERK_URL` are baked in at install time from
-/// `Bundle.main.resourceURL` and `AppSettings.shared.apiPort` respectively.
-/// If the user moves the app or changes the API port they must re-install via
+/// `Bundle.main.resourceURL` and `AppSettings.shared.localMCPBaseURL` respectively.
+/// If the user moves the app or changes the gateway port they must re-install via
 /// Preferences to refresh the shim — `currentStatus()` reports `installedOutdated`
 /// in either case so the UI button surfaces "Re-install".
 ///
@@ -61,48 +61,43 @@ final class CliShimInstaller {
             .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
 
         let currentBundle = Bundle.main.resourceURL!.path
-        let currentPort = AppSettings.shared.apiPort
+        let currentDefaultURL = AppSettings.shared.localMCPBaseURL
 
-        // Detect "stale port": the shim's baked-in URL no longer matches the
-        // configured apiPort. Older shims (pre-this-feature) had no URL line
-        // at all — treat them as outdated so the user gets prompted to re-install.
-        let embeddedPort = extractEmbeddedApiPort(from: contents)
+        // Detect "stale URL": the shim's baked-in URL no longer matches the
+        // configured local HTTPS gateway. Older shims had no URL line at all
+        // or used the direct HTTP API port — treat them as outdated so the
+        // user gets prompted to re-install.
+        let embeddedDefaultURL = extractEmbeddedDefaultURL(from: contents)
 
-        if embeddedBundle == currentBundle && embeddedPort == currentPort {
+        if embeddedBundle == currentBundle && embeddedDefaultURL == currentDefaultURL {
             return .installed(path: url.path)
         } else {
             return .installedOutdated(path: url.path, currentBundle: currentBundle)
         }
     }
 
-    /// Parse the integer port from the `export HARBOR_CLERK_URL=...` line in a shim.
+    /// Parse the default URL from the `export HARBOR_CLERK_URL=...` line in a shim.
     /// Returns nil if the URL line is absent or unparseable — `currentStatus`
     /// then treats the shim as outdated.
-    static func extractEmbeddedApiPort(from shimContents: String) -> Int? {
+    static func extractEmbeddedDefaultURL(from shimContents: String) -> String? {
         guard let urlLine = shimContents.components(separatedBy: "\n").first(where: { $0.hasPrefix("export HARBOR_CLERK_URL=") }) else {
             return nil
         }
-        // The line shape is: export HARBOR_CLERK_URL="${HARBOR_CLERK_URL:-http://localhost:PORT}"
-        // Find the default-value substring after ":-" and parse the trailing port.
-        guard let defaultMarker = urlLine.range(of: ":-http"),
+        // The line shape is: export HARBOR_CLERK_URL="${HARBOR_CLERK_URL:-https://localhost:PORT}"
+        // Find the default-value substring after ":-" and return it whole.
+        guard let defaultMarker = urlLine.range(of: ":-"),
               let closeBrace = urlLine.range(of: "}", range: defaultMarker.upperBound..<urlLine.endIndex) else {
             return nil
         }
-        let defaultUrl = String(urlLine[defaultMarker.upperBound..<closeBrace.lowerBound])
-        // defaultUrl is now something like "://localhost:8100" — take the last colon-separated component.
-        guard let portString = defaultUrl.split(separator: ":").last,
-              let port = Int(portString) else {
-            return nil
-        }
-        return port
+        return String(urlLine[defaultMarker.upperBound..<closeBrace.lowerBound])
     }
 
     /// Write the shim to `~/.local/bin/harbor-clerk`, creating the directory if needed.
     /// Sets executable permissions (0o755) after writing.
     static func install() throws {
         let bundle = Bundle.main.resourceURL!.path
-        let apiPort = AppSettings.shared.apiPort
-        let shim = makeShimContent(bundleResources: bundle, apiPort: apiPort)
+        let defaultURL = AppSettings.shared.localMCPBaseURL
+        let shim = makeShimContent(bundleResources: bundle, defaultURL: defaultURL)
 
         let dir = shimPath.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: nil)
@@ -126,21 +121,22 @@ final class CliShimInstaller {
     // MARK: - Internal helpers
 
     /// Generate the shim script content with `BUNDLE_RESOURCES` and the
-    /// default API URL baked in. The URL line uses `${VAR:-default}` so a
+    /// default local HTTPS gateway URL baked in. The URL line uses `${VAR:-default}` so a
     /// user can still override `HARBOR_CLERK_URL` in their shell for unusual
     /// deployments (e.g. pointing the CLI at a different Harbor Clerk
     /// instance on the network).
-    static func makeShimContent(bundleResources: String, apiPort: Int) -> String {
+    static func makeShimContent(bundleResources: String, defaultURL: String) -> String {
         return """
         #!/bin/sh
         # harbor-clerk — installed by Harbor Clerk Server
         # Invokes the bundled Python via Harbor Clerk Server.app's venv.
-        # Re-install via Preferences if you move/reinstall the app or change the API port.
+        # Re-install via Preferences if you move/reinstall the app or change the HTTPS gateway port.
         BUNDLE_RESOURCES="\(bundleResources)"
         export PATH="$BUNDLE_RESOURCES/venv/bin:/usr/bin:/bin"
         export PYTHONPATH="$BUNDLE_RESOURCES/venv/lib"
         export PYTHONDONTWRITEBYTECODE=1
-        export HARBOR_CLERK_URL="${HARBOR_CLERK_URL:-http://localhost:\(apiPort)}"
+        export HARBOR_CLERK_URL="${HARBOR_CLERK_URL:-\(defaultURL)}"
+        export HARBOR_CLERK_INSECURE_SKIP_VERIFY="${HARBOR_CLERK_INSECURE_SKIP_VERIFY:-1}"
         exec "$BUNDLE_RESOURCES/venv/bin/python" -m harbor_clerk.cli.main "$@"
         """
     }

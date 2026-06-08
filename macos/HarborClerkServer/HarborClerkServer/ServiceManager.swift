@@ -88,6 +88,7 @@ class ServiceManager: ObservableObject {
     let rerankerService: RerankerService
     let llamaService: LlamaService
     let apiService: APIService
+    let gatewayService: GatewayService
     let watcherService: WatcherService
     private var ioWorkers: [WorkerService] = []
     private var cpuWorkers: [WorkerService] = []
@@ -164,6 +165,7 @@ class ServiceManager: ObservableObject {
         rerankerService = RerankerService()
         llamaService = LlamaService()
         apiService = APIService()
+        gatewayService = GatewayService()
         watcherService = WatcherService()
 
         // Worker counts based on preset
@@ -180,7 +182,7 @@ class ServiceManager: ObservableObject {
             llmWorkers.append(WorkerService(queue: "llm", index: i))
         }
 
-        services = [postgresService, tikaService, embedderService, rerankerService, llamaService, apiService, watcherService]
+        services = [postgresService, tikaService, embedderService, rerankerService, llamaService, apiService, gatewayService, watcherService]
             + ioWorkers + cpuWorkers + llmWorkers
     }
 
@@ -216,6 +218,8 @@ class ServiceManager: ObservableObject {
             if let pySvc = service as? PythonService, let proc = pySvc.process, proc.isRunning {
                 pids.append(String(proc.processIdentifier))
             } else if let llama = service as? LlamaService, let pid = llama.processIdentifier {
+                pids.append(String(pid))
+            } else if let gateway = service as? GatewayService, let pid = gateway.processIdentifier {
                 pids.append(String(pid))
             }
         }
@@ -365,20 +369,24 @@ class ServiceManager: ObservableObject {
         await Self.killStaleProcess(onPort: settings.apiPort)
         await startService(apiService)
 
-        // 8. Workers
+        // 8. Native HTTPS gateway for local MCP/agent clients
+        await Self.killStaleProcess(onPort: settings.gatewayPort)
+        await startService(gatewayService)
+
+        // 9. Workers
         for worker in allWorkers {
             await startService(worker)
         }
 
-        // 9. Start the watcher daemon (talks to postgres directly; doesn't need API).
+        // 10. Start the watcher daemon (talks to postgres directly; doesn't need API).
         //    Replaced the old Swift FSEvents WatchedFolderManager with a managed
         //    Python subprocess (`harbor-clerk-watcher`); see WatcherService.swift.
         await startService(watcherService)
 
-        // 10. Watch config.json for model changes from the web UI
+        // 11. Watch config.json for model changes from the web UI
         startConfigWatcher()
 
-        // 11. Persist child PIDs for orphan cleanup on next launch
+        // 12. Persist child PIDs for orphan cleanup on next launch
         savePidFile()
 
         notifyStateChanged()
@@ -542,6 +550,9 @@ class ServiceManager: ObservableObject {
                 // suspenders.
                 if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
                 killed.insert(pid)
+            } else if let gateway = service as? GatewayService, let pid = gateway.processIdentifier {
+                if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
+                killed.insert(pid)
             }
         }
 
@@ -674,6 +685,11 @@ class ServiceManager: ObservableObject {
                 guard let self, let svc = pySvc else { return }
                 Task { @MainActor in await self.attemptAutoRestart(svc) }
             }
+        } else if let gateway = service as? GatewayService {
+            gateway.onUnexpectedExit = { [weak self, weak gateway] in
+                guard let self, let svc = gateway else { return }
+                Task { @MainActor in await self.attemptAutoRestart(svc) }
+            }
         }
 
         do {
@@ -691,6 +707,12 @@ class ServiceManager: ObservableObject {
             while Date() < deadline {
                 // Bail early if the process died — no point waiting for the full timeout
                 if let pySvc = service as? PythonService, pySvc.process?.isRunning != true {
+                    service.state = .errored
+                    notifyStateChanged()
+                    Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Process exited during startup")
+                    return
+                }
+                if let gateway = service as? GatewayService, gateway.processIdentifier == nil {
                     service.state = .errored
                     notifyStateChanged()
                     Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Process exited during startup")
@@ -772,6 +794,7 @@ class ServiceManager: ObservableObject {
         var pythonToRestart: Set<ObjectIdentifier> = []
         var needsMigrations = false
         var needsWorkerRecreate = false
+        var needsGatewayRestart = false
 
         for key in changedKeys {
             switch key {
@@ -807,7 +830,20 @@ class ServiceManager: ObservableObject {
             case "llm_model_id", "llm_yarn_enabled":
                 infraToRestart.append(llamaService)
 
-            case "api_port", "allow_remote_web", "allow_remote_mcp":
+            case "api_port":
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+                needsGatewayRestart = true
+
+            case "gateway_port",
+                 "gateway_hostname",
+                 "gateway_bind_addresses",
+                 "gateway_certificate_mode",
+                 "gateway_certificate_path",
+                 "gateway_private_key_path":
+                pythonToRestart.insert(ObjectIdentifier(apiService))
+                needsGatewayRestart = true
+
+            case "allow_remote_web", "allow_remote_mcp":
                 pythonToRestart.insert(ObjectIdentifier(apiService))
 
             case "worker_preset":
@@ -833,7 +869,7 @@ class ServiceManager: ObservableObject {
         // Embedder and Reranker before API to match startAll() ordering
         let nonWorkerPython: [any ManagedService] = [embedderService, rerankerService, apiService].filter { pythonToRestart.contains(ObjectIdentifier($0)) }
 
-        // 1. Stop python services (dependents first: workers → api/embedder)
+        // 1. Stop gateway and python services (dependents first: workers → gateway → api/embedder)
         // Send SIGTERM to all workers in parallel, then wait for all to exit.
         // Parallel SIGTERM then parallel wait-with-deadline. Pre-audit
         // (2026-05-11) this path had the same bug as stopAll()'s worker
@@ -866,6 +902,9 @@ class ServiceManager: ObservableObject {
                     }
                 }
             }
+        }
+        if needsGatewayRestart {
+            await gatewayService.stop()
         }
         for svc in nonWorkerPython {
             await svc.stop()
@@ -920,9 +959,17 @@ class ServiceManager: ObservableObject {
             worker.resetRestartCount()
         }
 
-        // 8. Start affected python services (embedder → api → workers)
+        // 8. Start affected python services (embedder → api), then gateway, then workers
         for svc in nonWorkerPython {
             await startService(svc)
+        }
+        if needsGatewayRestart {
+            if gatewayService.state == .errored {
+                gatewayService.state = .stopped
+                restartHistory.removeValue(forKey: gatewayService.name)
+            }
+            await Self.killStaleProcess(onPort: AppSettings.shared.gatewayPort)
+            await startService(gatewayService)
         }
         let workersToStart = needsWorkerRecreate ? allWorkers : allWorkers.filter { pythonToRestart.contains(ObjectIdentifier($0)) }
         for worker in workersToStart {
@@ -1120,8 +1167,10 @@ class ServiceManager: ObservableObject {
             "SECRET_KEY": settings.secretKey,
             "LOG_LEVEL": settings.logLevel,
             "STATIC_DIR": bundle.appendingPathComponent("frontend-dist").path,
-            "API_HOST": (settings.allowRemoteWeb || settings.allowRemoteMCP) ? "0.0.0.0" : "127.0.0.1",
+            "API_HOST": "127.0.0.1",
             "API_PORT": String(settings.apiPort),
+            "GATEWAY_PORT": String(settings.gatewayPort),
+            "LOCAL_MCP_URL": settings.localMCPBaseURL,
             "PATH": [
                 bundle.appendingPathComponent("venv/bin").path,
                 bundle.appendingPathComponent("tesseract/bin").path,

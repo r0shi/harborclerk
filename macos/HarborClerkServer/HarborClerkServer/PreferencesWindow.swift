@@ -1,3 +1,4 @@
+import Darwin
 import SwiftUI
 
 // MARK: - CLI Shim Row
@@ -131,8 +132,59 @@ private struct CopySnippetButton: View {
     }
 }
 
+private struct LocalNetworkInterface: Identifiable {
+    let id = UUID()
+    let name: String
+    let address: String
+    let isTailscale: Bool
+
+    var label: String {
+        isTailscale ? "Tailscale \(address)" : "\(name) \(address)"
+    }
+}
+
+private func localNetworkInterfaces() -> [LocalNetworkInterface] {
+    var pointer: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&pointer) == 0, let first = pointer else { return [] }
+    defer { freeifaddrs(pointer) }
+
+    var interfaces: [LocalNetworkInterface] = []
+    var current: UnsafeMutablePointer<ifaddrs>? = first
+    while let item = current {
+        defer { current = item.pointee.ifa_next }
+        let interface = item.pointee
+        guard let addr = interface.ifa_addr else { continue }
+        let family = addr.pointee.sa_family
+        guard family == UInt8(AF_INET) || family == UInt8(AF_INET6) else { continue }
+
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        let length = family == UInt8(AF_INET) ? socklen_t(MemoryLayout<sockaddr_in>.size) : socklen_t(MemoryLayout<sockaddr_in6>.size)
+        guard getnameinfo(addr, length, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+        let address = String(cString: host)
+        let name = String(cString: interface.ifa_name)
+        let flags = Int32(interface.ifa_flags)
+        let isLoopback = (flags & IFF_LOOPBACK) != 0
+        guard !isLoopback else { continue }
+        interfaces.append(
+            LocalNetworkInterface(
+                name: name,
+                address: address,
+                isTailscale: isTailscaleAddress(address) || name.lowercased().contains("tailscale")
+            )
+        )
+    }
+    return interfaces
+}
+
+private func isTailscaleAddress(_ address: String) -> Bool {
+    let parts = address.split(separator: ".").compactMap { Int($0) }
+    guard parts.count == 4 else { return false }
+    return parts[0] == 100 && (64...127).contains(parts[1])
+}
+
 private let defaultPorts: [String: Int] = [
     "api": 8100,
+    "gateway": GatewayConfig.defaultPort,
     "postgres": 5433,
     "tika": 9998,
     "embedder": 8101,
@@ -156,6 +208,13 @@ struct PreferencesWindow: View {
     @State private var enableCliAccessOnOpen = AppSettings.shared.enableCliAccess
     @State private var workerPreset = AppSettings.shared.workerPreset
     @State private var apiPortText = String(AppSettings.shared.apiPort)
+    @State private var gatewayPortText = String(AppSettings.shared.gatewayPort)
+    @State private var gatewayHostnameText = AppSettings.shared.gatewayHostname
+    @State private var gatewayBindAddressesText = AppSettings.shared.gatewayBindAddresses.joined(separator: ", ")
+    @State private var gatewayCertificateMode = AppSettings.shared.gatewayCertificateMode.rawValue
+    @State private var gatewayCertificatePath = AppSettings.shared.gatewayCertificatePath
+    @State private var gatewayPrivateKeyPath = AppSettings.shared.gatewayPrivateKeyPath
+    @State private var detectedInterfaces: [LocalNetworkInterface] = []
     @State private var postgresPortText = String(AppSettings.shared.postgresPort)
     @State private var tikaPortText = String(AppSettings.shared.tikaPort)
     @State private var embedderPortText = String(AppSettings.shared.embedderPort)
@@ -174,6 +233,12 @@ struct PreferencesWindow: View {
         var allowRemoteMCP = AppSettings.shared.allowRemoteMCP
         var workerPreset = AppSettings.shared.workerPreset
         var apiPort = String(AppSettings.shared.apiPort)
+        var gatewayPort = String(AppSettings.shared.gatewayPort)
+        var gatewayHostname = AppSettings.shared.gatewayHostname
+        var gatewayBindAddresses = AppSettings.shared.gatewayBindAddresses.joined(separator: ", ")
+        var gatewayCertificateMode = AppSettings.shared.gatewayCertificateMode.rawValue
+        var gatewayCertificatePath = AppSettings.shared.gatewayCertificatePath
+        var gatewayPrivateKeyPath = AppSettings.shared.gatewayPrivateKeyPath
         var postgresPort = String(AppSettings.shared.postgresPort)
         var tikaPort = String(AppSettings.shared.tikaPort)
         var embedderPort = String(AppSettings.shared.embedderPort)
@@ -199,18 +264,6 @@ struct PreferencesWindow: View {
 
             Form {
                 Section {
-                    Toggle("Allow remote browser connections", isOn: $allowRemoteWeb)
-                        .onChange(of: allowRemoteWeb) { _, _ in markDirty() }
-                    Text("Let users on your network access Harbor Clerk via a web browser.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Toggle("Allow remote model connections (MCP)", isOn: $allowRemoteMCP)
-                        .onChange(of: allowRemoteMCP) { _, _ in markDirty() }
-                    Text("Let AI models on your network query your documents.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
                     Toggle("Allow harbor-clerk CLI from agentic tools", isOn: $enableCliAccess)
                         .onChange(of: enableCliAccess) { _, newValue in
                             // Applied immediately — no restart required. The API server
@@ -230,8 +283,73 @@ struct PreferencesWindow: View {
                     // pre-stage the binary and flip the toggle later.
                     CliShimRow()
 
-                    if !allowRemoteWeb && !allowRemoteMCP {
-                        Text("Harbor Clerk is only accessible from this Mac.")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Local MCP URL")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(effectiveGatewayURL)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text("Uses Harbor Clerk's local HTTPS gateway. External binds expose only MCP token paths, not the web app.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+
+                    TextField("Gateway hostname", text: $gatewayHostnameText)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: gatewayHostnameText) { _, _ in markDirty() }
+                    Text("Use localhost for same-Mac clients, a Tailscale/MagicDNS name for tailnet clients, or a real hostname when using a custom certificate.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    HStack {
+                        Text("Bind addresses")
+                        Spacer()
+                        TextField("", text: $gatewayBindAddressesText)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(width: 220)
+                            .onChange(of: gatewayBindAddressesText) { _, _ in markDirty() }
+                    }
+                    HStack {
+                        Button("Loopback") {
+                            gatewayBindAddressesText = GatewayConfig.defaultBindAddresses.joined(separator: ", ")
+                            markDirty()
+                        }
+                        .controlSize(.small)
+                        Button("All interfaces") {
+                            gatewayBindAddressesText = "0.0.0.0, ::"
+                            markDirty()
+                        }
+                        .controlSize(.small)
+                        ForEach(Array(detectedInterfaces.filter(\.isTailscale).prefix(1))) { iface in
+                            Button(iface.label) {
+                                gatewayBindAddressesText = iface.address
+                                markDirty()
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                    Text(gatewayBindHelpText)
+                        .font(.caption)
+                        .foregroundStyle(gatewayUsesExternalBind ? .orange : .secondary)
+
+                    Picker("Certificate", selection: $gatewayCertificateMode) {
+                        Text("Generate local self-signed").tag(GatewayCertificateMode.internal.rawValue)
+                        Text("Use certificate files").tag(GatewayCertificateMode.custom.rawValue)
+                    }
+                    .onChange(of: gatewayCertificateMode) { _, _ in markDirty() }
+
+                    if gatewayCertificateMode == GatewayCertificateMode.custom.rawValue {
+                        certificatePathRow(label: "Certificate", text: $gatewayCertificatePath)
+                        certificatePathRow(label: "Private key", text: $gatewayPrivateKeyPath)
+                        if !gatewayCustomCertificateComplete {
+                            Text("Choose both a certificate file and private key before restarting the gateway.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+                        Text("ACME/Let's Encrypt automation is deferred; Harbor Clerk only reads the files you choose here.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -275,6 +393,7 @@ struct PreferencesWindow: View {
 
                 Section {
                     portRow(label: "API port", text: $apiPortText, key: "api")
+                    portRow(label: "HTTPS gateway port", text: $gatewayPortText, key: "gateway")
                     portRow(label: "PostgreSQL port", text: $postgresPortText, key: "postgres")
                     portRow(label: "Tika port", text: $tikaPortText, key: "tika")
                     portRow(label: "Embedder port", text: $embedderPortText, key: "embedder")
@@ -306,12 +425,13 @@ struct PreferencesWindow: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .frame(width: 480, height: needsRestart ? 600 : 550)
+        .frame(width: 560, height: needsRestart ? 720 : 670)
         .animation(.easeInOut(duration: 0.25), value: needsRestart)
         .onAppear {
             // Sync enableCliAccess from AppSettings in case it changed since the view was created
             enableCliAccess = AppSettings.shared.enableCliAccess
             enableCliAccessOnOpen = AppSettings.shared.enableCliAccess
+            detectedInterfaces = localNetworkInterfaces()
             captureInitial()
         }
     }
@@ -350,6 +470,7 @@ struct PreferencesWindow: View {
             .tint(.white)
             .controlSize(.small)
             .keyboardShortcut(.defaultAction)
+            .disabled(!gatewaySettingsValid)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -393,6 +514,77 @@ struct PreferencesWindow: View {
         }
     }
 
+    @ViewBuilder
+    private func certificatePathRow(label: String, text: Binding<String>) -> some View {
+        HStack {
+            Text(label)
+            Spacer()
+            TextField("", text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+                .frame(width: 250)
+                .onChange(of: text.wrappedValue) { _, _ in markDirty() }
+            Button("Choose") {
+                if let path = chooseCertificateFile() {
+                    text.wrappedValue = path
+                    markDirty()
+                }
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private var effectiveGatewayURL: String {
+        GatewayConfig.localBaseURL(
+            hostname: gatewayHostnameText,
+            gatewayPort: Int(gatewayPortText) ?? GatewayConfig.defaultPort
+        )
+    }
+
+    private var gatewayBindAddresses: [String] {
+        parseBindAddresses(gatewayBindAddressesText)
+    }
+
+    private var gatewayUsesExternalBind: Bool {
+        !GatewayConfig.exposesFullApp(bindAddresses: gatewayBindAddresses)
+    }
+
+    private var gatewayBindHelpText: String {
+        if gatewayUsesExternalBind {
+            return "External binds expose only /mcp and /t API-key MCP paths. The web app, setup, status, and OAuth endpoints stay off this listener."
+        }
+        return "Loopback binds expose the local gateway only from this Mac."
+    }
+
+    private var gatewayCustomCertificateComplete: Bool {
+        gatewayCertificateMode != GatewayCertificateMode.custom.rawValue
+            || (!gatewayCertificatePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !gatewayPrivateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private var gatewaySettingsValid: Bool {
+        !GatewayConfig.normalizedHostname(gatewayHostnameText).isEmpty
+            && !gatewayBindAddresses.isEmpty
+            && gatewayCustomCertificateComplete
+    }
+
+    private func parseBindAddresses(_ value: String) -> [String] {
+        let parts = value
+            .split { $0 == "," || $0 == " " || $0 == "\n" || $0 == "\t" }
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return GatewayConfig.normalizedBindAddresses(parts)
+    }
+
+    private func chooseCertificateFile() -> String? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        return panel.runModal() == .OK ? panel.url?.path : nil
+    }
+
     // MARK: - State management
 
     private func markDirty() {
@@ -414,6 +606,12 @@ struct PreferencesWindow: View {
             || allowRemoteMCP != initial.allowRemoteMCP
             || workerPreset != initial.workerPreset
             || apiPortText != initial.apiPort
+            || gatewayPortText != initial.gatewayPort
+            || gatewayHostnameText != initial.gatewayHostname
+            || gatewayBindAddressesText != initial.gatewayBindAddresses
+            || gatewayCertificateMode != initial.gatewayCertificateMode
+            || gatewayCertificatePath != initial.gatewayCertificatePath
+            || gatewayPrivateKeyPath != initial.gatewayPrivateKeyPath
             || postgresPortText != initial.postgresPort
             || tikaPortText != initial.tikaPort
             || embedderPortText != initial.embedderPort
@@ -431,6 +629,12 @@ struct PreferencesWindow: View {
         settings.allowRemoteMCP = allowRemoteMCP
         settings.workerPreset = workerPreset
         if let p = Int(apiPortText), p > 0, p <= 65535 { settings.apiPort = p }
+        if let p = Int(gatewayPortText), p > 0, p <= 65535 { settings.gatewayPort = p }
+        settings.gatewayHostname = gatewayHostnameText
+        settings.gatewayBindAddresses = gatewayBindAddresses
+        settings.gatewayCertificateMode = GatewayCertificateMode(rawValue: gatewayCertificateMode) ?? .internal
+        settings.gatewayCertificatePath = gatewayCertificatePath
+        settings.gatewayPrivateKeyPath = gatewayPrivateKeyPath
         if let p = Int(postgresPortText), p > 0, p <= 65535 { settings.postgresPort = p }
         if let p = Int(tikaPortText), p > 0, p <= 65535 { settings.tikaPort = p }
         if let p = Int(embedderPortText), p > 0, p <= 65535 { settings.embedderPort = p }
@@ -447,6 +651,12 @@ struct PreferencesWindow: View {
             allowRemoteMCP: allowRemoteMCP,
             workerPreset: workerPreset,
             apiPort: apiPortText,
+            gatewayPort: gatewayPortText,
+            gatewayHostname: gatewayHostnameText,
+            gatewayBindAddresses: gatewayBindAddressesText,
+            gatewayCertificateMode: gatewayCertificateMode,
+            gatewayCertificatePath: gatewayCertificatePath,
+            gatewayPrivateKeyPath: gatewayPrivateKeyPath,
             postgresPort: postgresPortText,
             tikaPort: tikaPortText,
             embedderPort: embedderPortText,
@@ -465,6 +675,12 @@ struct PreferencesWindow: View {
         allowRemoteMCP = initial.allowRemoteMCP
         workerPreset = initial.workerPreset
         apiPortText = initial.apiPort
+        gatewayPortText = initial.gatewayPort
+        gatewayHostnameText = initial.gatewayHostname
+        gatewayBindAddressesText = initial.gatewayBindAddresses
+        gatewayCertificateMode = initial.gatewayCertificateMode
+        gatewayCertificatePath = initial.gatewayCertificatePath
+        gatewayPrivateKeyPath = initial.gatewayPrivateKeyPath
         postgresPortText = initial.postgresPort
         tikaPortText = initial.tikaPort
         embedderPortText = initial.embedderPort
@@ -486,6 +702,12 @@ struct PreferencesWindow: View {
         if allowRemoteMCP != initial.allowRemoteMCP { keys.insert("allow_remote_mcp") }
         if workerPreset != initial.workerPreset { keys.insert("worker_preset") }
         if apiPortText != initial.apiPort { keys.insert("api_port") }
+        if gatewayPortText != initial.gatewayPort { keys.insert("gateway_port") }
+        if gatewayHostnameText != initial.gatewayHostname { keys.insert("gateway_hostname") }
+        if gatewayBindAddressesText != initial.gatewayBindAddresses { keys.insert("gateway_bind_addresses") }
+        if gatewayCertificateMode != initial.gatewayCertificateMode { keys.insert("gateway_certificate_mode") }
+        if gatewayCertificatePath != initial.gatewayCertificatePath { keys.insert("gateway_certificate_path") }
+        if gatewayPrivateKeyPath != initial.gatewayPrivateKeyPath { keys.insert("gateway_private_key_path") }
         if postgresPortText != initial.postgresPort { keys.insert("postgres_port") }
         if tikaPortText != initial.tikaPort { keys.insert("tika_port") }
         if embedderPortText != initial.embedderPort { keys.insert("embedder_port") }

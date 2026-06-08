@@ -71,7 +71,7 @@ function trimTrailingSlash(value: string) {
 }
 
 export default function IntegrationsPage() {
-  const { enableCliAccess, cliShimInstallStatus } = useSystemConfig()
+  const { enableCliAccess, cliShimInstallStatus, localMcpUrl } = useSystemConfig()
   const [settings, setSettings] = useState<IntegrationSettings>({ public_url: '', oauth_refresh_token_days: 90 })
   const [connections, setConnections] = useState<OAuthConnection[]>([])
   const [loading, setLoading] = useState(true)
@@ -136,12 +136,13 @@ export default function IntegrationsPage() {
   }
 
   const appOrigin = typeof window !== 'undefined' ? trimTrailingSlash(window.location.origin) : ''
-  const localBaseUrl = appOrigin || 'http://localhost:8100'
+  const localBaseUrl = localMcpUrl ? trimTrailingSlash(localMcpUrl) : appOrigin || 'http://localhost:8100'
   const publicBaseUrl = settings.public_url ? trimTrailingSlash(settings.public_url) : 'https://your-server.example.com'
   const mcpUrl = `${publicBaseUrl}/mcp`
   const localMcpTokenUrl = `${localBaseUrl}/t/YOUR_API_KEY`
   const cliEnvBlock = `export HARBOR_CLERK_URL="${localBaseUrl}"
 export HARBOR_CLERK_API_KEY="YOUR_API_KEY"
+export HARBOR_CLERK_INSECURE_SKIP_VERIFY=1
 export PATH="$HOME/.local/bin:$PATH"`
 
   if (loading) return <div className="text-gray-500 dark:text-gray-400">Loading...</div>
@@ -279,7 +280,7 @@ export PATH="$HOME/.local/bin:$PATH"`
             <p className="mt-1 text-sm text-(--color-text-secondary)">
               Use MCP when the tool can call structured remote tools directly. Cloud models receive retrieved snippets,
               citations, and metadata from scoped tool calls, not the full archive. Cloud clients require a public,
-              trusted HTTPS URL; same-machine clients can use the current app origin.
+              trusted HTTPS URL; same-machine clients can use the local gateway URL shown by this app.
             </p>
           </div>
           <div className="rounded-lg border border-(--color-border) bg-(--color-bg-secondary) p-4">
@@ -544,9 +545,9 @@ export PATH="$HOME/.local/bin:$PATH"`
               </p>
             </div>
             <p className="mt-3 text-xs text-(--color-text-secondary)">
-              Local MCP examples use the current app origin. macOS native currently exposes local MCP over HTTP; Docker
-              defaults to HTTPS on <code>https://localhost</code>. Cloud clients still need a public URL with a
-              certificate they trust.
+              Local MCP examples use the local HTTPS gateway when available. macOS native uses a self-signed localhost
+              certificate for that gateway; Docker defaults to HTTPS on <code>https://localhost</code>. Cloud clients
+              still need a public URL with a certificate they trust.
             </p>
           </>
         )}
