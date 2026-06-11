@@ -19,16 +19,18 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-# Install dependencies first (cached layer)
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+# Install dependencies first (cached layer). Keep uv's cache on the image
+# filesystem so large packages can hardlink into .venv instead of being copied
+# twice from a BuildKit cache mount.
+RUN --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=uv.lock,target=uv.lock \
-    uv sync --locked --no-install-project --no-editable
+    uv sync --locked --no-install-project --no-editable \
+    && uv cache clean
 
 # Copy source and install project
 COPY . /app
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-editable
+RUN uv sync --locked --no-editable \
+    && uv cache clean
 
 # Download spaCy NER models (spacy download requires pip)
 RUN uv pip install pip --python /app/.venv/bin/python \
