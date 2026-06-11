@@ -33,7 +33,9 @@ final class GatewayConfigTests: XCTestCase {
 
         XCTAssertTrue(caddyfile.contains("local_certs"))
         XCTAssertTrue(caddyfile.contains("skip_install_trust"))
+        XCTAssertTrue(caddyfile.contains("auto_https disable_redirects"))
         XCTAssertTrue(caddyfile.contains("admin off"))
+        XCTAssertTrue(caddyfile.contains("level INFO"))
         XCTAssertTrue(caddyfile.contains("https://localhost:8443"))
         XCTAssertTrue(caddyfile.contains("bind 127.0.0.1 ::1"))
         XCTAssertTrue(caddyfile.contains("tls internal"))
@@ -68,5 +70,14 @@ final class GatewayConfigTests: XCTestCase {
         )
 
         XCTAssertTrue(caddyfile.contains(#"tls "/Users/alex/certs/harbor cert.pem" "/Users/alex/certs/harbor key.pem""#))
+    }
+
+    func testCaddyLogLevelMapsAppLogLevels() {
+        XCTAssertEqual(GatewayConfig.caddyLogLevel("DEBUG"), "DEBUG")
+        XCTAssertEqual(GatewayConfig.caddyLogLevel("WARNING"), "WARN")
+        XCTAssertEqual(GatewayConfig.caddyLogLevel("WARN"), "WARN")
+        XCTAssertEqual(GatewayConfig.caddyLogLevel("ERROR"), "ERROR")
+        XCTAssertEqual(GatewayConfig.caddyLogLevel("TRACE"), "INFO")
+        XCTAssertEqual(GatewayConfig.caddyLogLevel(""), "INFO")
     }
 }

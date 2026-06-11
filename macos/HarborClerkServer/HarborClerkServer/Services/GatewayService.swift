@@ -49,7 +49,8 @@ final class GatewayService: ManagedService {
             bindAddresses: settings.gatewayBindAddresses,
             certificateMode: settings.gatewayCertificateMode,
             certificatePath: settings.gatewayCertificatePath,
-            privateKeyPath: settings.gatewayPrivateKeyPath
+            privateKeyPath: settings.gatewayPrivateKeyPath,
+            logLevel: settings.logLevel
         )
         try config.caddyfile.write(to: caddyfileURL, atomically: true, encoding: .utf8)
 
@@ -63,7 +64,10 @@ final class GatewayService: ManagedService {
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
         ]
 
-        let pipe = Log.createPipe(category: "gateway")
+        let pipe = Log.createPipe(
+            category: "gateway",
+            fileURL: settings.logsDir.appendingPathComponent("gateway.log")
+        )
         proc.standardOutput = pipe
         proc.standardError = pipe
 

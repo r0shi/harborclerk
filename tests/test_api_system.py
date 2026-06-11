@@ -155,6 +155,46 @@ async def test_health_check_marks_non_loopback_local_mcp_url_not_probed(client, 
         s.local_mcp_url = original
 
 
+async def test_native_service_logs_label_gateway_llm_and_worker_queues(
+    client, admin_user, admin_token, monkeypatch, tmp_path
+):
+    config_file = tmp_path / "config.json"
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    config_file.write_text("{}", encoding="utf-8")
+    for name in (
+        "api.log",
+        "gateway.log",
+        "llm.log",
+        "worker-io.log",
+        "worker-cpu.log",
+        "worker-llm.log",
+        "watcher.log",
+        "tika-launchd.log",
+        "postgres-Mon.log",
+    ):
+        (logs_dir / name).write_text("hello\n", encoding="utf-8")
+
+    monkeypatch.setenv("NATIVE_CONFIG_FILE", str(config_file))
+
+    resp = await client.get("/api/system/logs", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "native"
+    assert data["logs_dir"] == str(logs_dir)
+
+    labels = {item["name"]: item["service"] for item in data["files"]}
+    assert labels["api.log"] == "API Server"
+    assert labels["gateway.log"] == "HTTPS Gateway"
+    assert labels["llm.log"] == "LLM"
+    assert labels["worker-io.log"] == "Worker IO"
+    assert labels["worker-cpu.log"] == "Worker CPU"
+    assert labels["worker-llm.log"] == "Worker LLM"
+    assert labels["watcher.log"] == "Watcher"
+    assert labels["tika-launchd.log"] == "Tika"
+    assert labels["postgres-Mon.log"] == "PostgreSQL"
+
+
 async def test_health_check_reflects_allow_source_download_when_set(client):
     """Toggling the setting at runtime should be visible immediately on the
     next health fetch. Tests use the same Settings singleton; mutating it on

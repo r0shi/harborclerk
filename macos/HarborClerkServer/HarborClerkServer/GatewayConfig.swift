@@ -17,6 +17,7 @@ struct GatewayConfig {
     let certificateMode: GatewayCertificateMode
     let certificatePath: String
     let privateKeyPath: String
+    let logLevel: String
 
     var localBaseURL: String {
         Self.localBaseURL(hostname: hostname, gatewayPort: gatewayPort)
@@ -30,7 +31,8 @@ struct GatewayConfig {
             bindAddresses: bindAddresses,
             certificateMode: certificateMode,
             certificatePath: certificatePath,
-            privateKeyPath: privateKeyPath
+            privateKeyPath: privateKeyPath,
+            logLevel: logLevel
         )
     }
 
@@ -41,7 +43,8 @@ struct GatewayConfig {
         bindAddresses: [String] = Self.defaultBindAddresses,
         certificateMode: GatewayCertificateMode = .internal,
         certificatePath: String = "",
-        privateKeyPath: String = ""
+        privateKeyPath: String = "",
+        logLevel: String = "INFO"
     ) {
         self.apiPort = apiPort
         self.gatewayPort = gatewayPort
@@ -50,6 +53,7 @@ struct GatewayConfig {
         self.certificateMode = certificateMode
         self.certificatePath = certificatePath.trimmingCharacters(in: .whitespacesAndNewlines)
         self.privateKeyPath = privateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.logLevel = Self.caddyLogLevel(logLevel)
     }
 
     static func localBaseURL(hostname: String, gatewayPort: Int) -> String {
@@ -106,10 +110,12 @@ struct GatewayConfig {
         bindAddresses: [String] = defaultBindAddresses,
         certificateMode: GatewayCertificateMode = .internal,
         certificatePath: String = "",
-        privateKeyPath: String = ""
+        privateKeyPath: String = "",
+        logLevel: String = "INFO"
     ) -> String {
         let cleanHostname = normalizedHostname(hostname)
         let binds = normalizedBindAddresses(bindAddresses)
+        let cleanLogLevel = caddyLogLevel(logLevel)
         let site = "https://\(urlHost(cleanHostname)):\(gatewayPort)"
         let tlsLine: String
         if certificateMode == .custom,
@@ -140,7 +146,11 @@ struct GatewayConfig {
         {
             local_certs
             skip_install_trust
+            auto_https disable_redirects
             admin off
+            log {
+                level \(cleanLogLevel)
+            }
         }
 
         \(site) {
@@ -174,6 +184,19 @@ struct GatewayConfig {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
+    }
+
+    static func caddyLogLevel(_ level: String) -> String {
+        switch level.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "DEBUG":
+            return "DEBUG"
+        case "WARN", "WARNING":
+            return "WARN"
+        case "ERROR":
+            return "ERROR"
+        default:
+            return "INFO"
+        }
     }
 }
 

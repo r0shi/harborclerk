@@ -81,7 +81,10 @@ final class LlamaService: ManagedService {
         }
         proc.arguments = args
 
-        let pipe = Log.createPipe(category: "llm")
+        let pipe = Log.createPipe(
+            category: "llm",
+            fileURL: settings.logsDir.appendingPathComponent("llm.log")
+        )
         proc.standardOutput = pipe
         proc.standardError = pipe
 

@@ -41,6 +41,9 @@ function CopyButton({ text }: { text: string }) {
   )
 }
 
+const DOCKER_LOGS_COMMAND =
+  'docker compose logs -f gateway app watcher worker-io worker-cpu worker-llm embedder reranker llama-server tika postgres'
+
 export default function ServiceLogsPage() {
   const [logs, setLogs] = useState<LogsResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -74,9 +77,9 @@ export default function ServiceLogsPage() {
             </p>
             <div className="flex items-center">
               <code className="block flex-1 rounded-sm bg-(--color-bg-tertiary) px-3 py-2 text-xs font-mono text-(--color-text-primary) select-all">
-                docker compose logs -f app worker-io worker-cpu
+                {DOCKER_LOGS_COMMAND}
               </code>
-              <CopyButton text="docker compose logs -f app worker-io worker-cpu" />
+              <CopyButton text={DOCKER_LOGS_COMMAND} />
             </div>
           </div>
         ) : logs.files.length === 0 ? (

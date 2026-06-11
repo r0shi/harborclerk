@@ -1642,10 +1642,14 @@ async def list_logs(
 
     service_labels = {
         "api": "API Server",
+        "gateway": "HTTPS Gateway",
+        "llm": "LLM",
         "worker": "Worker",
+        "watcher": "Watcher",
         "embedder": "Embedder",
         "reranker": "Reranker",
         "postgres": "PostgreSQL",
+        "tika": "Tika",
     }
 
     files = []
@@ -1657,9 +1661,11 @@ async def list_logs(
         stem = p.stem.split("-")[0] if "-" in p.stem else p.stem
         label = service_labels.get(stem, stem.title())
         if stem == "worker" and "-io" in p.name:
-            label = "Worker (IO)"
+            label = "Worker IO"
         elif stem == "worker" and "-cpu" in p.name:
-            label = "Worker (CPU)"
+            label = "Worker CPU"
+        elif stem == "worker" and "-llm" in p.name:
+            label = "Worker LLM"
         files.append(
             {
                 "name": p.name,
