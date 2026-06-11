@@ -22,6 +22,23 @@ class SearchRequest(BaseModel):
     mime_type: str | None = None
     metadata_filter: dict[str, Any] | None = None
     text_contains: str | None = None
+    summary_state: Literal["has", "missing", "failed", "pending"] | None = None
+    pipeline_status: str | None = None
+    job_stage: Literal["extract", "ocr", "chunk", "entities", "embed", "summarize", "finalize"] | None = None
+    job_status: Literal["queued", "running", "done", "error"] | None = None
+    job_issue: (
+        Literal[
+            "any_issue",
+            "failed_job",
+            "ocr_failed",
+            "entity_skipped",
+            "summary_failed",
+            "summary_blocked",
+            "summary_pending",
+            "status_cleanup",
+        ]
+        | None
+    ) = None
     faceted: bool = False
     scope: ScopeSpec | None = None
 
@@ -84,6 +101,23 @@ class FindAllRequest(BaseModel):
     language: str | None = None
     mime_type: str | None = None
     metadata_filter: dict[str, Any] | None = None
+    summary_state: Literal["has", "missing", "failed", "pending"] | None = None
+    pipeline_status: str | None = None
+    job_stage: Literal["extract", "ocr", "chunk", "entities", "embed", "summarize", "finalize"] | None = None
+    job_status: Literal["queued", "running", "done", "error"] | None = None
+    job_issue: (
+        Literal[
+            "any_issue",
+            "failed_job",
+            "ocr_failed",
+            "entity_skipped",
+            "summary_failed",
+            "summary_blocked",
+            "summary_pending",
+            "status_cleanup",
+        ]
+        | None
+    ) = None
     scope: ScopeSpec | None = None
 
     @model_validator(mode="after")

@@ -224,6 +224,11 @@ async def search(
             mime_type=body.mime_type,
             metadata_filter=body.metadata_filter,
             text_contains=body.text_contains,
+            summary_state=body.summary_state,
+            pipeline_status=body.pipeline_status,
+            job_stage=body.job_stage,
+            job_status=body.job_status,
+            job_issue=body.job_issue,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
@@ -364,6 +369,11 @@ async def search_find_all(
             language=body.language,
             mime_type=body.mime_type,
             metadata_filter=body.metadata_filter,
+            summary_state=body.summary_state,
+            pipeline_status=body.pipeline_status,
+            job_stage=body.job_stage,
+            job_status=body.job_status,
+            job_issue=body.job_issue,
             presentation=body.presentation,
         )
     except ValueError as exc:

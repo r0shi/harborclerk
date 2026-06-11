@@ -171,6 +171,9 @@ describe('SearchPage', () => {
     fireEvent.change(screen.getByLabelText('Exact text'), { target: { value: 'force majeure' } })
     fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'en' } })
     fireEvent.change(screen.getByLabelText('MIME type'), { target: { value: 'application/pdf' } })
+    fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'missing' } })
+    fireEvent.change(screen.getByLabelText('Pipeline'), { target: { value: 'processing' } })
+    fireEvent.change(screen.getByLabelText('Ingest issue'), { target: { value: 'entity_skipped' } })
     fireEvent.change(screen.getByLabelText('Email from'), { target: { value: 'alice@example.com' } })
     fireEvent.change(screen.getByLabelText('Email subject'), { target: { value: 'invoice' } })
     fireEvent.click(screen.getByText('Advanced identifier filter'))
@@ -183,6 +186,9 @@ describe('SearchPage', () => {
     )
     expect(screen.getByText('Text: force majeure')).toBeInTheDocument()
     expect(screen.getByText('Type: PDF')).toBeInTheDocument()
+    expect(screen.getByText('Summary: Missing summary')).toBeInTheDocument()
+    expect(screen.getByText('Pipeline: Processing')).toBeInTheDocument()
+    expect(screen.getByText('Issue: Entity extraction skipped')).toBeInTheDocument()
     expect(screen.getByText('From: alice@example.com')).toBeInTheDocument()
     expect(screen.getByText('Document UUID: 11111111-1111-1111-1111-111111111111')).toBeInTheDocument()
 
@@ -199,6 +205,9 @@ describe('SearchPage', () => {
         text_contains: 'force majeure',
         language: 'en',
         mime_type: 'application/pdf',
+        summary_state: 'missing',
+        pipeline_status: 'processing',
+        job_issue: 'entity_skipped',
         metadata_filter: {
           'email.from_address': 'alice@example.com',
           'email.subject_contains': 'invoice',

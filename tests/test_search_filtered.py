@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.models import Chunk, Document
-from harbor_clerk.models.enums import PipelineStatus
+from harbor_clerk.models import Chunk, Document, IngestionJob
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.search import hybrid_search
 
 # ---------------------------------------------------------------------------
@@ -226,6 +226,101 @@ async def test_hybrid_search_text_contains_filters_chunks(db_session):
         text_contains="off-balance-sheet",
     )
     assert {h.doc_id for h in result.hits} == {str(doc_a.doc_id)}
+
+
+async def test_hybrid_search_pipeline_status_filter_accepts_processing_group(db_session):
+    ready_doc = Document(
+        title="Ready",
+        status="active",
+        sha256=b"sha_ready_0000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+    )
+    processing_doc = Document(
+        title="Processing",
+        status="active",
+        sha256=b"sha_proc_00000000000000000000000",
+        pipeline_status=PipelineStatus.chunking,
+    )
+    db_session.add_all([ready_doc, processing_doc])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Chunk(doc_id=ready_doc.doc_id, chunk_num=0, chunk_text="The contract was disclosed.", language="en"),
+            Chunk(doc_id=processing_doc.doc_id, chunk_num=0, chunk_text="The contract was disclosed.", language="en"),
+        ]
+    )
+    await db_session.flush()
+
+    result = await hybrid_search(db_session, "disclosed", k=10, pipeline_status="processing")
+
+    assert {h.doc_id for h in result.hits} == {str(processing_doc.doc_id)}
+
+
+async def test_hybrid_search_summary_state_filters_documents(db_session):
+    summarized_doc = Document(
+        title="Summarized",
+        status="active",
+        sha256=b"sha_sum_0000000000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        summary="A useful summary.",
+    )
+    missing_doc = Document(
+        title="Missing",
+        status="active",
+        sha256=b"sha_missing_00000000000000000000",
+        pipeline_status=PipelineStatus.ready,
+        summary="",
+    )
+    db_session.add_all([summarized_doc, missing_doc])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Chunk(doc_id=summarized_doc.doc_id, chunk_num=0, chunk_text="The contract was disclosed.", language="en"),
+            Chunk(doc_id=missing_doc.doc_id, chunk_num=0, chunk_text="The contract was disclosed.", language="en"),
+        ]
+    )
+    await db_session.flush()
+
+    has_result = await hybrid_search(db_session, "disclosed", k=10, summary_state="has")
+    missing_result = await hybrid_search(db_session, "disclosed", k=10, summary_state="missing")
+
+    assert {h.doc_id for h in has_result.hits} == {str(summarized_doc.doc_id)}
+    assert {h.doc_id for h in missing_result.hits} == {str(missing_doc.doc_id)}
+
+
+async def test_hybrid_search_job_issue_filters_entity_skipped(db_session):
+    skipped_doc = Document(
+        title="Skipped entities",
+        status="active",
+        sha256=b"sha_entity_skip_0000000000000000",
+        pipeline_status=PipelineStatus.ready,
+    )
+    normal_doc = Document(
+        title="Normal",
+        status="active",
+        sha256=b"sha_entity_ok_00000000000000000",
+        pipeline_status=PipelineStatus.ready,
+    )
+    db_session.add_all([skipped_doc, normal_doc])
+    await db_session.flush()
+    db_session.add_all(
+        [
+            Chunk(doc_id=skipped_doc.doc_id, chunk_num=0, chunk_text="The contract was disclosed.", language="en"),
+            Chunk(doc_id=normal_doc.doc_id, chunk_num=0, chunk_text="The contract was disclosed.", language="en"),
+            IngestionJob(
+                doc_id=skipped_doc.doc_id,
+                stage=JobStage.entities,
+                status=JobStatus.done,
+                pipeline_seq=skipped_doc.pipeline_seq,
+                metrics={"skipped": True, "reason": "spacy_unavailable"},
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    result = await hybrid_search(db_session, "disclosed", k=10, job_issue="entity_skipped")
+
+    assert {h.doc_id for h in result.hits} == {str(skipped_doc.doc_id)}
 
 
 async def test_hybrid_search_text_contains_case_insensitive(db_session):

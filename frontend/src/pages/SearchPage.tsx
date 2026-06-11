@@ -31,6 +31,9 @@ interface SearchFilters {
   emailCc: string
   emailSubject: string
   docId: string
+  summaryState: string
+  pipelineStatus: string
+  jobIssue: string
 }
 
 interface SearchHit {
@@ -109,6 +112,9 @@ const EMPTY_FILTERS: SearchFilters = {
   emailCc: '',
   emailSubject: '',
   docId: '',
+  summaryState: '',
+  pipelineStatus: '',
+  jobIssue: '',
 }
 
 const MIME_TYPE_LABELS: Record<string, string> = {
@@ -124,6 +130,30 @@ const MIME_TYPE_LABELS: Record<string, string> = {
   'text/html': 'HTML',
   'text/markdown': 'Markdown',
   'text/plain': 'Plain text',
+}
+
+const SUMMARY_STATE_LABELS: Record<string, string> = {
+  has: 'Has summary',
+  missing: 'Missing summary',
+  pending: 'Summary pending',
+  failed: 'Summary failed',
+}
+
+const PIPELINE_STATUS_LABELS: Record<string, string> = {
+  ready: 'Ready',
+  processing: 'Processing',
+  error: 'Failed',
+}
+
+const JOB_ISSUE_LABELS: Record<string, string> = {
+  any_issue: 'Any ingest issue',
+  failed_job: 'Any failed stage',
+  ocr_failed: 'OCR failed',
+  entity_skipped: 'Entity extraction skipped',
+  summary_failed: 'Summary failed',
+  summary_blocked: 'Summary paused',
+  summary_pending: 'Summary pending',
+  status_cleanup: 'Status cleanup needed',
 }
 
 interface SearchState {
@@ -207,6 +237,10 @@ function normalizedFilters(filters?: Partial<SearchFilters>): SearchFilters {
   return { ...EMPTY_FILTERS, ...filters }
 }
 
+function optionLabel(labels: Record<string, string>, value: string): string {
+  return labels[value] || value
+}
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 }
@@ -233,6 +267,9 @@ function buildFilterPayload(filters: SearchFilters) {
     ...(filters.before && { before: filters.before }),
     ...(filters.language && { language: filters.language }),
     ...(filters.mimeType.trim() && { mime_type: filters.mimeType.trim() }),
+    ...(filters.summaryState && { summary_state: filters.summaryState }),
+    ...(filters.pipelineStatus && { pipeline_status: filters.pipelineStatus }),
+    ...(filters.jobIssue && { job_issue: filters.jobIssue }),
     ...(Object.keys(metadataFilter).length > 0 && { metadata_filter: metadataFilter }),
   }
 }
@@ -245,6 +282,15 @@ function activeFilterEntries(filters: SearchFilters): Array<{ key: keyof SearchF
   if (filters.language) entries.push({ key: 'language', label: `Language: ${filters.language}` })
   if (filters.mimeType.trim())
     entries.push({ key: 'mimeType', label: `Type: ${mimeTypeLabel(filters.mimeType.trim())}` })
+  if (filters.summaryState)
+    entries.push({ key: 'summaryState', label: `Summary: ${optionLabel(SUMMARY_STATE_LABELS, filters.summaryState)}` })
+  if (filters.pipelineStatus)
+    entries.push({
+      key: 'pipelineStatus',
+      label: `Pipeline: ${optionLabel(PIPELINE_STATUS_LABELS, filters.pipelineStatus)}`,
+    })
+  if (filters.jobIssue)
+    entries.push({ key: 'jobIssue', label: `Issue: ${optionLabel(JOB_ISSUE_LABELS, filters.jobIssue)}` })
   if (filters.emailFrom.trim()) entries.push({ key: 'emailFrom', label: `From: ${filters.emailFrom.trim()}` })
   if (filters.emailTo.trim()) entries.push({ key: 'emailTo', label: `To: ${filters.emailTo.trim()}` })
   if (filters.emailCc.trim()) entries.push({ key: 'emailCc', label: `Cc: ${filters.emailCc.trim()}` })
@@ -721,6 +767,51 @@ export default function SearchPage() {
                     {mimeTypeOptionLabel(option)}
                   </option>
                 ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Summary</span>
+              <select
+                value={filters.summaryState}
+                onChange={(e) => updateFilter('summaryState', e.target.value)}
+                className="input-base"
+              >
+                <option value="">Any summary state</option>
+                <option value="has">Has summary</option>
+                <option value="missing">Missing summary</option>
+                <option value="pending">Summary pending</option>
+                <option value="failed">Summary failed</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Pipeline</span>
+              <select
+                value={filters.pipelineStatus}
+                onChange={(e) => updateFilter('pipelineStatus', e.target.value)}
+                className="input-base"
+              >
+                <option value="">Any pipeline state</option>
+                <option value="ready">Ready</option>
+                <option value="processing">Processing</option>
+                <option value="error">Failed</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-(--color-text-secondary)">Ingest issue</span>
+              <select
+                value={filters.jobIssue}
+                onChange={(e) => updateFilter('jobIssue', e.target.value)}
+                className="input-base"
+              >
+                <option value="">Any issue state</option>
+                <option value="any_issue">Any ingest issue</option>
+                <option value="failed_job">Any failed stage</option>
+                <option value="ocr_failed">OCR failed</option>
+                <option value="entity_skipped">Entity extraction skipped</option>
+                <option value="summary_failed">Summary failed</option>
+                <option value="summary_blocked">Summary paused</option>
+                <option value="summary_pending">Summary pending</option>
+                <option value="status_cleanup">Status cleanup needed</option>
               </select>
             </label>
             <label className="block">
