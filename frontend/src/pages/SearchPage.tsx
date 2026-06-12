@@ -304,11 +304,11 @@ function RelevanceScore({ score, maxScore }: { score: number; maxScore: number }
   const safeMax = maxScore > 0 ? maxScore : 1
   const width = Math.max(0, Math.min(100, Math.round((score / safeMax) * 100)))
   const formatted = score.toFixed(3)
-  const tooltip = `Relevance score ${formatted}. Higher is a stronger match for this query; compare scores within this search, not across different searches.`
+  const tooltip = `Relevance score ${formatted}. Higher means a stronger match for this query. Compare scores within this search, not across different searches.`
 
   return (
     <div className="flex shrink-0 items-center gap-1.5" title={tooltip} aria-label={tooltip}>
-      <span className="text-[11px] font-medium text-gray-500 dark:text-gray-400">Relevance</span>
+      <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400">Score</span>
       <div className="h-1.5 w-24 rounded-full bg-gray-200 dark:bg-gray-600" aria-hidden="true">
         <div
           className="h-1.5 rounded-full bg-blue-500"
@@ -1026,7 +1026,7 @@ export default function SearchPage() {
                       <SourceCitation source={hit.source} citation={hit.citation} />
                       {hit.page_range && <span>Pages {hit.page_range}</span>}
                       {hit.language && <span>Lang: {hit.language}</span>}
-                      {hit.mime_type && <span>{hit.mime_type}</span>}
+                      {hit.mime_type && <span title={hit.mime_type}>{mimeTypeLabel(hit.mime_type)}</span>}
                     </div>
                   </Card>
                 )

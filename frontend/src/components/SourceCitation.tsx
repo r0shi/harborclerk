@@ -25,20 +25,23 @@ export function SourceCitation({ source, citation, className = '' }: SourceCitat
     <span className={`inline-flex min-w-0 max-w-full flex-col gap-1 ${className}`}>
       {text && <span className="min-w-0 font-medium text-(--color-text-secondary)">{text}</span>}
       {(fileName || source?.folder_label) && (
-        <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
+        <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-2">
           {fileName && (
             <span
-              className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-1.5 py-0.5"
+              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-(--color-border) bg-(--color-bg-secondary) px-2 py-1 shadow-sm"
               title={source?.relative_path || fileName}
+              aria-label={`Filename ${fileName}`}
             >
-              <span className="shrink-0 text-[10px] font-medium text-gray-500 dark:text-gray-400">Filename</span>
-              <span className="min-w-0 max-w-[32rem] truncate font-mono text-[11px] text-(--color-text-secondary)">
+              <span className="shrink-0 rounded-sm bg-(--color-bg-tertiary) px-1 py-0.5 text-[10px] font-semibold uppercase text-(--color-text-secondary)">
+                Filename
+              </span>
+              <span className="min-w-0 max-w-[32rem] truncate font-mono text-[12px] font-medium text-(--color-text-primary)">
                 {fileName}
               </span>
             </span>
           )}
           {source?.folder_label && (
-            <span className="text-[11px] text-gray-500 dark:text-gray-400">Folder {source.folder_label}</span>
+            <span className="text-[11px] text-gray-500 dark:text-gray-400">Folder: {source.folder_label}</span>
           )}
         </span>
       )}
