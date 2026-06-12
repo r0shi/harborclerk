@@ -2,6 +2,7 @@ import { Route, Routes, Navigate, useParams } from 'react-router-dom'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 import AdminRoute from './components/AdminRoute'
+import SettingsLayout from './components/SettingsLayout'
 import LoginPage from './pages/LoginPage'
 import DocumentsPage from './pages/DocumentsPage'
 import DocumentDetailPage from './pages/DocumentDetailPage'
@@ -33,6 +34,11 @@ function ChatRedirect() {
   return <Navigate to={`/c/${conversationId}`} replace />
 }
 
+function ApiKeyRedirect() {
+  const { keyId } = useParams<{ keyId: string }>()
+  return <Navigate to={`/settings/api-keys/${keyId}`} replace />
+}
+
 export default function App() {
   return (
     <Routes>
@@ -52,36 +58,40 @@ export default function App() {
           <Route path="/stats" element={<StatsPage />} />
           <Route path="/chat" element={<Navigate to="/ask" replace />} />
           <Route path="/chat/:conversationId" element={<ChatRedirect />} />
-          <Route path="/settings" element={<SystemSettingsPage />} />
-          <Route path="/settings/preferences" element={<PreferencesPage />} />
-          <Route path="/preferences" element={<PreferencesPage />} />
+          <Route path="/preferences" element={<Navigate to="/settings/preferences" replace />} />
+          <Route path="/settings" element={<SettingsLayout />}>
+            <Route index element={<SystemSettingsPage />} />
+            <Route path="preferences" element={<PreferencesPage />} />
+            <Route element={<AdminRoute />}>
+              <Route path="integrations" element={<IntegrationsPage />} />
+              <Route path="users" element={<UsersPage />} />
+              <Route path="api-keys" element={<ApiKeysPage />} />
+              <Route path="api-keys/:keyId" element={<ApiKeyDashboardPage />} />
+              <Route path="models" element={<ModelsPage />} />
+              <Route path="languages" element={<LanguagesPage />} />
+              <Route path="retrieval" element={<RetrievalSettingsPage />} />
+              <Route path="rate-limits" element={<RateLimitSettingsPage />} />
+              <Route path="status" element={<SystemStatusPage />} />
+              <Route path="diagnostics" element={<ServiceLogsPage />} />
+              <Route path="maintenance" element={<SystemMaintenancePage />} />
+              <Route path="security" element={<SecuritySettingsPage />} />
+            </Route>
+          </Route>
           <Route element={<AdminRoute />}>
-            <Route path="/integrations" element={<IntegrationsPage />} />
-            <Route path="/settings/integrations" element={<IntegrationsPage />} />
-            <Route path="/settings/users" element={<UsersPage />} />
-            <Route path="/settings/api-keys" element={<ApiKeysPage />} />
-            <Route path="/settings/api-keys/:keyId" element={<ApiKeyDashboardPage />} />
-            <Route path="/settings/models" element={<ModelsPage />} />
-            <Route path="/settings/languages" element={<LanguagesPage />} />
-            <Route path="/settings/retrieval" element={<RetrievalSettingsPage />} />
-            <Route path="/settings/rate-limits" element={<RateLimitSettingsPage />} />
-            <Route path="/settings/status" element={<SystemStatusPage />} />
-            <Route path="/settings/diagnostics" element={<ServiceLogsPage />} />
-            <Route path="/settings/maintenance" element={<SystemMaintenancePage />} />
-            <Route path="/settings/security" element={<SecuritySettingsPage />} />
-            <Route path="/admin" element={<SystemSettingsPage />} />
-            <Route path="/admin/users" element={<UsersPage />} />
-            <Route path="/admin/keys" element={<ApiKeysPage />} />
-            <Route path="/admin/keys/:keyId" element={<ApiKeyDashboardPage />} />
-            <Route path="/admin/system" element={<Navigate to="/admin/system/status" replace />} />
-            <Route path="/admin/system/status" element={<SystemStatusPage />} />
-            <Route path="/admin/system/logs" element={<ServiceLogsPage />} />
-            <Route path="/admin/system/maintenance" element={<SystemMaintenancePage />} />
-            <Route path="/admin/system/security" element={<SecuritySettingsPage />} />
-            <Route path="/admin/models" element={<ModelsPage />} />
-            <Route path="/admin/languages" element={<LanguagesPage />} />
-            <Route path="/admin/retrieval" element={<RetrievalSettingsPage />} />
-            <Route path="/admin/rate-limits" element={<RateLimitSettingsPage />} />
+            <Route path="/integrations" element={<Navigate to="/settings/integrations" replace />} />
+            <Route path="/admin" element={<Navigate to="/settings" replace />} />
+            <Route path="/admin/users" element={<Navigate to="/settings/users" replace />} />
+            <Route path="/admin/keys" element={<Navigate to="/settings/api-keys" replace />} />
+            <Route path="/admin/keys/:keyId" element={<ApiKeyRedirect />} />
+            <Route path="/admin/system" element={<Navigate to="/settings/status" replace />} />
+            <Route path="/admin/system/status" element={<Navigate to="/settings/status" replace />} />
+            <Route path="/admin/system/logs" element={<Navigate to="/settings/diagnostics" replace />} />
+            <Route path="/admin/system/maintenance" element={<Navigate to="/settings/maintenance" replace />} />
+            <Route path="/admin/system/security" element={<Navigate to="/settings/security" replace />} />
+            <Route path="/admin/models" element={<Navigate to="/settings/models" replace />} />
+            <Route path="/admin/languages" element={<Navigate to="/settings/languages" replace />} />
+            <Route path="/admin/retrieval" element={<Navigate to="/settings/retrieval" replace />} />
+            <Route path="/admin/rate-limits" element={<Navigate to="/settings/rate-limits" replace />} />
           </Route>
         </Route>
       </Route>
