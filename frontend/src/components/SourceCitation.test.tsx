@@ -37,9 +37,10 @@ describe('SourceCitation', () => {
     )
 
     expect(screen.getByText('Contract, p. 4')).toBeInTheDocument()
-    expect(screen.getByText('Folder Contracts')).toBeInTheDocument()
+    expect(screen.getByText('Folder: Contracts')).toBeInTheDocument()
     expect(screen.getByText('Filename')).toBeInTheDocument()
     expect(screen.getByText('contract.pdf')).toBeInTheDocument()
+    expect(screen.getByLabelText('Filename contract.pdf')).toBeInTheDocument()
     expect(screen.getByTitle('vendors/contract.pdf')).toBeInTheDocument()
   })
 })

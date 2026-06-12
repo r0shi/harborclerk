@@ -153,6 +153,8 @@ describe('SearchPage', () => {
     expect(screen.getByText('contract.pdf')).toBeInTheDocument()
     expect(screen.getByTitle('vendors/contract.pdf')).toBeInTheDocument()
     expect(screen.getByLabelText(/Relevance score 0.870/)).toBeInTheDocument()
+    expect(screen.getByText('Score')).toBeInTheDocument()
+    expect(screen.getByTitle('application/pdf')).toHaveTextContent('PDF')
   })
 
   it('serializes friendly filters into search request fields', async () => {
