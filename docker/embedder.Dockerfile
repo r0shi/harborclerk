@@ -6,16 +6,18 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-# Install dependencies first (cached layer)
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=embedder/pyproject.toml,target=pyproject.toml \
+# Install dependencies first (cached layer). Keep uv's cache on the image
+# filesystem so large packages can hardlink into .venv instead of being copied
+# twice from a BuildKit cache mount.
+RUN --mount=type=bind,source=embedder/pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=embedder/uv.lock,target=uv.lock \
-    uv sync --locked --no-install-project --no-editable
+    uv sync --locked --no-install-project --no-editable \
+    && uv cache clean
 
 # Copy source and install project
 COPY embedder/ /app/
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-editable
+RUN uv sync --locked --no-editable \
+    && uv cache clean
 
 # Pre-download the Granite-R2 weights at build time so the container
 # starts immediately. ~700 MB to image size; acceptable per project policy.

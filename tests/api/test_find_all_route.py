@@ -89,6 +89,11 @@ async def test_search_find_all_forwards_filters_and_returns_sources(monkeypatch)
             language="en",
             mime_type="application/pdf",
             metadata_filter={"sidecar.vendor": "Pinnacle"},
+            summary_state="has",
+            pipeline_status="ready",
+            job_stage="summarize",
+            job_status="done",
+            job_issue="summary_pending",
         ),
         principal=Principal(type="user", id=uuid4(), role="admin"),
         session=session,
@@ -106,6 +111,11 @@ async def test_search_find_all_forwards_filters_and_returns_sources(monkeypatch)
     assert captured["language"] == "en"
     assert captured["mime_type"] == "application/pdf"
     assert captured["metadata_filter"] == {"sidecar.vendor": "Pinnacle"}
+    assert captured["summary_state"] == "has"
+    assert captured["pipeline_status"] == "ready"
+    assert captured["job_stage"] == "summarize"
+    assert captured["job_status"] == "done"
+    assert captured["job_issue"] == "summary_pending"
     assert captured["source_doc_ids"] == [str(doc_id)]
 
     assert response.total_matches == 1

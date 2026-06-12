@@ -12,7 +12,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
-from harbor_clerk.models import Chunk, Document
+from harbor_clerk.models import Chunk, Document, IngestionJob
+from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.search_rerank import rerank_hits
 from harbor_clerk.search_types import ConflictSource, FindAllHit, FindAllResult, SearchHit, SearchResult
 
@@ -35,6 +36,23 @@ logger = logging.getLogger(__name__)
 # Max docs returned when presentation="full" — keeps payload under ~20 KB
 # (top chunk text per doc, ~500 chars).
 _FIND_ALL_FULL_MAX_RESULTS = 30
+
+_PROCESSING_PIPELINE_STATUSES: tuple[PipelineStatus, ...] = (
+    PipelineStatus.queued,
+    PipelineStatus.extracting,
+    PipelineStatus.extracted,
+    PipelineStatus.ocr_running,
+    PipelineStatus.ocr_done,
+    PipelineStatus.chunking,
+    PipelineStatus.chunked,
+    PipelineStatus.extracting_entities,
+    PipelineStatus.entities_done,
+    PipelineStatus.embedding,
+    PipelineStatus.embedded,
+    PipelineStatus.summarizing,
+    PipelineStatus.summarized,
+    PipelineStatus.finalizing,
+)
 
 
 async def _embed_query(query: str) -> list[float]:
@@ -183,6 +201,149 @@ def _normalize_scores(scores: dict[uuid.UUID, float]) -> dict[uuid.UUID, float]:
     return {k: (v - min_score) / spread for k, v in scores.items()}
 
 
+def _parse_pipeline_status_filter(value: str | None) -> list[PipelineStatus]:
+    """Parse UI/REST pipeline status filters.
+
+    Accepts concrete PipelineStatus enum values plus the friendly "processing"
+    group used by the Search Workbench.
+    """
+    if not value:
+        return []
+
+    statuses: list[PipelineStatus] = []
+    seen: set[PipelineStatus] = set()
+    for raw_status in value.split(","):
+        raw_status = raw_status.strip()
+        if not raw_status:
+            continue
+        if raw_status == "processing":
+            candidates = list(_PROCESSING_PIPELINE_STATUSES)
+        else:
+            try:
+                candidates = [PipelineStatus(raw_status)]
+            except ValueError as exc:
+                allowed = ", ".join([s.value for s in PipelineStatus] + ["processing"])
+                raise ValueError(f"Invalid pipeline_status {raw_status!r}. Expected one of: {allowed}") from exc
+        for status in candidates:
+            if status not in seen:
+                seen.add(status)
+                statuses.append(status)
+    return statuses
+
+
+def _current_job_exists(
+    *,
+    stage: JobStage | None = None,
+    statuses: tuple[JobStatus, ...] = (),
+    reason: str | None = None,
+) -> Any:
+    conditions = [
+        IngestionJob.doc_id == Document.doc_id,
+        IngestionJob.pipeline_seq == Document.pipeline_seq,
+    ]
+    if stage is not None:
+        conditions.append(IngestionJob.stage == stage)
+    if statuses:
+        conditions.append(IngestionJob.status.in_(statuses))
+    if reason is not None:
+        conditions.append(IngestionJob.metrics["reason"].astext == reason)
+    return select(IngestionJob.job_id).where(*conditions).exists()
+
+
+def _summary_state_condition(summary_state: str) -> Any:
+    if summary_state == "has":
+        return func.length(func.trim(func.coalesce(Document.summary, ""))) > 0
+    if summary_state == "missing":
+        return func.length(func.trim(func.coalesce(Document.summary, ""))) == 0
+    if summary_state == "failed":
+        return _current_job_exists(stage=JobStage.summarize, statuses=(JobStatus.error,))
+    if summary_state == "pending":
+        return _current_job_exists(stage=JobStage.summarize, statuses=(JobStatus.queued, JobStatus.running))
+    raise ValueError("Invalid summary_state. Expected one of: has, missing, failed, pending")
+
+
+def _status_cleanup_condition() -> Any:
+    return (
+        select(IngestionJob.job_id)
+        .where(
+            IngestionJob.doc_id == Document.doc_id,
+            IngestionJob.pipeline_seq == Document.pipeline_seq,
+            IngestionJob.stage == JobStage.finalize,
+            IngestionJob.status == JobStatus.done,
+            Document.pipeline_status.in_(_PROCESSING_PIPELINE_STATUSES),
+        )
+        .exists()
+    )
+
+
+def _job_issue_condition(job_issue: str) -> Any:
+    failed_job = _current_job_exists(statuses=(JobStatus.error,))
+    ocr_failed = _current_job_exists(stage=JobStage.ocr, statuses=(JobStatus.error,))
+    entity_skipped = _current_job_exists(stage=JobStage.entities, reason="spacy_unavailable")
+    summary_failed = _current_job_exists(stage=JobStage.summarize, statuses=(JobStatus.error,))
+    summary_blocked = _current_job_exists(
+        stage=JobStage.summarize,
+        statuses=(JobStatus.queued, JobStatus.running),
+        reason="apple_intelligence_unavailable",
+    )
+    summary_pending = _current_job_exists(stage=JobStage.summarize, statuses=(JobStatus.queued, JobStatus.running))
+    status_cleanup = _status_cleanup_condition()
+
+    if job_issue == "any_issue":
+        return or_(
+            Document.pipeline_status == PipelineStatus.error,
+            failed_job,
+            entity_skipped,
+            summary_failed,
+            summary_blocked,
+            status_cleanup,
+        )
+    if job_issue == "failed_job":
+        return failed_job
+    if job_issue == "ocr_failed":
+        return ocr_failed
+    if job_issue == "entity_skipped":
+        return entity_skipped
+    if job_issue == "summary_failed":
+        return summary_failed
+    if job_issue == "summary_blocked":
+        return summary_blocked
+    if job_issue == "summary_pending":
+        return summary_pending
+    if job_issue == "status_cleanup":
+        return status_cleanup
+
+    raise ValueError(
+        "Invalid job_issue. Expected one of: any_issue, failed_job, ocr_failed, entity_skipped, "
+        "summary_failed, summary_blocked, summary_pending, status_cleanup"
+    )
+
+
+def _apply_document_state_filters(
+    doc_conditions: list,
+    *,
+    pipeline_status: str | None = None,
+    summary_state: str | None = None,
+    job_stage: str | None = None,
+    job_status: str | None = None,
+    job_issue: str | None = None,
+) -> None:
+    statuses = _parse_pipeline_status_filter(pipeline_status)
+    if statuses:
+        doc_conditions.append(Document.pipeline_status.in_(statuses))
+
+    if summary_state:
+        doc_conditions.append(_summary_state_condition(summary_state))
+
+    if job_stage or job_status:
+        stage = JobStage(job_stage) if job_stage else None
+        statuses_tuple = (JobStatus(job_status),) if job_status else ()
+        doc_conditions.append(_current_job_exists(stage=stage, statuses=statuses_tuple))
+
+    if job_issue:
+        doc_conditions.append(_job_issue_condition(job_issue))
+
+
 async def hybrid_search(
     session: AsyncSession,
     query: str,
@@ -197,6 +358,11 @@ async def hybrid_search(
     mime_type: str | None = None,
     metadata_filter: dict[str, Any] | None = None,
     text_contains: str | None = None,
+    summary_state: str | None = None,
+    pipeline_status: str | None = None,
+    job_stage: str | None = None,
+    job_status: str | None = None,
+    job_issue: str | None = None,
     bypass_reranker: bool = False,
 ) -> SearchResult:
     """Run hybrid FTS + vector search, merge scores, return top K."""
@@ -226,6 +392,14 @@ async def hybrid_search(
         doc_conditions.append(Document.created_at < before)
     if mime_type is not None:
         doc_conditions.append(Document.mime_type == mime_type)
+    _apply_document_state_filters(
+        doc_conditions,
+        pipeline_status=pipeline_status,
+        summary_state=summary_state,
+        job_stage=job_stage,
+        job_status=job_status,
+        job_issue=job_issue,
+    )
     # Metadata filter translation. Each "<namespace>.<key>": value pair
     # becomes either:
     #   - JSONB @> containment: doc_metadata @> '{"ns": {"key": value}}'
@@ -414,6 +588,11 @@ async def find_all(
     language: str | None = None,
     mime_type: str | None = None,
     metadata_filter: dict[str, Any] | None = None,
+    summary_state: str | None = None,
+    pipeline_status: str | None = None,
+    job_stage: str | None = None,
+    job_status: str | None = None,
+    job_issue: str | None = None,
     presentation: str = "brief",
 ) -> FindAllResult:
     """Doc-level enumeration. Aggregates chunks → docs, sorts, paginates.
@@ -461,6 +640,11 @@ async def find_all(
         mime_type=mime_type,
         metadata_filter=metadata_filter,
         text_contains=text_contains,
+        summary_state=summary_state,
+        pipeline_status=pipeline_status,
+        job_stage=job_stage,
+        job_status=job_status,
+        job_issue=job_issue,
         bypass_reranker=True,  # enumeration must see the full candidate pool
     )
 

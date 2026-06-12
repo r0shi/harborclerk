@@ -33,6 +33,11 @@ async def test_rest_search_forwards_metadata_filter_and_text_contains(monkeypatc
             "sidecar.vendor": "Pinnacle Tech Solutions",
         },
         text_contains="force majeure",
+        summary_state="missing",
+        pipeline_status="processing",
+        job_stage="entities",
+        job_status="done",
+        job_issue="entity_skipped",
     )
 
     response = await search_route.search(request, principal=principal, session=session)
@@ -45,6 +50,11 @@ async def test_rest_search_forwards_metadata_filter_and_text_contains(monkeypatc
         "sidecar.vendor": "Pinnacle Tech Solutions",
     }
     assert captured["text_contains"] == "force majeure"
+    assert captured["summary_state"] == "missing"
+    assert captured["pipeline_status"] == "processing"
+    assert captured["job_stage"] == "entities"
+    assert captured["job_status"] == "done"
+    assert captured["job_issue"] == "entity_skipped"
 
 
 @pytest.mark.anyio
