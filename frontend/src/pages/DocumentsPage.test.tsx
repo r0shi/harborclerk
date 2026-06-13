@@ -112,13 +112,15 @@ describe('DocumentsPage', () => {
 
   it('fetches entities for rows restored as expanded on load', async () => {
     sessionStorage.setItem('docs-page-state', JSON.stringify(SAVED_STATE))
-    getMock.mockImplementation((url) => {
+    const docsCalls: Array<Record<string, string | number> | undefined> = []
+    getMock.mockImplementation((url, params) => {
       if (url === '/api/docs/filters') {
         return Promise.resolve({ mime_types: [], doc_types: [], languages: [], entity_types: [] })
       }
       if (url === '/api/stats/topics') return Promise.resolve({ clusters: [] })
       if (url === '/api/watch/folders') return Promise.resolve([])
       if (url === '/api/docs') {
+        docsCalls.push(params)
         return Promise.resolve({
           items: [
             {
@@ -149,6 +151,14 @@ describe('DocumentsPage', () => {
 
     expect(await screen.findByText('Expanded doc')).toBeInTheDocument()
     expect(await screen.findByText('Acme Corp')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Acme Corp/ })).toHaveAttribute(
+      'href',
+      '/docs?entity=Acme%20Corp&entity_type=ORG',
+    )
+    fireEvent.click(screen.getByRole('link', { name: /Acme Corp/ }))
+    await waitFor(() => {
+      expect(docsCalls).toContainEqual(expect.objectContaining({ entity: 'Acme Corp', entity_type: 'ORG' }))
+    })
     expect(getMock).toHaveBeenCalledWith('/api/docs/doc-1/entities')
   })
 
@@ -197,6 +207,63 @@ describe('DocumentsPage', () => {
           summary_state: 'failed',
         }),
       )
+    })
+  })
+
+  it('shows active filter chips and removes individual filters', async () => {
+    const docsCalls: Array<Record<string, string | number> | undefined> = []
+    getMock.mockImplementation((url, params) => {
+      if (url === '/api/docs/filters') {
+        return Promise.resolve({
+          mime_types: [{ value: 'application/pdf', count: 1 }],
+          doc_types: [],
+          languages: [],
+          entity_types: [],
+        })
+      }
+      if (url === '/api/stats/topics') return Promise.resolve({ clusters: [] })
+      if (url === '/api/watch/folders') return Promise.resolve([])
+      if (url === '/api/docs') {
+        docsCalls.push(params)
+        return Promise.resolve({
+          items: [
+            {
+              doc_id: 'doc-1',
+              title: 'Filtered doc',
+              canonical_filename: 'filtered.pdf',
+              status: 'active',
+              pipeline_status: 'ready',
+              created_at: '2026-06-04T12:00:00Z',
+              updated_at: '2026-06-04T12:30:00Z',
+              summary: 'Short summary',
+              summary_model: 'extractive',
+              doc_type: 'contract',
+            },
+          ],
+          total: 1,
+          limit: 10,
+          offset: 0,
+        })
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`))
+    })
+
+    renderDocumentsPage()
+
+    expect(await screen.findByText('Filtered doc')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('File type'), { target: { value: 'application/pdf' } })
+
+    const chip = await screen.findByRole('button', { name: /Type: PDF/ })
+    expect(chip).toBeInTheDocument()
+    await waitFor(() => {
+      expect(docsCalls).toContainEqual(expect.objectContaining({ mime_type: 'application/pdf' }))
+    })
+
+    fireEvent.click(chip)
+
+    await waitFor(() => {
+      const latestCall = docsCalls[docsCalls.length - 1]
+      expect(latestCall).not.toEqual(expect.objectContaining({ mime_type: 'application/pdf' }))
     })
   })
 })

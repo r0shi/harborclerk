@@ -13,6 +13,16 @@ import { documentTypeIcon } from '../utils/documentTypeIcon'
 import { entityTypeClass } from '../utils/entityTypeColors'
 
 const DOCS_STATE_KEY = 'docs-page-state'
+const DOC_FILTER_URL_KEYS = [
+  'entity',
+  'mime_type',
+  'language',
+  'doc_type',
+  'entity_type',
+  'folder',
+  'pipeline_status',
+  'summary_state',
+] as const
 
 interface SavedDocsState {
   currentPage: number
@@ -81,6 +91,70 @@ const PROCESSING_STATUSES = new Set([
   'summarizing',
   'summarized',
 ])
+
+const MIME_TYPE_LABELS: Record<string, string> = {
+  'application/pdf': 'PDF',
+  'message/rfc822': 'Email',
+  'text/plain': 'Plain text',
+  'text/markdown': 'Markdown',
+  'text/html': 'HTML',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word document',
+  'application/msword': 'Word document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Excel spreadsheet',
+  'application/vnd.ms-excel': 'Excel spreadsheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint',
+  'application/vnd.ms-powerpoint': 'PowerPoint',
+  'application/rtf': 'RTF',
+  'application/epub+zip': 'EPUB',
+  'image/png': 'PNG image',
+  'image/jpeg': 'JPEG image',
+  'image/tiff': 'TIFF image',
+}
+
+const PIPELINE_STATUS_LABELS: Record<string, string> = {
+  ready: 'Ready',
+  error: 'Failed',
+  queued: 'Processing',
+  'queued,extracting,extracted,ocr_running,ocr_done,chunking,chunked,extracting_entities,entities_done,embedding,embedded,summarizing,summarized,finalizing':
+    'Processing',
+}
+
+const SUMMARY_STATE_LABELS: Record<string, string> = {
+  has: 'Has summary',
+  missing: 'Missing summary',
+  failed: 'Summary failed',
+  pending: 'Summary queued/running',
+}
+
+type DocsFilterKey =
+  | 'filter'
+  | 'mime'
+  | 'language'
+  | 'docType'
+  | 'entity'
+  | 'entityType'
+  | 'folder'
+  | 'pipeline'
+  | 'summary'
+
+function mimeTypeLabel(value: string): string {
+  if (MIME_TYPE_LABELS[value]) return MIME_TYPE_LABELS[value]
+  if (value.includes('/')) {
+    const [, subtype] = value.split('/', 2)
+    return subtype
+      .split(/[.+-]/)
+      .filter(Boolean)
+      .map((part) => part[0]?.toUpperCase() + part.slice(1))
+      .join(' ')
+  }
+  return value
+}
+
+function languageLabel(value: string): string {
+  if (!value) return value
+  if (value.length <= 3) return value.toUpperCase()
+  return value
+}
 
 function normalizeStatus(status?: string): string {
   if (!status) return 'unknown'
@@ -168,7 +242,7 @@ export default function DocumentsPage() {
   // (the API returns 403); on macOS the user-facing escape hatch is Reveal in
   // Finder via `window.harborclerk.revealInFinder`, not download.
   const canDownload = sysConfig.allowSourceDownload && sysConfig.loaded
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [pageSize, setPageSize] = useState(user?.preferences?.page_size || 10)
   const [docs, setDocs] = useState<DocSummary[]>([])
   const [total, setTotal] = useState(0)
@@ -211,14 +285,7 @@ export default function DocumentsPage() {
   const entityFetchesRef = useRef<Set<string>>(new Set())
 
   // Restore saved state from sessionStorage (URL params override)
-  const hasUrlParams =
-    searchParams.has('entity') ||
-    searchParams.has('mime_type') ||
-    searchParams.has('language') ||
-    searchParams.has('doc_type') ||
-    searchParams.has('entity_type') ||
-    searchParams.has('pipeline_status') ||
-    searchParams.has('summary_state')
+  const hasUrlParams = DOC_FILTER_URL_KEYS.some((key) => searchParams.has(key))
 
   // Helper: read a field from saved state or URL params
   function initField<K extends keyof SavedDocsState>(
@@ -409,11 +476,19 @@ export default function DocumentsPage() {
     setCurrentPage(1)
   }
 
-  function clearEntityFilter() {
+  function clearUrlFilterParams(keys?: readonly (typeof DOC_FILTER_URL_KEYS)[number][]) {
+    if (!hasUrlParams) return
+    const next = new URLSearchParams(searchParams)
+    for (const key of keys ?? DOC_FILTER_URL_KEYS) next.delete(key)
+    setSearchParams(next, { replace: true })
+  }
+
+  function clearEntityFilter({ clearUrl = true }: { clearUrl?: boolean } = {}) {
     setEntityFilter('')
     setEntityTypeFilter('')
     setEntityInput('')
     setEntitySuggestions([])
+    if (clearUrl) clearUrlFilterParams(['entity', 'entity_type'])
     setCurrentPage(1)
   }
 
@@ -651,6 +726,89 @@ export default function DocumentsPage() {
     pipelineStatusFilter ||
     summaryStateFilter
   )
+  const activeFilters: Array<{ key: DocsFilterKey; label: string }> = []
+  if (filter) activeFilters.push({ key: 'filter', label: `Filename: ${filter}` })
+  if (mimeFilter) activeFilters.push({ key: 'mime', label: `Type: ${mimeTypeLabel(mimeFilter)}` })
+  if (langFilter) activeFilters.push({ key: 'language', label: `Language: ${languageLabel(langFilter)}` })
+  if (docTypeFilter) activeFilters.push({ key: 'docType', label: `Category: ${docTypeFilter}` })
+  if (entityFilter) activeFilters.push({ key: 'entity', label: `Entity: ${entityFilter}` })
+  if (entityTypeFilter) activeFilters.push({ key: 'entityType', label: `Entity type: ${entityTypeFilter}` })
+  if (folderFilter) activeFilters.push({ key: 'folder', label: `Folder: ${folderFilter}` })
+  if (pipelineStatusFilter)
+    activeFilters.push({
+      key: 'pipeline',
+      label: `Status: ${PIPELINE_STATUS_LABELS[pipelineStatusFilter] ?? pipelineStatusFilter}`,
+    })
+  if (summaryStateFilter)
+    activeFilters.push({
+      key: 'summary',
+      label: `Summary: ${SUMMARY_STATE_LABELS[summaryStateFilter] ?? summaryStateFilter}`,
+    })
+
+  function clearDocsFilter(key: DocsFilterKey) {
+    if (key === 'filter') {
+      setFilter('')
+      setFilterInput('')
+    } else if (key === 'mime') {
+      setMimeFilter('')
+      clearUrlFilterParams(['mime_type'])
+    } else if (key === 'language') {
+      setLangFilter('')
+      clearUrlFilterParams(['language'])
+    } else if (key === 'docType') {
+      setDocTypeFilter('')
+      clearUrlFilterParams(['doc_type'])
+    } else if (key === 'entity') {
+      setEntityFilter('')
+      setEntityInput('')
+      setEntitySuggestions([])
+      clearUrlFilterParams(['entity'])
+    } else if (key === 'entityType') {
+      setEntityTypeFilter('')
+      clearUrlFilterParams(['entity_type'])
+    } else if (key === 'folder') {
+      setFolderFilter('')
+      clearUrlFilterParams(['folder'])
+    } else if (key === 'pipeline') {
+      setPipelineStatusFilter('')
+      clearUrlFilterParams(['pipeline_status'])
+    } else if (key === 'summary') {
+      setSummaryStateFilter('')
+      clearUrlFilterParams(['summary_state'])
+    }
+    setCurrentPage(1)
+  }
+
+  function clearAllFilters() {
+    setFilter('')
+    setFilterInput('')
+    setMimeFilter('')
+    setLangFilter('')
+    setDocTypeFilter('')
+    setFolderFilter('')
+    setPipelineStatusFilter('')
+    setSummaryStateFilter('')
+    clearEntityFilter({ clearUrl: false })
+    clearUrlFilterParams()
+    setCurrentPage(1)
+  }
+
+  function applyPivotFilters(next: { entity?: string; entityType?: string; folder?: string }) {
+    setFilter('')
+    setFilterInput('')
+    setMimeFilter('')
+    setLangFilter('')
+    setDocTypeFilter('')
+    setEntityFilter(next.entity ?? '')
+    setEntityInput(next.entity ?? '')
+    setEntityTypeFilter(next.entityType ?? '')
+    setFolderFilter(next.folder ?? '')
+    setPipelineStatusFilter('')
+    setSummaryStateFilter('')
+    setEntitySuggestions([])
+    setShowEntityDropdown(false)
+    setCurrentPage(1)
+  }
 
   let lastDoc: { doc_id: string; title: string } | null = null
   try {
@@ -736,7 +894,7 @@ export default function DocumentsPage() {
             />
             {entityFilter && (
               <button
-                onClick={clearEntityFilter}
+                onClick={() => clearEntityFilter()}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
               >
                 <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -766,6 +924,7 @@ export default function DocumentsPage() {
           {filterOptions.mime_types.length > 0 && (
             <select
               value={mimeFilter}
+              aria-label="File type"
               onChange={(e) => {
                 setMimeFilter(e.target.value)
                 setCurrentPage(1)
@@ -775,7 +934,7 @@ export default function DocumentsPage() {
               <option value="">All types</option>
               {filterOptions.mime_types.map((m) => (
                 <option key={m.value} value={m.value}>
-                  {m.value.split('/').pop()} ({m.count})
+                  {mimeTypeLabel(m.value)} ({m.count})
                 </option>
               ))}
             </select>
@@ -785,6 +944,7 @@ export default function DocumentsPage() {
           {filterOptions.languages.length > 0 && (
             <select
               value={langFilter}
+              aria-label="Language"
               onChange={(e) => {
                 setLangFilter(e.target.value)
                 setCurrentPage(1)
@@ -794,7 +954,7 @@ export default function DocumentsPage() {
               <option value="">All languages</option>
               {filterOptions.languages.map((l) => (
                 <option key={l.value} value={l.value}>
-                  {l.value.toUpperCase()} ({l.count})
+                  {languageLabel(l.value)} ({l.count})
                 </option>
               ))}
             </select>
@@ -804,6 +964,7 @@ export default function DocumentsPage() {
           {filterOptions.doc_types.length > 0 && (
             <select
               value={docTypeFilter}
+              aria-label="Document category"
               onChange={(e) => {
                 setDocTypeFilter(e.target.value)
                 setCurrentPage(1)
@@ -823,6 +984,7 @@ export default function DocumentsPage() {
           {folderOptions.length > 0 && (
             <select
               value={folderFilter}
+              aria-label="Folder"
               onChange={(e) => {
                 setFolderFilter(e.target.value)
                 setCurrentPage(1)
@@ -843,6 +1005,7 @@ export default function DocumentsPage() {
 
           <select
             value={pipelineStatusFilter}
+            aria-label="Document status"
             onChange={(e) => {
               setPipelineStatusFilter(e.target.value)
               setCurrentPage(1)
@@ -906,25 +1069,35 @@ export default function DocumentsPage() {
             docTypeFilter ||
             entityFilter ||
             entityTypeFilter ||
+            filter ||
             folderFilter ||
             pipelineStatusFilter ||
             summaryStateFilter) && (
-            <button
-              onClick={() => {
-                setMimeFilter('')
-                setLangFilter('')
-                setDocTypeFilter('')
-                setFolderFilter('')
-                setPipelineStatusFilter('')
-                setSummaryStateFilter('')
-                clearEntityFilter()
-                setCurrentPage(1)
-              }}
-              className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
-            >
+            <button onClick={clearAllFilters} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
               Clear filters
             </button>
           )}
+        </div>
+      )}
+
+      {activeFilters.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5" aria-label="Active document filters">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-(--color-text-secondary)">
+            Active filters
+          </span>
+          {activeFilters.map((entry) => (
+            <button
+              key={`${entry.key}-${entry.label}`}
+              onClick={() => clearDocsFilter(entry.key)}
+              className="inline-flex max-w-full items-center gap-1 rounded-full bg-(--area-accent-tint) px-2 py-1 text-[11px] font-medium text-(--area-accent-text) ring-1 ring-(--area-accent) hover:opacity-80"
+              title={`Remove ${entry.label}`}
+            >
+              <span className="truncate">{entry.label}</span>
+              <span aria-hidden="true" className="text-[13px] leading-none opacity-70">
+                ×
+              </span>
+            </button>
+          ))}
         </div>
       )}
 
@@ -1159,69 +1332,104 @@ export default function DocumentsPage() {
                       {isExpanded && (
                         <tr className="bg-gray-50/50 dark:bg-white/2">
                           <td colSpan={6} className="px-4 py-3 pl-14">
-                            <div className="p-3 space-y-3">
-                              {doc.doc_type && (
+                            <div className="grid gap-4 p-3 md:grid-cols-[minmax(0,1fr)_240px]">
+                              <div className="min-w-0 space-y-3">
                                 <div>
-                                  <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">
-                                    Document Type
-                                  </p>
-                                  <p className="text-sm text-(--color-text-primary)">{doc.doc_type}</p>
-                                </div>
-                              )}
-                              <div>
-                                <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">
-                                  Summary
-                                  {doc.summary_model && (
-                                    <span className="font-normal normal-case tracking-normal ml-1">
-                                      ({doc.summary_model})
-                                    </span>
-                                  )}
-                                </p>
-                                {doc.summary ? (
-                                  <p className="text-sm text-(--color-text-primary) leading-relaxed">{doc.summary}</p>
-                                ) : (
-                                  <p className="text-sm italic text-(--color-text-secondary)">No summary available</p>
-                                )}
-                              </div>
-                              {docEntities[doc.doc_id] && docEntities[doc.doc_id].length > 0 && (
-                                <div>
-                                  <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-1">
-                                    Entities
-                                  </p>
-                                  <div className="flex flex-wrap gap-1">
-                                    {docEntities[doc.doc_id].slice(0, 15).map((e, i) => (
-                                      <span
-                                        key={i}
-                                        className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-medium ${entityTypeClass(e.entity_type)}`}
-                                      >
-                                        {e.entity_text}
-                                        <span className="ml-1 opacity-60">{e.entity_type}</span>
-                                      </span>
-                                    ))}
-                                    {docEntities[doc.doc_id].length > 15 && (
-                                      <span className="text-[10px] text-gray-400 dark:text-gray-500">
-                                        +{docEntities[doc.doc_id].length - 15} more
+                                  <p className="mb-0.5 text-[11px] font-medium uppercase tracking-wide text-(--color-text-secondary)">
+                                    Summary
+                                    {doc.summary_model && (
+                                      <span className="ml-1 font-normal normal-case tracking-normal">
+                                        ({doc.summary_model})
                                       </span>
                                     )}
+                                  </p>
+                                  {doc.summary ? (
+                                    <p className="text-sm leading-relaxed text-(--color-text-primary)">{doc.summary}</p>
+                                  ) : (
+                                    <p className="text-sm italic text-(--color-text-secondary)">No summary available</p>
+                                  )}
+                                </div>
+                                {docEntities[doc.doc_id] && docEntities[doc.doc_id].length > 0 && (
+                                  <div>
+                                    <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-(--color-text-secondary)">
+                                      Entities
+                                    </p>
+                                    <div className="flex flex-wrap gap-1">
+                                      {docEntities[doc.doc_id].slice(0, 15).map((e, i) => (
+                                        <Link
+                                          key={`${e.entity_type}-${e.entity_text}-${i}`}
+                                          to={`/docs?entity=${encodeURIComponent(e.entity_text)}&entity_type=${encodeURIComponent(e.entity_type)}`}
+                                          onClick={() =>
+                                            applyPivotFilters({ entity: e.entity_text, entityType: e.entity_type })
+                                          }
+                                          className={`inline-block rounded-md px-2 py-0.5 text-[11px] font-medium hover:opacity-80 ${entityTypeClass(e.entity_type)}`}
+                                          title={`Show documents mentioning ${e.entity_text}`}
+                                        >
+                                          {e.entity_text}
+                                          <span className="ml-1 opacity-60">{e.entity_type}</span>
+                                        </Link>
+                                      ))}
+                                      {docEntities[doc.doc_id].length > 15 && (
+                                        <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                                          +{docEntities[doc.doc_id].length - 15} more
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
-                                </div>
-                              )}
-                              {doc.topic_id != null && topicNames[doc.topic_id] && (
-                                <div>
-                                  <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">
-                                    Topic
+                                )}
+                              </div>
+                              <div className="space-y-3 rounded-lg border border-(--color-border) bg-(--color-bg-primary) p-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="text-[11px] font-medium uppercase tracking-wide text-(--color-text-secondary)">
+                                    Document
                                   </p>
-                                  <p className="text-sm text-(--color-text-primary)">{topicNames[doc.topic_id]}</p>
+                                  <Link
+                                    to={`/docs/${doc.doc_id}`}
+                                    className="text-xs font-medium text-blue-600 hover:underline dark:text-blue-400"
+                                  >
+                                    Open
+                                  </Link>
                                 </div>
-                              )}
-                              {doc.source_path && (
-                                <div>
-                                  <p className="text-[11px] font-medium text-(--color-text-secondary) uppercase tracking-wide mb-0.5">
-                                    Source
-                                  </p>
-                                  <p className="text-xs text-(--color-text-primary) font-mono">{doc.source_path}</p>
-                                </div>
-                              )}
+                                <dl className="space-y-2 text-xs">
+                                  {doc.doc_type && (
+                                    <div>
+                                      <dt className="text-(--color-text-secondary)">Category</dt>
+                                      <dd className="text-(--color-text-primary)">{doc.doc_type}</dd>
+                                    </div>
+                                  )}
+                                  {doc.folder_name && (
+                                    <div>
+                                      <dt className="text-(--color-text-secondary)">Folder</dt>
+                                      <dd>
+                                        <Link
+                                          to={`/docs?folder=${encodeURIComponent(doc.folder_name)}`}
+                                          onClick={() => applyPivotFilters({ folder: doc.folder_name })}
+                                          className="text-blue-600 hover:underline dark:text-blue-400"
+                                        >
+                                          {doc.folder_name}
+                                        </Link>
+                                      </dd>
+                                    </div>
+                                  )}
+                                  {doc.topic_id != null && topicNames[doc.topic_id] && (
+                                    <div>
+                                      <dt className="text-(--color-text-secondary)">Topic</dt>
+                                      <dd className="text-(--color-text-primary)">{topicNames[doc.topic_id]}</dd>
+                                    </div>
+                                  )}
+                                  {doc.source_path && (
+                                    <div>
+                                      <dt className="text-(--color-text-secondary)">Source path</dt>
+                                      <dd
+                                        className="truncate font-mono text-[11px] text-(--color-text-primary)"
+                                        title={doc.source_path}
+                                      >
+                                        {doc.source_path}
+                                      </dd>
+                                    </div>
+                                  )}
+                                </dl>
+                              </div>
                             </div>
                           </td>
                         </tr>
