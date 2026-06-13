@@ -58,6 +58,25 @@ const ENTITY_SECTIONS = [
 const TICK_STYLE = { fontSize: 10, fill: 'var(--color-chart-tick)' }
 const SUB_PANE_KEY = 'explore-sub-pane'
 
+const MIME_TYPE_LABELS: Record<string, string> = {
+  'application/pdf': 'PDF',
+  'message/rfc822': 'Email',
+  'text/plain': 'Plain text',
+  'text/markdown': 'Markdown',
+  'text/html': 'HTML',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word document',
+  'application/msword': 'Word document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Excel spreadsheet',
+  'application/vnd.ms-excel': 'Excel spreadsheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint',
+  'application/vnd.ms-powerpoint': 'PowerPoint',
+  'application/rtf': 'RTF',
+  'application/epub+zip': 'EPUB',
+  'image/png': 'PNG image',
+  'image/jpeg': 'JPEG image',
+  'image/tiff': 'TIFF image',
+}
+
 const PROCESSING_STATUSES = new Set([
   'queued',
   'extracting',
@@ -74,6 +93,19 @@ const PROCESSING_STATUSES = new Set([
   'summarizing',
   'summarized',
 ])
+
+function mimeTypeLabel(value: string): string {
+  if (MIME_TYPE_LABELS[value]) return MIME_TYPE_LABELS[value]
+  if (value.includes('/')) {
+    const [, subtype] = value.split('/', 2)
+    return subtype
+      .split(/[.+-]/)
+      .filter(Boolean)
+      .map((part) => part[0]?.toUpperCase() + part.slice(1))
+      .join(' ')
+  }
+  return value
+}
 
 function StatusBadge({ status }: { status: string }) {
   const display = !status ? 'unknown' : PROCESSING_STATUSES.has(status) ? 'processing' : status
@@ -744,7 +776,7 @@ function ExploreDocList({
             <option value="">All types</option>
             {filterOptions.mime_types.map((m) => (
               <option key={m.value} value={m.value}>
-                {m.value.split('/').pop()} ({m.count})
+                {mimeTypeLabel(m.value)} ({m.count})
               </option>
             ))}
           </select>
@@ -797,18 +829,66 @@ function ExploreDocList({
         </div>
 
         {hasActiveFilters && (
-          <button
-            onClick={() => {
-              setFilterInput('')
-              setFilter('')
-              setMimeFilter('')
-              setTopicFilter('')
-              setCurrentPage(1)
-            }}
-            className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
-          >
-            Clear filters
-          </button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {filter && (
+              <button
+                onClick={() => {
+                  setFilterInput('')
+                  setFilter('')
+                  setCurrentPage(1)
+                }}
+                className="inline-flex items-center gap-1 rounded-full bg-(--area-accent-tint) px-2 py-1 text-[11px] font-medium text-(--area-accent-text) ring-1 ring-(--area-accent) hover:opacity-80"
+                title="Remove filename filter"
+              >
+                Filename: {filter}
+                <span aria-hidden="true" className="text-[13px] leading-none opacity-70">
+                  ×
+                </span>
+              </button>
+            )}
+            {mimeFilter && (
+              <button
+                onClick={() => {
+                  setMimeFilter('')
+                  setCurrentPage(1)
+                }}
+                className="inline-flex items-center gap-1 rounded-full bg-(--area-accent-tint) px-2 py-1 text-[11px] font-medium text-(--area-accent-text) ring-1 ring-(--area-accent) hover:opacity-80"
+                title="Remove file type filter"
+              >
+                Type: {mimeTypeLabel(mimeFilter)}
+                <span aria-hidden="true" className="text-[13px] leading-none opacity-70">
+                  ×
+                </span>
+              </button>
+            )}
+            {topicFilter && (
+              <button
+                onClick={() => {
+                  setTopicFilter('')
+                  setCurrentPage(1)
+                }}
+                className="inline-flex items-center gap-1 rounded-full bg-(--area-accent-tint) px-2 py-1 text-[11px] font-medium text-(--area-accent-text) ring-1 ring-(--area-accent) hover:opacity-80"
+                title="Remove topic filter"
+              >
+                Topic: {clusters.find((c) => String(c.cluster_id) === topicFilter)?.name ?? topicFilter}
+                <span aria-hidden="true" className="text-[13px] leading-none opacity-70">
+                  ×
+                </span>
+              </button>
+            )}
+            <button
+              onClick={() => {
+                setFilterInput('')
+                setFilter('')
+                setMimeFilter('')
+                setTopicFilter('')
+                setCurrentPage(1)
+              }}
+              className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+            >
+              Clear filters
+            </button>
+          </div>
         )}
       </div>
 
@@ -881,40 +961,76 @@ function ExploreDocList({
                           </div>
                         </td>
                         <td className="px-4 py-3">
-                          <StatusBadge status={doc.status} />
+                          <div className="flex items-center gap-2">
+                            <StatusBadge status={doc.status} />
+                            {doc.summary_model && (
+                              <span className="hidden rounded-md bg-(--color-bg-secondary) px-1.5 py-0.5 text-[10px] text-(--color-text-secondary) xl:inline">
+                                {doc.summary_model}
+                              </span>
+                            )}
+                          </div>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-                          {new Date(doc.updated_at).toLocaleDateString()}
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm text-gray-500 dark:text-gray-400">
+                              {new Date(doc.updated_at).toLocaleDateString()}
+                            </span>
+                            <Link
+                              to={`/docs/${doc.doc_id}`}
+                              className="rounded-md bg-(--color-bg-secondary) px-2 py-1 text-[11px] font-medium text-(--color-text-primary) hover:bg-gray-200 dark:hover:bg-gray-700"
+                            >
+                              Open
+                            </Link>
+                          </div>
                         </td>
                       </tr>
                       {isExpanded && (
                         <tr className="bg-gray-50/50 dark:bg-white/2">
-                          <td colSpan={4} className="px-4 py-3 pl-14">
-                            <div className="space-y-1 text-sm">
-                              {doc.doc_type && (
-                                <div>
-                                  <span className="font-medium text-gray-500 dark:text-gray-400">Type: </span>
-                                  <span className="text-gray-700 dark:text-gray-300">{doc.doc_type}</span>
-                                </div>
-                              )}
-                              <div>
-                                <span className="font-medium text-gray-500 dark:text-gray-400">
+                          <td colSpan={3} className="px-4 py-3 pl-14">
+                            <div className="grid gap-3 text-sm md:grid-cols-[minmax(0,1fr)_180px]">
+                              <div className="min-w-0">
+                                <p className="mb-0.5 text-[11px] font-medium uppercase tracking-wide text-(--color-text-secondary)">
                                   Summary
                                   {doc.summary_model ? (
-                                    <span className="font-normal text-gray-400 dark:text-gray-500">
-                                      {' '}
+                                    <span className="ml-1 font-normal normal-case tracking-normal">
                                       ({doc.summary_model})
                                     </span>
-                                  ) : (
-                                    ''
-                                  )}
-                                  :{' '}
-                                </span>
+                                  ) : null}
+                                </p>
                                 {doc.summary ? (
-                                  <span className="text-gray-700 dark:text-gray-300">{doc.summary}</span>
+                                  <p className="leading-relaxed text-gray-700 dark:text-gray-300">{doc.summary}</p>
                                 ) : (
-                                  <span className="italic text-gray-400 dark:text-gray-500">No summary</span>
+                                  <p className="italic text-gray-400 dark:text-gray-500">No summary</p>
                                 )}
+                              </div>
+                              <div className="rounded-lg border border-(--color-border) bg-(--color-bg-primary) p-3 text-xs">
+                                <div className="mb-2 flex items-center justify-between gap-3">
+                                  <span className="font-medium uppercase tracking-wide text-(--color-text-secondary)">
+                                    Document
+                                  </span>
+                                  <Link
+                                    to={`/docs/${doc.doc_id}`}
+                                    className="font-medium text-blue-600 hover:underline dark:text-blue-400"
+                                  >
+                                    Open
+                                  </Link>
+                                </div>
+                                <dl className="space-y-2">
+                                  {doc.doc_type && (
+                                    <div>
+                                      <dt className="text-(--color-text-secondary)">Category</dt>
+                                      <dd className="text-(--color-text-primary)">{doc.doc_type}</dd>
+                                    </div>
+                                  )}
+                                  {doc.canonical_filename && (
+                                    <div>
+                                      <dt className="text-(--color-text-secondary)">Filename</dt>
+                                      <dd className="truncate font-mono text-[11px] text-(--color-text-primary)">
+                                        {doc.canonical_filename}
+                                      </dd>
+                                    </div>
+                                  )}
+                                </dl>
                               </div>
                             </div>
                           </td>
