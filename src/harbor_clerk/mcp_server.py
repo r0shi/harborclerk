@@ -252,8 +252,14 @@ class MCPTokenPathAuth:
             return
 
         path = scope.get("path", "")
-        parts = path.strip("/").split("/", 1)
-        token = parts[0] if parts else ""
+        segments = [segment for segment in path.strip("/").split("/") if segment]
+
+        # FastAPI mount behavior can present this middleware either the stripped
+        # child path ("/hc_...") or the original mounted path ("/t/hc_...").
+        if segments and segments[0] == "t":
+            segments = segments[1:]
+
+        token = segments[0] if segments else ""
 
         if not token or not token.startswith(API_KEY_PREFIXES):
             await self._send_401(send)
@@ -267,7 +273,8 @@ class MCPTokenPathAuth:
         # Rewrite path: strip the token, keep the rest (if any).
         # Token and MCP paths (/mcp, /sse) are always ASCII, so encoding
         # the decoded remaining path is equivalent to slicing raw_path.
-        remaining = "/" + parts[1] if len(parts) > 1 else "/"
+        remaining_segments = segments[1:]
+        remaining = "/" + "/".join(remaining_segments) if remaining_segments else "/"
         scope = dict(scope)
         scope["path"] = remaining
         scope["raw_path"] = remaining.encode("ascii")

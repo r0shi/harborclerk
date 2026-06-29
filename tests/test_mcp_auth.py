@@ -171,6 +171,42 @@ class TestMCPTokenPathAuth:
         assert data["path"] == "/mcp"
 
     @pytest.mark.asyncio
+    async def test_mounted_token_path_rewrite(self, app, monkeypatch):
+        """Accept the public /t/<api_key> URL shape as well as the stripped mount path."""
+
+        async def mock_resolve(token):
+            if token == _VALID_KEY:
+                return _ADMIN_PRINCIPAL
+            return None
+
+        monkeypatch.setattr("harbor_clerk.mcp_server._resolve_principal", mock_resolve)
+
+        scope = _http_scope(path=f"/t/{_VALID_KEY}/mcp")
+        status, _, body = await _capture_response(app, scope)
+        assert status == 200
+        data = json.loads(body)
+        assert data["path"] == "/mcp"
+        assert data["principal_type"] == "api_key"
+
+    @pytest.mark.asyncio
+    async def test_mounted_token_path_without_subpath(self, app, monkeypatch):
+        """Accept the exact mcp_path returned by the API key creation endpoint."""
+
+        async def mock_resolve(token):
+            if token == _VALID_KEY:
+                return _ADMIN_PRINCIPAL
+            return None
+
+        monkeypatch.setattr("harbor_clerk.mcp_server._resolve_principal", mock_resolve)
+
+        scope = _http_scope(path=f"/t/{_VALID_KEY}")
+        status, _, body = await _capture_response(app, scope)
+        assert status == 200
+        data = json.loads(body)
+        assert data["path"] == "/"
+        assert data["principal_type"] == "api_key"
+
+    @pytest.mark.asyncio
     async def test_missing_key(self, app):
         scope = _http_scope(path="/")
         status, _, body = await _capture_response(app, scope)
