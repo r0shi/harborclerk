@@ -127,15 +127,7 @@ const SUMMARY_STATE_LABELS: Record<string, string> = {
 }
 
 type DocsFilterKey =
-  | 'filter'
-  | 'mime'
-  | 'language'
-  | 'docType'
-  | 'entity'
-  | 'entityType'
-  | 'folder'
-  | 'pipeline'
-  | 'summary'
+  'filter' | 'mime' | 'language' | 'docType' | 'entity' | 'entityType' | 'folder' | 'pipeline' | 'summary'
 
 function mimeTypeLabel(value: string): string {
   if (MIME_TYPE_LABELS[value]) return MIME_TYPE_LABELS[value]
