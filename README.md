@@ -401,29 +401,37 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 
 ### MCP
 
-`POST /mcp` — Streamable HTTP transport. Authenticate with `Authorization: Bearer <api_key>`. 19 tools available; the CLI mirrors the same practical tool surface, including `kb_find_all` via `harbor-clerk find-all`.
+`POST /mcp` — Streamable HTTP transport. The CLI mirrors the same practical tool
+surface, including `kb_find_all` via `harbor-clerk find-all`.
+
+<!-- BEGIN GENERATED: mcp-tools -->
+<!-- Do not edit by hand. Regenerate: uv run python -m scripts.gen_docs -->
+
+**19 tools.** Authenticate with `Authorization: Bearer <api_key>`.
 
 | Tool | Description |
 |---|---|
-| `kb_search` | Hybrid search with pagination, detail modes, and optional filters |
-| `kb_batch_search` | Run up to 5 search queries in a single call |
-| `kb_find_all` | Unified enumeration: list, filter, and paginate matching documents |
-| `kb_read_passages` | Read specific passages by chunk ID |
-| `kb_expand_context` | Get surrounding chunks for a given chunk |
-| `kb_get_document` | Document metadata and summary |
-| `kb_read_document` | Read full document text or a page range |
-| `kb_list_recent` | Recently added documents with summaries |
-| `kb_documents_by_date` | List documents inside a date range, ordered chronologically |
-| `kb_verify_identifier` | Resolve a free-text identifier (title, filename, UUID) to a `doc_id` before issuing other tool calls |
-| `kb_corpus_overview` | Aggregate corpus stats (languages, types, dates) |
-| `kb_document_outline` | Document heading structure and page layout |
-| `kb_find_related` | Find similar documents via embedding similarity |
-| `kb_entity_search` | Search named entities across the corpus |
-| `kb_entity_overview` | Entity type breakdown (per-doc or corpus-wide) |
-| `kb_entity_cooccurrence` | Find entities that co-occur in the same chunk or document |
-| `kb_ingest_status` | Check ingestion progress |
-| `kb_reprocess` | Re-run ingestion on a document |
-| `kb_system_health` | System health check |
+| `kb_batch_search` | Run multiple search queries in one call (max 5), grouped per query. |
+| `kb_corpus_overview` | Survey the corpus: doc types, date ranges, sample titles. |
+| `kb_document_outline` | Get a document's section structure (table of contents). |
+| `kb_documents_by_date` | Return documents sorted by their effective date. |
+| `kb_entity_cooccurrence` | Find which entities appear together in the same documents or chunks. |
+| `kb_entity_overview` | Survey entities in the corpus (or scoped to a single doc). |
+| `kb_entity_search` | Find documents that mention a specific named entity (person, organization, place). |
+| `kb_expand_context` | Read N chunks immediately before/after a given chunk_id. |
+| `kb_find_all` | Enumerate documents matching a query — deduped by document, with optional literal-substring filtering. |
+| `kb_find_related` | Find documents related to a given doc_id by semantic overlap. |
+| `kb_get_document` | Get a document's metadata + summary by doc_id. |
+| `kb_ingest_status` | Inspect a document's ingestion pipeline status (operator-facing). |
+| `kb_list_recent` | List the most recently-added documents in the corpus. |
+| `kb_read_document` | Read the full text of a document by doc_id. |
+| `kb_read_passages` | Read specific passages by chunk_id. |
+| `kb_reprocess` | Re-run the ingestion pipeline for a specific document. |
+| `kb_search` | Search the knowledge base by topic, keyword, or question. |
+| `kb_system_health` | Check HC's system health (PostgreSQL, storage, Tika, reranker). |
+| `kb_verify_identifier` | Verify a document identifier resolves to exactly one document. |
+<!-- END GENERATED: mcp-tools -->
+
 
 ---
 
