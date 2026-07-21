@@ -419,7 +419,7 @@ surface, including `kb_find_all` via `harbor-clerk find-all`.
 | `kb_entity_overview` | Survey entities in the corpus (or scoped to a single doc). |
 | `kb_entity_search` | Find documents that mention a specific named entity (person, organization, place). |
 | `kb_expand_context` | Read N chunks immediately before/after a given chunk_id. |
-| `kb_find_all` | Enumerate documents matching a query — deduped by document, with |
+| `kb_find_all` | Enumerate documents matching a query — deduped by document, with optional literal-substring filtering. |
 | `kb_find_related` | Find documents related to a given doc_id by semantic overlap. |
 | `kb_get_document` | Get a document's metadata + summary by doc_id. |
 | `kb_ingest_status` | Inspect a document's ingestion pipeline status (operator-facing). |
