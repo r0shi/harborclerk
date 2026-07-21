@@ -68,3 +68,24 @@ def test_compose_workers_only_reference_known_queues() -> None:
         f"docker-compose.yml subscribes to queue(s) {sorted(unknown)} that do not exist in "
         f"QUEUE_STAGES ({sorted(QUEUE_STAGES)}). Those workers would start and idle forever."
     )
+
+
+def test_llm_queue_worker_can_reach_llama_server() -> None:
+    """The llm-queue worker must be pointed at llama-server explicitly.
+
+    `settings.llama_server_url` defaults to localhost:8102 — the macOS-native
+    subprocess port. Inside a container that resolves to nothing, so summarize
+    would burn its retry budget and then silently fall back to an extractive
+    summary. Queue coverage alone does not prove the worker can reach what its
+    stages need.
+    """
+    offenders = [
+        name
+        for name, service in _load_services().items()
+        if "llm" in _queues_for_service(service) and "LLAMA_SERVER_URL" not in (service.get("environment") or {})
+    ]
+    assert not offenders, (
+        f"Service(s) {offenders} handle the 'llm' queue but do not set LLAMA_SERVER_URL. "
+        "They would fall back to the localhost:8102 default and silently produce "
+        "extractive summaries instead of LLM summaries."
+    )

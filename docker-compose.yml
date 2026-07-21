@@ -92,6 +92,12 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
+      # Required. settings.llama_server_url defaults to localhost:8102, which is
+      # the macOS-native subprocess port — inside this container that resolves to
+      # nothing, and summarize would silently degrade to extractive summaries
+      # after burning its retry budget. worker-io/worker-cpu don't need this
+      # because no stage on those queues calls the LLM.
+      LLAMA_SERVER_URL: http://llama-server:8080
       HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
       RERANKER_URL: http://reranker:8001
     depends_on:
