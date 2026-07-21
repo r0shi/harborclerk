@@ -1,23 +1,9 @@
 # Harbor Clerk Architecture
 
-> [!WARNING]
-> **This document is known to be stale.** An audit on 2026-07-21 (against content
-> last updated 2026-05-27) found several sections describe an architecture that no
-> longer exists. **Treat the code as authoritative.**
->
-> Still known-wrong in the **prose and diagrams below**: the embedding model and
-> dimension (now Granite-R2 / 768, not e5-small / 384), OCR's extraction path
-> (pypdfium2 + Tesseract, never Tika), the macOS service list and ports, and the
-> auth model's role semantics. Several shipped subsystems are missing entirely.
->
-> Verified accurate: **Retrieval Flow**, **Client Surfaces**, and everything under
-> **Generated reference** — those tables are derived from source and verified in
-> CI, so the queue topology and the full database schema there are correct even
-> where the diagrams above disagree.
->
-> Tracked in [#539](https://github.com/r0shi/harborclerk/issues/539), which has the
-> full findings and the plan to generate the enumerations from source so this
-> cannot drift again.
+The prose and diagrams here describe *why* the system is shaped the way it is.
+Every list, table, and count lives under [Generated reference](#generated-reference),
+derived from source and verified in CI. **Where the two disagree, the generated
+tables are authoritative** — they cannot drift; this prose can.
 
 ## System Overview
 
@@ -37,24 +23,26 @@ graph TB
         api["FastAPI<br/>REST API + MCP + SPA"]
     end
 
-    subgraph Watcher
-        watcher["Watcher<br/>Python watchdog<br/>FSEvents / inotify / polling"]
+    subgraph Ingest
+        watcher["Watcher<br/>watchdog + IMAP observer<br/>FSEvents / inotify / polling"]
     end
 
     subgraph Workers
-        wio["Worker (io queue)<br/>extract, chunk, entities,<br/>summarize, finalize"]
-        wcpu["Worker (cpu queue)<br/>OCR, embed"]
+        wio["Worker (io)<br/>extract, chunk,<br/>entities, finalize"]
+        wcpu["Worker (cpu)<br/>ocr, embed"]
+        wllm["Worker (llm)<br/>summarize"]
     end
 
     subgraph Data
         pg[("PostgreSQL 18<br/>+ pgvector + pg_trgm")]
         fs["Source filesystem<br/>(read in place)"]
+        imap["IMAP mailboxes<br/>(read-only)"]
     end
 
     subgraph Services
         tika["Apache Tika<br/>text extraction"]
-        embedder["Embedder<br/>multilingual-e5-small<br/>384-dim"]
-        reranker["Reranker<br/>cross-encoder<br/>(search re-ranking)"]
+        embedder["Embedder<br/>Granite-R2 multilingual<br/>768-dim"]
+        reranker["Reranker<br/>cross-encoder"]
         llama["llama.cpp<br/>local LLM inference"]
     end
 
@@ -64,68 +52,107 @@ graph TB
     caddy --> api
 
     api -- "async queries" --> pg
-    api -- "chat streaming" --> llama
+    api -- "embed the query" --> embedder
     api -- "re-rank search hits" --> reranker
+    api -- "chat / research" --> llama
     api -- "SSE /api/jobs/stream" --> browser
 
-    watcher -- "scan + LISTEN" --> fs
+    watcher -- "scan + watch" --> fs
+    watcher -- "EXAMINE / IDLE" --> imap
     watcher -- "enqueue ingest jobs" --> pg
 
-    wio -- "poll jobs<br/>LISTEN/NOTIFY" --> pg
-    wcpu -- "poll jobs<br/>LISTEN/NOTIFY" --> pg
+    wio -- "LISTEN/NOTIFY" --> pg
+    wcpu -- "LISTEN/NOTIFY" --> pg
+    wllm -- "LISTEN/NOTIFY" --> pg
+    wio -- "extract" --> tika
     wio -- "read source" --> fs
     wcpu -- "read source" --> fs
-    wio -- "extract" --> tika
-    wcpu -- "OCR" --> tika
     wcpu -- "embed" --> embedder
-
-    llama -. "tool calls<br/>via API" .-> api
+    wllm -- "summarize" --> llama
 ```
+
+> The gateway edge above reflects the **Docker Compose** topology. On macOS the
+> browser reaches the API directly — see [Deployment Modes](#deployment-modes).
+>
+> OCR runs **inside** the cpu worker (pypdfium2 rendering + Tesseract). It does
+> not call Tika — Tika handles text extraction only.
 
 ## Client Surfaces
 
-Three first-class ways for clients to reach the corpus, all hitting the same backend through Caddy:
+Three first-class ways for clients to reach the corpus, all reaching the same
+backend and the same authorization model. **The transport differs by deployment**
+— see the note below the table.
 
 | Surface | Transport | Auth | Audit `request_type` | Primary consumer |
 |---|---|---|---|---|
-| **Web UI** | HTTPS to React SPA + REST API | JWT (email + password) | `rest` | Humans in browser / WKWebView |
+| **Web UI** | Docker: HTTPS via Caddy. macOS: plain HTTP on loopback (`:8100`) | JWT (email + password) | `rest` | Humans in browser / WKWebView |
 | **MCP endpoint** | `POST /mcp` (Streamable HTTP) | API key bearer or OAuth 2.1 | `mcp_tool` | Cloud LLMs — Claude, ChatGPT, Claude Desktop, Gemini CLI |
 | **`harbor-clerk` CLI** | `POST /mcp` (same endpoint, JSON-RPC framing) | API key bearer | `cli_tool` | Local agent harnesses — OpenClaw, Claude Code, Codex, Aider |
+
+> **Only Docker Compose fronts everything with Caddy.** On macOS the WKWebView
+> app loads the SPA directly over plain HTTP on the loopback interface
+> (`http://localhost:8100`); the HTTPS gateway there is a *separate* surface on
+> `:8443`, used by local MCP clients that require TLS. Authorization, scoping,
+> and audit are identical either way — only the transport differs.
 
 The CLI is intentionally a thin shell wrapper over the same MCP transport — it does not get its own API. Two surfaces, one source of truth. Authorization scoping, rate limits, and per-key audit dashboards apply identically. The `request_type` split lets operators separate "human-driven cloud LLM traffic" from "local-agent-driven traffic" in the audit dashboard without giving them different security postures.
 
 The CLI is opt-in (off by default). On macOS the toggle lives in **Harbor Clerk Server → Preferences**; on Docker it's `ENABLE_CLI_ACCESS=true`. See [the CLI agent skill](../skills/harbor-clerk/SKILL.md) for the harness-side surface.
 
+## Ingestion Sources
+
+Two user-facing ingest paths, not one:
+
+- **Watched folders** — files are referenced in place and never altered, copied,
+  or moved. A 30-day reaper purges documents whose source stays missing.
+- **IMAP mailboxes** — messages and attachments are necessarily *fetched and
+  stored* as Documents, because there is no file on disk to reference. The
+  mailbox itself is strictly read-only (`EXAMINE`, never marking read or
+  deleting), and OAuth scopes must be read-only when OAuth lands.
+
+The legacy `POST /api/uploads/*` endpoints remain callable for non-interactive
+sources but have no UI affordance.
+
 ## Ingestion Pipeline
 
-Seven idempotent stages, each guarded by a row-level lock on `(doc_id, stage)`:
+Seven idempotent stages, each guarded by a row-level lock on `(doc_id, stage)`
+via `SELECT ... FOR UPDATE SKIP LOCKED`. Stage assignment and timeouts are in
+[the generated table](#ingestion-pipeline-stages).
 
 ```mermaid
 graph LR
-    drop(("File appears in<br/>watched folder"))
+    drop(("File appears<br/>or message arrives"))
 
-    extract["1. extract<br/><i>io queue</i><br/>Tika / plain text"]
-    ocr["2. ocr<br/><i>cpu queue</i><br/>pypdfium2 + Tesseract"]
-    chunk["3. chunk<br/><i>io queue</i><br/>~1000 char, 150 overlap"]
+    extract["1. extract<br/><i>io</i><br/>Tika / plain text / markdown"]
+    ocr["2. ocr<br/><i>cpu</i><br/>pypdfium2 + Tesseract"]
+    chunk["3. chunk<br/><i>io</i><br/>~1000 char, 150 overlap"]
 
-    entities["4. entities<br/><i>io queue</i><br/>spaCy NER"]
-    embed["5. embed<br/><i>cpu queue</i><br/>384-dim vectors"]
-    summarize["6. summarize<br/><i>io queue</i><br/>LLM summary"]
+    entities["entities<br/><i>io</i><br/>spaCy NER"]
+    embed["embed<br/><i>cpu</i><br/>768-dim vectors"]
+    finalize["finalize<br/><i>io</i><br/>mark complete"]
 
-    finalize["7. finalize<br/><i>io queue</i><br/>mark complete"]
+    summarize["summarize<br/><i>llm</i><br/>background"]
 
     drop --> extract --> ocr --> chunk
 
-    chunk --> entities & embed & summarize
-
+    chunk --> entities & embed
     entities --> finalize
     embed --> finalize
-    summarize --> finalize
+
+    chunk -. "does not gate" .-> summarize
 
     style ocr stroke-dasharray: 5 5
+    style summarize stroke-dasharray: 5 5
 ```
 
-> OCR (dashed) is conditional: always for images; PDF only if extracted text is sparse; skipped for text-native formats.
+> **OCR** (dashed) is conditional: always for images; for PDFs only when
+> extracted text is sparse; never for text-native formats.
+>
+> **`summarize`** (dashed) runs on its own `llm` queue and is a *background*
+> stage — it does **not** gate `finalize`. A document is searchable as soon as
+> `entities` and `embed` complete; its summary may arrive later, or fall back to
+> an extractive summary when no LLM is reachable. Any deployment must run a
+> worker subscribed to the `llm` queue or summaries silently never appear.
 
 ## Retrieval Flow
 
@@ -149,6 +176,8 @@ graph LR
 
 ## Deployment Modes
 
+Service inventories are generated: [Docker Compose services](#docker-compose-services).
+
 ### Docker Compose (Linux / DIY)
 
 ```mermaid
@@ -156,9 +185,10 @@ graph TB
     subgraph docker["Docker Compose"]
         gw["gateway<br/>Caddy"]
         app["app<br/>FastAPI"]
-        watcher["watcher<br/>(harbor-clerk-watcher)"]
+        watcher["watcher"]
         wio["worker-io"]
         wcpu["worker-cpu"]
+        wllm["worker-llm"]
         emb["embedder"]
         rerank["reranker"]
         pg[("postgres<br/>pgvector/pgvector:pg18")]
@@ -170,14 +200,13 @@ graph TB
     host_fs["Host bind mount<br/>./data/watch"]
 
     gw --> app
-    app --> pg & llama & rerank
+    app --> pg & emb & rerank & llama
     app -. "legacy uploads" .-> minio
     watcher --> pg
-    watcher -- "WATCH_ROOT<br/>/data/watch" --> host_fs
-    wio --> pg & tika
-    wio --> host_fs
-    wcpu --> pg & tika & emb
-    wcpu --> host_fs
+    watcher -- "WATCH_ROOT" --> host_fs
+    wio --> pg & tika & host_fs
+    wcpu --> pg & emb & host_fs
+    wllm --> pg & llama
 ```
 
 ### macOS Native
@@ -186,15 +215,17 @@ graph TB
 graph TB
     subgraph menubar["Harbor Clerk Server<br/>(menubar agent)"]
         sm["ServiceManager"]
-        pg["PostgreSQL 18<br/>(subprocess)"]
-        tika["Tika<br/>(subprocess)"]
-        emb["Embedder<br/>(subprocess)"]
-        rerank["Reranker<br/>(subprocess)"]
-        llama["llama.cpp<br/>(subprocess)"]
-        api["harbor-clerk-api<br/>(subprocess)"]
-        watcher["harbor-clerk-watcher<br/>(subprocess)"]
-        wio["worker io<br/>(subprocess)"]
-        wcpu["worker cpu<br/>(subprocess)"]
+        pg["PostgreSQL 18"]
+        tika["Tika"]
+        emb["Embedder"]
+        rerank["Reranker"]
+        llama["llama.cpp"]
+        api["harbor-clerk-api"]
+        gwy["HTTPS Gateway<br/>Caddy :8443"]
+        watcher["harbor-clerk-watcher"]
+        wio["worker io"]
+        wcpu["worker cpu"]
+        wllm["worker llm"]
     end
 
     subgraph client["Harbor Clerk (WKWebView app)"]
@@ -203,88 +234,107 @@ graph TB
     end
 
     user_dirs["User-picked folders<br/>(anywhere on disk)"]
+    mcp_client["Local MCP client"]
 
-    sm --> pg & tika & emb & rerank & llama & api & watcher & wio & wcpu
-    spa -- "http://localhost:8000" --> api
+    sm --> pg & tika & emb & rerank & llama & api & gwy & watcher & wio & wcpu & wllm
+    spa -- "http://localhost:8100" --> api
+    mcp_client -- "https://localhost:8443" --> gwy
+    gwy --> api
     spa -. "window.harborclerk" .-> bridge
     bridge -. "NSOpenPanel · NSWorkspace" .-> user_dirs
     watcher --> user_dirs
-    wio --> user_dirs
-    wcpu --> user_dirs
 ```
 
-## Data Model (key tables)
+> The SPA talks to the API directly over plain HTTP on the loopback interface
+> (`api_port`, default **8100**). The HTTPS gateway is a *separate* surface at
+> **8443** for local MCP clients that require TLS, with `internal` or
+> operator-supplied certificates and a loopback-versus-LAN exposure check.
+>
+> PostgreSQL and Tika are optionally managed by **launchd** rather than as
+> direct subprocesses, so they survive a menubar crash.
 
-The document model is flat: each `documents` row tracks one source file, including its current ingestion status, summary, and OCR/extraction metadata. Previous versions are not retained as a separate table — reprocessing updates the row in place.
+## Data Model
+
+The document model is flat: each `documents` row tracks one source file or
+message, including its current ingestion status, summary, and OCR/extraction
+metadata. Previous versions are not retained in a separate table — reprocessing
+updates the row in place.
+
+The full schema, grouped by subsystem with key columns, is generated:
+[Database tables](#database-tables). Core relationships:
 
 ```mermaid
 erDiagram
-    users ||--o{ api_keys : creates
-    users ||--o{ conversations : has
-    conversations ||--o{ chat_messages : contains
-
+    documents ||--o{ chunks : "split into"
+    documents ||--o{ document_pages : has
+    documents ||--o{ entities : mentions
+    documents ||--o{ ingestion_jobs : "tracked by"
     watched_folders ||--o{ watched_files : tracks
     watched_files ||--o| documents : "ingests as"
-
-    documents ||--o{ document_pages : has
-    documents ||--o{ document_headings : has
-    documents ||--o{ chunks : has
-    documents ||--o{ entities : has
-    documents ||--o{ ingestion_jobs : tracks
-
-    chunks {
-        text content
-        vector embedding_384dim
-        tsvector fts_en
-        tsvector fts_fr
-    }
-
-    documents {
-        text title
-        text canonical_filename
-        text source_path
-        enum status
-        text summary
-        bytea sha256
-    }
-
-    ingestion_jobs {
-        enum stage
-        enum status
-        timestamp heartbeat_at
-    }
-
-    watched_folders {
-        text path
-        text label
-        bool auto_discovered
-        text unavailable_reason
-    }
+    mail_accounts ||--o{ watched_labels : syncs
+    watched_labels ||--o{ watched_messages : contains
+    watched_messages ||--o| documents : "ingests as"
 ```
 
-> The legacy `uploads` and `upload_sessions` tables remain in the schema to keep the `POST /api/uploads/*` endpoints alive for non-interactive callers (planned email ingestion). The web UI no longer offers a direct upload affordance.
+> `chunks.embedding` is `vector(768)` (Granite-R2), with `fts_en` and `fts_fr`
+> generated `tsvector` columns alongside it. `schema_metadata` records the
+> embedding model and dimension; the app refuses to start against a mismatch.
 
 ## Auth Model
 
+The read/write axis is **human versus API key**, not admin versus user. Any
+authenticated human — regardless of role — can create watched folders, ingest,
+and chat; `require_human_user` exists specifically to reject API keys on
+mutating endpoints. `require_admin` gates a genuinely narrower set: user and
+key management, model management, and destructive document operations.
+
 ```mermaid
 graph LR
-    human["Human User"]
-    apikey["API Key Client"]
+    human["Human user<br/>email + password"]
+    apikey["API key client"]
+    oauth["OAuth 2.1 client<br/>(ChatGPT connector)"]
 
-    human -- "email + password" --> jwt["JWT<br/>access + refresh"]
-    apikey -- "Authorization: Bearer" --> hash["key_hash lookup"]
+    human --> jwt["JWT<br/>access + refresh"]
+    apikey --> hash["key_hash lookup<br/>+ scope"]
+    oauth --> dcr["Dynamic client registration<br/>PKCE · token exchange"]
 
     jwt --> api["API"]
     hash --> api
+    dcr --> api
 
-    api -- "role: admin" --> full["Full Access"]
-    api -- "role: user" --> limited["Read"]
-    api -- "api_key" --> readonly["Read-Only (scoped)"]
+    api -- "any human" --> write["Read + write<br/>(own conversations, folders, ingest)"]
+    api -- "require_admin" --> admin["Admin<br/>(users, keys, models, destructive ops)"]
+    api -- "api key" --> readonly["Read-only, scoped"]
 ```
 
+Per-operation gates are generated in the [REST API](#rest-api) table's Access
+column, derived from each route's dependency tree.
+
+- **API keys** are read-only, stored as hashes, and carry a scope, rate limits,
+  snippet caps, and an expiry.
+- **OAuth 2.1** with dynamic client registration is implemented for connector
+  clients: PKCE, authorization codes, token issue/refresh/revoke, and
+  `.well-known` discovery documents.
 - **Secret storage** — sensitive values (mail-account app passwords, future
-  OAuth tokens, etc.) are encrypted in Postgres with a master key managed per
-  deployment. See [secrets-and-keys.md](secrets-and-keys.md).
+  OAuth tokens) are encrypted in Postgres with a per-deployment master key.
+  `HARBOR_CLERK_MASTER_KEY` is a hard startup requirement for every service.
+  See [secrets-and-keys.md](secrets-and-keys.md).
+
+## Other Subsystems
+
+These ship and are exercised in production, but are not yet described in depth
+here. Pointers rather than prose, deliberately — an inaccurate architecture
+section is worse than an honest signpost.
+
+| Subsystem | Entry points |
+|---|---|
+| **Research** — plan → search → read → synthesize, with a cited report and optional citation verifier | `llm/research.py`, `llm/research_prompts.py`, `api/routes/research.py`, `research_state` table |
+| **Chat / local LLM orchestration** — tool-calling loop over the retrieval tools, citation assembly, model download and health | `llm/chat.py`, `llm/tools.py`, `llm/citations.py`, `llm/models.py`, `llm/download.py` |
+| **Secrets and encryption** — envelope cipher, key sources, master-key management | `secrets/cipher.py`, `secrets/keysource.py` |
+| **Topic modelling** — BERTopic clustering surfaced in Observatory | `topics.py`, `corpus_topics` tables |
+| **Language packs** — on-demand OCR and NER model downloads | `lang_packs/`, `languages.py`, `api/routes/languages.py` |
+| **Metadata extractors** — sidecar and frontmatter parsing into `documents.metadata` JSONB | `ingest/metadata_extractors/` |
+| **Markdown extraction** — a non-Tika path preserving heading structure | `worker/markdown_extract.py`, `worker/heading_parser.py` |
 
 ## Generated reference
 
