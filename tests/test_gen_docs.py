@@ -145,3 +145,124 @@ def test_committed_docs_are_up_to_date() -> None:
         assert original == regenerated, (
             f"{target.name} has stale generated content. Run: uv run python -m scripts.gen_docs"
         )
+
+
+# --- Content-quality assertions -------------------------------------------
+#
+# Byte-stability (--check) proves a doc matches its generator; it says nothing
+# about whether the generator is correct. A deterministic formatting bug
+# reproduces identically forever and passes --check. PR #541 shipped exactly
+# that. Each generator therefore needs assertions about its *content*.
+
+
+def test_every_table_has_an_explicit_group() -> None:
+    """The one hand-maintained element in db_tables cannot rot silently.
+
+    Module grouping is ~1:1 with tables and FK clustering collapses to one
+    component, so the group map is explicit. This test is what stops it from
+    drifting: add a table without a group and the build fails.
+    """
+    from scripts.gen_docs.generators.db_tables import TABLE_GROUPS, load_metadata
+
+    tables = set(load_metadata().tables)
+    ungrouped = sorted(tables - set(TABLE_GROUPS))
+    stale = sorted(set(TABLE_GROUPS) - tables)
+    assert not ungrouped, f"tables with no group assignment in TABLE_GROUPS: {ungrouped}"
+    assert not stale, f"TABLE_GROUPS references tables that no longer exist: {stale}"
+
+
+def test_db_block_lists_every_table() -> None:
+    from scripts.gen_docs.generators.db_tables import generate, load_metadata
+
+    output = generate()
+    missing = [t for t in load_metadata().tables if f"`{t}`" not in output]
+    assert not missing, f"tables absent from the generated block: {missing}"
+
+
+def test_pipeline_block_matches_worker_config() -> None:
+    """Would have caught #537: the docs claimed two queues; the code has three."""
+    from harbor_clerk.worker.entry import QUEUE_STAGES
+    from harbor_clerk.worker.pipeline import STAGE_CONFIG
+    from scripts.gen_docs.generators.pipeline import generate
+
+    output = generate()
+    for stage in STAGE_CONFIG:
+        assert f"`{stage.value}`" in output, f"stage {stage.value} missing from generated block"
+    for queue in QUEUE_STAGES:
+        assert f"`{queue}`" in output, f"queue {queue} missing from generated block"
+    assert "does **not** gate" in output, "summarize's background role must be stated explicitly"
+
+
+def test_compose_block_lists_every_service() -> None:
+    from scripts.gen_docs.generators.compose import generate, load_services
+
+    output = generate()
+    missing = [s for s in load_services() if f"`{s}`" not in output]
+    assert not missing, f"services absent from the generated block: {missing}"
+
+
+def test_rest_blocks_cover_every_operation() -> None:
+    from scripts.gen_docs.generators.rest import _operations, generate_full
+
+    ops = _operations()
+    assert ops, "no REST operations discovered"
+    assert all(path.startswith("/") for _, _, path, _, _ in ops)
+    assert all(summary for _, _, _, summary, _ in ops), "every operation should have an OpenAPI summary"
+
+    full = generate_full()
+    missing = [f"{m} {p}" for _, m, p, _, _ in ops if f"`{p}`" not in full]
+    assert not missing, f"operations absent from the full table: {missing[:5]}"
+
+
+def test_cli_mcp_parity() -> None:
+    """The CLI is a thin shell over MCP, so the surfaces must match exactly.
+
+    Folded in from what was planned as its own PR: parity is currently perfect
+    at 19/19, so this locks it rather than documenting exceptions.
+    """
+    from scripts.gen_docs.generators.cli_commands import load_subcommands
+    from scripts.gen_docs.generators.mcp_tools import _load_tools
+
+    mcp = {t.name.removeprefix("kb_").replace("_", "-") for t in _load_tools()}
+    cli = set(load_subcommands())
+    assert not mcp - cli, f"MCP tools with no CLI subcommand: {sorted(mcp - cli)}"
+    assert not cli - mcp, f"CLI subcommands with no MCP tool: {sorted(cli - mcp)}"
+
+
+def test_compose_roles_are_never_bare_flags() -> None:
+    """A Role cell must name a command, not a flag.
+
+    llama-server's compose command is a list of bare flags with no executable
+    (the entrypoint is in the image), and minio's is a plain string rather than
+    a list. Taking token zero blindly rendered "--host" as a role and dropped
+    minio's entirely — a deterministic bug that --check would never notice.
+    """
+    from scripts.gen_docs.generators.compose import _role, load_services
+
+    for name, service in load_services().items():
+        role = _role(service or {})
+        assert not role.startswith("`-"), f"{name} role is a bare flag: {role}"
+        command = (service or {}).get("command")
+        if isinstance(command, str):
+            assert role != "—", f"{name} has a string command but rendered no role"
+
+
+def test_rest_access_gates_are_derived_for_every_operation() -> None:
+    """Authorization must be derived, never guessed.
+
+    The hand-written table annotated "(admin)" by hand; those annotations were
+    lost when it was generated. _operations() raises if a route's gate cannot be
+    resolved unambiguously, so this asserts the join covers the whole surface
+    and that known-destructive endpoints are still marked.
+    """
+    from scripts.gen_docs.generators.rest import _operations
+
+    ops = _operations()
+    by_path = {(path, method): access for _, method, path, _, access in ops}
+    for path in (
+        "/api/system/delete-all-documents",
+        "/api/system/resummarize-all",
+        "/api/system/reprocess-all",
+    ):
+        assert by_path.get((path, "POST")) == "admin", f"{path} must be marked admin-gated"
+    assert any(a == "human only" for a in by_path.values()), "human-only gate should appear"
