@@ -245,7 +245,7 @@ docker compose logs -f app        # tail app logs
 docker compose logs -f watcher    # see what the watcher is picking up
 ```
 
-**Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `watcher` (folder watching + ingest queueing), `worker-io`, `worker-cpu`, `embedder` (multilingual-e5-small), `reranker` (cross-encoder re-ranking), `llama-server` (local LLM inference), `postgres` (pgvector + pg_trgm), `minio`, `tika`.
+**Services:** `gateway` (Caddy), `app` (FastAPI + React SPA), `watcher` (folder watching + ingest queueing), `worker-io`, `worker-cpu`, `worker-llm` (summarize), `embedder` (Granite-R2 multilingual, 768-dim), `reranker` (cross-encoder re-ranking), `llama-server` (local LLM inference), `postgres` (pgvector + pg_trgm), `minio`, `tika`.
 
 ---
 

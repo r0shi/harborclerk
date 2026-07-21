@@ -79,6 +79,27 @@ services:
     networks:
       - harbor-clerk
 
+  # Summarize is routed to its own `llm` queue (see QUEUE_STAGES in
+  # worker/entry.py). Without this service nothing claims those jobs and
+  # documents silently never receive a summary. No hard dependency on
+  # llama-server: summarize degrades to an extractive summary when no LLM is
+  # reachable, matching how `app` treats llama-server as optional.
+  worker-llm:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    command: ["harbor-clerk-worker", "--queues", "llm"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HARBOR_CLERK_MASTER_KEY: ${HARBOR_CLERK_MASTER_KEY:?master key required; see docs/secrets-and-keys.md}
+      RERANKER_URL: http://reranker:8001
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - harbor-clerk
+
   watcher:
     build:
       context: .
