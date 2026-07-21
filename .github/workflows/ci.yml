@@ -27,6 +27,11 @@ jobs:
         run: uv run ruff check .
       - name: Ruff format check
         run: uv run ruff format --check .
+      # Generated doc blocks must match a fresh render from source. Runs before
+      # the DB-backed tests so drift fails fast with a clear message; the test
+      # suite also covers this (tests/test_gen_docs.py) as defence in depth.
+      - name: Generated docs up to date
+        run: uv run python -m scripts.gen_docs --check
       - name: Create PG extensions
         run: |
           PGPASSWORD="" psql -h localhost -U lka -d lka_test -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_trgm; CREATE EXTENSION IF NOT EXISTS citext;"
