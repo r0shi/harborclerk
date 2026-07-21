@@ -44,3 +44,9 @@ redis_data/
 # per-model reports, raw SSE captures, and analysis writeups. Stays on
 # the developer's machine — nothing here ships in the repo.
 research-debugging/
+
+# Private strategy docs. Positioning, competitive analysis, claim posture,
+# and candid project assessment live in a separate PRIVATE repo checked out
+# here (github.com/r0shi/harborclerk-strategy). Technical design specs and
+# implementation plans stay public under docs/superpowers/.
+/docs/strategy/
