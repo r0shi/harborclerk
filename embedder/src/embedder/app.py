@@ -1,6 +1,9 @@
 """Embedding model server.
 
-Loads multilingual-e5-small (384-dim) and exposes POST /embed.
+Loads the model named by EMBED_MODEL — Granite-R2 multilingual (768-dim) by
+default — and exposes POST /embed. See MODEL_NAME/NEEDS_PREFIX below; the e5
+family is a supported fallback and needs "query: "/"passage: " prefixes that
+Granite-R2 does not.
 """
 
 import logging
