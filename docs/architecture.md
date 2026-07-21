@@ -71,18 +71,29 @@ graph TB
     wllm -- "summarize" --> llama
 ```
 
+> The gateway edge above reflects the **Docker Compose** topology. On macOS the
+> browser reaches the API directly — see [Deployment Modes](#deployment-modes).
+>
 > OCR runs **inside** the cpu worker (pypdfium2 rendering + Tesseract). It does
 > not call Tika — Tika handles text extraction only.
 
 ## Client Surfaces
 
-Three first-class ways for clients to reach the corpus, all hitting the same backend through Caddy:
+Three first-class ways for clients to reach the corpus, all reaching the same
+backend and the same authorization model. **The transport differs by deployment**
+— see the note below the table.
 
 | Surface | Transport | Auth | Audit `request_type` | Primary consumer |
 |---|---|---|---|---|
-| **Web UI** | HTTPS to React SPA + REST API | JWT (email + password) | `rest` | Humans in browser / WKWebView |
+| **Web UI** | Docker: HTTPS via Caddy. macOS: plain HTTP on loopback (`:8100`) | JWT (email + password) | `rest` | Humans in browser / WKWebView |
 | **MCP endpoint** | `POST /mcp` (Streamable HTTP) | API key bearer or OAuth 2.1 | `mcp_tool` | Cloud LLMs — Claude, ChatGPT, Claude Desktop, Gemini CLI |
 | **`harbor-clerk` CLI** | `POST /mcp` (same endpoint, JSON-RPC framing) | API key bearer | `cli_tool` | Local agent harnesses — OpenClaw, Claude Code, Codex, Aider |
+
+> **Only Docker Compose fronts everything with Caddy.** On macOS the WKWebView
+> app loads the SPA directly over plain HTTP on the loopback interface
+> (`http://localhost:8100`); the HTTPS gateway there is a *separate* surface on
+> `:8443`, used by local MCP clients that require TLS. Authorization, scoping,
+> and audit are identical either way — only the transport differs.
 
 The CLI is intentionally a thin shell wrapper over the same MCP transport — it does not get its own API. Two surfaces, one source of truth. Authorization scoping, rate limits, and per-key audit dashboards apply identically. The `request_type` split lets operators separate "human-driven cloud LLM traffic" from "local-agent-driven traffic" in the audit dashboard without giving them different security postures.
 
