@@ -353,51 +353,30 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 
 ### REST
 
-| Endpoint | Method | Description |
+<!-- BEGIN GENERATED: rest-summary -->
+<!-- Do not edit by hand. Regenerate: uv run python -m scripts.gen_docs -->
+
+**141 operations across 16 groups.** Full reference: [docs/architecture.md](docs/architecture.md#rest-api).
+
+| Group | Operations | Base path |
 |---|---|---|
-| `/api/auth/login` | POST | Login (email + password) |
-| `/api/auth/refresh` | POST | Refresh access token |
-| `/api/system/setup-status` | GET | Check if first-time setup is needed |
-| `/api/setup` | POST | Create initial admin account |
-| `/api/watch/system` | GET | Deployment context for the folder UI (`platform`, `picker`, `watch_root`) |
-| `/api/watch/folders` | GET/POST | List or register watched folders (POST is macOS-only) |
-| `/api/watch/folders/{id}` | PATCH/DELETE | Update or remove a watched folder |
-| `/api/watch/folders/{id}/progress` | GET | Per-folder ingestion stats across all 7 stages |
-| `/api/watch/folders/stream` | GET | SSE stream of per-folder progress deltas |
-| `/api/watch/folders/{id}/rescan` | POST | Trigger a full rescan of a folder |
-| `/api/docs` | GET | List documents |
-| `/api/docs/overview` | GET | Corpus overview stats |
-| `/api/docs/{id}` | GET | Document detail |
-| `/api/docs/{id}/content` | GET | Read document text (with page ranges) |
-| `/api/docs/{id}/outline` | GET | Document heading structure |
-| `/api/docs/{id}/entities` | GET | Named entities in document |
-| `/api/docs/{id}/related` | GET | Similar documents |
-| `/api/docs/{id}/download` | GET | Download original file (gated by `ALLOW_SOURCE_DOWNLOAD`; see [Source Files](#source-files-reveal-vs-download)) |
-| `/api/docs/{id}` | DELETE | Soft-delete a document |
-| `/api/docs/{id}/reprocess` | POST | Re-run ingestion |
-| `/api/docs/{id}/cancel` | POST | Cancel in-progress ingestion |
-| `/api/stats` | GET | Corpus-level aggregate statistics |
-| `/api/stats/clusters` | GET | Document centroid embeddings for UMAP clustering |
-| `/api/stats/entity-network` | GET | Entity co-occurrence network graph |
-| `/api/docs/{id}/stats` | GET | Per-document statistics |
-| `/api/search` | POST | Hybrid search (with optional filtering and facets) |
-| `/api/search/find-all` | POST | Enumerate matching documents with filters and pagination |
-| `/api/passages/read` | POST | Read passages by chunk IDs |
-| `/api/chat/conversations` | GET/POST | List or create chat conversations |
-| `/api/chat/conversations/{id}/messages` | POST | Send a message (streamed response with RAG) |
-| `/api/chat/models` | GET | List available LLM models |
-| `/api/chat/models/{id}/download` | POST | Download a model |
-| `/api/research` | GET/POST | List research tasks / start new research (streamed) |
-| `/api/research/active` | GET | Check if a research task is running |
-| `/api/research/{id}` | GET/DELETE | Get research detail / delete task |
-| `/api/research/{id}/resume` | POST | Resume interrupted research (streamed) |
-| `/api/system/health` | GET | Health check |
-| `/api/system/stats` | GET | System performance stats (admin) |
-| `/api/system/retrieval-settings` | GET/PUT | RAG and MCP retrieval config (admin) |
-| `/api/system/reprocess-all` | POST | Re-run ingestion on all documents (admin) |
-| `/api/system/resummarize-all` | POST | Re-run summaries on all documents (admin) |
-| `/api/system/delete-all-documents` | POST | Delete all documents and data (admin) |
-| `/api/jobs/stream` | GET | SSE stream of job progress |
+| `system` | 22 | `/api/system` |
+| `chat` | 19 | `/api/chat` |
+| `documents` | 15 | `/api/docs` |
+| `watch` | 12 | `/api/watch` |
+| `oauth` | 11 | `(various)` |
+| `api-keys` | 10 | `/api/api-keys` |
+| `uploads` | 10 | `/api/uploads` |
+| `mail` | 8 | `/api/mail` |
+| `auth` | 6 | `/api` |
+| `research` | 6 | `/api/research` |
+| `stats` | 6 | `/api` |
+| `users` | 5 | `/api/users` |
+| `languages` | 4 | `/api/languages` |
+| `jobs` | 3 | `/api/jobs` |
+| `search` | 3 | `/api` |
+| `setup` | 1 | `/api/setup` |
+<!-- END GENERATED: rest-summary -->
 
 ### MCP
 
