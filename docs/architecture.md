@@ -1,5 +1,22 @@
 # Harbor Clerk Architecture
 
+> [!WARNING]
+> **This document is known to be stale.** An audit on 2026-07-21 (against content
+> last updated 2026-05-27) found several sections describe an architecture that no
+> longer exists. **Treat the code as authoritative.**
+>
+> Known-wrong: the embedding model and dimension (now Granite-R2 / 768, not
+> e5-small / 384), the worker queue topology (three queues, and `summarize` does
+> not gate `finalize`), OCR's extraction path (pypdfium2 + Tesseract, never Tika),
+> the macOS service list and ports, and the auth model's role semantics. The data
+> model omits roughly half the schema, including the entire email/IMAP subsystem.
+>
+> Verified still accurate: **Retrieval Flow** and **Client Surfaces**.
+>
+> Tracked in [#539](https://github.com/r0shi/harborclerk/issues/539), which has the
+> full findings and the plan to generate the enumerations from source so this
+> cannot drift again.
+
 ## System Overview
 
 ```mermaid
