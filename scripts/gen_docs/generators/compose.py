@@ -28,17 +28,35 @@ def _image(service: dict) -> str:
 
 
 def _role(service: dict) -> str:
-    command = service.get("command") or []
-    if isinstance(command, list) and "--queues" in command:
+    """Describe what a service runs.
+
+    Compose `command:` comes in three shapes and each needs handling:
+    a list starting with an executable (`harbor-clerk-worker ...`), a plain
+    string (`server /data --console-address ...`), and a list of bare flags
+    with no executable at all (llama-server, whose entrypoint is baked into the
+    image). Naively taking token zero renders `--host` as the role, which is
+    meaningless.
+    """
+    command = service.get("command")
+    if isinstance(command, str):
+        command = command.split()
+    if not isinstance(command, list) or not command:
+        return "—"
+
+    if "--queues" in command:
         queues = []
         for token in command[command.index("--queues") + 1 :]:
             if str(token).startswith("-"):
                 break
             queues.append(str(token))
         return f"worker — queues: {', '.join(f'`{q}`' for q in queues)}"
-    if isinstance(command, list) and command:
-        return f"`{command[0]}`"
-    return "—"
+
+    first = str(command[0])
+    if first.startswith("-"):
+        # Bare flags: the entrypoint lives in the image, which the Image column
+        # already names. Better to say nothing than to name a flag.
+        return "—"
+    return f"`{first}`"
 
 
 def generate() -> str:

@@ -358,24 +358,24 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 
 **141 operations across 16 groups.** Full reference: [docs/architecture.md](docs/architecture.md#rest-api).
 
-| Group | Operations | Base path |
-|---|---|---|
-| `system` | 22 | `/api/system` |
-| `chat` | 19 | `/api/chat` |
-| `documents` | 15 | `/api/docs` |
-| `watch` | 12 | `/api/watch` |
-| `oauth` | 11 | `(various)` |
-| `api-keys` | 10 | `/api/api-keys` |
-| `uploads` | 10 | `/api/uploads` |
-| `mail` | 8 | `/api/mail` |
-| `auth` | 6 | `/api` |
-| `research` | 6 | `/api/research` |
-| `stats` | 6 | `/api` |
-| `users` | 5 | `/api/users` |
-| `languages` | 4 | `/api/languages` |
-| `jobs` | 3 | `/api/jobs` |
-| `search` | 3 | `/api` |
-| `setup` | 1 | `/api/setup` |
+| Group | Operations | Admin-only | Base path |
+|---|---|---|---|
+| `system` | 22 | 19 | `/api/system` |
+| `chat` | 19 | 7 | `/api/chat` |
+| `documents` | 15 | 4 | `/api/docs` |
+| `watch` | 12 | — | `/api/watch` |
+| `oauth` | 11 | 4 | `(various)` |
+| `api-keys` | 10 | 10 | `/api/api-keys` |
+| `uploads` | 10 | — | `/api/uploads` |
+| `mail` | 8 | 8 | `/api/mail` |
+| `auth` | 6 | — | `/api` |
+| `research` | 6 | — | `/api/research` |
+| `stats` | 6 | — | `/api` |
+| `users` | 5 | 5 | `/api/users` |
+| `languages` | 4 | 3 | `/api/languages` |
+| `jobs` | 3 | — | `/api/jobs` |
+| `search` | 3 | — | `/api` |
+| `setup` | 1 | — | `/api/setup` |
 <!-- END GENERATED: rest-summary -->
 
 ### MCP

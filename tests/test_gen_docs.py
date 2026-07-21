@@ -206,11 +206,11 @@ def test_rest_blocks_cover_every_operation() -> None:
 
     ops = _operations()
     assert ops, "no REST operations discovered"
-    assert all(path.startswith("/") for _, _, path, _ in ops)
-    assert all(summary for *_, summary in ops), "every operation should have an OpenAPI summary"
+    assert all(path.startswith("/") for _, _, path, _, _ in ops)
+    assert all(summary for _, _, _, summary, _ in ops), "every operation should have an OpenAPI summary"
 
     full = generate_full()
-    missing = [f"{m} {p}" for _, m, p, _ in ops if f"`{p}`" not in full]
+    missing = [f"{m} {p}" for _, m, p, _, _ in ops if f"`{p}`" not in full]
     assert not missing, f"operations absent from the full table: {missing[:5]}"
 
 
@@ -227,3 +227,42 @@ def test_cli_mcp_parity() -> None:
     cli = set(load_subcommands())
     assert not mcp - cli, f"MCP tools with no CLI subcommand: {sorted(mcp - cli)}"
     assert not cli - mcp, f"CLI subcommands with no MCP tool: {sorted(cli - mcp)}"
+
+
+def test_compose_roles_are_never_bare_flags() -> None:
+    """A Role cell must name a command, not a flag.
+
+    llama-server's compose command is a list of bare flags with no executable
+    (the entrypoint is in the image), and minio's is a plain string rather than
+    a list. Taking token zero blindly rendered "--host" as a role and dropped
+    minio's entirely — a deterministic bug that --check would never notice.
+    """
+    from scripts.gen_docs.generators.compose import _role, load_services
+
+    for name, service in load_services().items():
+        role = _role(service or {})
+        assert not role.startswith("`-"), f"{name} role is a bare flag: {role}"
+        command = (service or {}).get("command")
+        if isinstance(command, str):
+            assert role != "—", f"{name} has a string command but rendered no role"
+
+
+def test_rest_access_gates_are_derived_for_every_operation() -> None:
+    """Authorization must be derived, never guessed.
+
+    The hand-written table annotated "(admin)" by hand; those annotations were
+    lost when it was generated. _operations() raises if a route's gate cannot be
+    resolved unambiguously, so this asserts the join covers the whole surface
+    and that known-destructive endpoints are still marked.
+    """
+    from scripts.gen_docs.generators.rest import _operations
+
+    ops = _operations()
+    by_path = {(path, method): access for _, method, path, _, access in ops}
+    for path in (
+        "/api/system/delete-all-documents",
+        "/api/system/resummarize-all",
+        "/api/system/reprocess-all",
+    ):
+        assert by_path.get((path, "POST")) == "admin", f"{path} must be marked admin-gated"
+    assert any(a == "human only" for a in by_path.values()), "human-only gate should appear"

@@ -5,13 +5,15 @@
 > last updated 2026-05-27) found several sections describe an architecture that no
 > longer exists. **Treat the code as authoritative.**
 >
-> Known-wrong: the embedding model and dimension (now Granite-R2 / 768, not
-> e5-small / 384), the worker queue topology (three queues, and `summarize` does
-> not gate `finalize`), OCR's extraction path (pypdfium2 + Tesseract, never Tika),
-> the macOS service list and ports, and the auth model's role semantics. The data
-> model omits roughly half the schema, including the entire email/IMAP subsystem.
+> Still known-wrong in the **prose and diagrams below**: the embedding model and
+> dimension (now Granite-R2 / 768, not e5-small / 384), OCR's extraction path
+> (pypdfium2 + Tesseract, never Tika), the macOS service list and ports, and the
+> auth model's role semantics. Several shipped subsystems are missing entirely.
 >
-> Verified still accurate: **Retrieval Flow** and **Client Surfaces**.
+> Verified accurate: **Retrieval Flow**, **Client Surfaces**, and everything under
+> **Generated reference** — those tables are derived from source and verified in
+> CI, so the queue topology and the full database schema there are correct even
+> where the diagrams above disagree.
 >
 > Tracked in [#539](https://github.com/r0shi/harborclerk/issues/539), which has the
 > full findings and the plan to generate the enumerations from source so this
@@ -325,8 +327,8 @@ Queue subscriptions:
 | `app` | built from `docker/app.Dockerfile` | — |
 | `embedder` | built from `docker/embedder.Dockerfile` | — |
 | `gateway` | `caddy:2-alpine` | — |
-| `llama-server` | `ghcr.io/ggml-org/llama.cpp:server` | `--host` |
-| `minio` | `minio/minio:latest` | — |
+| `llama-server` | `ghcr.io/ggml-org/llama.cpp:server` | — |
+| `minio` | `minio/minio:latest` | `server` |
 | `postgres` | `pgvector/pgvector:pg18` | — |
 | `reranker` | built from `docker/reranker.Dockerfile` | — |
 | `tika` | `apache/tika:latest` | — |
@@ -418,228 +420,228 @@ Queue subscriptions:
 <!-- BEGIN GENERATED: rest-endpoints -->
 <!-- Do not edit by hand. Regenerate: uv run python -m scripts.gen_docs -->
 
-**141 operations.** Generated from the FastAPI OpenAPI schema.
+**141 operations**, 84 of them access-gated. Generated from the FastAPI OpenAPI schema; the Access column is derived from each route's dependency tree.
 
 ### `api-keys`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/api-keys` | List Api Keys |
-| `POST` | `/api/api-keys` | Create Api Key |
-| `POST` | `/api/api-keys/scope-preview` | Scope Preview Adhoc |
-| `DELETE` | `/api/api-keys/{key_id}` | Delete Api Key |
-| `PATCH` | `/api/api-keys/{key_id}` | Patch Api Key |
-| `GET` | `/api/api-keys/{key_id}/scope-preview` | Scope Preview |
-| `DELETE` | `/api/api-keys/{key_id}/usage` | Purge Key Usage |
-| `GET` | `/api/api-keys/{key_id}/usage` | Get Key Usage |
-| `GET` | `/api/api-keys/{key_id}/usage/requests` | Get Key Requests |
-| `GET` | `/api/api-keys/{key_id}/usage/timeline` | Get Key Timeline |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/api-keys` | **admin** | List Api Keys |
+| `POST` | `/api/api-keys` | **admin** | Create Api Key |
+| `POST` | `/api/api-keys/scope-preview` | **admin** | Scope Preview Adhoc |
+| `DELETE` | `/api/api-keys/{key_id}` | **admin** | Delete Api Key |
+| `PATCH` | `/api/api-keys/{key_id}` | **admin** | Patch Api Key |
+| `GET` | `/api/api-keys/{key_id}/scope-preview` | **admin** | Scope Preview |
+| `DELETE` | `/api/api-keys/{key_id}/usage` | **admin** | Purge Key Usage |
+| `GET` | `/api/api-keys/{key_id}/usage` | **admin** | Get Key Usage |
+| `GET` | `/api/api-keys/{key_id}/usage/requests` | **admin** | Get Key Requests |
+| `GET` | `/api/api-keys/{key_id}/usage/timeline` | **admin** | Get Key Timeline |
 
 ### `auth`
 
-| Method | Path | Summary |
-|---|---|---|
-| `POST` | `/api/auth/login` | Login |
-| `POST` | `/api/auth/logout` | Logout |
-| `POST` | `/api/auth/refresh` | Refresh |
-| `GET` | `/api/me` | Get Me |
-| `POST` | `/api/me/password` | Change Password |
-| `PATCH` | `/api/me/preferences` | Update Preferences |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `POST` | `/api/auth/login` | — | Login |
+| `POST` | `/api/auth/logout` | — | Logout |
+| `POST` | `/api/auth/refresh` | — | Refresh |
+| `GET` | `/api/me` | — | Get Me |
+| `POST` | `/api/me/password` | — | Change Password |
+| `PATCH` | `/api/me/preferences` | — | Update Preferences |
 
 ### `chat`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/chat/conversations` | List Conversations |
-| `POST` | `/api/chat/conversations` | Create Conversation |
-| `DELETE` | `/api/chat/conversations/{conv_id}` | Delete Conversation |
-| `GET` | `/api/chat/conversations/{conv_id}` | Get Conversation |
-| `GET` | `/api/chat/conversations/{conv_id}/export` | Export Conversation |
-| `POST` | `/api/chat/conversations/{conv_id}/messages` | Send Message |
-| `GET` | `/api/chat/models` | List Available Models |
-| `PUT` | `/api/chat/models/deactivate` | Deactivate Model |
-| `GET` | `/api/chat/models/download-progress` | Download Progress Stream |
-| `GET` | `/api/chat/models/orphaned` | List Orphaned Models |
-| `DELETE` | `/api/chat/models/orphaned/{filename}` | Remove Orphaned Model |
-| `GET` | `/api/chat/models/status` | Llm Status |
-| `GET` | `/api/chat/models/summary-afm` | Get Summary Force Afm |
-| `PUT` | `/api/chat/models/summary-afm` | Toggle Summary Force Afm |
-| `GET` | `/api/chat/models/yarn` | Get Yarn Status |
-| `PUT` | `/api/chat/models/yarn` | Toggle Yarn |
-| `DELETE` | `/api/chat/models/{model_id}` | Remove Model |
-| `PUT` | `/api/chat/models/{model_id}/activate` | Activate Model |
-| `POST` | `/api/chat/models/{model_id}/download` | Start Model Download |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/chat/conversations` | — | List Conversations |
+| `POST` | `/api/chat/conversations` | **human only** | Create Conversation |
+| `DELETE` | `/api/chat/conversations/{conv_id}` | **human only** | Delete Conversation |
+| `GET` | `/api/chat/conversations/{conv_id}` | — | Get Conversation |
+| `GET` | `/api/chat/conversations/{conv_id}/export` | — | Export Conversation |
+| `POST` | `/api/chat/conversations/{conv_id}/messages` | **human only** | Send Message |
+| `GET` | `/api/chat/models` | — | List Available Models |
+| `PUT` | `/api/chat/models/deactivate` | **admin** | Deactivate Model |
+| `GET` | `/api/chat/models/download-progress` | — | Download Progress Stream |
+| `GET` | `/api/chat/models/orphaned` | — | List Orphaned Models |
+| `DELETE` | `/api/chat/models/orphaned/{filename}` | **admin** | Remove Orphaned Model |
+| `GET` | `/api/chat/models/status` | — | Llm Status |
+| `GET` | `/api/chat/models/summary-afm` | — | Get Summary Force Afm |
+| `PUT` | `/api/chat/models/summary-afm` | **admin** | Toggle Summary Force Afm |
+| `GET` | `/api/chat/models/yarn` | — | Get Yarn Status |
+| `PUT` | `/api/chat/models/yarn` | **admin** | Toggle Yarn |
+| `DELETE` | `/api/chat/models/{model_id}` | **admin** | Remove Model |
+| `PUT` | `/api/chat/models/{model_id}/activate` | **admin** | Activate Model |
+| `POST` | `/api/chat/models/{model_id}/download` | **admin** | Start Model Download |
 
 ### `documents`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/docs` | List Documents |
-| `GET` | `/api/docs/entities/autocomplete` | Entity Autocomplete |
-| `GET` | `/api/docs/entities/top` | Top Entities |
-| `GET` | `/api/docs/filters` | Document Filters |
-| `GET` | `/api/docs/overview` | Corpus Overview |
-| `DELETE` | `/api/docs/{doc_id}` | Delete Document |
-| `GET` | `/api/docs/{doc_id}` | Get Document |
-| `POST` | `/api/docs/{doc_id}/cancel` | Cancel Processing |
-| `GET` | `/api/docs/{doc_id}/content` | Get Document Content |
-| `GET` | `/api/docs/{doc_id}/download` | Download Document |
-| `GET` | `/api/docs/{doc_id}/entities` | Get Document Entities |
-| `GET` | `/api/docs/{doc_id}/outline` | Get Document Outline |
-| `GET` | `/api/docs/{doc_id}/related` | Find Related Documents |
-| `POST` | `/api/docs/{doc_id}/reprocess` | Reprocess Document |
-| `POST` | `/api/docs/{doc_id}/resummarize` | Resummarize Document |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/docs` | — | List Documents |
+| `GET` | `/api/docs/entities/autocomplete` | — | Entity Autocomplete |
+| `GET` | `/api/docs/entities/top` | — | Top Entities |
+| `GET` | `/api/docs/filters` | — | Document Filters |
+| `GET` | `/api/docs/overview` | — | Corpus Overview |
+| `DELETE` | `/api/docs/{doc_id}` | **admin** | Delete Document |
+| `GET` | `/api/docs/{doc_id}` | — | Get Document |
+| `POST` | `/api/docs/{doc_id}/cancel` | **admin** | Cancel Processing |
+| `GET` | `/api/docs/{doc_id}/content` | — | Get Document Content |
+| `GET` | `/api/docs/{doc_id}/download` | — | Download Document |
+| `GET` | `/api/docs/{doc_id}/entities` | — | Get Document Entities |
+| `GET` | `/api/docs/{doc_id}/outline` | — | Get Document Outline |
+| `GET` | `/api/docs/{doc_id}/related` | — | Find Related Documents |
+| `POST` | `/api/docs/{doc_id}/reprocess` | **admin** | Reprocess Document |
+| `POST` | `/api/docs/{doc_id}/resummarize` | **admin** | Resummarize Document |
 
 ### `jobs`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/jobs/active` | Active Jobs |
-| `GET` | `/api/jobs/snapshot` | Jobs Snapshot |
-| `GET` | `/api/jobs/stream` | Job Stream |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/jobs/active` | — | Active Jobs |
+| `GET` | `/api/jobs/snapshot` | — | Jobs Snapshot |
+| `GET` | `/api/jobs/stream` | — | Job Stream |
 
 ### `languages`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/languages` | List Languages |
-| `DELETE` | `/api/languages/{lang_code}` | Remove Language Completely |
-| `POST` | `/api/languages/{lang_code}/install` | Install Language Tools |
-| `DELETE` | `/api/languages/{lang_code}/install/{tool_name}` | Remove Language Tool |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/languages` | **human only** | List Languages |
+| `DELETE` | `/api/languages/{lang_code}` | **admin** | Remove Language Completely |
+| `POST` | `/api/languages/{lang_code}/install` | **admin** | Install Language Tools |
+| `DELETE` | `/api/languages/{lang_code}/install/{tool_name}` | **admin** | Remove Language Tool |
 
 ### `mail`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/mail/accounts` | List Mail Accounts |
-| `POST` | `/api/mail/accounts` | Create Mail Account |
-| `DELETE` | `/api/mail/accounts/{account_id}` | Delete Mail Account |
-| `POST` | `/api/mail/accounts/{account_id}/test` | Test Mail Account |
-| `GET` | `/api/mail/labels` | List Watched Labels |
-| `POST` | `/api/mail/labels` | Create Watched Label |
-| `DELETE` | `/api/mail/labels/{label_id}` | Delete Watched Label |
-| `POST` | `/api/mail/labels/{label_id}/rescan` | Rescan Label |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/mail/accounts` | **admin** | List Mail Accounts |
+| `POST` | `/api/mail/accounts` | **admin** | Create Mail Account |
+| `DELETE` | `/api/mail/accounts/{account_id}` | **admin** | Delete Mail Account |
+| `POST` | `/api/mail/accounts/{account_id}/test` | **admin** | Test Mail Account |
+| `GET` | `/api/mail/labels` | **admin** | List Watched Labels |
+| `POST` | `/api/mail/labels` | **admin** | Create Watched Label |
+| `DELETE` | `/api/mail/labels/{label_id}` | **admin** | Delete Watched Label |
+| `POST` | `/api/mail/labels/{label_id}/rescan` | **admin** | Rescan Label |
 
 ### `oauth`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/.well-known/oauth-authorization-server` | Oauth Authorization Server |
-| `GET` | `/.well-known/oauth-protected-resource` | Oauth Protected Resource |
-| `GET` | `/api/integrations/connections` | List Connections |
-| `DELETE` | `/api/integrations/connections/{client_id}` | Delete Connection |
-| `GET` | `/api/integrations/settings` | Get Integration Settings |
-| `PUT` | `/api/integrations/settings` | Update Integration Settings |
-| `GET` | `/oauth/authorize` | Oauth Authorize Get |
-| `POST` | `/oauth/authorize` | Oauth Authorize Post |
-| `POST` | `/oauth/register` | Oauth Register |
-| `POST` | `/oauth/revoke` | Oauth Revoke |
-| `POST` | `/oauth/token` | Oauth Token |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/.well-known/oauth-authorization-server` | — | Oauth Authorization Server |
+| `GET` | `/.well-known/oauth-protected-resource` | — | Oauth Protected Resource |
+| `GET` | `/api/integrations/connections` | **admin** | List Connections |
+| `DELETE` | `/api/integrations/connections/{client_id}` | **admin** | Delete Connection |
+| `GET` | `/api/integrations/settings` | **admin** | Get Integration Settings |
+| `PUT` | `/api/integrations/settings` | **admin** | Update Integration Settings |
+| `GET` | `/oauth/authorize` | — | Oauth Authorize Get |
+| `POST` | `/oauth/authorize` | — | Oauth Authorize Post |
+| `POST` | `/oauth/register` | — | Oauth Register |
+| `POST` | `/oauth/revoke` | — | Oauth Revoke |
+| `POST` | `/oauth/token` | — | Oauth Token |
 
 ### `research`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/research` | List Research |
-| `POST` | `/api/research` | Start Research |
-| `GET` | `/api/research/active` | Check Active |
-| `DELETE` | `/api/research/{conv_id}` | Delete Research |
-| `GET` | `/api/research/{conv_id}` | Get Research |
-| `POST` | `/api/research/{conv_id}/resume` | Resume Research |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/research` | — | List Research |
+| `POST` | `/api/research` | **human only** | Start Research |
+| `GET` | `/api/research/active` | — | Check Active |
+| `DELETE` | `/api/research/{conv_id}` | **human only** | Delete Research |
+| `GET` | `/api/research/{conv_id}` | — | Get Research |
+| `POST` | `/api/research/{conv_id}/resume` | **human only** | Resume Research |
 
 ### `search`
 
-| Method | Path | Summary |
-|---|---|---|
-| `POST` | `/api/passages/read` | Read Passages |
-| `POST` | `/api/search` | Search |
-| `POST` | `/api/search/find-all` | Search Find All |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `POST` | `/api/passages/read` | — | Read Passages |
+| `POST` | `/api/search` | — | Search |
+| `POST` | `/api/search/find-all` | — | Search Find All |
 
 ### `setup`
 
-| Method | Path | Summary |
-|---|---|---|
-| `POST` | `/api/setup` | Setup |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `POST` | `/api/setup` | — | Setup |
 
 ### `stats`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/docs/{doc_id}/stats` | Document Stats |
-| `GET` | `/api/stats` | Corpus Stats |
-| `GET` | `/api/stats/clusters` | Document Clusters |
-| `GET` | `/api/stats/entity-network` | Entity Network |
-| `GET` | `/api/stats/timeline` | Document Timeline |
-| `GET` | `/api/stats/topics` | Topic Clusters |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/docs/{doc_id}/stats` | — | Document Stats |
+| `GET` | `/api/stats` | — | Corpus Stats |
+| `GET` | `/api/stats/clusters` | — | Document Clusters |
+| `GET` | `/api/stats/entity-network` | — | Entity Network |
+| `GET` | `/api/stats/timeline` | — | Document Timeline |
+| `GET` | `/api/stats/topics` | — | Topic Clusters |
 
 ### `system`
 
-| Method | Path | Summary |
-|---|---|---|
-| `POST` | `/api/system/clear-queue` | Clear Queue |
-| `POST` | `/api/system/clear-redundant-summary-backlog` | Clear Redundant Summary Backlog |
-| `POST` | `/api/system/delete-all-documents` | Delete All Documents |
-| `GET` | `/api/system/health` | Health Check |
-| `GET` | `/api/system/logs` | List Logs |
-| `GET` | `/api/system/ping` | Ping |
-| `POST` | `/api/system/purge-run` | Purge Run |
-| `GET` | `/api/system/rate-limit-settings` | Get Rate Limit Settings |
-| `PUT` | `/api/system/rate-limit-settings` | Update Rate Limit Settings |
-| `POST` | `/api/system/reaper-run` | Reaper Run |
-| `POST` | `/api/system/recompute-topics` | Recompute Topics Endpoint |
-| `POST` | `/api/system/repair-completed-statuses` | Repair Completed Statuses |
-| `POST` | `/api/system/reprocess-all` | Reprocess All |
-| `POST` | `/api/system/reprocess-all-skip-summarize` | Reprocess All Skip Summarize |
-| `POST` | `/api/system/resummarize-all` | Resummarize All |
-| `GET` | `/api/system/retrieval-settings` | Get Retrieval Settings |
-| `PUT` | `/api/system/retrieval-settings` | Update Retrieval Settings |
-| `POST` | `/api/system/run-migrations` | Run Migrations |
-| `GET` | `/api/system/setup-status` | Setup Status |
-| `GET` | `/api/system/stats` | System Stats |
-| `GET` | `/api/system/status-summary` | Status Summary |
-| `GET` | `/api/system/summary-backlog` | Get Summary Backlog |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `POST` | `/api/system/clear-queue` | **admin** | Clear Queue |
+| `POST` | `/api/system/clear-redundant-summary-backlog` | **admin** | Clear Redundant Summary Backlog |
+| `POST` | `/api/system/delete-all-documents` | **admin** | Delete All Documents |
+| `GET` | `/api/system/health` | — | Health Check |
+| `GET` | `/api/system/logs` | **admin** | List Logs |
+| `GET` | `/api/system/ping` | — | Ping |
+| `POST` | `/api/system/purge-run` | **admin** | Purge Run |
+| `GET` | `/api/system/rate-limit-settings` | **admin** | Get Rate Limit Settings |
+| `PUT` | `/api/system/rate-limit-settings` | **admin** | Update Rate Limit Settings |
+| `POST` | `/api/system/reaper-run` | **admin** | Reaper Run |
+| `POST` | `/api/system/recompute-topics` | **admin** | Recompute Topics Endpoint |
+| `POST` | `/api/system/repair-completed-statuses` | **admin** | Repair Completed Statuses |
+| `POST` | `/api/system/reprocess-all` | **admin** | Reprocess All |
+| `POST` | `/api/system/reprocess-all-skip-summarize` | **admin** | Reprocess All Skip Summarize |
+| `POST` | `/api/system/resummarize-all` | **admin** | Resummarize All |
+| `GET` | `/api/system/retrieval-settings` | **admin** | Get Retrieval Settings |
+| `PUT` | `/api/system/retrieval-settings` | **admin** | Update Retrieval Settings |
+| `POST` | `/api/system/run-migrations` | **admin** | Run Migrations |
+| `GET` | `/api/system/setup-status` | — | Setup Status |
+| `GET` | `/api/system/stats` | **admin** | System Stats |
+| `GET` | `/api/system/status-summary` | **admin** | Status Summary |
+| `GET` | `/api/system/summary-backlog` | **admin** | Get Summary Backlog |
 
 ### `uploads`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/uploads` | List Uploads |
-| `POST` | `/api/uploads` | Upload Files |
-| `POST` | `/api/uploads/confirm` | Confirm Upload |
-| `POST` | `/api/uploads/confirm-batch` | Confirm Upload Batch |
-| `POST` | `/api/uploads/sessions` | Create Session |
-| `DELETE` | `/api/uploads/sessions/{session_id}` | Cancel Session |
-| `GET` | `/api/uploads/sessions/{session_id}` | Get Upload Session |
-| `POST` | `/api/uploads/sessions/{session_id}/confirm` | Confirm Session |
-| `POST` | `/api/uploads/sessions/{session_id}/files` | Upload File To Session |
-| `GET` | `/api/uploads/sessions/{session_id}/resume` | Get Resume Info |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/uploads` | **human only** | List Uploads |
+| `POST` | `/api/uploads` | **human only** | Upload Files |
+| `POST` | `/api/uploads/confirm` | **human only** | Confirm Upload |
+| `POST` | `/api/uploads/confirm-batch` | **human only** | Confirm Upload Batch |
+| `POST` | `/api/uploads/sessions` | **human only** | Create Session |
+| `DELETE` | `/api/uploads/sessions/{session_id}` | **human only** | Cancel Session |
+| `GET` | `/api/uploads/sessions/{session_id}` | **human only** | Get Upload Session |
+| `POST` | `/api/uploads/sessions/{session_id}/confirm` | **human only** | Confirm Session |
+| `POST` | `/api/uploads/sessions/{session_id}/files` | **human only** | Upload File To Session |
+| `GET` | `/api/uploads/sessions/{session_id}/resume` | **human only** | Get Resume Info |
 
 ### `users`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/users` | List Users |
-| `POST` | `/api/users` | Create User |
-| `DELETE` | `/api/users/{user_id}` | Delete User |
-| `GET` | `/api/users/{user_id}` | Get User |
-| `PATCH` | `/api/users/{user_id}` | Update User |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/users` | **admin** | List Users |
+| `POST` | `/api/users` | **admin** | Create User |
+| `DELETE` | `/api/users/{user_id}` | **admin** | Delete User |
+| `GET` | `/api/users/{user_id}` | **admin** | Get User |
+| `PATCH` | `/api/users/{user_id}` | **admin** | Update User |
 
 ### `watch`
 
-| Method | Path | Summary |
-|---|---|---|
-| `GET` | `/api/watch/allowed-extensions` | Allowed Extensions |
-| `GET` | `/api/watch/folders` | List Folders |
-| `POST` | `/api/watch/folders` | Create Folder |
-| `GET` | `/api/watch/folders/stream` | Folder Progress Stream |
-| `DELETE` | `/api/watch/folders/{folder_id}` | Delete Folder |
-| `PATCH` | `/api/watch/folders/{folder_id}` | Patch Folder |
-| `GET` | `/api/watch/folders/{folder_id}/progress` | Get Folder Progress |
-| `POST` | `/api/watch/folders/{folder_id}/rescan` | Rescan Folder |
-| `POST` | `/api/watch/ingest` | Ingest File |
-| `POST` | `/api/watch/remove` | Remove File |
-| `POST` | `/api/watch/rename` | Rename File |
-| `GET` | `/api/watch/system` | Get System |
+| Method | Path | Access | Summary |
+|---|---|---|---|
+| `GET` | `/api/watch/allowed-extensions` | — | Allowed Extensions |
+| `GET` | `/api/watch/folders` | — | List Folders |
+| `POST` | `/api/watch/folders` | **human only** | Create Folder |
+| `GET` | `/api/watch/folders/stream` | — | Folder Progress Stream |
+| `DELETE` | `/api/watch/folders/{folder_id}` | **human only** | Delete Folder |
+| `PATCH` | `/api/watch/folders/{folder_id}` | **human only** | Patch Folder |
+| `GET` | `/api/watch/folders/{folder_id}/progress` | — | Get Folder Progress |
+| `POST` | `/api/watch/folders/{folder_id}/rescan` | **human only** | Rescan Folder |
+| `POST` | `/api/watch/ingest` | **human only** | Ingest File |
+| `POST` | `/api/watch/remove` | **human only** | Remove File |
+| `POST` | `/api/watch/rename` | **human only** | Rename File |
+| `GET` | `/api/watch/system` | — | Get System |
 <!-- END GENERATED: rest-endpoints -->
 
 ### CLI subcommands
