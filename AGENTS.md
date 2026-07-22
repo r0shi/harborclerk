@@ -92,10 +92,10 @@ wrong place.
 | Design specs and implementation plans | `docs/superpowers/{specs,plans}/` |
 | Eval harness and methodology | `scripts/test_corpora/`, `docs/evaluation.md` |
 | Integration setup (MCP, CLI, connectors) | `docs/integrations.md` |
-| Backend gotchas and pipeline invariants | `src/harbor_clerk/AGENTS.md` |
-| Frontend conventions and ESLint/Tailwind traps | `frontend/AGENTS.md` |
-| Swift process management, networking, presets | `macos/AGENTS.md` |
-| Migration and schema conventions | `alembic/AGENTS.md` |
+| Pipeline stages, queues, `mark_stage_done`, extraction paths, storage, retrieval, async traps | `src/harbor_clerk/AGENTS.md` |
+| Tailwind v4 (no config file), ESLint hooks rules, React Router state loss, npm peer deps, WKWebView dialogs | `frontend/AGENTS.md` |
+| Swift process management, `waitUntilExit`, pipe deadlocks, ports 8100/8443, worker presets, bundle IDs | `macos/AGENTS.md` |
+| Migrations, enum casing, embedding dimension sentinel, log-table conventions | `alembic/AGENTS.md` |
 
 Console scripts, MCP tools, REST routes, database tables, pipeline stages and
 Compose services are all **generated** into
@@ -122,16 +122,23 @@ content**, because Claude Code reads only `CLAUDE.md` while Codex and most other
 harnesses read `AGENTS.md`. One source of truth, two names — never edit them as
 if they were separate files.
 
-Scoped files exist in `src/harbor_clerk/`, `frontend/`, `macos/`, and
-`alembic/`. Note how Claude Code loads them:
+### Scoped files are NOT auto-loaded — read them yourself
 
-- Files in **parent** directories load at startup, in full.
-- Files in **subdirectories below your working directory** load **on demand**,
-  when the agent reads files there.
+Verified empirically (2026-07-21, Claude Code, `/context`): launching from the
+repo root loads **this file only**. Scoped `AGENTS.md` files did not appear in
+context even after explicitly reading a file in that directory. Do not rely on
+on-demand loading; it did not happen.
 
-So launching from the repo root guarantees only this file. That is why anything
-catastrophic-if-violated lives here rather than in a scoped file — severity
-decides placement, not topic.
+**Before working in a directory below, read its `AGENTS.md` first. It contains
+rules that will not otherwise be in your context.**
+
+The Map above is the discovery mechanism — an agent finds a scoped file because
+the Map names its subject. That works when the topic matches obviously and
+fails when it does not, which is the second reason to read the file rather than
+wait to be reminded.
+
+This is also why anything catastrophic-if-violated lives in this file rather
+than a scoped one: **severity decides placement, not topic.**
 
 **If your harness does not support hierarchical instruction files, read the
 scoped `AGENTS.md` files manually before working in those directories.**
