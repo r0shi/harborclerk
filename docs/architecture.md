@@ -694,6 +694,22 @@ Queue subscriptions:
 | `GET` | `/api/watch/system` | — | Get System |
 <!-- END GENERATED: rest-endpoints -->
 
+### Console scripts
+
+<!-- BEGIN GENERATED: entry-points -->
+<!-- Do not edit by hand. Regenerate: uv run python -m scripts.gen_docs -->
+
+**5 console scripts**, declared in `[project.scripts]`.
+
+| Command | Target | Purpose |
+|---|---|---|
+| `harbor-clerk` | `harbor_clerk.cli.main:main` | CLI for agent harnesses. Off by default, gated by `ENABLE_CLI_ACCESS`. |
+| `harbor-clerk-api` | `harbor_clerk.api.app:main` | FastAPI server — REST API, MCP endpoint, and the built SPA. |
+| `harbor-clerk-seed` | `harbor_clerk.seed:main` | Database seeder. |
+| `harbor-clerk-watcher` | `harbor_clerk.watcher.main:main` | Watched-folder and IMAP observer; enqueues ingest jobs. One per deployment. |
+| `harbor-clerk-worker` | `harbor_clerk.worker.entry:main` | Ingestion worker. Subscribes to one or more queues via `--queues`. |
+<!-- END GENERATED: entry-points -->
+
 ### CLI subcommands
 
 <!-- BEGIN GENERATED: cli-commands -->

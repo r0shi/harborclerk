@@ -266,3 +266,20 @@ def test_rest_access_gates_are_derived_for_every_operation() -> None:
     ):
         assert by_path.get((path, "POST")) == "admin", f"{path} must be marked admin-gated"
     assert any(a == "human only" for a in by_path.values()), "human-only gate should appear"
+
+
+def test_every_entry_point_is_described() -> None:
+    """The one hand-written element of entry_points cannot go stale.
+
+    Console scripts carry no description of their own, so DESCRIPTIONS is
+    hand-maintained — but it must cover [project.scripts] exactly in both
+    directions, so a new script cannot ship undocumented and a removed one
+    cannot linger.
+    """
+    from scripts.gen_docs.generators.entry_points import DESCRIPTIONS, load_scripts
+
+    scripts = set(load_scripts())
+    undescribed = sorted(scripts - set(DESCRIPTIONS))
+    stale = sorted(set(DESCRIPTIONS) - scripts)
+    assert not undescribed, f"console scripts with no description: {undescribed}"
+    assert not stale, f"DESCRIPTIONS references scripts that no longer exist: {stale}"

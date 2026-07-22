@@ -93,10 +93,15 @@ wrong place.
 | Eval harness and methodology | `scripts/test_corpora/`, `docs/evaluation.md` |
 | Integration setup (MCP, CLI, connectors) | `docs/integrations.md` |
 | Backend gotchas and pipeline invariants | `src/harbor_clerk/CLAUDE.md` |
+| Frontend conventions and ESLint/Tailwind traps | `frontend/CLAUDE.md` |
+| Swift process management, networking, presets | `macos/CLAUDE.md` |
+| Migration and schema conventions | `alembic/CLAUDE.md` |
 
-Entry points are declared in `pyproject.toml`. The MCP tool surface is defined
-in `src/harbor_clerk/mcp_server.py` and published as a generated table — read
-those rather than a transcription.
+Console scripts, MCP tools, REST routes, database tables, pipeline stages and
+Compose services are all **generated** into
+[`docs/architecture.md`](docs/architecture.md#generated-reference) from source.
+Read those rather than any transcription, and regenerate with
+`uv run python -m scripts.gen_docs` after changing them.
 
 ## Linting & formatting
 
@@ -109,52 +114,3 @@ those rather than a transcription.
 Five required checks on PRs to `main`: `python`, `frontend`, `codeql`,
 `dependency-audit`, `container-scan`. The `python` job also verifies generated
 docs are current.
-
----
-
-## Pending restructure (batches 3–5)
-
-The sections below were **not** part of the batches 1–2 restructure and are kept
-here awaiting a placement decision. Factual errors in them have been corrected —
-leaving a known-wrong statement in place to preserve a batch boundary would be
-the wrong trade — but where they should ultimately live is still open.
-
-### Python Package
-
-Package name: `harbor_clerk` (under `src/harbor_clerk/`). Entry points are
-declared in `pyproject.toml`:
-
-- `harbor-clerk-api` — FastAPI server
-- `harbor-clerk-worker` — PostgreSQL-polling background worker
-- `harbor-clerk-watcher` — folder + IMAP watcher (one process per deployment)
-- `harbor-clerk-seed` — database seeder
-- `harbor-clerk` — CLI for agent harnesses; off by default, gated by
-  `ENABLE_CLI_ACCESS`. Talks to `/mcp` over JSON-RPC using `HARBOR_CLERK_API_KEY`
-
-### Key API surface
-
-REST, MCP and CLI surfaces are **generated** from source — see
-[`docs/architecture.md#generated-reference`](docs/architecture.md#generated-reference).
-Do not transcribe them here; the previous hand-written copy drifted.
-
-### Database
-
-PostgreSQL 18 with `vector`, `pg_trgm`, and `citext`. No tenant table, no
-`tenant_id` columns.
-
-`chunks` has dual FTS columns (`fts_en`, `fts_fr`) as generated stored columns
-with GIN indexes, plus `embedding vector(768)` (Granite-R2) with an HNSW index.
-`schema_metadata` records the embedding model and dimension; startup refuses a
-mismatch. The full table list is generated; current schema lives in
-`alembic/versions/`.
-
-Storage (legacy uploads only): bucket `originals`, key pattern
-`originals/<doc_id>/<original_filename>`. Watched-folder documents are read in
-place from `source_path` and never stored in MinIO.
-
-### Worker presets (C = logical cores)
-
-- **Quiet**: io=1, cpu=1 · **Balanced**: io=max(2, C//4), cpu=2 · **Fast**:
-  io=max(2, C//2), cpu=3
-- Hard caps: io ≤ 8, cpu ≤ 4. The `llm` queue runs a single worker in every
-  preset.

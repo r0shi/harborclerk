@@ -55,6 +55,12 @@ def _compose_services() -> str:
     return generate()
 
 
+def _entry_points() -> str:
+    from scripts.gen_docs.generators.entry_points import generate
+
+    return generate()
+
+
 def _cli_commands() -> str:
     from scripts.gen_docs.generators.cli_commands import generate
 
@@ -69,4 +75,5 @@ GENERATORS: dict[str, Callable[[], str]] = {
     "pipeline-stages": _pipeline_stages,
     "compose-services": _compose_services,
     "cli-commands": _cli_commands,
+    "entry-points": _entry_points,
 }
