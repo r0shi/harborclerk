@@ -1,169 +1,160 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Operating rules for any agent or human working in this repository. Rules here
+are binding. Reference material — architecture, API surface, schema — lives
+elsewhere; see [Map](#map). On matters of **fact**, the code is authoritative and
+this file may be stale: trust the source and fix this file. On matters of
+**rule**, this file is authoritative.
 
-## Project Overview
+## What this is
 
-**Harbor Clerk** — a single-tenant, watched-folder-first local document intelligence app for document-heavy small teams, independent operators, researchers, and privacy-focused individuals running on Mac mini/Studio or Docker. Local extraction, OCR (English/French), hybrid retrieval, local embeddings/reranking, cited local AI answers, and Research. Cloud LLMs query via MCP over HTTPS with read-only API keys, receiving only cited snippets (no full corpus upload). Local agent harnesses (OpenClaw, Claude Code, Codex, Aider) can use the `harbor-clerk` CLI as a parallel surface to MCP.
+Harbor Clerk is a single-tenant, local-first document intelligence system: local
+extraction, OCR (eng/fra), hybrid retrieval with reranking, cited local-AI
+answers, and Research. It runs as a Mac-native app or via Docker Compose, and
+exposes the corpus to external agents through an MCP server and a mirrored CLI.
 
-Current state lives in this file plus `README.md` and `docs/architecture.md`.
+## Non-negotiables
 
-## PR Review Policy
+- **Single-tenant.** No `tenant_id` in schema, API, or code. Ever.
+- **Read-only external access.** API keys are read-only and stored hashed.
+- **Snippets, not corpus.** MCP/CLI callers receive retrieved passages and
+  citations — never a bulk corpus export.
+- **Never modify a source.** Watched-folder files are never altered, copied, or
+  moved. Mailboxes are read-only (IMAP `EXAMINE`; read-only OAuth scopes when
+  OAuth lands) — never marked read, never deleted.
+- **Copy only where the source requires it.** Watched-folder documents are read
+  in place from `source_path`. IMAP is the deliberate exception: messages and
+  attachments must be fetched and stored, because there is no file to reference.
+- **All results carry citations.** Every retrieval surface returns sources.
+- **Tika is required** for PDF/Office/eBook/HTML/email extraction.
+- **Never commit credentials.** Passwords, API keys, JWTs, or tokens supplied in
+  conversation never enter a file, regardless of stated intent.
+- **Strategy stays private.** Positioning, competitive analysis, claim posture,
+  and candid assessment live in `docs/strategy/` (a separate private repo),
+  never here.
 
-Feature PRs must receive a fresh-eyes review before merge. In practice, any PR
-should get an explicit review unless it is extremely small and low-risk: tiny
-documentation-only edits, one-line mechanical changes, or very obvious bug
-fixes. If a PR touches more than three files, changes behavior, modifies public
-APIs/tool contracts, adjusts security/auth, or affects ingest/retrieval/LLM
-flows, assume review is required.
+## Working agreement
 
-When an agent opens or updates a non-trivial PR, it should either request a
-fresh-eyes review from another agent/person or perform a separate review pass
-that treats the change as if someone else wrote it. Review findings should lead
-with bugs, regressions, missing tests, and user-facing contract risks.
+- **Branch first.** Create a feature branch before any change, including docs.
+  Never commit to `main`. Do this from the start, not retroactively.
+- **PR always.** Every change lands via PR, even docs-only. Branch protection is
+  enforced.
+- **Never bypass the gate.** No `gh pr merge --admin`, no direct push to main,
+  without explicit human permission in the current conversation.
+- **Verify before claiming done.** Run the checks and read the output before
+  saying anything passes. Evidence, then assertion.
+- **Don't stack PRs.** Land the base on `main` and branch again. A stacked
+  branch once lost ~3,000 lines to a squash-merge of its base.
+- **Regenerate docs** after changing tools, routes, models, stages, or compose
+  services: `uv run python -m scripts.gen_docs`. CI fails otherwise.
+- **`dependency-audit` can fail on an unrelated PR.** It audits the whole
+  environment against live advisory databases, so a newly-published CVE turns it
+  red on a change that touched nothing relevant.
 
-## Architecture
+## Review policy
 
-### Docker Compose (DIY/Linux)
+A PR requires a fresh-eyes review before merge if it touches more than three
+files, changes behavior, modifies public API or tool contracts, adjusts
+auth/security, affects ingest/retrieval/LLM flows, **or adds a new subsystem,
+client surface, or storage location**. Trivial doc edits and one-line mechanical
+fixes do not.
 
-| Container | Role |
+That last trigger exists because a new subsystem is exactly when a stated
+non-negotiable quietly stops being true — "originals are never copied" was
+correct until IMAP ingest shipped.
+
+The reviewer must be **unprimed**: hand it the diff and nothing else. No focus
+areas, no "don't flag X", no restatement of the design. A primed reviewer
+confirms the author's mental model instead of finding defects. Self-review "as
+if someone else wrote it" is not a substitute — it is the failure mode.
+
+Review output leads with bugs, regressions, missing tests, and contract risk.
+
+## Where knowledge goes
+
+- Project-wide rule or constraint → this file
+- Subsystem gotcha → the nearest scoped `CLAUDE.md`
+- Decision + rationale + rejected alternatives → `docs/adr/`
+- Deferred work → a GitHub issue
+- Strategy, positioning, claims → `docs/strategy/` (private repo)
+- Personal workflow preference → user memory
+
+**A project rule never goes in personal memory.** Test: could someone with a
+fresh clone and no memory work on this repo safely? If not, a rule is in the
+wrong place.
+
+## Map
+
+| What | Where |
 |---|---|
-| **gateway** (Caddy) | HTTPS termination (self-signed CA), reverse proxy |
-| **app** (FastAPI) | REST API + MCP endpoint + serves React SPA |
-| **watcher** | `harbor-clerk-watcher` daemon — auto-discovers top-level subdirs of `WATCH_ROOT` and enqueues ingest jobs |
-| **worker-io** | PostgreSQL-polling worker for `io` queue (extract/chunk/entities/summarize/finalize) |
-| **worker-cpu** | PostgreSQL-polling worker for `cpu` queue (ocr/embed) |
-| **embedder** | multilingual-e5-small model server (384-dim, MIT) |
-| **reranker** | Cross-encoder re-ranking service used by hybrid search before final score merge |
-| **llama-server** | `llama.cpp` HTTP server for local LLM inference (chat, research, summarize) |
-| **postgres** | PostgreSQL + pgvector + pg_trgm |
-| **minio** | Object storage for legacy upload originals (watched-folder docs are read in place) |
-| **tika** | Apache Tika server (text extraction for PDF, Office, eBook, HTML, email formats) |
+| Architecture, data model, deployment | `docs/architecture.md` |
+| Generated reference (tools, routes, tables, stages, services) | `docs/architecture.md#generated-reference` |
+| Design specs and implementation plans | `docs/superpowers/{specs,plans}/` |
+| Eval harness and methodology | `scripts/test_corpora/`, `docs/evaluation.md` |
+| Integration setup (MCP, CLI, connectors) | `docs/integrations.md` |
+| Backend gotchas and pipeline invariants | `src/harbor_clerk/CLAUDE.md` |
 
-### macOS Native Apps
+Entry points are declared in `pyproject.toml`. The MCP tool surface is defined
+in `src/harbor_clerk/mcp_server.py` and published as a generated table — read
+those rather than a transcription.
 
-Two native macOS apps under `macos/`:
+## Linting & formatting
 
-- **Harbor Clerk Server** — menubar agent app managing all backend services as subprocesses (PostgreSQL, Tika, Embedder, API, Workers)
-- **Harbor Clerk** — WKWebView app wrapping the React SPA from localhost
-
-Build scripts in `macos/scripts/`, orchestrated by `macos/Makefile`.
-
-**Watched Folders** (macOS + Docker): the only user-facing ingest path. Implemented as the Python `harbor-clerk-watcher` daemon using `watchdog` (FSEvents on macOS, inotify on Linux, polling fallback for NFS / SMB / fuse). Files referenced in place — never copied. 30-day soft-delete reaper for removed files. State stored in PostgreSQL (`watched_folders`, `watched_files`). On macOS, Swift retains only the `pickFolder` and `revealInFinder` JS bridges (NSOpenPanel + NSWorkspace); folder management UI lives at `/folders` in the web app. On Docker, top-level subdirs of `WATCH_ROOT` (`/data/watch`) are auto-discovered — there is no add/remove via the web UI.
-
-### Storage Backend
-
-Configurable via `STORAGE_BACKEND` env var:
-- `minio` (default) — MinIO/S3-compatible object storage (Docker Compose)
-- `filesystem` — local filesystem under `STORAGE_PATH` (native macOS app)
-
-### Text Extraction
-
-Plain-text formats (the set in `harbor_clerk.file_types.PLAIN_TEXT_EXTENSIONS`) use direct UTF-8 decode. All other non-image formats (PDF, DOCX, DOC, ODT, XLSX, PPTX, RTF, EPUB, HTML, EML, etc.) are extracted via Apache Tika. Tika is required.
-
-**No multi-tenancy.** Single-tenant appliance — no `tenant_id` anywhere in schema or API.
-
-**UI:** Vite + React + TypeScript SPA, built to static files and served by FastAPI at `/`.
-
-## Python Package
-
-Package name: `harbor_clerk` (under `src/harbor_clerk/`).
-
-Entry points:
-- `harbor-clerk-api` — FastAPI server
-- `harbor-clerk-worker` — PostgreSQL-polling background worker
-- `harbor-clerk-watcher` — folder watcher (one process per deployment; macOS subprocess or Docker `watcher` container)
-- `harbor-clerk-seed` — Database seeder
-- `harbor-clerk` — CLI for local agent harnesses (OpenClaw, Claude Code, Codex, Aider); off by default, gated by `ENABLE_CLI_ACCESS`. Talks to `/mcp` over JSON-RPC using `HARBOR_CLERK_API_KEY`
-
-## Ingestion Pipeline
-
-Seven idempotent stages, each guarded by row-level lock on `(doc_id, stage)` in `ingestion_jobs`:
-
-1. **extract** (io, 600s) — Apache Tika for PDF/Office/eBook/HTML/email, direct UTF-8 decode for plain-text formats (see `file_types.PLAIN_TEXT_EXTENSIONS`)
-2. **ocr** (cpu, 7200s) — conditional: always for images (JPEG/PNG/TIFF); PDF if `extracted_chars < 500` or `alpha_ratio < 0.2`; never for text-native formats. Uses pypdfium2 + Tesseract (eng+fra). Skipped if not needed.
-3. **chunk** (io, 1200s) — ~1000 char target, 150 char overlap, preserves page ranges + char offsets. Detects language per chunk
-4. **entities** (io, 900s) — spaCy NER (en_core_web_sm / fr_core_news_sm). Skipped if spaCy unavailable.
-5. **embed** (cpu, 1800s) — calls embedder container over HTTP, 384-dim vectors stored in pgvector
-6. **summarize** (io, 900s) — generates document summary
-7. **finalize** (io, 600s) — completes ingestion
-
-**Job timeouts:** `signal.alarm()` per stage with error handling updating `ingestion_jobs` to error. Workers send heartbeats every 30s. Reaper detects orphans via stale heartbeat (>90s) or 2x timeout fallback.
-
-**Worker wakeup:** Workers use PostgreSQL `LISTEN` on per-queue channels (`job_enqueued_io`, `job_enqueued_cpu`) for instant wakeup instead of polling.
-
-## Ingestion Flow
-
-The watcher is the only user-facing entry point:
-
-1. File appears (created/moved/modified) in a watched folder.
-2. Watcher computes SHA256, identifies it via `(folder_id, relative_path)`, and writes a `watched_files` row.
-3. New SHA → create a `documents` row and enqueue the `extract` stage. Same SHA on a previously-seen file → no-op (duplicate). Same path with different SHA → reprocess in place (the existing `documents` row is updated; the document model is flat, so there is no separate version table).
-4. Deletes mark the document inactive; a 30-day reaper purges it permanently if the source stays gone.
-
-The legacy `POST /api/uploads/*` endpoints are intentionally kept callable (no UI affordance) for future non-interactive ingest paths such as email.
-
-## Retrieval
-
-Hybrid search: Postgres FTS (bilingual, queries both `fts_en` and `fts_fr` columns) + pgvector cosine → normalize and merge per-chunk scores with a small OCR-confidence boost → optional cross-encoder rerank pass via the `reranker` service (bge-reranker-v2-m3, `reranker_enabled` default on) → top K (default 10). All results include citations. Returns `possible_conflict=true` when the top hits have similar scores across different documents.
-
-## Auth Model
-
-- **Human users**: email + password → JWT access token + refresh cookie. Roles: `admin` / `user`
-- **API keys**: admin-created, read-only, stored as `key_hash`. Header: `Authorization: Bearer <api_key>`
-
-## Key API Surface
-
-- REST: `/api/auth/login`, `/api/docs`, `/api/search`, `/api/search/find-all`, `/api/passages/read`, `/api/system/health`
-- Watch: `/api/watch/system`, `/api/watch/folders` (CRUD; POST gated to macOS via `picker=ui`), `/api/watch/folders/{id}/progress`, `/api/watch/folders/stream`, `/api/watch/folders/{id}/rescan`, `/api/watch/ingest`, `/api/watch/remove`, `/api/watch/rename`, `/api/watch/allowed-extensions`
-- Source files: `/api/docs/{id}/download` (gated by `ALLOW_SOURCE_DOWNLOAD`, default off; macOS uses `window.harborclerk.revealInFinder` instead)
-- Legacy: `/api/uploads*` — endpoints retained for non-interactive ingest paths (planned email ingestion); no UI affordance
-- MCP: `POST /mcp` — 19 tools: `kb_search`, `kb_batch_search`, `kb_find_all`, `kb_read_passages`, `kb_expand_context`, `kb_get_document`, `kb_list_recent`, `kb_corpus_overview`, `kb_document_outline`, `kb_find_related`, `kb_entity_search`, `kb_entity_overview`, `kb_entity_cooccurrence`, `kb_read_document`, `kb_verify_identifier`, `kb_documents_by_date`, `kb_ingest_status`, `kb_reprocess`, `kb_system_health`
-- CLI: `harbor-clerk <command>` — 19 subcommands mirroring the MCP tools, including `find-all` for document enumeration, for CLI-orchestrating agent harnesses (OpenClaw, Claude Code, Codex, Aider). Off by default. macOS: toggle in **Harbor Clerk Server → Preferences** — `MCPAuthMiddleware` re-reads the config file on every CLI request, so the change takes effect in seconds without a service restart. Docker: set `ENABLE_CLI_ACCESS=true` in the env and restart the API service. Audit-logged as `request_type="cli_tool"`. Auth via `HARBOR_CLERK_API_KEY`. Skill markdown at `skills/harbor-clerk/SKILL.md`; Integrations page surfaces a copy-paste block.
-- SSE: `GET /api/jobs/stream` — streams job progress events (server→client only)
-
-## Database
-
-PostgreSQL 18 with extensions: `vector`, `pg_trgm`, `citext`. No tenant table or tenant_id columns.
-
-Key tables: `users`, `api_keys`, `documents` (flat — was split into `documents` + `document_versions` pre-0017), `document_pages`, `document_headings`, `chunks`, `entities`, `ingestion_jobs`, `audit_log`, `api_request_log`, `conversations`, `chat_messages`, `watched_folders`, `watched_files`, `corpus_topics`, `corpus_topics_meta`, `model_settings`, `research_state`. The `uploads` and `upload_sessions` tables remain for the legacy upload endpoints.
-
-`chunks` has dual FTS columns (`fts_en` TSVECTOR, `fts_fr` TSVECTOR) both as generated stored columns with GIN indexes, plus `embedding vector(384)` with HNSW index. Current schema lives in `alembic/versions/`.
-
-Storage (legacy uploads only): bucket `originals`, key pattern `originals/<doc_id>/<original_filename>`. Watched-folder docs do not store originals in MinIO — they are read in place from `source_path` on the host filesystem.
-
-## Linting & Formatting
-
-**Python:** Ruff (config in `pyproject.toml`). Rules: E/F/W/I/UP/B/SIM. Line length 120.
-- `uv run ruff check .` — lint
-- `uv run ruff format .` — format
-- Ruff is in `[project.optional-dependencies] test`
-
-**Frontend:** ESLint 10 (flat config) + Prettier. Config in `frontend/eslint.config.js` and `frontend/.prettierrc`. `frontend/.npmrc` has `legacy-peer-deps=true` for peer dep compatibility.
-- `npm run lint` / `npm run format:check` / `npm run type-check`
+- Python: `uv run ruff check .` / `uv run ruff format .` (line length 120)
+- Frontend: `npm run lint` / `format:check` / `type-check` in `frontend/`
+- Everything at once: the `verify` skill
 
 ## CI
 
-GitHub Actions workflows run on PRs to `main`. Branch protection requires all 5 checks to pass.
+Five required checks on PRs to `main`: `python`, `frontend`, `codeql`,
+`dependency-audit`, `container-scan`. The `python` job also verifies generated
+docs are current.
 
-**`.github/workflows/ci.yml`:**
-- **python** job: ruff check, ruff format --check, pytest (with pgvector service container)
-- **frontend** job: eslint, prettier --check, tsc --noEmit
+---
 
-**`.github/workflows/codeql.yml`:**
-- **codeql** job: Python SAST via CodeQL (`security-and-quality` queries). Also runs weekly (Monday 6am UTC)
+## Pending restructure (batches 3–5)
 
-**`.github/workflows/security.yml`:**
-- **dependency-audit** job: `pip-audit` (HIGH severity, via `pypa/gh-action-pip-audit`) + `npm audit` (high/critical)
-- **container-scan** job: builds app + embedder Docker images, scans with Trivy (HIGH/CRITICAL, `--ignore-unfixed`)
+The sections below were **not** part of the batches 1–2 restructure and are kept
+here awaiting a placement decision. Factual errors in them have been corrected —
+leaving a known-wrong statement in place to preserve a batch boundary would be
+the wrong trade — but where they should ultimately live is still open.
 
-**Dependabot** (`.github/dependabot.yml`): weekly pip + npm dependency update PRs. Security updates (auto-PRs for CVEs) also enabled.
+### Python Package
 
-**Secret scanning** + **push protection** enabled at repo level.
+Package name: `harbor_clerk` (under `src/harbor_clerk/`). Entry points are
+declared in `pyproject.toml`:
 
-## Worker Presets (C = logical cores)
+- `harbor-clerk-api` — FastAPI server
+- `harbor-clerk-worker` — PostgreSQL-polling background worker
+- `harbor-clerk-watcher` — folder + IMAP watcher (one process per deployment)
+- `harbor-clerk-seed` — database seeder
+- `harbor-clerk` — CLI for agent harnesses; off by default, gated by
+  `ENABLE_CLI_ACCESS`. Talks to `/mcp` over JSON-RPC using `HARBOR_CLERK_API_KEY`
 
-- **Quiet**: io=1, cpu=1
-- **Balanced**: io=max(2, C//4), cpu=2
-- **Fast**: io=max(2, C//2), cpu=3
-- Hard caps: io_workers ≤ 8, cpu_workers ≤ 4
+### Key API surface
+
+REST, MCP and CLI surfaces are **generated** from source — see
+[`docs/architecture.md#generated-reference`](docs/architecture.md#generated-reference).
+Do not transcribe them here; the previous hand-written copy drifted.
+
+### Database
+
+PostgreSQL 18 with `vector`, `pg_trgm`, and `citext`. No tenant table, no
+`tenant_id` columns.
+
+`chunks` has dual FTS columns (`fts_en`, `fts_fr`) as generated stored columns
+with GIN indexes, plus `embedding vector(768)` (Granite-R2) with an HNSW index.
+`schema_metadata` records the embedding model and dimension; startup refuses a
+mismatch. The full table list is generated; current schema lives in
+`alembic/versions/`.
+
+Storage (legacy uploads only): bucket `originals`, key pattern
+`originals/<doc_id>/<original_filename>`. Watched-folder documents are read in
+place from `source_path` and never stored in MinIO.
+
+### Worker presets (C = logical cores)
+
+- **Quiet**: io=1, cpu=1 · **Balanced**: io=max(2, C//4), cpu=2 · **Fast**:
+  io=max(2, C//2), cpu=3
+- Hard caps: io ≤ 8, cpu ≤ 4. The `llm` queue runs a single worker in every
+  preset.
