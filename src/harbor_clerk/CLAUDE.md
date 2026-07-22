@@ -64,3 +64,10 @@ fetched and stored, because there is no file on disk to reference.
   endpoint blocks the event loop — wrap it in `run_in_executor`.
 - SQLAlchemy enum members must be **lowercase** to match Postgres values: both
   `postgresql.ENUM` and `sa.Enum` send `.name`, not `.value`.
+
+## Legacy upload storage
+
+The legacy upload path stores originals in the `originals` bucket under
+`originals/<doc_id>/<original_filename>`. Watched-folder and IMAP documents do
+**not** use it — watched files are read in place from `source_path`, and mail
+content is stored via the normal document path.
