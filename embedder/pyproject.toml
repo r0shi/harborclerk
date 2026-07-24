@@ -8,10 +8,6 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "sentence-transformers>=3.3.0",
     "numpy>=1.26.0",
-    # Declared explicitly, though sentence-transformers already requires it, so
-    # `[tool.uv.sources]` below can steer which build gets installed — uv only
-    # applies sources to direct dependencies.
-    "torch>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -33,24 +29,19 @@ harbor-clerk-embedder = "embedder.app:main"
 harbor-clerk-reranker = "embedder.reranker:main"
 
 [tool.pytest.ini_options]
-# Mirrors the root config so the marker referenced in tests/test_embedder_app.py
-# is registered here too — otherwise adding a real-model test emits
-# PytestUnknownMarkWarning and CI would run it.
+# Registered ahead of use. Nothing applies this marker yet — and the
+# tests/test_embedder_granite.py that test_embedder_app.py's docstring points at
+# does not exist — but the root project uses the same name, and an unregistered
+# marker fails as a silent PytestUnknownMarkWarning rather than loudly.
 markers = [
     "requires_models: tests that load embedding model weights. Skipped in default CI.",
 ]
 
-[tool.uv.sources]
-# CI runs these tests with the model stubbed out, but `sentence-transformers` is
-# a base dependency, so a plain sync on Linux resolves torch plus the whole
-# NVIDIA CUDA chain — ~2.7 GB of wheels for code that never executes a tensor
-# op. Pin the CPU wheel index on Linux; macOS/Windows keep the default (there
-# are no CUDA wheels there, and MPS lives in the default build).
-torch = [
-    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
+# NOTE: steering torch to the CPU wheel index on Linux would cut ~2.7 GB of
+# CUDA wheels from the `embedder` CI job, which stubs the model and never runs a
+# tensor op. It was tried and reverted: docker/embedder.Dockerfile builds from
+# this same lock with `uv sync --locked`, so it would silently drop CUDA from
+# every Linux deployment — a capability change, not a CI tweak. It also pulls in
+# download-r2.pytorch.org, which sits outside the dependency-audit job and
+# breaks allowlisted or air-gapped builds. Worth doing deliberately, with the
+# CI/production split made explicit; not as a side effect.
