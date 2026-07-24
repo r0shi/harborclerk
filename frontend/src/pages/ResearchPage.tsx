@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router'
 import CitedMarkdown from '../components/CitedMarkdown'
 import { FolderPicker } from '../components/FolderPicker'
 import { LocalAISetupPrompt } from '../components/LocalAISetupPrompt'
