@@ -69,8 +69,8 @@ Ingested 1,131 fresh documents (`~/corpora/cuad`, mostly PDFs) against the unpat
 
 | | unpatched | patched |
 |---|---|---|
-| Embedder restarts | 4 in 13 min | **0 in 6+ min** |
-| `embed` failures | climbing 44 → 356 | **falling 288 → 264** |
+| Embedder restarts | 4 in 13 min | **0 in 20 min** |
+| `embed` failures | climbing 44 → 356 (~27/min) | **0 organic in 20 min** |
 | Health probes answered (3 concurrent batches) | 4 | **55** |
 | Probes over the 3 s supervisor timeout | **3 of 4** | **0** |
 | Median health latency | 467.6 ms | **1.4 ms** |
@@ -78,7 +78,13 @@ Ingested 1,131 fresh documents (`~/corpora/cuad`, mostly PDFs) against the unpat
 
 Throughput is unchanged — an isolated A/B on a spare port measured 10.81 s vs 10.91 s wall clock for the same work. The concurrency semaphore defaults to 1, preserving today's serialisation exactly; only the starvation goes away.
 
-The failure backlog *drains* after the patch because previously-failed documents retry and now succeed.
+The failure backlog *drains* after the patch because previously-failed documents retry and now succeed: 356 → 126 over 30 minutes.
+
+Of the 115 embed failures still present at the end, **114 predate the patch** and exactly one does not — and that one is timestamped 15:30:17.822, the moment of my own `pkill` to deploy the patch. Zero organic failures in 20 minutes of continuous ingest.
+
+Then the residual **plateaus**: total errors sat at 126 across the final four samples. Nothing re-drives failed documents in bulk, so pre-patch damage is permanent until someone reprocesses each one by hand. That is the concrete case for #554.
+
+**The field test also caught a flaw in my own fix.** The retry's real window was 1.75–3.50s (N attempts sleep after only the first N−1, and half-to-full jitter halves each ceiling — my original "~7.5s" was bad arithmetic), while an embedder restart takes ~7.2s. So the retry could not survive the exact failure it was written for. Corrected to 6 attempts → 7.75–15.50s, with a test that derives the window from the constants and asserts it exceeds a measured restart.
 
 > **The installed bundle on this machine is still hand-patched.** I left it that way because reverting would knowingly re-break the box. Originals are at `~/Library/Application Support/Harbor Clerk/bundle-backup-2026-07-24/`, and any rebuild from `macos/` overwrites the patch anyway.
 
