@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -46,11 +47,33 @@ from harbor_clerk.secrets import get_cipher
 logger = logging.getLogger(__name__)
 
 
+def _describe(exc: BaseException) -> str:
+    """Never render an empty reason.
+
+    A bare `str(exc)` on `TimeoutError()` or `httpx.ReadTimeout('')` is the
+    empty string, and `last_error` is rendered by the Status page as
+    `{a.last_error && ...}` — falsy, so the user sees a failing account with no
+    reason at all. (#570 introduces a shared `error_text.describe_error`; this
+    stays local so the two PRs don't stack.)
+    """
+    return str(exc).strip() or type(exc).__name__
+
+
 def _default_session_factory() -> async_sessionmaker:
     """Build the production session factory (lazy import avoids module-load side-effects)."""
     from harbor_clerk.db import engine
 
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+# Respawn backoff. 5s base matches the supervisor tick, so a one-off blip still
+# recovers on the next pass; 5 minutes caps a persistent failure at ~12 login
+# attempts an hour rather than ~720.
+_BASE_RESPAWN_BACKOFF = 5.0
+_MAX_RESPAWN_BACKOFF = 300.0
+# A task that stayed up this long was working; its death is a new incident, not
+# a continuation of an earlier streak.
+_HEALTHY_RUN_SECONDS = 120.0
 
 
 class MailObserver:
@@ -66,6 +89,14 @@ class MailObserver:
         self._session_factory = session_factory
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
         self._stop_event = asyncio.Event()
+        # Respawn bookkeeping. Without backoff, a *persistent* failure — DNS
+        # down, a label deleted server-side, TLS refused — would respawn every
+        # supervisor_interval, i.e. ~720 LOGIN attempts an hour against the
+        # provider, each writing an imap_command_log row. Retrying at all is
+        # new behaviour; retrying it unthrottled would be its own outage.
+        self._consecutive_failures: dict[UUID, int] = {}
+        self._retry_not_before: dict[UUID, float] = {}
+        self._spawned_at: dict[UUID, float] = {}
 
     async def stop(self) -> None:
         """Signal the supervisor and all per-label tasks to stop."""
@@ -114,26 +145,64 @@ class MailObserver:
         # until the watcher process restarts. That is #557's symptom exactly,
         # one layer out, and it only became reachable once EXAMINE started
         # entering the selected state and the IDLE path went live.
+        now = time.monotonic()
         for lid, task in list(self._tasks.items()):
             if not task.done():
                 continue
             self._tasks.pop(lid, None)
-            if task.cancelled():
+            ran_for = now - self._spawned_at.pop(lid, now)
+
+            # `_run_label` swallows CancelledError, so a cancelled task finishes
+            # with a result rather than as cancelled — `task.cancelled()` alone
+            # would classify every shutdown as a clean exit and respawn it.
+            if task.cancelled() or self._stop_event.is_set():
+                self._consecutive_failures.pop(lid, None)
                 continue
+
             exc = task.exception()
+            # A task that ran a good while got as far as working; treat its
+            # death as a fresh incident rather than escalating an old streak.
+            failures = 1 if ran_for >= _HEALTHY_RUN_SECONDS else self._consecutive_failures.get(lid, 0) + 1
+            self._consecutive_failures[lid] = failures
+            delay = min(_MAX_RESPAWN_BACKOFF, _BASE_RESPAWN_BACKOFF * (2 ** (failures - 1)))
+            self._retry_not_before[lid] = now + delay
+
             if exc is not None:
-                logger.exception("label %s sync task died; respawning", lid, exc_info=exc)
+                logger.warning(
+                    "label %s sync task died after %.0fs (failure %d); respawning in %.0fs: %s",
+                    lid,
+                    ran_for,
+                    failures,
+                    delay,
+                    _describe(exc),
+                )
             else:
-                logger.warning("label %s sync task exited without error; respawning", lid)
+                logger.warning(
+                    "label %s sync task exited after %.0fs without error (failure %d); respawning in %.0fs",
+                    lid,
+                    ran_for,
+                    failures,
+                    delay,
+                )
 
         actual_ids = set(self._tasks.keys())
 
-        # Spawn tasks for newly-active labels (and anything just reaped)
+        # Spawn tasks for newly-active labels (and anything reaped whose backoff
+        # has elapsed). Never spawn during shutdown: stop() snapshots the task
+        # list before awaiting, so a task created after that snapshot would be
+        # dropped by the later _tasks.clear() without ever being cancelled —
+        # leaving an IMAP connection open and still committing after stop().
+        if self._stop_event.is_set():
+            return
         for lbl in rows:
             if lbl.account.status != "active":
                 continue
-            if lbl.label_id not in actual_ids:
-                self._tasks[lbl.label_id] = asyncio.create_task(self._run_label(lbl.label_id, session_factory))
+            if lbl.label_id in actual_ids:
+                continue
+            if now < self._retry_not_before.get(lbl.label_id, 0.0):
+                continue
+            self._spawned_at[lbl.label_id] = now
+            self._tasks[lbl.label_id] = asyncio.create_task(self._run_label(lbl.label_id, session_factory))
 
         # Cancel tasks for labels that are no longer active
         for lid in actual_ids - desired_ids:
@@ -192,7 +261,16 @@ class MailObserver:
             await audit_ctx.__aexit__(None, None, None)
             return
         except Exception as exc:
-            logger.warning("connect/login failed for label %s: %s", label_id, exc)
+            # Latch it. Without this the account stays `active` with no
+            # last_error, so the UI shows a healthy account that never syncs —
+            # and the supervisor retries forever with nothing explaining why.
+            logger.warning("connect/login failed for label %s: %s", label_id, _describe(exc))
+            async with session_factory() as session:
+                acc = (
+                    await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
+                ).scalar_one()
+                acc.last_error = _describe(exc)
+                await session.commit()
             await audit_ctx.__aexit__(None, None, None)
             return
 
