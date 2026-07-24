@@ -38,6 +38,22 @@ from __future__ import annotations
 HEALTH_DETAIL_LIMIT = 200
 
 
+def message_or_type(exc: BaseException) -> str:
+    """The exception's own message, falling back to its type when empty.
+
+    For exceptions whose message was *written for the reader* — a validation
+    error, an `AuthError` built as `AuthError(detail or "IMAP LOGIN failed")` —
+    the message is the point and the class name is noise. An operator reading
+    "AuthError: AUTHENTICATIONFAILED Invalid credentials" in the account banner
+    is worse served than by the message alone.
+
+    Use `describe_error` for anything unexpected, where the type *is* the
+    information. Use this where the message is authored and never empty, and the
+    fallback is only a guard against a future caller raising a bare instance.
+    """
+    return str(exc).strip() or type(exc).__name__
+
+
 def describe_error(exc: BaseException, *, max_detail: int | None = None) -> str:
     """Render `exc` as ``"TypeName: message"``, or ``"TypeName"`` when empty.
 

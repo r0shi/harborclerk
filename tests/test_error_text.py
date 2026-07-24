@@ -120,3 +120,31 @@ async def test_worker_records_a_named_error_on_the_document(db_session, monkeypa
         assert value, f"{label} is empty — the user is shown no reason at all"
         assert "ReadTimeout" in value, f"{label} does not name the failure: {value!r}"
         assert not value.rstrip().endswith(":"), f"{label} ends in a dangling colon: {value!r}"
+
+
+def test_message_or_type_keeps_authored_text_unprefixed():
+    """Authored messages are the point; the class name is noise.
+
+    `AuthError(detail or "IMAP LOGIN failed")` and the validation ValueErrors in
+    mcp_lookup_tools are never empty, and an account banner reading
+    "AuthError: AUTHENTICATIONFAILED Invalid credentials" serves a
+    non-technical reader worse than the message alone.
+    """
+    from harbor_clerk.error_text import message_or_type
+
+    assert message_or_type(ValueError("direction must be 'earliest' or 'latest'")) == (
+        "direction must be 'earliest' or 'latest'"
+    )
+    # Still never blank, if a future caller raises a bare instance.
+    assert message_or_type(TimeoutError()) == "TimeoutError"
+
+
+def test_connection_failure_branch_never_renders_a_blank_reason():
+    """The `except Exception` branch in the mail test-connection route.
+
+    A filtered IMAP port makes `wait_hello_from_server` raise a bare
+    TimeoutError after ~10s, whose str() is "" — so the admin saw literally
+    "connection failed: ". Asserted at the rendering level rather than through
+    the route, which needs a persisted account with an encrypted password.
+    """
+    assert f"connection failed: {describe_error(TimeoutError())}" == "connection failed: TimeoutError"

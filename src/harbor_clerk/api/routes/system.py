@@ -750,7 +750,7 @@ async def system_stats(
             "dead_tuples": int(dead_tuples),
         }
     except Exception as e:
-        logger.error("Failed to collect Postgres stats: %s", e)
+        logger.error("Failed to collect Postgres stats: %s", describe_error(e))
         result["postgres"] = {"error": describe_error(e)}
 
     # ── Queue stats (from ingestion_jobs table) ──
@@ -786,7 +786,7 @@ async def system_stats(
                 queue_stats[stat_key] += int(count)
         result["queues"] = queue_stats
     except Exception as e:
-        logger.error("Failed to collect queue stats: %s", e)
+        logger.error("Failed to collect queue stats: %s", describe_error(e))
         result["queues"] = {"error": describe_error(e)}
 
     # ── Storage stats ──
@@ -800,7 +800,7 @@ async def system_stats(
             "total_size_mb": round(total_size / (1024 * 1024), 1),
         }
     except Exception as e:
-        logger.error("Failed to collect storage stats: %s", e)
+        logger.error("Failed to collect storage stats: %s", describe_error(e))
         result["storage"] = {"error": describe_error(e)}
 
     return result
