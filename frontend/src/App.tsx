@@ -1,4 +1,4 @@
-import { Route, Routes, Navigate, useParams } from 'react-router-dom'
+import { Route, Routes, Navigate, useParams } from 'react-router'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 import AdminRoute from './components/AdminRoute'

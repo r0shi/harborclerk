@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import type { CorpusBannerState } from '../hooks/useCorpusBannerState'
 
 interface Props {

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { get, post } from '../api'
 import { Card } from '../components/Card'
 import { FolderPicker } from '../components/FolderPicker'

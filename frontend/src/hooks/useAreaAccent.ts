@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router'
 
 /** Single source of truth for the eight area names used throughout the design system. */
 export type AreaHue = 'ask' | 'research' | 'folders' | 'docs' | 'explore' | 'search' | 'observatory' | 'settings'

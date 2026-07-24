@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { get, post } from '../api'
 import { listMailAccounts } from '../api/mail'
 import type { MailAccountResponse } from '../types/mail'
