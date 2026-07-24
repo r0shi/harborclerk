@@ -8,6 +8,7 @@ refuses to put mutating bytes on the wire.
 
 from __future__ import annotations
 
+import aioimaplib
 import pytest
 
 from harbor_clerk.mail.exceptions import ReadOnlyViolation
@@ -133,3 +134,80 @@ def test_block_list_matches_aioimaplib_surface():
         f"Add each to known_read or known_mutating (and an override in "
         f"ReadOnlyIMAP4_SSL if mutating)."
     )
+
+
+# --------------------------------------------------------------------------
+# #557 — EXAMINE must leave the connection in the SELECTED state
+# --------------------------------------------------------------------------
+
+
+class _StubProtocol:
+    """Minimal stand-in for IMAP4ClientProtocol's state machinery."""
+
+    def __init__(self, state=aioimaplib.AUTH):
+        import asyncio
+
+        self.state = state
+        self.state_condition = asyncio.Condition()
+        self.notified = 0
+
+    async def _notify(self):
+        async with self.state_condition:
+            self.state_condition.notify_all()
+
+
+def _client_with_stub_examine(result: str):
+    """A ReadOnlyIMAP4_SSL whose super().examine() returns `result`."""
+    client = ReadOnlyIMAP4_SSL.__new__(ReadOnlyIMAP4_SSL)  # bypass network init
+    client.protocol = _StubProtocol()
+
+    async def fake_examine(self, mailbox="INBOX"):
+        return aioimaplib.Response(result, [b"* 12 EXISTS", b"* OK [UIDVALIDITY 42]"])
+
+    return client, fake_examine
+
+
+async def test_examine_moves_connection_into_selected_state(monkeypatch):
+    """The #557 regression.
+
+    aioimaplib 2.0.1 routes EXAMINE through simple_command, which never sets
+    SELECTED — only the @change_state-decorated select() does, and this class
+    blocks select() by design. Without this override the client stayed at AUTH
+    and every UID SEARCH/FETCH/IDLE was rejected before reaching the server.
+    """
+    client, fake_examine = _client_with_stub_examine("OK")
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
+
+    assert client.protocol.state == aioimaplib.AUTH
+    resp = await client.examine("kickstarter")
+
+    assert resp.result == "OK"
+    assert client.protocol.state == aioimaplib.SELECTED, (
+        "EXAMINE must enter the selected state (RFC 3501 §6.3.2); otherwise "
+        "UID SEARCH aborts client-side with 'illegal in state AUTH'"
+    )
+
+
+async def test_examine_leaves_state_alone_when_server_refuses(monkeypatch):
+    """A NO/BAD means the mailbox was not selected — don't claim otherwise."""
+    client, fake_examine = _client_with_stub_examine("NO")
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
+
+    resp = await client.examine("nonexistent-label")
+
+    assert resp.result == "NO"
+    assert client.protocol.state == aioimaplib.AUTH
+
+
+async def test_examine_permits_uid_search_afterwards(monkeypatch):
+    """End-to-end on the state guard: aioimaplib's own command table rejects
+    SEARCH unless state is SELECTED. After examine() it must pass that gate."""
+    client, fake_examine = _client_with_stub_examine("OK")
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
+
+    await client.examine("kickstarter")
+
+    allowed_states = aioimaplib.Commands["SEARCH"].valid_states
+    assert client.protocol.state in allowed_states
+    assert client.protocol.state in aioimaplib.Commands["UID"].valid_states
+    assert client.protocol.state in aioimaplib.Commands["IDLE"].valid_states
