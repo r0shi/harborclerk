@@ -8,6 +8,10 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "sentence-transformers>=3.3.0",
     "numpy>=1.26.0",
+    # Declared explicitly, though sentence-transformers already requires it, so
+    # `[tool.uv.sources]` below can steer which build gets installed — uv only
+    # applies sources to direct dependencies.
+    "torch>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -27,3 +31,26 @@ packages = ["src/embedder"]
 [project.scripts]
 harbor-clerk-embedder = "embedder.app:main"
 harbor-clerk-reranker = "embedder.reranker:main"
+
+[tool.pytest.ini_options]
+# Mirrors the root config so the marker referenced in tests/test_embedder_app.py
+# is registered here too — otherwise adding a real-model test emits
+# PytestUnknownMarkWarning and CI would run it.
+markers = [
+    "requires_models: tests that load embedding model weights. Skipped in default CI.",
+]
+
+[tool.uv.sources]
+# CI runs these tests with the model stubbed out, but `sentence-transformers` is
+# a base dependency, so a plain sync on Linux resolves torch plus the whole
+# NVIDIA CUDA chain — ~2.7 GB of wheels for code that never executes a tensor
+# op. Pin the CPU wheel index on Linux; macOS/Windows keep the default (there
+# are no CUDA wheels there, and MPS lives in the default build).
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

@@ -56,7 +56,10 @@ jobs:
       # Lint/format are already covered: the `python` job's root `ruff check .`
       # includes embedder/. This job exists purely to collect the tests.
       - name: Run tests
-        run: uv run --extra test pytest tests/ -v --tb=short
+        # --locked so CI cannot silently re-resolve and test a different
+        # dependency set than docker/embedder.Dockerfile builds (it uses
+        # `uv sync --locked`). -m matches the root job's marker handling.
+        run: uv run --locked --extra test pytest tests/ -v --tb=short -m "not requires_models"
         working-directory: embedder
 
   frontend:
