@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useAuth } from '../auth'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'

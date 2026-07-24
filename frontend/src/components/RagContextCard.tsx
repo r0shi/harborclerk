@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import type { RagContextChunk } from '../contexts/ChatContext'
 
 function formatPages(start: number | null, end: number | null): string | null {

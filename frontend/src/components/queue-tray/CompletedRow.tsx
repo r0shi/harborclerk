@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { stageLabel } from '../../utils/stageLabel'
 import type { CompletedItem } from '../../hooks/useQueueTray'
 
