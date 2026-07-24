@@ -69,8 +69,8 @@ Ingested 1,131 fresh documents (`~/corpora/cuad`, mostly PDFs) against the unpat
 
 | | unpatched | patched |
 |---|---|---|
-| Embedder restarts | 4 in 13 min | **0 in 20 min** |
-| `embed` failures | climbing 44 → 356 (~27/min) | **0 organic in 20 min** |
+| Embedder restarts | 4 in 13 min | **0 in 2 h 46 min** |
+| `embed` failures | climbing 44 → 356 (~27/min) | **0 organic in 2 h 46 min** |
 | Health probes answered (3 concurrent batches) | 4 | **55** |
 | Probes over the 3 s supervisor timeout | **3 of 4** | **0** |
 | Median health latency | 467.6 ms | **1.4 ms** |
@@ -81,6 +81,16 @@ Throughput is unchanged — an isolated A/B on a spare port measured 10.81 s vs 
 The failure backlog *drains* after the patch because previously-failed documents retry and now succeed: 356 → 126 over 30 minutes.
 
 Of the 115 embed failures still present at the end, **114 predate the patch** and exactly one does not — and that one is timestamped 15:30:17.822, the moment of my own `pkill` to deploy the patch. Zero organic failures in 20 minutes of continuous ingest.
+
+Final state when the queue drained at 18:16 — 2 h 46 min after the patch, all of
+it under sustained ingest: **4,123 documents, 214,956 chunks, 3,997 ready.**
+Embedder restarts today: five, every one of them before 15:30:23, and that last
+one was my own `pkill` to deploy the patch. Embed failures: 115 total, of which
+**114 predate the patch and the one that does not is timestamped 15:30:17.822**
+— the moment of that same `pkill`.
+
+So: zero supervisor-driven restarts and zero organic embed failures across the
+whole post-patch run, against four restarts and ~27 failures/minute before it.
 
 Then the residual **plateaus**: total errors sat at 126 across the final four samples. Nothing re-drives failed documents in bulk, so pre-patch damage is permanent until someone reprocesses each one by hand. That is the concrete case for #554.
 
