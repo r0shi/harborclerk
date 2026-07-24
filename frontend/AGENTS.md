@@ -1,7 +1,10 @@
 # AGENTS.md — `frontend`
 
-React 19 · React Router 7 · Tailwind 4 · Vite 7 · ESLint 10. Built to static
+React 19 · React Router 8 · Tailwind 4 · Vite 8 · ESLint 10. Built to static
 files and served by FastAPI at `/`.
+
+**Import from `react-router`, not `react-router-dom`.** The DOM package was a
+re-export shim in v7 and does not exist in v8.
 
 ## Tailwind v4 is CSS-first — do not create a config file
 

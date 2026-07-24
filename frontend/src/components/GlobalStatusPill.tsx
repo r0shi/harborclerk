@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { get } from '../api'
 import { useAuth } from '../auth'
 import { useSystemConfig } from '../hooks/useSystemConfig'
