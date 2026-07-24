@@ -22,6 +22,7 @@ from harbor_clerk.api.schemas.system import (
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings, sync_native_config
 from harbor_clerk.db import get_session
+from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT, describe_error
 from harbor_clerk.models import (
     Chunk,
     Document,
@@ -151,23 +152,6 @@ async def ping() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def _describe_error(exc: Exception) -> str:
-    """Render an exception for a health check payload.
-
-    Always include the type. Several of the exceptions that matter most here
-    carry an empty message — `httpx.ReadTimeout('')` and `ConnectTimeout('')`
-    among them — so a bare `f"error: {exc}"` renders as the literal string
-    `"error: "`, which tells an operator only that *something* is wrong.
-
-    A timeout is exactly the case worth naming: on a constrained machine the
-    embedder blocks long enough to time out its probe, and "error: " sent the
-    previous investigation looking for a crash that had not happened.
-    """
-    detail = str(exc).strip()
-    name = type(exc).__name__
-    return f"error: {name}: {detail}" if detail else f"error: {name}"
-
-
 @router.get("/system/health")
 async def health_check(
     session: AsyncSession = Depends(get_session),
@@ -181,8 +165,8 @@ async def health_check(
         result.scalar()
         checks["postgres"] = "ok"
     except Exception as e:
-        logger.error("Postgres health check failed: %s", e)
-        checks["postgres"] = _describe_error(e)
+        logger.error("Postgres health check failed: %s", describe_error(e))
+        checks["postgres"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
     # Storage
     try:
@@ -190,8 +174,8 @@ async def health_check(
         storage.bucket_exists("originals")
         checks["storage"] = "ok"
     except Exception as e:
-        logger.error("Storage health check failed: %s", e)
-        checks["storage"] = _describe_error(e)
+        logger.error("Storage health check failed: %s", describe_error(e))
+        checks["storage"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
     settings = get_settings()
 
@@ -201,8 +185,8 @@ async def health_check(
             r = await client.get(f"{settings.tika_url}/tika", timeout=5)
             checks["tika"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
     except Exception as e:
-        logger.error("Tika health check failed: %s", e)
-        checks["tika"] = _describe_error(e)
+        logger.error("Tika health check failed: %s", describe_error(e))
+        checks["tika"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
     # Embedder
     try:
@@ -210,8 +194,8 @@ async def health_check(
             r = await client.get(f"{settings.embedder_url}/health", timeout=5)
             checks["embedder"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
     except Exception as e:
-        logger.error("Embedder health check failed: %s", e)
-        checks["embedder"] = _describe_error(e)
+        logger.error("Embedder health check failed: %s", describe_error(e))
+        checks["embedder"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
     # Reranker — only probed when enabled; disabled is not a degraded state
     if settings.reranker_enabled:
@@ -220,8 +204,8 @@ async def health_check(
                 r = await client.get(f"{settings.reranker_url}/health", timeout=5)
                 checks["reranker"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
         except Exception as e:
-            logger.error("Reranker health check failed: %s", e)
-            checks["reranker"] = _describe_error(e)
+            logger.error("Reranker health check failed: %s", describe_error(e))
+            checks["reranker"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
     else:
         checks["reranker"] = "disabled"
 
@@ -238,8 +222,8 @@ async def health_check(
                 await writer.wait_closed()
                 checks["local_https_gateway"] = "ok"
             except Exception as e:
-                logger.error("Local HTTPS gateway health check failed: %s", e)
-                checks["local_https_gateway"] = _describe_error(e)
+                logger.error("Local HTTPS gateway health check failed: %s", describe_error(e))
+                checks["local_https_gateway"] = f"error: {describe_error(e, max_detail=HEALTH_DETAIL_LIMIT)}"
 
     from harbor_clerk.api.app import BUILD_HASH
 
@@ -767,7 +751,7 @@ async def system_stats(
         }
     except Exception as e:
         logger.error("Failed to collect Postgres stats: %s", e)
-        result["postgres"] = {"error": str(e)}
+        result["postgres"] = {"error": describe_error(e)}
 
     # ── Queue stats (from ingestion_jobs table) ──
     try:
@@ -803,7 +787,7 @@ async def system_stats(
         result["queues"] = queue_stats
     except Exception as e:
         logger.error("Failed to collect queue stats: %s", e)
-        result["queues"] = {"error": str(e)}
+        result["queues"] = {"error": describe_error(e)}
 
     # ── Storage stats ──
     try:
@@ -817,7 +801,7 @@ async def system_stats(
         }
     except Exception as e:
         logger.error("Failed to collect storage stats: %s", e)
-        result["storage"] = {"error": str(e)}
+        result["storage"] = {"error": describe_error(e)}
 
     return result
 

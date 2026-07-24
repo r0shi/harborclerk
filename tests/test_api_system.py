@@ -1163,38 +1163,93 @@ async def test_summary_backlog_endpoint_returns_all_four_fields(client, admin_us
 
 
 # --------------------------------------------------------------------------
-# Health-check error rendering
+# Health-check error rendering — the live box reported `"embedder": "error: "`
 # --------------------------------------------------------------------------
 
 
-def test_describe_error_names_the_type_when_message_is_empty():
-    """`httpx.ReadTimeout('')` and friends stringify to nothing.
+async def test_health_check_names_a_timing_out_embedder(client, monkeypatch):
+    """A timeout must name itself, not render as a bare "error: ".
 
-    A bare f"error: {exc}" then renders "error: ", which is what the live
-    system reported for a timing-out embedder — telling an operator only that
-    something, somewhere, was wrong.
+    This drives the endpoint rather than the helper, so reverting the call site
+    at system.py fails here. `httpx.ReadTimeout("")` carries an empty message —
+    which is what the Mac mini actually hit.
     """
     import httpx
 
-    from harbor_clerk.api.routes.system import _describe_error
+    real_get = httpx.AsyncClient.get
 
-    assert _describe_error(httpx.ReadTimeout("")) == "error: ReadTimeout"
-    assert _describe_error(httpx.ConnectTimeout("")) == "error: ConnectTimeout"
+    async def _selective_get(self, url, *args, **kwargs):
+        if str(url) == "http://embedder:8000/health":
+            raise httpx.ReadTimeout("")
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+
+    resp = await client.get("/api/system/health")
+    data = resp.json()
+
+    assert data["checks"]["embedder"] == "error: ReadTimeout"
+    assert data["status"] == "degraded"
 
 
-def test_describe_error_keeps_the_message_when_there_is_one():
+async def test_health_check_keeps_the_message_when_there_is_one(client, monkeypatch):
     import httpx
 
-    from harbor_clerk.api.routes.system import _describe_error
+    real_get = httpx.AsyncClient.get
 
-    assert _describe_error(httpx.ConnectError("connection refused")) == "error: ConnectError: connection refused"
+    async def _selective_get(self, url, *args, **kwargs):
+        if str(url) == "http://tika:9998/tika":
+            raise httpx.ConnectError("connection refused")
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+
+    resp = await client.get("/api/system/health")
+    assert resp.json()["checks"]["tika"] == "error: ConnectError: connection refused"
 
 
-def test_describe_error_never_renders_a_bare_prefix():
-    """No exception should produce a message that stops at the colon."""
-    from harbor_clerk.api.routes.system import _describe_error
+async def test_health_check_bounds_the_detail_it_publishes(client, monkeypatch):
+    """/api/system/health is unauthenticated, and a driver error can stringify
+    with the failing statement and connection detail. Bound what goes out."""
+    import httpx
 
-    for exc in (ValueError(""), RuntimeError("   "), TimeoutError()):
-        rendered = _describe_error(exc)
-        assert rendered.strip() != "error:", f"{exc!r} rendered as a bare prefix"
-        assert not rendered.endswith(": "), f"{exc!r} rendered with a dangling colon: {rendered!r}"
+    from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT
+
+    real_get = httpx.AsyncClient.get
+
+    async def _selective_get(self, url, *args, **kwargs):
+        if str(url) == "http://embedder:8000/health":
+            raise httpx.ConnectError("x" * 5000)
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+
+    resp = await client.get("/api/system/health")
+    rendered = resp.json()["checks"]["embedder"]
+
+    assert len(rendered) < HEALTH_DETAIL_LIMIT + 100, f"unbounded detail published: {len(rendered)} chars"
+    assert rendered.endswith("…")
+
+
+async def test_no_health_check_renders_a_dangling_prefix(client, monkeypatch):
+    """Whatever fails and however it stringifies, a reader learns the type."""
+    import httpx
+
+    real_get = httpx.AsyncClient.get
+    # Must stay selective: the test client is itself an httpx.AsyncClient, so a
+    # blanket raiser kills the request before it reaches the endpoint.
+    probed = ("http://tika:9998", "http://embedder:8000", "http://reranker:8001")
+
+    async def _selective_get(self, url, *args, **kwargs):
+        if str(url).startswith(probed):
+            raise httpx.ConnectTimeout("")
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+
+    resp = await client.get("/api/system/health")
+    checks = resp.json()["checks"]
+    assert checks["embedder"] == "error: ConnectTimeout"
+    for name, value in checks.items():
+        assert value.strip() != "error:", f"{name} rendered a bare prefix"
+        assert not value.endswith(": "), f"{name} rendered a dangling colon: {value!r}"
