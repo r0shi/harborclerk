@@ -151,6 +151,23 @@ async def ping() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _describe_error(exc: Exception) -> str:
+    """Render an exception for a health check payload.
+
+    Always include the type. Several of the exceptions that matter most here
+    carry an empty message — `httpx.ReadTimeout('')` and `ConnectTimeout('')`
+    among them — so a bare `f"error: {exc}"` renders as the literal string
+    `"error: "`, which tells an operator only that *something* is wrong.
+
+    A timeout is exactly the case worth naming: on a constrained machine the
+    embedder blocks long enough to time out its probe, and "error: " sent the
+    previous investigation looking for a crash that had not happened.
+    """
+    detail = str(exc).strip()
+    name = type(exc).__name__
+    return f"error: {name}: {detail}" if detail else f"error: {name}"
+
+
 @router.get("/system/health")
 async def health_check(
     session: AsyncSession = Depends(get_session),
@@ -165,7 +182,7 @@ async def health_check(
         checks["postgres"] = "ok"
     except Exception as e:
         logger.error("Postgres health check failed: %s", e)
-        checks["postgres"] = f"error: {e}"
+        checks["postgres"] = _describe_error(e)
 
     # Storage
     try:
@@ -174,7 +191,7 @@ async def health_check(
         checks["storage"] = "ok"
     except Exception as e:
         logger.error("Storage health check failed: %s", e)
-        checks["storage"] = f"error: {e}"
+        checks["storage"] = _describe_error(e)
 
     settings = get_settings()
 
@@ -185,7 +202,7 @@ async def health_check(
             checks["tika"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
     except Exception as e:
         logger.error("Tika health check failed: %s", e)
-        checks["tika"] = f"error: {e}"
+        checks["tika"] = _describe_error(e)
 
     # Embedder
     try:
@@ -194,7 +211,7 @@ async def health_check(
             checks["embedder"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
     except Exception as e:
         logger.error("Embedder health check failed: %s", e)
-        checks["embedder"] = f"error: {e}"
+        checks["embedder"] = _describe_error(e)
 
     # Reranker — only probed when enabled; disabled is not a degraded state
     if settings.reranker_enabled:
@@ -204,7 +221,7 @@ async def health_check(
                 checks["reranker"] = "ok" if r.status_code == 200 else f"error: HTTP {r.status_code}"
         except Exception as e:
             logger.error("Reranker health check failed: %s", e)
-            checks["reranker"] = f"error: {e}"
+            checks["reranker"] = _describe_error(e)
     else:
         checks["reranker"] = "disabled"
 
@@ -222,7 +239,7 @@ async def health_check(
                 checks["local_https_gateway"] = "ok"
             except Exception as e:
                 logger.error("Local HTTPS gateway health check failed: %s", e)
-                checks["local_https_gateway"] = f"error: {e}"
+                checks["local_https_gateway"] = _describe_error(e)
 
     from harbor_clerk.api.app import BUILD_HASH
 

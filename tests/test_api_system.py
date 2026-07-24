@@ -1160,3 +1160,41 @@ async def test_summary_backlog_endpoint_returns_all_four_fields(client, admin_us
     assert isinstance(data["p50_seconds"], (int, float)) and data["p50_seconds"] >= 0
     assert all(isinstance(ts, (int, float)) for ts, _ in data["depth_history"])
     assert all(isinstance(d, int) and d >= 0 for _, d in data["depth_history"])
+
+
+# --------------------------------------------------------------------------
+# Health-check error rendering
+# --------------------------------------------------------------------------
+
+
+def test_describe_error_names_the_type_when_message_is_empty():
+    """`httpx.ReadTimeout('')` and friends stringify to nothing.
+
+    A bare f"error: {exc}" then renders "error: ", which is what the live
+    system reported for a timing-out embedder — telling an operator only that
+    something, somewhere, was wrong.
+    """
+    import httpx
+
+    from harbor_clerk.api.routes.system import _describe_error
+
+    assert _describe_error(httpx.ReadTimeout("")) == "error: ReadTimeout"
+    assert _describe_error(httpx.ConnectTimeout("")) == "error: ConnectTimeout"
+
+
+def test_describe_error_keeps_the_message_when_there_is_one():
+    import httpx
+
+    from harbor_clerk.api.routes.system import _describe_error
+
+    assert _describe_error(httpx.ConnectError("connection refused")) == "error: ConnectError: connection refused"
+
+
+def test_describe_error_never_renders_a_bare_prefix():
+    """No exception should produce a message that stops at the colon."""
+    from harbor_clerk.api.routes.system import _describe_error
+
+    for exc in (ValueError(""), RuntimeError("   "), TimeoutError()):
+        rendered = _describe_error(exc)
+        assert rendered.strip() != "error:", f"{exc!r} rendered as a bare prefix"
+        assert not rendered.endswith(": "), f"{exc!r} rendered with a dangling colon: {rendered!r}"
