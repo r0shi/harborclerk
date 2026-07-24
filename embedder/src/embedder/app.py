@@ -6,6 +6,7 @@ family is a supported fallback and needs "query: "/"passage: " prefixes that
 Granite-R2 does not.
 """
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -25,7 +26,14 @@ MODEL_NAME = os.environ.get("EMBED_MODEL", "ibm-granite/granite-embedding-311m-m
 NEEDS_PREFIX = os.environ.get("EMBED_NEEDS_PREFIX", "false").lower() in ("true", "1", "yes")
 TASK_PREFIXES = {"query": "query: ", "passage": "passage: "}
 
+# How many encodes may run at once. One shared model on one GPU: letting every
+# caller in concurrently multiplies memory without improving throughput, so the
+# default of 1 preserves today's serialisation. It is a semaphore rather than a
+# hardcoded constant so a bigger machine can trade RAM for throughput.
+MAX_CONCURRENCY = max(1, int(os.environ.get("EMBED_MAX_CONCURRENCY", "1")))
+
 _model: SentenceTransformer | None = None
+_encode_slots: asyncio.Semaphore | None = None
 
 
 class EmbedRequest(BaseModel):
@@ -41,13 +49,17 @@ class EmbedResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _model
+    global _model, _encode_slots
+    # Bound to the loop that will actually await it, so it must be built here
+    # rather than at import time.
+    _encode_slots = asyncio.Semaphore(MAX_CONCURRENCY)
     logger.info("Loading model: %s", MODEL_NAME)
     _model = SentenceTransformer(MODEL_NAME)
     dim = _model.get_sentence_embedding_dimension()
-    logger.info("Model loaded. Embedding dimension: %d", dim)
+    logger.info("Model loaded. Embedding dimension: %d (max concurrency %d)", dim, MAX_CONCURRENCY)
     yield
     _model = None
+    _encode_slots = None
     logger.info("Embedder shut down")
 
 
@@ -63,14 +75,24 @@ async def health():
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(request: EmbedRequest):
-    if _model is None:
+    if _model is None or _encode_slots is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     texts = request.texts
     if NEEDS_PREFIX and request.task:
         prefix = TASK_PREFIXES[request.task]
         texts = [prefix + t for t in texts]
-    embeddings = _model.encode(texts, normalize_embeddings=True)
+
+    # SentenceTransformer.encode is blocking and GPU-bound — a 64-text batch
+    # takes ~3.5s on an M4. Calling it directly on the event loop starved
+    # /health for the whole encode, so the macOS supervisor's 3s probe timed
+    # out, six consecutive failures marked the service errored, and it was
+    # restarted mid-flight — failing every in-flight embed (#553, and the
+    # proximate cause of the #552 failures). Hand it to a worker thread so the
+    # loop stays free to answer /health, and gate concurrency separately.
+    async with _encode_slots:
+        embeddings = await asyncio.to_thread(_model.encode, texts, normalize_embeddings=True)
+
     return EmbedResponse(
         embeddings=embeddings.tolist(),
         model=MODEL_NAME,
