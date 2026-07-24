@@ -44,8 +44,10 @@ def test_succeeds_without_retry(httpx_mock: HTTPXMock):
 
 def test_retries_connection_error_then_succeeds(httpx_mock: HTTPXMock):
     """The #552 reproduction: N-1 transient failures, then success."""
+    # ReadError/ConnectError, not ReadTimeout: a read timeout means the request
+    # landed and is still being worked on, so it is deliberately not retried.
     httpx_mock.add_exception(httpx.ConnectError("connection refused"), url=EMBED_URL)
-    httpx_mock.add_exception(httpx.ReadTimeout("timed out"), url=EMBED_URL)
+    httpx_mock.add_exception(httpx.ReadError("connection reset"), url=EMBED_URL)
     _ok(httpx_mock)
 
     assert embed_texts(["hello"], task="passage") == [VECTOR]
@@ -171,30 +173,106 @@ def test_retry_window_outlasts_an_embedder_restart():
     )
 
 
-async def test_query_path_does_not_retry():
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)  # spare mocks prove the retry did NOT happen
+async def test_query_path_does_not_retry(httpx_mock: HTTPXMock):
     """search._embed_query must fall back instantly, not sit through a backoff.
 
     hybrid_search already degrades to lexical-only on any embedder failure, so
-    retrying returns an identical result more slowly. With the stage budget this
-    measured ~11s per search during an outage, on /api/search, kb_search and
-    find_all alike.
-    """
-    import time
-    from unittest.mock import patch
+    retrying returns an identical result more slowly. Measured against an
+    unreachable embedder before this was fixed: 11.14s per search with the stage
+    budget vs 0.05s with none — on /api/search, kb_search and find_all alike.
 
+    Asserts the request count, not elapsed time: the autouse _no_sleep fixture
+    no-ops asyncio.sleep, so a timing assertion here could never fail.
+    """
     from harbor_clerk.search import _embed_query
 
-    calls = []
+    for _ in range(10):
+        httpx_mock.add_exception(httpx.ConnectError("down"), url=EMBED_URL)
 
-    async def _fail(*args, **kwargs):
-        calls.append(kwargs.get("max_attempts"))
-        raise httpx.ConnectError("down")
+    with pytest.raises(EmbedderError):
+        await _embed_query("anything")
 
-    with patch("harbor_clerk.embedder_client.httpx.AsyncClient.post", _fail):
-        started = time.perf_counter()
-        with pytest.raises(EmbedderError):
-            await _embed_query("anything")
-        elapsed = time.perf_counter() - started
+    assert len(httpx_mock.get_requests()) == 1, (
+        f"query path made {len(httpx_mock.get_requests())} requests; it must not retry"
+    )
 
-    assert elapsed < 1.0, f"query embedding took {elapsed:.2f}s — it must fail fast"
-    assert len(calls) == 1, f"query path made {len(calls)} attempts; it must not retry"
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)  # spare mocks prove the retry did NOT happen
+async def test_hybrid_search_still_degrades_to_lexical_when_embedding_fails(db_session, httpx_mock: HTTPXMock):
+    """The contract that makes max_attempts=1 safe.
+
+    Everything above depends on hybrid_search swallowing the embedder failure
+    and returning FTS-only results. Nothing asserted it, so narrowing that
+    `except` later would break search with no failing test.
+    """
+    from harbor_clerk.search import hybrid_search
+
+    for _ in range(10):
+        httpx_mock.add_exception(httpx.ConnectError("down"), url=EMBED_URL)
+
+    result = await hybrid_search(db_session, "anything", k=5)
+    assert result is not None  # returned rather than raised — that is the contract
+
+
+def test_read_timeout_is_not_retried(httpx_mock: HTTPXMock):
+    """A read timeout means the request landed and the server is still working.
+
+    The embedder holds one model at a concurrency of 1, and a client-side
+    timeout neither cancels the in-flight encode nor lets the server see the
+    disconnect — so a retry queues a *second* encode behind the first rather
+    than replacing it. With a 7-attempt budget a batch that merely runs long
+    would cost seven duplicated encodes, turning a slow embedder into an
+    overloaded one.
+    """
+    httpx_mock.add_exception(httpx.ReadTimeout("slow"), url=EMBED_URL)
+
+    with pytest.raises(EmbedderError, match="ReadTimeout"):
+        embed_texts(["hello"], task="passage")
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_connection_errors_are_still_retried(httpx_mock: HTTPXMock):
+    """The restart case must keep its full budget — that is the whole point."""
+    httpx_mock.add_exception(httpx.ConnectError("refused"), url=EMBED_URL)
+    httpx_mock.add_exception(httpx.ReadError("reset"), url=EMBED_URL)
+    _ok(httpx_mock)
+
+    assert embed_texts(["hello"], task="passage") == [VECTOR]
+    assert len(httpx_mock.get_requests()) == 3
+
+
+def test_non_json_200_becomes_an_embedder_error(httpx_mock: HTTPXMock):
+    """A proxy error page with a 200 used to escape as a raw JSONDecodeError."""
+    httpx_mock.add_response(url=EMBED_URL, status_code=200, text="<html>gateway</html>")
+
+    with pytest.raises(EmbedderError, match="non-JSON"):
+        embed_texts(["hello"], task="passage")
+
+
+def test_unexpected_json_shape_becomes_an_embedder_error(httpx_mock: HTTPXMock):
+    """...and an unexpected shape used to escape as a raw KeyError."""
+    httpx_mock.add_response(url=EMBED_URL, json={"vectors": []})
+
+    with pytest.raises(EmbedderError, match="embeddings"):
+        embed_texts(["hello"], task="passage")
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)  # spare mocks prove the retry did NOT happen
+def test_deadline_stops_retrying_and_reports_the_real_attempt_count(httpx_mock: HTTPXMock, monkeypatch):
+    """Exiting via the deadline must not claim the full attempt budget was used.
+
+    That string lands in `ingestion_jobs.error`; reporting "7/7 attempts" for 2
+    sends an operator looking for a retry storm that never happened.
+    """
+    for _ in range(10):
+        httpx_mock.add_exception(httpx.ConnectError("down"), url=EMBED_URL)
+
+    ticks = iter([0.0, 0.0, 999.0, 999.0, 999.0, 999.0])
+    monkeypatch.setattr("harbor_clerk.embedder_client.time.monotonic", lambda: next(ticks))
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage", deadline_seconds=10.0)
+
+    assert "after 2/7 attempts" in str(excinfo.value), str(excinfo.value)
+    assert len(httpx_mock.get_requests()) == 2

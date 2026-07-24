@@ -13,9 +13,11 @@ Retrying it burns the budget and delays the real error, so we fail fast.
 
 Both a sync and an async entry point exist because the two callers differ:
 the `embed` stage runs in a sync worker, query embedding runs on the event loop.
-Everything that decides *anything* — `_retry_after`, `_parse`, `_backoff_delay`
-— is shared, so the two loops cannot drift on policy; they differ only in how
-they sleep and how they issue the request.
+Everything that decides anything — `_is_retryable_status`,
+`_is_retryable_transport`, `_parse`, `_backoff_delay` — is shared, so the two
+loops cannot drift on policy; they differ only in how they sleep and how they
+issue the request. (429 is retried with plain backoff; the `Retry-After` header
+is not honoured.)
 
 Retrying is for callers with no fallback. `search._embed_query` passes
 `max_attempts=1` on purpose: it already degrades to lexical-only for free, so
@@ -53,11 +55,13 @@ logger = logging.getLogger(__name__)
 # measurement, so this cannot regress silently.
 DEFAULT_MAX_ATTEMPTS = 7
 
-# Hard ceiling on one call, retries included. Without it, a hung embedder that
-# accepts but never answers costs `max_attempts * timeout` per batch — with the
-# embed stage's 120s timeout that is ~735s, so five batches would trip the
-# stage's own 3600s alarm and surface as "Stage embed timed out" instead of the
-# EmbedderError that says what actually happened.
+# Stop starting new attempts once this much time has gone. It bounds the retry
+# loop, not a single request: the check runs between attempts, so the worst case
+# is `deadline + timeout` — a final attempt may begin just under the line. With
+# the embed stage's 120s timeout that is ~420s, against the ~840s an unbounded
+# 7-attempt budget would cost. The point is to keep a batch clear of the stage's
+# own 3600s alarm, which would otherwise mask the real error behind
+# "Stage embed timed out".
 DEFAULT_DEADLINE_SECONDS = 300.0
 _BACKOFF_BASE_SECONDS = 0.5
 _BACKOFF_CAP_SECONDS = 8.0
@@ -80,6 +84,38 @@ def _backoff_delay(attempt: int) -> float:
 
 def _is_retryable_status(status_code: int) -> bool:
     return status_code >= 500 or status_code == 429
+
+
+# Transport failures where the request never landed, or the connection died
+# under it. These are the restart case — the embedder went away and came back —
+# and retrying them is the entire point of this module.
+_RETRYABLE_TRANSPORT = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+    httpx.CloseError,
+)
+
+
+def _is_retryable_transport(exc: httpx.TransportError) -> bool:
+    """Whether re-sending this request can help — or would only add load.
+
+    Deliberately excludes ReadTimeout and WriteTimeout. Those mean the request
+    *was* delivered and the server is still working on it: the embedder holds
+    one model behind a concurrency of 1, and a client-side timeout neither
+    cancels the in-flight encode nor lets the server see the disconnect. So a
+    retry does not replace the slow encode, it queues a second one behind it.
+    With a 7-attempt budget a 64-text batch that merely runs long would cost up
+    to seven duplicated encodes — turning a slow embedder into an overloaded
+    one, which is the failure this module exists to absorb.
+
+    UnsupportedProtocol is excluded too: a misconfigured EMBEDDER_URL is
+    permanent, and retrying it once per batch of every document is pure waste.
+    """
+    return isinstance(exc, _RETRYABLE_TRANSPORT)
 
 
 def _parse(resp: httpx.Response) -> list[list[float]]:
@@ -108,6 +144,12 @@ def _payload(texts: list[str], task: str) -> dict:
 
 
 def _give_up(attempts_made: int, max_attempts: int, detail: str) -> EmbedderError:
+    """`attempts_made` is what actually ran, which is not always max_attempts.
+
+    Exiting via the deadline stops early, and this string is the operator-facing
+    diagnostic in `ingestion_jobs.error` — reporting "7/7 attempts" for 3 sends
+    someone looking for a retry storm that never happened.
+    """
     return EmbedderError(f"embedder call failed after {attempts_made}/{max_attempts} attempts: {detail}")
 
 
@@ -128,10 +170,14 @@ def embed_texts(
     last_detail = "no attempt made"
     started = time.monotonic()
 
+    attempts_made = 0
     for attempt in range(1, max_attempts + 1):
+        attempts_made = attempt
         try:
             resp = httpx.post(url, json=_payload(texts, task), timeout=timeout)
         except httpx.TransportError as exc:
+            if not _is_retryable_transport(exc):
+                raise EmbedderError(f"embedder call failed: {type(exc).__name__}: {exc}") from exc
             last_detail = f"{type(exc).__name__}: {exc}"
         except httpx.RequestError as exc:
             # DecodingError / TooManyRedirects are RequestError but NOT
@@ -156,7 +202,7 @@ def embed_texts(
         )
         time.sleep(delay)
 
-    raise _give_up(max_attempts, max_attempts, last_detail)
+    raise _give_up(attempts_made, max_attempts, last_detail)
 
 
 async def embed_texts_async(
@@ -177,10 +223,14 @@ async def embed_texts_async(
     started = time.monotonic()
 
     async with httpx.AsyncClient(timeout=timeout) as client:
+        attempts_made = 0
         for attempt in range(1, max_attempts + 1):
+            attempts_made = attempt
             try:
                 resp = await client.post(url, json=_payload(texts, task))
             except httpx.TransportError as exc:
+                if not _is_retryable_transport(exc):
+                    raise EmbedderError(f"embedder call failed: {type(exc).__name__}: {exc}") from exc
                 last_detail = f"{type(exc).__name__}: {exc}"
             except httpx.RequestError as exc:
                 raise EmbedderError(f"embedder request failed: {type(exc).__name__}: {exc}") from exc
@@ -201,4 +251,4 @@ async def embed_texts_async(
             )
             await asyncio.sleep(delay)
 
-    raise _give_up(max_attempts, max_attempts, last_detail)
+    raise _give_up(attempts_made, max_attempts, last_detail)
