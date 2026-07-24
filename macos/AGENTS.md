@@ -50,6 +50,27 @@ surfaces; do not conflate them.
 Port 80 is frequently occupied on macOS (AirPlay Receiver and friends) and is
 not needed for local development.
 
+The client `Info.plist` declares **no ATS keys**, so the loopback cleartext load
+depends on WebKit's *implicit* localhost allowance rather than a declared
+exception. That is a known gap, not a decision — see #561.
+
+## Do not bump the SDK without re-testing
+
+Many of macOS's stricter privacy and security defaults are gated
+**"linked-on-or-after"** the SDK a binary was built against. The build currently
+targets `MACOSX_DEPLOYMENT_TARGET = 15.0` and links the macOS 15.x SDK, which
+means it is **grandfathered into the older, looser behavior** even when running
+on a much newer OS.
+
+Rebuilding against a newer SDK is what *flips the stricter rules on* — ATS,
+TCC/file access, hardened-runtime and JIT policy can all change behavior with no
+source change at all. So an SDK bump is a behavioral change, not housekeeping.
+
+When bumping, re-test on the target OS: the WKWebView loopback load, watched-
+folder access from the background watcher, and every spawned helper (Postgres,
+the Tika JVM, llama-server, bundled Python). See the macOS 27 readiness
+assessment in `docs/superpowers/plans/` and epic #563.
+
 ## No native dialogs in the web view
 
 `window.confirm` and `window.alert` silently return false in WKWebView. Swift
