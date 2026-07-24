@@ -47,12 +47,23 @@ class ReadOnlyIMAP4_SSL(aioimaplib.IMAP4_SSL):
         This narrows rather than widens the read-only guarantee's surface: the
         selection really is read-only — the server enforces it — we are only
         correcting the client's bookkeeping to match.
+
+        A *failed* EXAMINE deselects (RFC 3501 §6.3.1/§6.3.2: "if this command
+        is unsuccessful, no mailbox is selected"). That matters because
+        `MailObserver` holds one connection per label across ticks: if tick N
+        selects a label and tick N+1 gets a `NO` — a renamed label, or a
+        transient Gmail refusal — the server has nothing selected while the
+        client would still believe it does. `ingest.fetch_eml_bytes` does not
+        re-examine, so its UID FETCH would pass the client-side gate and be
+        rejected on the wire instead. Reset to AUTH so the state matches.
+
+        (aioimaplib's own `select()` omits this too, so upstream is no guide.)
         """
         response = await super().examine(mailbox)
-        if response.result == "OK":
-            async with self.protocol.state_condition:
-                self.protocol.state = aioimaplib.SELECTED
-                self.protocol.state_condition.notify_all()
+        new_state = aioimaplib.SELECTED if response.result == "OK" else aioimaplib.AUTH
+        async with self.protocol.state_condition:
+            self.protocol.state = new_state
+            self.protocol.state_condition.notify_all()
         return response
 
     async def store(self, *_args, **_kwargs):

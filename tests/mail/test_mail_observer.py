@@ -263,3 +263,56 @@ async def test_observer_creates_documents_after_sync(db_session, mock_aioimap, o
     assert len(docs) == 2
     titles = sorted(d.title for d in docs)
     assert titles == ["End to end", "doc.pdf"]
+
+
+async def test_reconcile_respawns_a_label_task_that_died(db_session, mock_aioimap, observer_session_factory):
+    """A label task that raised must be respawned, not left dead forever.
+
+    `_tasks` was keyed only on presence, so a task that died from an exception
+    stayed in the dict, was never respawned, and never had its exception
+    retrieved. One transient error — a connection dropped near Gmail's
+    ~29-minute IDLE limit, an `Abort` from the IDLE command — froze that label's
+    `last_synced_at` until the watcher process restarted. That is #557's symptom
+    one layer out, and it only became reachable once EXAMINE started entering
+    the selected state and the IDLE path actually ran.
+    """
+    import asyncio
+
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    cipher = get_cipher()
+    ct, fp = cipher.encrypt(b"app-pw")
+    account = MailAccount(
+        display_name="respawn-test",
+        provider="gmail",
+        imap_host="imap.gmail.com",
+        imap_port=993,
+        imap_username="respawn@example.com",
+        app_password_ciphertext=ct,
+        key_fingerprint=fp,
+    )
+    db_session.add(account)
+    await db_session.flush()
+    label = WatchedLabel(account_id=account.account_id, label_path="Resp", display_name="Resp")
+    db_session.add(label)
+    await db_session.commit()
+    label_id = label.label_id
+
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    # A task that died the way a transient IMAP error would.
+    async def _boom():
+        raise RuntimeError("connection dropped mid-IDLE")
+
+    dead = asyncio.create_task(_boom())
+    await asyncio.sleep(0)
+    assert dead.done() and dead.exception() is not None
+    observer._tasks[label_id] = dead
+
+    await observer._reconcile(observer_session_factory)
+
+    respawned = observer._tasks.get(label_id)
+    assert respawned is not None, "dead task was not respawned — the label would stall forever"
+    assert respawned is not dead, "the dead task was left in place"
+
+    await observer.stop()

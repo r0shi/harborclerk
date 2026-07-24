@@ -149,17 +149,12 @@ class _StubProtocol:
 
         self.state = state
         self.state_condition = asyncio.Condition()
-        self.notified = 0
-
-    async def _notify(self):
-        async with self.state_condition:
-            self.state_condition.notify_all()
 
 
-def _client_with_stub_examine(result: str):
+def _client_with_stub_examine(result: str, *, starting_state=aioimaplib.AUTH):
     """A ReadOnlyIMAP4_SSL whose super().examine() returns `result`."""
     client = ReadOnlyIMAP4_SSL.__new__(ReadOnlyIMAP4_SSL)  # bypass network init
-    client.protocol = _StubProtocol()
+    client.protocol = _StubProtocol(starting_state)
 
     async def fake_examine(self, mailbox="INBOX"):
         return aioimaplib.Response(result, [b"* 12 EXISTS", b"* OK [UIDVALIDITY 42]"])
@@ -188,20 +183,37 @@ async def test_examine_moves_connection_into_selected_state(monkeypatch):
     )
 
 
-async def test_examine_leaves_state_alone_when_server_refuses(monkeypatch):
-    """A NO/BAD means the mailbox was not selected — don't claim otherwise."""
-    client, fake_examine = _client_with_stub_examine("NO")
+async def test_examine_deselects_when_server_refuses(monkeypatch):
+    """A failed EXAMINE deselects — RFC 3501: "no mailbox is selected".
+
+    The stub starts at SELECTED deliberately. Starting from AUTH, "leave the
+    state alone" and "reset to AUTH" are indistinguishable, and the earlier
+    version of this test passed for both the correct and the broken
+    implementation.
+
+    Live shape: MailObserver keeps one connection per label across ticks. Tick N
+    examines OK, tick N+1 gets a NO (renamed label, transient refusal). If the
+    client still believed it was SELECTED, `ingest.fetch_eml_bytes` — which does
+    not re-examine — would put a UID FETCH on the wire against no selection.
+    """
+    client, fake_examine = _client_with_stub_examine("NO", starting_state=aioimaplib.SELECTED)
     monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
 
     resp = await client.examine("nonexistent-label")
 
     assert resp.result == "NO"
-    assert client.protocol.state == aioimaplib.AUTH
+    assert client.protocol.state == aioimaplib.AUTH, (
+        "a refused EXAMINE must deselect; a stale SELECTED lets UID FETCH/IDLE "
+        "past the client-side gate and fail on the wire instead"
+    )
 
 
-async def test_examine_permits_uid_search_afterwards(monkeypatch):
-    """End-to-end on the state guard: aioimaplib's own command table rejects
-    SEARCH unless state is SELECTED. After examine() it must pass that gate."""
+async def test_examine_satisfies_the_command_state_gate(monkeypatch):
+    """The state left by examine() must satisfy aioimaplib's own command table.
+
+    This reads `Commands[...].valid_states` rather than issuing anything — the
+    real UID SEARCH over a socket is `test_imap_state_e2e.py`.
+    """
     client, fake_examine = _client_with_stub_examine("OK")
     monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
 
@@ -211,3 +223,32 @@ async def test_examine_permits_uid_search_afterwards(monkeypatch):
     assert client.protocol.state in allowed_states
     assert client.protocol.state in aioimaplib.Commands["UID"].valid_states
     assert client.protocol.state in aioimaplib.Commands["IDLE"].valid_states
+
+
+async def test_examine_wakes_waiters_on_the_state_condition(monkeypatch):
+    """Taking the lock is only worth it if the notify actually wakes someone.
+
+    aioimaplib's `protocol.wait(...)` blocks on `state_condition` — that is why
+    `change_state` notifies, and why this override mirrors it. Without the
+    notify, a waiter would sleep past a state change that already happened.
+    """
+    import asyncio
+
+    client, fake_examine = _client_with_stub_examine("OK")
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
+
+    woke = asyncio.Event()
+
+    async def _waiter():
+        async with client.protocol.state_condition:
+            await client.protocol.state_condition.wait_for(lambda: client.protocol.state == aioimaplib.SELECTED)
+            woke.set()
+
+    task = asyncio.create_task(_waiter())
+    await asyncio.sleep(0)  # let the waiter reach wait_for
+
+    await client.examine("kickstarter")
+    await asyncio.wait_for(woke.wait(), timeout=2)
+
+    assert woke.is_set()
+    task.cancel()

@@ -61,6 +61,7 @@ class _MiniIMAPServer:
                 if len(parts) < 2:
                     continue
                 tag, verb = parts[0], parts[1].upper()
+                # Records the bare verb, so UID SEARCH lands here as 'UID'.
                 self.commands.append(verb)
 
                 if verb == "CAPABILITY":
@@ -89,7 +90,7 @@ class _MiniIMAPServer:
 class _PlaintextReadOnlyIMAP(ReadOnlyIMAP4_SSL):
     """The production class, minus TLS. `examine` resolves exactly as it does live."""
 
-    def create_client(self, host, port, loop, conn_lost_cb=None, ssl_context=None):  # noqa: ANN001
+    def create_client(self, host, port, loop, conn_lost_cb=None, ssl_context=None):
         aioimaplib.IMAP4.create_client(self, host, port, loop, conn_lost_cb, None)
 
 

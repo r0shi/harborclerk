@@ -105,9 +105,30 @@ class MailObserver:
             )
 
         desired_ids = {lbl.label_id for lbl in rows if lbl.account.status == "active"}
+
+        # Reap finished tasks before deciding what is running. Without this, a
+        # task that died from an exception stays in `_tasks` forever, so it is
+        # never respawned and its exception is never retrieved — one transient
+        # error (a dropped connection near Gmail's ~29-minute IDLE limit, an
+        # `Abort` from the IDLE command) freezes that label's `last_synced_at`
+        # until the watcher process restarts. That is #557's symptom exactly,
+        # one layer out, and it only became reachable once EXAMINE started
+        # entering the selected state and the IDLE path went live.
+        for lid, task in list(self._tasks.items()):
+            if not task.done():
+                continue
+            self._tasks.pop(lid, None)
+            if task.cancelled():
+                continue
+            exc = task.exception()
+            if exc is not None:
+                logger.exception("label %s sync task died; respawning", lid, exc_info=exc)
+            else:
+                logger.warning("label %s sync task exited without error; respawning", lid)
+
         actual_ids = set(self._tasks.keys())
 
-        # Spawn tasks for newly-active labels
+        # Spawn tasks for newly-active labels (and anything just reaped)
         for lbl in rows:
             if lbl.account.status != "active":
                 continue
