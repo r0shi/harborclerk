@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet } from 'react-router'
 import { useAuth } from '../auth'
 import { settingsSectionsForRole, type SettingsItem } from '../settingsNav'
 import { IconTile } from './IconTile'

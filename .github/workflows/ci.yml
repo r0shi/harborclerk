@@ -80,3 +80,11 @@ jobs:
       - name: Type check
         run: npm run type-check
         working-directory: frontend
+      # `frontend/package.json` has defined `"test": "vitest"` all along, but
+      # nothing ran it. For the react-router v8 migration the only automated
+      # signal was `tsc --noEmit`, which passes trivially on an import rename —
+      # while the MemoryRouter-based route tests, the ones that would actually
+      # catch a routing regression, sat uncollected.
+      - name: Unit tests
+        run: npm test -- --run
+        working-directory: frontend

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { useAuth } from '../auth'
 import BackButton from './BackButton'
 import { LLMStatusBanner, LLMStatusProvider } from './LLMStatusBanner'
