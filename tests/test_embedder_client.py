@@ -142,9 +142,13 @@ def test_retry_window_outlasts_an_embedder_restart():
     """The budget must cover a full restart, which is the failure it exists for.
 
     Measured on the Mac mini: the embedder is unreachable for ~7.2s across a
-    restart (shutdown -> model loaded). The original 4-attempt default gave a
-    1.75-3.5s window and a live ingest duly showed a document failing across a
-    restart the retry was meant to absorb.
+    restart. The original 4-attempt default gave a 1.75-3.5s window and a live
+    ingest duly showed a document failing across a restart it should have
+    absorbed.
+
+    The requirement carries margin rather than sitting just above the one
+    measurement, so a slower disk or a larger model doesn't silently make the
+    budget too small again.
     """
     from harbor_clerk.embedder_client import (
         _BACKOFF_BASE_SECONDS,
@@ -153,14 +157,44 @@ def test_retry_window_outlasts_an_embedder_restart():
     )
 
     OBSERVED_RESTART_SECONDS = 7.2
+    REQUIRED_WINDOW = OBSERVED_RESTART_SECONDS * 1.5
 
-    # Jitter is half-to-full, so the worst case for coverage is the low end.
+    # Jitter is half-to-full, so the guaranteed window is the low end.
     minimum_window = sum(
         min(_BACKOFF_CAP_SECONDS, _BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))) * 0.5
         for attempt in range(1, DEFAULT_MAX_ATTEMPTS)
     )
 
-    assert minimum_window > OBSERVED_RESTART_SECONDS, (
-        f"retry window is at least {minimum_window:.2f}s but an embedder restart "
-        f"takes ~{OBSERVED_RESTART_SECONDS}s — the retry cannot ride one out"
+    assert minimum_window >= REQUIRED_WINDOW, (
+        f"guaranteed retry window is {minimum_window:.2f}s; an embedder restart "
+        f"takes ~{OBSERVED_RESTART_SECONDS}s and this needs {REQUIRED_WINDOW:.2f}s of margin"
     )
+
+
+async def test_query_path_does_not_retry():
+    """search._embed_query must fall back instantly, not sit through a backoff.
+
+    hybrid_search already degrades to lexical-only on any embedder failure, so
+    retrying returns an identical result more slowly. With the stage budget this
+    measured ~11s per search during an outage, on /api/search, kb_search and
+    find_all alike.
+    """
+    import time
+    from unittest.mock import patch
+
+    from harbor_clerk.search import _embed_query
+
+    calls = []
+
+    async def _fail(*args, **kwargs):
+        calls.append(kwargs.get("max_attempts"))
+        raise httpx.ConnectError("down")
+
+    with patch("harbor_clerk.embedder_client.httpx.AsyncClient.post", _fail):
+        started = time.perf_counter()
+        with pytest.raises(EmbedderError):
+            await _embed_query("anything")
+        elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0, f"query embedding took {elapsed:.2f}s — it must fail fast"
+    assert len(calls) == 1, f"query path made {len(calls)} attempts; it must not retry"

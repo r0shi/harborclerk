@@ -56,8 +56,25 @@ _PROCESSING_PIPELINE_STATUSES: tuple[PipelineStatus, ...] = (
 
 
 async def _embed_query(query: str) -> list[float]:
-    """Embed a query string via the embedder service."""
-    embeddings = await embed_texts_async([query], task="query", timeout=30)
+    """Embed a query string via the embedder service.
+
+    Deliberately does **not** retry, unlike the embed stage.
+
+    The caller already has a correct, instant fallback: `hybrid_search` catches
+    any failure here and degrades to lexical-only. Retrying would buy nothing —
+    the same result is returned either way — while making every search during an
+    embedder outage sit through the whole backoff first. With the stage's
+    6-attempt budget that measured 12s per search, and against a socket that
+    accepts but never answers it would be 6 x the read timeout on top.
+
+    That cost lands on `/api/search`, `kb_search` and `find_all` alike, and a
+    single MCP call can pay it twice when a scoped key re-probes unscoped.
+
+    The thundering-herd argument for jittered retries applies to the `cpu`
+    workers waking on one LISTEN notification, not to an interactive request
+    with a free fallback.
+    """
+    embeddings = await embed_texts_async([query], task="query", timeout=30, max_attempts=1)
     return embeddings[0]
 
 

@@ -93,9 +93,16 @@ async def test_embed_stage_survives_transient_embedder_failure(db_session, httpx
 
 
 @pytest.mark.asyncio
-async def test_embed_stage_still_fails_when_embedder_is_truly_down(db_session, httpx_mock: HTTPXMock):
-    """Retry must not paper over a real outage — the stage should still raise
-    so the worker records the error rather than silently marking it done."""
+async def test_embed_stage_raises_when_embedder_is_truly_down(db_session, httpx_mock: HTTPXMock):
+    """Retry must not paper over a real outage.
+
+    Asserts what `run_embed` actually controls: it raises EmbedderError and
+    writes no embeddings. It deliberately does NOT assert the job row is
+    `error` — recording that is `execute_job`'s job (worker/entry.py), not
+    `run_embed`'s, and `mark_stage_running` never sets `running` either, so
+    the row is still `queued` here. An earlier version of this test claimed
+    otherwise and asserted neither.
+    """
     doc_id = await _make_doc_with_chunks(db_session, chunk_count=2)
 
     from harbor_clerk.embedder_client import DEFAULT_MAX_ATTEMPTS, EmbedderError
@@ -109,3 +116,4 @@ async def test_embed_stage_still_fails_when_embedder_is_truly_down(db_session, h
 
     _status, embedded = _stage_outcome(doc_id)
     assert embedded == 0
+    assert len(httpx_mock.get_requests()) == DEFAULT_MAX_ATTEMPTS
