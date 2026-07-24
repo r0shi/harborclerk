@@ -410,3 +410,67 @@ async def test_reconcile_does_not_spawn_during_shutdown(db_session, mock_aioimap
     await observer._reconcile(observer_session_factory)
 
     assert observer._tasks == {}, "spawned a task during shutdown; it would leak past stop()"
+
+
+async def test_backoff_never_overflows(db_session, mock_aioimap, observer_session_factory):
+    """The failure counter is unbounded; the exponent must not be.
+
+    `5.0 * 2 ** (failures - 1)` raises OverflowError past ~1024. `_reconcile` is
+    awaited unguarded in `run()`, so that unwinds the supervisor and every label
+    stops syncing until the process restarts — the failure this respawn logic
+    exists to prevent, one level up. A label failing fast on every attempt
+    reaches it in a few days of ordinary uptime.
+    """
+    import asyncio
+
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "overflow")
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    async def _boom():
+        raise RuntimeError("fails fast, every time")
+
+    for streak in (1_000, 100_000):
+        observer._consecutive_failures[label_id] = streak
+        dead = asyncio.create_task(_boom())
+        await asyncio.sleep(0)
+        observer._tasks[label_id] = dead
+        observer._spawned_at[label_id] = __import__("time").monotonic()
+
+        await observer._reconcile(observer_session_factory)  # must not raise
+
+        import time as _t
+
+        delay = observer._retry_not_before[label_id] - _t.monotonic()
+        assert delay <= 301, f"delay {delay}s exceeded the cap"
+
+    await observer.stop()
+
+
+async def test_reactivating_a_label_clears_its_backoff(db_session, mock_aioimap, observer_session_factory):
+    """A stale gate would silently block recovery right after an operator fix."""
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "reactivate")
+    observer = MailObserver(session_factory=observer_session_factory)
+    await observer._reconcile(observer_session_factory)
+
+    observer._consecutive_failures[label_id] = 9
+    observer._retry_not_before[label_id] = __import__("time").monotonic() + 300
+
+    # Label goes inactive → its task is cancelled and its backoff forgotten.
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import WatchedLabel as _WL
+
+    lbl = (await db_session.execute(_select(_WL).where(_WL.label_id == label_id))).scalar_one()
+    lbl.status = "paused"
+    await db_session.commit()
+
+    await observer._reconcile(observer_session_factory)
+
+    assert label_id not in observer._consecutive_failures
+    assert label_id not in observer._retry_not_before
+
+    await observer.stop()

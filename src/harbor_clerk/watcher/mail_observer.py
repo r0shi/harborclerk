@@ -17,6 +17,7 @@ Architecture:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from datetime import UTC, datetime
@@ -71,6 +72,14 @@ def _default_session_factory() -> async_sessionmaker:
 # attempts an hour rather than ~720.
 _BASE_RESPAWN_BACKOFF = 5.0
 _MAX_RESPAWN_BACKOFF = 300.0
+# Clamp the *exponent*, not just the resulting delay. `2 ** (failures - 1)` is an
+# int, and 5.0 * 2**1024 raises OverflowError — which unwinds _reconcile and
+# run(), so watcher/main.py logs "mail observer exited" and every label stops
+# syncing until the process restarts. At the 300s cap a label failing in under
+# _HEALTHY_RUN_SECONDS on every attempt reaches that in ~3.5 days, which is
+# ordinary uptime for an always-on appliance. That is the failure this respawn
+# logic exists to prevent, reintroduced one level up.
+_MAX_BACKOFF_EXPONENT = 8
 # A task that stayed up this long was working; its death is a new incident, not
 # a continuation of an earlier streak.
 _HEALTHY_RUN_SECONDS = 120.0
@@ -164,7 +173,7 @@ class MailObserver:
             # death as a fresh incident rather than escalating an old streak.
             failures = 1 if ran_for >= _HEALTHY_RUN_SECONDS else self._consecutive_failures.get(lid, 0) + 1
             self._consecutive_failures[lid] = failures
-            delay = min(_MAX_RESPAWN_BACKOFF, _BASE_RESPAWN_BACKOFF * (2 ** (failures - 1)))
+            delay = min(_MAX_RESPAWN_BACKOFF, _BASE_RESPAWN_BACKOFF * (2 ** min(failures - 1, _MAX_BACKOFF_EXPONENT)))
             self._retry_not_before[lid] = now + delay
 
             if exc is not None:
@@ -206,6 +215,11 @@ class MailObserver:
 
         # Cancel tasks for labels that are no longer active
         for lid in actual_ids - desired_ids:
+            # Drop the backoff bookkeeping too: otherwise a reactivated account
+            # sits behind a stale gate for up to the cap, silently, right after
+            # the operator fixed it.
+            self._consecutive_failures.pop(lid, None)
+            self._retry_not_before.pop(lid, None)
             task = self._tasks.pop(lid, None)
             if task is not None:
                 task.cancel()
@@ -265,14 +279,39 @@ class MailObserver:
             # last_error, so the UI shows a healthy account that never syncs —
             # and the supervisor retries forever with nothing explaining why.
             logger.warning("connect/login failed for label %s: %s", label_id, _describe(exc))
+            try:
+                async with session_factory() as session:
+                    acc = (
+                        await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
+                    ).scalar_one_or_none()
+                    if acc is not None:
+                        acc.last_error = _describe(exc)
+                        await session.commit()
+            except Exception:
+                # "connect failed" and "DB down" co-occur constantly. Letting
+                # this escape would skip the audit exit below and strand its
+                # session + pooled connection — once per retry, now that we
+                # retry.
+                logger.exception("could not record connect failure for label %s", label_id)
+            finally:
+                with contextlib.suppress(Exception):
+                    await conn.logout()
+                await audit_ctx.__aexit__(None, None, None)
+            return
+
+        # Login worked: clear any latched failure, or the UI shows a broken
+        # account that is in fact syncing — the inverse of the bug this fixes.
+        try:
             async with session_factory() as session:
                 acc = (
                     await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
-                ).scalar_one()
-                acc.last_error = _describe(exc)
-                await session.commit()
-            await audit_ctx.__aexit__(None, None, None)
-            return
+                ).scalar_one_or_none()
+                if acc is not None and acc.last_error is not None:
+                    acc.last_error = None
+                    acc.last_connected_at = datetime.now(UTC)
+                    await session.commit()
+        except Exception:
+            logger.exception("could not clear last_error for label %s", label_id)
 
         async def on_tick(c: IMAPConnection) -> None:
             async with session_factory() as session:

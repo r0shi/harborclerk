@@ -252,3 +252,25 @@ async def test_examine_wakes_waiters_on_the_state_condition(monkeypatch):
 
     assert woke.is_set()
     task.cancel()
+
+
+async def test_examine_deselects_when_the_command_raises(monkeypatch):
+    """A raised EXAMINE deselects too — not just a tagged NO.
+
+    `wait_for` timeout or a reset connection leaves the server with no
+    selection. Without this the client keeps a stale SELECTED and the next
+    idle_start() passes the client-side gate and goes on the wire against
+    nothing, which is what the override exists to prevent.
+    """
+    client = ReadOnlyIMAP4_SSL.__new__(ReadOnlyIMAP4_SSL)
+    client.protocol = _StubProtocol(aioimaplib.SELECTED)
+
+    async def _raises(self, mailbox="INBOX"):
+        raise TimeoutError()
+
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", _raises, raising=True)
+
+    with pytest.raises(TimeoutError):
+        await client.examine("kickstarter")
+
+    assert client.protocol.state == aioimaplib.AUTH, "a raised EXAMINE left a stale SELECTED"

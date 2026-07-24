@@ -59,12 +59,23 @@ class ReadOnlyIMAP4_SSL(aioimaplib.IMAP4_SSL):
 
         (aioimaplib's own `select()` omits this too, so upstream is no guide.)
         """
-        response = await super().examine(mailbox)
-        new_state = aioimaplib.SELECTED if response.result == "OK" else aioimaplib.AUTH
-        async with self.protocol.state_condition:
-            self.protocol.state = new_state
-            self.protocol.state_condition.notify_all()
+        try:
+            response = await super().examine(mailbox)
+        except BaseException:
+            # A raised EXAMINE (wait_for timeout, connection reset) leaves the
+            # server with no selection just as a NO does. Without this the
+            # client keeps a stale SELECTED and the next idle_start() passes the
+            # client-side gate and goes on the wire against nothing — the exact
+            # case the paragraph above says this prevents.
+            await self._set_state(aioimaplib.AUTH)
+            raise
+        await self._set_state(aioimaplib.SELECTED if response.result == "OK" else aioimaplib.AUTH)
         return response
+
+    async def _set_state(self, state: str) -> None:
+        async with self.protocol.state_condition:
+            self.protocol.state = state
+            self.protocol.state_condition.notify_all()
 
     async def store(self, *_args, **_kwargs):
         raise ReadOnlyViolation("store() mutates message flags")
