@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router'
 import { get } from '../api'
 import CorpusCharts from '../components/stats/CorpusCharts'
 import EntityNetwork from '../components/stats/EntityNetwork'

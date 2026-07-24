@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { del, get, patch, post } from '../api'
 import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'

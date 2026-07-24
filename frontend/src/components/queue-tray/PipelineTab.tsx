@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { useQueueSnapshot } from '../../hooks/useQueueSnapshot'
 import WorkerStrip from './WorkerStrip'
 import StageHistogram from './StageHistogram'

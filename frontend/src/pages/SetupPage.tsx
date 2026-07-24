@@ -1,5 +1,5 @@
 import { FormEvent, useMemo, useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate } from 'react-router'
 import { useAuth } from '../auth'
 import { Card } from '../components/Card'
 import { PageHeader } from '../components/PageHeader'
