@@ -106,7 +106,6 @@ def test_health_stays_responsive_while_encode_is_running(stub_model):
             t.join(timeout=10)
 
     assert r.status_code == 200
-    assert not embed_done.is_set() or health_latency < 1.0, "health should have answered before the encode finished"
     # The supervisor's probe timeout is 3s; anything near the encode duration
     # means the loop was blocked again.
     assert health_latency < 1.0, f"/health blocked for {health_latency:.2f}s — event loop is blocked by encode"
@@ -140,11 +139,17 @@ def test_concurrent_encodes_are_bounded(stub_model):
 
     stub_model.encode.side_effect = counting_encode
 
+    statuses = []
+
     with patch("embedder.app.SentenceTransformer", return_value=stub_model):
         from embedder.app import app
 
         with TestClient(app) as c:
-            threads = [threading.Thread(target=lambda: c.post("/embed", json={"texts": ["x"]})) for _ in range(6)]
+
+            def _post():
+                statuses.append(c.post("/embed", json={"texts": ["x"]}).status_code)
+
+            threads = [threading.Thread(target=_post) for _ in range(6)]
             for t in threads:
                 t.start()
             for t in threads:
@@ -152,4 +157,30 @@ def test_concurrent_encodes_are_bounded(stub_model):
 
     from embedder.app import MAX_CONCURRENCY
 
+    # Without these two, six requests that all 503 look identical to six that
+    # queue politely: peak stays 0 and the cap assertion passes vacuously.
+    assert statuses == [200] * 6, f"expected six successful encodes, got {statuses}"
+    assert stub_model.encode.call_count == 6
+
     assert peak <= MAX_CONCURRENCY, f"{peak} concurrent encodes exceeded the cap of {MAX_CONCURRENCY}"
+    assert peak >= 1, "no encode was observed; the test proved nothing"
+
+
+def test_max_concurrency_env_is_total():
+    """A junk value must not stop the service binding.
+
+    MAX_CONCURRENCY is read at import, so `int()` raising there means uvicorn
+    never binds — on the very service this module's fix exists to keep alive.
+    An unset compose passthrough and a bare `NAME=` in .env both arrive as "".
+    """
+    import os
+    from unittest.mock import patch
+
+    from embedder.app import _positive_int_env
+
+    for raw in ("", "auto", "  ", "-3", "0"):
+        with patch.dict(os.environ, {"EMBED_MAX_CONCURRENCY": raw}):
+            assert _positive_int_env("EMBED_MAX_CONCURRENCY", 1) >= 1
+
+    with patch.dict(os.environ, {"EMBED_MAX_CONCURRENCY": "4"}):
+        assert _positive_int_env("EMBED_MAX_CONCURRENCY", 1) == 4
