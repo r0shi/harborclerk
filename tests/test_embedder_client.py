@@ -136,3 +136,31 @@ async def test_async_raises_after_exhausting_attempts(httpx_mock: HTTPXMock):
     with pytest.raises(EmbedderError, match="after 2/2 attempts"):
         await embed_texts_async(["q"], task="query", max_attempts=2)
     assert len(httpx_mock.get_requests()) == 2
+
+
+def test_retry_window_outlasts_an_embedder_restart():
+    """The budget must cover a full restart, which is the failure it exists for.
+
+    Measured on the Mac mini: the embedder is unreachable for ~7.2s across a
+    restart (shutdown -> model loaded). The original 4-attempt default gave a
+    1.75-3.5s window and a live ingest duly showed a document failing across a
+    restart the retry was meant to absorb.
+    """
+    from harbor_clerk.embedder_client import (
+        _BACKOFF_BASE_SECONDS,
+        _BACKOFF_CAP_SECONDS,
+        DEFAULT_MAX_ATTEMPTS,
+    )
+
+    OBSERVED_RESTART_SECONDS = 7.2
+
+    # Jitter is half-to-full, so the worst case for coverage is the low end.
+    minimum_window = sum(
+        min(_BACKOFF_CAP_SECONDS, _BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))) * 0.5
+        for attempt in range(1, DEFAULT_MAX_ATTEMPTS)
+    )
+
+    assert minimum_window > OBSERVED_RESTART_SECONDS, (
+        f"retry window is at least {minimum_window:.2f}s but an embedder restart "
+        f"takes ~{OBSERVED_RESTART_SECONDS}s — the retry cannot ride one out"
+    )

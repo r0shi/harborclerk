@@ -29,10 +29,19 @@ from harbor_clerk.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Worst-case cumulative sleep with these defaults is ~7.5s (0.5 + 1 + 2 + 4),
-# comfortably inside every stage timeout while still riding out a model reload,
-# which takes ~1.5-3s on an M-series Mac.
-DEFAULT_MAX_ATTEMPTS = 4
+# The retry window has to outlast a full embedder restart, because that is the
+# failure it exists for. Measured on the Mac mini: shutdown 15:30:17.9 ->
+# model loaded 15:30:25.1, so the service is unreachable for ~7.2s.
+#
+# N attempts sleep after the first N-1 of them, and the jitter halves each
+# ceiling, so the real window is 0.5*sum .. sum of the ceilings:
+#
+#     4 attempts -> 1.75 - 3.50s   (shorter than a restart; would still fail)
+#     6 attempts -> 7.75 - 15.50s  (covers it, with margin)
+#
+# 4 was the original guess and it was wrong — a live ingest showed a document
+# failing across a restart the retry was supposed to absorb.
+DEFAULT_MAX_ATTEMPTS = 6
 _BACKOFF_BASE_SECONDS = 0.5
 _BACKOFF_CAP_SECONDS = 8.0
 
