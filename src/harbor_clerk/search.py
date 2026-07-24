@@ -6,12 +6,12 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-import httpx
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.config import get_settings
+from harbor_clerk.embedder_client import embed_texts_async
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.search_rerank import rerank_hits
@@ -57,14 +57,8 @@ _PROCESSING_PIPELINE_STATUSES: tuple[PipelineStatus, ...] = (
 
 async def _embed_query(query: str) -> list[float]:
     """Embed a query string via the embedder service."""
-    settings = get_settings()
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{settings.embedder_url}/embed",
-            json={"texts": [query], "task": "query"},
-        )
-        resp.raise_for_status()
-        return resp.json()["embeddings"][0]
+    embeddings = await embed_texts_async([query], task="query", timeout=30)
+    return embeddings[0]
 
 
 def _apply_email_metadata_filter(

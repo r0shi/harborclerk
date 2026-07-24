@@ -3,11 +3,10 @@
 import logging
 import uuid
 
-import httpx
 from sqlalchemy import select
 
-from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
+from harbor_clerk.embedder_client import embed_texts
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.models import Chunk, Document, IngestionJob
 from harbor_clerk.models.enums import JobStage
@@ -23,7 +22,6 @@ def run_embed(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
     if not mark_stage_running(doc_id, JobStage.embed, worker_seq=worker_seq):
         return
 
-    settings = get_settings()
     session = get_sync_session()
     try:
         # Load worker_seq up front so mark_stage_done and per-batch commits can race-check.
@@ -69,13 +67,7 @@ def run_embed(doc_id: uuid.UUID, *, worker_seq: int | None = None) -> None:
             batch = chunks[batch_start : batch_start + BATCH_SIZE]
             texts = [c.chunk_text for c in batch]
 
-            resp = httpx.post(
-                f"{settings.embedder_url}/embed",
-                json={"texts": texts, "task": "passage"},
-                timeout=120,
-            )
-            resp.raise_for_status()
-            embeddings = resp.json()["embeddings"]
+            embeddings = embed_texts(texts, task="passage", timeout=120)
 
             if not check_pipeline_seq(session, doc_id, worker_seq):
                 logger.info("embed: pipeline_seq bumped during processing for %s, aborting", doc_id)
