@@ -25,11 +25,16 @@ user sees as the reason a document failed.
 
 from __future__ import annotations
 
-# Bound for untrusted-reader surfaces. A SQLAlchemy OperationalError stringifies
-# with the failing statement and connection detail, and /api/system/health is
-# unauthenticated — see the caller in api/routes/system.py. This is a length
-# bound, not redaction: it limits how much leaks, it does not make the prefix
-# safe to publish. Anything genuinely secret must not reach an exception message.
+# Bound for the one caller with an unauthenticated reader: /api/system/health
+# has no auth dependency, and a SQLAlchemy OperationalError stringifies with the
+# failing statement and connection detail. This is a length bound, not
+# redaction: it limits how much leaks, it does not make the prefix safe to
+# publish. Anything genuinely secret must not reach an exception message.
+#
+# Deliberately NOT applied to `kb_system_health` or /system/stats: both are
+# admin-gated (api/scope.py strips kb_system_health from every API key
+# regardless of tier; /system/stats has require_admin), so a full message there
+# is a diagnostic, not a leak.
 HEALTH_DETAIL_LIMIT = 200
 
 

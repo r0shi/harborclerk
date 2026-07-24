@@ -1176,10 +1176,17 @@ async def test_health_check_names_a_timing_out_embedder(client, monkeypatch):
     """
     import httpx
 
+    from harbor_clerk.config import get_settings
+
     real_get = httpx.AsyncClient.get
+    # Resolve from config, never hardcode: CI overrides TIKA_URL/EMBEDDER_URL,
+    # so a literal that matches the local .env silently stops matching there —
+    # the shim falls through to a real request and the assertion compares
+    # against whatever the runner's network did.
+    embedder_health = f"{get_settings().embedder_url}/health"
 
     async def _selective_get(self, url, *args, **kwargs):
-        if str(url) == "http://embedder:8000/health":
+        if str(url) == embedder_health:
             raise httpx.ReadTimeout("")
         return await real_get(self, url, *args, **kwargs)
 
@@ -1195,10 +1202,13 @@ async def test_health_check_names_a_timing_out_embedder(client, monkeypatch):
 async def test_health_check_keeps_the_message_when_there_is_one(client, monkeypatch):
     import httpx
 
+    from harbor_clerk.config import get_settings
+
     real_get = httpx.AsyncClient.get
+    tika_probe = f"{get_settings().tika_url}/tika"
 
     async def _selective_get(self, url, *args, **kwargs):
-        if str(url) == "http://tika:9998/tika":
+        if str(url) == tika_probe:
             raise httpx.ConnectError("connection refused")
         return await real_get(self, url, *args, **kwargs)
 
@@ -1213,12 +1223,14 @@ async def test_health_check_bounds_the_detail_it_publishes(client, monkeypatch):
     with the failing statement and connection detail. Bound what goes out."""
     import httpx
 
+    from harbor_clerk.config import get_settings
     from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT
 
     real_get = httpx.AsyncClient.get
+    embedder_health = f"{get_settings().embedder_url}/health"
 
     async def _selective_get(self, url, *args, **kwargs):
-        if str(url) == "http://embedder:8000/health":
+        if str(url) == embedder_health:
             raise httpx.ConnectError("x" * 5000)
         return await real_get(self, url, *args, **kwargs)
 
@@ -1235,10 +1247,15 @@ async def test_no_health_check_renders_a_dangling_prefix(client, monkeypatch):
     """Whatever fails and however it stringifies, a reader learns the type."""
     import httpx
 
+    from harbor_clerk.config import get_settings
+
+    settings = get_settings()
     real_get = httpx.AsyncClient.get
     # Must stay selective: the test client is itself an httpx.AsyncClient, so a
-    # blanket raiser kills the request before it reaches the endpoint.
-    probed = ("http://tika:9998", "http://embedder:8000", "http://reranker:8001")
+    # blanket raiser kills the request before it reaches the endpoint. Resolved
+    # from config — hardcoded hosts silently stop matching under CI's env and
+    # the test keeps passing while covering less.
+    probed = (settings.tika_url, settings.embedder_url, settings.reranker_url)
 
     async def _selective_get(self, url, *args, **kwargs):
         if str(url).startswith(probed):

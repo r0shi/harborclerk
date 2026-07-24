@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from harbor_clerk.error_text import describe_error
 from harbor_clerk.mail.audit import audit_session_scope
 from harbor_clerk.mail.document_lifecycle import (
     restore_documents_for_relabeled,
@@ -166,7 +167,7 @@ class MailObserver:
                     await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
                 ).scalar_one()
                 acc.status = "auth_error"
-                acc.last_error = str(exc)
+                acc.last_error = describe_error(exc)
                 await session.commit()
             await audit_ctx.__aexit__(None, None, None)
             return
