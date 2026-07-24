@@ -1,7 +1,8 @@
 """Tests for embedder_client — bounded retry around the embedder service (#552).
 
 The contract these lock down:
-  - transient failures (connection, timeout, 5xx, 429) are retried and recover
+  - transient failures (connection lost, 5xx, 429) are retried and recover
+  - a read timeout is NOT retried — the request landed, so retrying duplicates work
   - a 4xx is NOT retried — it will never succeed, so fail fast
   - exhausting the budget raises EmbedderError, never the raw httpx error
 """
@@ -27,8 +28,10 @@ def _no_sleep(monkeypatch):
     monkeypatch.setattr("harbor_clerk.embedder_client.asyncio.sleep", _fake_async_sleep)
 
 
-def _ok(httpx_mock: HTTPXMock) -> None:
-    httpx_mock.add_response(url=EMBED_URL, json={"embeddings": [VECTOR]})
+def _ok(httpx_mock: HTTPXMock, n: int = 1) -> None:
+    """A success response for `n` texts. The count matters — the client now
+    rejects a response whose length doesn't match the request."""
+    httpx_mock.add_response(url=EMBED_URL, json={"embeddings": [VECTOR] * n})
 
 
 # --------------------------------------------------------------------------
@@ -90,7 +93,7 @@ def test_raises_after_exhausting_attempts(httpx_mock: HTTPXMock):
 
 
 def test_sends_expected_payload(httpx_mock: HTTPXMock):
-    _ok(httpx_mock)
+    _ok(httpx_mock, n=2)
     embed_texts(["a", "b"], task="passage")
 
     import json
@@ -276,3 +279,26 @@ def test_deadline_stops_retrying_and_reports_the_real_attempt_count(httpx_mock: 
 
     assert "after 2/7 attempts" in str(excinfo.value), str(excinfo.value)
     assert len(httpx_mock.get_requests()) == 2
+
+
+def test_short_embeddings_list_fails_loudly(httpx_mock: HTTPXMock):
+    """A wrong-length response must not silently lose chunks.
+
+    `run_embed` zips the result with its batch, and zip truncates. A short list
+    would leave the unpaired chunks at embedding=NULL while progress counted the
+    whole batch and the document went `ready` — invisible to vector search
+    forever, with nothing recorded to say a reprocess is needed.
+    """
+    httpx_mock.add_response(url=EMBED_URL, json={"embeddings": [VECTOR]})
+
+    with pytest.raises(EmbedderError, match="1 vectors for 3 texts"):
+        embed_texts(["a", "b", "c"], task="passage")
+
+
+def test_null_embeddings_becomes_an_embedder_error(httpx_mock: HTTPXMock):
+    """`{"embeddings": null}` used to pass through and raise a raw TypeError
+    out of the stage, defeating the module's only-EmbedderError contract."""
+    httpx_mock.add_response(url=EMBED_URL, json={"embeddings": None})
+
+    with pytest.raises(EmbedderError, match="expected a list"):
+        embed_texts(["a"], task="passage")

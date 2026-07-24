@@ -64,7 +64,7 @@ async def _embed_query(query: str) -> list[float]:
     any failure here and degrades to lexical-only. Retrying would buy nothing —
     the same result is returned either way — while making every search during an
     embedder outage sit through the whole backoff first. With the stage's
-    6-attempt budget that measured 12s per search, and against a socket that
+    retry budget that measured 12s per search, and against a socket that
     accepts but never answers it would be 6 x the read timeout on top.
 
     That cost lands on `/api/search`, `kb_search` and `find_all` alike, and a

@@ -58,7 +58,7 @@ DEFAULT_MAX_ATTEMPTS = 7
 # Stop starting new attempts once this much time has gone. It bounds the retry
 # loop, not a single request: the check runs between attempts, so the worst case
 # is `deadline + timeout` — a final attempt may begin just under the line. With
-# the embed stage's 120s timeout that is ~420s, against the ~840s an unbounded
+# the embed stage's 120s per-request timeout that is ~420s, against the ~840s an unbounded
 # 7-attempt budget would cost. The point is to keep a batch clear of the stage's
 # own 3600s alarm, which would otherwise mask the real error behind
 # "Stage embed timed out".
@@ -118,12 +118,21 @@ def _is_retryable_transport(exc: httpx.TransportError) -> bool:
     return isinstance(exc, _RETRYABLE_TRANSPORT)
 
 
-def _parse(resp: httpx.Response) -> list[list[float]]:
+def _parse(resp: httpx.Response, expected: int) -> list[list[float]]:
     """Turn a non-retryable response into vectors, or raise EmbedderError.
 
     A 200 carrying a proxy error page or an unexpected shape used to escape as
     a raw `json.JSONDecodeError` / `KeyError`, past callers that only expect
     EmbedderError.
+
+    The length check is not defensive padding. `run_embed` pairs the result with
+    its batch using `zip`, which truncates silently — so a short list leaves the
+    unpaired chunks at `embedding = NULL` while progress still counts the whole
+    batch, `mark_stage_done` runs, and the document reaches `ready`. Those
+    chunks are then invisible to vector search forever (`hybrid_search` filters
+    on `embedding IS NOT NULL`) with nothing recorded to say a reprocess is
+    needed. Failing the stage loudly is strictly better than losing them
+    quietly.
     """
     try:
         resp.raise_for_status()
@@ -134,9 +143,14 @@ def _parse(resp: httpx.Response) -> list[list[float]]:
     except ValueError as exc:
         raise EmbedderError(f"embedder returned a non-JSON body (HTTP {resp.status_code})") from exc
     try:
-        return data["embeddings"]
+        embeddings = data["embeddings"]
     except (KeyError, TypeError) as exc:
         raise EmbedderError("embedder response has no 'embeddings' field") from exc
+    if not isinstance(embeddings, list):
+        raise EmbedderError(f"embedder returned {type(embeddings).__name__} for 'embeddings', expected a list")
+    if len(embeddings) != expected:
+        raise EmbedderError(f"embedder returned {len(embeddings)} vectors for {expected} texts")
+    return embeddings
 
 
 def _payload(texts: list[str], task: str) -> dict:
@@ -187,7 +201,7 @@ def embed_texts(
         else:
             if not _is_retryable_status(resp.status_code):
                 # Every 2xx and every non-429 4xx: succeed or fail, never retry.
-                return _parse(resp)
+                return _parse(resp, len(texts))
             last_detail = f"HTTP {resp.status_code}"
 
         if attempt == max_attempts or time.monotonic() - started >= deadline_seconds:
@@ -236,7 +250,7 @@ async def embed_texts_async(
                 raise EmbedderError(f"embedder request failed: {type(exc).__name__}: {exc}") from exc
             else:
                 if not _is_retryable_status(resp.status_code):
-                    return _parse(resp)
+                    return _parse(resp, len(texts))
                 last_detail = f"HTTP {resp.status_code}"
 
             if attempt == max_attempts or time.monotonic() - started >= deadline_seconds:
