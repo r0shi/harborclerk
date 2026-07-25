@@ -8,6 +8,7 @@ refuses to put mutating bytes on the wire.
 
 from __future__ import annotations
 
+import aioimaplib
 import pytest
 
 from harbor_clerk.mail.exceptions import ReadOnlyViolation
@@ -133,3 +134,143 @@ def test_block_list_matches_aioimaplib_surface():
         f"Add each to known_read or known_mutating (and an override in "
         f"ReadOnlyIMAP4_SSL if mutating)."
     )
+
+
+# --------------------------------------------------------------------------
+# #557 — EXAMINE must leave the connection in the SELECTED state
+# --------------------------------------------------------------------------
+
+
+class _StubProtocol:
+    """Minimal stand-in for IMAP4ClientProtocol's state machinery."""
+
+    def __init__(self, state=aioimaplib.AUTH):
+        import asyncio
+
+        self.state = state
+        self.state_condition = asyncio.Condition()
+
+
+def _client_with_stub_examine(result: str, *, starting_state=aioimaplib.AUTH):
+    """A ReadOnlyIMAP4_SSL whose super().examine() returns `result`."""
+    client = ReadOnlyIMAP4_SSL.__new__(ReadOnlyIMAP4_SSL)  # bypass network init
+    client.protocol = _StubProtocol(starting_state)
+
+    async def fake_examine(self, mailbox="INBOX"):
+        return aioimaplib.Response(result, [b"* 12 EXISTS", b"* OK [UIDVALIDITY 42]"])
+
+    return client, fake_examine
+
+
+async def test_examine_moves_connection_into_selected_state(monkeypatch):
+    """The #557 regression.
+
+    aioimaplib 2.0.1 routes EXAMINE through simple_command, which never sets
+    SELECTED — only the @change_state-decorated select() does, and this class
+    blocks select() by design. Without this override the client stayed at AUTH
+    and every UID SEARCH/FETCH/IDLE was rejected before reaching the server.
+    """
+    client, fake_examine = _client_with_stub_examine("OK")
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
+
+    assert client.protocol.state == aioimaplib.AUTH
+    resp = await client.examine("kickstarter")
+
+    assert resp.result == "OK"
+    assert client.protocol.state == aioimaplib.SELECTED, (
+        "EXAMINE must enter the selected state (RFC 3501 §6.3.2); otherwise "
+        "UID SEARCH aborts client-side with 'illegal in state AUTH'"
+    )
+
+
+async def test_examine_deselects_when_server_refuses(monkeypatch):
+    """A failed EXAMINE deselects — RFC 3501: "no mailbox is selected".
+
+    The stub starts at SELECTED deliberately. Starting from AUTH, "leave the
+    state alone" and "reset to AUTH" are indistinguishable, and the earlier
+    version of this test passed for both the correct and the broken
+    implementation.
+
+    Live shape: MailObserver keeps one connection per label across ticks. Tick N
+    examines OK, tick N+1 gets a NO (renamed label, transient refusal). If the
+    client still believed it was SELECTED, `ingest.fetch_eml_bytes` — which does
+    not re-examine — would put a UID FETCH on the wire against no selection.
+    """
+    client, fake_examine = _client_with_stub_examine("NO", starting_state=aioimaplib.SELECTED)
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
+
+    resp = await client.examine("nonexistent-label")
+
+    assert resp.result == "NO"
+    assert client.protocol.state == aioimaplib.AUTH, (
+        "a refused EXAMINE must deselect; a stale SELECTED lets UID FETCH/IDLE "
+        "past the client-side gate and fail on the wire instead"
+    )
+
+
+async def test_examine_satisfies_the_command_state_gate(monkeypatch):
+    """The state left by examine() must satisfy aioimaplib's own command table.
+
+    This reads `Commands[...].valid_states` rather than issuing anything — the
+    real UID SEARCH over a socket is `test_imap_state_e2e.py`.
+    """
+    client, fake_examine = _client_with_stub_examine("OK")
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
+
+    await client.examine("kickstarter")
+
+    allowed_states = aioimaplib.Commands["SEARCH"].valid_states
+    assert client.protocol.state in allowed_states
+    assert client.protocol.state in aioimaplib.Commands["UID"].valid_states
+    assert client.protocol.state in aioimaplib.Commands["IDLE"].valid_states
+
+
+async def test_examine_wakes_waiters_on_the_state_condition(monkeypatch):
+    """Taking the lock is only worth it if the notify actually wakes someone.
+
+    aioimaplib's `protocol.wait(...)` blocks on `state_condition` — that is why
+    `change_state` notifies, and why this override mirrors it. Without the
+    notify, a waiter would sleep past a state change that already happened.
+    """
+    import asyncio
+
+    client, fake_examine = _client_with_stub_examine("OK")
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", fake_examine, raising=True)
+
+    woke = asyncio.Event()
+
+    async def _waiter():
+        async with client.protocol.state_condition:
+            await client.protocol.state_condition.wait_for(lambda: client.protocol.state == aioimaplib.SELECTED)
+            woke.set()
+
+    task = asyncio.create_task(_waiter())
+    await asyncio.sleep(0)  # let the waiter reach wait_for
+
+    await client.examine("kickstarter")
+    await asyncio.wait_for(woke.wait(), timeout=2)
+
+    assert woke.is_set()
+    task.cancel()
+
+
+async def test_examine_deselects_when_the_command_raises(monkeypatch):
+    """A raised EXAMINE deselects too — not just a tagged NO.
+
+    `wait_for` timeout or a reset connection leaves the server with no
+    selection. Without this the client keeps a stale SELECTED and the next
+    idle_start() passes the client-side gate and goes on the wire against
+    nothing, which is what the override exists to prevent.
+    """
+    client = ReadOnlyIMAP4_SSL.__new__(ReadOnlyIMAP4_SSL)
+    client.protocol = _StubProtocol(aioimaplib.SELECTED)
+
+    async def _raises(self, mailbox="INBOX"):
+        raise TimeoutError()
+
+    monkeypatch.setattr(aioimaplib.IMAP4_SSL, "examine", _raises, raising=True)
+
+    with pytest.raises(TimeoutError):
+        await client.examine("kickstarter")
+
+    assert client.protocol.state == aioimaplib.AUTH, "a raised EXAMINE left a stale SELECTED"

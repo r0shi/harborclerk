@@ -24,6 +24,59 @@ class ReadOnlyIMAP4_SSL(aioimaplib.IMAP4_SSL):
     async def select(self, *_args, **_kwargs):
         raise ReadOnlyViolation("select() opens the mailbox read-write; use examine() instead")
 
+    async def examine(self, mailbox: str = "INBOX"):
+        """EXAMINE, and record that the connection is now in the selected state.
+
+        Works around an aioimaplib bug (2.0.1). Per RFC 3501 §6.3.2 EXAMINE is
+        identical to SELECT except that the mailbox is read-only, and both enter
+        the *selected* state. aioimaplib only tracks that for SELECT — which is
+        `@change_state`-decorated and assigns `state = SELECTED` — while EXAMINE
+        goes through the generic `simple_command` path and leaves `state` at
+        AUTH.
+
+        Because this class deliberately blocks `select()`, nothing else ever
+        moved the state, so every following UID SEARCH / UID FETCH / IDLE was
+        rejected *client-side* with `Abort: command SEARCH illegal in state
+        AUTH` before a byte reached the server. That made IMAP ingest
+        impossible: labels stayed at `last_synced_at = NULL` forever (#557).
+
+        Assigning under `state_condition` and notifying mirrors what
+        `change_state` does for SELECT, so callers blocked in
+        `protocol.wait(...)` are woken rather than hanging.
+
+        This narrows rather than widens the read-only guarantee's surface: the
+        selection really is read-only — the server enforces it — we are only
+        correcting the client's bookkeeping to match.
+
+        A *failed* EXAMINE deselects (RFC 3501 §6.3.1/§6.3.2: "if this command
+        is unsuccessful, no mailbox is selected"). That matters because
+        `MailObserver` holds one connection per label across ticks: if tick N
+        selects a label and tick N+1 gets a `NO` — a renamed label, or a
+        transient Gmail refusal — the server has nothing selected while the
+        client would still believe it does. `ingest.fetch_eml_bytes` does not
+        re-examine, so its UID FETCH would pass the client-side gate and be
+        rejected on the wire instead. Reset to AUTH so the state matches.
+
+        (aioimaplib's own `select()` omits this too, so upstream is no guide.)
+        """
+        try:
+            response = await super().examine(mailbox)
+        except BaseException:
+            # A raised EXAMINE (wait_for timeout, connection reset) leaves the
+            # server with no selection just as a NO does. Without this the
+            # client keeps a stale SELECTED and the next idle_start() passes the
+            # client-side gate and goes on the wire against nothing — the exact
+            # case the paragraph above says this prevents.
+            await self._set_state(aioimaplib.AUTH)
+            raise
+        await self._set_state(aioimaplib.SELECTED if response.result == "OK" else aioimaplib.AUTH)
+        return response
+
+    async def _set_state(self, state: str) -> None:
+        async with self.protocol.state_condition:
+            self.protocol.state = state
+            self.protocol.state_condition.notify_all()
+
     async def store(self, *_args, **_kwargs):
         raise ReadOnlyViolation("store() mutates message flags")
 
