@@ -129,6 +129,10 @@ services:
       context: .
       dockerfile: docker/embedder.Dockerfile
     restart: unless-stopped
+    environment:
+      # Concurrent encodes. 1 keeps the single shared model serialised, which is
+      # what the service is tuned for; raise only with measurements.
+      EMBED_MAX_CONCURRENCY: ${EMBED_MAX_CONCURRENCY:-1}
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
       interval: 10s

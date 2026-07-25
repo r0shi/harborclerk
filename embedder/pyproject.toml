@@ -27,3 +27,21 @@ packages = ["src/embedder"]
 [project.scripts]
 harbor-clerk-embedder = "embedder.app:main"
 harbor-clerk-reranker = "embedder.reranker:main"
+
+[tool.pytest.ini_options]
+# Registered ahead of use. Nothing applies this marker yet — and the
+# tests/test_embedder_granite.py that test_embedder_app.py's docstring points at
+# does not exist — but the root project uses the same name, and an unregistered
+# marker fails as a silent PytestUnknownMarkWarning rather than loudly.
+markers = [
+    "requires_models: tests that load embedding model weights. Skipped in default CI.",
+]
+
+# NOTE: steering torch to the CPU wheel index on Linux would cut ~2.7 GB of
+# CUDA wheels from the `embedder` CI job, which stubs the model and never runs a
+# tensor op. It was tried and reverted: docker/embedder.Dockerfile builds from
+# this same lock with `uv sync --locked`, so it would silently drop CUDA from
+# every Linux deployment — a capability change, not a CI tweak. It also pulls in
+# download-r2.pytorch.org, which sits outside the dependency-audit job and
+# breaks allowlisted or air-gapped builds. Worth doing deliberately, with the
+# CI/production split made explicit; not as a side effect.
