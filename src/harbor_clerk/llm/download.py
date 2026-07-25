@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
+from harbor_clerk.error_text import describe_error
 from harbor_clerk.llm.models import MODELS, get_model
 
 logger = logging.getLogger(__name__)
@@ -178,7 +179,7 @@ def download_model(model_id: str) -> Path:
         # Clean up partial download
         if part_file.is_file():
             part_file.unlink()
-        _publish_progress(model_id, "error", error=str(e))
+        _publish_progress(model_id, "error", error=describe_error(e))
         raise
 
     finally:

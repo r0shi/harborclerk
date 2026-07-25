@@ -69,6 +69,26 @@ def _ensure_test_db_exists(port: int, dbname: str) -> None:
         finally:
             await conn.close()
 
+        # Extensions live in the database, not the cluster, so a freshly created
+        # test DB has none of them and the first migration dies on VECTOR(768).
+        # CI does this in a separate workflow step; without it here, a local
+        # `uv run pytest` cannot bootstrap its own test database.
+        # Same order as the connect above: password first. Reversed, a server
+        # using cleartext `password` auth makes asyncpg dereference a None
+        # password and raise AttributeError, not InvalidPasswordError — which
+        # escapes this handler and leaves a created-but-extensionless database.
+        try:
+            db_conn = await asyncpg.connect(
+                host="localhost", port=port, user="lka", password="lka_dev_password", database=dbname
+            )
+        except asyncpg.InvalidPasswordError:
+            db_conn = await asyncpg.connect(host="localhost", port=port, user="lka", database=dbname)
+        try:
+            for ext in ("vector", "pg_trgm", "citext"):
+                await db_conn.execute(f"CREATE EXTENSION IF NOT EXISTS {ext}")
+        finally:
+            await db_conn.close()
+
     try:
         asyncio.run(_go())
     except Exception as e:

@@ -22,6 +22,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from harbor_clerk.api.scope import UserScope
+from harbor_clerk.error_text import describe_error
 
 if TYPE_CHECKING:
     from harbor_clerk.llm.models import ModelInfo
@@ -790,10 +791,10 @@ async def execute_tool(
         return await func(**mapped_args)
     except PermissionError as e:
         logger.warning("Tool permission error: %s - %s", name, e)
-        return json.dumps({"error": str(e)})
+        return json.dumps({"error": describe_error(e)})
     except Exception as e:
         logger.exception("Tool execution error: %s", name)
-        return json.dumps({"error": str(e)})
+        return json.dumps({"error": describe_error(e)})
     finally:
         if token is not None:
             _mcp_principal.reset(token)

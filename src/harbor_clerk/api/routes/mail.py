@@ -26,6 +26,7 @@ from harbor_clerk.api.schemas.mail import (
     WatchedLabelResponse,
 )
 from harbor_clerk.db import get_session
+from harbor_clerk.error_text import describe_error, message_or_type
 from harbor_clerk.mail import AuthError, IMAPConnection, discover_folders
 from harbor_clerk.models import MailAccount, WatchedLabel
 from harbor_clerk.secrets import get_cipher
@@ -160,9 +161,10 @@ async def test_mail_account(
         await conn.logout()
     except AuthError as exc:
         account.status = "auth_error"
-        account.last_error = str(exc)
+        detail = message_or_type(exc)
+        account.last_error = detail
         await session.commit()
-        return TestConnectionResponse(success=False, error=str(exc))
+        return TestConnectionResponse(success=False, error=detail)
     except Exception as exc:
         # Network errors, timeouts, etc. — don't change account status
         # (the account isn't broken, just unreachable right now).
@@ -170,7 +172,7 @@ async def test_mail_account(
             await conn.logout()
         except Exception:
             pass
-        return TestConnectionResponse(success=False, error=f"connection failed: {exc}")
+        return TestConnectionResponse(success=False, error=f"connection failed: {describe_error(exc)}")
 
     account.status = "active"
     account.last_error = None
