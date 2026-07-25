@@ -111,9 +111,12 @@ Read those rather than any transcription, and regenerate with
 
 ## CI
 
-Five required checks on PRs to `main`: `python`, `frontend`, `codeql`,
-`dependency-audit`, `container-scan`. The `python` job also verifies generated
-docs are current.
+Six required checks on PRs to `main`: `python`, `embedder`, `frontend`,
+`codeql`, `dependency-audit`, `container-scan`. The `python` job also verifies
+generated docs are current.
+
+`embedder` is new — **branch protection must be updated to require it**, or the
+guard it exists to provide stays advisory.
 
 ## Instruction files and your harness
 
