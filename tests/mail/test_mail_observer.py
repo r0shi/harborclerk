@@ -263,3 +263,214 @@ async def test_observer_creates_documents_after_sync(db_session, mock_aioimap, o
     assert len(docs) == 2
     titles = sorted(d.title for d in docs)
     assert titles == ["End to end", "doc.pdf"]
+
+
+async def test_reconcile_respawns_a_label_task_that_died(db_session, mock_aioimap, observer_session_factory):
+    """A label task that raised must be respawned, not left dead forever.
+
+    `_tasks` was keyed only on presence, so a task that died from an exception
+    stayed in the dict, was never respawned, and never had its exception
+    retrieved. One transient error — a connection dropped near Gmail's
+    ~29-minute IDLE limit, an `Abort` from the IDLE command — froze that label's
+    `last_synced_at` until the watcher process restarted. That is #557's symptom
+    one layer out, and it only became reachable once EXAMINE started entering
+    the selected state and the IDLE path actually ran.
+    """
+    import asyncio
+
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    cipher = get_cipher()
+    ct, fp = cipher.encrypt(b"app-pw")
+    account = MailAccount(
+        display_name="respawn-test",
+        provider="gmail",
+        imap_host="imap.gmail.com",
+        imap_port=993,
+        imap_username="respawn@example.com",
+        app_password_ciphertext=ct,
+        key_fingerprint=fp,
+    )
+    db_session.add(account)
+    await db_session.flush()
+    label = WatchedLabel(account_id=account.account_id, label_path="Resp", display_name="Resp")
+    db_session.add(label)
+    await db_session.commit()
+    label_id = label.label_id
+
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    # A task that died the way a transient IMAP error would.
+    async def _boom():
+        raise RuntimeError("connection dropped mid-IDLE")
+
+    dead = asyncio.create_task(_boom())
+    await asyncio.sleep(0)
+    assert dead.done() and dead.exception() is not None
+    observer._tasks[label_id] = dead
+
+    # First reconcile reaps it and arms the backoff (see the backoff test).
+    await observer._reconcile(observer_session_factory)
+    assert observer._tasks.get(label_id) is None
+    assert observer._consecutive_failures[label_id] == 1
+
+    # Once the backoff has elapsed it must actually come back — the point of
+    # the fix is that the label recovers without a watcher restart.
+    observer._retry_not_before[label_id] = 0.0
+    await observer._reconcile(observer_session_factory)
+
+    respawned = observer._tasks.get(label_id)
+    assert respawned is not None, "dead task was never respawned — the label would stall forever"
+    assert respawned is not dead, "the dead task was left in place"
+
+    await observer.stop()
+
+
+async def _one_active_label(db_session, name: str):
+    cipher = get_cipher()
+    ct, fp = cipher.encrypt(b"app-pw")
+    account = MailAccount(
+        display_name=name,
+        provider="gmail",
+        imap_host="imap.gmail.com",
+        imap_port=993,
+        imap_username=f"{name}@example.com",
+        app_password_ciphertext=ct,
+        key_fingerprint=fp,
+    )
+    db_session.add(account)
+    await db_session.flush()
+    label = WatchedLabel(account_id=account.account_id, label_path=name, display_name=name)
+    db_session.add(label)
+    await db_session.commit()
+    return label.label_id
+
+
+async def test_respawn_backs_off_instead_of_hammering_the_provider(db_session, mock_aioimap, observer_session_factory):
+    """A persistent failure must not respawn every supervisor tick.
+
+    The supervisor ticks every 5s by default. Respawning unconditionally means
+    ~720 LOGIN attempts an hour against the provider for a failure that will
+    never succeed — a label deleted server-side, DNS down, TLS refused. Each one
+    also writes an imap_command_log row. Retrying at all is new; retrying it
+    unthrottled would be its own outage.
+    """
+    import asyncio
+
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "backoff")
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    async def _boom():
+        raise RuntimeError("persistent failure")
+
+    # First death: reaped, backoff armed, and NOT immediately respawned.
+    dead = asyncio.create_task(_boom())
+    await asyncio.sleep(0)
+    observer._tasks[label_id] = dead
+    observer._spawned_at[label_id] = __import__("time").monotonic()
+
+    await observer._reconcile(observer_session_factory)
+
+    assert label_id not in observer._tasks, "respawned immediately — no backoff was applied"
+    assert observer._consecutive_failures[label_id] == 1
+    assert observer._retry_not_before[label_id] > 0
+
+    # Backoff must grow, not stay flat.
+    first_delay = observer._retry_not_before[label_id] - __import__("time").monotonic()
+    observer._consecutive_failures[label_id] = 4
+    dead2 = asyncio.create_task(_boom())
+    await asyncio.sleep(0)
+    observer._tasks[label_id] = dead2
+    observer._spawned_at[label_id] = __import__("time").monotonic()
+    observer._retry_not_before[label_id] = 0.0  # let it be reaped again
+
+    await observer._reconcile(observer_session_factory)
+    second_delay = observer._retry_not_before[label_id] - __import__("time").monotonic()
+
+    assert second_delay > first_delay, f"backoff did not grow: {first_delay:.1f}s then {second_delay:.1f}s"
+
+    await observer.stop()
+
+
+async def test_reconcile_does_not_spawn_during_shutdown(db_session, mock_aioimap, observer_session_factory):
+    """stop() snapshots the task list before awaiting.
+
+    A task created after that snapshot is dropped by the later `_tasks.clear()`
+    without ever being cancelled — it keeps an IMAP connection open and keeps
+    committing after stop() returned.
+    """
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    await _one_active_label(db_session, "shutdown")
+    observer = MailObserver(session_factory=observer_session_factory)
+    observer._stop_event.set()
+
+    await observer._reconcile(observer_session_factory)
+
+    assert observer._tasks == {}, "spawned a task during shutdown; it would leak past stop()"
+
+
+async def test_backoff_never_overflows(db_session, mock_aioimap, observer_session_factory):
+    """The failure counter is unbounded; the exponent must not be.
+
+    `5.0 * 2 ** (failures - 1)` raises OverflowError past ~1024. `_reconcile` is
+    awaited unguarded in `run()`, so that unwinds the supervisor and every label
+    stops syncing until the process restarts — the failure this respawn logic
+    exists to prevent, one level up. A label failing fast on every attempt
+    reaches it in a few days of ordinary uptime.
+    """
+    import asyncio
+
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "overflow")
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    async def _boom():
+        raise RuntimeError("fails fast, every time")
+
+    for streak in (1_000, 100_000):
+        observer._consecutive_failures[label_id] = streak
+        dead = asyncio.create_task(_boom())
+        await asyncio.sleep(0)
+        observer._tasks[label_id] = dead
+        observer._spawned_at[label_id] = __import__("time").monotonic()
+
+        await observer._reconcile(observer_session_factory)  # must not raise
+
+        import time as _t
+
+        delay = observer._retry_not_before[label_id] - _t.monotonic()
+        assert delay <= 301, f"delay {delay}s exceeded the cap"
+
+    await observer.stop()
+
+
+async def test_reactivating_a_label_clears_its_backoff(db_session, mock_aioimap, observer_session_factory):
+    """A stale gate would silently block recovery right after an operator fix."""
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "reactivate")
+    observer = MailObserver(session_factory=observer_session_factory)
+    await observer._reconcile(observer_session_factory)
+
+    observer._consecutive_failures[label_id] = 9
+    observer._retry_not_before[label_id] = __import__("time").monotonic() + 300
+
+    # Label goes inactive → its task is cancelled and its backoff forgotten.
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import WatchedLabel as _WL
+
+    lbl = (await db_session.execute(_select(_WL).where(_WL.label_id == label_id))).scalar_one()
+    lbl.status = "paused"
+    await db_session.commit()
+
+    await observer._reconcile(observer_session_factory)
+
+    assert label_id not in observer._consecutive_failures
+    assert label_id not in observer._retry_not_before
+
+    await observer.stop()
