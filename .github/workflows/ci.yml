@@ -44,6 +44,24 @@ jobs:
           TIKA_URL: "http://localhost:9998"
         run: uv run pytest tests/ -v --tb=short -m "not requires_models"
 
+  embedder:
+    # `embedder/` is a separate uv project with its own lock, and the root
+    # pytest run is confined to `testpaths = ["tests"]` — so nothing here was
+    # ever collected. The #553 guard (encode must not block the event loop)
+    # would have been decorative on PRs without this job.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # Lint/format are already covered: the `python` job's root `ruff check .`
+      # includes embedder/. This job exists purely to collect the tests.
+      - name: Run tests
+        # --locked so CI cannot silently re-resolve and test a different
+        # dependency set than docker/embedder.Dockerfile builds (it uses
+        # `uv sync --locked`). -m matches the root job's marker handling.
+        run: uv run --locked --extra test pytest tests/ -v --tb=short -m "not requires_models"
+        working-directory: embedder
+
   frontend:
     runs-on: ubuntu-latest
     steps:

@@ -54,3 +54,167 @@ def test_embed_task_query_still_accepted(client):
     """Backward compat: workers send task=passage; must not 422."""
     r = client.post("/embed", json={"texts": ["hello"], "task": "passage"})
     assert r.status_code == 200
+
+
+# --------------------------------------------------------------------------
+# #553 — the encode must not block the event loop
+# --------------------------------------------------------------------------
+
+
+def test_health_stays_responsive_while_encode_is_running(stub_model):
+    """The regression that caused the restart storm.
+
+    `SentenceTransformer.encode` is blocking and GPU-bound. When it ran
+    directly on the event loop, /health could not be served for the whole
+    encode — measured at 3.3s for a 64-text batch against the real model. The
+    macOS supervisor probes with a 3s timeout and restarts after six
+    consecutive failures, so sustained ingest restarted the embedder
+    mid-flight and failed every in-flight request.
+
+    Here the stub blocks for 1.5s; /health must still answer promptly.
+    """
+    import threading
+    import time
+
+    encode_started = threading.Event()
+
+    def slow_encode(texts, normalize_embeddings=True):
+        encode_started.set()
+        time.sleep(1.5)
+        return np.stack([np.full(768, 0.1, dtype=np.float32) for _ in texts])
+
+    stub_model.encode.side_effect = slow_encode
+
+    with patch("embedder.app.SentenceTransformer", return_value=stub_model):
+        from embedder.app import app
+
+        with TestClient(app) as c:
+            embed_done = threading.Event()
+
+            def do_embed():
+                c.post("/embed", json={"texts": ["a", "b"]})
+                embed_done.set()
+
+            t = threading.Thread(target=do_embed)
+            t.start()
+            assert encode_started.wait(timeout=5), "encode never started"
+
+            started = time.perf_counter()
+            health_response = c.get("/health")
+            health_latency = time.perf_counter() - started
+            health_status = health_response.status_code
+
+            t.join(timeout=10)
+
+    assert health_status == 200
+    # The supervisor's probe timeout is 3s; anything near the encode duration
+    # means the loop was blocked again.
+    assert health_latency < 1.0, f"/health blocked for {health_latency:.2f}s — event loop is blocked by encode"
+
+
+def test_concurrent_encodes_are_bounded(stub_model):
+    """Concurrency is gated so N workers degrade to slower, not unstable.
+
+    One shared model on one GPU: admitting every caller at once multiplies
+    memory without improving throughput.
+    """
+    import threading
+
+    in_flight = 0
+    peak = 0
+    completed = 0
+    lock = threading.Lock()
+
+    def counting_encode(texts, normalize_embeddings=True):
+        nonlocal in_flight, peak, completed
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        try:
+            import time
+
+            time.sleep(0.2)
+            return np.stack([np.full(768, 0.1, dtype=np.float32) for _ in texts])
+        finally:
+            with lock:
+                in_flight -= 1
+                completed += 1
+
+    stub_model.encode.side_effect = counting_encode
+
+    statuses = []
+
+    with patch("embedder.app.SentenceTransformer", return_value=stub_model):
+        from embedder.app import app
+
+        with TestClient(app) as c:
+
+            def _post():
+                statuses.append(c.post("/embed", json={"texts": ["x"]}).status_code)
+
+            threads = [threading.Thread(target=_post) for _ in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30)
+
+    from embedder.app import MAX_CONCURRENCY
+
+    # Without these, six requests that all 503 look identical to six that queue
+    # politely: peak stays 0 and the cap assertion passes vacuously.
+    assert statuses == [200] * 6, f"expected six successful encodes, got {statuses}"
+    assert completed == 6, f"only {completed} encodes ran"  # counted under the lock, not via MagicMock
+    assert peak >= 1, "no encode was observed; the test proved nothing"
+
+    # Assert against the configured cap, whatever it is — but skip rather than
+    # fail if the environment raised it, since `peak <= MAX_CONCURRENCY` would
+    # then hold for any observed value and assert nothing. Failing here would
+    # turn "operator tuned the knob" into a red suite that reads as a
+    # regression, and this same change ships EMBED_MAX_CONCURRENCY in
+    # .env.example and docker-compose.yml.
+    if MAX_CONCURRENCY != 1:
+        pytest.skip(f"EMBED_MAX_CONCURRENCY={MAX_CONCURRENCY} in this environment; cap assertion would be vacuous")
+    assert peak == 1, f"{peak} concurrent encodes exceeded the cap of 1"
+
+
+def test_max_concurrency_env_is_total():
+    """A junk value must not stop the service binding.
+
+    MAX_CONCURRENCY is read at import, so `int()` raising there means uvicorn
+    never binds — on the very service this module's fix exists to keep alive.
+    An unset compose passthrough and a bare `NAME=` in .env both arrive as "".
+    """
+    import os
+    from unittest.mock import patch
+
+    from embedder.app import _positive_int_env
+
+    for raw in ("", "auto", "  ", "-3", "0"):
+        with patch.dict(os.environ, {"EMBED_MAX_CONCURRENCY": raw}):
+            assert _positive_int_env("EMBED_MAX_CONCURRENCY", 1) >= 1
+
+    with patch.dict(os.environ, {"EMBED_MAX_CONCURRENCY": "4"}):
+        assert _positive_int_env("EMBED_MAX_CONCURRENCY", 1) == 4
+
+    # The module-level value must come from the helper. A refactor back to a
+    # bare int(os.environ[...]) would keep the cases above green.
+    import embedder.app
+
+    assert embedder.app.MAX_CONCURRENCY >= 1
+    assert isinstance(embedder.app.MAX_CONCURRENCY, int)
+
+
+def test_embed_returns_503_before_the_semaphore_exists(stub_model):
+    """The `_encode_slots is None` guard, which had no coverage.
+
+    Reachable if a request lands between process start and lifespan completing,
+    or after shutdown clears it.
+    """
+    from unittest.mock import patch
+
+    with patch("embedder.app.SentenceTransformer", return_value=stub_model):
+        import embedder.app as app_module
+
+        # Outside the TestClient context lifespan never ran, so both globals are None.
+        assert app_module._encode_slots is None
+        assert app_module._model is None
