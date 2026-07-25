@@ -6,6 +6,7 @@ family is a supported fallback and needs "query: "/"passage: " prefixes that
 Granite-R2 does not.
 """
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -25,7 +26,37 @@ MODEL_NAME = os.environ.get("EMBED_MODEL", "ibm-granite/granite-embedding-311m-m
 NEEDS_PREFIX = os.environ.get("EMBED_NEEDS_PREFIX", "false").lower() in ("true", "1", "yes")
 TASK_PREFIXES = {"query": "query: ", "passage": "passage: "}
 
+
+def _positive_int_env(name: str, default: int) -> int:
+    """Read a positive int from the environment, tolerating junk.
+
+    Every other env read in this module is total, and this one must be too: it
+    runs at import, so a bad value stops uvicorn binding at all — on the service
+    this change exists to keep alive. An unset compose passthrough
+    (`EMBED_MAX_CONCURRENCY=${EMBED_MAX_CONCURRENCY}`) or a bare `NAME=` line in
+    .env both arrive as the empty string.
+    """
+    raw = os.environ.get(name, "")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        if raw:
+            logger.warning("%s=%r is not an integer; using %d", name, raw, default)
+        return default
+
+
+# How many encodes may run at once. The weights are shared, so what concurrency
+# multiplies is activation memory, not the model — but on one GPU it buys no
+# throughput either, so the default of 1 preserves today's serialisation and
+# makes this change purely about the event loop.
+#
+# Raising it is not obviously safe: >1 has no test coverage, and
+# SentenceTransformer.encode mutates shared module state (`self.eval()`,
+# `self.to(device)`) on every call. Measure before trusting it.
+MAX_CONCURRENCY = _positive_int_env("EMBED_MAX_CONCURRENCY", 1)
+
 _model: SentenceTransformer | None = None
+_encode_slots: asyncio.Semaphore | None = None
 
 
 class EmbedRequest(BaseModel):
@@ -41,13 +72,17 @@ class EmbedResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _model
+    global _model, _encode_slots
+    # Bound to the loop that will actually await it, so it must be built here
+    # rather than at import time.
+    _encode_slots = asyncio.Semaphore(MAX_CONCURRENCY)
     logger.info("Loading model: %s", MODEL_NAME)
     _model = SentenceTransformer(MODEL_NAME)
     dim = _model.get_sentence_embedding_dimension()
-    logger.info("Model loaded. Embedding dimension: %d", dim)
+    logger.info("Model loaded. Embedding dimension: %d (max concurrency %d)", dim, MAX_CONCURRENCY)
     yield
     _model = None
+    _encode_slots = None
     logger.info("Embedder shut down")
 
 
@@ -63,14 +98,33 @@ async def health():
 
 @app.post("/embed", response_model=EmbedResponse)
 async def embed(request: EmbedRequest):
-    if _model is None:
+    if _model is None or _encode_slots is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
+
+    # Bind before the await. The guard above and the encode below are no longer
+    # one synchronous step, so lifespan shutdown could set the global to None in
+    # between and turn an intended 503 into an AttributeError 500.
+    model = _model
+    slots = _encode_slots
 
     texts = request.texts
     if NEEDS_PREFIX and request.task:
         prefix = TASK_PREFIXES[request.task]
         texts = [prefix + t for t in texts]
-    embeddings = _model.encode(texts, normalize_embeddings=True)
+
+    # SentenceTransformer.encode is blocking and GPU-bound — a 64-text batch
+    # takes ~3.5s on an M4. Calling it directly on the event loop starved
+    # /health for the whole encode, so the macOS supervisor's 3s probe timed
+    # out, six consecutive failures marked the service errored, and it was
+    # restarted mid-flight — failing every in-flight embed (#553, and the
+    # proximate cause of the #552 failures). Hand it to a worker thread so the
+    # loop stays free to answer /health, and gate concurrency separately.
+    # Note: the slot is released on exit, but a cancelled request cannot cancel
+    # the worker thread — the encode runs to completion regardless. Reachable
+    # today only at shutdown; worth knowing before wrapping /embed in a timeout.
+    async with slots:
+        embeddings = await asyncio.to_thread(model.encode, texts, normalize_embeddings=True)
+
     return EmbedResponse(
         embeddings=embeddings.tolist(),
         model=MODEL_NAME,
