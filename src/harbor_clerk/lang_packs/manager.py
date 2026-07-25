@@ -22,6 +22,7 @@ from typing import Literal
 
 import httpx
 
+from harbor_clerk.error_text import describe_error
 from harbor_clerk.lang_packs.storage import artifact_path, lang_dir
 from harbor_clerk.languages import LANGUAGES, Tool
 
@@ -177,7 +178,7 @@ def download_artifact(lang_code: str, tool: Tool) -> DownloadResult:
         return DownloadResult(status="installed", bytes_downloaded=bytes_written)
     except Exception as e:
         tmp_target.unlink(missing_ok=True)
-        return DownloadResult(status="failed", error=f"{type(e).__name__}: {e}")
+        return DownloadResult(status="failed", error=describe_error(e))
 
 
 def verify_artifact(lang_code: str, tool: Tool) -> bool:

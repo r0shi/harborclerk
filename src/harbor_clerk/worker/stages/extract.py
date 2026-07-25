@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from harbor_clerk.config import get_settings
 from harbor_clerk.db_sync import get_sync_session
+from harbor_clerk.error_text import describe_error
 from harbor_clerk.file_types import MARKDOWN_EXTENSIONS, PLAIN_TEXT_EXTENSIONS, sniff_mime
 from harbor_clerk.ingest.metadata_extractors import run_all as run_metadata_extractors
 from harbor_clerk.models import Document, DocumentHeading, DocumentLink, DocumentPage
@@ -139,7 +140,7 @@ def _fetch_tika_exception_detail(data: bytes, mime_type: str) -> str:
         first_line = exc.split("\n", 1)[0]
         return _sanitize_external_string(first_line)
     except Exception as e:  # noqa: BLE001 — best-effort diagnostic
-        return _sanitize_external_string(f"rmeta refetch failed: {type(e).__name__}: {e}")
+        return _sanitize_external_string(f"rmeta refetch failed: {describe_error(e)}")
 
 
 def _alpha_ratio(text: str) -> float:

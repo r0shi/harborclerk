@@ -1,0 +1,72 @@
+"""One way to render an exception for a human.
+
+Three formats had grown up independently:
+
+    f"error: {e}"                  api/routes/system.py, mcp_server.py
+    f"{type(e).__name__}: {e}"     worker/entry.py, lang_packs/manager.py
+    str(e)                         the /system/stats blocks
+
+All three lose information on exactly the exceptions that matter most.
+`httpx.ReadTimeout('')`, `httpx.ConnectTimeout('')` and a bare `TimeoutError()`
+all carry an empty message, so the first renders the literal `"error: "`, the
+second renders `"ReadTimeout: "` with a dangling colon, and the third renders
+nothing at all.
+
+That is not hypothetical. The Mac mini reported
+`{"checks":{"embedder":"error: "}}` while its embedder was timing out, and the
+Status page rendered "Search services need attention — embedder: error:". A
+timeout is precisely the failure worth naming, and the blank string is part of
+why an investigation went looking for a crash that had not happened.
+
+The worker path matters more than the health path: `worker/entry.py` writes its
+rendering into `ingestion_jobs.error` and `documents.error`, which is what a
+user sees as the reason a document failed.
+"""
+
+from __future__ import annotations
+
+# Bound for the one caller with an unauthenticated reader: /api/system/health
+# has no auth dependency, and a SQLAlchemy OperationalError stringifies with the
+# failing statement and connection detail. This is a length bound, not
+# redaction: it limits how much leaks, it does not make the prefix safe to
+# publish. Anything genuinely secret must not reach an exception message.
+#
+# Deliberately NOT applied to `kb_system_health` or /system/stats: both are
+# admin-gated (api/scope.py strips kb_system_health from every API key
+# regardless of tier; /system/stats has require_admin), so a full message there
+# is a diagnostic, not a leak.
+HEALTH_DETAIL_LIMIT = 200
+
+
+def message_or_type(exc: BaseException) -> str:
+    """The exception's own message, falling back to its type when empty.
+
+    For exceptions whose message was *written for the reader* — a validation
+    error, an `AuthError` built as `AuthError(detail or "IMAP LOGIN failed")` —
+    the message is the point and the class name is noise. An operator reading
+    "AuthError: AUTHENTICATIONFAILED Invalid credentials" in the account banner
+    is worse served than by the message alone.
+
+    Use `describe_error` for anything unexpected, where the type *is* the
+    information. Use this where the message is authored and never empty, and the
+    fallback is only a guard against a future caller raising a bare instance.
+    """
+    return str(exc).strip() or type(exc).__name__
+
+
+def describe_error(exc: BaseException, *, max_detail: int | None = None) -> str:
+    """Render `exc` as ``"TypeName: message"``, or ``"TypeName"`` when empty.
+
+    Never returns a string ending in a dangling colon, which is the whole point
+    — a reader must always learn at least what kind of failure occurred.
+
+    `max_detail` truncates the message (not the type name) for callers that
+    expose the result to an unauthenticated reader.
+    """
+    name = type(exc).__name__
+    detail = str(exc).strip()
+    if not detail:
+        return name
+    if max_detail is not None and len(detail) > max_detail:
+        detail = detail[:max_detail].rstrip() + "…"
+    return f"{name}: {detail}"

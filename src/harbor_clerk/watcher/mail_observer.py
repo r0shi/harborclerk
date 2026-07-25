@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
 
+from harbor_clerk.error_text import describe_error, message_or_type
 from harbor_clerk.mail.audit import audit_session_scope
 from harbor_clerk.mail.document_lifecycle import (
     restore_documents_for_relabeled,
@@ -46,18 +47,6 @@ from harbor_clerk.models import MailAccount, WatchedLabel
 from harbor_clerk.secrets import get_cipher
 
 logger = logging.getLogger(__name__)
-
-
-def _describe(exc: BaseException) -> str:
-    """Never render an empty reason.
-
-    A bare `str(exc)` on `TimeoutError()` or `httpx.ReadTimeout('')` is the
-    empty string, and `last_error` is rendered by the Status page as
-    `{a.last_error && ...}` — falsy, so the user sees a failing account with no
-    reason at all. (#570 introduces a shared `error_text.describe_error`; this
-    stays local so the two PRs don't stack.)
-    """
-    return str(exc).strip() or type(exc).__name__
 
 
 def _default_session_factory() -> async_sessionmaker:
@@ -183,7 +172,7 @@ class MailObserver:
                     ran_for,
                     failures,
                     delay,
-                    _describe(exc),
+                    describe_error(exc),
                 )
             else:
                 logger.warning(
@@ -270,7 +259,7 @@ class MailObserver:
                     await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
                 ).scalar_one()
                 acc.status = "auth_error"
-                acc.last_error = str(exc)
+                acc.last_error = message_or_type(exc)
                 await session.commit()
             await audit_ctx.__aexit__(None, None, None)
             return
@@ -278,14 +267,14 @@ class MailObserver:
             # Latch it. Without this the account stays `active` with no
             # last_error, so the UI shows a healthy account that never syncs —
             # and the supervisor retries forever with nothing explaining why.
-            logger.warning("connect/login failed for label %s: %s", label_id, _describe(exc))
+            logger.warning("connect/login failed for label %s: %s", label_id, describe_error(exc))
             try:
                 async with session_factory() as session:
                     acc = (
                         await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
                     ).scalar_one_or_none()
                     if acc is not None:
-                        acc.last_error = _describe(exc)
+                        acc.last_error = describe_error(exc)
                         await session.commit()
             except Exception:
                 # "connect failed" and "DB down" co-occur constantly. Letting

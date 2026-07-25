@@ -1160,3 +1160,113 @@ async def test_summary_backlog_endpoint_returns_all_four_fields(client, admin_us
     assert isinstance(data["p50_seconds"], (int, float)) and data["p50_seconds"] >= 0
     assert all(isinstance(ts, (int, float)) for ts, _ in data["depth_history"])
     assert all(isinstance(d, int) and d >= 0 for _, d in data["depth_history"])
+
+
+# --------------------------------------------------------------------------
+# Health-check error rendering — the live box reported `"embedder": "error: "`
+# --------------------------------------------------------------------------
+
+
+async def test_health_check_names_a_timing_out_embedder(client, monkeypatch):
+    """A timeout must name itself, not render as a bare "error: ".
+
+    This drives the endpoint rather than the helper, so reverting the call site
+    at system.py fails here. `httpx.ReadTimeout("")` carries an empty message —
+    which is what the Mac mini actually hit.
+    """
+    import httpx
+
+    from harbor_clerk.config import get_settings
+
+    real_get = httpx.AsyncClient.get
+    # Resolve from config, never hardcode: CI overrides TIKA_URL/EMBEDDER_URL,
+    # so a literal that matches the local .env silently stops matching there —
+    # the shim falls through to a real request and the assertion compares
+    # against whatever the runner's network did.
+    embedder_health = f"{get_settings().embedder_url}/health"
+
+    async def _selective_get(self, url, *args, **kwargs):
+        if str(url) == embedder_health:
+            raise httpx.ReadTimeout("")
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+
+    resp = await client.get("/api/system/health")
+    data = resp.json()
+
+    assert data["checks"]["embedder"] == "error: ReadTimeout"
+    assert data["status"] == "degraded"
+
+
+async def test_health_check_keeps_the_message_when_there_is_one(client, monkeypatch):
+    import httpx
+
+    from harbor_clerk.config import get_settings
+
+    real_get = httpx.AsyncClient.get
+    tika_probe = f"{get_settings().tika_url}/tika"
+
+    async def _selective_get(self, url, *args, **kwargs):
+        if str(url) == tika_probe:
+            raise httpx.ConnectError("connection refused")
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+
+    resp = await client.get("/api/system/health")
+    assert resp.json()["checks"]["tika"] == "error: ConnectError: connection refused"
+
+
+async def test_health_check_bounds_the_detail_it_publishes(client, monkeypatch):
+    """/api/system/health is unauthenticated, and a driver error can stringify
+    with the failing statement and connection detail. Bound what goes out."""
+    import httpx
+
+    from harbor_clerk.config import get_settings
+    from harbor_clerk.error_text import HEALTH_DETAIL_LIMIT
+
+    real_get = httpx.AsyncClient.get
+    embedder_health = f"{get_settings().embedder_url}/health"
+
+    async def _selective_get(self, url, *args, **kwargs):
+        if str(url) == embedder_health:
+            raise httpx.ConnectError("x" * 5000)
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+
+    resp = await client.get("/api/system/health")
+    rendered = resp.json()["checks"]["embedder"]
+
+    assert len(rendered) < HEALTH_DETAIL_LIMIT + 100, f"unbounded detail published: {len(rendered)} chars"
+    assert rendered.endswith("…")
+
+
+async def test_no_health_check_renders_a_dangling_prefix(client, monkeypatch):
+    """Whatever fails and however it stringifies, a reader learns the type."""
+    import httpx
+
+    from harbor_clerk.config import get_settings
+
+    settings = get_settings()
+    real_get = httpx.AsyncClient.get
+    # Must stay selective: the test client is itself an httpx.AsyncClient, so a
+    # blanket raiser kills the request before it reaches the endpoint. Resolved
+    # from config — hardcoded hosts silently stop matching under CI's env and
+    # the test keeps passing while covering less.
+    probed = (settings.tika_url, settings.embedder_url, settings.reranker_url)
+
+    async def _selective_get(self, url, *args, **kwargs):
+        if str(url).startswith(probed):
+            raise httpx.ConnectTimeout("")
+        return await real_get(self, url, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", _selective_get)
+
+    resp = await client.get("/api/system/health")
+    checks = resp.json()["checks"]
+    assert checks["embedder"] == "error: ConnectTimeout"
+    for name, value in checks.items():
+        assert value.strip() != "error:", f"{name} rendered a bare prefix"
+        assert not value.endswith(": "), f"{name} rendered a dangling colon: {value!r}"

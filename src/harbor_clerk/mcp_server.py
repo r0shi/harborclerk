@@ -14,6 +14,7 @@ from harbor_clerk.api.deps import Principal
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.config import get_settings, refresh_cli_access_setting
 from harbor_clerk.db import async_session_factory
+from harbor_clerk.error_text import describe_error
 from harbor_clerk.mcp_discriminator import _compute_discriminator_hint
 from harbor_clerk.mcp_lookup_tools import (
     documents_by_date as _documents_by_date_impl,
@@ -2911,7 +2912,7 @@ async def kb_system_health() -> str:
             await session.execute(text("SELECT 1"))
             checks["postgres"] = "ok"
         except Exception as e:
-            checks["postgres"] = f"error: {e}"
+            checks["postgres"] = f"error: {describe_error(e)}"
 
     try:
         from harbor_clerk.storage import get_storage
@@ -2920,7 +2921,7 @@ async def kb_system_health() -> str:
         storage.bucket_exists("originals")
         checks["storage"] = "ok"
     except Exception as e:
-        checks["storage"] = f"error: {e}"
+        checks["storage"] = f"error: {describe_error(e)}"
 
     overall = all(v == "ok" for v in checks.values())
     return json.dumps(

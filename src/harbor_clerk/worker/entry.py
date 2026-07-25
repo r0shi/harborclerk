@@ -24,6 +24,7 @@ from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.db_health import panic_on_sentinel_mismatch
 from harbor_clerk.db_sync import _make_sync_url, get_sync_session
+from harbor_clerk.error_text import describe_error
 from harbor_clerk.events import publish_job_event
 from harbor_clerk.llm.summarize import AppleIntelligenceUnavailableError
 from harbor_clerk.models import Document, IngestionJob
@@ -449,7 +450,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
     try:
         func(doc_id, worker_seq=pipeline_seq)
     except AppleIntelligenceUnavailableError as e:
-        error_msg = f"{type(e).__name__}: {e}"
+        error_msg = describe_error(e)
         disposition = _record_afm_unavailable_job(doc_id, stage, pipeline_seq, error_msg)
         if disposition is None:
             logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
@@ -484,7 +485,7 @@ def execute_job(doc_id: uuid.UUID, stage: JobStage, pipeline_seq: int | None = N
                 retry_after=disposition.retry_after.isoformat(),
             )
     except Exception as e:
-        error_msg = f"{type(e).__name__}: {e}"
+        error_msg = describe_error(e)
         logger.error("Job %s/%s failed: %s", doc_id, stage.value, error_msg)
 
         session = get_sync_session()

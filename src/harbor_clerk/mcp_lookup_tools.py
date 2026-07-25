@@ -22,6 +22,7 @@ from sqlalchemy import case, cast, func, literal, null, or_, select
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from harbor_clerk.error_text import message_or_type
 from harbor_clerk.mcp_discriminator import _find_differing_metadata_fields
 from harbor_clerk.models import Chunk, Document
 from harbor_clerk.search import _apply_email_metadata_filter, _apply_jsonb_metadata_filter
@@ -449,7 +450,7 @@ async def documents_by_date(
             limit=limit,
         )
     except ValueError as exc:
-        return {"error": str(exc)}
+        return {"error": message_or_type(exc)}
 
     results: list[dict] = []
     for doc, eff_date, src in rows:
