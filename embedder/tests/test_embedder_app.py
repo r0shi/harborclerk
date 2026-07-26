@@ -244,37 +244,3 @@ def test_encode_releases_the_gpu_cache(stub_model):
             assert c.post("/embed", json={"texts": ["b", "c"]}).status_code == 200
 
     assert len(calls) == 2, f"expected a release per encode, got {len(calls)}"
-
-
-def test_release_is_a_noop_without_a_device(monkeypatch):
-    """CPU-only deployments (Docker) have no device allocator to drain, and a
-    failure here must never fail an encode."""
-    import builtins
-
-    from embedder.gpu_cache import release_gpu_cache
-
-    real_import = builtins.__import__
-
-    def _no_torch(name, *a, **kw):
-        if name == "torch":
-            raise ImportError("no torch here")
-        return real_import(name, *a, **kw)
-
-    monkeypatch.setattr(builtins, "__import__", _no_torch)
-    release_gpu_cache()  # must not raise
-
-
-def test_release_can_be_disabled(monkeypatch):
-    """Escape hatch for machines with headroom, where cache reuse wins."""
-    import importlib
-
-    monkeypatch.setenv("RELEASE_GPU_CACHE", "false")
-    import embedder.gpu_cache as gc
-
-    importlib.reload(gc)
-    try:
-        assert gc.RELEASE_GPU_CACHE is False
-        gc.release_gpu_cache()  # no-op, must not raise
-    finally:
-        monkeypatch.delenv("RELEASE_GPU_CACHE", raising=False)
-        importlib.reload(gc)

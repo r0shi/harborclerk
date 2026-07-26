@@ -68,3 +68,46 @@ def test_health_endpoint(client):
     r = client.get("/health")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+def test_rerank_releases_the_gpu_cache(monkeypatch):
+    """The reranker has the same variable-length exposure as the embedder, and
+    until now no call-site test — so the regression below could not be caught.
+    """
+    from unittest.mock import patch
+
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    calls = []
+    model = MagicMock()
+    model.predict.side_effect = lambda pairs: np.array([0.5] * len(pairs))
+
+    with (
+        patch("embedder.reranker.CrossEncoder", return_value=model),
+        patch("embedder.reranker.release_gpu_cache", side_effect=lambda: calls.append(1)),
+    ):
+        from embedder.reranker import app
+
+        with TestClient(app) as c:
+            r = c.post("/rerank", json={"query": "q", "passages": ["a", "b"], "top_k": 2})
+            assert r.status_code == 200
+
+    assert len(calls) == 1, f"expected one release per rerank, got {len(calls)}"
+
+
+def test_rerank_binds_the_model_before_the_executor_hop(monkeypatch):
+    """Shutdown between the guard and the worker thread must not 500.
+
+    `run_in_executor(None, _model.predict, pairs)` bound the method eagerly on
+    the event loop. A closure that reads the global instead resolves it on the
+    worker thread — after an await — so lifespan shutdown can null it in
+    between, turning the intended 503 into AttributeError.
+    """
+    import inspect
+
+    import embedder.reranker as rr
+
+    src = inspect.getsource(rr.rerank)
+    assert "model = _model" in src, "rerank must bind _model before handing work to the executor"
+    assert "_model.predict(" not in src, "predict must be called on the bound local, not the global"

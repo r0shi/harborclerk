@@ -1,4 +1,4 @@
-"""Return GPU allocator cache to the OS after inference.
+"""Return GPU allocator cache to the OS when it grows past a high-water mark.
 
 PyTorch's caching allocator keeps freed device blocks for reuse and never
 returns them. That is normally self-limiting — a steady workload reaches a
@@ -7,7 +7,7 @@ the inputs are documents and email bodies whose lengths vary by orders of
 magnitude: nearly every batch asks for a shape the cache has not seen, so it
 allocates a fresh block and the cache ratchets upward forever.
 
-Measured on the Mac mini (M4, 32 GB), embedding a real corpus:
+Measured on the Mac mini (M4, 32 GB) during a 7,449-message email ingest:
 
     fresh embedder process          1.5 GB
     after ~1.5 hours of ingest       40 GB   (phys_footprint, peak 44 GB)
@@ -15,17 +15,18 @@ Measured on the Mac mini (M4, 32 GB), embedding a real corpus:
 At that point the machine had 347 MB free, 15 GB in the compressor and 13 GB of
 swap in use. Restarting the embedder returned free memory to 11 GB.
 
-Ten batches of 64 variable-length texts, with and without releasing:
+It is not a leak: `current_allocated_memory` never moved off 594 MB and
+`gc.collect()` changed nothing. Only `empty_cache()` returns it.
 
-    unmanaged (GB)  6.7 12.8  6.5  8.6  8.6  9.6 11.9 16.3 11.5 12.4
-    managed   (GB)  4.1  8.6  2.4  2.9  2.9  2.3  3.0  7.4  2.6  3.5
-
-Managed still spikes while a large batch is in flight — that is live
-allocation, not cache — but it returns to baseline instead of ratcheting.
-
-Releasing costs nothing measurable (97.2s vs 96.8s over five batches) and on a
-machine this tight it is slightly *faster*, because holding gigabytes of dead
-cache costs more in compression and swap than re-allocating does.
+**Why a high-water mark rather than releasing after every call.** The same
+endpoints serve two very different workloads. Ingest sends batches of 64
+variable-length chunks, which is what ratchets. Search sends a *single* query
+string on every request, and `/rerank` sits on that same request path. Draining
+unconditionally would throw away the cache the next query is about to reuse, on
+an interactive path whose latency budget is already tight — and the reranker has
+no concurrency gate, so one thread's drain would pull the cache out from under
+the others mid-flight. Gating on the gap means small requests never pay, and the
+ratchet is still bounded.
 
 Call this on the worker thread, never the event loop: `empty_cache` blocks, and
 starving `/health` is exactly what #553 was about.
@@ -35,33 +36,70 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
-# Escape hatch. Set to 0/false to keep PyTorch's default caching behaviour, e.g.
-# on a machine with headroom to spare where the reuse is worth more than the RAM.
-RELEASE_GPU_CACHE = os.environ.get("RELEASE_GPU_CACHE", "true").lower() not in ("0", "false", "no")
 
-_warned = False
+def _int_env(name: str, default: int) -> int:
+    """Total parse — this runs at import, so a bad value must not stop startup."""
+    raw = os.environ.get(name, "")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        if raw:
+            logger.warning("%s=%r is not an integer; using %d", name, raw, default)
+        return default
+
+
+# Release once the cached-but-unused pool exceeds this. Measured on the Mac
+# mini, the two workloads separate by more than an order of magnitude:
+#
+#     search steady state (single-query encodes)   0.44 GB   flat
+#     after three ingest batches of 64             8.22 GB
+#
+# 4 GB sits well clear of both: search never triggers a drain, and the ratchet
+# is caught long before it costs swap. A first attempt at 2 GB was too low —
+# searches issued right after an ingest still sat above the mark and drained on
+# every request, which is the interactive path this gate exists to protect.
+CACHE_HIGH_WATER_MB = _int_env("GPU_CACHE_HIGH_WATER_MB", 4096)
+
+# 0 disables entirely, restoring PyTorch's default behaviour.
+ENABLED = CACHE_HIGH_WATER_MB > 0
+
+_last_warned_at = 0.0
+_WARN_INTERVAL_SECONDS = 300.0
+
+
+def _warn(msg: str) -> None:
+    """Rate-limited rather than once-per-process: this guards an OOM-class
+    outage, and a single log line hours ago is not a signal anyone will see."""
+    global _last_warned_at
+    now = time.monotonic()
+    if now - _last_warned_at >= _WARN_INTERVAL_SECONDS:
+        _last_warned_at = now
+        logger.warning(msg, exc_info=True)
 
 
 def release_gpu_cache() -> None:
-    """Hand cached device memory back, on whichever backend is active.
+    """Drain the device allocator's free pool if it has grown past the mark.
 
     Silent no-op on CPU-only deployments (Docker), where there is no device
-    allocator to drain.
+    allocator. Never raises — cache hygiene must not fail an inference call.
     """
-    global _warned
-    if not RELEASE_GPU_CACHE:
+    if not ENABLED:
         return
     try:
         import torch
 
+        threshold = CACHE_HIGH_WATER_MB * 1024 * 1024
         if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
+            gap = torch.mps.driver_allocated_memory() - torch.mps.current_allocated_memory()
+            if gap > threshold:
+                torch.mps.empty_cache()
         elif torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:  # noqa: BLE001 — never fail an encode over cache hygiene
-        if not _warned:
-            logger.warning("could not release GPU cache; continuing", exc_info=True)
-            _warned = True
+            gap = torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+            if gap > threshold:
+                torch.cuda.empty_cache()
+    except Exception:  # never fail an encode over cache hygiene
+        _warn("could not release GPU cache; continuing")

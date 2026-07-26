@@ -74,15 +74,25 @@ async def rerank(req: RerankRequest):
     if not req.passages:
         return RerankResponse(scores=[], model=MODEL_NAME)
 
+    # Bind before handing work to the executor. The previous form,
+    # `run_in_executor(None, _model.predict, pairs)`, evaluated `_model.predict`
+    # eagerly on the event loop; a closure reading the global instead resolves
+    # it on the worker thread — after an await — so lifespan shutdown can null
+    # it in between and turn the intended 503 into an AttributeError 500. Same
+    # hazard app.py guards against.
+    model = _model
     pairs = [[req.query, p] for p in req.passages]
 
     def _predict_and_release():
         # Same exposure as the embedder: variable-length passages mean the
         # allocator cache never reaches a steady state. Released on the worker
-        # thread so the event loop stays free.
-        out = _model.predict(pairs)
-        release_gpu_cache()
-        return out
+        # thread so the event loop stays free, and in a finally so an OOM —
+        # the likeliest failure on a tight machine — still drains rather than
+        # leaving the pool full for the retry that follows.
+        try:
+            return model.predict(pairs)
+        finally:
+            release_gpu_cache()
 
     raw_scores = await asyncio.get_event_loop().run_in_executor(None, _predict_and_release)
     indexed = sorted(

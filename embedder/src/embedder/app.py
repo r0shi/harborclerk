@@ -127,9 +127,13 @@ async def embed(request: EmbedRequest):
     def _encode_and_release():
         # Both on the worker thread: `empty_cache` blocks, and doing it on the
         # event loop would re-create the /health starvation #553 was about.
-        out = model.encode(texts, normalize_embeddings=True)
-        release_gpu_cache()
-        return out
+        # In a finally because an MPS OOM is the likeliest failure here, and it
+        # surfaces as a 5xx that embedder_client retries — six more encodes
+        # against an allocator we never drained.
+        try:
+            return model.encode(texts, normalize_embeddings=True)
+        finally:
+            release_gpu_cache()
 
     async with slots:
         embeddings = await asyncio.to_thread(_encode_and_release)
