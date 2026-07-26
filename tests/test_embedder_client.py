@@ -302,3 +302,32 @@ def test_null_embeddings_becomes_an_embedder_error(httpx_mock: HTTPXMock):
 
     with pytest.raises(EmbedderError, match="expected a list"):
         embed_texts(["a"], task="passage")
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+def test_errors_never_render_a_dangling_colon(httpx_mock: HTTPXMock):
+    """Every retryable transport exception stringifies empty when raised bare.
+
+    `f"{type(exc).__name__}: {exc}"` then yields "ConnectTimeout: ", and that
+    string reaches `ingestion_jobs.error` and `documents.error`, which the
+    document detail page renders verbatim. This module was written in the same
+    window as error_text and was the one file its migration missed.
+    """
+    for exc in (
+        httpx.ConnectTimeout(""),
+        httpx.ConnectError(""),
+        httpx.PoolTimeout(""),
+        httpx.ReadError(""),
+        httpx.RemoteProtocolError(""),
+    ):
+        httpx_mock.reset()
+        for _ in range(8):
+            httpx_mock.add_exception(exc, url=EMBED_URL)
+        with pytest.raises(EmbedderError) as excinfo:
+            embed_texts(["hello"], task="passage", max_attempts=2)
+        rendered = str(excinfo.value)
+        assert type(exc).__name__ in rendered, rendered
+        assert ": " not in rendered.rstrip().removesuffix(type(exc).__name__) or not rendered.rstrip().endswith(":"), (
+            f"dangling colon in {rendered!r}"
+        )
+        assert not rendered.rstrip().endswith(":"), f"dangling colon in {rendered!r}"
