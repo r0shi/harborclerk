@@ -16,6 +16,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
+from embedder.gpu_cache import release_gpu_cache
+
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.environ.get("EMBED_MODEL", "ibm-granite/granite-embedding-311m-multilingual-r2")
@@ -122,8 +124,15 @@ async def embed(request: EmbedRequest):
     # Note: the slot is released on exit, but a cancelled request cannot cancel
     # the worker thread — the encode runs to completion regardless. Reachable
     # today only at shutdown; worth knowing before wrapping /embed in a timeout.
+    def _encode_and_release():
+        # Both on the worker thread: `empty_cache` blocks, and doing it on the
+        # event loop would re-create the /health starvation #553 was about.
+        out = model.encode(texts, normalize_embeddings=True)
+        release_gpu_cache()
+        return out
+
     async with slots:
-        embeddings = await asyncio.to_thread(model.encode, texts, normalize_embeddings=True)
+        embeddings = await asyncio.to_thread(_encode_and_release)
 
     return EmbedResponse(
         embeddings=embeddings.tolist(),

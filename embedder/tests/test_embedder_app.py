@@ -218,3 +218,63 @@ def test_embed_returns_503_before_the_semaphore_exists(stub_model):
         # Outside the TestClient context lifespan never ran, so both globals are None.
         assert app_module._encode_slots is None
         assert app_module._model is None
+
+
+def test_encode_releases_the_gpu_cache(stub_model):
+    """The allocator cache must be handed back after each encode.
+
+    PyTorch's caching allocator never returns device memory on its own. That is
+    fine for a steady workload, but the inputs here are documents and email
+    bodies of wildly varying length, so nearly every batch asks for an unseen
+    shape and the cache ratchets. Measured on the Mac mini: 1.5 GB fresh, 40 GB
+    after ~1.5 hours of ingest, with the machine down to 347 MB free.
+    """
+    from unittest.mock import patch
+
+    calls = []
+
+    with (
+        patch("embedder.app.SentenceTransformer", return_value=stub_model),
+        patch("embedder.app.release_gpu_cache", side_effect=lambda: calls.append(1)),
+    ):
+        from embedder.app import app
+
+        with TestClient(app) as c:
+            assert c.post("/embed", json={"texts": ["a"]}).status_code == 200
+            assert c.post("/embed", json={"texts": ["b", "c"]}).status_code == 200
+
+    assert len(calls) == 2, f"expected a release per encode, got {len(calls)}"
+
+
+def test_release_is_a_noop_without_a_device(monkeypatch):
+    """CPU-only deployments (Docker) have no device allocator to drain, and a
+    failure here must never fail an encode."""
+    import builtins
+
+    from embedder.gpu_cache import release_gpu_cache
+
+    real_import = builtins.__import__
+
+    def _no_torch(name, *a, **kw):
+        if name == "torch":
+            raise ImportError("no torch here")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", _no_torch)
+    release_gpu_cache()  # must not raise
+
+
+def test_release_can_be_disabled(monkeypatch):
+    """Escape hatch for machines with headroom, where cache reuse wins."""
+    import importlib
+
+    monkeypatch.setenv("RELEASE_GPU_CACHE", "false")
+    import embedder.gpu_cache as gc
+
+    importlib.reload(gc)
+    try:
+        assert gc.RELEASE_GPU_CACHE is False
+        gc.release_gpu_cache()  # no-op, must not raise
+    finally:
+        monkeypatch.delenv("RELEASE_GPU_CACHE", raising=False)
+        importlib.reload(gc)

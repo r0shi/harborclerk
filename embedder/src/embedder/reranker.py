@@ -15,6 +15,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sentence_transformers import CrossEncoder
 
+from embedder.gpu_cache import release_gpu_cache
+
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
@@ -73,7 +75,16 @@ async def rerank(req: RerankRequest):
         return RerankResponse(scores=[], model=MODEL_NAME)
 
     pairs = [[req.query, p] for p in req.passages]
-    raw_scores = await asyncio.get_event_loop().run_in_executor(None, _model.predict, pairs)
+
+    def _predict_and_release():
+        # Same exposure as the embedder: variable-length passages mean the
+        # allocator cache never reaches a steady state. Released on the worker
+        # thread so the event loop stays free.
+        out = _model.predict(pairs)
+        release_gpu_cache()
+        return out
+
+    raw_scores = await asyncio.get_event_loop().run_in_executor(None, _predict_and_release)
     indexed = sorted(
         ((i, float(s)) for i, s in enumerate(raw_scores)),
         key=lambda x: x[1],
