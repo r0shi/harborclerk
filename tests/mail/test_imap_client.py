@@ -166,3 +166,77 @@ async def test_uid_allows_read_subcommands(_patch_aioimaplib, verb, monkeypatch)
     result, _lines = await conn.uid(verb, "1:*")
     assert result == "OK"
     assert captured == [(verb, ("1:*",))]
+
+
+async def test_logout_closes_the_transport_even_when_login_never_succeeded():
+    """Dropping the client reference does not release the socket.
+
+    aioimaplib schedules `loop.create_connection(...)` in `IMAP4.__init__`, so
+    the transport is owned by the event loop; losing the Python reference leaves
+    it open until the server reaps it (~30 min on Gmail). LOGOUT is skipped when
+    `_logged_in` is false — the connect-ok/login-failed path — so before this
+    fix that path closed nothing at all.
+
+    Harmless when a dead task was never retried: one socket per watcher
+    lifetime. With respawn-on-failure it repeats, against Gmail's limit of 15
+    simultaneous IMAP connections per account.
+    """
+    import asyncio
+
+    from harbor_clerk.mail.imap_client import IMAPConnection
+
+    closed = []
+
+    class _Transport:
+        def close(self):
+            closed.append(True)
+
+    class _Client:
+        def __init__(self):
+            self.protocol = type("P", (), {"transport": _Transport()})()
+            self._client_task = asyncio.get_event_loop().create_future()
+            self._client_task.set_result(None)
+
+        async def logout(self):
+            raise AssertionError("must not LOGOUT when login never succeeded")
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    conn._client = _Client()
+    conn._logged_in = False  # connected, but login raised
+
+    await conn.logout()
+
+    assert closed, "transport was never closed — the socket leaks until the server reaps it"
+    assert conn._client is None
+
+
+async def test_logout_retrieves_the_connection_task_exception():
+    """`create_connection` runs as a task nobody awaits. When it fails — the
+    common case after a connect error — its exception is never retrieved, and
+    asyncio only surfaces it as "Task exception was never retrieved" at
+    shutdown. That is how this leak stayed invisible.
+    """
+    import asyncio
+
+    from harbor_clerk.mail.imap_client import IMAPConnection
+
+    async def _failed_connect():
+        raise OSError("connection refused")
+
+    task = asyncio.ensure_future(_failed_connect())
+    await asyncio.sleep(0)
+
+    class _Client:
+        protocol = None
+
+        def __init__(self, t):
+            self._client_task = t
+
+    conn = IMAPConnection(host="h", port=993, username="u", password="p")
+    conn._client = _Client(task)
+    conn._logged_in = False
+
+    await conn.logout()
+
+    assert task.done()
+    assert task.exception() is not None  # retrieved, so asyncio won't complain

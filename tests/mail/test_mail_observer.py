@@ -474,3 +474,90 @@ async def test_reactivating_a_label_clears_its_backoff(db_session, mock_aioimap,
     assert label_id not in observer._retry_not_before
 
     await observer.stop()
+
+
+async def test_backoff_is_forgotten_for_a_label_that_died_then_went_inactive(
+    db_session, mock_aioimap, observer_session_factory
+):
+    """The cleanup keyed off `actual_ids`, computed *after* the reap loop popped
+    dead tasks — so a label that died and *then* went inactive could never
+    appear in it, and kept its backoff forever. On reactivation it sat behind a
+    stale gate for up to the cap with nothing logged, and its next failure
+    escalated from the old streak instead of restarting at the base delay.
+    """
+    import asyncio
+
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import WatchedLabel as _WL
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "forget")
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    async def _boom():
+        raise RuntimeError("died")
+
+    dead = asyncio.create_task(_boom())
+    await asyncio.sleep(0)
+    observer._tasks[label_id] = dead
+    observer._spawned_at[label_id] = __import__("time").monotonic()
+
+    # Reap while still desired: backoff is armed and the task is gone.
+    await observer._reconcile(observer_session_factory)
+    assert observer._consecutive_failures.get(label_id) == 1
+    assert label_id not in observer._tasks
+
+    # Now the label goes inactive — the state must not survive it.
+    lbl = (await db_session.execute(_select(_WL).where(_WL.label_id == label_id))).scalar_one()
+    lbl.status = "paused"
+    await db_session.commit()
+
+    await observer._reconcile(observer_session_factory)
+
+    assert label_id not in observer._consecutive_failures, "stale backoff survived deactivation"
+    assert label_id not in observer._retry_not_before
+    assert label_id not in observer._spawned_at
+
+    await observer.stop()
+
+
+async def test_deliberate_exit_is_not_logged_as_a_failure(db_session, mock_aioimap, observer_session_factory, caplog):
+    """`_run_label` returns on purpose when the account goes auth_error or its
+    key stops matching. No respawn follows, because the label has left
+    desired_ids — so logging "respawning in Ns" promises something that never
+    happens, and arming a backoff for it is meaningless.
+    """
+    import asyncio
+    import logging
+
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import WatchedLabel as _WL
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "deliberate")
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    # Label is already inactive when its task finishes cleanly.
+    lbl = (await db_session.execute(_select(_WL).where(_WL.label_id == label_id))).scalar_one()
+    lbl.status = "paused"
+    await db_session.commit()
+
+    async def _clean_exit():
+        return None
+
+    done = asyncio.create_task(_clean_exit())
+    await asyncio.sleep(0)
+    observer._tasks[label_id] = done
+    observer._spawned_at[label_id] = __import__("time").monotonic()
+
+    with caplog.at_level(logging.INFO):
+        await observer._reconcile(observer_session_factory)
+
+    text = caplog.text
+    assert "respawning" not in text, f"promised a respawn that cannot happen: {text}"
+    assert "no longer active" in text
+    assert label_id not in observer._consecutive_failures
+
+    await observer.stop()

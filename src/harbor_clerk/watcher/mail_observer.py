@@ -118,6 +118,13 @@ class MailObserver:
         finally:
             await self.stop()
 
+    def _forget(self, label_id: UUID) -> None:
+        """Drop every scrap of per-label state. One place, so a new dict cannot
+        be added to __init__ and quietly outlive the label it describes."""
+        self._consecutive_failures.pop(label_id, None)
+        self._retry_not_before.pop(label_id, None)
+        self._spawned_at.pop(label_id, None)
+
     async def _reconcile(self, session_factory: async_sessionmaker) -> None:
         """Spawn / cancel per-label tasks to match the desired-state DB query."""
         async with session_factory() as session:
@@ -154,10 +161,24 @@ class MailObserver:
             # with a result rather than as cancelled — `task.cancelled()` alone
             # would classify every shutdown as a clean exit and respawn it.
             if task.cancelled() or self._stop_event.is_set():
-                self._consecutive_failures.pop(lid, None)
+                self._forget(lid)
                 continue
 
             exc = task.exception()
+
+            # `_run_label` also *returns* on purpose when the account has gone
+            # auth_error or its key no longer matches. Those are not failures
+            # and no respawn is coming, because the label has left desired_ids
+            # — so arming a backoff and logging "respawning in Ns" promises
+            # something that will never happen.
+            if lid not in desired_ids:
+                self._forget(lid)
+                logger.info(
+                    "label %s sync task stopped after %.0fs; label or account no longer active",
+                    lid,
+                    ran_for,
+                )
+                continue
             # A task that ran a good while got as far as working; treat its
             # death as a fresh incident rather than escalating an old streak.
             failures = 1 if ran_for >= _HEALTHY_RUN_SECONDS else self._consecutive_failures.get(lid, 0) + 1
@@ -175,8 +196,12 @@ class MailObserver:
                     describe_error(exc),
                 )
             else:
+                # Still desired, but the coroutine returned rather than raised:
+                # the connect/login failure path does exactly this, having
+                # already logged and latched the reason. "without error" would
+                # be wrong — it failed, it just did not propagate.
                 logger.warning(
-                    "label %s sync task exited after %.0fs without error (failure %d); respawning in %.0fs",
+                    "label %s sync task returned early after %.0fs (failure %d); respawning in %.0fs",
                     lid,
                     ran_for,
                     failures,
@@ -202,14 +227,18 @@ class MailObserver:
             self._spawned_at[lbl.label_id] = now
             self._tasks[lbl.label_id] = asyncio.create_task(self._run_label(lbl.label_id, session_factory))
 
-        # Cancel tasks for labels that are no longer active
-        for lid in actual_ids - desired_ids:
-            # Drop the backoff bookkeeping too: otherwise a reactivated account
-            # sits behind a stale gate for up to the cap, silently, right after
-            # the operator fixed it.
-            self._consecutive_failures.pop(lid, None)
-            self._retry_not_before.pop(lid, None)
+        # Cancel tasks for labels that are no longer active, and forget the
+        # bookkeeping for anything undesired — keyed off every id we hold state
+        # for, not just running tasks. `actual_ids` is computed *after* the reap
+        # loop popped dead tasks, so a label that died and then went inactive
+        # would never appear here and would keep its backoff forever: on
+        # reactivation it sits behind a stale gate for up to the cap, silently,
+        # and its next failure escalates from the old streak instead of
+        # restarting at the base delay.
+        known = set(self._tasks) | set(self._consecutive_failures) | set(self._retry_not_before) | set(self._spawned_at)
+        for lid in known - desired_ids:
             task = self._tasks.pop(lid, None)
+            self._forget(lid)
             if task is not None:
                 task.cancel()
 
