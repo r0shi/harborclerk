@@ -561,3 +561,52 @@ async def test_deliberate_exit_is_not_logged_as_a_failure(db_session, mock_aioim
     assert label_id not in observer._consecutive_failures
 
     await observer.stop()
+
+
+async def test_auth_failure_closes_the_connection_it_opened(
+    db_session, mock_aioimap, observer_session_factory, monkeypatch
+):
+    """The path that leaks most, and the one the logout() fix exists for.
+
+    `AuthError` is raised by `login()` — after `connect()` completed the TLS
+    handshake — so there is a live socket. A wrong app password fails every
+    label on the account at once, and again on every re-activation, each time
+    holding a socket for ~30 min against Gmail's 15-connection limit. Fixing
+    `logout()` achieves nothing if this branch does not call it.
+    """
+    from harbor_clerk.mail.exceptions import AuthError
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "authleak")
+
+    logouts = []
+    real_logout = IMAPConnection.logout
+
+    async def _tracked_logout(self):
+        logouts.append(1)
+        return await real_logout(self)
+
+    async def _connect_ok(self):
+        self._client = object()  # handshake completed; a socket exists
+
+    async def _login_fails(self):
+        raise AuthError("AUTHENTICATIONFAILED Invalid credentials")
+
+    monkeypatch.setattr(IMAPConnection, "connect", _connect_ok)
+    monkeypatch.setattr(IMAPConnection, "login", _login_fails)
+    monkeypatch.setattr(IMAPConnection, "logout", _tracked_logout)
+
+    observer = MailObserver(session_factory=observer_session_factory)
+    await observer._run_label(label_id, observer_session_factory)
+
+    assert logouts, "auth failure returned without closing the connection it opened"
+
+    # And the account is still marked, so the behaviour that mattered is intact.
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import MailAccount as _MA
+
+    acc = (await db_session.execute(_select(_MA))).scalars().first()
+    await db_session.refresh(acc)
+    assert acc.status == "auth_error"

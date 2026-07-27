@@ -118,12 +118,21 @@ class MailObserver:
         finally:
             await self.stop()
 
+    @property
+    def _per_label_state(self) -> tuple[dict, ...]:
+        """Every per-label dict except `_tasks`, which has its own lifecycle
+        (cancel-then-drop) and cannot simply be discarded.
+
+        Derived rather than hand-listed so `_forget` and the `known` union below
+        cannot drift — a new dict added here is covered by both. Forgetting to
+        update one of them is exactly the omission this change fixes.
+        """
+        return (self._consecutive_failures, self._retry_not_before, self._spawned_at)
+
     def _forget(self, label_id: UUID) -> None:
-        """Drop every scrap of per-label state. One place, so a new dict cannot
-        be added to __init__ and quietly outlive the label it describes."""
-        self._consecutive_failures.pop(label_id, None)
-        self._retry_not_before.pop(label_id, None)
-        self._spawned_at.pop(label_id, None)
+        """Drop this label's backoff bookkeeping. Does not touch `_tasks`."""
+        for d in self._per_label_state:
+            d.pop(label_id, None)
 
     async def _reconcile(self, session_factory: async_sessionmaker) -> None:
         """Spawn / cancel per-label tasks to match the desired-state DB query."""
@@ -173,11 +182,23 @@ class MailObserver:
             # something that will never happen.
             if lid not in desired_ids:
                 self._forget(lid)
-                logger.info(
-                    "label %s sync task stopped after %.0fs; label or account no longer active",
-                    lid,
-                    ran_for,
-                )
+                if exc is not None:
+                    # A sibling label can crash *while* the account is being
+                    # marked auth_error by another — same account, both leave
+                    # desired_ids. Suppressing the cause here loses the only
+                    # record of a genuine failure.
+                    logger.warning(
+                        "label %s sync task died after %.0fs while going inactive: %s",
+                        lid,
+                        ran_for,
+                        describe_error(exc),
+                    )
+                else:
+                    logger.info(
+                        "label %s sync task stopped after %.0fs; label or account no longer active",
+                        lid,
+                        ran_for,
+                    )
                 continue
             # A task that ran a good while got as far as working; treat its
             # death as a fresh incident rather than escalating an old streak.
@@ -235,7 +256,7 @@ class MailObserver:
         # reactivation it sits behind a stale gate for up to the cap, silently,
         # and its next failure escalates from the old streak instead of
         # restarting at the base delay.
-        known = set(self._tasks) | set(self._consecutive_failures) | set(self._retry_not_before) | set(self._spawned_at)
+        known = set(self._tasks).union(*self._per_label_state)
         for lid in known - desired_ids:
             task = self._tasks.pop(lid, None)
             self._forget(lid)
@@ -283,14 +304,26 @@ class MailObserver:
             await conn.connect()
             await conn.login()
         except AuthError as exc:
-            async with session_factory() as session:
-                acc = (
-                    await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
-                ).scalar_one()
-                acc.status = "auth_error"
-                acc.last_error = message_or_type(exc)
-                await session.commit()
-            await audit_ctx.__aexit__(None, None, None)
+            # AuthError comes from login(), i.e. *after* connect() completed the
+            # TLS handshake — so there is a live socket here, and this is the
+            # path that leaks most: a wrong app password fails every label on
+            # the account at once, and again on every re-activation. Fixing
+            # logout() is no use if the branch that needs it does not call it.
+            try:
+                async with session_factory() as session:
+                    acc = (
+                        await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
+                    ).scalar_one_or_none()
+                    if acc is not None:
+                        acc.status = "auth_error"
+                        acc.last_error = message_or_type(exc)
+                        await session.commit()
+            except Exception:
+                logger.exception("could not record auth failure for label %s", label_id)
+            finally:
+                with contextlib.suppress(Exception):
+                    await conn.logout()
+                await audit_ctx.__aexit__(None, None, None)
             return
         except Exception as exc:
             # Latch it. Without this the account stays `active` with no

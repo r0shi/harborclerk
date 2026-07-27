@@ -210,21 +210,25 @@ async def test_logout_closes_the_transport_even_when_login_never_succeeded():
     assert conn._client is None
 
 
-async def test_logout_retrieves_the_connection_task_exception():
-    """`create_connection` runs as a task nobody awaits. When it fails — the
-    common case after a connect error — its exception is never retrieved, and
-    asyncio only surfaces it as "Task exception was never retrieved" at
-    shutdown. That is how this leak stayed invisible.
+async def test_logout_cancels_a_still_pending_connection_task():
+    """`create_connection` runs as a task nobody awaits.
+
+    The earlier version of this test used an already-failed task, so
+    `task.done()` held unconditionally and `task.exception()` — the assertion
+    itself — was what retrieved the exception. It passed against the unfixed
+    code. This uses a *pending* task, which only reaches a terminal state if
+    `logout()` actually cancels it.
     """
     import asyncio
 
     from harbor_clerk.mail.imap_client import IMAPConnection
 
-    async def _failed_connect():
-        raise OSError("connection refused")
+    async def _never_connects():
+        await asyncio.sleep(3600)
 
-    task = asyncio.ensure_future(_failed_connect())
+    task = asyncio.ensure_future(_never_connects())
     await asyncio.sleep(0)
+    assert not task.done()
 
     class _Client:
         protocol = None
@@ -238,5 +242,23 @@ async def test_logout_retrieves_the_connection_task_exception():
 
     await conn.logout()
 
-    assert task.done()
-    assert task.exception() is not None  # retrieved, so asyncio won't complain
+    assert task.done(), "pending connection task was left running"
+    assert task.cancelled()
+
+
+def test_aioimaplib_still_exposes_the_attributes_logout_reaches_for():
+    """`logout()` reaches past the wrapper for the socket, so it depends on two
+    aioimaplib internals. The other tests here use stubs with those names
+    hard-coded, which would keep passing through an upstream rename while the
+    leak silently returned. Pin them against the real library.
+    """
+    import aioimaplib
+
+    assert "_client_task" in aioimaplib.IMAP4.__annotations__ or hasattr(aioimaplib.IMAP4, "_client_task"), (
+        "aioimaplib.IMAP4._client_task is gone — logout() no longer drains the connection task"
+    )
+
+    protocol = aioimaplib.IMAP4ClientProtocol.__new__(aioimaplib.IMAP4ClientProtocol)
+    assert hasattr(protocol, "transport") or "transport" in aioimaplib.IMAP4ClientProtocol.__init__.__code__.co_names, (
+        "IMAP4ClientProtocol.transport is gone — logout() no longer closes the socket"
+    )
