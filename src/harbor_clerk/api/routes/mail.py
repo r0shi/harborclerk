@@ -7,6 +7,7 @@ via auth) and by Stage 4's UI.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from datetime import UTC, datetime
 from uuid import UUID
@@ -160,6 +161,14 @@ async def test_mail_account(
         folders = await discover_folders(conn)
         await conn.logout()
     except AuthError as exc:
+        # AuthError comes from login(), after connect() completed the TLS
+        # handshake — so a live socket exists here, exactly as in the watcher's
+        # label task. This path is if anything more reachable: an admin fixing a
+        # mistyped app password retries this endpoint, and each attempt would
+        # pin a connection for ~30 min against the provider's per-account cap.
+        # The sibling branch below already closes; this one simply did not.
+        with contextlib.suppress(Exception):
+            await conn.logout()
         account.status = "auth_error"
         detail = message_or_type(exc)
         account.last_error = detail

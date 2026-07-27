@@ -336,3 +336,48 @@ async def test_rescan_label_resets_cursor(client, admin_user, admin_token, db_se
     await db_session.refresh(label)
     assert label.last_uid_seen == 0
     assert label.uidvalidity is None
+
+
+async def test_test_connection_closes_the_socket_on_auth_failure(client, admin_user, admin_token, monkeypatch):
+    """The same leak as the watcher's label task, at a more reachable site.
+
+    `AuthError` comes from `login()`, after `connect()` completed the TLS
+    handshake — so a live socket exists. An admin fixing a mistyped app password
+    retries this endpoint, and each attempt would pin a connection for ~30 min
+    against the provider's per-account cap, on the very account whose label
+    tasks need those connections. The sibling `except Exception` branch already
+    closed; this one did not.
+    """
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from tests.mail.conftest import FakeIMAP
+
+    FakeIMAP.reset()
+    FakeIMAP.set_login_response("NO", b"AUTHENTICATIONFAILED Invalid credentials")
+    monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
+
+    logouts = []
+    real_logout = IMAPConnection.logout
+
+    async def _tracked_logout(self):
+        logouts.append(1)
+        return await real_logout(self)
+
+    monkeypatch.setattr(IMAPConnection, "logout", _tracked_logout)
+
+    body = {
+        "display_name": "leak-check",
+        "provider": "gmail",
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "imap_username": "leak@example.com",
+        "app_password": "wrong",
+    }
+    account_id = (await client.post("/api/mail/accounts", json=body, headers=auth_header(admin_token))).json()[
+        "account_id"
+    ]
+
+    resp = await client.post(f"/api/mail/accounts/{account_id}/test", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
+
+    assert logouts, "auth failure returned without closing the connection it opened"

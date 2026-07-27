@@ -191,6 +191,8 @@ async def test_logout_closes_the_transport_even_when_login_never_succeeded():
         def close(self):
             closed.append(True)
 
+    logouts = []
+
     class _Client:
         def __init__(self):
             self.protocol = type("P", (), {"transport": _Transport()})()
@@ -198,7 +200,10 @@ async def test_logout_closes_the_transport_even_when_login_never_succeeded():
             self._client_task.set_result(None)
 
         async def logout(self):
-            raise AssertionError("must not LOGOUT when login never succeeded")
+            # Recorded, not raised: `logout()` wraps this call in
+            # `except Exception`, which swallows AssertionError — so raising
+            # here would make the guard inert.
+            logouts.append(1)
 
     conn = IMAPConnection(host="h", port=993, username="u", password="p")
     conn._client = _Client()
@@ -207,6 +212,7 @@ async def test_logout_closes_the_transport_even_when_login_never_succeeded():
     await conn.logout()
 
     assert closed, "transport was never closed — the socket leaks until the server reaps it"
+    assert logouts == [], "sent LOGOUT when login never succeeded"
     assert conn._client is None
 
 
@@ -262,3 +268,10 @@ def test_aioimaplib_still_exposes_the_attributes_logout_reaches_for():
     assert hasattr(protocol, "transport") or "transport" in aioimaplib.IMAP4ClientProtocol.__init__.__code__.co_names, (
         "IMAP4ClientProtocol.transport is gone — logout() no longer closes the socket"
     )
+
+    # The third internal, and the one whose loss is most silent: without
+    # `protocol`, both getattrs return None and the close no-ops while every
+    # stub-based test stays green.
+    created = aioimaplib.IMAP4.create_client.__code__.co_names
+    assert "protocol" in created, "IMAP4.protocol is gone — logout() can no longer reach the transport"
+    assert "_client_task" in created, "IMAP4._client_task is no longer assigned — logout() drains nothing"

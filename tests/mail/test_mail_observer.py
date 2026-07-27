@@ -574,6 +574,8 @@ async def test_auth_failure_closes_the_connection_it_opened(
     holding a socket for ~30 min against Gmail's 15-connection limit. Fixing
     `logout()` achieves nothing if this branch does not call it.
     """
+    import asyncio
+
     from harbor_clerk.mail.exceptions import AuthError
     from harbor_clerk.mail.imap_client import IMAPConnection
     from harbor_clerk.watcher.mail_observer import MailObserver
@@ -587,8 +589,24 @@ async def test_auth_failure_closes_the_connection_it_opened(
         logouts.append(1)
         return await real_logout(self)
 
+    closed = []
+
+    class _Transport:
+        def close(self):
+            closed.append(1)
+
+    class _ConnectedClient:
+        """Shaped like a real post-handshake client, so `logout()` actually
+        reaches the transport — a bare object() misses every getattr and the
+        test would prove only that logout() was *called*."""
+
+        def __init__(self):
+            self.protocol = type("P", (), {"transport": _Transport()})()
+            self._client_task = asyncio.get_event_loop().create_future()
+            self._client_task.set_result(None)
+
     async def _connect_ok(self):
-        self._client = object()  # handshake completed; a socket exists
+        self._client = _ConnectedClient()  # handshake completed; a socket exists
 
     async def _login_fails(self):
         raise AuthError("AUTHENTICATIONFAILED Invalid credentials")
@@ -601,6 +619,7 @@ async def test_auth_failure_closes_the_connection_it_opened(
     await observer._run_label(label_id, observer_session_factory)
 
     assert logouts, "auth failure returned without closing the connection it opened"
+    assert closed, "logout() was called but the socket was never actually closed"
 
     # And the account is still marked, so the behaviour that mattered is intact.
     from sqlalchemy import select as _select
