@@ -163,7 +163,9 @@ def test_the_first_failure_is_logged(gpu_cache, monkeypatch, caplog):
     import types
 
     mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="1024")
-    monkeypatch.setattr(mod.time, "monotonic", lambda: 100.0)
+    # Replace the module reference, not stdlib `time.monotonic` — the latter
+    # freezes every thread in the process, including event-loop clocks.
+    monkeypatch.setattr(mod, "time", types.SimpleNamespace(monotonic=lambda: 100.0))
 
     torch = types.ModuleType("torch")
 
@@ -177,3 +179,49 @@ def test_the_first_failure_is_logged(gpu_cache, monkeypatch, caplog):
         mod.release_gpu_cache()
 
     assert "could not release GPU cache" in caplog.text, "first failure was swallowed"
+
+
+def test_a_drain_that_reclaims_nothing_does_not_repeat_immediately(gpu_cache, monkeypatch):
+    """`empty_cache()` cannot release heaps holding live buffers.
+
+    Measured: with another request's activations in flight, a drain recovered
+    8 MB of 1024. Without a cooldown the gap stays above the mark, so the next
+    request drains too — and every one after it. The gate degrades into firing
+    constantly and reclaiming nothing, under exactly the concurrent load that
+    triggers it.
+    """
+    mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="1024")
+    # A gap that a drain cannot reduce, because something else holds the heaps.
+    torch, calls = _fake_torch(mps=True, driver=5000 * MB, current=100 * MB)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    clock = iter([0.0, 0.1, 0.2])
+    monkeypatch.setattr(mod, "time", types.SimpleNamespace(monotonic=lambda: next(clock)))
+
+    for _ in range(3):
+        mod.release_gpu_cache()
+
+    assert len(calls) == 1, f"drained {len(calls)} times in 0.2s; the cooldown is not holding"
+
+
+def test_the_cooldown_expires(gpu_cache, monkeypatch):
+    """It is a cooldown, not a one-shot — a genuine later ratchet must drain."""
+    mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="1024")
+    torch, calls = _fake_torch(mps=True, driver=5000 * MB, current=100 * MB)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    # One monotonic() read per release_gpu_cache() that reaches the gate.
+    times = iter([0.0, 100.0])
+    monkeypatch.setattr(mod, "time", types.SimpleNamespace(monotonic=lambda: next(times)))
+
+    mod.release_gpu_cache()
+    mod.release_gpu_cache()
+
+    assert len(calls) == 2, "cooldown never expired"
+
+
+def test_an_absurd_high_water_is_rejected(gpu_cache):
+    """A value past any real device is as 'off' as 0, just spelled differently."""
+    mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="999999999")
+    assert mod.CACHE_HIGH_WATER_MB == 4096
+    assert mod.ENABLED

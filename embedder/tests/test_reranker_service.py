@@ -6,6 +6,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def _reset_reranker_globals():
+    """`embedder.reranker` keeps `_model` at module scope, and every TestClient
+    here mutates it through lifespan. Without a reset, a test's outcome depends
+    on what ran before it — which is how a passing assertion in this file can
+    mean nothing. Restore it around each test.
+    """
+    import embedder.reranker as rr
+
+    saved = rr._model
+    yield
+    rr._model = saved
+
+
 @pytest.fixture
 def stub_cross_encoder():
     """Stub CrossEncoder that returns predictable scores: higher index → higher score."""
@@ -96,18 +110,61 @@ def test_rerank_releases_the_gpu_cache(monkeypatch):
     assert len(calls) == 1, f"expected one release per rerank, got {len(calls)}"
 
 
-def test_rerank_binds_the_model_before_the_executor_hop(monkeypatch):
-    """Shutdown between the guard and the worker thread must not 500.
+def test_rerank_releases_the_cache_even_when_predict_raises():
+    """The mirror of the embedder's test, which the first pass omitted.
 
-    `run_in_executor(None, _model.predict, pairs)` bound the method eagerly on
-    the event loop. A closure that reads the global instead resolves it on the
-    worker thread — after an await — so lifespan shutdown can null it in
-    between, turning the intended 503 into AttributeError.
+    reranker.py makes the identical OOM argument for its `finally`, and mutating
+    it to release only on success left all 25 tests green.
     """
-    import inspect
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    calls = []
+    model = MagicMock()
+    model.predict.side_effect = RuntimeError("MPS backend out of memory")
+
+    with (
+        patch("embedder.reranker.CrossEncoder", return_value=model),
+        patch("embedder.reranker.release_gpu_cache", side_effect=lambda: calls.append(1)),
+    ):
+        from embedder.reranker import app
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
+            assert r.status_code >= 500
+
+    assert calls == [1], "cache was not released when predict raised"
+
+
+def test_rerank_survives_shutdown_between_the_guard_and_the_executor_hop():
+    """Behavioural replacement for a test that inspected source text.
+
+    The old one asserted `"model = _model" in inspect.getsource(...)`, so a
+    semantically identical rename failed it and matching-but-wrong code passed.
+    This drives the actual race: null the module global while `predict` is in
+    flight, and assert the request does not become an AttributeError 500.
+    """
+    from unittest.mock import patch
 
     import embedder.reranker as rr
+    import numpy as np
+    from fastapi.testclient import TestClient
 
-    src = inspect.getsource(rr.rerank)
-    assert "model = _model" in src, "rerank must bind _model before handing work to the executor"
-    assert "_model.predict(" not in src, "predict must be called on the bound local, not the global"
+    model = MagicMock()
+
+    def _predict_then_shutdown(pairs):
+        # Lifespan shutdown lands while this worker thread is mid-predict.
+        rr._model = None
+        return np.array([0.5] * len(pairs))
+
+    model.predict.side_effect = _predict_then_shutdown
+
+    with patch("embedder.reranker.CrossEncoder", return_value=model):
+        with TestClient(rr.app, raise_server_exceptions=False) as c:
+            r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
+
+    assert r.status_code == 200, (
+        f"got {r.status_code}: the model was resolved on the worker thread after the guard, "
+        "so shutdown turned a valid request into a failure"
+    )

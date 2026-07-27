@@ -22,11 +22,19 @@ It is not a leak: `current_allocated_memory` never moved off 594 MB and
 endpoints serve two very different workloads. Ingest sends batches of 64
 variable-length chunks, which is what ratchets. Search sends a *single* query
 string on every request, and `/rerank` sits on that same request path. Draining
-unconditionally would throw away the cache the next query is about to reuse, on
-an interactive path whose latency budget is already tight — and the reranker has
-no concurrency gate, so one thread's drain would pull the cache out from under
-the others mid-flight. Gating on the gap means small requests never pay, and the
-ratchet is still bounded.
+unconditionally throws away the cache the next query is about to reuse, on an
+interactive path whose latency budget is already tight. Gating on the gap means
+small requests never pay, and the ratchet is still bounded.
+
+**Why a cooldown as well.** `empty_cache()` can only release heaps with no live
+buffers, so a drain issued while another request holds activations reclaims
+almost nothing — measured at 8 MB of 1024. Without a cooldown the gap stays
+above the mark, so the *next* request drains too, and every one after it: the
+gate degrades into firing constantly and reclaiming nothing, under exactly the
+concurrent load that triggers it. (An earlier draft of this comment claimed the
+hazard was one thread pulling the cache out from under another. That is not
+possible — live tensors are never freed by `empty_cache` — and the real
+pathology is the opposite one.)
 
 Call this on the worker thread, never the event loop: `empty_cache` blocks, and
 starving `/health` is exactly what #553 was about.
@@ -39,6 +47,11 @@ import os
 import time
 
 logger = logging.getLogger(__name__)
+
+
+# Larger than the unified memory of any Mac this ships on, so a value above it
+# is a typo or a misunderstanding rather than a configuration.
+_MAX_SANE_HIGH_WATER_MB = 512 * 1024
 
 
 def _int_env(name: str, default: int) -> int:
@@ -55,6 +68,12 @@ def _int_env(name: str, default: int) -> int:
         # -1 to mean "no limit" would silently get the unbounded growth back
         # with no log line. Fail loudly toward the safe value instead.
         logger.warning("%s=%d is negative; using %d", name, value, default)
+        return default
+    if 0 < value > _MAX_SANE_HIGH_WATER_MB:
+        # A value larger than any plausible machine is "off" in effect, which is
+        # the same failure the negative branch exists to prevent — just spelled
+        # differently. 0 stays a deliberate, documented disable.
+        logger.warning("%s=%d exceeds any plausible device memory; using %d", name, value, default)
         return default
     return value
 
@@ -77,6 +96,14 @@ ENABLED = CACHE_HIGH_WATER_MB > 0
 _last_warned_at = float("-inf")
 _WARN_INTERVAL_SECONDS = 300.0
 
+# Minimum gap between drain *attempts*. A drain costs 3-17ms for ~1 GB, so the
+# point is not the cost of one — it is that under concurrency a drain can
+# reclaim nothing while activations pin the heaps, leaving the gap above the
+# mark and every subsequent request trying again. One attempt per interval
+# bounds that to a rounding error.
+_MIN_DRAIN_INTERVAL_SECONDS = 5.0
+_last_drain_at = float("-inf")
+
 
 def _warn(msg: str) -> None:
     """Rate-limited rather than once-per-process: this guards an OOM-class
@@ -94,19 +121,41 @@ def release_gpu_cache() -> None:
     Silent no-op on CPU-only deployments (Docker), where there is no device
     allocator. Never raises — cache hygiene must not fail an inference call.
     """
+    global _last_drain_at
     if not ENABLED:
         return
     try:
         import torch
 
-        threshold = CACHE_HIGH_WATER_MB * 1024 * 1024
         if torch.backends.mps.is_available():
-            gap = torch.mps.driver_allocated_memory() - torch.mps.current_allocated_memory()
-            if gap > threshold:
-                torch.mps.empty_cache()
+            measure, drain, label = _mps_gap, torch.mps.empty_cache, "mps"
         elif torch.cuda.is_available():
-            gap = torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
-            if gap > threshold:
-                torch.cuda.empty_cache()
+            measure, drain, label = _cuda_gap, torch.cuda.empty_cache, "cuda"
+        else:
+            return  # CPU-only: no device allocator to drain
+
+        gap = measure(torch)
+        if gap <= CACHE_HIGH_WATER_MB * 1024 * 1024:
+            return
+
+        now = time.monotonic()
+        if now - _last_drain_at < _MIN_DRAIN_INTERVAL_SECONDS:
+            return
+        _last_drain_at = now
+
+        drain()
+        # Logged because nothing else shows whether the guard ever fired or how
+        # much it recovered — which is what distinguishes "working" from
+        # "firing constantly and reclaiming nothing".
+        after = measure(torch)
+        logger.debug("%s cache drained: gap %.0f MB -> %.0f MB", label, gap / 1024 / 1024, after / 1024 / 1024)
     except Exception:  # never fail an encode over cache hygiene
         _warn("could not release GPU cache; continuing")
+
+
+def _mps_gap(torch) -> int:
+    return torch.mps.driver_allocated_memory() - torch.mps.current_allocated_memory()
+
+
+def _cuda_gap(torch) -> int:
+    return torch.cuda.memory_reserved() - torch.cuda.memory_allocated()

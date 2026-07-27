@@ -271,3 +271,41 @@ def test_cache_is_released_even_when_encode_raises(stub_model):
             assert r.status_code >= 500
 
     assert calls == [1], "cache was not released when the encode raised"
+
+
+def test_release_runs_on_the_worker_thread_not_the_event_loop(stub_model):
+    """The #553 invariant, asserted in three comments and guarded by none.
+
+    `empty_cache()` blocks. Doing it on the event loop re-creates exactly the
+    /health starvation the service was fixed for. Mutating the call site to
+    release outside `to_thread` left all 25 tests green.
+    """
+    import threading
+    from unittest.mock import patch
+
+    loop_thread = []
+    release_thread = []
+
+    def _note_encode(texts, normalize_embeddings=True):
+        loop_thread.append(threading.current_thread().name)
+        return np.stack([np.full(768, 0.1, dtype=np.float32) for _ in texts])
+
+    stub_model.encode.side_effect = _note_encode
+
+    with (
+        patch("embedder.app.SentenceTransformer", return_value=stub_model),
+        patch(
+            "embedder.app.release_gpu_cache",
+            side_effect=lambda: release_thread.append(threading.current_thread().name),
+        ),
+    ):
+        from embedder.app import app
+
+        with TestClient(app) as c:
+            assert c.post("/embed", json={"texts": ["a"]}).status_code == 200
+
+    assert release_thread, "release never ran"
+    assert release_thread[0] == loop_thread[0], (
+        f"release ran on {release_thread[0]} but the encode ran on {loop_thread[0]} — "
+        "it must share the worker thread, not run on the event loop"
+    )
