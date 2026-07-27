@@ -137,14 +137,21 @@ def test_rerank_releases_the_cache_even_when_predict_raises():
     assert calls == [1], "cache was not released when predict raised"
 
 
-def test_rerank_survives_shutdown_between_the_guard_and_the_executor_hop():
-    """Behavioural replacement for a test that inspected source text.
+def test_rerank_binds_the_model_before_the_executor_hop():
+    """Shutdown between the guard and the worker thread must not 500.
 
-    The old one asserted `"model = _model" in inspect.getsource(...)`, so a
-    semantically identical rename failed it and matching-but-wrong code passed.
-    This drives the actual race: null the module global while `predict` is in
-    flight, and assert the request does not become an AttributeError 500.
+    The first attempt at this test nulled `_model` from inside `predict` — by
+    which point the closure has already dereferenced the name, so it could not
+    fail. Verified: re-introducing the regression (drop `model = _model`, call
+    `_model.predict`) left all 30 tests green, while the crude
+    `inspect.getsource` test it replaced *did* catch it. That replacement was a
+    net loss of coverage.
+
+    This interposes on the hop itself, so the global is nulled at exactly the
+    moment lifespan shutdown would do it: after the guard, before the worker
+    thread resolves anything.
     """
+    import asyncio
     from unittest.mock import patch
 
     import embedder.reranker as rr
@@ -152,21 +159,29 @@ def test_rerank_survives_shutdown_between_the_guard_and_the_executor_hop():
     from fastapi.testclient import TestClient
 
     model = MagicMock()
+    model.predict.side_effect = lambda pairs: np.array([0.5] * len(pairs))
 
-    def _predict_then_shutdown(pairs):
-        # Lifespan shutdown lands while this worker thread is mid-predict.
-        rr._model = None
-        return np.array([0.5] * len(pairs))
+    real_get_event_loop = asyncio.get_event_loop
 
-    model.predict.side_effect = _predict_then_shutdown
+    class _NullingLoop:
+        def __init__(self, loop):
+            self._loop = loop
+
+        def run_in_executor(self, executor, fn, *args):
+            rr._model = None  # shutdown lands between the guard and the hop
+            return self._loop.run_in_executor(executor, fn, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._loop, name)
 
     with (
         patch("embedder.reranker.CrossEncoder", return_value=model),
         TestClient(rr.app, raise_server_exceptions=False) as c,
     ):
-        r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
+        with patch.object(rr.asyncio, "get_event_loop", lambda: _NullingLoop(real_get_event_loop())):
+            r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
 
     assert r.status_code == 200, (
-        f"got {r.status_code}: the model was resolved on the worker thread after the guard, "
-        "so shutdown turned a valid request into a failure"
+        f"got {r.status_code}: `_model` was resolved on the worker thread after the guard, "
+        "so shutdown turned a valid request into an AttributeError 500"
     )

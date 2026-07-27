@@ -225,3 +225,42 @@ def test_an_absurd_high_water_is_rejected(gpu_cache):
     mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="999999999")
     assert mod.CACHE_HIGH_WATER_MB == 4096
     assert mod.ENABLED
+
+
+def test_an_effective_drain_does_not_start_a_cooldown(gpu_cache, monkeypatch):
+    """A blanket interval defeats the `finally` at both call sites.
+
+    embedder_client retries a 5xx up to 7 times, with cumulative minimum elapsed
+    of 0.25/0.75/1.75/3.75s before attempts 2-5 — all inside a flat 5s window.
+    An OOM would drain once and then skip every retry, which is exactly the case
+    the `finally` exists for. So a drain that *worked* must not block the next.
+    """
+    mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="1024")
+
+    # A backend whose drain genuinely frees the pool.
+    state = {"driver": 5000 * MB}
+    calls = []
+    torch = types.ModuleType("torch")
+
+    def _drain():
+        calls.append("mps")
+        state["driver"] = 200 * MB
+
+    torch.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: True))
+    torch.mps = types.SimpleNamespace(
+        driver_allocated_memory=lambda: state["driver"],
+        current_allocated_memory=lambda: 0,
+        empty_cache=_drain,
+    )
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(mod, "time", types.SimpleNamespace(monotonic=lambda: 0.0))
+
+    mod.release_gpu_cache()
+    assert calls == ["mps"]
+
+    # Pool ratchets straight back up, still within the interval.
+    state["driver"] = 5000 * MB
+    mod.release_gpu_cache()
+
+    assert len(calls) == 2, "an effective drain started a cooldown and blocked the retry-path drain"

@@ -69,7 +69,7 @@ def _int_env(name: str, default: int) -> int:
         # with no log line. Fail loudly toward the safe value instead.
         logger.warning("%s=%d is negative; using %d", name, value, default)
         return default
-    if 0 < value > _MAX_SANE_HIGH_WATER_MB:
+    if value > _MAX_SANE_HIGH_WATER_MB:
         # A value larger than any plausible machine is "off" in effect, which is
         # the same failure the negative branch exists to prevent — just spelled
         # differently. 0 stays a deliberate, documented disable.
@@ -96,12 +96,23 @@ ENABLED = CACHE_HIGH_WATER_MB > 0
 _last_warned_at = float("-inf")
 _WARN_INTERVAL_SECONDS = 300.0
 
-# Minimum gap between drain *attempts*. A drain costs 3-17ms for ~1 GB, so the
-# point is not the cost of one — it is that under concurrency a drain can
+# Minimum gap after an *ineffective* drain. A drain costs 3-17ms for ~1 GB, so
+# the point is not the cost of one — it is that under concurrency a drain can
 # reclaim nothing while activations pin the heaps, leaving the gap above the
-# mark and every subsequent request trying again. One attempt per interval
-# bounds that to a rounding error.
+# mark and every subsequent request trying again.
+#
+# Gated on ineffectiveness rather than on time alone, because a blanket
+# interval defeats the `finally` at both call sites. embedder_client retries a
+# 5xx up to 7 times with cumulative minimum elapsed of 0.25/0.75/1.75/3.75s
+# before attempts 2-5 — all inside a flat 5s window — so an OOM would drain
+# once and then skip every retry, which is precisely the case the `finally`
+# was added for. And the first drain is the one least likely to work: it runs
+# while the failed encode's intermediates are still reachable through the
+# in-flight traceback.
 _MIN_DRAIN_INTERVAL_SECONDS = 5.0
+# A drain that recovers less than this did not work — the heaps were pinned by
+# something live. Only *those* start a cooldown.
+_MIN_USEFUL_RECLAIM_BYTES = 64 * 1024 * 1024
 _last_drain_at = float("-inf")
 
 
@@ -141,14 +152,29 @@ def release_gpu_cache() -> None:
         now = time.monotonic()
         if now - _last_drain_at < _MIN_DRAIN_INTERVAL_SECONDS:
             return
-        _last_drain_at = now
 
         drain()
-        # Logged because nothing else shows whether the guard ever fired or how
-        # much it recovered — which is what distinguishes "working" from
-        # "firing constantly and reclaiming nothing".
         after = measure(torch)
-        logger.debug("%s cache drained: gap %.0f MB -> %.0f MB", label, gap / 1024 / 1024, after / 1024 / 1024)
+        reclaimed = gap - after
+
+        # Cool down only if that achieved nothing. A drain that worked is
+        # evidence the heaps are releasable, so blocking the next one would
+        # defeat the `finally` at both call sites: embedder_client retries a 5xx
+        # up to 7 times, with cumulative minimum elapsed of 0.25/0.75/1.75/3.75s
+        # before attempts 2-5 — all inside a flat 5s window.
+        _last_drain_at = now if reclaimed < _MIN_USEFUL_RECLAIM_BYTES else float("-inf")
+
+        # INFO, not DEBUG: both services hard-code basicConfig(level=INFO) with
+        # no override, so a debug line is unreachable in every shipped
+        # deployment — and this is the only signal distinguishing "working" from
+        # "firing constantly and recovering nothing".
+        logger.info(
+            "%s cache drained: %.0f MB -> %.0f MB (reclaimed %.0f MB)",
+            label,
+            gap / 1024 / 1024,
+            after / 1024 / 1024,
+            reclaimed / 1024 / 1024,
+        )
     except Exception:  # never fail an encode over cache hygiene
         _warn("could not release GPU cache; continuing")
 
