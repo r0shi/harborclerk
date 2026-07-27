@@ -94,7 +94,7 @@ whole post-patch run, against four restarts and ~27 failures/minute before it.
 
 Then the residual **plateaus**: total errors sat at 126 across the final four samples. Nothing re-drives failed documents in bulk, so pre-patch damage is permanent until someone reprocesses each one by hand. That is the concrete case for #554.
 
-**The field test also caught a flaw in my own fix.** The retry's real window was 1.75–3.50s (N attempts sleep after only the first N−1, and half-to-full jitter halves each ceiling — my original "~7.5s" was bad arithmetic), while an embedder restart takes ~7.2s. So the retry could not survive the exact failure it was written for. Corrected to 6 attempts → 7.75–15.50s, with a test that derives the window from the constants and asserts it exceeds a measured restart.
+**The field test also caught a flaw in my own fix.** The retry's real window was 1.75–3.50s (N attempts sleep after only the first N−1, and half-to-full jitter halves each ceiling — my original "~7.5s" was bad arithmetic), while an embedder restart takes ~7.2s. So the retry could not survive the exact failure it was written for. Corrected to 7 attempts → 11.75–23.50s (6 cleared the measurement by only 7%, which is luck rather than margin), with a test that derives the window from the constants and asserts it exceeds a measured restart.
 
 > **The installed bundle on this machine is still hand-patched.** I left it that way because reverting would knowingly re-break the box. Originals are at `~/Library/Application Support/Harbor Clerk/bundle-backup-2026-07-24/`, and any rebuild from `macos/` overwrites the patch anyway.
 
@@ -175,6 +175,18 @@ Qwen3-8B-Q4_K_M.gguf                5.0 GB
 Two of those — the 22 GB and 17 GB models — **cannot run on this machine at all** alongside the rest of the stack, and nothing stopped them being downloaded. That is #556, and the field evidence says it should be a **hard gate**, not a hint: 55.8 GB of models is also what put the volume at 99 % full earlier in the session.
 
 Resident during ingest: llama ~12 GB wired + 2 workers 2.8 GB + embedder 1.1 GB + reranker 1.1 GB + Tika JVM 0.7 GB + Postgres + API ≈ **18–19 GB before any headroom**.
+
+> **Superseded — the figures above are `ps` RSS**, which
+> excludes compressed and swapped pages. Measured later with `footprint` during
+> the much larger 7,449-message email ingest, the embedder reached **40 GB**
+> phys_footprint (peak 44 GB) — it was the single largest consumer, not the LLM,
+> and it grows without bound — PyTorch's caching allocator never returns freed
+> device blocks, and the inputs vary enough in length that it never reaches a
+> steady state (PR #574). The statement in
+> §1 that "there was no memory bug to find" remains correct about #553
+> specifically: the restarts were health-probe starvation, not memory. The
+> unbounded growth is a separate defect that this report's RSS figures were too
+> coarse to see.
 
 ### Postgres is running stock defaults
 
