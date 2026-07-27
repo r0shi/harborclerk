@@ -160,9 +160,11 @@ def test_rerank_survives_shutdown_between_the_guard_and_the_executor_hop():
 
     model.predict.side_effect = _predict_then_shutdown
 
-    with patch("embedder.reranker.CrossEncoder", return_value=model):
-        with TestClient(rr.app, raise_server_exceptions=False) as c:
-            r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
+    with (
+        patch("embedder.reranker.CrossEncoder", return_value=model),
+        TestClient(rr.app, raise_server_exceptions=False) as c,
+    ):
+        r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
 
     assert r.status_code == 200, (
         f"got {r.status_code}: the model was resolved on the worker thread after the guard, "
