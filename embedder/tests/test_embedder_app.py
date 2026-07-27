@@ -244,3 +244,30 @@ def test_encode_releases_the_gpu_cache(stub_model):
             assert c.post("/embed", json={"texts": ["b", "c"]}).status_code == 200
 
     assert len(calls) == 2, f"expected a release per encode, got {len(calls)}"
+
+
+def test_cache_is_released_even_when_encode_raises(stub_model):
+    """The `finally` is the load-bearing part, and it had no coverage.
+
+    An MPS OOM is the likeliest failure on a memory-tight machine, and it
+    surfaces as a 5xx that embedder_client retries — so releasing only on
+    success means the retries pile onto an allocator that was never drained.
+    Mutating both call sites to release after a successful return passed all
+    22 tests before this.
+    """
+    from unittest.mock import patch
+
+    calls = []
+    stub_model.encode.side_effect = RuntimeError("MPS backend out of memory")
+
+    with (
+        patch("embedder.app.SentenceTransformer", return_value=stub_model),
+        patch("embedder.app.release_gpu_cache", side_effect=lambda: calls.append(1)),
+    ):
+        from embedder.app import app
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.post("/embed", json={"texts": ["a"]})
+            assert r.status_code >= 500
+
+    assert calls == [1], "cache was not released when the encode raised"

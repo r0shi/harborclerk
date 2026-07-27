@@ -133,6 +133,8 @@ services:
       # Concurrent encodes. 1 keeps the single shared model serialised, which is
       # what the service is tuned for; raise only with measurements.
       EMBED_MAX_CONCURRENCY: ${EMBED_MAX_CONCURRENCY:-1}
+      # Release the device allocator cache past this many MB. 0 disables.
+      GPU_CACHE_HIGH_WATER_MB: ${GPU_CACHE_HIGH_WATER_MB:-4096}
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
       interval: 10s
@@ -143,6 +145,9 @@ services:
       - harbor-clerk
 
   reranker:
+    environment:
+      # Same exposure as the embedder — variable-length passages.
+      GPU_CACHE_HIGH_WATER_MB: ${GPU_CACHE_HIGH_WATER_MB:-4096}
     build:
       context: .
       dockerfile: docker/reranker.Dockerfile

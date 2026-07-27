@@ -47,6 +47,11 @@ def gpu_cache(monkeypatch):
         return importlib.import_module("embedder.gpu_cache")
 
     yield _load
+    # monkeypatch.undo() runs *after* this finalizer (it is a dependency, so it
+    # is torn down last), so re-importing here would re-read the env var the
+    # test just set and leak that value into sys.modules for whatever runs
+    # next. Clear it first.
+    monkeypatch.delenv("GPU_CACHE_HIGH_WATER_MB", raising=False)
     sys.modules.pop("embedder.gpu_cache", None)
     importlib.import_module("embedder.gpu_cache")
 
@@ -135,7 +140,40 @@ def test_never_raises_when_the_backend_misbehaves(gpu_cache, monkeypatch):
 
 def test_high_water_env_is_total(gpu_cache):
     """Parsed at import, so junk must not stop the service binding."""
-    for raw in ("", "auto", "  ", "-5"):
+    for raw in ("", "auto", "  "):
         mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB=raw)
-        assert mod.CACHE_HIGH_WATER_MB >= 0
+        assert mod.ENABLED, f"{raw!r} silently disabled the guard"
     assert gpu_cache(GPU_CACHE_HIGH_WATER_MB="512").CACHE_HIGH_WATER_MB == 512
+
+
+def test_a_negative_value_does_not_silently_disable_the_guard(gpu_cache):
+    """`max(0, int(raw))` parsed -1 fine and clamped it onto the "off"
+    sentinel — so an operator typing -1 to mean "no limit" got the unbounded
+    growth back with no log line. The old test asserted `>= 0`, enshrining it."""
+    mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="-1")
+    assert mod.ENABLED, "-1 disabled the guard"
+    assert mod.CACHE_HIGH_WATER_MB == 4096
+
+
+def test_the_first_failure_is_logged(gpu_cache, monkeypatch, caplog):
+    """`_last_warned_at = 0.0` compared against boot-relative monotonic()
+    suppressed every warning for the first 300s of uptime — which is exactly
+    when the menubar app autostarts the embedder at login."""
+    import logging
+    import types
+
+    mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="1024")
+    monkeypatch.setattr(mod.time, "monotonic", lambda: 100.0)
+
+    torch = types.ModuleType("torch")
+
+    def _boom():
+        raise RuntimeError("backend exploded")
+
+    torch.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=_boom))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    with caplog.at_level(logging.WARNING):
+        mod.release_gpu_cache()
+
+    assert "could not release GPU cache" in caplog.text, "first failure was swallowed"

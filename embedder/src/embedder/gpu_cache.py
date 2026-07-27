@@ -45,11 +45,18 @@ def _int_env(name: str, default: int) -> int:
     """Total parse — this runs at import, so a bad value must not stop startup."""
     raw = os.environ.get(name, "")
     try:
-        return max(0, int(raw))
+        value = int(raw)
     except ValueError:
         if raw:
             logger.warning("%s=%r is not an integer; using %d", name, raw, default)
         return default
+    if value < 0:
+        # Clamping to 0 would land on the "off" sentinel, so an operator typing
+        # -1 to mean "no limit" would silently get the unbounded growth back
+        # with no log line. Fail loudly toward the safe value instead.
+        logger.warning("%s=%d is negative; using %d", name, value, default)
+        return default
+    return value
 
 
 # Release once the cached-but-unused pool exceeds this. Measured on the Mac
@@ -67,7 +74,7 @@ CACHE_HIGH_WATER_MB = _int_env("GPU_CACHE_HIGH_WATER_MB", 4096)
 # 0 disables entirely, restoring PyTorch's default behaviour.
 ENABLED = CACHE_HIGH_WATER_MB > 0
 
-_last_warned_at = 0.0
+_last_warned_at = float("-inf")
 _WARN_INTERVAL_SECONDS = 300.0
 
 
