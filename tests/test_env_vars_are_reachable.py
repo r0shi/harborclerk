@@ -20,6 +20,18 @@ tuned it and nothing changed", usually during an incident.
 
 Adding a knob is fine. Adding one nobody can turn is not: either plumb it, or
 record it here with a reason.
+
+**Scope.** This covers *raw* environment reads — the ~17 names read directly via
+`os.environ.get` / `getenv` / a `*_env` helper. It deliberately does not cover
+the ~59 pydantic fields on `Settings`, which reach the process by a different
+route entirely: `.env` under Compose, and `config.json` on macOS. Raw reads are
+the ones that bypass both mechanisms, which is why all three dead knobs were
+raw reads.
+
+That is a real limit, not full coverage: whether every `Settings` field is
+actually settable on macOS is a separate and larger question — `config.json` is
+consulted for a handful of keys, not all of them — and this guard does not
+answer it.
 """
 
 from __future__ import annotations

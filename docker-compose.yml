@@ -136,7 +136,16 @@ services:
       # e5-family models need "query: "/"passage: " prefixes; Granite-R2 does
       # not. This is the switch the rollback path depends on — it was read but
       # settable nowhere, so that path could not actually be taken.
-      EMBED_MODEL: ${EMBED_MODEL:-ibm-granite/granite-embedding-311m-multilingual-r2}
+      #
+      # EMBED_MODEL is deliberately NOT set here. docker/embedder.Dockerfile
+      # bakes the weights into the image and sets ENV EMBED_MODEL=/models/...
+      # so the container starts without network; a compose `environment:` entry
+      # overrides that ENV, which would turn the path back into a HuggingFace
+      # repo id — a ~700 MB download per container recreate with no cache
+      # volume, and on an air-gapped host a lifespan crash, a restart loop, and
+      # `app`/`worker-cpu` never starting because they wait on this service's
+      # healthcheck. Rolling back to e5 means rebuilding the image, not editing
+      # compose.
       EMBED_NEEDS_PREFIX: ${EMBED_NEEDS_PREFIX:-false}
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
