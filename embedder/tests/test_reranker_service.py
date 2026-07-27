@@ -177,9 +177,9 @@ def test_rerank_binds_the_model_before_the_executor_hop():
     with (
         patch("embedder.reranker.CrossEncoder", return_value=model),
         TestClient(rr.app, raise_server_exceptions=False) as c,
+        patch.object(rr.asyncio, "get_event_loop", lambda: _NullingLoop(real_get_event_loop())),
     ):
-        with patch.object(rr.asyncio, "get_event_loop", lambda: _NullingLoop(real_get_event_loop())):
-            r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
+        r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
 
     assert r.status_code == 200, (
         f"got {r.status_code}: `_model` was resolved on the worker thread after the guard, "
