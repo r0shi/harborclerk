@@ -176,11 +176,13 @@ Two of those — the 22 GB and 17 GB models — **cannot run on this machine at 
 
 Resident during ingest: llama ~12 GB wired + 2 workers 2.8 GB + embedder 1.1 GB + reranker 1.1 GB + Tika JVM 0.7 GB + Postgres + API ≈ **18–19 GB before any headroom**.
 
-> **Superseded — read this with the figures below.** Those are `ps` RSS, which
+> **Superseded — the figures above are `ps` RSS**, which
 > excludes compressed and swapped pages. Measured later with `footprint` during
 > the much larger 7,449-message email ingest, the embedder reached **40 GB**
 > phys_footprint (peak 44 GB) — it was the single largest consumer, not the LLM,
-> and it grows without bound. See the GPU-allocator-cache fix. The statement in
+> and it grows without bound — PyTorch's caching allocator never returns freed
+> device blocks, and the inputs vary enough in length that it never reaches a
+> steady state (PR #574). The statement in
 > §1 that "there was no memory bug to find" remains correct about #553
 > specifically: the restarts were health-probe starvation, not memory. The
 > unbounded growth is a separate defect that this report's RSS figures were too
