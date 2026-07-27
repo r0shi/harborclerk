@@ -133,6 +133,11 @@ services:
       # Concurrent encodes. 1 keeps the single shared model serialised, which is
       # what the service is tuned for; raise only with measurements.
       EMBED_MAX_CONCURRENCY: ${EMBED_MAX_CONCURRENCY:-1}
+      # e5-family models need "query: "/"passage: " prefixes; Granite-R2 does
+      # not. This is the switch the rollback path depends on — it was read but
+      # settable nowhere, so that path could not actually be taken.
+      EMBED_MODEL: ${EMBED_MODEL:-ibm-granite/granite-embedding-311m-multilingual-r2}
+      EMBED_NEEDS_PREFIX: ${EMBED_NEEDS_PREFIX:-false}
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
       interval: 10s

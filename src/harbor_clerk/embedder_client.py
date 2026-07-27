@@ -34,6 +34,7 @@ import time
 import httpx
 
 from harbor_clerk.config import get_settings
+from harbor_clerk.error_text import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -191,13 +192,13 @@ def embed_texts(
             resp = httpx.post(url, json=_payload(texts, task), timeout=timeout)
         except httpx.TransportError as exc:
             if not _is_retryable_transport(exc):
-                raise EmbedderError(f"embedder call failed: {type(exc).__name__}: {exc}") from exc
-            last_detail = f"{type(exc).__name__}: {exc}"
+                raise EmbedderError(f"embedder call failed: {describe_error(exc)}") from exc
+            last_detail = describe_error(exc)
         except httpx.RequestError as exc:
             # DecodingError / TooManyRedirects are RequestError but NOT
             # TransportError. Retrying will not help, but the caller is still
             # owed an EmbedderError rather than a raw httpx type.
-            raise EmbedderError(f"embedder request failed: {type(exc).__name__}: {exc}") from exc
+            raise EmbedderError(f"embedder request failed: {describe_error(exc)}") from exc
         else:
             if not _is_retryable_status(resp.status_code):
                 # Every 2xx and every non-429 4xx: succeed or fail, never retry.
@@ -244,10 +245,10 @@ async def embed_texts_async(
                 resp = await client.post(url, json=_payload(texts, task))
             except httpx.TransportError as exc:
                 if not _is_retryable_transport(exc):
-                    raise EmbedderError(f"embedder call failed: {type(exc).__name__}: {exc}") from exc
-                last_detail = f"{type(exc).__name__}: {exc}"
+                    raise EmbedderError(f"embedder call failed: {describe_error(exc)}") from exc
+                last_detail = describe_error(exc)
             except httpx.RequestError as exc:
-                raise EmbedderError(f"embedder request failed: {type(exc).__name__}: {exc}") from exc
+                raise EmbedderError(f"embedder request failed: {describe_error(exc)}") from exc
             else:
                 if not _is_retryable_status(resp.status_code):
                     return _parse(resp, len(texts))
