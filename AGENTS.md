@@ -70,6 +70,20 @@ if someone else wrote it" is not a substitute — it is the failure mode.
 
 Review output leads with bugs, regressions, missing tests, and contract risk.
 
+Before requesting review, the author runs two mechanical checks:
+
+- **Sweep for sibling call sites.** A change that fixes a pattern, migrates a
+  contract, or adds a cleanup path is not done until the old idiom has been
+  grepped for and every hit accounted for in the PR. Three migrations each
+  shipped N−1 of N sites; the missed site was always the one outside the
+  module being edited — exactly the site self-review never visits.
+- **Mutation-verify tests guarding error handling, resource cleanup, or a
+  `finally`.** Commit first, then revert the guarded line and confirm a test
+  fails; restore, and state the result in the PR. A green suite on a change
+  you just made is not evidence — five consecutive review rounds found vacuous
+  tests, concentrated in exactly these three places, and revert-the-line
+  caught every one.
+
 ## Where knowledge goes
 
 - Project-wide rule or constraint → this file

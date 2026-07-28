@@ -36,6 +36,9 @@ def download(args: argparse.Namespace) -> None:
                 raise
 
             delay = args.base_delay * (2 ** (attempt - 1)) + random.uniform(0, args.base_delay)
+            # Renders the {type}: {message} shape inline on purpose: this is a
+            # standalone build script that runs before the harbor_clerk package
+            # exists in the image, so it cannot import error_text.describe_error.
             print(
                 f"Hugging Face download failed on attempt {attempt}/{args.attempts}: {exc.__class__.__name__}: {exc}",
                 file=sys.stderr,
