@@ -13,6 +13,7 @@ login attempt — making accidental logging of the connection object safe.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -132,17 +133,70 @@ class IMAPConnection:
         await self._audit("LOGIN", _args, (result, lines), duration_ms, None)
 
     async def logout(self) -> None:
-        """Close the connection. Idempotent — safe to call when not logged in."""
-        if self._client is None:
+        """Close the connection. Idempotent — safe to call when not logged in.
+
+        Dropping `self._client` is not enough to release the socket. aioimaplib
+        schedules `loop.create_connection(...)` in `IMAP4.__init__`, so the
+        transport is owned by the event loop; losing the Python reference leaves
+        it open until the server reaps it — roughly 30 minutes on Gmail. That
+        was survivable while a failed label task was never retried, because it
+        leaked one socket per watcher lifetime. With respawn-on-failure it
+        repeats: at the backoff cap, about twelve attempts an hour with roughly
+        six alive at once, against Gmail's limit of fifteen simultaneous IMAP
+        connections per account — enough for one sick label to lock out the
+        healthy ones.
+
+        The LOGOUT itself is still conditional (there is nothing to log out of
+        if login never succeeded), but the transport close is not.
+        """
+        client, self._client = self._client, None
+        logged_in, self._logged_in = self._logged_in, False
+        if client is None:
             return
         try:
-            if self._logged_in:
-                await self._client.logout()
+            if logged_in:
+                await client.logout()
         except Exception as exc:
             logger.debug("logout() raised: %s — ignoring", exc)
         finally:
-            self._logged_in = False
-            self._client = None
+            # The close and the drain run on *every* exit. CancelledError is not
+            # an Exception, so without the finally a cancellation delivered
+            # during the LOGOUT — the normal way a watcher label task exits —
+            # would leave before the close, reintroducing the leak on the one
+            # path where the docstring promises it cannot happen.
+            #
+            # Reach past the wrapper for the socket. These are aioimaplib
+            # internals, like the EXAMINE state fix in readonly_imap — pinned by
+            # tests so an upstream rename fails loudly rather than silently
+            # leaking again.
+            self._close_transport(client)
+
+            # `create_connection` runs as a task nobody awaits. If it failed —
+            # the common case when we are here after a connect error — its
+            # exception is never retrieved and asyncio logs "Task exception was
+            # never retrieved" at shutdown, which is how this class of bug
+            # stayed invisible. On the cancellation path the task is already
+            # done (a completed login implies the connection task finished), so
+            # the gather returns without suspending.
+            task = getattr(client, "_client_task", None)
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                # gather(return_exceptions=True) retrieves it without swallowing
+                # a cancellation aimed at *us* — `suppress(CancelledError)`
+                # around a bare await would absorb the caller's own cancel.
+                await asyncio.gather(task, return_exceptions=True)
+
+    @staticmethod
+    def _close_transport(client: Any) -> None:
+        protocol = getattr(client, "protocol", None)
+        transport = getattr(protocol, "transport", None)
+        if transport is None:
+            return
+        try:
+            transport.close()
+        except Exception as exc:
+            logger.debug("transport.close() raised: %s — ignoring", exc)
 
     async def examine(self, mailbox: str) -> tuple[str, list[bytes]]:
         """Open `mailbox` in read-only mode (IMAP EXAMINE command).

@@ -472,5 +472,312 @@ async def test_reactivating_a_label_clears_its_backoff(db_session, mock_aioimap,
 
     assert label_id not in observer._consecutive_failures
     assert label_id not in observer._retry_not_before
+    assert label_id not in observer._spawned_at
 
     await observer.stop()
+
+
+async def test_backoff_is_forgotten_for_a_label_that_died_then_went_inactive(
+    db_session, mock_aioimap, observer_session_factory
+):
+    """The cleanup keyed off `actual_ids`, computed *after* the reap loop popped
+    dead tasks — so a label that died and *then* went inactive could never
+    appear in it, and kept its backoff forever. On reactivation it sat behind a
+    stale gate for up to the cap with nothing logged, and its next failure
+    escalated from the old streak instead of restarting at the base delay.
+    """
+    import asyncio
+
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import WatchedLabel as _WL
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "forget")
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    async def _boom():
+        raise RuntimeError("died")
+
+    dead = asyncio.create_task(_boom())
+    await asyncio.sleep(0)
+    observer._tasks[label_id] = dead
+    observer._spawned_at[label_id] = __import__("time").monotonic()
+
+    # Reap while still desired: backoff is armed and the task is gone.
+    await observer._reconcile(observer_session_factory)
+    assert observer._consecutive_failures.get(label_id) == 1
+    assert label_id not in observer._tasks
+
+    # Now the label goes inactive — the state must not survive it.
+    lbl = (await db_session.execute(_select(_WL).where(_WL.label_id == label_id))).scalar_one()
+    lbl.status = "paused"
+    await db_session.commit()
+
+    await observer._reconcile(observer_session_factory)
+
+    assert label_id not in observer._consecutive_failures, "stale backoff survived deactivation"
+    assert label_id not in observer._retry_not_before
+    assert label_id not in observer._spawned_at
+
+    await observer.stop()
+
+
+async def test_deliberate_exit_is_not_logged_as_a_failure(db_session, mock_aioimap, observer_session_factory, caplog):
+    """`_run_label` returns on purpose when the account goes auth_error or its
+    key stops matching. No respawn follows, because the label has left
+    desired_ids — so logging "respawning in Ns" promises something that never
+    happens, and arming a backoff for it is meaningless.
+    """
+    import asyncio
+    import logging
+
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import WatchedLabel as _WL
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "deliberate")
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    # Label is already inactive when its task finishes cleanly.
+    lbl = (await db_session.execute(_select(_WL).where(_WL.label_id == label_id))).scalar_one()
+    lbl.status = "paused"
+    await db_session.commit()
+
+    async def _clean_exit():
+        return None
+
+    done = asyncio.create_task(_clean_exit())
+    await asyncio.sleep(0)
+    observer._tasks[label_id] = done
+    observer._spawned_at[label_id] = __import__("time").monotonic()
+
+    with caplog.at_level(logging.INFO):
+        await observer._reconcile(observer_session_factory)
+
+    text = caplog.text
+    assert "respawning" not in text, f"promised a respawn that cannot happen: {text}"
+    assert "no longer active" in text
+    assert label_id not in observer._consecutive_failures
+
+    await observer.stop()
+
+
+async def test_auth_failure_closes_the_connection_it_opened(
+    db_session, mock_aioimap, observer_session_factory, monkeypatch
+):
+    """The path that leaks most, and the one the logout() fix exists for.
+
+    `AuthError` is raised by `login()` — after `connect()` completed the TLS
+    handshake — so there is a live socket. A wrong app password fails every
+    label on the account at once, and again on every re-activation, each time
+    holding a socket for ~30 min against Gmail's 15-connection limit. Fixing
+    `logout()` achieves nothing if this branch does not call it.
+    """
+    import asyncio
+
+    from harbor_clerk.mail.exceptions import AuthError
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    label_id = await _one_active_label(db_session, "authleak")
+
+    logouts = []
+    real_logout = IMAPConnection.logout
+
+    async def _tracked_logout(self):
+        logouts.append(1)
+        return await real_logout(self)
+
+    closed = []
+
+    class _Transport:
+        def close(self):
+            closed.append(1)
+
+    class _ConnectedClient:
+        """Shaped like a real post-handshake client, so `logout()` actually
+        reaches the transport — a bare object() misses every getattr and the
+        test would prove only that logout() was *called*."""
+
+        def __init__(self):
+            self.protocol = type("P", (), {"transport": _Transport()})()
+            self._client_task = asyncio.get_event_loop().create_future()
+            self._client_task.set_result(None)
+
+    async def _connect_ok(self):
+        self._client = _ConnectedClient()  # handshake completed; a socket exists
+
+    async def _login_fails(self):
+        raise AuthError("AUTHENTICATIONFAILED Invalid credentials")
+
+    monkeypatch.setattr(IMAPConnection, "connect", _connect_ok)
+    monkeypatch.setattr(IMAPConnection, "login", _login_fails)
+    monkeypatch.setattr(IMAPConnection, "logout", _tracked_logout)
+
+    observer = MailObserver(session_factory=observer_session_factory)
+    await observer._run_label(label_id, observer_session_factory)
+
+    assert logouts, "auth failure returned without closing the connection it opened"
+    assert closed, "logout() was called but the socket was never actually closed"
+
+    # And the account is still marked, so the behaviour that mattered is intact.
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import MailAccount as _MA
+
+    acc = (await db_session.execute(_select(_MA))).scalars().first()
+    await db_session.refresh(acc)
+    assert acc.status == "auth_error"
+
+
+async def test_cancelling_a_label_mid_connect_still_closes_the_socket(
+    db_session, mock_aioimap, observer_session_factory, monkeypatch
+):
+    """The window the per-branch cleanups missed. `_reconcile` cancels a task
+    the moment its label goes inactive, and `stop()` cancels them all — and a
+    hung TLS handshake to an unreachable host is exactly where such a task
+    spends its time. CancelledError is not an Exception, so before the outer
+    finally none of the cleanup branches ran on this path: the half-open socket
+    (aioimaplib schedules `create_connection` in `__init__`, so one exists the
+    moment the client object does) leaked until the server reaped it.
+    """
+    import asyncio
+
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    closed = []
+
+    class _Transport:
+        def close(self):
+            closed.append(1)
+
+    class _HalfOpenClient:
+        """A client whose handshake never completes: the connection task has
+        produced a socket, but the server greeting never arrives."""
+
+        def __init__(self):
+            self.protocol = type("P", (), {"transport": _Transport()})()
+            self._client_task = asyncio.get_event_loop().create_future()
+            self._client_task.set_result(None)
+
+    in_connect = asyncio.Event()
+
+    async def _connect_hangs(self):
+        self._client = _HalfOpenClient()
+        in_connect.set()
+        await asyncio.sleep(3600)  # greeting never arrives; only a cancel ends this
+
+    monkeypatch.setattr(IMAPConnection, "connect", _connect_hangs)
+
+    label_id = await _one_active_label(db_session, "cancelmid")
+    observer = MailObserver(session_factory=observer_session_factory)
+    task = asyncio.create_task(observer._run_label(label_id, observer_session_factory))
+    await asyncio.wait_for(in_connect.wait(), timeout=5)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert closed, "cancellation mid-connect leaked the socket"
+
+
+async def test_network_failure_during_login_still_closes_the_socket(
+    db_session, mock_aioimap, observer_session_factory, monkeypatch
+):
+    """The third of the three paths the cleanup covers: connect() completed —
+    a socket exists — and then login died with a *non-auth* error: a timeout,
+    a dropped connection. The auth and cancel-mid-connect variants are pinned
+    above; this path shares the same finally and now shares a test.
+    """
+    import asyncio
+
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    closed = []
+
+    class _Transport:
+        def close(self):
+            closed.append(1)
+
+    class _ConnectedClient:
+        def __init__(self):
+            self.protocol = type("P", (), {"transport": _Transport()})()
+            self._client_task = asyncio.get_event_loop().create_future()
+            self._client_task.set_result(None)
+
+    async def _connect_ok(self):
+        self._client = _ConnectedClient()
+
+    async def _login_drops(self):
+        raise RuntimeError("connection reset by peer")
+
+    monkeypatch.setattr(IMAPConnection, "connect", _connect_ok)
+    monkeypatch.setattr(IMAPConnection, "login", _login_drops)
+
+    label_id = await _one_active_label(db_session, "netfail")
+    observer = MailObserver(session_factory=observer_session_factory)
+    await observer._run_label(label_id, observer_session_factory)
+
+    assert closed, "a non-auth login failure leaked the socket it opened"
+
+    # And the failure is latched, so the UI has something to show.
+    from sqlalchemy import select as _select
+
+    from harbor_clerk.models import MailAccount as _MA
+
+    acc = (await db_session.execute(_select(_MA))).scalars().first()
+    await db_session.refresh(acc)
+    assert acc.last_error is not None
+    assert "connection reset by peer" in acc.last_error
+
+
+async def test_cancellation_during_logout_still_exits_the_audit_session(
+    db_session, mock_aioimap, observer_session_factory, monkeypatch
+):
+    """logout() deliberately re-raises a cancellation delivered mid-LOGOUT, and
+    suppress(Exception) does not cover CancelledError — so without its own
+    finally around the audit exit, this one path strands the audit session and
+    its pooled connection until GC. Found by unprimed review; the socket half
+    was covered, the audit half was not.
+    """
+    import asyncio
+
+    from harbor_clerk.mail.exceptions import AuthError
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from harbor_clerk.watcher import mail_observer as mo
+
+    exits = []
+
+    class _RecordingAuditScope:
+        async def __aenter__(self):
+            return None  # no audit session: IMAPConnection._audit no-ops
+
+        async def __aexit__(self, *exc):
+            exits.append(1)
+            return False
+
+    async def _connect_ok(self):
+        self._client = object()
+
+    async def _login_fails(self):
+        raise AuthError("AUTHENTICATIONFAILED")
+
+    async def _logout_cancelled(self):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(mo, "audit_session_scope", lambda: _RecordingAuditScope())
+    monkeypatch.setattr(IMAPConnection, "connect", _connect_ok)
+    monkeypatch.setattr(IMAPConnection, "login", _login_fails)
+    monkeypatch.setattr(IMAPConnection, "logout", _logout_cancelled)
+
+    label_id = await _one_active_label(db_session, "auditcancel")
+    observer = MailObserver(session_factory=observer_session_factory)
+
+    with pytest.raises(asyncio.CancelledError):
+        await observer._run_label(label_id, observer_session_factory)
+
+    assert exits == [1], "cancellation during logout skipped the audit-session exit"

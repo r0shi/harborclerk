@@ -118,6 +118,22 @@ class MailObserver:
         finally:
             await self.stop()
 
+    @property
+    def _per_label_state(self) -> tuple[dict, ...]:
+        """Every per-label dict except `_tasks`, which has its own lifecycle
+        (cancel-then-drop) and cannot simply be discarded.
+
+        Derived rather than hand-listed so `_forget` and the `known` union below
+        cannot drift — a new dict added here is covered by both. Forgetting to
+        update one of them is exactly the omission this change fixes.
+        """
+        return (self._consecutive_failures, self._retry_not_before, self._spawned_at)
+
+    def _forget(self, label_id: UUID) -> None:
+        """Drop this label's backoff bookkeeping. Does not touch `_tasks`."""
+        for d in self._per_label_state:
+            d.pop(label_id, None)
+
     async def _reconcile(self, session_factory: async_sessionmaker) -> None:
         """Spawn / cancel per-label tasks to match the desired-state DB query."""
         async with session_factory() as session:
@@ -154,10 +170,36 @@ class MailObserver:
             # with a result rather than as cancelled — `task.cancelled()` alone
             # would classify every shutdown as a clean exit and respawn it.
             if task.cancelled() or self._stop_event.is_set():
-                self._consecutive_failures.pop(lid, None)
+                self._forget(lid)
                 continue
 
             exc = task.exception()
+
+            # `_run_label` also *returns* on purpose when the account has gone
+            # auth_error or its key no longer matches. Those are not failures
+            # and no respawn is coming, because the label has left desired_ids
+            # — so arming a backoff and logging "respawning in Ns" promises
+            # something that will never happen.
+            if lid not in desired_ids:
+                self._forget(lid)
+                if exc is not None:
+                    # A sibling label can crash *while* the account is being
+                    # marked auth_error by another — same account, both leave
+                    # desired_ids. Suppressing the cause here loses the only
+                    # record of a genuine failure.
+                    logger.warning(
+                        "label %s sync task died after %.0fs while going inactive: %s",
+                        lid,
+                        ran_for,
+                        describe_error(exc),
+                    )
+                else:
+                    logger.info(
+                        "label %s sync task stopped after %.0fs; label or account no longer active",
+                        lid,
+                        ran_for,
+                    )
+                continue
             # A task that ran a good while got as far as working; treat its
             # death as a fresh incident rather than escalating an old streak.
             failures = 1 if ran_for >= _HEALTHY_RUN_SECONDS else self._consecutive_failures.get(lid, 0) + 1
@@ -175,8 +217,12 @@ class MailObserver:
                     describe_error(exc),
                 )
             else:
+                # Still desired, but the coroutine returned rather than raised:
+                # the connect/login failure path does exactly this, having
+                # already logged and latched the reason. "without error" would
+                # be wrong — it failed, it just did not propagate.
                 logger.warning(
-                    "label %s sync task exited after %.0fs without error (failure %d); respawning in %.0fs",
+                    "label %s sync task returned early after %.0fs (failure %d); respawning in %.0fs",
                     lid,
                     ran_for,
                     failures,
@@ -202,14 +248,18 @@ class MailObserver:
             self._spawned_at[lbl.label_id] = now
             self._tasks[lbl.label_id] = asyncio.create_task(self._run_label(lbl.label_id, session_factory))
 
-        # Cancel tasks for labels that are no longer active
-        for lid in actual_ids - desired_ids:
-            # Drop the backoff bookkeeping too: otherwise a reactivated account
-            # sits behind a stale gate for up to the cap, silently, right after
-            # the operator fixed it.
-            self._consecutive_failures.pop(lid, None)
-            self._retry_not_before.pop(lid, None)
+        # Cancel tasks for labels that are no longer active, and forget the
+        # bookkeeping for anything undesired — keyed off every id we hold state
+        # for, not just running tasks. `actual_ids` is computed *after* the reap
+        # loop popped dead tasks, so a label that died and then went inactive
+        # would never appear here and would keep its backoff forever: on
+        # reactivation it sits behind a stale gate for up to the cap, silently,
+        # and its next failure escalates from the old streak instead of
+        # restarting at the base delay.
+        known = set(self._tasks).union(*self._per_label_state)
+        for lid in known - desired_ids:
             task = self._tasks.pop(lid, None)
+            self._forget(lid)
             if task is not None:
                 task.cancel()
 
@@ -251,89 +301,115 @@ class MailObserver:
             )
 
         try:
-            await conn.connect()
-            await conn.login()
-        except AuthError as exc:
-            async with session_factory() as session:
-                acc = (
-                    await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
-                ).scalar_one()
-                acc.status = "auth_error"
-                acc.last_error = message_or_type(exc)
-                await session.commit()
-            await audit_ctx.__aexit__(None, None, None)
-            return
-        except Exception as exc:
-            # Latch it. Without this the account stays `active` with no
-            # last_error, so the UI shows a healthy account that never syncs —
-            # and the supervisor retries forever with nothing explaining why.
-            logger.warning("connect/login failed for label %s: %s", label_id, describe_error(exc))
+            try:
+                await conn.connect()
+                await conn.login()
+            except AuthError as exc:
+                # AuthError comes from login(), i.e. *after* connect() completed
+                # the TLS handshake — so there is a live socket here, and this
+                # is the path that leaks most: a wrong app password fails every
+                # label on the account at once, and again on every
+                # re-activation. The outer finally is what closes it.
+                try:
+                    async with session_factory() as session:
+                        acc = (
+                            await session.execute(
+                                select(MailAccount).where(MailAccount.account_id == account.account_id)
+                            )
+                        ).scalar_one_or_none()
+                        if acc is not None:
+                            acc.status = "auth_error"
+                            acc.last_error = message_or_type(exc)
+                            await session.commit()
+                except Exception:
+                    logger.exception("could not record auth failure for label %s", label_id)
+                return
+            except Exception as exc:
+                # Latch it. Without this the account stays `active` with no
+                # last_error, so the UI shows a healthy account that never syncs
+                # — and the supervisor retries forever with nothing explaining
+                # why.
+                logger.warning("connect/login failed for label %s: %s", label_id, describe_error(exc))
+                try:
+                    async with session_factory() as session:
+                        acc = (
+                            await session.execute(
+                                select(MailAccount).where(MailAccount.account_id == account.account_id)
+                            )
+                        ).scalar_one_or_none()
+                        if acc is not None:
+                            acc.last_error = describe_error(exc)
+                            await session.commit()
+                except Exception:
+                    # "connect failed" and "DB down" co-occur constantly. The
+                    # cleanup in the outer finally runs either way; catching
+                    # here keeps the reap loop attributing this death to the
+                    # connect failure logged above, not the bookkeeping write.
+                    logger.exception("could not record connect failure for label %s", label_id)
+                return
+
+            # Login worked: clear any latched failure, or the UI shows a broken
+            # account that is in fact syncing — the inverse of the bug this fixes.
             try:
                 async with session_factory() as session:
                     acc = (
                         await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
                     ).scalar_one_or_none()
-                    if acc is not None:
-                        acc.last_error = describe_error(exc)
+                    if acc is not None and acc.last_error is not None:
+                        acc.last_error = None
+                        acc.last_connected_at = datetime.now(UTC)
                         await session.commit()
             except Exception:
-                # "connect failed" and "DB down" co-occur constantly. Letting
-                # this escape would skip the audit exit below and strand its
-                # session + pooled connection — once per retry, now that we
-                # retry.
-                logger.exception("could not record connect failure for label %s", label_id)
-            finally:
+                logger.exception("could not clear last_error for label %s", label_id)
+
+            async def on_tick(c: IMAPConnection) -> None:
+                async with session_factory() as session:
+                    lbl = (
+                        await session.execute(select(WatchedLabel).where(WatchedLabel.label_id == label_id))
+                    ).scalar_one()
+                    try:
+                        if lbl.uidvalidity is None:
+                            await sync_label_initial(session, c, lbl)
+                        else:
+                            try:
+                                await sync_label_incremental(session, c, lbl)
+                            except UidValidityChanged:
+                                await handle_uidvalidity_change(session, c, lbl)
+                        await detect_unlabeled_messages(session, c, lbl)
+                        # Stage 3: turn newly-discovered watched_messages into Documents
+                        await ingest_pending_messages(session, c, lbl)
+                        # Stage 3: lifecycle — soft-delete Documents whose watched_messages went unlabeled
+                        await soft_delete_documents_for_unlabeled(session, lbl)
+                        # Stage 3: lifecycle — restore Documents that came back via re-label
+                        await restore_documents_for_relabeled(session, lbl)
+                        lbl.last_synced_at = datetime.now(UTC)
+                        await session.commit()
+                    except Exception as exc:
+                        logger.exception("sync failed for label %s: %s", label_id, exc)
+                        await session.rollback()
+
+            try:
+                # Initial tick (in case label has no cursor yet)
+                await on_tick(conn)
+                await poll_or_idle_loop(conn, on_tick=on_tick, poll_interval=self.poll_interval)
+            except asyncio.CancelledError:
+                pass
+        finally:
+            # One cleanup for every exit: the sync loop ending, auth failure,
+            # connect failure — and the case the three per-branch cleanups this
+            # replaces all missed: cancellation delivered while connect(),
+            # login(), or the bookkeeping writes above were still in flight. A
+            # label cancelled mid-handshake (watcher shutdown, or the label
+            # going inactive) used to leak both its socket and the audit
+            # session.
+            #
+            # logout() swallows its own errors but deliberately *re-raises a
+            # cancellation delivered during the LOGOUT round-trip* — and
+            # suppress(Exception) does not cover CancelledError — so the audit
+            # exit needs its own finally, or that one path strands the audit
+            # session and its pooled connection until GC.
+            try:
                 with contextlib.suppress(Exception):
                     await conn.logout()
+            finally:
                 await audit_ctx.__aexit__(None, None, None)
-            return
-
-        # Login worked: clear any latched failure, or the UI shows a broken
-        # account that is in fact syncing — the inverse of the bug this fixes.
-        try:
-            async with session_factory() as session:
-                acc = (
-                    await session.execute(select(MailAccount).where(MailAccount.account_id == account.account_id))
-                ).scalar_one_or_none()
-                if acc is not None and acc.last_error is not None:
-                    acc.last_error = None
-                    acc.last_connected_at = datetime.now(UTC)
-                    await session.commit()
-        except Exception:
-            logger.exception("could not clear last_error for label %s", label_id)
-
-        async def on_tick(c: IMAPConnection) -> None:
-            async with session_factory() as session:
-                lbl = (
-                    await session.execute(select(WatchedLabel).where(WatchedLabel.label_id == label_id))
-                ).scalar_one()
-                try:
-                    if lbl.uidvalidity is None:
-                        await sync_label_initial(session, c, lbl)
-                    else:
-                        try:
-                            await sync_label_incremental(session, c, lbl)
-                        except UidValidityChanged:
-                            await handle_uidvalidity_change(session, c, lbl)
-                    await detect_unlabeled_messages(session, c, lbl)
-                    # Stage 3: turn newly-discovered watched_messages into Documents
-                    await ingest_pending_messages(session, c, lbl)
-                    # Stage 3: lifecycle — soft-delete Documents whose watched_messages went unlabeled
-                    await soft_delete_documents_for_unlabeled(session, lbl)
-                    # Stage 3: lifecycle — restore Documents that came back via re-label
-                    await restore_documents_for_relabeled(session, lbl)
-                    lbl.last_synced_at = datetime.now(UTC)
-                    await session.commit()
-                except Exception as exc:
-                    logger.exception("sync failed for label %s: %s", label_id, exc)
-                    await session.rollback()
-
-        try:
-            # Initial tick (in case label has no cursor yet)
-            await on_tick(conn)
-            await poll_or_idle_loop(conn, on_tick=on_tick, poll_interval=self.poll_interval)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            await conn.logout()
-            await audit_ctx.__aexit__(None, None, None)

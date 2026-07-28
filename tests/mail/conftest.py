@@ -187,22 +187,14 @@ class FakeIMAP:
         raise TimeoutError("no idle events queued")
 
 
-import pytest  # noqa: E402
-
-
-@pytest.fixture(autouse=True)
-def _reset_fake_imap_state():
-    """Reset FakeIMAP's class-level response staging between every mail test.
-
-    Without this, leftover responses from a previous test leak into the
-    next — rendering tests order-dependent.
-    """
-    FakeIMAP.reset()
-    yield
-    FakeIMAP.reset()
-
+# FakeIMAP's class-level staging is reset around every test by the suite-wide
+# autouse fixture in tests/conftest.py — it lives there, not here, because
+# tests/api/ consumes the fake too and a fixture in this conftest cannot
+# reach it.
 
 from uuid import uuid4  # noqa: E402
+
+import pytest  # noqa: E402
 
 from harbor_clerk.models import MailAccount, WatchedLabel  # noqa: E402
 
