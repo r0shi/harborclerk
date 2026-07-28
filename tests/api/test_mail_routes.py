@@ -122,7 +122,6 @@ async def test_test_connection_endpoint(client, admin_user, admin_token, monkeyp
     """Test connection endpoint: opens IMAP conn, runs LIST, returns folders."""
     from tests.mail.conftest import FakeIMAP
 
-    FakeIMAP.reset()
     FakeIMAP.set_login_response("OK", b"OK")
     FakeIMAP.set_list_response(
         "OK",
@@ -160,7 +159,6 @@ async def test_test_connection_endpoint(client, admin_user, admin_token, monkeyp
 async def test_test_connection_auth_error(client, admin_user, admin_token, monkeypatch):
     from tests.mail.conftest import FakeIMAP
 
-    FakeIMAP.reset()
     FakeIMAP.set_login_response("NO", b"AUTHENTICATIONFAILED Invalid credentials")
     monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
 
@@ -351,10 +349,15 @@ async def test_test_connection_closes_the_socket_on_auth_failure(client, admin_u
     from harbor_clerk.mail.imap_client import IMAPConnection
     from tests.mail.conftest import FakeIMAP
 
-    FakeIMAP.reset()
     FakeIMAP.set_login_response("NO", b"AUTHENTICATIONFAILED Invalid credentials")
     monkeypatch.setattr("harbor_clerk.mail.imap_client.ReadOnlyIMAP4_SSL", FakeIMAP)
 
+    # This proves the route *calls* logout() on the auth-failure path — it
+    # cannot prove the socket closes, because FakeIMAP has no protocol/transport
+    # for the real logout() to reach. The close half of the contract is proven
+    # by tests/mail/test_imap_client.py::
+    # test_logout_closes_the_transport_even_when_login_never_succeeded; the two
+    # compose.
     logouts = []
     real_logout = IMAPConnection.logout
 

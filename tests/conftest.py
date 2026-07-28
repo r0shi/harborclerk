@@ -176,6 +176,25 @@ def _reset_global_settings_singleton():
     _config._settings = None
 
 
+@pytest.fixture(autouse=True)
+def _reset_fake_imap_class_state():
+    """Reset FakeIMAP's class-level response staging before AND after every
+    test, suite-wide.
+
+    FakeIMAP stages responses as *class* attributes, so a test that sets one
+    and never resets poisons every later FakeIMAP consumer in the run. This
+    fixture used to live in tests/mail/conftest.py, which left tests/api/ — a
+    FakeIMAP consumer via test_mail_routes.py — with no reset at all: the last
+    staged response (a NO login) survived for the rest of an api-only run,
+    an order-dependency lying in wait for the next test that adopts the fake.
+    """
+    from tests.mail.conftest import FakeIMAP
+
+    FakeIMAP.reset()
+    yield
+    FakeIMAP.reset()
+
+
 @pytest.fixture(scope="session")
 def _engine():
     """Create engine and run Alembic migrations once per test session."""

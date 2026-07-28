@@ -158,30 +158,34 @@ class IMAPConnection:
                 await client.logout()
         except Exception as exc:
             logger.debug("logout() raised: %s — ignoring", exc)
-        except BaseException:
-            # CancelledError is not an Exception, so it used to leave before the
-            # close below — reintroducing the leak on the one path where the
-            # docstring promises it cannot happen. Close, then re-raise.
+        finally:
+            # The close and the drain run on *every* exit. CancelledError is not
+            # an Exception, so without the finally a cancellation delivered
+            # during the LOGOUT — the normal way a watcher label task exits —
+            # would leave before the close, reintroducing the leak on the one
+            # path where the docstring promises it cannot happen.
+            #
+            # Reach past the wrapper for the socket. These are aioimaplib
+            # internals, like the EXAMINE state fix in readonly_imap — pinned by
+            # tests so an upstream rename fails loudly rather than silently
+            # leaking again.
             self._close_transport(client)
-            raise
 
-        # Reach past the wrapper for the socket. These are aioimaplib internals,
-        # like the EXAMINE state fix in readonly_imap — pinned by tests so an
-        # upstream rename fails loudly rather than silently leaking again.
-        self._close_transport(client)
-
-        # `create_connection` runs as a task nobody awaits. If it failed — the
-        # common case when we are here after a connect error — its exception is
-        # never retrieved and asyncio logs "Task exception was never retrieved"
-        # at shutdown, which is how this class of bug stayed invisible.
-        task = getattr(client, "_client_task", None)
-        if task is not None:
-            if not task.done():
-                task.cancel()
-            # gather(return_exceptions=True) retrieves it without swallowing a
-            # cancellation aimed at *us* — `suppress(CancelledError)` around a
-            # bare await would absorb the caller's own cancel.
-            await asyncio.gather(task, return_exceptions=True)
+            # `create_connection` runs as a task nobody awaits. If it failed —
+            # the common case when we are here after a connect error — its
+            # exception is never retrieved and asyncio logs "Task exception was
+            # never retrieved" at shutdown, which is how this class of bug
+            # stayed invisible. On the cancellation path the task is already
+            # done (a completed login implies the connection task finished), so
+            # the gather returns without suspending.
+            task = getattr(client, "_client_task", None)
+            if task is not None:
+                if not task.done():
+                    task.cancel()
+                # gather(return_exceptions=True) retrieves it without swallowing
+                # a cancellation aimed at *us* — `suppress(CancelledError)`
+                # around a bare await would absorb the caller's own cancel.
+                await asyncio.gather(task, return_exceptions=True)
 
     @staticmethod
     def _close_transport(client: Any) -> None:

@@ -472,6 +472,7 @@ async def test_reactivating_a_label_clears_its_backoff(db_session, mock_aioimap,
 
     assert label_id not in observer._consecutive_failures
     assert label_id not in observer._retry_not_before
+    assert label_id not in observer._spawned_at
 
     await observer.stop()
 
@@ -629,3 +630,55 @@ async def test_auth_failure_closes_the_connection_it_opened(
     acc = (await db_session.execute(_select(_MA))).scalars().first()
     await db_session.refresh(acc)
     assert acc.status == "auth_error"
+
+
+async def test_cancelling_a_label_mid_connect_still_closes_the_socket(
+    db_session, mock_aioimap, observer_session_factory, monkeypatch
+):
+    """The window the per-branch cleanups missed. `_reconcile` cancels a task
+    the moment its label goes inactive, and `stop()` cancels them all — and a
+    hung TLS handshake to an unreachable host is exactly where such a task
+    spends its time. CancelledError is not an Exception, so before the outer
+    finally none of the cleanup branches ran on this path: the half-open socket
+    (aioimaplib schedules `create_connection` in `__init__`, so one exists the
+    moment the client object does) leaked until the server reaped it.
+    """
+    import asyncio
+
+    from harbor_clerk.mail.imap_client import IMAPConnection
+    from harbor_clerk.watcher.mail_observer import MailObserver
+
+    closed = []
+
+    class _Transport:
+        def close(self):
+            closed.append(1)
+
+    class _HalfOpenClient:
+        """A client whose handshake never completes: the connection task has
+        produced a socket, but the server greeting never arrives."""
+
+        def __init__(self):
+            self.protocol = type("P", (), {"transport": _Transport()})()
+            self._client_task = asyncio.get_event_loop().create_future()
+            self._client_task.set_result(None)
+
+    in_connect = asyncio.Event()
+
+    async def _connect_hangs(self):
+        self._client = _HalfOpenClient()
+        in_connect.set()
+        await asyncio.sleep(3600)  # greeting never arrives; only a cancel ends this
+
+    monkeypatch.setattr(IMAPConnection, "connect", _connect_hangs)
+
+    label_id = await _one_active_label(db_session, "cancelmid")
+    observer = MailObserver(session_factory=observer_session_factory)
+    task = asyncio.create_task(observer._run_label(label_id, observer_session_factory))
+    await asyncio.wait_for(in_connect.wait(), timeout=5)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert closed, "cancellation mid-connect leaked the socket"

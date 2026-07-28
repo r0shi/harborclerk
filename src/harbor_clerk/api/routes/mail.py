@@ -159,16 +159,7 @@ async def test_mail_account(
         await conn.connect()
         await conn.login()
         folders = await discover_folders(conn)
-        await conn.logout()
     except AuthError as exc:
-        # AuthError comes from login(), after connect() completed the TLS
-        # handshake — so a live socket exists here, exactly as in the watcher's
-        # label task. This path is if anything more reachable: an admin fixing a
-        # mistyped app password retries this endpoint, and each attempt would
-        # pin a connection for ~30 min against the provider's per-account cap.
-        # The sibling branch below already closes; this one simply did not.
-        with contextlib.suppress(Exception):
-            await conn.logout()
         account.status = "auth_error"
         detail = message_or_type(exc)
         account.last_error = detail
@@ -177,11 +168,18 @@ async def test_mail_account(
     except Exception as exc:
         # Network errors, timeouts, etc. — don't change account status
         # (the account isn't broken, just unreachable right now).
-        try:
-            await conn.logout()
-        except Exception:
-            pass
         return TestConnectionResponse(success=False, error=f"connection failed: {describe_error(exc)}")
+    finally:
+        # One close for every exit — success, auth failure, network error, and
+        # cancellation. AuthError comes from login(), after connect() completed
+        # the TLS handshake, so a live socket exists on all of these paths; an
+        # admin fixing a mistyped app password retries this endpoint, and each
+        # attempt would pin a connection for ~30 min against the provider's
+        # per-account cap. CancelledError in particular is not an Exception and
+        # bypasses both branches above. logout() is idempotent and swallows its
+        # own errors; best-effort here is enough.
+        with contextlib.suppress(Exception):
+            await conn.logout()
 
     account.status = "active"
     account.last_error = None
