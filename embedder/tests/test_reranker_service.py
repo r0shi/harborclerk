@@ -185,3 +185,45 @@ def test_rerank_binds_the_model_before_the_executor_hop():
         f"got {r.status_code}: `_model` was resolved on the worker thread after the guard, "
         "so shutdown turned a valid request into an AttributeError 500"
     )
+
+
+def test_release_runs_on_the_worker_thread_not_the_event_loop():
+    """The #553 invariant, guarded for /embed and asserted only in a comment
+    here. `empty_cache()` blocks; running it on the event loop re-creates the
+    /health starvation the embedder was fixed for. Verified before writing
+    this: hoisting the release out of `_predict_and_release` and calling it
+    after the await — on the loop — left every reranker test green.
+    """
+    import threading
+
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    predict_thread = []
+    release_thread = []
+
+    model = MagicMock()
+
+    def _note_predict(pairs):
+        predict_thread.append(threading.current_thread().name)
+        return np.array([0.5] * len(pairs))
+
+    model.predict.side_effect = _note_predict
+
+    with (
+        patch("embedder.reranker.CrossEncoder", return_value=model),
+        patch(
+            "embedder.reranker.release_gpu_cache",
+            side_effect=lambda: release_thread.append(threading.current_thread().name),
+        ),
+    ):
+        from embedder.reranker import app
+
+        with TestClient(app) as c:
+            assert c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1}).status_code == 200
+
+    assert release_thread, "release never ran"
+    assert release_thread[0] == predict_thread[0], (
+        f"release ran on {release_thread[0]} but predict ran on {predict_thread[0]} — "
+        "it must share the worker thread, not run on the event loop"
+    )

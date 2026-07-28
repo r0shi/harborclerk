@@ -15,45 +15,69 @@ import types
 import pytest
 
 
-def _fake_torch(*, mps=False, cuda=False, driver=0, current=0, reserved=0, allocated=0):
-    """A stand-in exposing exactly the surface gpu_cache touches."""
+def _fake_torch(*, mps=False, cuda=False, driver=0, current=0, reserved=0, allocated=0, drain_seconds=0.0):
+    """A stand-in exposing exactly the surface gpu_cache touches.
+
+    `drain_seconds` makes empty_cache slow, the way the real one is — the
+    concurrency test uses it to hold one thread inside the drain while others
+    arrive at the cooldown check.
+    """
+    import time as _time
+
     calls = []
     t = types.ModuleType("torch")
+
+    def _drain(name):
+        if drain_seconds:
+            _time.sleep(drain_seconds)
+        calls.append(name)
 
     t.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: mps))
     t.mps = types.SimpleNamespace(
         is_available=lambda: mps,
         driver_allocated_memory=lambda: driver,
         current_allocated_memory=lambda: current,
-        empty_cache=lambda: calls.append("mps"),
+        empty_cache=lambda: _drain("mps"),
     )
     t.cuda = types.SimpleNamespace(
         is_available=lambda: cuda,
         memory_reserved=lambda: reserved,
         memory_allocated=lambda: allocated,
-        empty_cache=lambda: calls.append("cuda"),
+        empty_cache=lambda: _drain("cuda"),
     )
     return t, calls
 
 
 @pytest.fixture
 def gpu_cache(monkeypatch):
-    """Fresh module import so env-derived constants are re-read per test."""
+    """Fresh module state, with env-derived constants re-read per test.
+
+    reload-in-place, NOT pop-and-reimport: app.py and reranker.py bind
+    `release_gpu_cache` by `from … import` at import time, so a brand-new
+    module object would leave them holding the *old* function, whose
+    `__globals__` still carry the old config — a future test that sets
+    ENABLED or the high-water mark and then drives /embed or /rerank would
+    silently exercise the defaults. `importlib.reload` re-executes the module
+    body in the SAME namespace dict, which those existing bindings share, so
+    the call sites see the refreshed config (and reset cooldown state) too.
+    """
+    set_keys: set[str] = set()
 
     def _load(**env):
         for k, v in env.items():
             monkeypatch.setenv(k, v)
-        sys.modules.pop("embedder.gpu_cache", None)
-        return importlib.import_module("embedder.gpu_cache")
+            set_keys.add(k)
+        return importlib.reload(importlib.import_module("embedder.gpu_cache"))
 
     yield _load
     # monkeypatch.undo() runs *after* this finalizer (it is a dependency, so it
-    # is torn down last), so re-importing here would re-read the env var the
-    # test just set and leak that value into sys.modules for whatever runs
-    # next. Clear it first.
-    monkeypatch.delenv("GPU_CACHE_HIGH_WATER_MB", raising=False)
-    sys.modules.pop("embedder.gpu_cache", None)
-    importlib.import_module("embedder.gpu_cache")
+    # is torn down last), so reloading here would re-read whatever env the test
+    # just set and leak that config into the module for whatever runs next.
+    # Clear every var _load actually set — recorded, not hardcoded, so a test
+    # exercising some future knob is covered without editing this fixture.
+    for k in set_keys:
+        monkeypatch.delenv(k, raising=False)
+    importlib.reload(importlib.import_module("embedder.gpu_cache"))
 
 
 MB = 1024 * 1024
@@ -228,12 +252,13 @@ def test_an_absurd_high_water_is_rejected(gpu_cache):
 
 
 def test_an_effective_drain_does_not_start_a_cooldown(gpu_cache, monkeypatch):
-    """A blanket interval defeats the `finally` at both call sites.
+    """A blanket interval defeats the `finally` at the /embed call site.
 
     embedder_client retries a 5xx up to 7 times, with cumulative minimum elapsed
     of 0.25/0.75/1.75/3.75s before attempts 2-5 — all inside a flat 5s window.
     An OOM would drain once and then skip every retry, which is exactly the case
-    the `finally` exists for. So a drain that *worked* must not block the next.
+    that `finally` exists for. So a drain that *worked* must not block the next.
+    (/rerank never retries — rerank_hits degrades — so this concerns /embed.)
     """
     mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="1024")
 
@@ -264,3 +289,35 @@ def test_an_effective_drain_does_not_start_a_cooldown(gpu_cache, monkeypatch):
     mod.release_gpu_cache()
 
     assert len(calls) == 2, "an effective drain started a cooldown and blocked the retry-path drain"
+
+
+def test_a_concurrent_burst_drains_once(gpu_cache, monkeypatch):
+    """check-gap → check-cooldown → drain → record is not atomic, and /rerank
+    hands release to the default executor with no concurrency gate — so before
+    the lock, simultaneous requests could all clear the cooldown check while
+    the first was still inside its drain, and every one of them drained: the
+    storm the cooldown exists to stop, arriving via the door it cannot see.
+
+    The slow fake drain holds the first thread inside empty_cache while the
+    barrier guarantees the others are already past start; without the lock at
+    least one of them clears the not-yet-recorded cooldown and drains again.
+    """
+    import threading
+
+    mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="2048")
+    torch, calls = _fake_torch(mps=True, driver=5000 * MB, current=500 * MB, drain_seconds=0.05)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    barrier = threading.Barrier(8)
+
+    def _release_after_barrier():
+        barrier.wait()
+        mod.release_gpu_cache()
+
+    threads = [threading.Thread(target=_release_after_barrier) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(calls) == 1, f"a concurrent burst drained {len(calls)} times; the check-then-record raced"

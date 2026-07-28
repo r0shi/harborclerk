@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -102,18 +103,33 @@ _WARN_INTERVAL_SECONDS = 300.0
 # mark and every subsequent request trying again.
 #
 # Gated on ineffectiveness rather than on time alone, because a blanket
-# interval defeats the `finally` at both call sites. embedder_client retries a
-# 5xx up to 7 times with cumulative minimum elapsed of 0.25/0.75/1.75/3.75s
-# before attempts 2-5 — all inside a flat 5s window — so an OOM would drain
-# once and then skip every retry, which is precisely the case the `finally`
-# was added for. And the first drain is the one least likely to work: it runs
-# while the failed encode's intermediates are still reachable through the
-# in-flight traceback.
+# interval defeats the `finally` at the /embed call site: embedder_client
+# retries a 5xx up to 7 times with cumulative minimum elapsed of
+# 0.25/0.75/1.75/3.75s before attempts 2-5 — all inside a flat 5s window — so
+# an OOM would drain once and then skip every retry, which is precisely the
+# case that `finally` was added for. (/rerank is different: rerank_hits
+# catches once and degrades to the hybrid order, no retry — there the finally
+# protects the next request.)
+#
+# Residual risk, stated plainly: if the *first* OOM-path drain is itself
+# ineffective — plausible, since it runs while the failed encode's
+# intermediates are still reachable through the in-flight traceback — it
+# starts this cooldown and suppresses the retries' drains after all. That
+# worst case is the pre-#574 status quo (no drain at all), never worse than
+# it, and it ends within the 5s window; a drain that *works* records no
+# cooldown, so the recovering case is never throttled.
 _MIN_DRAIN_INTERVAL_SECONDS = 5.0
 # A drain that recovers less than this did not work — the heaps were pinned by
 # something live. Only *those* start a cooldown.
 _MIN_USEFUL_RECLAIM_BYTES = 64 * 1024 * 1024
 _last_drain_at = float("-inf")
+# check-gap → check-cooldown → drain → record is not atomic, and /rerank runs
+# release on the default executor with no concurrency gate — so without the
+# lock, N simultaneous requests all clear the cooldown check before any
+# records a timestamp: N blocking drains, which is the storm the cooldown
+# exists to stop, plus cross-thread `after` measurements crediting one
+# thread's reclaim to another and recording the wrong cooldown state.
+_drain_lock = threading.Lock()
 
 
 def _warn(msg: str) -> None:
@@ -145,36 +161,43 @@ def release_gpu_cache() -> None:
         else:
             return  # CPU-only: no device allocator to drain
 
-        gap = measure(torch)
-        if gap <= CACHE_HIGH_WATER_MB * 1024 * 1024:
+        # Non-blocking: a thread that finds the lock held would only repeat the
+        # holder's drain microseconds later against the same heaps, so skipping
+        # is the correct outcome — and an inference thread never stalls here.
+        if not _drain_lock.acquire(blocking=False):
             return
+        try:
+            gap = measure(torch)
+            if gap <= CACHE_HIGH_WATER_MB * 1024 * 1024:
+                return
 
-        now = time.monotonic()
-        if now - _last_drain_at < _MIN_DRAIN_INTERVAL_SECONDS:
-            return
+            now = time.monotonic()
+            if now - _last_drain_at < _MIN_DRAIN_INTERVAL_SECONDS:
+                return
 
-        drain()
-        after = measure(torch)
-        reclaimed = gap - after
+            drain()
+            after = measure(torch)
+            reclaimed = gap - after
 
-        # Cool down only if that achieved nothing. A drain that worked is
-        # evidence the heaps are releasable, so blocking the next one would
-        # defeat the `finally` at both call sites: embedder_client retries a 5xx
-        # up to 7 times, with cumulative minimum elapsed of 0.25/0.75/1.75/3.75s
-        # before attempts 2-5 — all inside a flat 5s window.
-        _last_drain_at = now if reclaimed < _MIN_USEFUL_RECLAIM_BYTES else float("-inf")
+            # Cool down only if that achieved nothing. A drain that worked is
+            # evidence the heaps are releasable, so blocking the next one would
+            # defeat the /embed `finally` under embedder_client's retries — see
+            # the note on _MIN_DRAIN_INTERVAL_SECONDS.
+            _last_drain_at = now if reclaimed < _MIN_USEFUL_RECLAIM_BYTES else float("-inf")
 
-        # INFO, not DEBUG: both services hard-code basicConfig(level=INFO) with
-        # no override, so a debug line is unreachable in every shipped
-        # deployment — and this is the only signal distinguishing "working" from
-        # "firing constantly and recovering nothing".
-        logger.info(
-            "%s cache drained: %.0f MB -> %.0f MB (reclaimed %.0f MB)",
-            label,
-            gap / 1024 / 1024,
-            after / 1024 / 1024,
-            reclaimed / 1024 / 1024,
-        )
+            # INFO, not DEBUG: both services hard-code basicConfig(level=INFO)
+            # with no override, so a debug line is unreachable in every shipped
+            # deployment — and this is the only signal distinguishing "working"
+            # from "firing constantly and recovering nothing".
+            logger.info(
+                "%s cache drained: %.0f MB -> %.0f MB (reclaimed %.0f MB)",
+                label,
+                gap / 1024 / 1024,
+                after / 1024 / 1024,
+                reclaimed / 1024 / 1024,
+            )
+        finally:
+            _drain_lock.release()
     except Exception:  # never fail an encode over cache hygiene
         _warn("could not release GPU cache; continuing")
 

@@ -87,8 +87,10 @@ async def rerank(req: RerankRequest):
         # Same exposure as the embedder: variable-length passages mean the
         # allocator cache never reaches a steady state. Released on the worker
         # thread so the event loop stays free, and in a finally so an OOM —
-        # the likeliest failure on a tight machine — still drains rather than
-        # leaving the pool full for the retry that follows.
+        # the likeliest failure on a tight machine — still drains. Unlike
+        # /embed there is no retry behind this: search_rerank.rerank_hits
+        # catches once and degrades to the hybrid order, so the drain here is
+        # for the *next* search, not a retry of this one.
         try:
             return model.predict(pairs)
         finally:
