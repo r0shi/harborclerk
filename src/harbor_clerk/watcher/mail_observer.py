@@ -401,7 +401,15 @@ class MailObserver:
             # login(), or the bookkeeping writes above were still in flight. A
             # label cancelled mid-handshake (watcher shutdown, or the label
             # going inactive) used to leak both its socket and the audit
-            # session. logout() is idempotent and swallows its own errors.
-            with contextlib.suppress(Exception):
-                await conn.logout()
-            await audit_ctx.__aexit__(None, None, None)
+            # session.
+            #
+            # logout() swallows its own errors but deliberately *re-raises a
+            # cancellation delivered during the LOGOUT round-trip* — and
+            # suppress(Exception) does not cover CancelledError — so the audit
+            # exit needs its own finally, or that one path strands the audit
+            # session and its pooled connection until GC.
+            try:
+                with contextlib.suppress(Exception):
+                    await conn.logout()
+            finally:
+                await audit_ctx.__aexit__(None, None, None)
