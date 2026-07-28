@@ -18,6 +18,9 @@ final class EmbedderService: PythonService {
             // MPS allocator code does anything at all.
             "EMBED_MODEL": modelPath,
             "GPU_CACHE_HIGH_WATER_MB": String(AppSettings.shared.gpuCacheHighWaterMB),
+            // The e5 rollback switch. Unreachable here otherwise — and macOS is
+            // the platform whose rollback path the comment in app.py describes.
+            "EMBED_NEEDS_PREFIX": AppSettings.shared.embedNeedsPrefix ? "true" : "false",
             "HOST": "127.0.0.1",
             "PORT": String(AppSettings.shared.embedderPort),
         ]

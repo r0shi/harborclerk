@@ -22,7 +22,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from harbor_clerk.api.scope import UserScope
-from harbor_clerk.error_text import describe_error
+from harbor_clerk.error_text import describe_error, message_or_type
 
 if TYPE_CHECKING:
     from harbor_clerk.llm.models import ModelInfo
@@ -791,7 +791,12 @@ async def execute_tool(
         return await func(**mapped_args)
     except PermissionError as e:
         logger.warning("Tool permission error: %s - %s", name, e)
-        return json.dumps({"error": describe_error(e)})
+        # Authored, user-facing strings ("Not authenticated", "Admin access
+        # required"), so the class name is noise — the same distinction
+        # error_text draws for AuthError and the validation ValueErrors. The
+        # dedicated branch exists precisely because these differ from the
+        # unexpected exceptions below.
+        return json.dumps({"error": message_or_type(e)})
     except Exception as e:
         logger.exception("Tool execution error: %s", name)
         return json.dumps({"error": describe_error(e)})

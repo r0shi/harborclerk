@@ -302,3 +302,65 @@ def test_null_embeddings_becomes_an_embedder_error(httpx_mock: HTTPXMock):
 
     with pytest.raises(EmbedderError, match="expected a list"):
         embed_texts(["a"], task="passage")
+
+
+# --------------------------------------------------------------------------
+# Rendering — every changed line, on both entry points
+# --------------------------------------------------------------------------
+
+# Three distinct code paths render an exception, and they are easy to conflate:
+#   retryable transport  -> retries, then _give_up
+#   non-retryable transport (ReadTimeout, the canonical case) -> immediate raise
+#   RequestError that is not a TransportError -> immediate raise
+# Each exists twice, once per entry point. Parametrised so a failure names the
+# case rather than hiding the rest behind the first one.
+_EMPTY_MESSAGE_EXCEPTIONS = [
+    pytest.param(httpx.ConnectTimeout(""), id="retryable-connect-timeout"),
+    pytest.param(httpx.ConnectError(""), id="retryable-connect-error"),
+    pytest.param(httpx.PoolTimeout(""), id="retryable-pool-timeout"),
+    pytest.param(httpx.ReadError(""), id="retryable-read-error"),
+    pytest.param(httpx.WriteError(""), id="retryable-write-error"),
+    pytest.param(httpx.RemoteProtocolError(""), id="retryable-remote-protocol"),
+    pytest.param(httpx.CloseError(""), id="retryable-close-error"),
+    pytest.param(httpx.ReadTimeout(""), id="non-retryable-read-timeout"),
+    pytest.param(httpx.WriteTimeout(""), id="non-retryable-write-timeout"),
+    pytest.param(httpx.DecodingError(""), id="request-error-decoding"),
+    pytest.param(httpx.TooManyRedirects(""), id="request-error-redirects"),
+]
+
+
+def _assert_named_without_dangling_colon(rendered: str, exc: Exception) -> None:
+    assert type(exc).__name__ in rendered, f"failure type not named: {rendered!r}"
+    assert not rendered.rstrip().endswith(":"), f"dangling colon in {rendered!r}"
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+@pytest.mark.parametrize("exc", _EMPTY_MESSAGE_EXCEPTIONS)
+def test_sync_errors_never_render_a_dangling_colon(httpx_mock: HTTPXMock, exc):
+    """Every exception here stringifies empty when raised bare.
+
+    `f"{type(exc).__name__}: {exc}"` then yields "ReadTimeout: ", and that
+    string reaches `ingestion_jobs.error` and `documents.error`, which the
+    document detail page renders verbatim.
+    """
+    for _ in range(4):
+        httpx_mock.add_exception(exc, url=EMBED_URL)
+
+    with pytest.raises(EmbedderError) as excinfo:
+        embed_texts(["hello"], task="passage", max_attempts=2)
+
+    _assert_named_without_dangling_colon(str(excinfo.value), exc)
+
+
+@pytest.mark.httpx_mock(assert_all_responses_were_requested=False)
+@pytest.mark.parametrize("exc", _EMPTY_MESSAGE_EXCEPTIONS)
+async def test_async_errors_never_render_a_dangling_colon(httpx_mock: HTTPXMock, exc):
+    """Half the changed lines live on the async path, and nothing covered it —
+    reverting all three kept the suite green."""
+    for _ in range(4):
+        httpx_mock.add_exception(exc, url=EMBED_URL)
+
+    with pytest.raises(EmbedderError) as excinfo:
+        await embed_texts_async(["q"], task="query", max_attempts=2)
+
+    _assert_named_without_dangling_colon(str(excinfo.value), exc)

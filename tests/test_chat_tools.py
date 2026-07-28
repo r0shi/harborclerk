@@ -252,3 +252,20 @@ def test_research_dispatch_overrides_batch_search_with_research_mapper():
     assert "batch_search" in _RESEARCH_TOOL_DISPATCH
     _, mapper = _RESEARCH_TOOL_DISPATCH["batch_search"]
     assert mapper is not _map_args_batch_search_chat
+
+
+async def test_permission_error_reaches_the_llm_without_a_class_name():
+    """`execute_tool`'s error string goes straight into the LLM's tool-result
+    stream and is rendered to the user as `Error: <string>`.
+
+    Both PermissionErrors raised here carry authored text ("Not authenticated",
+    "Admin access required"), so the class name is noise. Reverting the branch
+    to `describe_error` kept the whole suite green before this.
+    """
+    from harbor_clerk.llm.tools import execute_tool
+
+    # No principal in the context var → mcp_server raises PermissionError.
+    result = await execute_tool("search_documents", {"query": "anything"})
+
+    assert "PermissionError" not in result, f"class name leaked to the LLM: {result}"
+    assert "authenticat" in result.lower() or "admin" in result.lower(), result

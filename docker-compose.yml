@@ -134,7 +134,26 @@ services:
       # what the service is tuned for; raise only with measurements.
       EMBED_MAX_CONCURRENCY: ${EMBED_MAX_CONCURRENCY:-1}
       # Release the device allocator cache past this many MB. 0 disables.
+      # Inert unless a GPU is exposed to the container (none is, in this file —
+      # no `deploy.resources.reservations.devices`): with neither MPS nor CUDA
+      # available the release is a deliberate no-op, because CPU-only PyTorch
+      # has no device allocator to drain. Kept plumbed so a GPU-enabled
+      # override file gets the bound cache without editing the service.
       GPU_CACHE_HIGH_WATER_MB: ${GPU_CACHE_HIGH_WATER_MB:-4096}
+      # e5-family models need "query: "/"passage: " prefixes; Granite-R2 does
+      # not. This is the switch the rollback path depends on — it was read but
+      # settable nowhere, so that path could not actually be taken.
+      #
+      # EMBED_MODEL is deliberately NOT set here. docker/embedder.Dockerfile
+      # bakes the weights into the image and sets ENV EMBED_MODEL=/models/...
+      # so the container starts without network; a compose `environment:` entry
+      # overrides that ENV, which would turn the path back into a HuggingFace
+      # repo id — a ~700 MB download per container recreate with no cache
+      # volume, and on an air-gapped host a lifespan crash, a restart loop, and
+      # `app`/`worker-cpu` never starting because they wait on this service's
+      # healthcheck. Rolling back to e5 means rebuilding the image, not editing
+      # compose.
+      EMBED_NEEDS_PREFIX: ${EMBED_NEEDS_PREFIX:-false}
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
       interval: 10s
