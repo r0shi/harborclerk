@@ -14,6 +14,7 @@ import difflib
 import sys
 from pathlib import Path
 
+from harbor_clerk.error_text import describe_error
 from scripts.gen_docs.blocks import BlockError, find_blocks, replace_block
 from scripts.gen_docs.registry import GENERATORS, REPO_ROOT, TARGETS
 
@@ -41,7 +42,7 @@ def _render(path: Path) -> tuple[str, str, list[str]]:
         try:
             content = generator()
         except Exception as exc:  # noqa: BLE001 - surface which generator failed
-            raise RuntimeError(f"generator {name!r} failed: {type(exc).__name__}: {exc}") from exc
+            raise RuntimeError(f"generator {name!r} failed: {describe_error(exc)}") from exc
         updated = replace_block(updated, name, content)
 
     return original, updated, names
