@@ -71,6 +71,12 @@ final class AppSettings: @unchecked Sendable {
         set { lock.withLock { data["embedder_port"] = newValue }; save() }
     }
 
+    /// e5 rollback switch; default must match EMBED_NEEDS_PREFIX in embedder/src/embedder/app.py.
+    var embedNeedsPrefix: Bool {
+        get { lock.withLock { data["embed_needs_prefix"] as? Bool ?? false } }
+        set { lock.withLock { data["embed_needs_prefix"] = newValue }; save() }
+    }
+
     var rerankerPort: Int {
         get { lock.withLock { data["reranker_port"] as? Int ?? 8201 } }
         set { lock.withLock { data["reranker_port"] = newValue }; save() }
