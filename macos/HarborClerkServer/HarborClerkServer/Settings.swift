@@ -87,6 +87,16 @@ final class AppSettings: @unchecked Sendable {
         set { lock.withLock { data["reranker_enabled"] = newValue }; save() }
     }
 
+    /// Release the GPU allocator cache once the unused pool exceeds this many
+    /// MB; 0 disables. Surfaced here because `pythonEnvironment()` builds a
+    /// closed dict — a knob the Python side reads is unreachable on macOS
+    /// unless it is passed explicitly, and macOS is the only platform where the
+    /// MPS path runs. Default matches `embedder.gpu_cache.CACHE_HIGH_WATER_MB`.
+    var gpuCacheHighWaterMB: Int {
+        get { lock.withLock { data["gpu_cache_high_water_mb"] as? Int ?? 4096 } }
+        set { lock.withLock { data["gpu_cache_high_water_mb"] = newValue }; save() }
+    }
+
     var workerPreset: String {
         get { lock.withLock { data["worker_preset"] as? String ?? "balanced" } }
         set { lock.withLock { data["worker_preset"] = newValue }; save() }

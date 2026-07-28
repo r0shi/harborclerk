@@ -133,6 +133,13 @@ services:
       # Concurrent encodes. 1 keeps the single shared model serialised, which is
       # what the service is tuned for; raise only with measurements.
       EMBED_MAX_CONCURRENCY: ${EMBED_MAX_CONCURRENCY:-1}
+      # Release the device allocator cache past this many MB. 0 disables.
+      # Inert unless a GPU is exposed to the container (none is, in this file —
+      # no `deploy.resources.reservations.devices`): with neither MPS nor CUDA
+      # available the release is a deliberate no-op, because CPU-only PyTorch
+      # has no device allocator to drain. Kept plumbed so a GPU-enabled
+      # override file gets the bound cache without editing the service.
+      GPU_CACHE_HIGH_WATER_MB: ${GPU_CACHE_HIGH_WATER_MB:-4096}
       # e5-family models need "query: "/"passage: " prefixes; Granite-R2 does
       # not. This is the switch the rollback path depends on — it was read but
       # settable nowhere, so that path could not actually be taken.
@@ -157,6 +164,9 @@ services:
       - harbor-clerk
 
   reranker:
+    environment:
+      # Same exposure as the embedder — variable-length passages.
+      GPU_CACHE_HIGH_WATER_MB: ${GPU_CACHE_HIGH_WATER_MB:-4096}
     build:
       context: .
       dockerfile: docker/reranker.Dockerfile

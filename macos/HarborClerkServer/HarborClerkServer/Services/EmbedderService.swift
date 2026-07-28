@@ -11,7 +11,13 @@ final class EmbedderService: PythonService {
         let modelPath = Bundle.main.resourceURL!
             .appendingPathComponent("model/granite-embedding-311m-multilingual-r2").path
         return [
+            // Inference-time knobs the Python side reads from the environment.
+            // `pythonEnvironment()` builds a closed dict and does not inherit
+            // the process environment, so anything not listed here is
+            // unreachable on this platform — and macOS is the only place the
+            // MPS allocator code does anything at all.
             "EMBED_MODEL": modelPath,
+            "GPU_CACHE_HIGH_WATER_MB": String(AppSettings.shared.gpuCacheHighWaterMB),
             // The e5 rollback switch. Unreachable here otherwise — and macOS is
             // the platform whose rollback path the comment in app.py describes.
             "EMBED_NEEDS_PREFIX": AppSettings.shared.embedNeedsPrefix ? "true" : "false",

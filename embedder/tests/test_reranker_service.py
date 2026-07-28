@@ -6,6 +6,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+@pytest.fixture(autouse=True)
+def _reset_reranker_globals():
+    """`embedder.reranker` keeps `_model` at module scope, and every TestClient
+    here mutates it through lifespan. Without a reset, a test's outcome depends
+    on what ran before it — which is how a passing assertion in this file can
+    mean nothing. Restore it around each test.
+    """
+    import embedder.reranker as rr
+
+    saved = rr._model
+    yield
+    rr._model = saved
+
+
 @pytest.fixture
 def stub_cross_encoder():
     """Stub CrossEncoder that returns predictable scores: higher index → higher score."""
@@ -68,3 +82,148 @@ def test_health_endpoint(client):
     r = client.get("/health")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+def test_rerank_releases_the_gpu_cache(monkeypatch):
+    """The reranker has the same variable-length exposure as the embedder, and
+    until now no call-site test — so the regression below could not be caught.
+    """
+    from unittest.mock import patch
+
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    calls = []
+    model = MagicMock()
+    model.predict.side_effect = lambda pairs: np.array([0.5] * len(pairs))
+
+    with (
+        patch("embedder.reranker.CrossEncoder", return_value=model),
+        patch("embedder.reranker.release_gpu_cache", side_effect=lambda: calls.append(1)),
+    ):
+        from embedder.reranker import app
+
+        with TestClient(app) as c:
+            r = c.post("/rerank", json={"query": "q", "passages": ["a", "b"], "top_k": 2})
+            assert r.status_code == 200
+
+    assert len(calls) == 1, f"expected one release per rerank, got {len(calls)}"
+
+
+def test_rerank_releases_the_cache_even_when_predict_raises():
+    """The mirror of the embedder's test, which the first pass omitted.
+
+    reranker.py makes the identical OOM argument for its `finally`, and mutating
+    it to release only on success left all 25 tests green.
+    """
+    from unittest.mock import patch
+
+    from fastapi.testclient import TestClient
+
+    calls = []
+    model = MagicMock()
+    model.predict.side_effect = RuntimeError("MPS backend out of memory")
+
+    with (
+        patch("embedder.reranker.CrossEncoder", return_value=model),
+        patch("embedder.reranker.release_gpu_cache", side_effect=lambda: calls.append(1)),
+    ):
+        from embedder.reranker import app
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
+            assert r.status_code >= 500
+
+    assert calls == [1], "cache was not released when predict raised"
+
+
+def test_rerank_binds_the_model_before_the_executor_hop():
+    """Shutdown between the guard and the worker thread must not 500.
+
+    The first attempt at this test nulled `_model` from inside `predict` — by
+    which point the closure has already dereferenced the name, so it could not
+    fail. Verified: re-introducing the regression (drop `model = _model`, call
+    `_model.predict`) left all 30 tests green, while the crude
+    `inspect.getsource` test it replaced *did* catch it. That replacement was a
+    net loss of coverage.
+
+    This interposes on the hop itself, so the global is nulled at exactly the
+    moment lifespan shutdown would do it: after the guard, before the worker
+    thread resolves anything.
+    """
+    import asyncio
+    from unittest.mock import patch
+
+    import embedder.reranker as rr
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    model = MagicMock()
+    model.predict.side_effect = lambda pairs: np.array([0.5] * len(pairs))
+
+    real_get_event_loop = asyncio.get_event_loop
+
+    class _NullingLoop:
+        def __init__(self, loop):
+            self._loop = loop
+
+        def run_in_executor(self, executor, fn, *args):
+            rr._model = None  # shutdown lands between the guard and the hop
+            return self._loop.run_in_executor(executor, fn, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._loop, name)
+
+    with (
+        patch("embedder.reranker.CrossEncoder", return_value=model),
+        TestClient(rr.app, raise_server_exceptions=False) as c,
+        patch.object(rr.asyncio, "get_event_loop", lambda: _NullingLoop(real_get_event_loop())),
+    ):
+        r = c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1})
+
+    assert r.status_code == 200, (
+        f"got {r.status_code}: `_model` was resolved on the worker thread after the guard, "
+        "so shutdown turned a valid request into an AttributeError 500"
+    )
+
+
+def test_release_runs_on_the_worker_thread_not_the_event_loop():
+    """The #553 invariant, guarded for /embed and asserted only in a comment
+    here. `empty_cache()` blocks; running it on the event loop re-creates the
+    /health starvation the embedder was fixed for. Verified before writing
+    this: hoisting the release out of `_predict_and_release` and calling it
+    after the await — on the loop — left every reranker test green.
+    """
+    import threading
+
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    predict_thread = []
+    release_thread = []
+
+    model = MagicMock()
+
+    def _note_predict(pairs):
+        predict_thread.append(threading.current_thread().name)
+        return np.array([0.5] * len(pairs))
+
+    model.predict.side_effect = _note_predict
+
+    with (
+        patch("embedder.reranker.CrossEncoder", return_value=model),
+        patch(
+            "embedder.reranker.release_gpu_cache",
+            side_effect=lambda: release_thread.append(threading.current_thread().name),
+        ),
+    ):
+        from embedder.reranker import app
+
+        with TestClient(app) as c:
+            assert c.post("/rerank", json={"query": "q", "passages": ["a"], "top_k": 1}).status_code == 200
+
+    assert release_thread, "release never ran"
+    assert release_thread[0] == predict_thread[0], (
+        f"release ran on {release_thread[0]} but predict ran on {predict_thread[0]} — "
+        "it must share the worker thread, not run on the event loop"
+    )

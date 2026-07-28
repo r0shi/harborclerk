@@ -15,6 +15,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sentence_transformers import CrossEncoder
 
+from embedder.gpu_cache import release_gpu_cache
+
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
@@ -72,8 +74,29 @@ async def rerank(req: RerankRequest):
     if not req.passages:
         return RerankResponse(scores=[], model=MODEL_NAME)
 
+    # Bind before handing work to the executor. The previous form,
+    # `run_in_executor(None, _model.predict, pairs)`, evaluated `_model.predict`
+    # eagerly on the event loop; a closure reading the global instead resolves
+    # it on the worker thread — after an await — so lifespan shutdown can null
+    # it in between and turn the intended 503 into an AttributeError 500. Same
+    # hazard app.py guards against.
+    model = _model
     pairs = [[req.query, p] for p in req.passages]
-    raw_scores = await asyncio.get_event_loop().run_in_executor(None, _model.predict, pairs)
+
+    def _predict_and_release():
+        # Same exposure as the embedder: variable-length passages mean the
+        # allocator cache never reaches a steady state. Released on the worker
+        # thread so the event loop stays free, and in a finally so an OOM —
+        # the likeliest failure on a tight machine — still drains. Unlike
+        # /embed there is no retry behind this: search_rerank.rerank_hits
+        # catches once and degrades to the hybrid order, so the drain here is
+        # for the *next* search, not a retry of this one.
+        try:
+            return model.predict(pairs)
+        finally:
+            release_gpu_cache()
+
+    raw_scores = await asyncio.get_event_loop().run_in_executor(None, _predict_and_release)
     indexed = sorted(
         ((i, float(s)) for i, s in enumerate(raw_scores)),
         key=lambda x: x[1],
