@@ -10,9 +10,9 @@ asserts the link between "tests exist here" and "CI runs them":
   - `frontend` vitest — `"test": "vitest"` was defined in package.json and run
     by no workflow, so a react-router major upgrade had `tsc --noEmit` as its
     only automated signal.
-  - `scripts/test_corpora/tests` — 35 files, ~191 tests, still uncollected. It
-    is its own uv project with its own dependencies, so a root-venv run cannot
-    even import 19 of them; that is a wiring gap, not rotted code.
+  - `scripts/test_corpora/tests` — its own uv project, so the root
+    `testpaths = ["tests"]` never saw it. 421 tests that had never run; wiring
+    them up found runner/client.py broken against its own lockfile (#587).
   - `macos/**/*Tests` — 152 XCTest cases across the two Swift apps. This guard
     only scanned `test_*.py`, so the entire Swift half of the product was
     invisible to the very check meant to catch uncollected suites. Worse, the
@@ -42,12 +42,7 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # Directories that legitimately hold no CI-run tests. Each needs a reason and,
 # where it is a gap rather than a decision, an issue number.
 UNCOLLECTED_WITH_REASON: dict[str, str] = {
-    # Its own uv project (scripts/test_corpora/pyproject.toml) with its own
-    # dependencies, so it needs a job of its own the way `embedder` does — a
-    # root-venv run cannot import 19 of the 35 files. The harness is also
-    # destructive by design (it wipes and re-ingests corpora), so the CI shape
-    # needs a decision, not just a `run:` line.
-    "scripts/test_corpora/tests": "separate uv project, needs its own CI job like embedder — see issue #587",
+    # Empty: every suite in the repo is now run by some job.
 }
 
 _SKIP_PARTS = {".venv", "node_modules", "site-packages", "build", ".git", ".claude", ".worktrees", "dist"}
