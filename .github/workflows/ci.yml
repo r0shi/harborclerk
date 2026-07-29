@@ -62,6 +62,44 @@ jobs:
         run: uv run --locked --extra test pytest tests/ -v --tb=short -m "not requires_models"
         working-directory: embedder
 
+  macos:
+    # Nothing compiled Swift on a PR, so half the product had no CI at all.
+    # #588 merged green with `AppSettings.shared.embedNeedsPrefix` referenced but
+    # never declared — the app simply did not build, and it took a manual build
+    # on the Mac mini to notice. A textual guard cannot catch that; only a
+    # compiler can.
+    #
+    # This runs the tests rather than just building, because the 148 tests in
+    # HarborClerkServerTests had never executed either (see the XCTest guard in
+    # AppDelegate for why) and a build-only job would have left them dead.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # BundleResourceTests asserts frontend-dist/index.html lands in the app
+      # bundle, and the Copy Frontend Dist phase warns rather than fails when the
+      # source is absent — so without this the app would package an empty web UI
+      # and exactly one test would tell us. Verified by holding dist back: 148
+      # tests, 1 failure, that one.
+      - name: Build frontend
+        run: npm ci && npm run build
+        working-directory: frontend
+      # CODE_SIGNING_ALLOWED=NO: the runner has no signing identity, and this job
+      # is about compilation and behaviour, not distribution. `make sign` covers
+      # the signed path at release time.
+      - name: Menubar app — build and test
+        run: |
+          xcodebuild -project HarborClerkServer.xcodeproj -scheme HarborClerkServer \
+            -configuration Debug CODE_SIGNING_ALLOWED=NO -quiet test
+        working-directory: macos/HarborClerkServer
+      - name: Client app — build and test
+        run: |
+          xcodebuild -project HarborClerk.xcodeproj -scheme HarborClerk \
+            -configuration Debug CODE_SIGNING_ALLOWED=NO -quiet test
+        working-directory: macos/HarborClerk
+
   frontend:
     runs-on: ubuntu-latest
     steps:

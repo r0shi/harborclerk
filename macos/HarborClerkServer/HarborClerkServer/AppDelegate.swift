@@ -13,6 +13,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isQuitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Under XCTest the app is only a host for the test bundle. Booting the
+        // real stack here reaches the Keychain and launches PostgreSQL, Tika and
+        // the Python services, and the runner times out before the test bundle
+        // ever connects ("The test runner hung before establishing connection").
+        // That is why none of these tests have ever run. Checked via the
+        // environment rather than NSClassFromString("XCTestCase") because the
+        // runner exports it before launch, so it is already set here.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return }
+
         // First-launch master key bootstrap. Idempotent — generates the key in
         // Keychain only on the very first launch; subsequent launches just read.
         // Must run before ServiceManager.startAll() because the Python subprocesses

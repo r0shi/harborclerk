@@ -13,6 +13,11 @@ asserts the link between "tests exist here" and "CI runs them":
   - `scripts/test_corpora/tests` — 35 files, ~191 tests, still uncollected. It
     is its own uv project with its own dependencies, so a root-venv run cannot
     even import 19 of them; that is a wiring gap, not rotted code.
+  - `macos/**/*Tests` — 152 XCTest cases across the two Swift apps. This guard
+    only scanned `test_*.py`, so the entire Swift half of the product was
+    invisible to the very check meant to catch uncollected suites. Worse, the
+    148 in HarborClerkServerTests could not even run: the test host booted the
+    real service stack on launch and the runner timed out before connecting.
 
 The failure mode is silent by construction: a test that never runs cannot fail,
 so the suite looks green precisely because the coverage is missing. Same shape
@@ -86,6 +91,54 @@ def _collected_dirs() -> set[str]:
 def _is_collected(test_dir: str, collected: set[str]) -> bool:
     """A parent target collects its children: `tests/` covers `tests/mail`."""
     return any(test_dir == c or test_dir.startswith(f"{c}/") for c in collected)
+
+
+def _swift_test_dirs() -> set[str]:
+    """Directories holding XCTest cases, keyed by the Xcode project above them."""
+    found: set[str] = set()
+    for path in REPO.rglob("*.swift"):
+        rel = path.relative_to(REPO)
+        if _SKIP_PARTS & set(rel.parts):
+            continue
+        if "XCTestCase" in path.read_text(encoding="utf-8", errors="replace"):
+            found.add(str(rel.parent))
+    return found
+
+
+def _xcodebuild_tested_dirs() -> set[str]:
+    """Project directories some workflow step runs `xcodebuild ... test` in."""
+    tested: set[str] = set()
+    for wf in WORKFLOWS.glob("*.yml"):
+        doc = yaml.safe_load(wf.read_text()) or {}
+        for job in (doc.get("jobs") or {}).values():
+            for step in job.get("steps") or []:
+                run = step.get("run") or ""
+                if "xcodebuild" not in run or not re.search(r"\btest\b", run):
+                    continue
+                cwd = step.get("working-directory") or job.get("defaults", {}).get("run", {}).get("working-directory")
+                if cwd:
+                    tested.add(cwd.rstrip("/"))
+    return tested
+
+
+def test_every_swift_test_target_is_run_by_ci():
+    """The Python-only scan above cannot see these, which is how they were missed.
+
+    A build-only job would not be enough: these tests existed and passed
+    locally, but nothing ran them, so `AppSettings.shared.embedNeedsPrefix`
+    shipped referencing a property that did not exist (#588).
+    """
+    swift_dirs = _swift_test_dirs()
+    assert swift_dirs, "found no XCTestCase files — the scan is broken, not the repo"
+
+    tested = _xcodebuild_tested_dirs()
+    missing = sorted(d for d in swift_dirs if not any(d.startswith(f"{t}/") or d == t for t in tested))
+
+    assert not missing, (
+        "these Swift test targets are not run by any CI job, so their coverage is "
+        f"imaginary: {missing}. Add an `xcodebuild ... test` step whose "
+        "working-directory contains the project."
+    )
 
 
 def test_every_test_directory_is_collected_by_ci():
