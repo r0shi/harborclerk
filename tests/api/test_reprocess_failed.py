@@ -8,14 +8,17 @@ everything that succeeded.
 
 from __future__ import annotations
 
-import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from harbor_clerk.models import Document, IngestionJob
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from tests.conftest import auth_header
 
-pytestmark = pytest.mark.anyio
+# No pytest.mark.anyio: pyproject sets asyncio_mode = "auto", so pytest-asyncio
+# already runs these. Adding the anyio marker routes them through a second
+# plugin and a second event loop, while the `_engine` fixture is session-scoped
+# and bound to the first — "attached to a different loop". It passed locally
+# and failed every test in CI.
 
 
 def _doc(title: str, *, sha: bytes, status: str = "active", pipeline_status=PipelineStatus.error) -> Document:
@@ -46,7 +49,7 @@ async def test_requeues_only_the_failed_active_documents(client, admin_user, adm
 
     resp = await client.post("/api/docs/reprocess-failed", headers=auth_header(admin_token))
     assert resp.status_code == 202, resp.text
-    assert resp.json() == {"requeued": 1, "matched": 1, "remaining": 0}
+    assert resp.json() == {"requeued": 1, "remaining": 0}
 
     for doc, expected_seq, expected_status in (
         (failed, 4, PipelineStatus.extracting),
@@ -97,7 +100,7 @@ async def test_limit_reports_what_it_left_behind(client, admin_user, admin_token
 
     resp = await client.post("/api/docs/reprocess-failed?limit=2", headers=auth_header(admin_token))
     assert resp.status_code == 202, resp.text
-    assert resp.json() == {"requeued": 2, "matched": 5, "remaining": 3}
+    assert resp.json() == {"requeued": 2, "remaining": 3}
 
 
 async def test_no_failed_documents_is_not_an_error(client, admin_user, admin_token, db_session):
@@ -106,15 +109,7 @@ async def test_no_failed_documents_is_not_an_error(client, admin_user, admin_tok
 
     resp = await client.post("/api/docs/reprocess-failed", headers=auth_header(admin_token))
     assert resp.status_code == 202, resp.text
-    assert resp.json() == {"requeued": 0, "matched": 0, "remaining": 0}
-
-
-async def test_the_literal_path_is_not_swallowed_by_the_doc_id_route(client, admin_user, admin_token, db_session):
-    """`/docs/{doc_id}/reprocess` sits beside this; a UUID parse of the literal
-    segment is the classic way a route like this 422s in production and passes
-    in a unit test that calls the function directly."""
-    resp = await client.post("/api/docs/reprocess-failed", headers=auth_header(admin_token))
-    assert resp.status_code == 202, f"literal route matched the wrong handler: {resp.status_code} {resp.text}"
+    assert resp.json() == {"requeued": 0, "remaining": 0}
 
 
 async def test_requires_admin(client, regular_user, user_token, db_session):
@@ -142,13 +137,82 @@ async def test_a_row_that_stopped_matching_is_not_counted(client, admin_user, ad
     async def _one_vanishes(session, doc_id, **kw):
         seen.append(doc_id)
         if len(seen) == 1:
-            return None  # as if the row had just been deleted
+            # Actually stop the row matching, rather than only returning None.
+            # A mock that returns None while leaving the row in `error` is
+            # testing its own stub: the row really does still match, so
+            # remaining=1 is the right answer and the assertion proves nothing
+            # about the counting.
+            await session.execute(update(Document).where(Document.doc_id == doc_id).values(status="deleted"))
+            return None
         return await real(session, doc_id, **kw)
 
     monkeypatch.setattr(pipeline, "reset_and_queue_extract_for_doc", _one_vanishes)
 
     resp = await client.post("/api/docs/reprocess-failed", headers=auth_header(admin_token))
     assert resp.status_code == 202, resp.text
-    assert resp.json() == {"requeued": 1, "matched": 2, "remaining": 1}, (
-        "a row that stopped matching was counted as requeued"
+    # remaining is 0: the vanished row no longer matches, and the other was
+    # requeued. Counting before the loop reported 1 here — telling the caller to
+    # keep retrying work that no longer existed.
+    assert resp.json() == {"requeued": 1, "remaining": 0}, (
+        "a row that stopped matching was counted as requeued, or inflated remaining"
     )
+
+
+async def test_deliberately_stopped_documents_are_left_alone(client, admin_user, admin_token, db_session):
+    """Cancelling and /system/clear-queue both park a document in `error`.
+
+    So a naive "requeue everything in error" restarts work an admin explicitly
+    stopped — and silently undoes the emergency stop. The distinguishing signal
+    is only the error text.
+    """
+    cancelled = _doc("Cancelled", sha=b"c" * 32)
+    cancelled.error = "Cancelled by user"
+    cleared = _doc("Cleared", sha=b"q" * 32)
+    cleared.error = "Queue cleared before pipeline completed"
+    genuine = _doc("Genuine", sha=b"g" * 32)
+    db_session.add_all([cancelled, cleared, genuine])
+    await db_session.commit()
+
+    resp = await client.post("/api/docs/reprocess-failed", headers=auth_header(admin_token))
+    assert resp.status_code == 202, resp.text
+    assert resp.json() == {"requeued": 1, "remaining": 0}, "a deliberately-stopped document was restarted"
+
+    for doc in (cancelled, cleared):
+        await db_session.refresh(doc)
+        assert doc.pipeline_status == PipelineStatus.error, f"{doc.title} was restarted"
+        assert doc.pipeline_seq == 3, f"{doc.title} generation was bumped"
+
+
+def test_the_stop_sentinels_still_match_their_call_sites():
+    """The exclusion is by string match, so a reword elsewhere fails open —
+    silently restarting cancelled work with every test still green."""
+    from pathlib import Path
+
+    from harbor_clerk.api.routes.documents import DELIBERATELY_STOPPED_ERRORS
+
+    src = Path(__file__).resolve().parents[2] / "src" / "harbor_clerk"
+    corpus = (src / "worker" / "pipeline.py").read_text() + (src / "api" / "routes" / "system.py").read_text()
+    missing = [text for text in DELIBERATELY_STOPPED_ERRORS if f'"{text}"' not in corpus]
+    assert not missing, (
+        f"these sentinels no longer appear in pipeline.py or system.py: {missing}. "
+        "The writer was reworded, so reprocess-failed will restart that population again."
+    )
+
+
+async def test_the_bulk_requeue_is_audited(client, admin_user, admin_token, db_session):
+    """An admin action that mutates the corpus in bulk has to leave a record."""
+    from harbor_clerk.models import AuditLog
+
+    db_session.add(_doc("Failed", sha=b"f" * 32))
+    await db_session.commit()
+
+    resp = await client.post("/api/docs/reprocess-failed", headers=auth_header(admin_token))
+    assert resp.status_code == 202, resp.text
+
+    entries = (
+        (await db_session.execute(select(AuditLog).where(AuditLog.action == "reprocess_failed_documents")))
+        .scalars()
+        .all()
+    )
+    assert len(entries) == 1, f"expected one audit entry, got {len(entries)}"
+    assert entries[0].detail == {"requeued": 1}, entries[0].detail
