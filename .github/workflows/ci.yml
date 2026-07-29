@@ -62,6 +62,75 @@ jobs:
         run: uv run --locked --extra test pytest tests/ -v --tb=short -m "not requires_models"
         working-directory: embedder
 
+  macos:
+    # Nothing compiled Swift on a PR, so half the product had no CI at all.
+    # #588 merged green with `AppSettings.shared.embedNeedsPrefix` referenced but
+    # never declared — the app simply did not build, and it took a manual build
+    # on the Mac mini to notice. A textual guard cannot catch that; only a
+    # compiler can.
+    #
+    # This runs the tests rather than just building, because the 148 tests in
+    # HarborClerkServerTests had never executed either (see the XCTest guard in
+    # AppDelegate for why) and a build-only job would have left them dead.
+    runs-on: macos-15
+    # A hung xcodebuild would otherwise run to GitHub's 360-minute default on a
+    # runner billed at 10x — ~60 core-hours for one wedged run, on a PR that can
+    # never go green without a manual re-run. The suite takes ~90s; 20 leaves
+    # room for a cold runner without leaving room for a hang.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # BundleResourceTests asserts frontend-dist/index.html lands in the app
+      # bundle, and the Copy Frontend Dist phase warns rather than fails when the
+      # source is absent — so without this the app would package an empty web UI
+      # and exactly one test would tell us. Verified by holding dist back: 148
+      # tests, 1 failure, that one.
+      # macos/AGENTS.md: the linked SDK is behaviour-changing (linked-on-or-after
+      # gating for ATS, TCC, hardened runtime), so which one CI used is part of
+      # reading a result. Not pinned here — choosing the version to standardise
+      # on is a real decision, and the shipped binary is built by `make sign` on
+      # a maintainer's machine, not by this job. Printing it at least makes an
+      # image rotation visible instead of silent.
+      - name: Record the toolchain
+        run: xcodebuild -version && xcrun --show-sdk-version
+      - name: Build frontend
+        run: npm ci && npm run build
+        working-directory: frontend
+      # CODE_SIGNING_ALLOWED=NO: the runner has no signing identity, and this job
+      # is about compilation and behaviour, not distribution. `make sign` covers
+      # the signed path at release time.
+      # Why the wrapper rather than a bare xcodebuild: it exits 0 when a scheme
+      # runs *zero* tests. Drop a target from the scheme and the job stays green
+      # while testing nothing — the exact failure this job exists to end. So the
+      # count is asserted, not assumed.
+      #
+      # `set -o pipefail` keeps xcodebuild's exit status authoritative through
+      # the tee, so an actual test failure still fails the step on its own; the
+      # grep afterwards only adds the zero-tests case. Deliberately not filtering
+      # the output through a grep in the pipeline — that swallows the exit code,
+      # and matching "with 0 failures" would happily match a passing sibling
+      # suite while the run as a whole failed. `-quiet` is dropped because it
+      # suppresses the very line being checked.
+      - name: Menubar app — build and test
+        run: |
+          set -o pipefail
+          xcodebuild -project HarborClerkServer.xcodeproj -scheme HarborClerkServer \
+            -configuration Debug CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+          grep -qE "Executed [1-9][0-9]* tests?" "$RUNNER_TEMP/xcodebuild.log" \
+            || { echo "::error::xcodebuild reported success but ran no tests"; exit 1; }
+        working-directory: macos/HarborClerkServer
+      - name: Client app — build and test
+        run: |
+          set -o pipefail
+          xcodebuild -project HarborClerk.xcodeproj -scheme HarborClerk \
+            -configuration Debug CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+          grep -qE "Executed [1-9][0-9]* tests?" "$RUNNER_TEMP/xcodebuild.log" \
+            || { echo "::error::xcodebuild reported success but ran no tests"; exit 1; }
+        working-directory: macos/HarborClerk
+
   frontend:
     runs-on: ubuntu-latest
     steps:

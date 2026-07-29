@@ -13,6 +13,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isQuitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Under XCTest the app is only a host for the test bundle. Booting the
+        // real stack here reaches the Keychain and launches PostgreSQL, Tika and
+        // the Python services, and the runner times out before the test bundle
+        // ever connects ("The test runner hung before establishing connection").
+        // That is why none of these tests have ever run. Checked via the
+        // environment rather than NSClassFromString("XCTestCase") because the
+        // runner exports it before launch, so it is already set here.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            // Logged rather than returning silently: if this ever fires outside
+            // a test run (an inherited environment, `launchctl setenv`), the
+            // symptom is a menubar app that starts no services and shows no
+            // status item, and this line is the only thing that would explain it.
+            Log.logger("lifecycle").notice("XCTest host launch — skipping service startup")
+            return
+        }
+
         // First-launch master key bootstrap. Idempotent — generates the key in
         // Keychain only on the very first launch; subsequent launches just read.
         // Must run before ServiceManager.startAll() because the Python subprocesses
@@ -51,7 +67,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isQuitting else { return .terminateNow }
         isQuitting = true
-        healthChecker.stopPolling()
+        // Optional: under an XCTest host launch this was never created, and
+        // anything terminating the host via NSApp.terminate would crash here.
+        healthChecker?.stopPolling()
 
         // 30-second hard deadline. The audit memo
         // (project_menubar_process_management_audit.md) traced multiple

@@ -126,7 +126,27 @@ extension Process {
 
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async {
-                proc.waitUntilExit()
+                // Poll rather than `waitUntilExit()`. That call runs its own
+                // runloop waiting for a termination notification, and if the
+                // child exits between the `isRunning` guard above and the call
+                // itself, the notification is already gone and it blocks
+                // forever. Reproduced at 3 of 8 full test-suite runs on
+                // /usr/bin/true, which exits faster than we can get here.
+                //
+                // Nothing rescues it once wedged: the SIGKILL escalation above
+                // opens with `guard proc.isRunning`, sees a process that has
+                // already exited, and returns without resuming anything. So the
+                // continuation is never resumed and shutdown waits forever —
+                // the deadlock #341 bounded for the Pipe case, reached by a
+                // different route.
+                //
+                // `terminationHandler` would be the tidier fix but is not ours
+                // to take: PythonService sets one for its restart logic and
+                // also calls this helper, so assigning here would silently
+                // clobber it.
+                while proc.isRunning {
+                    usleep(20_000)  // 20ms — bounded by the SIGKILL escalation
+                }
                 c.resume()
             }
         }

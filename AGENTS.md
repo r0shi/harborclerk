@@ -125,12 +125,16 @@ Read those rather than any transcription, and regenerate with
 
 ## CI
 
-Six required checks on PRs to `main`: `python`, `embedder`, `frontend`,
+Required checks on PRs to `main`: `python`, `embedder`, `macos`, `frontend`,
 `codeql`, `dependency-audit`, `container-scan`. The `python` job also verifies
-generated docs are current.
+generated docs are current. Counted in prose once — "six required checks" — and
+it was wrong by the next PR, so it isn't counted here.
 
-`embedder` is new — **branch protection must be updated to require it**, or the
-guard it exists to provide stays advisory.
+**A new job is not enforced until branch protection requires it.** Adding one to
+`ci.yml` makes it run and go green; it does not make it able to block a merge.
+Every job added this week (`embedder`, `macos`) needed a separate
+`gh api -X PATCH repos/:owner/:repo/branches/main/protection/required_status_checks`
+call, and until that lands the guard is advisory.
 
 ## Instruction files and your harness
 
