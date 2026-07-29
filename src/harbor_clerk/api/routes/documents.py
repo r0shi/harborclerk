@@ -860,6 +860,61 @@ async def delete_document(
     await session.commit()
 
 
+@router.post("/docs/reprocess-failed", status_code=status.HTTP_202_ACCEPTED)
+async def reprocess_failed_documents(
+    limit: int = Query(default=1000, ge=1, le=10000),
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Requeue every document whose pipeline ended in `error`.
+
+    Recovering from a transient outage previously meant clicking through the
+    Documents list 100 at a time, because selection is per-page and the only
+    bulk action was `/system/reprocess-all` — which re-runs the entire corpus,
+    including the documents that succeeded (#554).
+
+    Deliberately reuses the per-document helper rather than doing one set-based
+    UPDATE. It bumps `pipeline_seq`, clears `error`, deletes the stale non-extract
+    jobs and inserts the extract job atomically; a second implementation of that
+    is a second thing to keep in step with the pipeline, and the failure mode of
+    getting it subtly wrong is a document that looks requeued and never runs.
+
+    No hidden truncation: `limit` bounds the work, and the response reports what
+    was left behind so a caller can tell "done" from "there is more".
+    """
+    failed = (
+        select(Document.doc_id)
+        .where(Document.status == "active", Document.pipeline_status == PipelineStatus.error)
+        .order_by(Document.created_at)
+    )
+    total = await session.scalar(select(func.count()).select_from(failed.subquery()))
+    doc_ids = list((await session.execute(failed.limit(limit))).scalars().all())
+
+    from harbor_clerk.worker.pipeline import reset_and_queue_extract_for_doc
+
+    requeued = 0
+    for doc_id in doc_ids:
+        # Returns None when the row stopped matching between the select and here
+        # — deleted, or already requeued by the watcher. Not an error; it just
+        # must not be counted, or the number reported back is a lie.
+        if await reset_and_queue_extract_for_doc(session, doc_id) is not None:
+            requeued += 1
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="reprocess_failed_documents",
+        target_type="document",
+        target_id=None,
+        detail={"requeued": requeued, "matched": total},
+    )
+    await session.commit()
+
+    remaining = max(0, (total or 0) - requeued)
+    logger.info("Requeued %d failed documents (%d still matching)", requeued, remaining)
+    return {"requeued": requeued, "matched": total or 0, "remaining": remaining}
+
+
 @router.post("/docs/{doc_id}/reprocess", status_code=status.HTTP_202_ACCEPTED)
 async def reprocess_document(
     doc_id: uuid.UUID,

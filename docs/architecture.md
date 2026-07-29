@@ -470,7 +470,7 @@ Queue subscriptions:
 <!-- BEGIN GENERATED: rest-endpoints -->
 <!-- Do not edit by hand. Regenerate: uv run python -m scripts.gen_docs -->
 
-**141 operations**, 84 of them access-gated. Generated from the FastAPI OpenAPI schema; the Access column is derived from each route's dependency tree.
+**142 operations**, 85 of them access-gated. Generated from the FastAPI OpenAPI schema; the Access column is derived from each route's dependency tree.
 
 ### `api-keys`
 
@@ -531,6 +531,7 @@ Queue subscriptions:
 | `GET` | `/api/docs/entities/top` | — | Top Entities |
 | `GET` | `/api/docs/filters` | — | Document Filters |
 | `GET` | `/api/docs/overview` | — | Corpus Overview |
+| `POST` | `/api/docs/reprocess-failed` | **admin** | Reprocess Failed Documents |
 | `DELETE` | `/api/docs/{doc_id}` | **admin** | Delete Document |
 | `GET` | `/api/docs/{doc_id}` | — | Get Document |
 | `POST` | `/api/docs/{doc_id}/cancel` | **admin** | Cancel Processing |
