@@ -3,7 +3,7 @@ import logging
 import os
 import tempfile
 
-from pydantic import Field, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -176,7 +176,93 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         _settings = Settings()
+        # After construction, not inside it: apply_native_config calls
+        # get_settings() and would recurse on a half-built singleton.
+        apply_native_config()
     return _settings
+
+
+# Keys in config.json that deliberately do not map onto a Settings field.
+# Listed so an unmatched key is a decision rather than a silent no-op, and
+# pinned by tests/test_settings_persist_across_restart.py so a key added on the
+# Swift side has to be classified as one or the other.
+_NATIVE_ONLY_KEYS = frozenset(
+    {
+        # Menubar state and process orchestration — Python never reads these.
+        "llm_restart",  # a signal flag the menubar clears, not configuration
+        "worker_preset",  # consumed by ServiceManager to size pools
+        "postgres_port",  # folded into database_url before the worker starts
+        # Service ports the menubar assigns and then passes to each subprocess
+        # as a resolved URL (EMBEDDER_URL, TIKA_URL, ...), so the port itself
+        # never needs to reach Settings.
+        "embedder_port",
+        "reranker_port",
+        "tika_port",
+        "llama_port",
+        # Persisted here for the Preferences UI, then handed to the embedder and
+        # reranker as GPU_CACHE_HIGH_WATER_MB (see their extraEnvironment). The
+        # app process never reads it — only those two subprocesses do.
+        "gpu_cache_high_water_mb",
+        # Caddy's configuration. The gateway is a separate process that the
+        # menubar configures directly; none of it routes through Python.
+        "gateway_bind_addresses",
+        "gateway_hostname",
+        "gateway_certificate_mode",
+        "gateway_certificate_path",
+        "gateway_private_key_path",
+        "allow_remote_web",
+        "allow_remote_mcp",
+    }
+)
+
+
+def _native_config_data() -> dict:
+    """config.json as a dict, or empty if there isn't one / it's unreadable."""
+    path = get_settings().native_config_file
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            return json.loads(f.read())
+    except Exception:
+        logger.debug("Failed to read native config %s", path, exc_info=True)
+        return {}
+
+
+def apply_native_config(only: set[str] | None = None) -> None:
+    """Overlay config.json onto the Settings singleton.
+
+    Writes to config.json were already generic — `sync_native_config` takes any
+    key — while reads were two hand-maintained lists. So eleven fields that
+    admin routes persist had no reader at all, and every change to them silently
+    reverted to the default on the next restart (#592). This is the missing
+    half: any config.json key naming a real Settings field is applied.
+
+    Values are validated against the field's own type rather than assigned raw,
+    so a hand-edited config.json cannot put a string where an int belongs and
+    have it surface later as a confusing failure somewhere else. A key that
+    fails validation is skipped and logged; it never stops startup.
+
+    `only` restricts the overlay to named fields, for the hot-path refreshers
+    that run per-request and shouldn't touch unrelated state.
+    """
+    settings = get_settings()
+    data = _native_config_data()
+    if not data:
+        return
+
+    for key, value in data.items():
+        if only is not None and key not in only:
+            continue
+        field = type(settings).model_fields.get(key)
+        if field is None:
+            if key not in _NATIVE_ONLY_KEYS and only is None:
+                logger.debug("native config key %r matches no Settings field; ignoring", key)
+            continue
+        try:
+            setattr(settings, key, TypeAdapter(field.annotation).validate_python(value))
+        except Exception:
+            logger.warning("native config key %r has an invalid value; keeping the current one", key, exc_info=True)
 
 
 def refresh_cli_access_setting() -> None:
@@ -186,17 +272,7 @@ def refresh_cli_access_setting() -> None:
     window. The change takes effect for new requests within seconds because
     MCPAuthMiddleware calls this before checking the gate.  No restart needed.
     """
-    settings = get_settings()
-    path = settings.native_config_file
-    if not path or not os.path.exists(path):
-        return
-    try:
-        with open(path) as f:
-            data = json.loads(f.read())
-        if "enable_cli_access" in data:
-            settings.enable_cli_access = bool(data["enable_cli_access"])
-    except Exception:
-        logger.debug("Failed to refresh enable_cli_access from %s", path, exc_info=True)
+    apply_native_config(only={"enable_cli_access"})
 
 
 def refresh_llm_settings() -> None:
@@ -206,25 +282,15 @@ def refresh_llm_settings() -> None:
     changes the active model via the API, the worker's cached Settings
     object is stale.  Call this before any LLM-dependent stage.
     """
-    settings = get_settings()
-    path = settings.native_config_file
-    if not path or not os.path.exists(path):
-        return
-    try:
-        with open(path) as f:
-            data = json.loads(f.read())
-        if "llm_model_id" in data:
-            settings.llm_model_id = data["llm_model_id"]
-        if "llm_yarn_enabled" in data:
-            settings.llm_yarn_enabled = bool(data["llm_yarn_enabled"])
-        if "summary_force_apple_intelligence" in data:
-            settings.summary_force_apple_intelligence = bool(data["summary_force_apple_intelligence"])
-        if "research_verifier_enabled" in data:
-            settings.research_verifier_enabled = bool(data["research_verifier_enabled"])
-        if "research_verifier_revision_enabled" in data:
-            settings.research_verifier_revision_enabled = bool(data["research_verifier_revision_enabled"])
-    except Exception:
-        logger.debug("Failed to refresh LLM settings from %s", path, exc_info=True)
+    apply_native_config(
+        only={
+            "llm_model_id",
+            "llm_yarn_enabled",
+            "summary_force_apple_intelligence",
+            "research_verifier_enabled",
+            "research_verifier_revision_enabled",
+        }
+    )
 
 
 def sync_native_config(key: str, value: str | bool | int) -> None:
