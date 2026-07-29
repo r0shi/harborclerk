@@ -100,24 +100,49 @@ def _swift_test_dirs() -> set[str]:
         rel = path.relative_to(REPO)
         if _SKIP_PARTS & set(rel.parts):
             continue
-        if "XCTestCase" in path.read_text(encoding="utf-8", errors="replace"):
+        # A subclass declaration, not the bare word: this PR's own AppDelegate
+        # comment mentions NSClassFromString("XCTestCase"), which made the app
+        # source itself register as a test directory.
+        if re.search(r"class\s+\w+\s*:[^{\n]*\bXCTestCase\b", path.read_text(encoding="utf-8", errors="replace")):
             found.add(str(rel.parent))
     return found
 
 
 def _xcodebuild_tested_dirs() -> set[str]:
-    """Project directories some workflow step runs `xcodebuild ... test` in."""
+    """Xcode project directories some PR-triggered job runs `xcodebuild ... test` in.
+
+    Three ways an earlier version of this said yes while nothing ran:
+
+      - the word `test` appearing in a *comment* ("tests are flaky on CI, build
+        only for now") satisfied it, which is the most likely wording of exactly
+        the change it exists to catch;
+      - it keyed on `working-directory`, so hoisting one step to `macos/` made
+        the prefix match cover every project underneath it;
+      - it never looked at triggers, so moving the job to a manual workflow, or
+        adding `if: false`, left it green.
+    """
     tested: set[str] = set()
     for wf in WORKFLOWS.glob("*.yml"):
         doc = yaml.safe_load(wf.read_text()) or {}
+        # PyYAML reads a bare `on:` key as the boolean True.
+        triggers = doc.get("on", doc.get(True)) or {}
+        names = set(triggers) if isinstance(triggers, (dict, list)) else {triggers}
+        if "pull_request" not in names:
+            continue  # a workflow that does not run on PRs guards nothing here
+
         for job in (doc.get("jobs") or {}).values():
+            if str(job.get("if", "")).strip().lower() in {"false", "${{ false }}", "${{false}}"}:
+                continue
             for step in job.get("steps") or []:
-                run = step.get("run") or ""
-                if "xcodebuild" not in run or not re.search(r"\btest\b", run):
+                code = "\n".join(re.sub(r"#.*$", "", line) for line in (step.get("run") or "").splitlines())
+                if "xcodebuild" not in code or not re.search(r"(?<![-\w])test\b", code):
                     continue
                 cwd = step.get("working-directory") or job.get("defaults", {}).get("run", {}).get("working-directory")
-                if cwd:
-                    tested.add(cwd.rstrip("/"))
+                # Anchor on -project, not the working directory: the project path
+                # is what actually says which target gets tested.
+                for proj in re.findall(r"-project\s+(\S+\.xcodeproj)", code):
+                    full = f"{cwd.rstrip('/')}/{proj}" if cwd else proj
+                    tested.add(str(Path(full).parent))
     return tested
 
 

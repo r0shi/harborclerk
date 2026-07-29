@@ -73,6 +73,11 @@ jobs:
     # HarborClerkServerTests had never executed either (see the XCTest guard in
     # AppDelegate for why) and a build-only job would have left them dead.
     runs-on: macos-15
+    # A hung xcodebuild would otherwise run to GitHub's 360-minute default on a
+    # runner billed at 10x — ~60 core-hours for one wedged run, on a PR that can
+    # never go green without a manual re-run. The suite takes ~90s; 20 leaves
+    # room for a cold runner without leaving room for a hang.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -83,6 +88,14 @@ jobs:
       # source is absent — so without this the app would package an empty web UI
       # and exactly one test would tell us. Verified by holding dist back: 148
       # tests, 1 failure, that one.
+      # macos/AGENTS.md: the linked SDK is behaviour-changing (linked-on-or-after
+      # gating for ATS, TCC, hardened runtime), so which one CI used is part of
+      # reading a result. Not pinned here — choosing the version to standardise
+      # on is a real decision, and the shipped binary is built by `make sign` on
+      # a maintainer's machine, not by this job. Printing it at least makes an
+      # image rotation visible instead of silent.
+      - name: Record the toolchain
+        run: xcodebuild -version && xcrun --show-sdk-version
       - name: Build frontend
         run: npm ci && npm run build
         working-directory: frontend
