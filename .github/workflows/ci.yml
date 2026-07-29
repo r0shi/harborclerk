@@ -131,6 +131,37 @@ jobs:
             || { echo "::error::xcodebuild reported success but ran no tests"; exit 1; }
         working-directory: macos/HarborClerk
 
+  eval-harness:
+    # scripts/test_corpora is its own uv project, so `testpaths = ["tests"]` in
+    # the root pyproject never saw it: 421 tests that had not run once. AGENTS.md
+    # names this harness as how you prove a retrieval or pipeline change did not
+    # regress, so the tool relied on for that had no protection of its own.
+    #
+    # Wiring it up immediately found a live break — see the mcp pin in
+    # scripts/test_corpora/pyproject.toml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      # test_entity_overlap_english really does load en_core_web_sm. It could be
+      # marked requires_models and skipped, like the root job does — but that is
+      # how a suite ends up green without running, which is the whole subject of
+      # this job. The model is ~12MB.
+      - name: Install the spaCy model the metrics tests use
+        # Same --extra as the test step: a differing extra set makes uv re-sync
+        # between the two, which can prune the just-installed model.
+        run: uv run --extra test python -m spacy download en_core_web_sm
+        working-directory: scripts/test_corpora
+      - name: Run tests
+        # No --locked here, unlike the embedder job: this project's uv.lock is
+        # deliberately untracked (#326, "the harness doesn't need lockstep
+        # version pinning across machines"), so there is nothing to check
+        # against. CI therefore resolves fresh, exactly as a developer running
+        # `uv sync` does — which is precisely how mcp 2.0.0 got in, and why the
+        # `<2` bound in pyproject.toml is load-bearing rather than belt-and-braces.
+        run: uv run --extra test pytest tests/ -v --tb=short
+        working-directory: scripts/test_corpora
+
   frontend:
     runs-on: ubuntu-latest
     steps:

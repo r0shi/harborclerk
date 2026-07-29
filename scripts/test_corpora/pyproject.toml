@@ -7,7 +7,14 @@ dependencies = [
     "httpx>=0.28",
     "anthropic>=0.43",
     "openai>=1.50",
-    "mcp>=1.9",
+    # Same major as the app (root pyproject pins mcp>=1.9.0, locked at 1.28.1).
+# This lock had floated to 2.0.0, where streamablehttp_client is renamed
+# streamable_http_client and no longer takes headers= or timeout= — so
+# runner/client.py raised ImportError on the first MCP call. Nothing caught
+# it because nothing ran these tests (#587). Migrating the harness to the
+# 2.x client API is worth doing, but not while it is a major ahead of the
+# server it exercises.
+    "mcp>=1.9,<2",
     "pyyaml>=6",
     "tenacity>=9",
     "pypdfium2>=4",

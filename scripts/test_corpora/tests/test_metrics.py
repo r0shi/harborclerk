@@ -28,8 +28,14 @@ def test_citation_extra_counts_model_only():
     assert citation_extra(["a", "b"], ["a", "b", "c", "d"]) == 2
 
 
-def test_entity_overlap_english(monkeypatch):
-    """Use a stub spaCy doc so we don't depend on the model loading."""
+def test_entity_overlap_english():
+    """Exercises the real en_core_web_sm pipeline.
+
+    The docstring used to say it stubbed the model, and it took a `monkeypatch`
+    it never used — the stub was intended and never written. Nothing noticed,
+    because nothing ran this suite (#587). It genuinely needs the model, so CI
+    installs it rather than the assertion being weakened to match the comment.
+    """
     baseline = "California and Delaware appear in the contract from Acme."
     model = "The contract from Acme references California."
     score = entity_overlap(baseline, model, lang="en")
