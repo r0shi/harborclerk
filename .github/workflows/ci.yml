@@ -89,15 +89,33 @@ jobs:
       # CODE_SIGNING_ALLOWED=NO: the runner has no signing identity, and this job
       # is about compilation and behaviour, not distribution. `make sign` covers
       # the signed path at release time.
+      # Why the wrapper rather than a bare xcodebuild: it exits 0 when a scheme
+      # runs *zero* tests. Drop a target from the scheme and the job stays green
+      # while testing nothing — the exact failure this job exists to end. So the
+      # count is asserted, not assumed.
+      #
+      # `set -o pipefail` keeps xcodebuild's exit status authoritative through
+      # the tee, so an actual test failure still fails the step on its own; the
+      # grep afterwards only adds the zero-tests case. Deliberately not filtering
+      # the output through a grep in the pipeline — that swallows the exit code,
+      # and matching "with 0 failures" would happily match a passing sibling
+      # suite while the run as a whole failed. `-quiet` is dropped because it
+      # suppresses the very line being checked.
       - name: Menubar app — build and test
         run: |
+          set -o pipefail
           xcodebuild -project HarborClerkServer.xcodeproj -scheme HarborClerkServer \
-            -configuration Debug CODE_SIGNING_ALLOWED=NO -quiet test
+            -configuration Debug CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+          grep -qE "Executed [1-9][0-9]* tests?" "$RUNNER_TEMP/xcodebuild.log" \
+            || { echo "::error::xcodebuild reported success but ran no tests"; exit 1; }
         working-directory: macos/HarborClerkServer
       - name: Client app — build and test
         run: |
+          set -o pipefail
           xcodebuild -project HarborClerk.xcodeproj -scheme HarborClerk \
-            -configuration Debug CODE_SIGNING_ALLOWED=NO -quiet test
+            -configuration Debug CODE_SIGNING_ALLOWED=NO test 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+          grep -qE "Executed [1-9][0-9]* tests?" "$RUNNER_TEMP/xcodebuild.log" \
+            || { echo "::error::xcodebuild reported success but ran no tests"; exit 1; }
         working-directory: macos/HarborClerk
 
   frontend:
