@@ -14,7 +14,13 @@ from harbor_clerk.models import Base
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers defaults to True, which switches off every logger
+    # not named in alembic.ini — including all of harbor_clerk.*. Production is
+    # unaffected because migrations run as a subprocess (the /system/run-migrations
+    # route and MigrationRunner.swift both shell out), but tests/test_migrations.py
+    # calls alembic in-process, so it silently disabled harbor_clerk logging for
+    # every test that ran after it and made any later log assertion vacuous.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

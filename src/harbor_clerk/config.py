@@ -3,7 +3,7 @@ import logging
 import os
 import tempfile
 
-from pydantic import Field, TypeAdapter, field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -149,10 +149,14 @@ class Settings(BaseSettings):
     # because the download endpoint exposes the raw bytes of any document the
     # caller can already see in search — that's a meaningful escalation over
     # the chunk-excerpt access read-only API keys are designed for. On macOS
-    # native, the menu app does NOT expose a way to flip this on, so the only
-    # way to access source files there is Reveal in Finder (which doesn't go
-    # through the HTTP server). On Docker, an admin can opt in by setting
-    # ALLOW_SOURCE_DOWNLOAD=true in the compose file.
+    # native, the menu app offers no UI for it, so the intended way to reach
+    # source files there is Reveal in Finder (which doesn't go through the HTTP
+    # server). Since #592 that is a statement about the UI and not a guarantee:
+    # config.json is applied generically, so anyone who can write
+    # ~/Library/Application Support/Harbor Clerk/config.json can turn this on.
+    # That is not an escalation — the same access reads the documents directly,
+    # and secret_key is in that file — but the old comment claimed more than it
+    # should. On Docker, an admin opts in with ALLOW_SOURCE_DOWNLOAD=true.
     allow_source_download: bool = Field(default=False)
 
     enable_cli_access: bool = Field(
@@ -175,10 +179,16 @@ _settings: Settings | None = None
 def get_settings() -> Settings:
     global _settings
     if _settings is None:
-        _settings = Settings()
-        # After construction, not inside it: apply_native_config calls
-        # get_settings() and would recurse on a half-built singleton.
-        apply_native_config()
+        # Build and overlay a local, then publish. Assigning `_settings` first
+        # and overlaying after would let a concurrent caller see a non-None
+        # singleton that config.json had not been applied to yet — and the
+        # window is not small, since reading the file releases the GIL. The
+        # watcher alone starts several threads that all call this at once
+        # (watcher/main.py: discovery, listener, per-folder scans, mail
+        # observer), so one of them would silently get env-only values.
+        settings = Settings()
+        _apply_to(settings)
+        _settings = settings
     return _settings
 
 
@@ -216,21 +226,41 @@ _NATIVE_ONLY_KEYS = frozenset(
 )
 
 
-def _native_config_data() -> dict:
-    """config.json as a dict, or empty if there isn't one / it's unreadable."""
-    path = get_settings().native_config_file
+def _native_config_data(path: str) -> dict:
+    """config.json as a dict, or empty if there isn't one / it's unusable.
+
+    Takes the path rather than reading it off the singleton: this runs during
+    `get_settings()` before the singleton is published, so it cannot call it.
+
+    The `isinstance` check is not defensive padding. `json.loads` happily
+    returns a list or a string for a hand-mangled file, and the caller's
+    `.items()` would then raise from inside `get_settings()` — leaving the
+    singleton unpublished on the first call and, worse, quietly un-overlaid on
+    every call after it.
+    """
     if not path or not os.path.exists(path):
         return {}
     try:
         with open(path) as f:
-            return json.loads(f.read())
+            data = json.loads(f.read())
     except Exception:
         logger.debug("Failed to read native config %s", path, exc_info=True)
         return {}
+    if not isinstance(data, dict):
+        logger.warning("native config %s is a %s, not an object; ignoring it", path, type(data).__name__)
+        return {}
+    return data
 
 
-def apply_native_config(only: set[str] | None = None) -> None:
-    """Overlay config.json onto the Settings singleton.
+# Keys already reported as invalid, so the per-request refreshers do not log the
+# same complaint on every call. `refresh_llm_settings` runs before every LLM
+# stage and `refresh_cli_access_setting` on every MCP request; a bad value in
+# config.json would otherwise emit a warning and a full traceback each time.
+_reported_invalid: set[tuple[str, str]] = set()
+
+
+def _apply_to(settings: Settings, only: set[str] | None = None) -> None:
+    """Overlay config.json onto `settings` in place.
 
     Writes to config.json were already generic — `sync_native_config` takes any
     key — while reads were two hand-maintained lists. So eleven fields that
@@ -238,31 +268,53 @@ def apply_native_config(only: set[str] | None = None) -> None:
     reverted to the default on the next restart (#592). This is the missing
     half: any config.json key naming a real Settings field is applied.
 
-    Values are validated against the field's own type rather than assigned raw,
-    so a hand-edited config.json cannot put a string where an int belongs and
-    have it surface later as a confusing failure somewhere else. A key that
-    fails validation is skipped and logged; it never stops startup.
+    Assignment goes through the model's own validator rather than `setattr`.
+    `model_config` does not set `validate_assignment`, so a plain `setattr`
+    validates nothing, and validating against the bare annotation is not enough
+    either — it drops the `Field(ge=...)` constraints and the field validators,
+    which would let config.json hold a `reranker_pool_size` of 0 that the same
+    value in an env var rejects at startup. A key that fails is skipped and
+    logged; it never stops the process starting.
 
-    `only` restricts the overlay to named fields, for the hot-path refreshers
-    that run per-request and shouldn't touch unrelated state.
+    Takes the object explicitly so `get_settings()` can overlay before it
+    publishes the singleton — see the note there.
     """
-    settings = get_settings()
-    data = _native_config_data()
+    if only is not None:
+        unknown = only - set(type(settings).model_fields)
+        if unknown:
+            # The caller named fields that do not exist, so those refreshes are
+            # silently doing nothing — the exact shape of #592, one level up.
+            logger.warning("refresh requested for unknown Settings fields: %s", sorted(unknown))
+
+    data = _native_config_data(settings.native_config_file)
     if not data:
         return
 
     for key, value in data.items():
         if only is not None and key not in only:
             continue
-        field = type(settings).model_fields.get(key)
-        if field is None:
-            if key not in _NATIVE_ONLY_KEYS and only is None:
+        if key not in type(settings).model_fields:
+            if key not in _NATIVE_ONLY_KEYS:
                 logger.debug("native config key %r matches no Settings field; ignoring", key)
             continue
         try:
-            setattr(settings, key, TypeAdapter(field.annotation).validate_python(value))
+            type(settings).__pydantic_validator__.validate_assignment(settings, key, value)
         except Exception:
-            logger.warning("native config key %r has an invalid value; keeping the current one", key, exc_info=True)
+            seen = (key, repr(value))
+            if seen not in _reported_invalid:
+                # Bounded: the refreshers re-read the file on every call, so a
+                # config.json being edited in a loop would otherwise grow this
+                # forever. Dropping the memo just re-warns, which is the safe
+                # direction.
+                if len(_reported_invalid) >= 100:
+                    _reported_invalid.clear()
+                _reported_invalid.add(seen)
+                logger.warning("native config key %r has an invalid value; keeping the current one", key, exc_info=True)
+
+
+def apply_native_config(only: set[str] | None = None) -> None:
+    """Overlay config.json onto the Settings singleton. See `_apply_to`."""
+    _apply_to(get_settings(), only)
 
 
 def refresh_cli_access_setting() -> None:

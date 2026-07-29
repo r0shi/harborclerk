@@ -23,9 +23,11 @@ teaches the next person to add names to an exemption dict. So the list is gone
 and what remains is behavioural — write the keys, rebuild Settings the way a
 restart does, and check the values came back.
 
-The one thing this cannot see is Swift: `_swift_env_keys` matched text, and #588
-shipped a reference to a property that did not exist. The macOS build job added
-alongside this closes that; compilability is not a question a regex can answer.
+The one thing this cannot see is Swift. `test_every_key_swift_writes_is_classified`
+below matches `data["..."]` textually, so it answers "is this key classified?"
+and nothing about whether the Swift compiles — #588 shipped a reference to a
+property that did not exist and no check caught it, because nothing in CI builds
+Swift. That is a separate gap and still open.
 """
 
 from __future__ import annotations
@@ -104,9 +106,11 @@ def test_an_invalid_value_is_skipped_not_fatal(tmp_path, monkeypatch):
     put a string where an int belongs to fail confusingly somewhere later."""
     from harbor_clerk.config import Settings
 
-    default = Settings.model_fields["mcp_max_k"].default
+    # What the field resolves to without any config.json — not the declared
+    # default, which a repo .env or an exported MCP_MAX_K would diverge from.
+    baseline = Settings().mcp_max_k
     settings = _restart_with({"mcp_max_k": "not-a-number"}, tmp_path, monkeypatch)  # must not raise
-    assert settings.mcp_max_k == default, "an invalid value was applied instead of being skipped"
+    assert settings.mcp_max_k == baseline, "an invalid value was applied instead of being skipped"
 
 
 def test_persisted_keys_survive_a_restart(tmp_path, monkeypatch):
@@ -180,3 +184,102 @@ def test_native_only_keys_are_not_settings_fields():
 
     both = sorted(_NATIVE_ONLY_KEYS & set(Settings.model_fields))
     assert not both, f"listed as native-only but really are Settings fields, so they are applied: {both}"
+
+
+def test_the_singleton_is_never_visible_before_the_overlay(tmp_path, monkeypatch):
+    """`get_settings()` must publish a fully-overlaid object, or not at all.
+
+    A first version of this fix assigned the singleton and *then* applied
+    config.json, because the overlay called `get_settings()` and would otherwise
+    recurse. That opens a window — spanning open/read/json.loads, all of which
+    release the GIL — where a concurrent caller gets a non-None singleton with
+    env-only values. The watcher alone starts discovery, listener, mail-observer
+    and per-folder scan threads that all call this at once, so a thread landing
+    in the window would silently see `enable_cli_access=False` and reject a CLI
+    request that config.json had enabled.
+
+    Asserted as the invariant rather than by racing threads: at the moment the
+    overlay runs, the module global must still be unset. A timing test would
+    pass on a fast machine whether or not the bug was present.
+    """
+    import json
+
+    from harbor_clerk import config as cfg
+
+    (tmp_path / "config.json").write_text(json.dumps({"mcp_max_k": 11}))
+    monkeypatch.setenv("NATIVE_CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.setattr(cfg, "_settings", None)
+
+    seen: list[object] = []
+    real = cfg._apply_to
+    monkeypatch.setattr(cfg, "_apply_to", lambda s, only=None: (seen.append(cfg._settings), real(s, only))[1])
+
+    assert cfg.get_settings().mcp_max_k == 11
+    assert seen and seen[0] is None, (
+        "the singleton was already published while config.json was still being applied — "
+        "a concurrent caller would see un-overlaid settings"
+    )
+
+
+def test_field_constraints_and_validators_are_enforced(tmp_path, monkeypatch):
+    """config.json must not be able to hold a value an env var would reject.
+
+    `model_config` does not set `validate_assignment`, so a plain `setattr`
+    validates nothing; and validating against the bare annotation drops both the
+    `Field(ge=...)` constraints and the field validators. Either way
+    `reranker_pool_size: 0` lands in a Settings object the model declares
+    impossible, while `RERANKER_POOL_SIZE=0` is rejected at startup.
+    """
+    from harbor_clerk.config import Settings
+
+    baseline = Settings()
+    settings = _restart_with(
+        {"reranker_pool_size": 0, "reranker_top_k_pad": -99, "public_url": "https://x.example.com/"},
+        tmp_path,
+        monkeypatch,
+    )
+
+    assert settings.reranker_pool_size == baseline.reranker_pool_size, "ge=1 was not enforced on the overlay"
+    assert settings.reranker_top_k_pad == baseline.reranker_top_k_pad, "ge=0 was not enforced on the overlay"
+    assert settings.public_url == "https://x.example.com", (
+        "the _strip_trailing_slash field validator was bypassed, so public_url now "
+        "violates the invariant its own validator declares"
+    )
+
+
+def test_a_non_dict_config_json_does_not_break_startup(tmp_path, monkeypatch):
+    """A hand-mangled file must not take the process down — nor, worse, half-start it.
+
+    `json.loads` returns a list for `[1, 2]`, and iterating it raised from
+    inside `get_settings()` *after* the singleton was published: the first call
+    blew up and every call after it silently returned un-overlaid settings.
+    """
+    from harbor_clerk import config as cfg
+
+    (tmp_path / "config.json").write_text("[1, 2]")
+    monkeypatch.setenv("NATIVE_CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.setattr(cfg, "_settings", None)
+
+    settings = cfg.get_settings()  # must not raise
+    assert settings.mcp_max_k == type(settings)().mcp_max_k
+
+
+def test_a_refresh_for_an_unknown_field_is_reported(tmp_path, monkeypatch, caplog):
+    """A typo in a refresher's `only` set silently stops refreshing that field.
+
+    That is #592's own shape one level up, so it must not be quiet — and the
+    branch that logs unmatched keys deliberately skips the `only` path, since
+    every key not in `only` has already been passed over.
+    """
+    import logging
+
+    from harbor_clerk import config as cfg
+
+    _restart_with({"mcp_max_k": 3}, tmp_path, monkeypatch)
+    with caplog.at_level(logging.WARNING, logger=cfg.__name__):
+        cfg.apply_native_config(only={"llm_model_idd"})
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("unknown Settings fields" in m and "llm_model_idd" in m for m in messages), (
+        f"a refresh for a non-existent field logged nothing: {messages}"
+    )

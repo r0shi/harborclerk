@@ -52,3 +52,25 @@ def test_upgrade_to_head(alembic_cfg, sync_engine):
     ):
         assert expected in tables, f"Table {expected} missing after upgrade"
     assert "document_versions" not in tables, "document_versions should be absent after 0017"
+
+
+def test_migrating_does_not_disable_application_loggers(alembic_cfg, sync_engine):
+    """`fileConfig` must not switch off every logger it doesn't name.
+
+    alembic/env.py calls `logging.config.fileConfig`, whose `disable_existing_loggers`
+    defaults to True — so running a migration in-process disabled all of
+    harbor_clerk.* for the rest of the session. Production never noticed
+    (migrations run as a subprocess both from /system/run-migrations and from
+    MigrationRunner.swift), but in this suite it silenced every later log
+    assertion, which is the worst kind of failure: tests that pass by capturing
+    nothing.
+    """
+    import logging
+
+    logger = logging.getLogger("harbor_clerk.config")
+    command.upgrade(alembic_cfg, "head")
+
+    assert not logger.disabled, (
+        "running a migration disabled harbor_clerk logging — any later test asserting "
+        "on log output will silently capture nothing"
+    )

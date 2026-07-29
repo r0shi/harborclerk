@@ -113,12 +113,11 @@ def test_refresh_cli_access_setting_no_native_config(monkeypatch):
     monkeypatch.delenv("ENABLE_CLI_ACCESS", raising=False)
     from harbor_clerk import config as _config
 
-    _config._settings = None
+    monkeypatch.setattr(_config, "_settings", None)
     monkeypatch.setenv("NATIVE_CONFIG_FILE", "")
 
     from harbor_clerk.config import refresh_cli_access_setting
 
-    _config._settings = None
     # Should not raise, and enable_cli_access keeps its default False
     refresh_cli_access_setting()
     assert _config.get_settings().enable_cli_access is False
@@ -163,7 +162,7 @@ def test_refresh_cli_access_setting_disable_after_enable(monkeypatch, tmp_path):
 
     from harbor_clerk import config as _config
 
-    _config._settings = None
+    monkeypatch.setattr(_config, "_settings", None)
 
     from harbor_clerk.config import refresh_cli_access_setting
 
@@ -193,7 +192,7 @@ def test_refresh_cli_access_setting_key_absent_leaves_unchanged(monkeypatch, tmp
 
     from harbor_clerk import config as _config
 
-    _config._settings = None
+    monkeypatch.setattr(_config, "_settings", None)
 
     from harbor_clerk.config import refresh_cli_access_setting
 
