@@ -125,16 +125,22 @@ Read those rather than any transcription, and regenerate with
 
 ## CI
 
-Required checks on PRs to `main`: `python`, `embedder`, `macos`, `frontend`,
-`codeql`, `dependency-audit`, `container-scan`. The `python` job also verifies
-generated docs are current. Counted in prose once — "six required checks" — and
+Required checks on PRs to `main`: `python`, `embedder`, `macos`,
+`eval-harness`, `frontend`, `codeql`, `dependency-audit`, `container-scan`. The
+`python` job also verifies generated docs are current. Counted in prose once — "six required checks" — and
 it was wrong by the next PR, so it isn't counted here.
 
 **A new job is not enforced until branch protection requires it.** Adding one to
 `ci.yml` makes it run and go green; it does not make it able to block a merge.
-Every job added this week (`embedder`, `macos`) needed a separate
+Every job added this week (`embedder`, `macos`, `eval-harness`) needed a separate
 `gh api -X PATCH repos/:owner/:repo/branches/main/protection/required_status_checks`
 call, and until that lands the guard is advisory.
+
+**Add the job to `main` before requiring it.** A required context that never
+reports blocks the merge, so requiring `macos` and `eval-harness` while their own
+PRs were still open would have deadlocked all four open PRs — including the two
+that added those jobs, which then could not merge to supply them. Land the job,
+then require it, then rebase everything else.
 
 ## Instruction files and your harness
 

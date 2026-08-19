@@ -57,14 +57,42 @@ exception. That is a known gap, not a decision — see #561.
 ## Do not bump the SDK without re-testing
 
 Many of macOS's stricter privacy and security defaults are gated
-**"linked-on-or-after"** the SDK a binary was built against. The build currently
-targets `MACOSX_DEPLOYMENT_TARGET = 15.0` and links the macOS 15.x SDK, which
-means it is **grandfathered into the older, looser behavior** even when running
-on a much newer OS.
+**"linked-on-or-after"** the SDK a binary was built against. Rebuilding against a
+newer SDK is what *flips the stricter rules on* — ATS, TCC/file access,
+hardened-runtime and JIT policy can all change behavior with no source change at
+all. So an SDK bump is a behavioral change, not housekeeping.
 
-Rebuilding against a newer SDK is what *flips the stricter rules on* — ATS,
-TCC/file access, hardened-runtime and JIT policy can all change behavior with no
-source change at all. So an SDK bump is a behavioral change, not housekeeping.
+**The bump has already happened.** This section used to say the build "links the
+macOS 15.x SDK" and is "grandfathered into the older, looser behavior". That is
+no longer true, and nothing recorded the change: the deployment target is still
+15.0, but the SDK follows whatever Xcode is on the build machine, so installing
+Xcode 26 silently moved it. Measured on the shipped bundles:
+
+```
+$ vtool -show-build /Applications/HarborClerkServer.app/Contents/MacOS/HarborClerkServer
+ platform MACOS
+    minos 15.0
+      sdk 26.5
+```
+
+So the stricter rules are **already live in every build since that Xcode
+upgrade**, and have been through a full field test — an 11,436-document corpus,
+IMAP sync, search and Research — with no observed breakage. The `#561` ATS gap
+(no ATS keys declared, loopback cleartext relying on WebKit's implicit localhost
+allowance) is therefore running *under* the stricter regime today, not waiting
+for it.
+
+Two consequences worth keeping in mind:
+
+- **The risk is inverted from how it reads.** Building on a machine with an older
+  Xcode now *loosens* the shipped binary rather than being the safe default. The
+  CI `macos` job runs on `macos-15`, whose SDK is older than the release
+  machine's, so CI validates a **more permissive** configuration than ships — it
+  cannot catch a regression that only the stricter SDK triggers.
+- **"Do not bump without re-testing" needs a way to notice a bump.** It was
+  bypassed here not by anyone deciding to bump, but by a routine Xcode upgrade.
+  `vtool -show-build` on the built binary is the check; pinning Xcode in the job
+  and at release time is the fix, and is not yet done.
 
 When bumping, re-test on the target OS: the WKWebView loopback load, watched-
 folder access from the background watcher, and every spawned helper (Postgres,
