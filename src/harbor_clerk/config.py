@@ -149,10 +149,14 @@ class Settings(BaseSettings):
     # because the download endpoint exposes the raw bytes of any document the
     # caller can already see in search — that's a meaningful escalation over
     # the chunk-excerpt access read-only API keys are designed for. On macOS
-    # native, the menu app does NOT expose a way to flip this on, so the only
-    # way to access source files there is Reveal in Finder (which doesn't go
-    # through the HTTP server). On Docker, an admin can opt in by setting
-    # ALLOW_SOURCE_DOWNLOAD=true in the compose file.
+    # native, the menu app offers no UI for it, so the intended way to reach
+    # source files there is Reveal in Finder (which doesn't go through the HTTP
+    # server). Since #592 that is a statement about the UI and not a guarantee:
+    # config.json is applied generically, so anyone who can write
+    # ~/Library/Application Support/Harbor Clerk/config.json can turn this on.
+    # That is not an escalation — the same access reads the documents directly,
+    # and secret_key is in that file — but the old comment claimed more than it
+    # should. On Docker, an admin opts in with ALLOW_SOURCE_DOWNLOAD=true.
     allow_source_download: bool = Field(default=False)
 
     enable_cli_access: bool = Field(
@@ -175,8 +179,142 @@ _settings: Settings | None = None
 def get_settings() -> Settings:
     global _settings
     if _settings is None:
-        _settings = Settings()
+        # Build and overlay a local, then publish. Assigning `_settings` first
+        # and overlaying after would let a concurrent caller see a non-None
+        # singleton that config.json had not been applied to yet — and the
+        # window is not small, since reading the file releases the GIL. The
+        # watcher alone starts several threads that all call this at once
+        # (watcher/main.py: discovery, listener, per-folder scans, mail
+        # observer), so one of them would silently get env-only values.
+        settings = Settings()
+        _apply_to(settings)
+        _settings = settings
     return _settings
+
+
+# Keys in config.json that deliberately do not map onto a Settings field.
+# Listed so an unmatched key is a decision rather than a silent no-op, and
+# pinned by tests/test_settings_persist_across_restart.py so a key added on the
+# Swift side has to be classified as one or the other.
+_NATIVE_ONLY_KEYS = frozenset(
+    {
+        # Menubar state and process orchestration — Python never reads these.
+        "llm_restart",  # a signal flag the menubar clears, not configuration
+        "worker_preset",  # consumed by ServiceManager to size pools
+        "postgres_port",  # folded into database_url before the worker starts
+        # Service ports the menubar assigns and then passes to each subprocess
+        # as a resolved URL (EMBEDDER_URL, TIKA_URL, ...), so the port itself
+        # never needs to reach Settings.
+        "embedder_port",
+        "reranker_port",
+        "tika_port",
+        "llama_port",
+        # Persisted here for the Preferences UI, then handed to the embedder and
+        # reranker as GPU_CACHE_HIGH_WATER_MB (see their extraEnvironment). The
+        # app process never reads it — only those two subprocesses do.
+        "gpu_cache_high_water_mb",
+        # Caddy's configuration. The gateway is a separate process that the
+        # menubar configures directly; none of it routes through Python.
+        "gateway_bind_addresses",
+        "gateway_hostname",
+        "gateway_certificate_mode",
+        "gateway_certificate_path",
+        "gateway_private_key_path",
+        "allow_remote_web",
+        "allow_remote_mcp",
+    }
+)
+
+
+def _native_config_data(path: str) -> dict:
+    """config.json as a dict, or empty if there isn't one / it's unusable.
+
+    Takes the path rather than reading it off the singleton: this runs during
+    `get_settings()` before the singleton is published, so it cannot call it.
+
+    The `isinstance` check is not defensive padding. `json.loads` happily
+    returns a list or a string for a hand-mangled file, and the caller's
+    `.items()` would then raise from inside `get_settings()` — leaving the
+    singleton unpublished on the first call and, worse, quietly un-overlaid on
+    every call after it.
+    """
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as f:
+            data = json.loads(f.read())
+    except Exception:
+        logger.debug("Failed to read native config %s", path, exc_info=True)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("native config %s is a %s, not an object; ignoring it", path, type(data).__name__)
+        return {}
+    return data
+
+
+# Keys already reported as invalid, so the per-request refreshers do not log the
+# same complaint on every call. `refresh_llm_settings` runs before every LLM
+# stage and `refresh_cli_access_setting` on every MCP request; a bad value in
+# config.json would otherwise emit a warning and a full traceback each time.
+_reported_invalid: set[tuple[str, str]] = set()
+
+
+def _apply_to(settings: Settings, only: set[str] | None = None) -> None:
+    """Overlay config.json onto `settings` in place.
+
+    Writes to config.json were already generic — `sync_native_config` takes any
+    key — while reads were two hand-maintained lists. So eleven fields that
+    admin routes persist had no reader at all, and every change to them silently
+    reverted to the default on the next restart (#592). This is the missing
+    half: any config.json key naming a real Settings field is applied.
+
+    Assignment goes through the model's own validator rather than `setattr`.
+    `model_config` does not set `validate_assignment`, so a plain `setattr`
+    validates nothing, and validating against the bare annotation is not enough
+    either — it drops the `Field(ge=...)` constraints and the field validators,
+    which would let config.json hold a `reranker_pool_size` of 0 that the same
+    value in an env var rejects at startup. A key that fails is skipped and
+    logged; it never stops the process starting.
+
+    Takes the object explicitly so `get_settings()` can overlay before it
+    publishes the singleton — see the note there.
+    """
+    if only is not None:
+        unknown = only - set(type(settings).model_fields)
+        if unknown:
+            # The caller named fields that do not exist, so those refreshes are
+            # silently doing nothing — the exact shape of #592, one level up.
+            logger.warning("refresh requested for unknown Settings fields: %s", sorted(unknown))
+
+    data = _native_config_data(settings.native_config_file)
+    if not data:
+        return
+
+    for key, value in data.items():
+        if only is not None and key not in only:
+            continue
+        if key not in type(settings).model_fields:
+            if key not in _NATIVE_ONLY_KEYS:
+                logger.debug("native config key %r matches no Settings field; ignoring", key)
+            continue
+        try:
+            type(settings).__pydantic_validator__.validate_assignment(settings, key, value)
+        except Exception:
+            seen = (key, repr(value))
+            if seen not in _reported_invalid:
+                # Bounded: the refreshers re-read the file on every call, so a
+                # config.json being edited in a loop would otherwise grow this
+                # forever. Dropping the memo just re-warns, which is the safe
+                # direction.
+                if len(_reported_invalid) >= 100:
+                    _reported_invalid.clear()
+                _reported_invalid.add(seen)
+                logger.warning("native config key %r has an invalid value; keeping the current one", key, exc_info=True)
+
+
+def apply_native_config(only: set[str] | None = None) -> None:
+    """Overlay config.json onto the Settings singleton. See `_apply_to`."""
+    _apply_to(get_settings(), only)
 
 
 def refresh_cli_access_setting() -> None:
@@ -186,17 +324,7 @@ def refresh_cli_access_setting() -> None:
     window. The change takes effect for new requests within seconds because
     MCPAuthMiddleware calls this before checking the gate.  No restart needed.
     """
-    settings = get_settings()
-    path = settings.native_config_file
-    if not path or not os.path.exists(path):
-        return
-    try:
-        with open(path) as f:
-            data = json.loads(f.read())
-        if "enable_cli_access" in data:
-            settings.enable_cli_access = bool(data["enable_cli_access"])
-    except Exception:
-        logger.debug("Failed to refresh enable_cli_access from %s", path, exc_info=True)
+    apply_native_config(only={"enable_cli_access"})
 
 
 def refresh_llm_settings() -> None:
@@ -206,25 +334,15 @@ def refresh_llm_settings() -> None:
     changes the active model via the API, the worker's cached Settings
     object is stale.  Call this before any LLM-dependent stage.
     """
-    settings = get_settings()
-    path = settings.native_config_file
-    if not path or not os.path.exists(path):
-        return
-    try:
-        with open(path) as f:
-            data = json.loads(f.read())
-        if "llm_model_id" in data:
-            settings.llm_model_id = data["llm_model_id"]
-        if "llm_yarn_enabled" in data:
-            settings.llm_yarn_enabled = bool(data["llm_yarn_enabled"])
-        if "summary_force_apple_intelligence" in data:
-            settings.summary_force_apple_intelligence = bool(data["summary_force_apple_intelligence"])
-        if "research_verifier_enabled" in data:
-            settings.research_verifier_enabled = bool(data["research_verifier_enabled"])
-        if "research_verifier_revision_enabled" in data:
-            settings.research_verifier_revision_enabled = bool(data["research_verifier_revision_enabled"])
-    except Exception:
-        logger.debug("Failed to refresh LLM settings from %s", path, exc_info=True)
+    apply_native_config(
+        only={
+            "llm_model_id",
+            "llm_yarn_enabled",
+            "summary_force_apple_intelligence",
+            "research_verifier_enabled",
+            "research_verifier_revision_enabled",
+        }
+    )
 
 
 def sync_native_config(key: str, value: str | bool | int) -> None:

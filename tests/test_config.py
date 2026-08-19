@@ -113,19 +113,28 @@ def test_refresh_cli_access_setting_no_native_config(monkeypatch):
     monkeypatch.delenv("ENABLE_CLI_ACCESS", raising=False)
     from harbor_clerk import config as _config
 
-    _config._settings = None
+    monkeypatch.setattr(_config, "_settings", None)
     monkeypatch.setenv("NATIVE_CONFIG_FILE", "")
 
     from harbor_clerk.config import refresh_cli_access_setting
 
-    _config._settings = None
     # Should not raise, and enable_cli_access keeps its default False
     refresh_cli_access_setting()
     assert _config.get_settings().enable_cli_access is False
 
 
-def test_refresh_cli_access_setting_reads_from_file(monkeypatch, tmp_path):
-    """refresh_cli_access_setting picks up enable_cli_access=true from config.json."""
+def test_cli_access_is_read_from_file_at_startup(monkeypatch, tmp_path):
+    """config.json is applied when Settings is built, not only on refresh.
+
+    This assertion used to run the other way round: it required
+    `get_settings()` to return False *despite* config.json saying true, until
+    something called `refresh_cli_access_setting()` by hand. That was the #592
+    bug written down as a requirement — config.json was persisted generically
+    and read back only by two hand-maintained lists, so anything not on a list
+    reverted on restart. Startup now applies the file, so the setting is live
+    without a refresher, and CLI access no longer depends on whether some
+    request path happened to call one first.
+    """
     config_file = tmp_path / "config.json"
     config_file.write_text('{"enable_cli_access": true}\n')
 
@@ -134,14 +143,12 @@ def test_refresh_cli_access_setting_reads_from_file(monkeypatch, tmp_path):
 
     from harbor_clerk import config as _config
 
-    _config._settings = None
+    monkeypatch.setattr(_config, "_settings", None)
 
-    from harbor_clerk.config import refresh_cli_access_setting
+    assert _config.get_settings().enable_cli_access is True
 
-    # Before refresh: default is False (env var absent)
-    assert _config.get_settings().enable_cli_access is False
-
-    refresh_cli_access_setting()
+    # And the refresher remains idempotent on an already-applied value.
+    _config.refresh_cli_access_setting()
     assert _config.get_settings().enable_cli_access is True
 
 
@@ -155,7 +162,7 @@ def test_refresh_cli_access_setting_disable_after_enable(monkeypatch, tmp_path):
 
     from harbor_clerk import config as _config
 
-    _config._settings = None
+    monkeypatch.setattr(_config, "_settings", None)
 
     from harbor_clerk.config import refresh_cli_access_setting
 
@@ -185,7 +192,7 @@ def test_refresh_cli_access_setting_key_absent_leaves_unchanged(monkeypatch, tmp
 
     from harbor_clerk import config as _config
 
-    _config._settings = None
+    monkeypatch.setattr(_config, "_settings", None)
 
     from harbor_clerk.config import refresh_cli_access_setting
 
