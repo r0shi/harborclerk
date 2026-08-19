@@ -860,6 +860,90 @@ async def delete_document(
     await session.commit()
 
 
+# Error text written by the two paths that park a document in `error` on
+# purpose. Kept in step with their call sites by
+# tests/api/test_reprocess_failed.py, because a reworded string here fails open
+# — it would silently start requeuing cancelled work again.
+DELIBERATELY_STOPPED_ERRORS = ("Cancelled by user", "Queue cleared before pipeline completed")
+
+
+@router.post("/docs/reprocess-failed", status_code=status.HTTP_202_ACCEPTED)
+async def reprocess_failed_documents(
+    limit: int = Query(default=1000, ge=1, le=10000),
+    admin: Principal = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Requeue every document whose pipeline ended in `error`.
+
+    Recovering from a transient outage previously meant clicking through the
+    Documents list 100 at a time, because selection is per-page and the only
+    bulk action was `/system/reprocess-all` — which re-runs the entire corpus,
+    including the documents that succeeded (#554).
+
+    Deliberately reuses the per-document helper rather than doing one set-based
+    UPDATE. It bumps `pipeline_seq`, clears `error`, deletes the stale non-extract
+    jobs and inserts the extract job atomically; a second implementation of that
+    is a second thing to keep in step with the pipeline, and the failure mode of
+    getting it subtly wrong is a document that looks requeued and never runs.
+
+    No hidden truncation: `limit` bounds the work, and the response reports what
+    was left behind so a caller can tell "done" from "there is more".
+    """
+    failed = (
+        select(Document.doc_id)
+        .where(
+            Document.status == "active",
+            Document.pipeline_status == PipelineStatus.error,
+            # `error` is not only "the pipeline broke". Cancelling a document
+            # (worker/pipeline.py cancel_doc_jobs) and the /system/clear-queue
+            # emergency stop both park documents here too, distinguished only by
+            # this text. Requeuing those would restart work an admin deliberately
+            # stopped and silently undo the emergency stop — and since they tend
+            # to be older, an ordering by age would have requeued them *first*
+            # and spent the whole limit on them.
+            Document.error.not_in(DELIBERATELY_STOPPED_ERRORS),
+        )
+        # Most recently failed first, matching the failed-docs query in
+        # routes/system.py. The motivating case is an outage that just failed a
+        # batch; oldest-first would put permanently-broken documents at the head
+        # of every call, so a caller looping on `remaining` would keep retrying
+        # the same corrupt files and might never reach the ones it wants.
+        .order_by(Document.updated_at.desc())
+    )
+    doc_ids = list((await session.execute(failed.limit(limit))).scalars().all())
+
+    from harbor_clerk.worker.pipeline import reset_and_queue_extract_for_doc
+
+    requeued = 0
+    for doc_id in doc_ids:
+        # Returns None when the row stopped matching between the select and here
+        # — deleted, or already requeued by the watcher. Not an error; it just
+        # must not be counted, or the number reported back is a lie.
+        if await reset_and_queue_extract_for_doc(session, doc_id) is not None:
+            requeued += 1
+
+    await log_audit(
+        session,
+        user_id=admin.id,
+        action="reprocess_failed_documents",
+        target_type="document",
+        target_id=None,
+        detail={"requeued": requeued},
+    )
+    # Counted *after* the loop, so "remaining" is literally what still matches
+    # rather than an inference. Counting first meant a row that stopped matching
+    # mid-loop stayed in the total while being correctly excluded from
+    # `requeued`, inflating `remaining` and telling the caller to keep retrying
+    # work that no longer exists; and because the count and the select ran as
+    # separate statements under READ COMMITTED, a batch that was still failing
+    # could return more rows than the count, reporting "requeued 7 of 5".
+    remaining = await session.scalar(select(func.count()).select_from(failed.subquery())) or 0
+    await session.commit()
+
+    logger.info("Requeued %d failed documents (%d still matching)", requeued, remaining)
+    return {"requeued": requeued, "remaining": remaining}
+
+
 @router.post("/docs/{doc_id}/reprocess", status_code=status.HTTP_202_ACCEPTED)
 async def reprocess_document(
     doc_id: uuid.UUID,

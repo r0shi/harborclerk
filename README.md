@@ -356,13 +356,13 @@ harbor-clerk <command> --help        # man-page-class help with JSON return shap
 <!-- BEGIN GENERATED: rest-summary -->
 <!-- Do not edit by hand. Regenerate: uv run python -m scripts.gen_docs -->
 
-**141 operations across 16 groups.** Full reference: [docs/architecture.md](docs/architecture.md#rest-api).
+**142 operations across 16 groups.** Full reference: [docs/architecture.md](docs/architecture.md#rest-api).
 
 | Group | Operations | Admin-only | Base path |
 |---|---|---|---|
 | `system` | 22 | 19 | `/api/system` |
 | `chat` | 19 | 7 | `/api/chat` |
-| `documents` | 15 | 4 | `/api/docs` |
+| `documents` | 16 | 5 | `/api/docs` |
 | `watch` | 12 | — | `/api/watch` |
 | `oauth` | 11 | 4 | `(various)` |
 | `api-keys` | 10 | 10 | `/api/api-keys` |
