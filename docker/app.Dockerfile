@@ -32,10 +32,26 @@ COPY . /app
 RUN uv sync --locked --no-editable \
     && uv cache clean
 
-# Download spaCy NER models (spacy download requires pip)
+# Download spaCy NER models (spacy download requires pip).
+#
+# pip is then removed again. It is only needed for these two downloads, but it
+# vendors its own copies of third-party libraries — including msgpack — and the
+# venv is copied wholesale into the runtime image, so leaving it behind ships a
+# msgpack that Trivy flags (GHSA-6v7p-g79w-8964) and that nothing ever imports.
+# Same reasoning as build-venv.sh on the macOS side: this is a frozen appliance,
+# not a pip-managed environment.
+#
+# The directories are removed explicitly as well. `pip uninstall` leaves a
+# directory behind whenever it holds a file pip did not install, and an empty
+# package directory is still an importable namespace package — which is exactly
+# how a "removed" plotly kept satisfying find_spec() in the macOS build.
 RUN uv pip install pip --python /app/.venv/bin/python \
     && /app/.venv/bin/python -m spacy download en_core_web_sm \
-    && /app/.venv/bin/python -m spacy download fr_core_news_sm
+    && /app/.venv/bin/python -m spacy download fr_core_news_sm \
+    && /app/.venv/bin/python -m pip uninstall -y pip \
+    && rm -rf /app/.venv/lib/python*/site-packages/pip \
+              /app/.venv/lib/python*/site-packages/setuptools \
+              /app/.venv/lib/python*/site-packages/pkg_resources
 
 # ── Runtime ──
 FROM python:3.12-slim
@@ -43,6 +59,13 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     tesseract-ocr tesseract-ocr-eng tesseract-ocr-fra \
     && rm -rf /var/lib/apt/lists/*
+
+# python:3.12-slim ships setuptools in the *system* site-packages, currently
+# 70.3.0, which carries CVE-2025-47273. The app runs entirely out of /app/.venv
+# and never imports it, but Trivy scans the whole image and `apt-get upgrade`
+# does not touch it — it was pip-installed into the base image, not packaged.
+RUN pip install --no-cache-dir --upgrade "setuptools>=78.1.1" \
+    && rm -rf /root/.cache/pip
 
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/alembic /app/alembic
