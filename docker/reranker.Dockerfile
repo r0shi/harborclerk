@@ -7,7 +7,12 @@ ARG PRELOAD_MODEL=1
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `apt-get upgrade` matters as much as the install: without it this image never
+# picks up Debian security updates, and it was the only one of the three missing
+# it. That shipped nine HIGH findings from a single util-linux CVE
+# (CVE-2026-53615, integer overflow in libblkid) while app and embedder — which
+# do upgrade — were clean. Guarded by tests/test_dockerfiles_upgrade_base.py.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
