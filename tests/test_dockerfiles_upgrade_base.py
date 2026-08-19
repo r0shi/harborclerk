@@ -34,7 +34,12 @@ def test_every_apt_installing_image_also_upgrades():
 
     missing = []
     for path in files:
-        text = path.read_text()
+        # Strip comments first. The first version of this test did not, and the
+        # explanatory comment added directly above the fix contained the words
+        # "apt-get upgrade" — so removing the actual command still passed. A
+        # guard that its own documentation satisfies is worse than none.
+        text = "\n".join(re.sub(r"#.*$", "", line) for line in path.read_text().splitlines())
+
         # Only images that touch apt at all are in scope; a pure COPY-from image
         # has no base packages of its own to upgrade.
         if "apt-get install" not in text:
