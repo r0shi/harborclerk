@@ -47,6 +47,32 @@ sign_jar_dylibs() {
     rm -rf "$staging"
 }
 
+# ── Entitlements ──
+# Xcode expands `$(AppIdentifierPrefix)` at build time; `codesign` does not, so
+# passing the source .entitlements straight to `--sign` embeds the variable
+# *literally*. The app then declares a keychain access group named
+# "$(AppIdentifierPrefix)com.harborclerk.shared", which matches nothing, and
+# MasterKeyManager's SecItemAdd fails with errSecMissingEntitlement — the exact
+# path its own comment documents as "previously-encrypted secrets become
+# unreadable". Verified by signing a bundle and reading back its entitlements.
+#
+# TEAM_ID is already required above, and AppIdentifierPrefix is exactly the team
+# ID plus a trailing dot, so resolve it here.
+resolve_entitlements() {
+    local src="$1"
+    local out="$2"
+    sed "s/\$(AppIdentifierPrefix)/${TEAM_ID}./g" "$src" > "$out"
+
+    # Any remaining $(...) would ship literally the same way. Fail loudly rather
+    # than embed a second one silently — this bug was invisible precisely
+    # because a bad entitlement signs and verifies just fine.
+    if grep -q '\$(' "$out"; then
+        echo "ERROR: unresolved build variable in $src after substitution:" >&2
+        grep -n '\$(' "$out" | sed 's/^/  /' >&2
+        exit 1
+    fi
+}
+
 # ── Codesign helper ──
 codesign_app() {
     local app_path="$1"
@@ -86,8 +112,13 @@ CLIENT_APP="$OUTPUT_DIR/HarborClerk.app"
 SERVER_ENTITLEMENTS="$MACOS_DIR/HarborClerkServer/HarborClerkServer/HarborClerkServer.entitlements"
 CLIENT_ENTITLEMENTS="$MACOS_DIR/HarborClerk/HarborClerk/HarborClerk.entitlements"
 
-codesign_app "$SERVER_APP" "$SERVER_ENTITLEMENTS"
-codesign_app "$CLIENT_APP" "$CLIENT_ENTITLEMENTS"
+RESOLVED_DIR=$(mktemp -d)
+trap 'rm -rf "$RESOLVED_DIR"' EXIT
+resolve_entitlements "$SERVER_ENTITLEMENTS" "$RESOLVED_DIR/server.entitlements"
+resolve_entitlements "$CLIENT_ENTITLEMENTS" "$RESOLVED_DIR/client.entitlements"
+
+codesign_app "$SERVER_APP" "$RESOLVED_DIR/server.entitlements"
+codesign_app "$CLIENT_APP" "$RESOLVED_DIR/client.entitlements"
 
 # ── Create DMG ──
 DMG_PATH="$OUTPUT_DIR/HarborClerk.dmg"

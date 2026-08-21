@@ -37,6 +37,18 @@ echo "==> Packaging Harbor Clerk apps"
 FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
 
 # ── Build Xcode projects ──
+# Built without signing. `make sign` (scripts/notarize.sh) re-signs everything
+# with `codesign --force --deep --options runtime` and Developer ID, and passes
+# entitlements explicitly, so any signature applied here is discarded anyway.
+#
+# Requiring one regardless cost real time: Xcode's automatic signing wanted a
+# Mac App Development profile, which needs a Development certificate for the
+# project's team *and* this Mac registered as a device in the developer account
+# — neither of which the release path uses. It also made the build depend on
+# Xcode holding a live account session, which it loses readily.
+#
+# So the only credential the release needs is the Developer ID key, used in one
+# place: notarize.sh.
 echo "==> Building Harbor Clerk Server.app"
 cd "$MACOS_DIR/HarborClerkServer"
 xcodebuild -project HarborClerkServer.xcodeproj \
@@ -45,7 +57,7 @@ xcodebuild -project HarborClerkServer.xcodeproj \
     -derivedDataPath "$BUILD_DIR/derived" \
     -arch arm64 \
     ONLY_ACTIVE_ARCH=NO \
-    -allowProvisioningUpdates \
+    CODE_SIGNING_ALLOWED=NO \
     build
 
 echo "==> Building Harbor Clerk.app"
@@ -56,7 +68,7 @@ xcodebuild -project HarborClerk.xcodeproj \
     -derivedDataPath "$BUILD_DIR/derived" \
     -arch arm64 \
     ONLY_ACTIVE_ARCH=NO \
-    -allowProvisioningUpdates \
+    CODE_SIGNING_ALLOWED=NO \
     build
 
 # ── Locate built apps ──
