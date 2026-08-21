@@ -73,10 +73,23 @@ final class MasterKeyManager {
 
     /// Read the stored key, generating a new one on first use.
     /// This is the normal entry point for app startup.
+    ///
+    /// Minting a new key is not a neutral event: everything encrypted under the
+    /// old one becomes unreadable, which in practice means the user re-entering
+    /// their mail-account passwords. That used to happen in silence, because
+    /// genuine first launch and "the stored key is gone" are the same code path
+    /// and neither said anything. Both are worth a line in the log.
     func loadOrGenerate() -> Data {
         if let existing = load() {
             return existing
         }
+
+        // Both interpolations are annotated: an un-annotated dynamic String
+        // defaults to private in os.Logger and would be redacted to <private>
+        // in the one message that exists to explain what happened.
+        Log.logger("master-key").notice(
+            "No master key stored under service \(self.serviceIdentifier, privacy: .public) — generating a new one. Anything encrypted with a previous key, including stored mail-account passwords, will need to be re-entered."
+        )
         return generate()
     }
 

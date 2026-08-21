@@ -76,14 +76,14 @@ dev: frontend
 	@echo "==> Building Xcode project (Debug)"
 	cd HarborClerkServer && xcodebuild -project HarborClerkServer.xcodeproj \
 		-scheme HarborClerkServer -configuration Debug \
-		-allowProvisioningUpdates build
+		CODE_SIGNING_ALLOWED=NO build
 
 # ── Test ──
 
 test:
 	cd HarborClerkServer && xcodebuild -project HarborClerkServer.xcodeproj \
 		-scheme HarborClerkServer -configuration Debug \
-		-allowProvisioningUpdates test
+		CODE_SIGNING_ALLOWED=NO test
 
 # ── Apps ──
 

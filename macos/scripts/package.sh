@@ -28,15 +28,24 @@ remove_tree() {
     fi
 }
 
-signing_identity_for() {
-    codesign -dvv "$1" 2>&1 | sed -n 's/^Authority=//p' | head -n 1
-}
 
 echo "==> Packaging Harbor Clerk apps"
 
 FRONTEND_DIST="$PROJECT_ROOT/frontend/dist"
 
 # ── Build Xcode projects ──
+# Built without signing. `make sign` (scripts/notarize.sh) re-signs everything
+# with `codesign --force --deep --options runtime` and Developer ID, and passes
+# entitlements explicitly, so any signature applied here is discarded anyway.
+#
+# Requiring one regardless cost real time: Xcode's automatic signing wanted a
+# Mac App Development profile, which needs a Development certificate for the
+# project's team *and* this Mac registered as a device in the developer account
+# — neither of which the release path uses. It also made the build depend on
+# Xcode holding a live account session, which it loses readily.
+#
+# So the only credential the release needs is the Developer ID key, used in one
+# place: notarize.sh.
 echo "==> Building Harbor Clerk Server.app"
 cd "$MACOS_DIR/HarborClerkServer"
 xcodebuild -project HarborClerkServer.xcodeproj \
@@ -45,7 +54,7 @@ xcodebuild -project HarborClerkServer.xcodeproj \
     -derivedDataPath "$BUILD_DIR/derived" \
     -arch arm64 \
     ONLY_ACTIVE_ARCH=NO \
-    -allowProvisioningUpdates \
+    CODE_SIGNING_ALLOWED=NO \
     build
 
 echo "==> Building Harbor Clerk.app"
@@ -56,7 +65,7 @@ xcodebuild -project HarborClerk.xcodeproj \
     -derivedDataPath "$BUILD_DIR/derived" \
     -arch arm64 \
     ONLY_ACTIVE_ARCH=NO \
-    -allowProvisioningUpdates \
+    CODE_SIGNING_ALLOWED=NO \
     build
 
 # ── Locate built apps ──
@@ -68,9 +77,6 @@ if [ -z "$SERVER_APP" ] || [ -z "$CLIENT_APP" ]; then
     exit 1
 fi
 
-SERVER_SIGN_IDENTITY="${SIGN_IDENTITY:-$(signing_identity_for "$SERVER_APP")}"
-SERVER_ENTITLEMENTS="$BUILD_DIR/HarborClerkServer.expanded.entitlements.plist"
-codesign -d --entitlements :- "$SERVER_APP" > "$SERVER_ENTITLEMENTS" 2>/dev/null
 
 # ── Copy resources into server app bundle ──
 RESOURCES="$SERVER_APP/Contents/Resources"
@@ -144,12 +150,12 @@ mkdir -p "$OUTPUT_DIR"
 copy_bundle "$SERVER_APP" "$OUTPUT_DIR/HarborClerkServer.app"
 copy_bundle "$CLIENT_APP" "$OUTPUT_DIR/HarborClerk.app"
 
-if [ -n "$SERVER_SIGN_IDENTITY" ]; then
-    echo "==> Re-signing HarborClerkServer.app after resource assembly"
-    codesign --force --sign "$SERVER_SIGN_IDENTITY" \
-        --entitlements "$SERVER_ENTITLEMENTS" \
-        "$OUTPUT_DIR/HarborClerkServer.app"
-fi
+# No re-signing here. The build is unsigned and `make sign` (notarize.sh) is the
+# only signing step, so extracting entitlements back out of the built app —
+# which this used to do — now yields a zero-byte file. codesign accepts that
+# with a warning and produces an app stripped of disable-library-validation,
+# allow-unsigned-executable-memory and both network entitlements, which the
+# server needs to spawn llama and Python under the hardened runtime. Silently.
 
 echo "==> Apps assembled in ${OUTPUT_DIR}"
 echo "==> Server app: $(du -sh "$OUTPUT_DIR/HarborClerkServer.app" | cut -f1)"
