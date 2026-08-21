@@ -26,12 +26,6 @@ final class MasterKeyManager {
     private let account = "master-key"
     private let accessGroup: String?
 
-    /// Status of the most recent `load`. `loadOrGenerate` needs to tell
-    /// "no such item" apart from "could not be read" — a locked keychain
-    /// returns nil just like an absent one, and the two call for opposite
-    /// behaviour.
-    private var lastLoadStatus: OSStatus = errSecSuccess
-
     /// `accessGroup` defaults to the production shared group. Tests can pass
     /// `nil` to bypass it when running in a signing environment that doesn't
     /// honor the entitlement (e.g., ad-hoc CI).
@@ -54,7 +48,6 @@ final class MasterKeyManager {
         }
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        lastLoadStatus = status
         guard status == errSecSuccess, let data = item as? Data else {
             return nil
         }
@@ -82,55 +75,22 @@ final class MasterKeyManager {
     /// This is the normal entry point for app startup.
     ///
     /// Minting a new key is not a neutral event: everything encrypted under the
-    /// old one — mail-account passwords, principally — becomes unreadable, and
-    /// the user has to re-enter them. That used to happen in silence, because
-    /// first launch and "the key is no longer reachable" are the same code path
-    /// and neither said anything. They are distinguishable and both worth
-    /// logging.
-    ///
-    /// The case that made this concrete: builds signed ad-hoc store the key
-    /// outside the team access group, so the first correctly-signed build looks
-    /// under `4HCL3BR49V.com.harborclerk.shared`, finds nothing, and generates.
-    /// Expected and one-time — but only comprehensible if it is said.
+    /// old one becomes unreadable, which in practice means the user re-entering
+    /// their mail-account passwords. That used to happen in silence, because
+    /// genuine first launch and "the stored key is gone" are the same code path
+    /// and neither said anything. Both are worth a line in the log.
     func loadOrGenerate() -> Data {
         if let existing = load() {
             return existing
         }
 
+        // Both interpolations are annotated: an un-annotated dynamic String
+        // defaults to private in os.Logger and would be redacted to <private>
+        // in the one message that exists to explain what happened.
         Log.logger("master-key").notice(
-            "No master key under service \(self.serviceIdentifier, privacy: .public)\(self.accessGroup.map { " in access group \($0)" } ?? "") — generating a new one. Anything encrypted with a previous key, including stored mail-account passwords, will need to be re-entered."
+            "No master key stored under service \(self.serviceIdentifier, privacy: .public) — generating a new one. Anything encrypted with a previous key, including stored mail-account passwords, will need to be re-entered."
         )
-
-        discardUnreachableLegacyKey()
         return generate()
-    }
-
-    /// Remove a key left behind outside the access group, before a new one is
-    /// written.
-    ///
-    /// Ordering is the whole point. Deleting *after* storing looked safer and is
-    /// the opposite: `SecItemDelete` issued without an access group matches every
-    /// item the app can reach, so it would take the replacement with it. Running
-    /// first means the only thing that can be deleted is the item `load()` just
-    /// failed to find.
-    ///
-    /// Gated on `errSecItemNotFound` specifically. `load()` also returns nil when
-    /// the keychain is locked or access was denied, and deleting on those would
-    /// destroy a perfectly good key over a transient condition.
-    private func discardUnreachableLegacyKey() {
-        guard accessGroup != nil, lastLoadStatus == errSecItemNotFound else { return }
-
-        let status = SecItemDelete([
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceIdentifier,
-            kSecAttrAccount as String: account,
-        ] as CFDictionary)
-
-        if status == errSecSuccess {
-            Log.logger("master-key").notice(
-                "Removed an older master key stored outside the access group; it was unreadable to this build and would only have confused later diagnosis."
-            )
-        }
     }
 
     /// Remove the stored key. Use only for testing or operator-initiated reset.

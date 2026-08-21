@@ -28,9 +28,6 @@ remove_tree() {
     fi
 }
 
-signing_identity_for() {
-    codesign -dvv "$1" 2>&1 | sed -n 's/^Authority=//p' | head -n 1
-}
 
 echo "==> Packaging Harbor Clerk apps"
 
@@ -80,9 +77,6 @@ if [ -z "$SERVER_APP" ] || [ -z "$CLIENT_APP" ]; then
     exit 1
 fi
 
-SERVER_SIGN_IDENTITY="${SIGN_IDENTITY:-$(signing_identity_for "$SERVER_APP")}"
-SERVER_ENTITLEMENTS="$BUILD_DIR/HarborClerkServer.expanded.entitlements.plist"
-codesign -d --entitlements :- "$SERVER_APP" > "$SERVER_ENTITLEMENTS" 2>/dev/null
 
 # ── Copy resources into server app bundle ──
 RESOURCES="$SERVER_APP/Contents/Resources"
@@ -156,12 +150,12 @@ mkdir -p "$OUTPUT_DIR"
 copy_bundle "$SERVER_APP" "$OUTPUT_DIR/HarborClerkServer.app"
 copy_bundle "$CLIENT_APP" "$OUTPUT_DIR/HarborClerk.app"
 
-if [ -n "$SERVER_SIGN_IDENTITY" ]; then
-    echo "==> Re-signing HarborClerkServer.app after resource assembly"
-    codesign --force --sign "$SERVER_SIGN_IDENTITY" \
-        --entitlements "$SERVER_ENTITLEMENTS" \
-        "$OUTPUT_DIR/HarborClerkServer.app"
-fi
+# No re-signing here. The build is unsigned and `make sign` (notarize.sh) is the
+# only signing step, so extracting entitlements back out of the built app —
+# which this used to do — now yields a zero-byte file. codesign accepts that
+# with a warning and produces an app stripped of disable-library-validation,
+# allow-unsigned-executable-memory and both network entitlements, which the
+# server needs to spawn llama and Python under the hardened runtime. Silently.
 
 echo "==> Apps assembled in ${OUTPUT_DIR}"
 echo "==> Server app: $(du -sh "$OUTPUT_DIR/HarborClerkServer.app" | cut -f1)"
