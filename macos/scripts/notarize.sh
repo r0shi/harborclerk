@@ -13,6 +13,27 @@ APPLE_ID="${APPLE_ID:?Set APPLE_ID env var}"
 TEAM_ID="${TEAM_ID:?Set TEAM_ID env var}"
 APP_PASSWORD="${APP_PASSWORD:?Set APP_PASSWORD env var (app-specific password)}"
 
+# ── Refuse to sign from a stale checkout ──
+# The launch probe below only exists in the tree it is run from. A notarized
+# DMG was shipped dead-on-launch *twice*: the second time because the fix had
+# merged on GitHub but the local tree had not pulled it, so an older notarize.sh
+# (no probe) signed with older entitlements. Print what is being signed, and
+# refuse if origin/main has commits this tree lacks. NOTARIZE_ALLOW_STALE=1 opts
+# out for deliberate hotfix builds from a branch.
+sign_commit=$(git -C "$MACOS_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)
+echo "==> Signing from commit ${sign_commit} ($(git -C "$MACOS_DIR" branch --show-current 2>/dev/null || echo detached))"
+if [ "${NOTARIZE_ALLOW_STALE:-0}" != "1" ]; then
+    git -C "$MACOS_DIR" fetch -q origin main 2>/dev/null || true
+    behind=$(git -C "$MACOS_DIR" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+    if [ "$behind" -gt 0 ]; then
+        echo "ERROR: this checkout is ${behind} commit(s) behind origin/main." >&2
+        echo "       The build scripts, entitlements and probe used for signing come from" >&2
+        echo "       the working tree, not from GitHub. Pull first, or set NOTARIZE_ALLOW_STALE=1" >&2
+        echo "       to sign a deliberately older tree." >&2
+        exit 1
+    fi
+fi
+
 echo "==> Signing and notarizing apps"
 
 # Apple's notarization unzips JARs and validates every Mach-O binary inside.
