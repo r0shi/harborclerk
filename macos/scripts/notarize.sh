@@ -152,8 +152,14 @@ codesign_app "$CLIENT_APP" "$RESOLVED_DIR/client.entitlements"
 # client shows its waiting view for a moment and its BackendDetector still polls
 # /api/system/health on localhost; it does not read or write the Keychain.
 launch_probe() {
-    local app="$1" exe pid rc probe_dir probe_app
-    exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
+    local app exe pid rc probe_dir probe_app
+    # Absolutise first. The Makefile hands this script BUILD_DIR=build, so every
+    # path here is relative — and `defaults read` treats a relative path as a
+    # *domain name* ("Domain 'build/output/.../Info.plist' not found"). Every
+    # test of this function had used absolute paths, which is why that never
+    # showed until the real `make sign`. PlistBuddy reads a path as a path.
+    app="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+    exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$app/Contents/Info.plist")
     # Probe a copy, never the artifact itself. Launching a notarized bundle in
     # place puts it under App Management protection, after which nothing — not
     # even the Terminal that signed it — may write inside it again; a second
