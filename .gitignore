@@ -50,3 +50,4 @@ research-debugging/
 # here (github.com/r0shi/harborclerk-strategy). Technical design specs and
 # implementation plans stay public under docs/superpowers/.
 /docs/strategy/
+*.profraw

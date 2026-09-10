@@ -99,6 +99,24 @@ folder access from the background watcher, and every spawned helper (Postgres,
 the Tika JVM, llama-server, bundled Python). See the macOS 27 readiness
 assessment in `docs/superpowers/plans/` and epic #563.
 
+## Entitlements: restricted keys kill a Developer ID app silently
+
+`keychain-access-groups` (and anything under `com.apple.developer.*`) is a
+**restricted** entitlement. A Developer ID build that declares one without an
+embedded provisioning profile is **SIGKILLed by the kernel at exec**, before
+`main()`. Nothing in the pipeline notices: `codesign --verify --deep --strict`
+passes, `spctl --assess` says accepted, and the notary service returns Accepted
+— none of them run the binary. This shipped as a stapled DMG whose app exited
+137 with no stderr. `notarize.sh` now exec-probes both apps before submitting.
+
+Dev builds hid it for months: Xcode's automatic signing embeds a development
+profile that authorises the key. The release path never had one.
+
+Also: on the file-based login keychain (the default without
+`kSecUseDataProtectionKeychain`) `kSecAttrAccessGroup` is ignored on read and
+write — measured — so the group never delivered the cross-rebuild ACL anchoring
+it was added for. Stable Developer ID signing is what does that.
+
 ## No native dialogs in the web view
 
 `window.confirm` and `window.alert` silently return false in WKWebView. Swift

@@ -9,13 +9,12 @@ struct KeychainCredentials {
 
 /// Thin wrapper around the macOS Keychain for saving and loading login credentials.
 ///
-/// Items live in the shared keychain access group
-/// `4HCL3BR49V.com.harborclerk.shared`, declared in HarborClerk.entitlements.
-/// This anchors ACLs to the team identifier so rebuilds don't trigger the
-/// per-binary "wants to access your keychain" prompt.
+/// No keychain access group. The one this used to declare (#445) is a
+/// restricted entitlement that kills a Developer ID build at exec without an
+/// embedded provisioning profile — and is ignored on the file-based login
+/// keychain anyway. See MasterKeyManager in the server app for the measurements.
 enum KeychainManager {
     private static let service = "com.harborclerk.HarborClerk"
-    private static let accessGroup = "4HCL3BR49V.com.harborclerk.shared"
     private static let logger = Logger(subsystem: "com.harborclerk.HarborClerk", category: "keychain")
 
     static func save(email: String, password: String) {
@@ -27,7 +26,6 @@ enum KeychainManager {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: email,
-            kSecAttrAccessGroup as String: accessGroup,
             kSecValueData as String: passwordData,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
         ]
@@ -46,7 +44,6 @@ enum KeychainManager {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccessGroup as String: accessGroup,
             kSecReturnAttributes as String: true,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
@@ -69,7 +66,6 @@ enum KeychainManager {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccessGroup as String: accessGroup,
         ]
         SecItemDelete(query as CFDictionary)
     }

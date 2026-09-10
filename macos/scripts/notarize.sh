@@ -120,6 +120,37 @@ resolve_entitlements "$CLIENT_ENTITLEMENTS" "$RESOLVED_DIR/client.entitlements"
 codesign_app "$SERVER_APP" "$RESOLVED_DIR/server.entitlements"
 codesign_app "$CLIENT_APP" "$RESOLVED_DIR/client.entitlements"
 
+# ── Launch probe ──
+# Run each signed app for two seconds before anything is submitted. A restricted
+# entitlement without a provisioning profile makes the kernel SIGKILL the app at
+# exec, and every check before this point — codesign --verify, spctl, the notary
+# service — passes it, because none of them execute the binary. That shipped once
+# as an Accepted, stapled DMG whose app died on launch (exit 137, no stderr).
+#
+# XCTestConfigurationFilePath is the server app's existing "start nothing"
+# switch (see AppDelegate), so the probe has no side effects there. The client
+# has no such switch and will show its window for a moment.
+launch_probe() {
+    local app="$1" exe pid rc
+    exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
+    XCTestConfigurationFilePath=/dev/null "$app/Contents/MacOS/$exe" >/dev/null 2>&1 &
+    pid=$!
+    sleep 2
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+        echo "==> Launch probe OK: $(basename "$app")"
+    else
+        wait "$pid"; rc=$?
+        echo "ERROR: $(basename "$app") exited within 2s of launch (rc=$rc) after signing." >&2
+        [ "$rc" = 137 ] && echo "       rc=137 is a kernel SIGKILL at exec: almost always a restricted entitlement" >&2 \
+                        && echo "       (e.g. keychain-access-groups) with no embedded provisioning profile." >&2
+        echo "       Not submitting for notarization." >&2
+        exit 1
+    fi
+}
+launch_probe "$SERVER_APP"
+launch_probe "$CLIENT_APP"
+
 # ── Create DMG ──
 DMG_PATH="$OUTPUT_DIR/HarborClerk.dmg"
 echo "==> Creating DMG"

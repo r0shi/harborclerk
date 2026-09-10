@@ -13,12 +13,23 @@ import os
 /// (development, release) don't trample each other. Production uses
 /// `MasterKeyManager.production`; tests pass a unique id per run.
 ///
-/// All items are written into the shared keychain access group
-/// `4HCL3BR49V.com.harborclerk.shared`, declared in both apps' entitlements.
-/// This anchors ACLs to the team identifier instead of the per-build
-/// designated requirement, so rebuilds (dev cert ↔ release cert, ad-hoc ↔
-/// signed) no longer trigger the "binary X wants to access your keychain"
-/// prompt.
+/// No keychain access group. One was declared here and in both apps'
+/// entitlements (#445) to anchor ACLs to the team identifier. Two things were
+/// wrong with that, both measured rather than reasoned:
+///
+///   - `keychain-access-groups` is a *restricted* entitlement. Without an
+///     embedded provisioning profile a Developer ID build is SIGKILLed at exec,
+///     before `main()`. Nothing upstream notices — `codesign --verify`, `spctl`
+///     and notarization all pass, because none of them run the binary. Dev
+///     builds survived only because Xcode's automatic signing embedded a
+///     development profile; no release build was ever launched until one was.
+///   - On the file-based login keychain this class uses (no
+///     `kSecUseDataProtectionKeychain`), `kSecAttrAccessGroup` is ignored on
+///     both write and read, so the group never anchored anything.
+///
+/// Stable Developer ID signing is what actually keeps the designated
+/// requirement constant across rebuilds. Keep `accessGroup` nil unless the
+/// store moves to the data-protection keychain *and* a profile ships with it.
 final class MasterKeyManager {
     static let production = MasterKeyManager(serviceIdentifier: "com.harborclerk.master-key")
 
@@ -26,10 +37,9 @@ final class MasterKeyManager {
     private let account = "master-key"
     private let accessGroup: String?
 
-    /// `accessGroup` defaults to the production shared group. Tests can pass
-    /// `nil` to bypass it when running in a signing environment that doesn't
-    /// honor the entitlement (e.g., ad-hoc CI).
-    init(serviceIdentifier: String, accessGroup: String? = "4HCL3BR49V.com.harborclerk.shared") {
+    /// `accessGroup` is nil in production — see the type comment. The parameter
+    /// stays so a future data-protection-keychain store can opt in explicitly.
+    init(serviceIdentifier: String, accessGroup: String? = nil) {
         self.serviceIdentifier = serviceIdentifier
         self.accessGroup = accessGroup
     }
