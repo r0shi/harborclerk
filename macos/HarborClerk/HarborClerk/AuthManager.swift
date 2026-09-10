@@ -27,6 +27,16 @@ final class AuthManager: ObservableObject {
     // MARK: - Server became available
 
     func onServerBecameAvailable() async {
+        // Same start-nothing switch the server's AppDelegate honours. The
+        // signing launch probe in notarize.sh execs this app for two seconds and
+        // kills it; without this, that ran the real path below, and the catch-all
+        // treated "killed mid-request" like stale credentials and deleted the
+        // user's saved login from the Keychain.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            state = .loginRequired(errorMessage: nil)
+            return
+        }
+
         state = .checkingAuth
 
         // 1. Check if first-time setup is needed

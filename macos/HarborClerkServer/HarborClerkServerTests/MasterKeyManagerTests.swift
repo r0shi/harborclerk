@@ -5,10 +5,9 @@ final class MasterKeyManagerTests: XCTestCase {
 
     /// Use a unique service id per test so concurrent runs don't trample each other.
     ///
-    /// `accessGroup: nil` bypasses the production keychain-access-groups
-    /// entitlement, so tests run cleanly in any signing environment — including
-    /// ad-hoc builds on contributor machines without the team's Apple Development
-    /// cert. Production code uses the default group via `MasterKeyManager.production`.
+    /// `accessGroup: nil` matches production: there is no keychain access group
+    /// any more (see the MasterKeyManager type comment for why), so these tests
+    /// exercise the same configuration `MasterKeyManager.production` uses.
     private func makeManager() -> MasterKeyManager {
         let id = "com.harborclerk.test.\(UUID().uuidString)"
         return MasterKeyManager(serviceIdentifier: id, accessGroup: nil)

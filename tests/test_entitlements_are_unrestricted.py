@@ -22,6 +22,7 @@ build does that (grep below), the key is banned outright.
 from __future__ import annotations
 
 import plistlib
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -42,7 +43,15 @@ def _restricted(key: str) -> bool:
 
 
 def _build_embeds_a_profile() -> bool:
-    return any("provisionprofile" in p.read_text() for p in SIGNING_SCRIPTS if p.exists())
+    """Comments stripped first: a `# TODO: embed embedded.provisionprofile` must
+    not switch this guard off while the entitlements go unchecked."""
+    for p in SIGNING_SCRIPTS:
+        if not p.exists():
+            continue
+        code = "\n".join(re.sub(r"#.*$", "", line) for line in p.read_text().splitlines())
+        if "provisionprofile" in code:
+            return True
+    return False
 
 
 def test_no_restricted_entitlement_without_a_provisioning_profile():

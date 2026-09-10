@@ -50,11 +50,10 @@ sign_jar_dylibs() {
 # ── Entitlements ──
 # Xcode expands `$(AppIdentifierPrefix)` at build time; `codesign` does not, so
 # passing the source .entitlements straight to `--sign` embeds the variable
-# *literally*. The app then declares a keychain access group named
-# "$(AppIdentifierPrefix)com.harborclerk.shared", which matches nothing, and
-# MasterKeyManager's SecItemAdd fails with errSecMissingEntitlement — the exact
-# path its own comment documents as "previously-encrypted secrets become
-# unreadable". Verified by signing a bundle and reading back its entitlements.
+# *literally*. That once shipped a keychain access group literally named
+# "$(AppIdentifierPrefix)com.harborclerk.shared". No entitlement uses the
+# variable today, so the substitution is a no-op — kept, with the unresolved-
+# variable check below, so the next one cannot ship the same way.
 #
 # TEAM_ID is already required above, and AppIdentifierPrefix is exactly the team
 # ID plus a trailing dot, so resolve it here.
@@ -127,9 +126,9 @@ codesign_app "$CLIENT_APP" "$RESOLVED_DIR/client.entitlements"
 # service — passes it, because none of them execute the binary. That shipped once
 # as an Accepted, stapled DMG whose app died on launch (exit 137, no stderr).
 #
-# XCTestConfigurationFilePath is the server app's existing "start nothing"
-# switch (see AppDelegate), so the probe has no side effects there. The client
-# has no such switch and will show its window for a moment.
+# XCTestConfigurationFilePath is the "start nothing" switch both apps honour
+# (server: AppDelegate; client: AuthManager), so the probe touches neither the
+# network nor the Keychain. The client still shows its window for a moment.
 launch_probe() {
     local app="$1" exe pid rc
     exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
@@ -140,7 +139,9 @@ launch_probe() {
         kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
         echo "==> Launch probe OK: $(basename "$app")"
     else
-        wait "$pid"; rc=$?
+        # `|| rc=$?`: under set -e a plain `wait` on a dead child aborts the
+        # script right here, and none of the explanation below ever prints.
+        rc=0; wait "$pid" || rc=$?
         echo "ERROR: $(basename "$app") exited within 2s of launch (rc=$rc) after signing." >&2
         [ "$rc" = 137 ] && echo "       rc=137 is a kernel SIGKILL at exec: almost always a restricted entitlement" >&2 \
                         && echo "       (e.g. keychain-access-groups) with no embedded provisioning profile." >&2
