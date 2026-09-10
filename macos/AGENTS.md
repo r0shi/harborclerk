@@ -109,6 +109,13 @@ passes, `spctl --assess` says accepted, and the notary service returns Accepted
 — none of them run the binary. This shipped as a stapled DMG whose app exited
 137 with no stderr. `notarize.sh` now exec-probes both apps before submitting.
 
+**Probe a copy, never the artifact.** Launching a notarized bundle in place puts
+it under App Management protection: from then on nothing — not even the Terminal
+that signed it — may write inside it, and the next `make sign` on that output
+dies re-signing `tika-server.jar` with "Operation not permitted". The fix is to
+`mv` the bundle aside (a rename on the parent is allowed) and regenerate it with
+`package.sh`. `notarize.sh` probes a `ditto` copy for exactly this reason.
+
 Dev builds hid it for months: Xcode's automatic signing embeds a development
 profile that authorises the key. The release path never had one.
 
