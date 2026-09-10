@@ -50,11 +50,10 @@ sign_jar_dylibs() {
 # ── Entitlements ──
 # Xcode expands `$(AppIdentifierPrefix)` at build time; `codesign` does not, so
 # passing the source .entitlements straight to `--sign` embeds the variable
-# *literally*. The app then declares a keychain access group named
-# "$(AppIdentifierPrefix)com.harborclerk.shared", which matches nothing, and
-# MasterKeyManager's SecItemAdd fails with errSecMissingEntitlement — the exact
-# path its own comment documents as "previously-encrypted secrets become
-# unreadable". Verified by signing a bundle and reading back its entitlements.
+# *literally*. That once shipped a keychain access group literally named
+# "$(AppIdentifierPrefix)com.harborclerk.shared". No entitlement uses the
+# variable today, so the substitution is a no-op — kept, with the unresolved-
+# variable check below, so the next one cannot ship the same way.
 #
 # TEAM_ID is already required above, and AppIdentifierPrefix is exactly the team
 # ID plus a trailing dot, so resolve it here.
@@ -119,6 +118,40 @@ resolve_entitlements "$CLIENT_ENTITLEMENTS" "$RESOLVED_DIR/client.entitlements"
 
 codesign_app "$SERVER_APP" "$RESOLVED_DIR/server.entitlements"
 codesign_app "$CLIENT_APP" "$RESOLVED_DIR/client.entitlements"
+
+# ── Launch probe ──
+# Run each signed app for two seconds before anything is submitted. A restricted
+# entitlement without a provisioning profile makes the kernel SIGKILL the app at
+# exec, and every check before this point — codesign --verify, spctl, the notary
+# service — passes it, because none of them execute the binary. That shipped once
+# as an Accepted, stapled DMG whose app died on launch (exit 137, no stderr).
+#
+# XCTestConfigurationFilePath is the "start nothing" switch both apps honour
+# (server: AppDelegate; client: AuthManager). The server touches nothing. The
+# client shows its waiting view for a moment and its BackendDetector still polls
+# /api/system/health on localhost; it does not read or write the Keychain.
+launch_probe() {
+    local app="$1" exe pid rc
+    exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
+    XCTestConfigurationFilePath=/dev/null "$app/Contents/MacOS/$exe" >/dev/null 2>&1 &
+    pid=$!
+    sleep 2
+    if kill -0 "$pid" 2>/dev/null; then
+        kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+        echo "==> Launch probe OK: $(basename "$app")"
+    else
+        # `|| rc=$?`: under set -e a plain `wait` on a dead child aborts the
+        # script right here, and none of the explanation below ever prints.
+        rc=0; wait "$pid" || rc=$?
+        echo "ERROR: $(basename "$app") exited within 2s of launch (rc=$rc) after signing." >&2
+        [ "$rc" = 137 ] && echo "       rc=137 is a kernel SIGKILL at exec: almost always a restricted entitlement" >&2 \
+                        && echo "       (e.g. keychain-access-groups) with no embedded provisioning profile." >&2
+        echo "       Not submitting for notarization." >&2
+        exit 1
+    fi
+}
+launch_probe "$SERVER_APP"
+launch_probe "$CLIENT_APP"
 
 # ── Create DMG ──
 DMG_PATH="$OUTPUT_DIR/HarborClerk.dmg"
