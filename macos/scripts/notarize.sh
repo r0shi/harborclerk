@@ -152,18 +152,27 @@ codesign_app "$CLIENT_APP" "$RESOLVED_DIR/client.entitlements"
 # client shows its waiting view for a moment and its BackendDetector still polls
 # /api/system/health on localhost; it does not read or write the Keychain.
 launch_probe() {
-    local app="$1" exe pid rc
+    local app="$1" exe pid rc probe_dir probe_app
     exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)
-    XCTestConfigurationFilePath=/dev/null "$app/Contents/MacOS/$exe" >/dev/null 2>&1 &
+    # Probe a copy, never the artifact itself. Launching a notarized bundle in
+    # place puts it under App Management protection, after which nothing — not
+    # even the Terminal that signed it — may write inside it again; a second
+    # `make sign` on the same output then dies re-signing tika-server.jar with
+    # "Operation not permitted". ditto preserves the signature, so the copy is
+    # what would ship, minus the side effect. ~3.7 GB, so this takes a moment.
+    probe_dir=$(mktemp -d)
+    probe_app="$probe_dir/$(basename "$app")"
+    ditto "$app" "$probe_app"
+    XCTestConfigurationFilePath=/dev/null "$probe_app/Contents/MacOS/$exe" >/dev/null 2>&1 &
     pid=$!
     sleep 2
     if kill -0 "$pid" 2>/dev/null; then
         kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null || true
+        rm -rf "$probe_dir"
         echo "==> Launch probe OK: $(basename "$app")"
     else
-        # `|| rc=$?`: under set -e a plain `wait` on a dead child aborts the
-        # script right here, and none of the explanation below ever prints.
         rc=0; wait "$pid" || rc=$?
+        rm -rf "$probe_dir"
         echo "ERROR: $(basename "$app") exited within 2s of launch (rc=$rc) after signing." >&2
         [ "$rc" = 137 ] && echo "       rc=137 is a kernel SIGKILL at exec: almost always a restricted entitlement" >&2 \
                         && echo "       (e.g. keychain-access-groups) with no embedded provisioning profile." >&2
