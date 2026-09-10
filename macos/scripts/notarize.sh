@@ -127,8 +127,9 @@ codesign_app "$CLIENT_APP" "$RESOLVED_DIR/client.entitlements"
 # as an Accepted, stapled DMG whose app died on launch (exit 137, no stderr).
 #
 # XCTestConfigurationFilePath is the "start nothing" switch both apps honour
-# (server: AppDelegate; client: AuthManager), so the probe touches neither the
-# network nor the Keychain. The client still shows its window for a moment.
+# (server: AppDelegate; client: AuthManager). The server touches nothing. The
+# client shows its waiting view for a moment and its BackendDetector still polls
+# /api/system/health on localhost; it does not read or write the Keychain.
 launch_probe() {
     local app="$1" exe pid rc
     exe=$(defaults read "$app/Contents/Info.plist" CFBundleExecutable)

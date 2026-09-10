@@ -32,8 +32,13 @@ final class AuthManager: ObservableObject {
         // kills it; without this, that ran the real path below, and the catch-all
         // treated "killed mid-request" like stale credentials and deleted the
         // user's saved login from the Keychain.
+        // `.waitingForServer`, not `.loginRequired`: LoginView's onAppear reads the
+        // saved login from the Keychain, and a freshly Developer-ID-signed probe
+        // binary has a different designated requirement from the build that stored
+        // it — so that read raises the ACL prompt in the middle of `make sign`.
+        // WaitingView touches nothing.
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-            state = .loginRequired(errorMessage: nil)
+            state = .waitingForServer
             return
         }
 

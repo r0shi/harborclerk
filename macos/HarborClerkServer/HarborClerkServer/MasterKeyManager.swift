@@ -142,9 +142,9 @@ final class MasterKeyManager {
         }
         let status = SecItemAdd(query as CFDictionary, nil)
         if status != errSecSuccess {
-            // Don't crash. A failed persist (e.g., errSecMissingEntitlement when the
-            // signing chain doesn't honor the keychain-access-groups entitlement, or
-            // errSecInteractionNotAllowed if the Keychain is locked) used to fire a
+            // Don't crash. A failed persist (e.g. errSecInteractionNotAllowed when the
+            // Keychain is locked; there is no access-group entitlement any more, so
+            // errSecMissingEntitlement is no longer an expected cause) used to fire a
             // precondition and SIGABRT on launch. Now we log loudly and let the
             // caller proceed with the in-memory key. On next launch load() will
             // return nil and a fresh key will be generated — previously-encrypted

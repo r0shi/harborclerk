@@ -49,7 +49,10 @@ def _build_embeds_a_profile() -> bool:
         if not p.exists():
             continue
         code = "\n".join(re.sub(r"#.*$", "", line) for line in p.read_text().splitlines())
-        if "provisionprofile" in code:
+        # The embedding idiom specifically — a copy *into* Contents/. A strip step
+        # such as `find … -name embedded.provisionprofile -delete` also mentions
+        # the file and ships no profile.
+        if re.search(r"\b(cp|ditto|install)\b[^\n]*provisionprofile[^\n]*Contents/", code):
             return True
     return False
 

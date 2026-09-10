@@ -32,10 +32,10 @@ enum KeychainManager {
         let status = SecItemAdd(query as CFDictionary, nil)
         if status != errSecSuccess {
             // Logged but not surfaced — callers (AuthManager) don't currently
-            // check a return value. errSecMissingEntitlement (-34018) here
-            // means the signing chain isn't honoring the access-group
-            // entitlement; the user will be re-prompted to log in on each
-            // launch until the signing setup is fixed.
+            // check a return value. If this fails the login is not remembered
+            // and the user is prompted again next launch. (There is no access
+            // group any more, so errSecMissingEntitlement is no longer an
+            // expected cause — see MasterKeyManager in the server app.)
             logger.error("SecItemAdd failed: OSStatus \(status, privacy: .public)")
         }
     }
