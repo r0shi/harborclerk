@@ -40,6 +40,29 @@ def observer_session_factory(_engine):
     return async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
 
 
+async def _count(session, stmt, expected: int) -> bool:
+    return len((await session.execute(stmt)).scalars().all()) >= expected
+
+
+async def _wait_for(predicate, *, timeout: float = 5.0, interval: float = 0.02) -> None:
+    """Poll until `predicate()` (a coroutine) is truthy, or `timeout` elapses.
+
+    The tests below used to `await asyncio.sleep(0.2)` after starting the
+    observer and then assert on rows written. That is a bet on how long one
+    poll cycle plus its DB writes takes on the machine running the test — and it
+    lost on a loaded CI runner while passing 8/8 locally on identical code (#607).
+    Waiting on the asserted state itself removes the bet; the timeout is only a
+    ceiling for the genuinely-broken case.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while not await predicate():
+        if _time.monotonic() > deadline:
+            return  # let the caller's assertion report what is actually there
+        await asyncio.sleep(interval)
+
+
 async def test_observer_runs_initial_sync_for_active_label(
     db_session, mock_aioimap, observer_session_factory, monkeypatch
 ):
@@ -90,7 +113,9 @@ async def test_observer_runs_initial_sync_for_active_label(
 
     # Run for ~0.3s — long enough for one initial-sync tick to complete
     task = asyncio.create_task(observer.run())
-    await asyncio.sleep(0.3)
+    await _wait_for(
+        lambda: _count(db_session, select(WatchedMessage).where(WatchedMessage.label_id == label.label_id), 1)
+    )
     await observer.stop()
     try:
         await asyncio.wait_for(task, timeout=2.0)
@@ -133,6 +158,10 @@ async def test_observer_skips_paused_labels(db_session, mock_aioimap, observer_s
 
     observer = MailObserver(poll_interval=0.05, session_factory=observer_session_factory)
     task = asyncio.create_task(observer.run())
+    # A negative assertion — nothing may be written — cannot be waited for, so a
+    # bounded sleep stays. Note the failure direction: if this is too short the
+    # test passes vacuously; it can never turn red on a slow runner. The two
+    # positive tests in this file use _wait_for instead.
     await asyncio.sleep(0.2)
     await observer.stop()
     try:
@@ -174,6 +203,10 @@ async def test_observer_skips_auth_error_accounts(db_session, mock_aioimap, obse
 
     observer = MailObserver(poll_interval=0.05, session_factory=observer_session_factory)
     task = asyncio.create_task(observer.run())
+    # A negative assertion — nothing may be written — cannot be waited for, so a
+    # bounded sleep stays. Note the failure direction: if this is too short the
+    # test passes vacuously; it can never turn red on a slow runner. The two
+    # positive tests in this file use _wait_for instead.
     await asyncio.sleep(0.2)
     await observer.stop()
     try:
@@ -247,7 +280,9 @@ async def test_observer_creates_documents_after_sync(db_session, mock_aioimap, o
 
     observer = MailObserver(poll_interval=0.05, session_factory=observer_session_factory)
     task = asyncio.create_task(observer.run())
-    await asyncio.sleep(0.4)  # one tick should be enough
+    await _wait_for(
+        lambda: _count(db_session, select(Document).where(Document.email_message_id == "<flow1@example.com>"), 2)
+    )
     await observer.stop()
     try:
         await asyncio.wait_for(task, timeout=2.0)

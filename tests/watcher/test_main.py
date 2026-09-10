@@ -148,8 +148,18 @@ def test_daemon_scans_existing_files_when_observer_registers(factory, tmp_path, 
                 rows = list(sess.query(WatchedFile).filter_by(folder_id=folder_id).all())
             finally:
                 sess.close()
+            # Wait for the condition the test actually asserts — the row *and*
+            # last_scan_at — not just the row. The scan thread writes the row
+            # first and stamps last_scan_at afterwards, so polling on rows alone
+            # could win that race and fail the last_scan_at assertion below (#607).
             if rows:
-                break
+                sess2 = factory()
+                try:
+                    done = sess2.query(WatchedFolder).filter_by(folder_id=folder_id).one().last_scan_at is not None
+                finally:
+                    sess2.close()
+                if done:
+                    break
             time.sleep(0.1)
 
         assert len(rows) == 1, f"expected exactly one ingested file, got {[r.relative_path for r in rows]}"
