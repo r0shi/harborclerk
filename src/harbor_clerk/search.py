@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -469,6 +469,21 @@ async def hybrid_search(
     vector_scores: dict[uuid.UUID, float] = {}
     try:
         query_embedding = await _embed_query(query)
+        # pgvector post-filters an HNSW scan: the index yields hnsw.ef_search
+        # candidates (40 by default) and only then are the WHERE clauses
+        # applied, so a filtered query can come back short. With the status
+        # filter above always present, this hit the default path too — on the
+        # live corpus (21% of chunks belonging to deleted documents) 10 of 60
+        # probe queries returned fewer candidates than asked for, one as few as
+        # 24 of 30, all of them starved by a deleted dump that sat nearest to
+        # the query. relaxed_order keeps scanning until the LIMIT is met, bounded
+        # by hnsw.max_scan_tuples. SET LOCAL is scoped to this transaction; the
+        # savepoint keeps an older pgvector without the GUC from aborting it.
+        try:
+            async with session.begin_nested():
+                await session.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+        except Exception:
+            logger.debug("hnsw.iterative_scan unavailable; vector leg may post-filter short")
         distance = Chunk.embedding.cosine_distance(query_embedding)
         stmt = (
             select(Chunk.chunk_id, distance.label("distance"))
