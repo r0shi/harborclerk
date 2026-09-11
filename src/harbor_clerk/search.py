@@ -33,6 +33,10 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+# pgvector 0.8+. The `hnsw.` prefix is reserved by the extension, so an unknown
+# GUC is a hard error rather than a placeholder — hence the savepoint at the use site.
+_HNSW_ITERATIVE_SCAN_SQL = "SET LOCAL hnsw.iterative_scan = relaxed_order"
+
 # Max docs returned when presentation="full" — keeps payload under ~20 KB
 # (top chunk text per doc, ~500 chars).
 _FIND_ALL_FULL_MAX_RESULTS = 30
@@ -440,9 +444,8 @@ async def hybrid_search(
     if metadata_filter:
         _apply_jsonb_metadata_filter(metadata_filter, doc_conditions)
 
-    if doc_conditions:
-        doc_subq = select(Document.doc_id).where(*doc_conditions)
-        scope_filters.append(Chunk.doc_id.in_(doc_subq))
+    doc_subq = select(Document.doc_id).where(*doc_conditions)
+    scope_filters.append(Chunk.doc_id.in_(doc_subq))
 
     # Dynamic candidate limit: pull enough candidates for k + offset
     candidate_limit = max(30, k + offset + 20)
@@ -481,7 +484,7 @@ async def hybrid_search(
         # savepoint keeps an older pgvector without the GUC from aborting it.
         try:
             async with session.begin_nested():
-                await session.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+                await session.execute(text(_HNSW_ITERATIVE_SCAN_SQL))
         except Exception:
             logger.debug("hnsw.iterative_scan unavailable; vector leg may post-filter short")
         distance = Chunk.embedding.cosine_distance(query_embedding)

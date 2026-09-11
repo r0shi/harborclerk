@@ -28,6 +28,7 @@ from __future__ import annotations
 import random
 import uuid
 
+import pytest
 from sqlalchemy import text
 
 from harbor_clerk.models import Chunk, Document
@@ -54,7 +55,16 @@ async def _doc(session, *, status: str) -> Document:
     return doc
 
 
+async def _require_iterative_scan(session) -> None:
+    """Fail with the real reason on a pgvector too old for iterative scans, not the assertion below."""
+    version = (await session.execute(text("SELECT extversion FROM pg_extension WHERE extname = 'vector'"))).scalar()
+    major, minor = (int(x) for x in version.split(".")[:2])
+    if (major, minor) < (0, 8):
+        pytest.skip(f"pgvector {version} has no hnsw.iterative_scan; both deploy paths ship 0.8+")
+
+
 async def test_live_neighbours_survive_a_deleted_document_nearest_to_the_query(db_session, monkeypatch):
+    await _require_iterative_scan(db_session)
     rng = random.Random(7)
     query_vec = _near(rng, 0.0)
     dead = await _doc(db_session, status="deleted")
@@ -99,3 +109,40 @@ async def test_live_neighbours_survive_a_deleted_document_nearest_to_the_query(d
         "the vector leg returned nothing: the HNSW scan's first ef_search candidates were all "
         "deleted chunks and the post-filter dropped them, so live neighbours were never reached"
     )
+
+
+async def test_an_unknown_iterative_scan_guc_does_not_take_the_search_down(db_session, monkeypatch):
+    """On a pgvector without the GUC the SET fails; that must degrade, not abort.
+
+    Without the savepoint the failed SET poisons the transaction: the vector leg
+    logs a misleading "embedder unavailable", and the chunk load that follows
+    dies with InFailedSQLTransactionError — every search on that server fails,
+    lexical fallback included. Reproduced with a name pgvector rejects outright,
+    since `hnsw.` is a reserved prefix and an unknown GUC there is a hard error.
+    """
+    live = await _doc(db_session, status="active")
+    marker = f"kestrel-{uuid.uuid4().hex[:8]} clause"
+    db_session.add(
+        Chunk(
+            doc_id=live.doc_id,
+            chunk_num=0,
+            chunk_text=f"the {marker} applies",
+            language="english",
+            embedding=[0.01] * DIM,
+        )
+    )
+    await db_session.flush()
+
+    import harbor_clerk.search as search_mod
+
+    monkeypatch.setattr(search_mod, "_HNSW_ITERATIVE_SCAN_SQL", "SET LOCAL hnsw.no_such_guc = relaxed_order")
+
+    async def _fake_embed(query):
+        return [0.01] * DIM
+
+    monkeypatch.setattr(search_mod, "_embed_query", _fake_embed)
+
+    result = await hybrid_search(db_session, marker, k=5)
+    assert str(live.doc_id) in {h.doc_id for h in result.hits}, "search failed outright instead of degrading"
+    # And the transaction is still usable afterwards.
+    assert (await db_session.execute(text("SELECT 1"))).scalar() == 1
