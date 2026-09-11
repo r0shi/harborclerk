@@ -396,7 +396,13 @@ async def hybrid_search(
         scope_filters.append(Chunk.chunk_text.ilike(f"%{escaped}%", escape="\\"))
 
     # Document-level filters — subquery on doc_ids
-    doc_conditions = []
+    # Always present, so the document subquery is always applied to both the
+    # FTS and vector branches below. Without it, an unfiltered search never
+    # consulted documents.status at all, and a deleted document's chunks —
+    # 62k of them on the live corpus — stayed fully retrievable through every
+    # surface that routes here: /search, find-all, the MCP tools and the chat
+    # tool. DELETE only flips the status; the chunks are still there.
+    doc_conditions = [Document.status == "active"]
     if after is not None:
         doc_conditions.append(Document.created_at >= after)
     if before is not None:
