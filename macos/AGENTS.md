@@ -153,3 +153,28 @@ preset. These are defined in `ServiceManager.workerCounts`.
 (`harbor-clerk`, `embedder`). An older import-guard shortcut skipped reinstalls
 even when the Python source had changed, producing a stale venv inside a
 freshly-built app.
+
+## `cc` can pick up the Command Line Tools SDK, not Xcode's
+
+`make apps` compiles PostgreSQL and pgvector from source. On a machine whose
+Command Line Tools were updated by a macOS beta, the bare `cc` that
+`configure` runs resolves the **CLT** SDK (`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`)
+even though `xcode-select -p` points at Xcode.app. When that SDK is newer than
+Xcode's linker — CLT 27.0 against Xcode 26.5 here — every link fails with
+
+```
+ld: tapi error: malformed file
+.../MacOSX27.0.sdk/usr/lib/libSystem.B.tbd:4:20: error: unknown architecture
+```
+
+and the build stops at `configure: error: C compiler cannot create executables`.
+Nothing in the repo changed; the OS update did it. Pin the SDK to Xcode's for
+the build:
+
+```bash
+SDKROOT=$(xcrun --sdk macosx --show-sdk-path) make apps
+```
+
+`xcrun --show-sdk-path` *without* `--sdk macosx` returns the CLT path on such
+a machine, so use the explicit form. `make sign` does not compile anything and
+needs no override.
