@@ -200,9 +200,15 @@ cp -R "$SERVER_APP" "$STAGING/"
 cp -R "$CLIENT_APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
+# ULMO (lzma), not UDZO (zlib). The bundle grew from 1.2 GB to 2.5 GB when the
+# granite embedding and bge-reranker weights were bundled, and GitHub refuses
+# release assets over 2 GiB. Measured on the v0.9.2 candidate: UDZO 2.54 GiB,
+# ULMO 1.94 GiB. Converting after the fact is not an option — the DMG is
+# codesigned and stapled below, so the compressed image has to exist before
+# notarization, i.e. here.
 hdiutil create -volname "Harbor Clerk" \
     -srcfolder "$STAGING" \
-    -ov -format UDZO \
+    -ov -format ULMO \
     "$DMG_PATH"
 
 codesign --force --sign "$IDENTITY" --timestamp "$DMG_PATH"
