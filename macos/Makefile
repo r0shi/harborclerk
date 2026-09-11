@@ -89,7 +89,7 @@ test:
 
 apple-summarize:
 	@echo "==> Building apple-summarize CLI"
-	cd apple-summarize && swift build -c release 2>/dev/null && \
+	@cd apple-summarize && swift build -c release 2>/dev/null && \
 		mkdir -p ../$(BUILD)/apple-summarize && \
 		cp .build/release/apple-summarize ../$(BUILD)/apple-summarize/ || \
 		echo "==> apple-summarize build skipped (requires macOS 26+)"
