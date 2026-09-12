@@ -113,10 +113,20 @@ if [ -d "$BUILD_DIR/tesseract" ]; then
     cp -R "$BUILD_DIR/tesseract" "$RESOURCES/tesseract"
 fi
 
-# Model
-if [ -d "$BUILD_DIR/model" ]; then
-    cp -R "$BUILD_DIR/model" "$RESOURCES/model"
-fi
+# Models — only the two the Swift services load (EmbedderService.swift and
+# RerankerService.swift), by name. A wholesale copy of build/model shipped a
+# stale multilingual-e5-small directory left over from an April build: 466 MB
+# of fp32 weights nothing referenced, which compress poorly and pushed the
+# v0.9.2 DMG to 2.23 GiB — over GitHub's 2 GiB asset limit — after a
+# notarization that had already succeeded.
+mkdir -p "$RESOURCES/model"
+for m in granite-embedding-311m-multilingual-r2 bge-reranker-v2-m3; do
+    if [ ! -d "$BUILD_DIR/model/$m" ]; then
+        echo "ERROR: $BUILD_DIR/model/$m is missing — run 'make model' first" >&2
+        exit 1
+    fi
+    cp -R "$BUILD_DIR/model/$m" "$RESOURCES/model/$m"
+done
 
 # llama-server
 if [ -d "$BUILD_DIR/llama" ]; then
