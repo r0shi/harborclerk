@@ -200,26 +200,39 @@ cp -R "$SERVER_APP" "$STAGING/"
 cp -R "$CLIENT_APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
-# ULMO (lzma), not UDZO (zlib). The bundle grew from 1.2 GB to 2.5 GB when the
-# granite embedding and bge-reranker weights were bundled, and GitHub refuses
-# release assets over 2 GiB. Measured on the v0.9.2 candidate: UDZO 2.54 GiB,
-# ULMO 1.94 GiB. Converting after the fact is not an option — the DMG is
-# codesigned and stapled below, so the compressed image has to exist before
-# notarization, i.e. here.
+# ULMO (lzma), not UDZO (zlib), and HFS+, not APFS. The bundle grew from
+# 1.2 GB to 3.2 GB when the granite embedding and bge-reranker weights were
+# bundled, and GitHub refuses release assets over 2 GiB. Measured on the
+# v0.9.2 candidate (3.2 GB payload, same staging folder, same run):
+#
+#   UDZO / APFS   2.54 GiB
+#   ULMO / APFS   2.03 GiB   313 MB of it "bytes-wasted" per hdiutil imageinfo
+#   ULMO / HFS+   1.75 GiB    16 MB wasted
+#
+# The default filesystem on this macOS is APFS, and hdiutil's compressed
+# encoding stores a large slice of an APFS image that holds no file data;
+# HFS+ has none of that. (An earlier comment here claimed ULMO 1.94 GiB —
+# that number was never reproduced and is withdrawn.) Converting after the
+# fact is not an option — the DMG is codesigned and stapled below, so the
+# compressed image has to exist before notarization, i.e. here.
 hdiutil create -volname "Harbor Clerk" \
     -srcfolder "$STAGING" \
-    -ov -format ULMO \
+    -ov -format ULMO -fs "HFS+" \
     "$DMG_PATH"
 
 # GitHub refuses release assets of 2 GiB or more, and it does so at upload —
 # after the ten-minute notarization below has already been paid for. Check here.
 GITHUB_ASSET_LIMIT=$((2 * 1024 * 1024 * 1024))
-DMG_BYTES=$(stat -f %z "$DMG_PATH")
-if [ "$DMG_BYTES" -ge "$GITHUB_ASSET_LIMIT" ]; then
-    echo "ERROR: $DMG_PATH is $DMG_BYTES bytes ($(( DMG_BYTES / 1048576 )) MiB); GitHub's release asset limit is 2 GiB." >&2
-    echo "       Find what grew: du -sk '$SERVER_APP/Contents/Resources/'* | sort -rn | head" >&2
-    exit 1
-fi
+check_asset_size() {
+    local bytes
+    bytes=$(stat -f %z "$DMG_PATH")
+    if [ "$bytes" -ge "$GITHUB_ASSET_LIMIT" ]; then
+        echo "ERROR: $DMG_PATH is $bytes bytes ($(( bytes / 1048576 )) MiB); GitHub's release asset limit is 2 GiB." >&2
+        echo "       Find what grew: du -sk '$SERVER_APP/Contents/Resources/'* | sort -rn | head" >&2
+        exit 1
+    fi
+}
+check_asset_size
 
 codesign --force --sign "$IDENTITY" --timestamp "$DMG_PATH"
 
@@ -250,6 +263,8 @@ fi
 
 echo "==> Stapling"
 xcrun stapler staple "$DMG_PATH"
+# Signing and stapling both append to the image; re-check the final size.
+check_asset_size
 
 echo "==> Done: ${DMG_PATH}"
 echo "==> Size: $(du -sh "$DMG_PATH" | cut -f1)"

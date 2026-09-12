@@ -116,7 +116,7 @@ fi
 # Models — only the two the Swift services load (EmbedderService.swift and
 # RerankerService.swift), by name. A wholesale copy of build/model shipped a
 # stale multilingual-e5-small directory left over from an April build: 466 MB
-# of fp16 weights nothing referenced, which compress to nothing and pushed the
+# of fp32 weights nothing referenced, which compress poorly and pushed the
 # v0.9.2 DMG to 2.23 GiB — over GitHub's 2 GiB asset limit — after a
 # notarization that had already succeeded.
 mkdir -p "$RESOURCES/model"
