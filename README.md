@@ -9,7 +9,7 @@
 Harbor Clerk turns watched folders into a private, searchable document archive.
 
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Release](https://img.shields.io/badge/release-v0.9.1-blue)
+![Release](https://img.shields.io/badge/release-v0.9.2-blue)
 ![Python](https://img.shields.io/badge/python-3.12+-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Docker-lightgrey)
 
