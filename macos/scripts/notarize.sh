@@ -211,6 +211,16 @@ hdiutil create -volname "Harbor Clerk" \
     -ov -format ULMO \
     "$DMG_PATH"
 
+# GitHub refuses release assets of 2 GiB or more, and it does so at upload —
+# after the ten-minute notarization below has already been paid for. Check here.
+GITHUB_ASSET_LIMIT=$((2 * 1024 * 1024 * 1024))
+DMG_BYTES=$(stat -f %z "$DMG_PATH")
+if [ "$DMG_BYTES" -ge "$GITHUB_ASSET_LIMIT" ]; then
+    echo "ERROR: $DMG_PATH is $DMG_BYTES bytes ($(( DMG_BYTES / 1048576 )) MiB); GitHub's release asset limit is 2 GiB." >&2
+    echo "       Find what grew: du -sk '$SERVER_APP/Contents/Resources/'* | sort -rn | head" >&2
+    exit 1
+fi
+
 codesign --force --sign "$IDENTITY" --timestamp "$DMG_PATH"
 
 # ── Notarize ──
