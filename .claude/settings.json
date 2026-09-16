@@ -6,11 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=$(jq -r '.tool_input.file_path // empty'); [ -n \"$FILE\" ] && echo \"$FILE\" | grep -qE '\\.py$' && ruff format --quiet \"$FILE\" 2>/dev/null || true"
+            "command": "FILE=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"tool_input\",{}).get(\"file_path\",\"\"))' 2>/dev/null); [ -n \"$FILE\" ] || exit 0; echo \"$FILE\" | grep -qE '\\.py$' || exit 0; cd \"$CLAUDE_PROJECT_DIR\" && uv run ruff format --quiet \"$FILE\" 2>/dev/null; exit 0"
           },
           {
             "type": "command",
-            "command": "FILE=$(jq -r '.tool_input.file_path // empty'); [ -n \"$FILE\" ] && echo \"$FILE\" | grep -qE '\\.(tsx?|jsx?|css)$' && cd \"$CLAUDE_PROJECT_DIR/frontend\" && npx prettier --write \"$FILE\" 2>/dev/null || true"
+            "command": "FILE=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"tool_input\",{}).get(\"file_path\",\"\"))' 2>/dev/null); [ -n \"$FILE\" ] || exit 0; echo \"$FILE\" | grep -qE '\\.(tsx?|jsx?|css)$' || exit 0; cd \"$CLAUDE_PROJECT_DIR/frontend\" && npx prettier --write \"$FILE\" >/dev/null 2>&1; exit 0"
           }
         ]
       }
@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=$(jq -r '.tool_input.file_path // empty'); [ -n \"$FILE\" ] && echo \"$FILE\" | grep -qE '(\\.env|uv\\.lock|secrets)' && ! echo \"$FILE\" | grep -qE '\\.env\\.example$' && echo 'BLOCK: Protected file' && exit 2 || exit 0"
+            "command": "FILE=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"tool_input\",{}).get(\"file_path\",\"\"))' 2>/dev/null); [ -n \"$FILE\" ] || exit 0; REL=${FILE#\"$CLAUDE_PROJECT_DIR\"/}; case \"$REL\" in .env.example|*/.env.example) exit 0;; esac; if echo \"$REL\" | grep -qE '(^|/)\\.env(\\.[^/]+)?$|(^|/)uv\\.lock$'; then echo \"BLOCK: $REL is protected. .env files hold secrets and are never edited by an agent; uv.lock changes go through uv (uv lock / uv add).\" >&2; exit 2; fi; exit 0"
           }
         ]
       }

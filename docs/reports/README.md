@@ -2,9 +2,9 @@
 
 Dated outputs of loops and field work: eval runs, acceptance passes, model
 surveys, benchmark results, field reports. One file per run, named
-`YYYY-MM-DD-<kind>-<slug>.md`. Reports are evidence; the claim posture they
-support lives in [`docs/evaluation.md`](../evaluation.md), and numeric results
-stay here rather than in the README.
+`YYYY-MM-DD-<kind>-<slug>.md`. Reports are evidence; the public claim ladder
+and known limitations they support live in [`docs/evaluation.md`](../evaluation.md),
+and numeric results stay here rather than in the README.
 
 Every loop-generated report opens with a header block so a reader can
 reproduce it or discount it:

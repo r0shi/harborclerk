@@ -27,8 +27,9 @@ two Macs. Before this decision:
 1. **Agent material stays in this repository.** Rules in `AGENTS.md` files;
    procedures as skills under `.claude/skills/`; hooks in
    `.claude/settings.json`; decisions here; loop output under `docs/reports/`.
-   Only `.claude/settings.local.json`, worktrees and harness caches stay
-   untracked. Tracked files under `.claude/` must contain no machine-specific
+   Only `.claude/settings.local.json`, worktree checkouts and lock files stay
+   untracked; the ignore rules are a denylist so new material under `.claude/`
+   is tracked by default. Tracked files under `.claude/` must contain no machine-specific
    absolute paths, guarded by `tests/test_claude_config_is_portable.py`.
 2. **Agent-authored work runs under a machine user account** (working name
    `harborclerk-bot`), holding a fine-grained personal access token scoped to
@@ -41,6 +42,10 @@ two Macs. Before this decision:
    approves; the owner approves the bot's PRs after reading its unprimed
    review. `enforce_admins` is switched on once the bot path has merged a
    handful of PRs, so `--admin` becomes impossible rather than forbidden.
+   The gate assumes a human is present in the interactive session: two agents
+   could satisfy it alone if an unattended session ran on the owner's
+   credentials, which is why decision 2 requires unattended sessions to run
+   as the bot.
 4. **Heavy loops run on the Macs, never on a self-hosted runner attached to
    this public repository**, and report back only through `gh`: a PR, an
    issue comment, or a dated report under `docs/reports/`.

@@ -54,9 +54,11 @@ exposes the corpus to external agents through an MCP server and a mirrored CLI.
 ## Identities
 
 - **Unattended sessions run as the machine user** (`GH_TOKEN` and the git
-  author set to the bot); interactive sessions the owner drives run as the
-  owner. The bot never holds admin. See `docs/adr/0001-agent-native-sdlc.md`.
-- **No agent merges its own PR.** One approving review is required.
+  author set to the bot) once the account exists; sessions the owner drives
+  run as the owner. The bot never holds admin. Until the bot exists, nothing
+  runs unattended against GitHub. See `docs/adr/0001-agent-native-sdlc.md`.
+- **No agent merges its own PR.** Branch protection will require one approving
+  review once the bot exists; until then this is a rule, not a gate.
 - **Signing is human.** No agent runs `make sign` or handles the app-specific
   password.
 
@@ -116,7 +118,7 @@ wrong place.
 | Design specs and implementation plans | `docs/superpowers/{specs,plans}/` |
 | Decisions, with rejected alternatives | `docs/adr/` |
 | Dated reports: evals, acceptance, field work | `docs/reports/` |
-| Skills: `verify`, `build-macos`, and the loop procedures | `.claude/skills/*/SKILL.md` — tracked, no absolute paths |
+| Skills: `verify`, `build-macos` | `.claude/skills/*/SKILL.md` — tracked, no absolute paths |
 | Eval harness and methodology | `scripts/test_corpora/`, `docs/evaluation.md` |
 | Integration setup (MCP, CLI, connectors) | `docs/integrations.md` |
 | Pipeline stages, queues, `mark_stage_done`, extraction paths, storage, retrieval, async traps | `src/harbor_clerk/AGENTS.md` |
@@ -162,9 +164,9 @@ content**, because Claude Code reads only `CLAUDE.md` while Codex and most other
 harnesses read `AGENTS.md`. One source of truth, two names — never edit them as
 if they were separate files.
 
-`.claude/settings.json`, `.claude/skills/` and `.claude/launch.json` are tracked
-and must stay portable — no machine-specific paths. `.claude/settings.local.json`
-is not tracked.
+`.claude/` is tracked — hooks, skills, commands, launch configs — and must stay
+portable: no machine-specific paths. Only `.claude/settings.local.json`,
+worktree checkouts and lock files are ignored.
 
 ### Scoped files are NOT auto-loaded — read them yourself
 
