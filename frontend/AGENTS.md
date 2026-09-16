@@ -36,6 +36,26 @@ works fine with ESLint 10; without the flag `npm ci` fails in CI and in the
 Docker build. `recharts` needs `react-is` installed explicitly or the Vite build
 fails to resolve it.
 
+## TypeScript stays on 6 until typescript-eslint moves
+
+`legacy-peer-deps` does **not** cover this one. typescript-eslint checks the
+TypeScript version at runtime and throws — `typescript-eslint does not support
+TS 7.0` — so ESLint does not start at all. Its supported range is
+`>=4.8.4 <6.1.0` in both the latest release and the canary, and the upstream
+tracking issue has no target version.
+
+Everything else already works on TypeScript 7: type check, build, Prettier and
+the unit tests all pass, and `tsc --noEmit` drops from 2.2s to 0.33s. That gain
+is not worth the documented workaround, which aliases `typescript` to
+`@typescript/typescript6` and hides real TypeScript 7 behind a second name — two
+compilers in the lockfile, and a package called `typescript` that is not the one
+the build uses. It would also split type-aware lint rules (TypeScript 6) from
+the build's type check (TypeScript 7) the moment anyone enables them.
+
+`.github/dependabot.yml` therefore ignores the **7.0 line only**, so the 7.1 PR
+still arrives and acts as the prompt to re-evaluate. Do not widen that to all
+majors, and do not adopt TypeScript 7 piecemeal — see #637.
+
 ## Routing state loss
 
 Navigating from `/` to `/c/:conversationId` **unmounts** the child ChatPage and
