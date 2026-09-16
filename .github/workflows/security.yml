@@ -16,9 +16,6 @@ jobs:
       - name: Install Python deps
         run: uv sync --extra test
 
-      - name: Upgrade pip in venv (CVE-2026-3219 fix in 26.1)
-        run: .venv/bin/python -m pip install --upgrade 'pip>=26.1'
-
       - name: pip-audit (fail only on advisories with a fix available)
         run: |
           # pip-audit has no severity or ignore-unfixed filter, and the
@@ -28,7 +25,13 @@ jobs:
           # apply: advisories with no upstream fix (e.g. the torch/transformers
           # malicious-checkpoint RCEs) are reported but do not fail the build;
           # an advisory that has a fix available does fail it.
-          .venv/bin/python -m pip freeze --exclude-editable > /tmp/frozen.txt
+          # --all keeps pip/setuptools/wheel in the list. Without it `pip
+          # freeze` silently drops them, so a vulnerable pip in uv.lock could
+          # never fail this job — which is exactly what happened: Dependabot
+          # flagged pip <26.2.0 from the lockfile while this job stayed green,
+          # and a hand-written "upgrade pip in the venv" step above it had been
+          # papering over an earlier pip advisory since April.
+          .venv/bin/python -m pip freeze --exclude-editable --all > /tmp/frozen.txt
           uvx pip-audit -r /tmp/frozen.txt --no-deps --format json --progress-spinner off --output /tmp/pip-audit.json || true
           if [ ! -s /tmp/pip-audit.json ]; then echo "::error::pip-audit produced no report"; exit 1; fi
           jq -r '.dependencies[] as $d | $d.vulns[] | "  [\(if (.fix_versions|length>0) then "FIX AVAILABLE" else "no fix" end)] \($d.name) \($d.version) \(.id)"' /tmp/pip-audit.json
