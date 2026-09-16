@@ -20,8 +20,8 @@ from pathlib import Path
 import pypdfium2 as pdfium
 import pytest
 
-from tests.acceptance.fixtures import render
-from tests.acceptance.fixtures.render import Fixture, load_groundtruth, materialize, source_text
+from acceptance.fixtures import render
+from acceptance.fixtures.render import Fixture, load_groundtruth, materialize, source_text
 
 
 @pytest.fixture(scope="module")

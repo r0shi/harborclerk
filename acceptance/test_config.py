@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.acceptance import config
+from acceptance import config
 
 
 def _env(monkeypatch: pytest.MonkeyPatch, **values: str) -> None:

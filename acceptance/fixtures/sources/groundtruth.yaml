@@ -1,5 +1,5 @@
 # Ground truth for the acceptance fixtures. Every value here is asserted by
-# tests/acceptance/test_fixtures_render.py against the sources (offline) and by
+# acceptance/test_fixtures_render.py against the sources (offline) and by
 # the live checks against a running instance. Change a source and this file
 # together.
 

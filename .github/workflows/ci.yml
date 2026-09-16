@@ -43,6 +43,12 @@ jobs:
           STORAGE_PATH: /tmp/hc-test-storage
           TIKA_URL: "http://localhost:9998"
         run: uv run pytest tests/ -v --tb=short -m "not requires_models"
+      # acceptance/ is deliberately outside tests/: tests/conftest.py runs at
+      # import and probes Postgres on 5433/5432 and creates a test database,
+      # which on the Mac mini is the instance under test. The live checks skip
+      # here (no HC_API_BASE); the fixture renderer and safety switches run.
+      - name: Acceptance suite (offline parts)
+        run: uv run pytest acceptance/ -v --tb=short
 
   embedder:
     # `embedder/` is a separate uv project with its own lock, and the root

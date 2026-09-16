@@ -27,6 +27,7 @@ class AcceptanceConfig:
     username: str
     password: str
     folder_root: Path
+    folder_root_in_instance: str | None
     insecure: bool
     disposable: bool
     wipe: bool
@@ -40,7 +41,18 @@ class AcceptanceConfig:
 
     @property
     def folder_path(self) -> Path:
+        """Where this process writes the fixtures."""
         return self.folder_root / self.folder_name
+
+    @property
+    def folder_path_in_instance(self) -> str:
+        """The same folder as the instance sees it: identical for the native
+        app, the container-side bind-mount path on Compose."""
+        return (
+            str(Path(self.folder_root_in_instance) / self.folder_name)
+            if self.folder_root_in_instance
+            else str(self.folder_path)
+        )
 
 
 def _flag(name: str) -> bool:
@@ -72,6 +84,7 @@ def load_config() -> AcceptanceConfig:
         username=username,
         password=password,
         folder_root=folder_root,
+        folder_root_in_instance=os.environ.get("HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE", "").strip() or None,
         insecure=_flag("HC_INSECURE"),
         disposable=disposable,
         wipe=wipe,
