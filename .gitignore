@@ -14,7 +14,14 @@ build/
 .idea/
 .vscode/
 *.swp
-.claude/
+# Claude Code: hooks, skills and launch configs are tracked so a fresh clone
+# and the second machine get the same tools (ADR 0001). Local permission
+# grants and worktrees are not.
+.claude/*
+!.claude/settings.json
+!.claude/skills/
+!.claude/launch.json
+!.claude/agents/
 .serena/
 .worktrees/
 .superpowers/

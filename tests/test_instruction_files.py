@@ -17,7 +17,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-IGNORED = {"node_modules", ".git", "build", "dist", ".venv", "__pycache__"}
+# `.worktrees` and `.claude/worktrees` hold other branches' checkouts on a
+# developer machine; their instruction files belong to those branches.
+IGNORED = {"node_modules", ".git", "build", "dist", ".venv", "__pycache__", ".worktrees", ".claude"}
 
 
 def _instruction_dirs() -> list[Path]:

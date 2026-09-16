@@ -51,6 +51,15 @@ exposes the corpus to external agents through an MCP server and a mirrored CLI.
   environment against live advisory databases, so a newly-published CVE turns it
   red on a change that touched nothing relevant.
 
+## Identities
+
+- **Unattended sessions run as the machine user** (`GH_TOKEN` and the git
+  author set to the bot); interactive sessions the owner drives run as the
+  owner. The bot never holds admin. See `docs/adr/0001-agent-native-sdlc.md`.
+- **No agent merges its own PR.** One approving review is required.
+- **Signing is human.** No agent runs `make sign` or handles the app-specific
+  password.
+
 ## Review policy
 
 A PR requires a fresh-eyes review before merge if it touches more than three
@@ -89,6 +98,7 @@ Before requesting review, the author runs two mechanical checks:
 - Project-wide rule or constraint → this file
 - Subsystem gotcha → the nearest scoped `AGENTS.md`
 - Decision + rationale + rejected alternatives → `docs/adr/`
+- Loop output, eval and field reports → `docs/reports/`
 - Deferred work → a GitHub issue
 - Strategy, positioning, claims → `docs/strategy/` (private repo)
 - Personal workflow preference → user memory
@@ -104,6 +114,9 @@ wrong place.
 | Architecture, data model, deployment | `docs/architecture.md` |
 | Generated reference (tools, routes, tables, stages, services) | `docs/architecture.md#generated-reference` |
 | Design specs and implementation plans | `docs/superpowers/{specs,plans}/` |
+| Decisions, with rejected alternatives | `docs/adr/` |
+| Dated reports: evals, acceptance, field work | `docs/reports/` |
+| Skills: `verify`, `build-macos`, and the loop procedures | `.claude/skills/*/SKILL.md` — tracked, no absolute paths |
 | Eval harness and methodology | `scripts/test_corpora/`, `docs/evaluation.md` |
 | Integration setup (MCP, CLI, connectors) | `docs/integrations.md` |
 | Pipeline stages, queues, `mark_stage_done`, extraction paths, storage, retrieval, async traps | `src/harbor_clerk/AGENTS.md` |
@@ -148,6 +161,10 @@ then require it, then rebase everything else.
 content**, because Claude Code reads only `CLAUDE.md` while Codex and most other
 harnesses read `AGENTS.md`. One source of truth, two names — never edit them as
 if they were separate files.
+
+`.claude/settings.json`, `.claude/skills/` and `.claude/launch.json` are tracked
+and must stay portable — no machine-specific paths. `.claude/settings.local.json`
+is not tracked.
 
 ### Scoped files are NOT auto-loaded — read them yourself
 
