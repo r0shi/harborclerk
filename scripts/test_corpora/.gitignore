@@ -8,4 +8,14 @@ __pycache__/
 # Lockfile is intentionally untracked — `uv run`/`uv sync` regenerates it
 # on demand and the harness doesn't need lockstep version pinning across
 # machines. Letting it stay tracked spammed working-tree dirty status.
+#
+# Side effect worth knowing about: GitHub's dependency graph kept a snapshot
+# of the lockfile from before it was untracked, and Dependabot keeps matching
+# new advisories against it. That produced 36 open alerts naming
+# `scripts/test_corpora/uv.lock` — a path absent from `main` since #326 — with
+# ones created as late as 2026-09-05, while the only lockfiles in the tree are
+# `uv.lock` and `embedder/uv.lock`. All 36 were dismissed as inaccurate on
+# 2026-09-16. If more appear against this path, check the git tree before
+# chasing them: nothing in the repo pins those versions, so there is nothing
+# to upgrade, and dismissal is the only way to clear them.
 uv.lock
