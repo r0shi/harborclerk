@@ -4,9 +4,10 @@ The eval harness has a fuller one (`scripts/test_corpora/runner/client.py`)
 with retries and research helpers, but it lives in a separate uv project with
 its own dependencies, so this suite carries what it needs on `httpx` and `mcp`,
 both root dependencies. Methods return parsed JSON and raise on unexpected
-status; `request()` returns the raw response for the checks that are *about*
-a status code. Nothing here can call the endpoints the design spec lists as
-never-called: there are no methods for them.
+status. `request()` returns the raw response and is the only way to reach an
+endpoint without a method here; the checks use it for status-code assertions,
+and the session fixture uses it for exactly one mutating call, the guarded
+`delete-all-documents` of wipe mode.
 """
 
 from __future__ import annotations
@@ -17,6 +18,27 @@ import time
 from typing import Any
 
 import httpx
+
+FOREGROUND_STAGES = ("extract", "chunk", "embed", "finalize")
+
+
+def folder_ingest_done(progress: dict[str, Any], expected_files: int) -> bool:
+    """The folder has been scanned, every expected file has finalized, and no
+    foreground stage has work left. `summarize` is background, does not gate
+    finalize, and blocks indefinitely with no model, so it is not counted."""
+    foreground_in_flight = sum(
+        counts["pending"] + counts["running"] for stage, counts in progress["by_stage"].items() if stage != "summarize"
+    )
+    return (
+        progress["scan_status"] == "idle"
+        and foreground_in_flight == 0
+        and progress["completed_files"] >= expected_files
+    )
+
+
+def document_ready(doc: dict[str, Any]) -> bool:
+    stages = {j["stage"]: j["status"] for j in doc.get("jobs", [])}
+    return doc.get("pipeline_status") == "ready" and all(stages.get(s) == "done" for s in FOREGROUND_STAGES)
 
 
 class HarborClerk:
@@ -76,6 +98,9 @@ class HarborClerk:
     def me(self) -> dict[str, Any]:
         return self._json("GET", "/api/me")
 
+    def cookie(self, name: str) -> str | None:
+        return self._http.cookies.get(name)
+
     def with_key(self, raw_key: str) -> HarborClerk:
         """A separate client authenticated as an API key, same target."""
         return HarborClerk(self.base_url, verify=self._verify, timeout=self._timeout, bearer=raw_key)
@@ -91,20 +116,9 @@ class HarborClerk:
     def status_summary(self) -> dict[str, Any]:
         return self._json("GET", "/api/system/status-summary")
 
-    def jobs_snapshot(self) -> dict[str, Any]:
-        return self._json("GET", "/api/jobs/snapshot")
-
-    def pipeline_quiet(self, *, ignore_queues: tuple[str, ...] = ("llm",)) -> bool:
-        """Foreground queues idle. `llm` is ignored by default: summarize runs
-        there, does not gate finalize, and blocks indefinitely with no model."""
-        queues = self.jobs_snapshot()["queues"]
-        return all(q["queued"] == 0 and q["running"] == 0 for name, q in queues.items() if name not in ignore_queues)
-
-    def has_cookie(self, name: str) -> bool:
-        return name in self._http.cookies
-
     def document_count(self) -> int:
-        return int(self._json("GET", "/api/docs", params={"limit": 0}).get("total", 0))
+        # limit=0 means "no limit" on this route and would page the whole corpus.
+        return int(self._json("GET", "/api/docs", params={"limit": 1}).get("total", 0))
 
     # ── watched folders ─────────────────────────────────────────────────
 
@@ -117,35 +131,20 @@ class HarborClerk:
     def folder_progress(self, folder_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/watch/folders/{folder_id}/progress")
 
-    def folder_rescan(self, folder_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/api/watch/folders/{folder_id}/rescan")
-
     def folder_delete(self, folder_id: str) -> None:
         self._json("DELETE", f"/api/watch/folders/{folder_id}")
 
     def wait_for_folder_ingest(
         self, folder_id: str, *, expected_files: int, timeout_s: float, poll_s: float = 3.0
     ) -> dict[str, Any]:
-        """Block until the folder has been scanned, every expected file has
-        finalized, and the queues are quiet. Raises TimeoutError with the last
-        progress payload, which is what a human needs to diagnose a stall."""
+        """Folder-scoped: judged from the folder's own progress, so other work
+        on the instance neither delays nor fails the run. Raises TimeoutError
+        with the last progress payload, which is what a human needs."""
         deadline = time.monotonic() + timeout_s
         progress: dict[str, Any] = {}
         while time.monotonic() < deadline:
             progress = self.folder_progress(folder_id)
-            # `ingest_status` counts summarize, which is background and may be
-            # blocked with no model, so judge the foreground stages directly.
-            foreground_in_flight = sum(
-                counts["pending"] + counts["running"]
-                for stage, counts in progress["by_stage"].items()
-                if stage != "summarize"
-            )
-            done = (
-                progress["scan_status"] == "idle"
-                and foreground_in_flight == 0
-                and progress["completed_files"] >= expected_files
-            )
-            if done and self.pipeline_quiet():
+            if folder_ingest_done(progress, expected_files):
                 return progress
             time.sleep(poll_s)
         raise TimeoutError(f"folder {folder_id} did not finish ingesting in {timeout_s:.0f}s: {json.dumps(progress)}")
@@ -178,18 +177,16 @@ class HarborClerk:
     def reprocess_document(self, doc_id: str) -> Any:
         return self._json("POST", f"/api/docs/{doc_id}/reprocess")
 
-    def delete_document(self, doc_id: str) -> None:
-        self._json("DELETE", f"/api/docs/{doc_id}")
-
     def wait_for_document_ready(self, doc_id: str, *, timeout_s: float, poll_s: float = 3.0) -> dict[str, Any]:
+        """Judged from the document's own stage jobs, not the instance queues."""
         deadline = time.monotonic() + timeout_s
         doc: dict[str, Any] = {}
         while time.monotonic() < deadline:
             doc = self.get_document(doc_id)
-            if doc.get("pipeline_status") == "ready" and self.pipeline_quiet():
+            if document_ready(doc):
                 return doc
-            if doc.get("pipeline_status") == "failed":
-                raise RuntimeError(f"document {doc_id} failed: {doc.get('error')}")
+            if doc.get("pipeline_status") == "error":  # PipelineStatus.error; there is no "failed"
+                raise RuntimeError(f"document {doc_id} errored: {doc.get('error')}")
             time.sleep(poll_s)
         raise TimeoutError(
             f"document {doc_id} not ready in {timeout_s:.0f}s: pipeline_status={doc.get('pipeline_status')}"
@@ -205,17 +202,6 @@ class HarborClerk:
 
     def key_requests(self, key_id: str, **params: Any) -> dict[str, Any]:
         return self._json("GET", f"/api/api-keys/{key_id}/usage/requests", params=params)
-
-    # ── models (for Ask) ────────────────────────────────────────────────
-
-    def list_models(self) -> Any:
-        return self._json("GET", "/api/chat/models")
-
-    def model_status(self) -> dict[str, Any]:
-        return self._json("GET", "/api/chat/models/status")
-
-    def activate_model(self, model_id: str) -> Any:
-        return self._json("PUT", f"/api/chat/models/{model_id}/activate")
 
 
 class McpSession:

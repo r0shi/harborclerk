@@ -1,7 +1,7 @@
 """Where the acceptance suite gets its target and its safety switches.
 
 Everything comes from the environment so credentials never enter the tree;
-the `acceptance` skill reads them from Keychain. With no `HC_API_BASE` the
+the `acceptance` skill (PR 3 of the plan) will read them from Keychain. With no `HC_API_BASE` the
 whole suite skips, which is why the report in `docs/reports/`, not a green
 CI job, is the evidence that it ran.
 """
@@ -74,6 +74,16 @@ def load_config() -> AcceptanceConfig:
     if not folder_root.is_dir():
         pytest.skip(f"HC_ACCEPTANCE_FOLDER_ROOT={folder_root} is not a directory")
 
+    root_in_instance = os.environ.get("HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE", "").strip() or None
+    if root_in_instance:
+        # The Compose watcher auto-discovers every top-level subdirectory of
+        # WATCH_ROOT and, with no unique constraint on the path, registers a
+        # second row beside a manually created one: two observers, two
+        # documents per file, and a twin that refuses deletion while mounted.
+        pytest.skip(
+            "Compose targets are not supported yet (watcher auto-discovery creates a twin folder); see the spec"
+        )
+
     wipe = _flag("HC_ACCEPTANCE_WIPE")
     disposable = _flag("HC_ACCEPTANCE_DISPOSABLE")
     if wipe and not disposable:
@@ -84,7 +94,7 @@ def load_config() -> AcceptanceConfig:
         username=username,
         password=password,
         folder_root=folder_root,
-        folder_root_in_instance=os.environ.get("HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE", "").strip() or None,
+        folder_root_in_instance=root_in_instance,
         insecure=_flag("HC_INSECURE"),
         disposable=disposable,
         wipe=wipe,

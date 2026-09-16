@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
 
 from acceptance import config
+from acceptance.config import AcceptanceConfig
 
 
 def _env(monkeypatch: pytest.MonkeyPatch, **values: str) -> None:
-    for name in (
-        "HC_API_BASE",
-        "HC_USERNAME",
-        "HC_PASSWORD",
-        "HC_ACCEPTANCE_FOLDER_ROOT",
-        "HC_INSECURE",
-        "HC_ACCEPTANCE_DISPOSABLE",
-        "HC_ACCEPTANCE_WIPE",
-        "HC_ACCEPTANCE_RUN_ID",
-    ):
-        monkeypatch.delenv(name, raising=False)
+    for name in list(os.environ):
+        if name.startswith("HC_"):
+            monkeypatch.delenv(name, raising=False)
     for name, value in values.items():
         monkeypatch.setenv(name, value)
 
@@ -42,7 +38,7 @@ def test_wipe_requires_the_disposable_flag(monkeypatch: pytest.MonkeyPatch) -> N
         config.load_config()
 
 
-def test_folder_root_must_exist(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_folder_root_must_exist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _env(
         monkeypatch,
         HC_API_BASE="http://localhost:8100",
@@ -54,7 +50,20 @@ def test_folder_root_must_exist(monkeypatch: pytest.MonkeyPatch, tmp_path) -> No
         config.load_config()
 
 
-def test_config_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_compose_target_is_skipped_with_the_reason(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _env(
+        monkeypatch,
+        HC_API_BASE="https://localhost",
+        HC_USERNAME="a@b.c",
+        HC_PASSWORD="x",
+        HC_ACCEPTANCE_FOLDER_ROOT=str(tmp_path),
+        HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE="/data/watch",
+    )
+    with pytest.raises(pytest.skip.Exception, match="Compose"):
+        config.load_config()
+
+
+def test_config_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _env(
         monkeypatch,
         HC_API_BASE="http://localhost:8100/",
@@ -66,5 +75,24 @@ def test_config_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     cfg = config.load_config()
     assert cfg.api_base == "http://localhost:8100"  # trailing slash stripped
     assert cfg.folder_path == tmp_path.resolve() / "hc-acceptance-abc123"
+    assert cfg.folder_path_in_instance == str(cfg.folder_path)
     assert not cfg.wipe and not cfg.disposable and not cfg.insecure
-    assert cfg.ingest_timeout_s == 900
+    assert cfg.ingest_timeout_s == 900 and cfg.ask_timeout_s == 300
+
+
+def test_folder_path_in_instance_maps_to_the_container_side(tmp_path: Path) -> None:
+    cfg = AcceptanceConfig(
+        api_base="https://localhost",
+        username="a@b.c",
+        password="x",
+        folder_root=tmp_path,
+        folder_root_in_instance="/data/watch",
+        insecure=True,
+        disposable=False,
+        wipe=False,
+        run_id="abc123",
+        ingest_timeout_s=1,
+        ask_timeout_s=1,
+    )
+    assert cfg.folder_path == tmp_path / "hc-acceptance-abc123"
+    assert cfg.folder_path_in_instance == "/data/watch/hc-acceptance-abc123"

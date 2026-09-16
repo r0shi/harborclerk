@@ -2,9 +2,13 @@
 
 One folder of rendered fixtures is added to the instance under a per-run
 name, ingested, and deleted at the end. Deleting the watched folder cascades
-to its documents, so folder-scoped runs leave everything else on the
-instance untouched. Every API key the run creates is deleted too. Wipe mode
-is opt-in and double-guarded (see `config.py`).
+to its documents, so folder-scoped runs leave every other document on the
+instance untouched; they do leave audit rows (login, key create and delete,
+reprocess) and soft-deleted keys, which is the trail they should leave. Wipe
+mode is opt-in and double-guarded (see `config.py`).
+
+The setup and teardown are plain functions so they can be tested offline
+with a fake client; the pytest fixtures only bind them to the session.
 """
 
 from __future__ import annotations
@@ -13,14 +17,31 @@ import hashlib
 import os
 import shutil
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
+import httpx
 import pytest
 
 from acceptance.config import WIPE_MAX_DOCUMENTS, AcceptanceConfig, load_config
 from acceptance.fixtures.render import Fixture, load_groundtruth, materialize
 from acceptance.hc_client import HarborClerk, McpSession
+
+
+class AdminClient(Protocol):
+    """The slice of `HarborClerk` the session helpers use; a fake implements it offline."""
+
+    def document_count(self) -> int: ...
+    def folder_list(self) -> list[dict[str, Any]]: ...
+    def folder_create(self, path: str, *, recursive: bool = True) -> dict[str, Any]: ...
+    def folder_delete(self, folder_id: str) -> None: ...
+    def wait_for_folder_ingest(
+        self, folder_id: str, *, expected_files: int, timeout_s: float, poll_s: float = 3.0
+    ) -> dict[str, Any]: ...
+    def list_documents(self, **params: Any) -> dict[str, Any]: ...
+    def status_summary(self) -> dict[str, Any]: ...
+    def request(self, method: str, path: str, **kw: Any) -> httpx.Response: ...
 
 
 @pytest.fixture(scope="session")
@@ -65,70 +86,85 @@ class Corpus:
         return next((name for name, d in self.docs.items() if d["doc_id"] == doc_id), None)
 
 
-def _wipe_instance(admin: HarborClerk, cfg: AcceptanceConfig) -> None:
-    """Only on a disposable instance holding little: both guards, every time."""
+def wipe_instance(admin: AdminClient, cfg: AcceptanceConfig) -> None:
+    """Only on a disposable instance holding little: both guards, every time.
+    Every watched folder must go first; if any refuses, stop before touching
+    documents rather than leave a half-wiped instance."""
     if not cfg.disposable:
         pytest.fail("wipe mode without HC_ACCEPTANCE_DISPOSABLE=1")
     count = admin.document_count()
     if count > WIPE_MAX_DOCUMENTS:
         pytest.fail(f"refusing to wipe {cfg.api_base}: it holds {count} documents (cap {WIPE_MAX_DOCUMENTS})")
+    refused: list[str] = []
     for folder in admin.folder_list():
-        admin.folder_delete(folder["folder_id"])
+        try:
+            admin.folder_delete(folder["folder_id"])
+        except httpx.HTTPStatusError as e:
+            refused.append(f"{folder.get('path')}: {e.response.status_code}")
+    if refused:
+        pytest.fail(f"refusing to wipe: these folders could not be deleted, documents left intact: {refused}")
     admin.request(
         "POST", "/api/system/delete-all-documents", json={"confirmation": "DELETE EVERYTHING"}
     ).raise_for_status()
 
 
-def _documents_under(admin: HarborClerk, folder_path: str) -> dict[str, dict[str, Any]]:
+def documents_under(admin: AdminClient, folder_path: str) -> dict[str, dict[str, Any]]:
     """Map fixture file name -> document row for documents from our folder."""
-    rows = admin.list_documents(limit=200)["items"]
-    out: dict[str, dict[str, Any]] = {}
     prefix = folder_path.rstrip("/") + "/"
-    for row in rows:
+    out: dict[str, dict[str, Any]] = {}
+    for row in admin.list_documents(limit=200)["items"]:
         src = row.get("watch_source_path") or row.get("source_path") or ""
         if src.startswith(prefix):
             out[src[len(prefix) :]] = row
     return out
 
 
-@pytest.fixture(scope="session")
-def corpus(cfg: AcceptanceConfig, admin: HarborClerk) -> Iterator[Corpus]:
-    if cfg.wipe:
-        _wipe_instance(admin, cfg)
+@contextmanager
+def corpus_session(admin: AdminClient, cfg: AcceptanceConfig, *, keep: bool = False) -> Iterator[Corpus]:
+    """Render, register, ingest, yield; then remove the folder and the files.
 
-    # Register the empty folder first, then render into it. On Compose the
-    # watcher auto-discovers top-level subdirectories of WATCH_ROOT every
-    # minute; populating first can lose the race and leave an auto-mount that
-    # refuses deletion. It also exercises the live detection path the product
-    # claims, rather than only the initial scan.
+    Files are rendered *before* the folder is registered so the watcher's
+    initial scan sees all of them: `skipped_extensions` is written only by
+    that scan, and live events for unsupported files are dropped without
+    updating the tally. The cleanup runs whatever failed, including a failed
+    ingest wait, so a run never leaves a registered folder behind."""
+    if cfg.wipe:
+        wipe_instance(admin, cfg)
     cfg.folder_path.mkdir(parents=True, exist_ok=False)
-    folder = admin.folder_create(cfg.folder_path_in_instance)
-    fixtures = {f.name: f for f in materialize(cfg.folder_path)}
-    expected_files = sum(1 for f in fixtures.values() if not f.unsupported)
-    corpus = Corpus(
-        folder_id=folder["folder_id"],
-        folder_path=folder["path"],
-        fixtures=fixtures,
-        groundtruth=load_groundtruth(),
-        source_digests={f.name: hashlib.sha256(f.path.read_bytes()).hexdigest() for f in fixtures.values()},
-    )
-    keep = os.environ.get("HC_ACCEPTANCE_KEEP", "") == "1"
+    folder_id: str | None = None
     try:
+        fixtures = {f.name: f for f in materialize(cfg.folder_path)}
+        digests = {f.name: hashlib.sha256(f.path.read_bytes()).hexdigest() for f in fixtures.values()}
+        expected_files = sum(1 for f in fixtures.values() if not f.unsupported)
+        folder = admin.folder_create(cfg.folder_path_in_instance)
+        folder_id = folder["folder_id"]
+        corpus = Corpus(
+            folder_id=folder_id,
+            folder_path=folder["path"],
+            fixtures=fixtures,
+            groundtruth=load_groundtruth(),
+            source_digests=digests,
+        )
         try:
-            admin.wait_for_folder_ingest(
-                corpus.folder_id, expected_files=expected_files, timeout_s=cfg.ingest_timeout_s
-            )
+            admin.wait_for_folder_ingest(folder_id, expected_files=expected_files, timeout_s=cfg.ingest_timeout_s)
         except TimeoutError as e:
             summary = admin.status_summary()
             pytest.fail(
                 f"{e}\nstatus-summary: {summary.get('state')} {summary.get('counts')}\n{summary.get('needs_attention')}"
             )
-        corpus.docs = _documents_under(admin, corpus.folder_path)
+        corpus.docs = documents_under(admin, corpus.folder_path)
         yield corpus
     finally:
         if not keep:
-            admin.folder_delete(corpus.folder_id)
+            if folder_id is not None:
+                admin.folder_delete(folder_id)
             shutil.rmtree(cfg.folder_path, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def corpus(cfg: AcceptanceConfig, admin: HarborClerk) -> Iterator[Corpus]:
+    with corpus_session(admin, cfg, keep=os.environ.get("HC_ACCEPTANCE_KEEP", "") == "1") as c:
+        yield c
 
 
 class KeyFactory:
@@ -144,9 +180,13 @@ class KeyFactory:
         self.created.append(key)
         return key
 
-    def cleanup(self) -> None:
+    def cleanup(self) -> list[str]:
+        """Delete every key created; return the ids that could not be deleted."""
+        failed: list[str] = []
         for key in self.created:
-            self._admin.request("DELETE", f"/api/api-keys/{key['key_id']}")
+            if self._admin.request("DELETE", f"/api/api-keys/{key['key_id']}").status_code >= 400:
+                failed.append(key["key_id"])
+        return failed
 
 
 @pytest.fixture(scope="session")
