@@ -6,11 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"tool_input\",{}).get(\"file_path\",\"\"))' 2>/dev/null) || exit 0; [ -n \"$FILE\" ] || exit 0; echo \"$FILE\" | grep -qE '\\.py$' || exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && uv run --frozen --no-sync ruff format --quiet \"$FILE\" || { echo \"ruff hook: could not format $FILE. Is uv on PATH and the test extra synced (uv sync --extra test)?\" >&2; exit 2; }; exit 0"
+            "command": "FILE=$(python3 -c 'import json,sys; print((json.load(sys.stdin).get(\"tool_input\") or {}).get(\"file_path\") or \"\")' 2>/dev/null) || { echo 'BLOCK: hook could not parse tool_input (python3 missing or malformed payload); refusing to fail open.' >&2; exit 2; }; [ -n \"$FILE\" ] || exit 0; echo \"$FILE\" | grep -qE '\\.py$' || exit 0; cd \"${CLAUDE_PROJECT_DIR:-.}\" && uv run --frozen --no-sync ruff format --quiet \"$FILE\" || { echo \"ruff hook: could not format $FILE. Is uv on PATH and the test extra synced (uv sync --extra test)?\" >&2; exit 2; }; exit 0"
           },
           {
             "type": "command",
-            "command": "FILE=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"tool_input\",{}).get(\"file_path\",\"\"))' 2>/dev/null) || exit 0; [ -n \"$FILE\" ] || exit 0; echo \"$FILE\" | grep -qE '\\.(tsx?|jsx?|css)$' || exit 0; P=\"${CLAUDE_PROJECT_DIR:-.}/frontend/node_modules/.bin/prettier\"; [ -x \"$P\" ] || { echo \"prettier hook: $P not found. Run npm ci in frontend/.\" >&2; exit 2; }; \"$P\" --log-level warn --write \"$FILE\" || { echo \"prettier hook: could not format $FILE\" >&2; exit 2; }; exit 0"
+            "command": "FILE=$(python3 -c 'import json,sys; print((json.load(sys.stdin).get(\"tool_input\") or {}).get(\"file_path\") or \"\")' 2>/dev/null) || { echo 'BLOCK: hook could not parse tool_input (python3 missing or malformed payload); refusing to fail open.' >&2; exit 2; }; [ -n \"$FILE\" ] || exit 0; echo \"$FILE\" | grep -qE '\\.(tsx?|jsx?|css)$' || exit 0; case \"$FILE\" in */frontend/*|frontend/*) ;; *) exit 0;; esac; P=\"${CLAUDE_PROJECT_DIR:-.}/frontend/node_modules/.bin/prettier\"; [ -x \"$P\" ] || { echo \"prettier hook: $P not found. Run npm ci in frontend/.\" >&2; exit 2; }; \"$P\" --log-level warn --write \"$FILE\" || { echo \"prettier hook: could not format $FILE\" >&2; exit 2; }; exit 0"
           }
         ]
       }
@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"tool_input\",{}).get(\"file_path\",\"\"))' 2>/dev/null) || { echo 'BLOCK: protected-file guard could not parse tool_input (python3 missing or malformed payload); refusing to fail open.' >&2; exit 2; }; [ -n \"$FILE\" ] || exit 0; if [ -n \"${CLAUDE_PROJECT_DIR:-}\" ]; then REL=${FILE#\"$CLAUDE_PROJECT_DIR\"/}; else REL=$FILE; fi; case \"$REL\" in .env.example|*/.env.example) exit 0;; esac; if echo \"$REL\" | grep -qE '(^|/)\\.env(\\.[^/]+)?$|(^|/)uv\\.lock$'; then echo \"BLOCK: $REL is protected. .env files hold secrets and are never edited by an agent; uv.lock changes go through uv (uv lock / uv add).\" >&2; exit 2; fi; exit 0"
+            "command": "FILE=$(python3 -c 'import json,sys; print((json.load(sys.stdin).get(\"tool_input\") or {}).get(\"file_path\") or \"\")' 2>/dev/null) || { echo 'BLOCK: hook could not parse tool_input (python3 missing or malformed payload); refusing to fail open.' >&2; exit 2; }; [ -n \"$FILE\" ] || exit 0; if [ -n \"${CLAUDE_PROJECT_DIR:-}\" ]; then REL=${FILE#\"$CLAUDE_PROJECT_DIR\"/}; else REL=$FILE; fi; case \"$REL\" in .env.example|*/.env.example) exit 0;; esac; if echo \"$REL\" | grep -qE '(^|/)\\.env(\\.[^/]+)?$|(^|/)\\.envrc$|(^|/)uv\\.lock$'; then echo \"BLOCK: $REL is protected. .env files hold secrets and are never edited by an agent; uv.lock changes go through uv (uv lock / uv add).\" >&2; exit 2; fi; exit 0"
           }
         ]
       }

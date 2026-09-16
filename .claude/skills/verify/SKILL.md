@@ -17,7 +17,7 @@ the repository root.
 
 2. Run frontend checks:
    ```bash
-   (cd frontend && npm run lint 2>&1 && npm run type-check 2>&1 && npm run format:check 2>&1)
+   (cd frontend && npm run lint 2>&1 && npm run type-check 2>&1 && npm run format:check 2>&1 && npm test -- --run 2>&1)
    ```
 
 3. Report a summary:
@@ -26,6 +26,7 @@ the repository root.
    - ESLint: pass/fail (show errors, ignore warnings)
    - TypeScript: pass/fail (show errors)
    - Prettier: pass/fail (show files that need formatting)
+   - Vitest: pass/fail (show failing tests)
    - Overall: PASS if all green, FAIL if any errors
 
 CI additionally verifies generated docs (`uv run python -m scripts.gen_docs

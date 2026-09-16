@@ -66,9 +66,10 @@ exposes the corpus to external agents through an MCP server and a mirrored CLI.
 
 A PR requires a fresh-eyes review before merge if it touches more than three
 files, changes behavior, modifies public API or tool contracts, adjusts
-auth/security, affects ingest/retrieval/LLM flows, **or adds a new subsystem,
-client surface, or storage location**. Trivial doc edits and one-line mechanical
-fixes do not.
+auth/security, affects ingest/retrieval/LLM flows, **adds a new subsystem,
+client surface, or storage location, or changes `.claude/settings.json`** (its
+hooks run on every clone). Trivial doc edits and one-line mechanical fixes do
+not.
 
 That last trigger exists because a new subsystem is exactly when a stated
 non-negotiable quietly stops being true — "originals are never copied" was
@@ -118,7 +119,7 @@ wrong place.
 | Design specs and implementation plans | `docs/superpowers/{specs,plans}/` |
 | Decisions, with rejected alternatives | `docs/adr/` |
 | Dated reports: evals, acceptance, field work | `docs/reports/` |
-| Skills: `verify`, `build-macos` | `.claude/skills/*/SKILL.md` — tracked, no absolute paths |
+| Skills: `verify`, `build-macos` | `.claude/skills/*/SKILL.md` — tracked, no machine-specific paths |
 | Eval harness and methodology | `scripts/test_corpora/`, `docs/evaluation.md` |
 | Integration setup (MCP, CLI, connectors) | `docs/integrations.md` |
 | Pipeline stages, queues, `mark_stage_done`, extraction paths, storage, retrieval, async traps | `src/harbor_clerk/AGENTS.md` |

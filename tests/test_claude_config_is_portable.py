@@ -80,10 +80,19 @@ def test_per_machine_state_is_ignored(rel: str) -> None:
     assert _ignored(rel), f"{rel} is per-machine state and must be ignored"
 
 
+@pytest.mark.parametrize(
+    ("rel", "ignored"), [(".env", True), (".env.local", True), (".env.production", True), (".env.example", False)]
+)
+def test_env_files_are_gitignored_except_the_template(rel: str, ignored: bool) -> None:
+    """The guard treats `.env.<suffix>` as secrets; `.gitignore` must agree, or
+    `git add -A` commits what the hook refused to edit."""
+    assert _ignored(rel) == ignored, f"{rel}: expected ignored={ignored}"
+
+
 @pytest.mark.parametrize("rel", sorted(_tracked(".claude")))
 def test_no_machine_specific_paths(rel: str) -> None:
     text = (REPO / rel).read_text(encoding="utf-8")
-    hits = re.findall(r"(?:/Users/|/home/)[\w.-]+", text)
+    hits = re.findall(r"(?:/Users/|/home/|/Volumes/)[\w.-]+", text)
     assert not hits, f"{rel} names a machine-specific path: {sorted(set(hits))}"
 
 
@@ -147,7 +156,15 @@ def _ruff_hook() -> str:
     return hook
 
 
-def _hook_env(*, project_dir: bool = True, shadow: Path | None = None) -> dict[str, str]:
+def _prettier_hook() -> str:
+    (hook,) = [c for c in _hook_commands("PostToolUse") if "prettier" in c]
+    return hook
+
+
+PRETTIER_BIN = REPO / "frontend" / "node_modules" / ".bin" / "prettier"
+
+
+def _hook_env(*, project_dir: bool | Path = True, shadow: Path | None = None) -> dict[str, str]:
     """The environment Claude Code runs hooks in: the user's shell, where the
     project venv is *not* activated. Under `uv run pytest`, `.venv/bin` is on
     PATH, so a bare `ruff` resolves here and nowhere else; drop exactly that
@@ -161,10 +178,10 @@ def _hook_env(*, project_dir: bool = True, shadow: Path | None = None) -> dict[s
         path.insert(0, str(shadow))
     env["PATH"] = os.pathsep.join(path)
     assert shutil.which("uv", path=env["PATH"]), "uv must be on PATH for these tests (it is what the hooks call)"
-    if project_dir:
-        env["CLAUDE_PROJECT_DIR"] = str(REPO)
-    else:
+    if project_dir is False:
         env.pop("CLAUDE_PROJECT_DIR", None)
+    else:
+        env["CLAUDE_PROJECT_DIR"] = str(REPO if project_dir is True else project_dir)
     return env
 
 
@@ -191,6 +208,7 @@ def _payload(file_path: str | Path) -> str:
     [
         (".env", True),
         (".env.local", True),
+        (".envrc", True),  # direnv files carry secrets the same way
         ("uv.lock", True),
         ("embedder/uv.lock", True),
         (".env.example", False),  # checked-in template with placeholder values
@@ -219,8 +237,9 @@ def test_guard_blocks_without_project_dir_and_with_relative_paths() -> None:
     assert _run(_guard(), _payload("README.md"), _hook_env()).returncode == 0
 
 
-def test_guard_allows_when_payload_has_no_file_path() -> None:
-    result = _run(_guard(), json.dumps({"tool_name": "Edit", "tool_input": {}}), _hook_env())
+@pytest.mark.parametrize("tool_input", [{}, {"file_path": None}])
+def test_guard_allows_when_payload_has_no_file_path(tool_input: dict) -> None:
+    result = _run(_guard(), json.dumps({"tool_name": "Edit", "tool_input": tool_input}), _hook_env())
     assert result.returncode == 0, result.stderr
 
 
@@ -236,6 +255,18 @@ def test_guard_fails_closed_on_malformed_payload() -> None:
     result = _run(_guard(), "not json {", _hook_env())
     assert result.returncode == 2, f"guard allowed an edit on an unparseable payload: exit {result.returncode}"
     assert result.stderr.strip()
+
+
+def test_formatter_hooks_refuse_when_parser_is_missing(tmp_path: Path) -> None:
+    """Same property for the formatters: exiting 0 with nothing formatted looks
+    identical to success. The guard runs first and would already block, but
+    that is a dependency between two hooks, not a property of this one."""
+    target = tmp_path / "unformatted.py"
+    target.write_text("x = { 'a':1 }\n", encoding="utf-8")
+    for hook in (_ruff_hook(), _prettier_hook()):
+        result = _run(hook, _payload(target), _hook_env(shadow=_shadow(tmp_path, "python3")))
+        assert result.returncode == 2, f"formatter hook exited {result.returncode} with its parser missing"
+        assert result.stderr.strip()
 
 
 def test_ruff_hook_actually_formats(tmp_path: Path) -> None:
@@ -265,5 +296,39 @@ def test_ruff_hook_never_touches_the_lockfile() -> None:
     the flags rather than the behaviour: `--frozen` never updates the lock,
     `--no-sync` never installs anything from inside a hook."""
     hook = _ruff_hook()
-    assert "--frozen" in hook, "the ruff hook must run `uv run --frozen ...` so it can never rewrite uv.lock"
-    assert "--no-sync" in hook, "the ruff hook must run `uv run --no-sync ...`; a formatter never installs packages"
+    assert "uv run --frozen --no-sync ruff format" in hook, (
+        "the ruff hook must invoke `uv run --frozen --no-sync ruff format`: --frozen so it can never rewrite "
+        "uv.lock, --no-sync so a formatter never installs packages"
+    )
+
+
+def test_prettier_hook_reports_missing_install(tmp_path: Path) -> None:
+    """A project directory with no `frontend/node_modules` must produce a
+    message, not a silent exit 0 with the file unformatted."""
+    target = tmp_path / "frontend" / "src" / "x.ts"
+    target.parent.mkdir(parents=True)
+    target.write_text("const  x=1\n", encoding="utf-8")
+    result = _run(_prettier_hook(), _payload(target), _hook_env(project_dir=tmp_path))
+    assert result.returncode == 2, f"prettier hook exited {result.returncode} with no install present"
+    assert result.stderr.strip(), "failure without a reason on stderr"
+    assert target.read_text(encoding="utf-8") == "const  x=1\n"
+
+
+def test_prettier_hook_ignores_files_outside_frontend(tmp_path: Path) -> None:
+    """The frontend Prettier config applies only under `frontend/`; formatting
+    `frontend-dist/assets/*.js` or anything else with defaults would be wrong."""
+    target = tmp_path / "x.ts"
+    target.write_text("const  x=1\n", encoding="utf-8")
+    result = _run(_prettier_hook(), _payload(target), _hook_env())
+    assert result.returncode == 0, result.stderr
+    assert target.read_text(encoding="utf-8") == "const  x=1\n", "a file outside frontend/ was formatted"
+
+
+@pytest.mark.skipif(not PRETTIER_BIN.exists(), reason="frontend/node_modules not installed (npm ci); runs locally")
+def test_prettier_hook_actually_formats(tmp_path: Path) -> None:
+    target = tmp_path / "frontend" / "x.ts"
+    target.parent.mkdir()
+    target.write_text("const  x=1\n", encoding="utf-8")
+    result = _run(_prettier_hook(), _payload(target), _hook_env())
+    assert result.returncode == 0, result.stderr
+    assert target.read_text(encoding="utf-8") == "const x = 1;\n", "the prettier hook did not format the file"

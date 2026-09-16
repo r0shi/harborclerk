@@ -8,6 +8,8 @@ build/
 .venv/
 *.egg
 .env
+.env.*
+!.env.example
 .uv/
 
 # IDE / tools
