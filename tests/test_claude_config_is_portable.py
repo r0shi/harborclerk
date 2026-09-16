@@ -11,8 +11,9 @@ The ignore rules are checked with `git check-ignore --no-index`, not by
 reading the index: once a file is committed, `git ls-files` lists it whatever
 `.gitignore` says, so an index-based assertion passed with the negation
 deleted. The hooks are run the way Claude Code runs them, with a JSON
-`tool_input` on stdin, because a hook that silently exits 0 when `jq` or
-`ruff` is missing looks identical to one that works.
+`tool_input` on stdin and the project venv *not* on PATH, because a hook that
+silently exits 0 when `jq`, `python3`, `ruff` or `uv` is missing looks
+identical to one that works.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -66,6 +69,7 @@ def test_claude_config_is_tracked() -> None:
     tracked = _tracked(".claude")
     for required in (".claude/settings.json", ".claude/launch.json", ".claude/skills/verify/SKILL.md"):
         assert required in tracked, f"{required} is not in the index"
+    assert ".claude/settings.local.json" not in tracked, "per-machine permission grants are in the index"
 
 
 @pytest.mark.parametrize(
@@ -74,7 +78,6 @@ def test_claude_config_is_tracked() -> None:
 )
 def test_per_machine_state_is_ignored(rel: str) -> None:
     assert _ignored(rel), f"{rel} is per-machine state and must be ignored"
-    assert rel not in _tracked(".claude"), f"{rel} is in the index"
 
 
 @pytest.mark.parametrize("rel", sorted(_tracked(".claude")))
@@ -134,24 +137,53 @@ def _hook_commands(event: str) -> list[str]:
     return commands
 
 
-def _hook_env() -> dict[str, str]:
+def _guard() -> str:
+    (guard,) = _hook_commands("PreToolUse")
+    return guard
+
+
+def _ruff_hook() -> str:
+    (hook,) = [c for c in _hook_commands("PostToolUse") if "ruff" in c]
+    return hook
+
+
+def _hook_env(*, project_dir: bool = True, shadow: Path | None = None) -> dict[str, str]:
     """The environment Claude Code runs hooks in: the user's shell, where the
     project venv is *not* activated. Under `uv run pytest`, `.venv/bin` is on
-    PATH, so a bare `ruff` resolves here and nowhere else; drop every PATH
-    entry that provides one so the hook must go through `uv`, which stays."""
-    env = {**os.environ, "CLAUDE_PROJECT_DIR": str(REPO)}
+    PATH, so a bare `ruff` resolves here and nowhere else; drop exactly that
+    directory so the hook must go through `uv`, which stays on PATH. `shadow`
+    is prepended to PATH to stand in for a missing tool."""
+    env = dict(os.environ)
     env.pop("VIRTUAL_ENV", None)
-    env["PATH"] = os.pathsep.join(
-        d for d in env.get("PATH", "").split(os.pathsep) if d and not (Path(d) / "ruff").exists()
-    )
+    venv_bin = (REPO / ".venv" / "bin").resolve()
+    path = [d for d in env.get("PATH", "").split(os.pathsep) if d and Path(d).resolve() != venv_bin]
+    if shadow is not None:
+        path.insert(0, str(shadow))
+    env["PATH"] = os.pathsep.join(path)
+    assert shutil.which("uv", path=env["PATH"]), "uv must be on PATH for these tests (it is what the hooks call)"
+    if project_dir:
+        env["CLAUDE_PROJECT_DIR"] = str(REPO)
+    else:
+        env.pop("CLAUDE_PROJECT_DIR", None)
     return env
 
 
-def _run_hook(command: str, file_path: Path) -> subprocess.CompletedProcess[str]:
-    payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(file_path)}})
-    return subprocess.run(
-        ["bash", "-c", command], input=payload, capture_output=True, text=True, env=_hook_env(), timeout=120
-    )
+def _shadow(tmp_path: Path, name: str) -> Path:
+    """A PATH directory whose `name` is a stub that fails like a missing tool."""
+    d = tmp_path / "shadow-bin"
+    d.mkdir(exist_ok=True)
+    stub = d / name
+    stub.write_text("#!/bin/sh\nexit 127\n")
+    stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return d
+
+
+def _run(command: str, payload: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["bash", "-c", command], input=payload, capture_output=True, text=True, env=env, timeout=120)
+
+
+def _payload(file_path: str | Path) -> str:
+    return json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(file_path)}})
 
 
 @pytest.mark.parametrize(
@@ -169,8 +201,7 @@ def _run_hook(command: str, file_path: Path) -> subprocess.CompletedProcess[str]
     ],
 )
 def test_protected_file_guard(rel: str, blocked: bool) -> None:
-    (guard,) = _hook_commands("PreToolUse")
-    result = _run_hook(guard, REPO / rel)
+    result = _run(_guard(), _payload(REPO / rel), _hook_env())
     if blocked:
         assert result.returncode == 2, f"{rel} should be blocked (exit 2), got {result.returncode}: {result.stderr}"
         # Claude Code shows the exit-2 reason from stderr only; stdout is dropped.
@@ -179,26 +210,60 @@ def test_protected_file_guard(rel: str, blocked: bool) -> None:
         assert result.returncode == 0, f"{rel} should be allowed (exit 0), got {result.returncode}: {result.stderr}"
 
 
+def test_guard_blocks_without_project_dir_and_with_relative_paths() -> None:
+    """The anchoring must not depend on `CLAUDE_PROJECT_DIR` being set or on
+    the path being absolute."""
+    assert _run(_guard(), _payload(REPO / ".env"), _hook_env(project_dir=False)).returncode == 2
+    assert _run(_guard(), _payload(REPO / "README.md"), _hook_env(project_dir=False)).returncode == 0
+    assert _run(_guard(), _payload(".env"), _hook_env()).returncode == 2
+    assert _run(_guard(), _payload("README.md"), _hook_env()).returncode == 0
+
+
 def test_guard_allows_when_payload_has_no_file_path() -> None:
-    (guard,) = _hook_commands("PreToolUse")
-    result = subprocess.run(
-        ["bash", "-c", guard],
-        input=json.dumps({"tool_name": "Edit", "tool_input": {}}),
-        capture_output=True,
-        text=True,
-        env=_hook_env(),
-        timeout=60,
-    )
+    result = _run(_guard(), json.dumps({"tool_name": "Edit", "tool_input": {}}), _hook_env())
     assert result.returncode == 0, result.stderr
+
+
+def test_guard_fails_closed_when_parser_is_missing(tmp_path: Path) -> None:
+    """A guard that cannot read its input must refuse, not allow. The previous
+    `jq` version exited 0 with an empty FILE when jq was absent."""
+    result = _run(_guard(), _payload(REPO / "README.md"), _hook_env(shadow=_shadow(tmp_path, "python3")))
+    assert result.returncode == 2, f"guard allowed an edit it could not inspect: exit {result.returncode}"
+    assert result.stderr.strip(), "refusal without a reason on stderr"
+
+
+def test_guard_fails_closed_on_malformed_payload() -> None:
+    result = _run(_guard(), "not json {", _hook_env())
+    assert result.returncode == 2, f"guard allowed an edit on an unparseable payload: exit {result.returncode}"
+    assert result.stderr.strip()
 
 
 def test_ruff_hook_actually_formats(tmp_path: Path) -> None:
     """A bare `ruff` is not on PATH on a machine that only has `uv`; the hook
     swallowed that with `|| true` and formatted nothing."""
-    ruff_hooks = [c for c in _hook_commands("PostToolUse") if "ruff" in c]
-    assert len(ruff_hooks) == 1, ruff_hooks
     target = tmp_path / "unformatted.py"
     target.write_text("x = { 'a':1 ,'b':2 }\n", encoding="utf-8")
-    result = _run_hook(ruff_hooks[0], target)
+    result = _run(_ruff_hook(), _payload(target), _hook_env())
     assert result.returncode == 0, result.stderr
     assert target.read_text(encoding="utf-8") == 'x = {"a": 1, "b": 2}\n', "the ruff hook did not format the file"
+
+
+def test_ruff_hook_reports_failure_instead_of_swallowing_it(tmp_path: Path) -> None:
+    target = tmp_path / "unformatted.py"
+    target.write_text("x = { 'a':1 }\n", encoding="utf-8")
+    result = _run(_ruff_hook(), _payload(target), _hook_env(shadow=_shadow(tmp_path, "uv")))
+    assert result.returncode == 2, f"ruff hook exited {result.returncode} with uv missing; it must say so, not exit 0"
+    assert result.stderr.strip(), "failure without a reason on stderr"
+    assert target.read_text(encoding="utf-8") == "x = { 'a':1 }\n"
+
+
+def test_ruff_hook_never_touches_the_lockfile() -> None:
+    """`uv run` performs an implicit lock and sync, so with `pyproject.toml`
+    one dependency ahead of `uv.lock` a *formatter* hook would rewrite the
+    lockfile the PreToolUse guard exists to protect, with all output sent to
+    /dev/null. Reproducing that needs a stale lock and network, so this checks
+    the flags rather than the behaviour: `--frozen` never updates the lock,
+    `--no-sync` never installs anything from inside a hook."""
+    hook = _ruff_hook()
+    assert "--frozen" in hook, "the ruff hook must run `uv run --frozen ...` so it can never rewrite uv.lock"
+    assert "--no-sync" in hook, "the ruff hook must run `uv run --no-sync ...`; a formatter never installs packages"

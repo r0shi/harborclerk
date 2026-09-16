@@ -166,7 +166,9 @@ if they were separate files.
 
 `.claude/` is tracked — hooks, skills, commands, launch configs — and must stay
 portable: no machine-specific paths. Only `.claude/settings.local.json`,
-worktree checkouts and lock files are ignored.
+worktree checkouts and lock files are ignored. The protected-file hook covers
+the Edit and Write tools only; a shell redirect is not covered. It is a guard,
+not a gate.
 
 ### Scoped files are NOT auto-loaded — read them yourself
 

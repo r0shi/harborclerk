@@ -64,7 +64,8 @@ two Macs. Before this decision:
 
 ## Consequences
 
-- `.gitignore` switches to `.claude/*` with explicit negations.
+- `.gitignore` ignores only per-machine state under `.claude/` (a denylist),
+  so new material there is tracked by default.
 - `AGENTS.md` gains an Identities section and Map rows for skills, decisions
   and reports.
 - An isolated data-directory and port override for the Mac app is the first
