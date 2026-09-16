@@ -36,6 +36,16 @@ works fine with ESLint 10; without the flag `npm ci` fails in CI and in the
 Docker build. `recharts` needs `react-is` installed explicitly or the Vite build
 fails to resolve it.
 
+## jest-dom matchers need the `/vitest` entry point
+
+`src/test-setup.ts` must import `@testing-library/jest-dom/vitest`, not
+`@testing-library/jest-dom`. Vitest 5 changed `Assertion` to take two type
+parameters and only the subpath augments the new shape. With the bare import
+every matcher call becomes `TS2339: Property 'toBeInTheDocument' does not
+exist` — 164 of them — while the matchers keep working at runtime. So `npm
+test` stays green and `tsc --noEmit` fails, which also takes down the Docker
+and macOS builds, since both run `tsc -b` before Vite.
+
 ## TypeScript stays on 6 until typescript-eslint moves
 
 `legacy-peer-deps` does **not** cover this one. typescript-eslint checks the
