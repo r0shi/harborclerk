@@ -1,6 +1,10 @@
-/// <reference types="vitest" />
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
+// `vitest/config`, not `vite`. Vitest 5 moved the `UserConfig.test` module
+// augmentation behind this entry point, so the old `/// <reference
+// types="vitest" />` is inert and `test:` below stops type-checking. Silent
+// here, because tsconfig.json only includes `src` — the editor shows it, CI
+// never does.
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
