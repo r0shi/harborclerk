@@ -15,3 +15,16 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # TypeScript 7 is held, not rejected — see #637. Our code type-checks,
+      # builds and tests clean on it; typescript-eslint is what refuses to
+      # run, and its supported range is still >=4.8.4 <6.1.0 with no target
+      # version upstream.
+      #
+      # This ignores only the 7.0 line, deliberately. TypeScript 7.1 is where
+      # the stable programmatic API lands, which is the precondition
+      # typescript-eslint is waiting on, so leaving 7.1 un-ignored makes
+      # Dependabot open a fresh PR the day it ships — that PR is the trigger
+      # to re-evaluate. Widening this to all majors would remove the trigger.
+      - dependency-name: "typescript"
+        versions: ["7.0.x"]
