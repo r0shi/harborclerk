@@ -13,6 +13,7 @@ import secrets
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -31,6 +32,7 @@ class AcceptanceConfig:
     insecure: bool
     disposable: bool
     wipe: bool
+    keep: bool
     run_id: str
     ingest_timeout_s: int
     ask_timeout_s: int
@@ -88,6 +90,8 @@ def load_config() -> AcceptanceConfig:
     disposable = _flag("HC_ACCEPTANCE_DISPOSABLE")
     if wipe and not disposable:
         pytest.fail("HC_ACCEPTANCE_WIPE=1 requires HC_ACCEPTANCE_DISPOSABLE=1; wipe mode empties the instance")
+    if wipe and urlsplit(api_base).hostname not in ("localhost", "127.0.0.1", "::1"):
+        pytest.fail(f"HC_ACCEPTANCE_WIPE=1 is only allowed against a loopback instance, not {api_base}")
 
     return AcceptanceConfig(
         api_base=api_base,
@@ -98,6 +102,7 @@ def load_config() -> AcceptanceConfig:
         insecure=_flag("HC_INSECURE"),
         disposable=disposable,
         wipe=wipe,
+        keep=_flag("HC_ACCEPTANCE_KEEP"),
         run_id=os.environ.get("HC_ACCEPTANCE_RUN_ID", "").strip() or secrets.token_hex(4),
         ingest_timeout_s=int(os.environ.get("HC_ACCEPTANCE_INGEST_TIMEOUT", "900")),
         ask_timeout_s=int(os.environ.get("HC_ACCEPTANCE_ASK_TIMEOUT", "300")),

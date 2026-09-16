@@ -38,6 +38,36 @@ def test_wipe_requires_the_disposable_flag(monkeypatch: pytest.MonkeyPatch) -> N
         config.load_config()
 
 
+def test_wipe_is_refused_against_a_non_loopback_instance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The disposable instance is local by definition; a remote wipe is a typo."""
+    _env(
+        monkeypatch,
+        HC_API_BASE="https://mini.local:8443",
+        HC_USERNAME="a@b.c",
+        HC_PASSWORD="x",
+        HC_ACCEPTANCE_FOLDER_ROOT=str(tmp_path),
+        HC_ACCEPTANCE_WIPE="1",
+        HC_ACCEPTANCE_DISPOSABLE="1",
+    )
+    with pytest.raises(pytest.fail.Exception, match="loopback"):
+        config.load_config()
+
+
+def test_wipe_is_allowed_on_loopback_with_both_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _env(
+        monkeypatch,
+        HC_API_BASE="http://127.0.0.1:8100",
+        HC_USERNAME="a@b.c",
+        HC_PASSWORD="x",
+        HC_ACCEPTANCE_FOLDER_ROOT=str(tmp_path),
+        HC_ACCEPTANCE_WIPE="1",
+        HC_ACCEPTANCE_DISPOSABLE="1",
+        HC_ACCEPTANCE_KEEP="1",
+    )
+    cfg = config.load_config()
+    assert cfg.wipe and cfg.disposable and cfg.keep
+
+
 def test_folder_root_must_exist(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _env(
         monkeypatch,
@@ -76,7 +106,7 @@ def test_config_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     assert cfg.api_base == "http://localhost:8100"  # trailing slash stripped
     assert cfg.folder_path == tmp_path.resolve() / "hc-acceptance-abc123"
     assert cfg.folder_path_in_instance == str(cfg.folder_path)
-    assert not cfg.wipe and not cfg.disposable and not cfg.insecure
+    assert not cfg.wipe and not cfg.disposable and not cfg.insecure and not cfg.keep
     assert cfg.ingest_timeout_s == 900 and cfg.ask_timeout_s == 300
 
 
@@ -90,6 +120,7 @@ def test_folder_path_in_instance_maps_to_the_container_side(tmp_path: Path) -> N
         insecure=True,
         disposable=False,
         wipe=False,
+        keep=False,
         run_id="abc123",
         ingest_timeout_s=1,
         ask_timeout_s=1,

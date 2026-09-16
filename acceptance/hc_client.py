@@ -6,8 +6,12 @@ its own dependencies, so this suite carries what it needs on `httpx` and `mcp`,
 both root dependencies. Methods return parsed JSON and raise on unexpected
 status. `request()` returns the raw response and is the only way to reach an
 endpoint without a method here; the checks use it for status-code assertions,
-and the session fixture uses it for exactly one mutating call, the guarded
-`delete-all-documents` of wipe mode.
+and the session helpers use it for two mutating calls: key deletion at
+teardown, and the guarded `delete-all-documents` of wipe mode.
+
+A user session refreshes its access token once on a 401 and retries: the
+token lives 30 minutes by default and a run with OCR can outlast that, and
+the teardown that removes the folder must not be the call that fails.
 """
 
 from __future__ import annotations
@@ -36,13 +40,31 @@ def folder_ingest_done(progress: dict[str, Any], expected_files: int) -> bool:
     )
 
 
+def folder_stage_errors(progress: dict[str, Any]) -> dict[str, int]:
+    """Foreground stages with errored jobs; a non-empty result means waiting
+    longer cannot help, so the wait fails now instead of at the timeout."""
+    return {
+        stage: counts["error"]
+        for stage, counts in progress["by_stage"].items()
+        if stage != "summarize" and counts.get("error", 0) > 0
+    }
+
+
 def document_ready(doc: dict[str, Any]) -> bool:
     stages = {j["stage"]: j["status"] for j in doc.get("jobs", [])}
     return doc.get("pipeline_status") == "ready" and all(stages.get(s) == "done" for s in FOREGROUND_STAGES)
 
 
 class HarborClerk:
-    def __init__(self, base_url: str, *, verify: bool = True, timeout: float = 60.0, bearer: str | None = None):
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        verify: bool = True,
+        timeout: float = 60.0,
+        bearer: str | None = None,
+        transport: httpx.BaseTransport | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         headers = {"Accept": "application/json"}
         if bearer:
@@ -53,10 +75,14 @@ class HarborClerk:
             timeout=httpx.Timeout(timeout, connect=10.0),
             headers=headers,
             follow_redirects=False,
+            transport=transport,
         )
         self._verify = verify
         self._timeout = timeout
+        self._transport = transport
+        self._session_user = False  # True after login(): a refresh cookie exists
         self.user: dict[str, Any] | None = None
+        self.refreshes = 0
 
     def close(self) -> None:
         self._http.close()
@@ -70,11 +96,19 @@ class HarborClerk:
     # ── raw ─────────────────────────────────────────────────────────────
 
     def request(self, method: str, path: str, **kw: Any) -> httpx.Response:
-        """No status check. For assertions about 401/403/422 and the like."""
-        return self._http.request(method, path, **kw)
+        """No status check. For assertions about 401/403/422 and the like.
+        A logged-in user session refreshes once on 401 and retries."""
+        r = self._http.request(method, path, **kw)
+        if r.status_code == 401 and self._session_user and not path.startswith("/api/auth/"):
+            try:
+                self.refresh()
+            except httpx.HTTPStatusError:
+                return r
+            r = self._http.request(method, path, **kw)
+        return r
 
     def _json(self, method: str, path: str, **kw: Any) -> Any:
-        r = self._http.request(method, path, **kw)
+        r = self.request(method, path, **kw)
         if r.status_code >= 400:
             raise httpx.HTTPStatusError(
                 f"{method} {path} -> {r.status_code}: {r.text[:500]}", request=r.request, response=r
@@ -87,12 +121,14 @@ class HarborClerk:
         data = self._json("POST", "/api/auth/login", json={"email": email, "password": password})
         self._http.headers["Authorization"] = f"Bearer {data['access_token']}"
         self.user = data.get("user")
+        self._session_user = True
         return data
 
     def refresh(self) -> dict[str, Any]:
         """Uses the httponly refresh cookie the login set; rotates the token."""
         data = self._json("POST", "/api/auth/refresh")
         self._http.headers["Authorization"] = f"Bearer {data['access_token']}"
+        self.refreshes += 1
         return data
 
     def me(self) -> dict[str, Any]:
@@ -103,7 +139,9 @@ class HarborClerk:
 
     def with_key(self, raw_key: str) -> HarborClerk:
         """A separate client authenticated as an API key, same target."""
-        return HarborClerk(self.base_url, verify=self._verify, timeout=self._timeout, bearer=raw_key)
+        return HarborClerk(
+            self.base_url, verify=self._verify, timeout=self._timeout, bearer=raw_key, transport=self._transport
+        )
 
     # ── system ──────────────────────────────────────────────────────────
 
@@ -115,6 +153,10 @@ class HarborClerk:
 
     def status_summary(self) -> dict[str, Any]:
         return self._json("GET", "/api/system/status-summary")
+
+    def watch_system(self) -> dict[str, Any]:
+        """`platform` is "docker" on Compose, where WATCH_ROOT confines folders."""
+        return self._json("GET", "/api/watch/system")
 
     def document_count(self) -> int:
         # limit=0 means "no limit" on this route and would page the whole corpus.
@@ -144,6 +186,9 @@ class HarborClerk:
         progress: dict[str, Any] = {}
         while time.monotonic() < deadline:
             progress = self.folder_progress(folder_id)
+            errors = folder_stage_errors(progress)
+            if errors:
+                raise RuntimeError(f"folder {folder_id} has errored stages, waiting cannot help: {errors}")
             if folder_ingest_done(progress, expected_files):
                 return progress
             time.sleep(poll_s)

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import json
 import time
 
 import pytest
@@ -70,8 +69,14 @@ def test_a3_api_key_is_refused_on_human_only_routes(admin: HarborClerk, keys: Ke
 # ── B. Ingest and status ────────────────────────────────────────────────────
 
 
+def _expected_files(corpus: Corpus) -> int:
+    """Fixtures the watcher ingests, plus any file a check added later (B7)."""
+    fixture_docs = sum(1 for f in corpus.fixtures.values() if not f.unsupported)
+    return fixture_docs + len(set(corpus.docs) - set(corpus.fixtures))
+
+
 def test_b1_folder_ingested_completely(admin: HarborClerk, corpus: Corpus) -> None:
-    expected = sum(1 for f in corpus.fixtures.values() if not f.unsupported)
+    expected = _expected_files(corpus)
     progress = admin.folder_progress(corpus.folder_id)
     assert progress["scan_status"] == "idle"
     assert progress["total_files"] == expected, progress
@@ -111,10 +116,14 @@ def test_b3_no_fixture_stage_errored(admin: HarborClerk, corpus: Corpus) -> None
     assert all(v == "ready" for v in status.values()), {n: v for n, v in status.items() if v != "ready"}
 
 
-def test_b4_reprocess_returns_to_ready(admin: HarborClerk, corpus: Corpus, cfg) -> None:
+def test_b4_reprocess_runs_a_new_pipeline_generation_to_ready(admin: HarborClerk, corpus: Corpus, cfg) -> None:
     doc_id = corpus.doc_id("vendor-notes.md")
+    before = admin.get_document(doc_id)["pipeline_seq"]
     admin.reprocess_document(doc_id)
     doc = admin.wait_for_document_ready(doc_id, timeout_s=cfg.ingest_timeout_s)
+    assert doc["pipeline_seq"] == before + 1, (
+        f"reprocess did not start a new generation: {before} -> {doc['pipeline_seq']}"
+    )
     by_stage = {j["stage"]: j["status"] for j in doc["jobs"]}
     for stage in FOREGROUND_STAGES:
         assert by_stage.get(stage) == "done", (stage, by_stage)
@@ -329,28 +338,34 @@ def test_d5_mcp_payloads_never_contain_an_absolute_path(corpus: Corpus, keys: Ke
         assert not leaked, f"{name} payload contains {leaked}"
 
 
-def test_d6_rest_read_routes_admit_a_search_tier_key_and_expose_source_path(
+@pytest.mark.xfail(strict=True, reason="#646: API-key tier is enforced only in MCP; REST read routes admit any key")
+def test_d6_search_tier_key_cannot_read_documents_over_rest(
     admin: HarborClerk, corpus: Corpus, keys: KeyFactory
 ) -> None:
-    """Records current behaviour for open question 1 of the spec and #646:
-    tier is enforced only in MCP, so a search-tier key can read a document's
-    detail (with the absolute `source_path`) and its full content over REST.
-    If this starts failing, the behaviour changed; resolve #646 deliberately."""
+    """Asserts the contract the README states. It fails today, which the
+    strict xfail records without reporting a pass; when #646 is fixed the
+    xfail turns into a strict XPASS failure, and the marker comes off."""
     doc_id = corpus.doc_id("lease-agreement.pdf")
     key = admin.with_key(keys.create("d6-search", permission_tier="search")["raw_key"])
     try:
-        doc = key.get_document(doc_id)
+        detail = key.request("GET", f"/api/docs/{doc_id}")
         content = key.request("GET", f"/api/docs/{doc_id}/content")
     finally:
         key.close()
-    assert doc.get("source_path", "").startswith(corpus.folder_path), json.dumps(doc)[:300]
-    assert content.status_code == 200 and "one further term" in content.text
+    assert detail.status_code in (401, 403), f"search-tier key read document detail: {detail.text[:200]}"
+    assert content.status_code in (401, 403), "search-tier key read full document content"
+    assert "source_path" not in detail.text
 
 
 def test_d7_document_list_filters_narrow_the_list(admin: HarborClerk, corpus: Corpus) -> None:
-    fr = {d["doc_id"] for d in admin.list_documents(language="fr", limit=200)["items"]}
-    assert corpus.doc_id("bail-commercial.txt") in fr and corpus.doc_id("lease-agreement.pdf") not in fr
-    pdfs = {d["doc_id"] for d in admin.list_documents(mime_type="application/pdf", limit=200)["items"]}
-    assert {corpus.doc_id(n) for n in LEASE_DOCS} <= pdfs and corpus.doc_id("vendor-notes.md") not in pdfs
-    titled = {d["doc_id"] for d in admin.list_documents(q="handbook", limit=200)["items"]}
-    assert corpus.doc_id("handbook.docx") in titled
+    ours = ",".join(sorted(corpus.doc_ids))  # `doc_ids` confines the list to this run's documents
+
+    def ids(**filters) -> set[str]:
+        return {d["doc_id"] for d in admin.list_documents(doc_ids=ours, limit=200, **filters)["items"]}
+
+    assert ids() == corpus.doc_ids
+    fr = ids(language="fr")
+    assert fr == {corpus.doc_id("bail-commercial.txt")}, {corpus.name_of(d) for d in fr}
+    pdfs = ids(mime_type="application/pdf")
+    assert pdfs == {corpus.doc_id(n) for n in LEASE_DOCS}, {corpus.name_of(d) for d in pdfs}
+    assert corpus.doc_id("handbook.docx") in ids(q="handbook")

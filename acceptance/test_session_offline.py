@@ -16,7 +16,7 @@ import pytest
 
 from acceptance import conftest
 from acceptance.config import WIPE_MAX_DOCUMENTS, AcceptanceConfig
-from acceptance.hc_client import HarborClerk, document_ready, folder_ingest_done
+from acceptance.hc_client import HarborClerk, document_ready, folder_ingest_done, folder_stage_errors
 
 
 def _cfg(tmp_path: Path, **over: Any) -> AcceptanceConfig:
@@ -29,6 +29,7 @@ def _cfg(tmp_path: Path, **over: Any) -> AcceptanceConfig:
         insecure=False,
         disposable=False,
         wipe=False,
+        keep=False,
         run_id="offline",
         ingest_timeout_s=5,
         ask_timeout_s=5,
@@ -47,7 +48,12 @@ class FakeAdmin:
         ingest_error: Exception | None = None,
         create_error: Exception | None = None,
         items: list[dict[str, Any]] | None = None,
+        delete_error: Exception | None = None,
+        page_items: list[list[dict[str, Any]]] | None = None,
     ):
+        self.delete_error = delete_error
+        self.page_items = page_items  # per-offset pages for documents_under paging tests
+        self.list_calls: list[dict[str, Any]] = []
         self.count = count
         self.folders = folders or []
         self.refuse_delete = refuse_delete
@@ -71,6 +77,8 @@ class FakeAdmin:
         return {"folder_id": "f1", "path": path}
 
     def folder_delete(self, folder_id: str) -> None:
+        if self.delete_error:
+            raise self.delete_error
         if folder_id in self.refuse_delete:
             raise httpx.HTTPStatusError(
                 "409", request=httpx.Request("DELETE", "http://x"), response=httpx.Response(409)
@@ -83,7 +91,15 @@ class FakeAdmin:
         return {"completed_files": expected_files}
 
     def list_documents(self, **params: Any) -> dict[str, Any]:
+        self.list_calls.append(params)
+        if self.page_items is not None:
+            n = params.get("offset", 0) // params.get("limit", 200)
+            items = self.page_items[n] if n < len(self.page_items) else []
+            return {"items": items, "total": sum(len(p) for p in self.page_items)}
         return {"items": self.items, "total": len(self.items)}
+
+    def watch_system(self) -> dict[str, Any]:
+        return {"platform": "macos"}
 
     def status_summary(self) -> dict[str, Any]:
         return {"state": "processing", "counts": {}, "needs_attention": []}
@@ -185,11 +201,55 @@ def test_corpus_session_wipes_first_when_asked(tmp_path: Path) -> None:
     assert admin.deleted == ["old", "f1"]
 
 
+def test_corpus_session_removes_the_files_even_when_the_folder_delete_fails(tmp_path: Path) -> None:
+    """A 401 after a long run must not leave rendered files behind as well."""
+    cfg = _cfg(tmp_path)
+    admin = FakeAdmin(items=_items_for(cfg.folder_path), delete_error=RuntimeError("401 Token expired"))
+    with pytest.raises(RuntimeError, match="Token expired"), conftest.corpus_session(admin, cfg):
+        pass
+    assert not cfg.folder_path.exists()
+
+
 def test_documents_under_maps_by_relative_path(tmp_path: Path) -> None:
     folder = tmp_path / "f"
     admin = FakeAdmin(items=_items_for(folder) + [{"doc_id": "d-src", "source_path": str(folder / "x.txt")}])
     mapped = conftest.documents_under(admin, str(folder))
     assert mapped == {"lease-agreement.pdf": admin.items[0], "x.txt": admin.items[2]}
+
+
+def test_documents_under_pages_until_every_expected_name_is_found(tmp_path: Path) -> None:
+    """The list is recency-ordered with no folder filter; on a busy instance
+    our documents may not all sit on the first page."""
+    folder = tmp_path / "f"
+    ours = lambda name: {"doc_id": f"d-{name}", "watch_source_path": str(folder / name)}  # noqa: E731
+    noise = [{"doc_id": f"n{i}", "watch_source_path": f"/elsewhere/{i}.pdf"} for i in range(2)]
+    admin = FakeAdmin(page_items=[noise + [ours("a.txt")], noise + [ours("b.txt")], [ours("c.txt")]])
+    mapped = conftest.documents_under(admin, str(folder), expected={"a.txt", "b.txt"}, page=3)
+    assert set(mapped) == {"a.txt", "b.txt"}, "stops once every expected name is found"
+    assert [c["offset"] for c in admin.list_calls] == [0, 3]
+    admin2 = FakeAdmin(page_items=[noise + [ours("a.txt")], noise + [ours("b.txt")], [ours("c.txt")]])
+    assert set(conftest.documents_under(admin2, str(folder), page=3)) == {"a.txt", "b.txt", "c.txt"}
+
+
+def test_key_cleanup_reports_the_ids_it_could_not_delete() -> None:
+    class Admin:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def create_api_key(self, name: str, *, permission_tier: str = "full", **fields: Any) -> dict[str, Any]:
+            return {"key_id": name, "raw_key": "hc_x"}
+
+        def request(self, method: str, path: str, **kw: Any) -> httpx.Response:
+            self.calls.append(path)
+            status = 500 if path.endswith("-bad") else 204  # key ids here are the factory's generated names
+            return httpx.Response(status, request=httpx.Request(method, "http://x" + path))
+
+    admin = Admin()
+    factory = conftest.KeyFactory(admin, "run")  # type: ignore[arg-type]
+    factory.create("bad")  # first, so stopping at the first failure would skip the next one
+    factory.create("good")
+    assert factory.cleanup() == ["acceptance-run-bad"]
+    assert len(admin.calls) == 2, "every key is attempted even after one fails"
 
 
 # ── readiness predicates ────────────────────────────────────────────────────
@@ -219,6 +279,64 @@ def test_document_ready_needs_every_foreground_stage_done() -> None:
     assert document_ready({"pipeline_status": "ready", "jobs": jobs + [{"stage": "summarize", "status": "queued"}]})
     assert not document_ready({"pipeline_status": "ready", "jobs": jobs[:-1]})
     assert not document_ready({"pipeline_status": "processing", "jobs": jobs})
+
+
+def test_folder_stage_errors_reports_foreground_errors_only() -> None:
+    progress = _progress()
+    assert folder_stage_errors(progress) == {}
+    progress["by_stage"]["summarize"]["error"] = 3
+    assert folder_stage_errors(progress) == {}, "summarize failures are background and must not fail the wait"
+    progress["by_stage"]["extract"]["error"] = 1
+    assert folder_stage_errors(progress) == {"extract": 1}
+
+
+def test_wait_for_folder_ingest_fails_fast_on_an_errored_stage() -> None:
+    class Client(HarborClerk):
+        def folder_progress(self, folder_id: str) -> dict[str, Any]:
+            p = _progress(completed=7)
+            p["by_stage"]["extract"]["error"] = 1
+            return p
+
+    with Client("http://localhost:1") as client, pytest.raises(RuntimeError, match="errored stages"):
+        client.wait_for_folder_ingest("f1", expected_files=8, timeout_s=2, poll_s=0.1)
+
+
+def test_user_session_refreshes_once_on_401_and_retries() -> None:
+    """The access token lives 30 minutes; a run with OCR can outlast it, and
+    the teardown must not be the call that dies."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(f"{request.method} {request.url.path} {request.headers.get('Authorization')}")
+        if request.url.path == "/api/auth/login":
+            return httpx.Response(200, json={"access_token": "t1", "token_type": "bearer", "user": {"role": "admin"}})
+        if request.url.path == "/api/auth/refresh":
+            return httpx.Response(200, json={"access_token": "t2", "token_type": "bearer"})
+        if request.headers.get("Authorization") == "Bearer t1":
+            return httpx.Response(401, json={"detail": "Token expired"})
+        return httpx.Response(200, json={"status": "healthy", "checks": {}})
+
+    with HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client:
+        client.login("a@b.c", "x")
+        assert client.health()["status"] == "healthy"
+        assert client.refreshes == 1
+        assert calls[-3:] == [
+            "GET /api/system/health Bearer t1",
+            "POST /api/auth/refresh Bearer t1",
+            "GET /api/system/health Bearer t2",
+        ]
+
+
+def test_api_key_client_never_tries_to_refresh() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(401, json={"detail": "expired"})
+
+    with HarborClerk("http://test", bearer="hc_key", transport=httpx.MockTransport(handler)) as client:
+        assert client.request("GET", "/api/docs").status_code == 401
+    assert calls == ["/api/docs"], "a key has no refresh cookie; retrying would only repeat the 401"
 
 
 def test_wait_for_document_ready_detects_the_error_status_immediately() -> None:

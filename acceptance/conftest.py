@@ -14,7 +14,6 @@ with a fake client; the pytest fixtures only bind them to the session.
 from __future__ import annotations
 
 import hashlib
-import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -41,6 +40,7 @@ class AdminClient(Protocol):
     ) -> dict[str, Any]: ...
     def list_documents(self, **params: Any) -> dict[str, Any]: ...
     def status_summary(self) -> dict[str, Any]: ...
+    def watch_system(self) -> dict[str, Any]: ...
     def request(self, method: str, path: str, **kw: Any) -> httpx.Response: ...
 
 
@@ -58,6 +58,10 @@ def admin(cfg: AcceptanceConfig) -> Iterator[HarborClerk]:
     client.login(cfg.username, cfg.password)
     if not client.user or client.user.get("role") != "admin":
         pytest.fail(f"{cfg.username} is not an admin; the suite creates folders and keys")
+    if client.watch_system().get("platform") == "docker":
+        pytest.skip(
+            "Compose targets are not supported yet (watcher auto-discovery creates a twin folder); see the spec"
+        )
     yield client
     client.close()
 
@@ -108,14 +112,26 @@ def wipe_instance(admin: AdminClient, cfg: AcceptanceConfig) -> None:
     ).raise_for_status()
 
 
-def documents_under(admin: AdminClient, folder_path: str) -> dict[str, dict[str, Any]]:
-    """Map fixture file name -> document row for documents from our folder."""
+def documents_under(
+    admin: AdminClient, folder_path: str, *, expected: set[str] | None = None, page: int = 200, max_pages: int = 25
+) -> dict[str, dict[str, Any]]:
+    """Map fixture file name -> document row for documents from our folder.
+
+    `GET /api/docs` has no folder filter, so this pages the list, most recently
+    updated first, until every expected name is found or the list ends. The
+    fixtures are the most recently finalized documents right after ingest, so
+    the first page normally suffices; the paging is for instances busy with
+    other work."""
     prefix = folder_path.rstrip("/") + "/"
     out: dict[str, dict[str, Any]] = {}
-    for row in admin.list_documents(limit=200)["items"]:
-        src = row.get("watch_source_path") or row.get("source_path") or ""
-        if src.startswith(prefix):
-            out[src[len(prefix) :]] = row
+    for n in range(max_pages):
+        items = admin.list_documents(limit=page, offset=n * page)["items"]
+        for row in items:
+            src = row.get("watch_source_path") or row.get("source_path") or ""
+            if src.startswith(prefix):
+                out[src[len(prefix) :]] = row
+        if len(items) < page or (expected is not None and expected <= set(out)):
+            break
     return out
 
 
@@ -135,7 +151,8 @@ def corpus_session(admin: AdminClient, cfg: AcceptanceConfig, *, keep: bool = Fa
     try:
         fixtures = {f.name: f for f in materialize(cfg.folder_path)}
         digests = {f.name: hashlib.sha256(f.path.read_bytes()).hexdigest() for f in fixtures.values()}
-        expected_files = sum(1 for f in fixtures.values() if not f.unsupported)
+        expected_names = {name for name, f in fixtures.items() if not f.unsupported}
+        expected_files = len(expected_names)
         folder = admin.folder_create(cfg.folder_path_in_instance)
         folder_id = folder["folder_id"]
         corpus = Corpus(
@@ -147,23 +164,28 @@ def corpus_session(admin: AdminClient, cfg: AcceptanceConfig, *, keep: bool = Fa
         )
         try:
             admin.wait_for_folder_ingest(folder_id, expected_files=expected_files, timeout_s=cfg.ingest_timeout_s)
-        except TimeoutError as e:
+        except (TimeoutError, RuntimeError) as e:
             summary = admin.status_summary()
             pytest.fail(
                 f"{e}\nstatus-summary: {summary.get('state')} {summary.get('counts')}\n{summary.get('needs_attention')}"
             )
-        corpus.docs = documents_under(admin, corpus.folder_path)
+        corpus.docs = documents_under(admin, corpus.folder_path, expected=expected_names)
         yield corpus
     finally:
         if not keep:
-            if folder_id is not None:
-                admin.folder_delete(folder_id)
-            shutil.rmtree(cfg.folder_path, ignore_errors=True)
+            try:
+                if folder_id is not None:
+                    admin.folder_delete(folder_id)
+            finally:
+                # The files go even if the folder delete raised (401 after a
+                # long run, 5xx): a registered folder pointing at nothing is
+                # easier to spot and remove than one that keeps ingesting.
+                shutil.rmtree(cfg.folder_path, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")
 def corpus(cfg: AcceptanceConfig, admin: HarborClerk) -> Iterator[Corpus]:
-    with corpus_session(admin, cfg, keep=os.environ.get("HC_ACCEPTANCE_KEEP", "") == "1") as c:
+    with corpus_session(admin, cfg, keep=cfg.keep) as c:
         yield c
 
 
@@ -193,7 +215,9 @@ class KeyFactory:
 def keys(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[KeyFactory]:
     factory = KeyFactory(admin, cfg.run_id)
     yield factory
-    factory.cleanup()
+    failed = factory.cleanup()
+    if failed:
+        pytest.fail(f"API keys created by this run could not be deleted and are still active: {failed}")
 
 
 @pytest.fixture(scope="session")
