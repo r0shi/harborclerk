@@ -81,6 +81,7 @@ release template can be filled from the run.
 | B4 | `POST /api/docs/{id}/reprocess` on one fixture returns to `ready` with a coherent per-stage `jobs[]` |
 | B5 | A file with an unsupported extension in the folder appears in `skipped_extensions`, not as a failed document |
 | B6 | Every fixture file is byte-identical after ingest (sha256 before and after): the product reads files in place and never modifies a source |
+| B7 | A file written into the folder after registration is picked up by the watcher's live path, becomes `ready`, and is found by a scoped search |
 
 ### C. Search and Find All
 
@@ -171,32 +172,39 @@ Ground truth records, per fixture, the expected `pipeline_status`, language,
 fixtures share the Find All phrase. The image PDF is compared to its text twin
 by token overlap above a threshold, not by equality; OCR is not exact.
 
-On Docker Compose the folder must be a top-level child of `WATCH_ROOT` as
-seen inside the container, while this process writes to the host side of the
-bind mount, so two paths are needed: `HC_ACCEPTANCE_FOLDER_ROOT` (where the
-suite writes) and `HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE` (what the API is
-told). For the native app one path serves both and the default is a
-temporary directory.
+For the native app the folder root defaults to a temporary directory.
+**Docker Compose targets are deferred.** The watcher auto-discovers every
+top-level subdirectory of `WATCH_ROOT` (`watcher/discovery.py:33-44`) and,
+with no unique constraint on `watched_folders.path`, registers a second row
+beside a manually created one: two observers, two documents per file, and a
+twin that refuses deletion while mounted (`watch.py:462-467`). A Compose run
+needs discovery-aware registration (wait for the auto-discovered row and adopt
+it), which is a follow-up. Until then the suite skips with that reason when
+`HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE` is set.
 
 ## Runtime and safety
 
 Environment: `HC_API_BASE` (required, else skip), `HC_USERNAME`, `HC_PASSWORD`
-(admin), `HC_ACCEPTANCE_FOLDER_ROOT` and `HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE`
-(optional, see Fixtures), `HC_INSECURE=1` for Caddy's self-signed certificate,
+(admin), `HC_ACCEPTANCE_FOLDER_ROOT` (optional), `HC_ACCEPTANCE_FOLDER_ROOT_IN_INSTANCE`
+(Compose; currently a skip, see Fixtures), `HC_INSECURE=1` for Caddy's self-signed certificate,
 `HC_ACCEPTANCE_DISPOSABLE=1` to unlock wipe mode and model swaps,
 `HC_ACCEPTANCE_KEEP=1` to leave the folder in place after a failed run.
 
 Modes:
 
-- **Folder-scoped (default).** Session fixture creates an empty
-  `hc-acceptance-<run id>/` under the folder root, registers it as a watched
-  folder, *then* renders the fixtures into it (the Compose watcher
-  auto-discovers top-level subdirectories every minute, and an auto-mount
-  refuses deletion, so registering first closes that race and also exercises
-  live detection), waits for ingest, yields, then deletes the folder
-  (cascading its documents) and every API key it created. Nothing else on
-  the instance is touched. All searches carry `scope.folder_ids=[fixture
-  folder]` unless the check is about scope itself.
+- **Folder-scoped (default).** Session fixture creates
+  `hc-acceptance-<run id>/` under the folder root, renders the fixtures into
+  it, *then* registers it as a watched folder: `skipped_extensions` is written
+  only by the initial scan, and live events for unsupported files are dropped
+  without updating the tally, so the scan must see every file (B5). Live
+  detection is exercised separately by B7. It waits for ingest judged from
+  the folder's own progress (never the instance-wide queues, which other work
+  would keep busy), yields, then deletes the folder (cascading its documents)
+  and every API key it created, in a `finally` that also runs when ingest
+  fails. No other document on the instance is touched; the run leaves audit
+  rows and soft-deleted keys, which is the trail it should leave. All
+  searches carry `scope.folder_ids=[fixture folder]` unless the check is
+  about scope itself.
 - **Wipe (`HC_ACCEPTANCE_WIPE=1`).** Deletes every watched folder, then calls
   `delete-all-documents` with the literal confirmation, then proceeds as
   above. Refuses unless `HC_ACCEPTANCE_DISPOSABLE=1` is set and
@@ -238,8 +246,8 @@ when the owner asks; the report is the trace.
   control: its own spec.
 - Isolated data-directory and port override for the Mac app: its own spec;
   required before wipe mode or the eval sweep can run on the larger machine.
-- A compose-backed CI job running this suite: follow-up issue once the suite
-  is stable on the mini.
+- Docker Compose as a target: discovery-aware folder registration, then a
+  compose-backed CI job, once the suite is stable on the mini.
 - Summary state (smoke area 2) and CLI text-mode citations (area 6) are not
   checked in this tier; the first needs a model, the second a rendering
   contract that does not exist yet.
@@ -248,7 +256,7 @@ when the owner asks; the report is the trace.
 
 | README claim | Checks |
 |---|---|
-| Reads files in place; originals never move | B1, B2, B6 |
+| Reads files in place; originals never move; new files are picked up | B1, B2, B6, B7 |
 | OCR for scanned documents | B2 |
 | Hybrid lexical and semantic search, bilingual | C1, C2, C3 |
 | Results always carry citations back to the source | C1, C5, D4, F3 |
