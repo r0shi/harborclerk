@@ -32,11 +32,15 @@ two Macs. Before this decision:
    is tracked by default. Tracked files under `.claude/` must contain no machine-specific
    absolute paths, guarded by `tests/test_claude_config_is_portable.py`.
 2. **Agent-authored work runs under a machine user account** (working name
-   `harborclerk-bot`), holding a fine-grained personal access token scoped to
-   this repository only, with write on contents, pull requests, issues and
-   commit statuses, and no admin. Unattended sessions export `GH_TOKEN` and the
-   git author for the bot. Interactive sessions the owner drives run as the
-   owner.
+   `harborclerk-bot`), holding a personal access token (classic) with the
+   `repo` and `workflow` scopes and an expiry. A fine-grained token cannot be
+   used: it can only reach repositories owned by the token's own account or by
+   an organization, and this repository is owned by the owner's personal
+   account. The bot's reach is therefore bounded by its collaborator role
+   (write, never admin) rather than by the token. The token lives in the
+   Keychain of each machine that runs unattended sessions and is never pasted
+   into a conversation. Unattended sessions export `GH_TOKEN` and the git
+   author for the bot. Interactive sessions the owner drives run as the owner.
 3. **No agent merges its own pull request.** Branch protection moves to one
    required approving review. The bot reviews the owner's PRs unprimed and
    approves; the owner approves the bot's PRs after reading its unprimed
@@ -84,9 +88,16 @@ two Macs. Before this decision:
   must be separate.
 - **A GitHub App as the authoring identity.** Installation tokens expire
   hourly and `gh` has no native App login, so every long-running loop would
-  carry a token-minting shim. A fine-grained PAT gives the same per-repository
-  scoping. An App remains the right additive choice for a second,
-  reviewer-only identity if agent PRs ever need to merge without the owner.
+  carry a token-minting shim. An App would give true per-repository token
+  scoping, which a classic PAT lacks; the collaborator role bounds the PAT to
+  the same single repository in practice. An App remains the right additive
+  choice for a second, reviewer-only identity if agent PRs ever need to merge
+  without the owner.
+- **Moving the repository into a (free) organization.** Deferred, not
+  rejected. It would make fine-grained tokens, org rulesets and team-based
+  review requirements available, at the cost of a repository move. Revisit if
+  the bot's classic-token scope or the personal-repo protection options become
+  the binding constraint.
 - **A second machine user as reviewer.** GitHub's terms permit one machine
   account alongside a personal account.
 - **A CI heuristic for "this PR needs review"** (the #536 sketch). With a
