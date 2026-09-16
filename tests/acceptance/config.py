@@ -1,0 +1,81 @@
+"""Where the acceptance suite gets its target and its safety switches.
+
+Everything comes from the environment so credentials never enter the tree;
+the `acceptance` skill reads them from Keychain. With no `HC_API_BASE` the
+whole suite skips, which is why the report in `docs/reports/`, not a green
+CI job, is the evidence that it ran.
+"""
+
+from __future__ import annotations
+
+import os
+import secrets
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+# Wipe mode is refused on any instance holding more documents than this, even
+# with the disposable flag: a mistyped URL must not empty the wrong machine.
+WIPE_MAX_DOCUMENTS = 500
+
+
+@dataclass(frozen=True)
+class AcceptanceConfig:
+    api_base: str
+    username: str
+    password: str
+    folder_root: Path
+    insecure: bool
+    disposable: bool
+    wipe: bool
+    run_id: str
+    ingest_timeout_s: int
+    ask_timeout_s: int
+
+    @property
+    def folder_name(self) -> str:
+        return f"hc-acceptance-{self.run_id}"
+
+    @property
+    def folder_path(self) -> Path:
+        return self.folder_root / self.folder_name
+
+
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+
+
+def load_config() -> AcceptanceConfig:
+    """Build the config or skip the calling test with the reason a human needs."""
+    api_base = os.environ.get("HC_API_BASE", "").strip().rstrip("/")
+    if not api_base:
+        pytest.skip("HC_API_BASE not set: acceptance tests need a running Harbor Clerk instance")
+    username = os.environ.get("HC_USERNAME", "").strip()
+    password = os.environ.get("HC_PASSWORD", "")
+    if not username or not password:
+        pytest.skip("HC_USERNAME / HC_PASSWORD not set: acceptance tests need an admin login")
+
+    root = os.environ.get("HC_ACCEPTANCE_FOLDER_ROOT", "").strip()
+    folder_root = Path(root).expanduser().resolve() if root else Path(tempfile.gettempdir()).resolve()
+    if not folder_root.is_dir():
+        pytest.skip(f"HC_ACCEPTANCE_FOLDER_ROOT={folder_root} is not a directory")
+
+    wipe = _flag("HC_ACCEPTANCE_WIPE")
+    disposable = _flag("HC_ACCEPTANCE_DISPOSABLE")
+    if wipe and not disposable:
+        pytest.fail("HC_ACCEPTANCE_WIPE=1 requires HC_ACCEPTANCE_DISPOSABLE=1; wipe mode empties the instance")
+
+    return AcceptanceConfig(
+        api_base=api_base,
+        username=username,
+        password=password,
+        folder_root=folder_root,
+        insecure=_flag("HC_INSECURE"),
+        disposable=disposable,
+        wipe=wipe,
+        run_id=os.environ.get("HC_ACCEPTANCE_RUN_ID", "").strip() or secrets.token_hex(4),
+        ingest_timeout_s=int(os.environ.get("HC_ACCEPTANCE_INGEST_TIMEOUT", "900")),
+        ask_timeout_s=int(os.environ.get("HC_ACCEPTANCE_ASK_TIMEOUT", "300")),
+    )
