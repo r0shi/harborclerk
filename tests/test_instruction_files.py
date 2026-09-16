@@ -17,7 +17,15 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-IGNORED = {"node_modules", ".git", "build", "dist", ".venv", "__pycache__"}
+IGNORED = {"node_modules", ".git", "build", "dist", ".venv", "__pycache__", ".worktrees"}
+
+
+def _is_worktree_checkout(rel_parts: tuple[str, ...]) -> bool:
+    """`.worktrees/` and `.claude/worktrees/` hold other branches' checkouts on a
+    developer machine; their instruction files belong to those branches. Only
+    that subdirectory of `.claude/` is skipped, so a future `.claude/skills/AGENTS.md`
+    is still checked."""
+    return bool(IGNORED & set(rel_parts)) or rel_parts[:2] == (".claude", "worktrees")
 
 
 def _instruction_dirs() -> list[Path]:
@@ -25,7 +33,7 @@ def _instruction_dirs() -> list[Path]:
     found: set[Path] = set()
     for name in ("AGENTS.md", "CLAUDE.md"):
         for path in REPO_ROOT.rglob(name):
-            if IGNORED & set(path.relative_to(REPO_ROOT).parts):
+            if _is_worktree_checkout(path.relative_to(REPO_ROOT).parts):
                 continue
             found.add(path.parent)
     return sorted(found)

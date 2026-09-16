@@ -8,13 +8,20 @@ build/
 .venv/
 *.egg
 .env
+.env.*
+!.env.example
 .uv/
 
 # IDE / tools
 .idea/
 .vscode/
 *.swp
-.claude/
+# Claude Code: hooks, skills, commands and launch configs are tracked so a
+# fresh clone and the second machine get the same tools (ADR 0001). Only
+# per-machine state is ignored: permission grants, worktree checkouts, locks.
+.claude/settings.local.json
+.claude/worktrees/
+.claude/*.lock
 .serena/
 .worktrees/
 .superpowers/

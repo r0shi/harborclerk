@@ -51,13 +51,25 @@ exposes the corpus to external agents through an MCP server and a mirrored CLI.
   environment against live advisory databases, so a newly-published CVE turns it
   red on a change that touched nothing relevant.
 
+## Identities
+
+- **Unattended sessions run as the machine user** (`GH_TOKEN` and the git
+  author set to the bot) once the account exists; sessions the owner drives
+  run as the owner. The bot never holds admin. Until the bot exists, nothing
+  runs unattended against GitHub. See `docs/adr/0001-agent-native-sdlc.md`.
+- **No agent merges its own PR.** Branch protection will require one approving
+  review once the bot exists; until then this is a rule, not a gate.
+- **Signing is human.** No agent runs `make sign` or handles the app-specific
+  password.
+
 ## Review policy
 
 A PR requires a fresh-eyes review before merge if it touches more than three
 files, changes behavior, modifies public API or tool contracts, adjusts
-auth/security, affects ingest/retrieval/LLM flows, **or adds a new subsystem,
-client surface, or storage location**. Trivial doc edits and one-line mechanical
-fixes do not.
+auth/security, affects ingest/retrieval/LLM flows, **adds a new subsystem,
+client surface, or storage location, or changes `.claude/settings.json`** (its
+hooks run on every clone). Trivial doc edits and one-line mechanical fixes do
+not.
 
 That last trigger exists because a new subsystem is exactly when a stated
 non-negotiable quietly stops being true — "originals are never copied" was
@@ -89,6 +101,7 @@ Before requesting review, the author runs two mechanical checks:
 - Project-wide rule or constraint → this file
 - Subsystem gotcha → the nearest scoped `AGENTS.md`
 - Decision + rationale + rejected alternatives → `docs/adr/`
+- Loop output, eval and field reports → `docs/reports/`
 - Deferred work → a GitHub issue
 - Strategy, positioning, claims → `docs/strategy/` (private repo)
 - Personal workflow preference → user memory
@@ -104,6 +117,9 @@ wrong place.
 | Architecture, data model, deployment | `docs/architecture.md` |
 | Generated reference (tools, routes, tables, stages, services) | `docs/architecture.md#generated-reference` |
 | Design specs and implementation plans | `docs/superpowers/{specs,plans}/` |
+| Decisions, with rejected alternatives | `docs/adr/` |
+| Dated reports: evals, acceptance, field work | `docs/reports/` |
+| Skills: `verify`, `build-macos` | `.claude/skills/*/SKILL.md` — tracked, no machine-specific paths |
 | Eval harness and methodology | `scripts/test_corpora/`, `docs/evaluation.md` |
 | Integration setup (MCP, CLI, connectors) | `docs/integrations.md` |
 | Pipeline stages, queues, `mark_stage_done`, extraction paths, storage, retrieval, async traps | `src/harbor_clerk/AGENTS.md` |
@@ -148,6 +164,12 @@ then require it, then rebase everything else.
 content**, because Claude Code reads only `CLAUDE.md` while Codex and most other
 harnesses read `AGENTS.md`. One source of truth, two names — never edit them as
 if they were separate files.
+
+`.claude/` is tracked — hooks, skills, commands, launch configs — and must stay
+portable: no machine-specific paths. Only `.claude/settings.local.json`,
+worktree checkouts and lock files are ignored. The protected-file hook covers
+the Edit and Write tools only; a shell redirect is not covered. It is a guard,
+not a gate.
 
 ### Scoped files are NOT auto-loaded — read them yourself
 
