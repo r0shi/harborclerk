@@ -131,15 +131,48 @@ def test_h1_soft_deleted_document_leaves_every_retrieval_surface(
     passages = session.call_tool("kb_read_passages", {"chunk_ids": [chunk_id]})
     err = tool_error(passages)
     assert err or not tool_json(passages)["passages"], "kb_read_passages still returned the deleted chunk"
+    corpus.deleted_chunk_id = chunk_id  # for H1c
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="#621 follow-up (v0.9.2 known limitation): REST passages/read still dereferences a deleted chunk by id",
+)
+def test_h1c_rest_passages_read_refuses_a_deleted_chunk(
+    admin: HarborClerk, corpus: Corpus, keys: KeyFactory, mcp
+) -> None:
+    """The contract every other surface honours. MCP kb_read_passages already
+    refuses the chunk; the REST route does not. Strict xfail: fixing it turns
+    this into an XPASS failure and the marker comes off."""
+    chunk_id = getattr(corpus, "deleted_chunk_id", None)
+    if chunk_id is None:  # H1 did not run first; find the chunk and delete the document ourselves
+        phrase = corpus.groundtruth["fixtures"][DELETION_TARGET]["unique_phrase"]
+        hits = admin.search(phrase, scope=corpus.scope, text_contains=phrase, k=5)["hits"]
+        if not hits:
+            pytest.skip("the deletion target is already gone and its chunk id was not recorded in this session")
+        chunk_id = hits[0]["chunk_id"]
+        _ensure_deleted(admin, corpus)
     rest_passages = admin.request("POST", "/api/passages/read", json={"chunk_ids": [chunk_id]})
-    assert rest_passages.status_code >= 400 or not rest_passages.json()["passages"], "REST passages/read"
+    assert rest_passages.status_code >= 400 or not rest_passages.json()["passages"], (
+        f"REST passages/read returned a deleted chunk: {rest_passages.text[:200]}"
+    )
 
 
 def test_h1b_ask_does_not_cite_a_deleted_document(admin: HarborClerk, corpus: Corpus, active_model: str, cfg) -> None:
-    phrase = corpus.groundtruth["fixtures"][DELETION_TARGET]["unique_phrase"]
+    """Asks something the remaining documents answer (the invoice email) whose
+    best match before the deletion was the deleted note, so the model has an
+    answer to give and no reason to loop; an unanswerable question ran for 19
+    minutes on gpt-oss-20b before the whole-answer budget existed."""
     doc_id = _ensure_deleted(admin, corpus)
-    done, _ = _ask(admin, corpus, f"What does the note about the {phrase} say? Cite the document.", cfg.ask_timeout_s)
+    done, _ = _ask(
+        admin,
+        corpus,
+        "Which supplier's invoices were matched to deliveries at Harbourside Lane, and what is the invoice number? "
+        "Cite the document.",
+        cfg.ask_timeout_s,
+    )
     cited = {c["doc_id"] for c in (done.get("rag_context") or {}).get("citations") or []}
+    assert cited, f"the answer carried no citations: {done}"
     assert doc_id not in cited, "Ask cited a soft-deleted document"
 
 

@@ -94,6 +94,7 @@ class Corpus:
     groundtruth: dict[str, Any]
     docs: dict[str, dict[str, Any]] = field(default_factory=dict)  # fixture name -> DocumentSummary
     source_digests: dict[str, str] = field(default_factory=dict)  # fixture name -> sha256 at render time
+    deleted_chunk_id: str | None = None  # set by H1 for H1c
 
     @property
     def scope(self) -> dict[str, list[str]]:
