@@ -1582,6 +1582,9 @@ def test_a_state_block_with_a_key_missing_is_unreadable_not_a_crash(tmp_path, ca
             holder = holder[key]
         del holder[path[-1]]
         assert cli.state_from_report(f"## State\n\n```json\n{json.dumps(broken)}\n```\n") is None, path
+    newer = json.dumps({**state, "format": 99})  # complete in every key; only the format is one this tool does not know
+    assert cli.state_from_report(f"## State\n\n```json\n{newer}\n```\n") is None
+    assert cli.state_from_report(f"## State\n\n```json\n{json.dumps(state)}\n```\n") == state
     edited = tmp_path / "2026-09-11-model-survey-r1.md"
     edited.write_text('## State\n\n```json\n{"format": 1, "outputs": {"waiting": [], "over_cap": []}}\n```\n')
     assert cli.main(["--out", str(tmp_path / "out.md"), "--previous", str(edited)]) == 2
@@ -1623,3 +1626,12 @@ def test_main_hands_the_plan_to_the_survey_and_writes_the_report_and_the_facts(t
     assert "Previous survey:** `2026-09-10-model-survey-r0.md`" in written
     assert cli.state_from_report(written)["generated_at"] == "2026-09-17T23:30:00+00:00"
     assert json.loads(facts_path.read_text())["since"] == "2026-08-11"
+
+
+def test_when_every_successor_fails_the_screen_the_audit_says_so_and_names_none() -> None:
+    w = World()
+    w.release("Qwen/Qwen3.8-9B", "2026-08-05", licence="other")
+    w.release("Qwen/Qwen3.6-9B", "2026-04-20")  # permissive, but nobody trusted has built it
+    tier = _run(w, policy=_policy(orgs=["acme"]))["curated"][0]
+    assert [s["repo"] for s in tier["successors"]] == ["Qwen/Qwen3.8-9B", "Qwen/Qwen3.6-9B"]
+    assert tier["findings"] == ["size-matched successors exist, but none passes the screen yet"]
