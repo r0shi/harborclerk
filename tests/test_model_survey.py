@@ -333,6 +333,11 @@ def test_exclusions_cover_gui_agents_and_derivative_uncensored_builds() -> None:
     ):
         assert excluded_fragment(name, POLICY), name
     assert excluded_fragment("ibm-granite/granite-4.2-8b", POLICY) is None
+    assert excluded_fragment("tencent/Penguin-VL-8B", POLICY) is None, "`gui` once matched Pen-gui-n"
+    assert (
+        excluded_fragment("acme/GUIAgent-7B", POLICY) is None and excluded_fragment("acme/Holo-GUI", POLICY) == "-gui"
+    )
+    assert excluded_fragment("acme/gui-owl-7b", POLICY), "an earlier fragment (`ui-`) may be the one that matches"
 
 
 def _rows(*ids: str, tag: str = "image-text-to-text") -> list[dict]:
@@ -682,7 +687,7 @@ def test_a_release_waiting_for_a_gguf_is_carried_to_the_next_survey_and_examined
 
     report = render(facts, _policy(), "r1", datetime(2026, 9, 17), previous="2026-08-01-model-survey-r0.md")
     assert pending(state_from_report(report)) == {"acme/Soon-7B": "2026-09-10"}
-    assert "3 release(s) carried into this run, 3 examined again" in report.split("## Reading")[0]
+    assert "3 release(s) carried into this run, 3 of them examined" in report.split("## Reading")[0]
     assert sorted(facts["rechecked"]) == ["acme/Late-7B", "acme/Never-7B", "acme/Soon-7B"]
     soon = next(c for c in facts["screened"] if c["model"]["repo"] == "acme/Soon-7B")
     assert soon["notes"] == [CARRIED_NOTE], "the window reached it first; it is a carried release all the same"
@@ -1884,6 +1889,9 @@ def test_a_release_that_cannot_be_read_is_carried_whether_the_window_or_the_carr
         ("acme/Fresh-7B", "not readable this run (renamed, private or gated); carried to the next"),
     }
     assert facts["examined_log"] == {}, "neither was examined, so neither may be skipped as examined"
+    assert len(facts["excluded"]) == 2 and len(facts["waiting"]) == 2, (
+        "the window filed it; the carried list must not file it again"
+    )
     state = state_from_report(render(facts, _policy(), "r1", datetime(2026, 9, 17)))
     assert pending(state) == {"acme/Carried-7B": "2026-08-20", "acme/Fresh-7B": "2026-08-20"}
 
@@ -2035,3 +2043,185 @@ def test_an_old_report_with_unreadable_state_does_not_outrank_a_newer_readable_o
     (tmp_path / "2026-09-03-model-survey-old.md").write_text("# from before reports carried state\n")
     _report(tmp_path, "2026-09-10-model-survey-r0.md", _run(_soon_world()), generated="2026-09-10T09:00:00+00:00")
     assert previous_report(tmp_path).name == "2026-09-10-model-survey-r0.md"
+
+
+# --- review round 7 -----------------------------------------------------------------------------------------------
+
+
+def test_the_report_shows_the_lists_the_skill_tells_the_operator_to_read() -> None:
+    """The state block was asserted; the lists a person reads were not, and
+    each could be deleted from the renderer with every test passing."""
+    from datetime import datetime
+
+    from scripts.model_survey import __main__ as cli
+
+    w = World()
+    w.release("acme/Soon-7B", "2026-09-10")  # may pass later: nobody has built it
+    w.release("acme/Future-7B", "2026-08-25", likes=9999)  # a candidate that needs a llama.cpp upgrade
+    w.gguf("unsloth/Future-7B-GGUF", {"Future-7B-Q4_K_M.gguf": 4_000_000_000}, arch="relarch")
+    w.release("acme/Seen-7B", "2026-09-01")
+    w.release("acme/Old-Probe-7B", "2026-09-03")
+    for i in range(cli.PER_ORG):
+        w.release(f"acme/Thing{i}-7B", "2026-08-10", likes=500 + i)
+    facts = _run(w, seen={"acme/Seen-7B": "2026-09-01"}, left_out={"acme/Old-Probe-7B": "2026-09-03"})
+    text = cli.render(facts, _policy(), "r1", datetime(2026, 9, 17), previous="`2026-09-10-model-survey-r0.md`")
+    header = text.split("## Reading")[0]
+    assert "the window overlaps earlier runs by 30 days, and 1 release(s) they examined were skipped" in header
+    assert "(and 1 more that an earlier report listed)" in header
+    assert (
+        "⚠ architecture 'relarch' needs a llama.cpp upgrade past the pin (v9.9.9 has it)."
+        in text.split("## The curated set")[0]
+    )
+    may_pass = text.split("## May pass later")[1].split("\n## ")[0]
+    assert "- `acme/Thing11-7B` · 2026-08-10" in may_pass and "after its repo was created" in may_pass
+    over_cap = text.split("### Over the per-vendor cap")[1].split("\n### ")[0]
+    assert (
+        "- `acme/Soon-7B` · 2026-09-10 · 100 likes" in over_cap
+        and "- `acme/Thing0-7B` · 2026-08-10 · 500 likes" in over_cap
+    )
+    assert "- `acme` · 16 listed · 16 since 2026-07-22 · 12 examined · 1 examined by an earlier run" in text
+
+
+def test_the_header_describes_an_overlap_only_when_the_run_followed_a_report(tmp_path) -> None:
+    from datetime import datetime
+
+    from scripts.model_survey import __main__ as cli
+
+    facts = _run(_soon_world())
+    for mode, overlaps in (("follows", True), ("replaces", False), ("fresh", False)):
+        text = cli.render({**facts, "mode": mode}, _policy(), "r1", datetime(2026, 9, 17), previous="`r0.md`")
+        assert ("overlaps earlier runs" in text.split("## Reading")[0]) is overlaps, mode
+    first = _report(tmp_path, "2026-09-17-model-survey-a.md", facts)
+    assert cli.plan(None, None, False, date(2026, 9, 17))["mode"] == "first"
+    assert cli.plan(first, None, False, date(2026, 9, 17))["mode"] == "replaces"
+    assert cli.plan(first, None, False, date(2026, 9, 24))["mode"] == "follows"
+    stateless = tmp_path / "2026-09-18-model-survey-b.md"
+    stateless.write_text("# no state\n")
+    assert cli.plan(stateless, date(2026, 8, 1), False, date(2026, 9, 24))["mode"] == "fresh"
+
+
+def test_replacing_a_replacement_does_not_nest_the_windows_source_and_the_warning_says_replaces(
+    tmp_path, monkeypatch
+) -> None:
+    from scripts.model_survey import __main__ as cli
+
+    monkeypatch.setattr(cli, "REPORTS", tmp_path / "docs" / "reports")
+    (tmp_path / "docs" / "reports").mkdir(parents=True)
+    monkeypatch.setattr(cli, "_git", lambda *a: False)
+    today = date(2026, 9, 17)
+    report = _report(cli.REPORTS, "2026-09-17-model-survey-a.md", {**_run(_soon_world()), "since_source": cli.GIVEN})
+    expected = "repeated from the replaced report, where it was given with --since"
+    for name in ("b", "c"):
+        run = cli.plan(report, None, False, today)
+        assert run["since_source"] == expected, name
+        assert run["warnings"][0].endswith("and this run replaces it")
+        facts = {**_run(_soon_world()), "since_source": run["since_source"]}
+        report = _report(
+            cli.REPORTS,
+            f"2026-09-17-model-survey-{name}.md",
+            facts,
+            generated=f"2026-09-17T1{ord(name) - 97}:00:00+00:00",
+        )
+    assert cli.plan(report, None, False, date(2026, 9, 24))["warnings"][0].endswith("and this run follows it")
+
+
+def test_a_vendor_taken_off_the_watchlist_takes_its_carried_releases_with_it() -> None:
+    """Its own `-GGUF` repo was trusted because it was a watched vendor's."""
+    w = World()
+    w.release("gone/Soon-7B", "2026-09-10")
+    w.gguf("gone/Soon-7B-GGUF", {"Soon-7B-Q4_K_M.gguf": 4_000_000_000})
+    facts = _run(w, recheck={"gone/Soon-7B": "2026-09-10"})
+    assert facts["candidates"] == [] and facts["waiting"] == []
+    assert [(e["repo"], e["why"]) for e in facts["excluded"]] == [
+        ("gone/Soon-7B", "its vendor is no longer on the watchlist")
+    ]
+
+
+def test_a_previous_report_that_is_not_there_is_a_message_not_a_traceback(tmp_path, capsys) -> None:
+    from scripts.model_survey import __main__ as cli
+
+    assert cli.main(["--out", str(tmp_path / "out.md"), "--previous", str(tmp_path / "absent.md")]) == 2
+    assert "is not a file" in capsys.readouterr().err
+
+
+def test_the_report_is_created_exclusively_because_the_first_check_was_minutes_ago(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from scripts.model_survey import __main__ as cli
+
+    out = tmp_path / "out.md"
+    real_survey, w = cli.survey, World()
+
+    def slow_survey(policy, since, hub, client, **kw):
+        out.write_text("another run finished first")
+        fake_hub, fake_client = w.clients()
+        w.gguf("Qwen/Qwen3-8B-GGUF", {"Qwen3-8B-Q4_K_M.gguf": 5_030_000_000}, arch="qwen3", ctx=40960)
+        return real_survey(_policy(), since, fake_hub, fake_client, curated=[_curated()], today=kw["today"])
+
+    monkeypatch.setattr(cli, "survey", slow_survey)
+    monkeypatch.setattr(cli, "previous_report", lambda: None)
+    assert cli.main(["--out", str(out), "--since", "2026-08-01"]) == 2
+    assert out.read_text() == "another run finished first" and "refusing to overwrite" in capsys.readouterr().err
+
+
+def test_the_policys_limits_are_inclusive_where_it_says_at_least_and_at_most() -> None:
+    arch = {"arch_at_pin": {"qwen35"}, "arch_at_head": {"qwen35"}}
+    exactly = _gguf("unsloth/X-GGUF", context_length=POLICY.min_context, quant_bytes=int(POLICY.ceiling_gb * 1e9))
+    assert screen(_model("acme/Edge-7B"), exactly, POLICY, **arch)["verdict"] == "candidate"
+    over = _gguf("unsloth/X-GGUF", context_length=POLICY.min_context - 1, quant_bytes=int(POLICY.ceiling_gb * 1e9) + 1)
+    assert len(screen(_model("acme/Edge-7B"), over, POLICY, **arch)["reasons"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("size_gb", "fills"),
+    [(8.0, True), (6.1, True), (5.9, False), (10.5, True), (10.7, False), (19.0, True), (21.5, False), (3.5, False)],
+)
+def test_the_gap_bonus_needs_a_wide_gap_and_a_gigabyte_of_room_on_each_side(size_gb: float, fills: bool) -> None:
+    """The curated ladder is 2.5, 5.03, 11.6, 17 and 22.1 GB. Every step but the first is wider than 4 GB."""
+    candidate = {"model": _model("acme/Mid-7B"), "gguf": _gguf("unsloth/X-GGUF", quant_bytes=int(size_gb * 1e9))}
+    assert ("fills a gap in the size ladder" in score(candidate, CURATED, date(2026, 9, 17))) is fills
+
+
+def test_the_family_search_leaves_out_builds_and_tasks_that_are_not_chat() -> None:
+    rows = [
+        {"id": "Qwen/Qwen3.5-9B", "createdAt": "2026-02-27T00:00:00Z", "pipeline_tag": "text-generation"},
+        {"id": "Qwen/Qwen3.5-9B-GGUF", "createdAt": "2026-02-27T00:00:00Z", "pipeline_tag": "text-generation"},
+        {
+            "id": "Qwen/Qwen3.6-9B-Listener",
+            "createdAt": "2026-04-01T00:00:00Z",
+            "pipeline_tag": "automatic-speech-recognition",
+        },
+    ]
+    assert excluded_fragment("Qwen/Qwen3.6-9B-Listener", POLICY) is None, "only its task keeps it out"
+    assert [f["repo"] for f in size_matched_successors(_curated(), rows, POLICY)] == ["Qwen/Qwen3.5-9B"]
+
+
+def test_equal_scores_are_ordered_by_name_and_screened_releases_by_likes() -> None:
+    twins = [{"model": _model(f"acme/{n}-7B"), "gguf": _gguf("unsloth/X-GGUF")} for n in ("Zeta", "Alpha")]
+    assert [c["model"]["repo"] for c in rank(twins, CURATED, date(2026, 9, 17))] == ["acme/Alpha-7B", "acme/Zeta-7B"]
+    w = World()
+    w.release("acme/Quiet-7B", "2026-08-01", likes=3)
+    w.release("acme/Loud-7B", "2026-08-01", likes=900)
+    assert [c["model"]["repo"] for c in _run(w)["screened"]] == ["acme/Loud-7B", "acme/Quiet-7B"]
+
+
+def test_trending_outside_the_watchlist_keeps_the_twelve_most_liked() -> None:
+    w = World()
+    w.trending = [{"id": f"pub{i}/Model-7B", "createdAt": "2026-09-01T00:00:00Z", "likes": i} for i in range(1, 16)]
+    outside = _run(w)["outside_watchlist"]
+    assert len(outside) == 12 and outside[0]["repo"] == "pub15/Model-7B" and outside[-1]["repo"] == "pub4/Model-7B"
+
+
+def test_the_owner_check_ignores_case_and_a_failed_git_describe_is_unknown(monkeypatch) -> None:
+    import subprocess
+
+    from scripts.model_survey import __main__ as cli
+
+    w = World()
+    w.gguf("Unsloth/Thing-7B-GGUF", {})
+    w.redirects["unsloth/thing-7b-gguf"] = "Unsloth/Thing-7B-GGUF"
+    hub, _ = w.clients()
+    assert hub.model("unsloth/thing-7b-gguf")["id"] == "Unsloth/Thing-7B-GGUF"
+    failed = subprocess.CompletedProcess([], 128, stdout="fatal: not a git repository", stderr="")
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: failed)
+    assert cli.commit_id() == "unknown"

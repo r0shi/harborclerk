@@ -54,11 +54,13 @@ on its own. All commands run from the repository root.
    produces an empty report. A run makes a few hundred requests, paced under
    the Hub's limit, so it takes several minutes.
    ```bash
-   RUN=survey-$(date -u +%Y%m%d-%H%M)
+   RUN=$(date -u +%Y%m%d-%H%M)
    uv run python -m scripts.model_survey --out docs/reports/ --run-id $RUN \
      --json "${TMPDIR:-/tmp}/$RUN.json" --cache "${TMPDIR:-/tmp}/hc-model-survey-cache-$(id -u)"
    ```
-   It prints the window it chose and the report path. It refuses to overwrite:
+   The per-vendor cap defers, it does not drop: what was over the cap is examined
+   by the next run, all of it, so a vendor that publishes dozens of eligible
+   repos at once makes that run longer. It prints the window it chose and the report path. It refuses to overwrite:
    one file per run. Read the header's **Coverage** line: what was left out by
    name, by task or by the per-vendor cap is listed at the end of the report,
    with a count per vendor, and a ⚠ there is something to act on (a vendor

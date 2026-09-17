@@ -51,7 +51,7 @@ permissive_licenses: [apache-2.0, mit, bsd-3-clause, gemma, cc-by-4.0, openrail]
 exclude_name_fragments:
   [fp8, fp4, nvfp4, awq, gptq, int4, int8, bnb, mlx, onnx, -base, sae-, embedding, embed, reranker, guard,
    asr, tts, audio, omni, image, video, ocr, aligner, reward, -prm, math, translate, drive, world, agentworld,
-   ui-, -ui, gui, cua, abliterat, uncensor, obliterat, heretic,
+   ui-, -ui, gui-, -gui, cua, abliterat, uncensor, obliterat, heretic,
    qat, w4a16, -assistant, mobile, unquantized,
    probe, checkpoint, experiment, classifier]
 

@@ -426,14 +426,17 @@ def survey(
         )
 
     handled = {c["model"]["repo"].lower() for c in considered} | {e["repo"].lower() for e in excluded}
-    handled |= set(left_out_log)
     watched = {o.lower(): o for o in policy.orgs}
     for repo, created in carried.items():
         if repo.lower() in handled:
             continue
         handled.add(repo.lower())
         org = watched.get(repo.split("/")[0].lower())
-        ids = {row["id"].lower() for row in listing_of(org)} if org else set()
+        if org is None:
+            # Its own `-GGUF` repo was trusted because it was a watched vendor's. It no longer is.
+            leave_out(repo, created, "its vendor is no longer on the watchlist")
+            continue
+        ids = {row["id"].lower() for row in listing_of(org)}
         why = left_out_reason(repo, ids, None)  # the policy or the listing changed since it was carried
         if why:
             leave_out(repo, created, why)
@@ -586,6 +589,7 @@ def survey(
         "left_out": left_out,
         "left_out_log": left_out_log,
         "since_source": "given by the caller",
+        "mode": "follows" if seen else "first",
         "known_orgs": sorted(known_orgs) if known_orgs is not None else None,
         "seen": seen,
         "first_run_since": first_run_since.isoformat(),
@@ -644,9 +648,13 @@ def render(
         f"- **Run id:** `{run_id}` · commit `{commit}` · window: releases since {facts['since']} ({facts['since_source']}) · {len(policy.orgs)} vendors watched",
         (
             f"- **Previous survey:** {previous} · {len(facts['carried'])} release(s) carried into this run, "
-            f"{len(facts['rechecked'])} examined again (the rest are listed under By name or task with the reason) · the "
-            f"window overlaps earlier runs by {OVERLAP_DAYS} days, and "
-            f"{sum(v['already_examined'] for v in facts['vendors'])} release(s) they examined were skipped"
+            f"{len(facts['rechecked'])} of them examined (the rest are listed under By name or task with the reason)"
+            + (
+                f" · the window overlaps earlier runs by {OVERLAP_DAYS} days, and "
+                f"{sum(v['already_examined'] for v in facts['vendors'])} release(s) they examined were skipped"
+                if facts["mode"] == "follows"
+                else ""
+            )
             if previous
             else "- **Previous survey:** none; this is a first run"
         ),
@@ -767,7 +775,7 @@ def render(
         "",
         f"Screened only for reasons time can cure: no trusted {policy.quant} build yet, an architecture llama.cpp cannot load "
         "yet, or a template or context a publisher may fix. The next survey examines these again however old they are. A "
-        f"release drops off {WAIT_DAYS} days after it was published.",
+        f"release drops off {WAIT_DAYS} days after its repo was created.",
         "",
     ]
     out += [f"- `{w['repo']}` · {w['created']}" for w in facts["waiting"]] or ["- none"]
@@ -839,7 +847,7 @@ def _git(*args: str) -> bool:
     return r.returncode == 0
 
 
-def provenance_warning(report: Path) -> str | None:
+def provenance_warning(report: Path, verb: str = "follows") -> str | None:
     """The loop's state is whatever report this checkout holds, which is not
     always what `main` holds: last week's report may sit in an open PR, or a
     closed one may have left its file behind. Following such a report is
@@ -850,11 +858,12 @@ def provenance_warning(report: Path) -> str | None:
         return None  # a report outside the repository, as --previous allows
     if _git("cat-file", "-e", f"origin/main:{relative}"):
         return None
-    return f"`{report.name}` is not on origin/main (an open PR, or a file a closed one left behind), and this run follows it"
+    return f"`{report.name}` is not on origin/main (an open PR, or a file a closed one left behind), and this run {verb} it"
 
 
 def _fresh_plan(since: date, source: str, today: date, label: str | None, warnings: list[str]) -> dict[str, Any]:
     return {
+        "mode": "fresh" if label else "first",  # fresh: a previous report exists, but its state could not be read
         "since": since,
         "since_source": source,
         "recheck": {},
@@ -868,6 +877,7 @@ def _fresh_plan(since: date, source: str, today: date, label: str | None, warnin
 
 
 GIVEN = "given with --since"
+REPEATED = "repeated from the replaced report"
 
 
 def plan(previous: Path | None, since: date | None, redo: bool, today: date) -> dict[str, Any]:
@@ -897,10 +907,9 @@ def plan(previous: Path | None, since: date | None, redo: bool, today: date) -> 
     repeat = redo or report_date(previous) == today
     inputs, outputs = state["inputs"], state["outputs"]
     if repeat:
-        opened, source = (
-            date.fromisoformat(state["since"]),
-            f"repeated from the replaced report, where it was {inputs['since_source']}",
-        )
+        opened = date.fromisoformat(state["since"])
+        was = inputs["since_source"]
+        source = was if was.startswith(REPEATED) else f"{REPEATED}, where it was {was}"
         recheck, known, seen, left_out = inputs["carried"], inputs["known_orgs"], inputs["seen"], inputs["left_out"]
         first_run_since = date.fromisoformat(inputs["first_run_since"])
     else:
@@ -909,8 +918,9 @@ def plan(previous: Path | None, since: date | None, redo: bool, today: date) -> 
         opened, source = followed - timedelta(days=OVERLAP_DAYS), f"{OVERLAP_DAYS} days before the report it follows"
         recheck, known, seen, left_out = pending(state), outputs["vendors"], outputs["examined"], outputs["left_out"]
         first_run_since = today - timedelta(days=FIRST_RUN_DAYS)
-    warning = provenance_warning(previous)
+    warning = provenance_warning(previous, "replaces" if repeat else "follows")
     return {
+        "mode": "replaces" if repeat else "follows",
         "since": since or opened,
         "since_source": GIVEN if since else source,
         "recheck": dict(recheck),
@@ -945,6 +955,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refusing to overwrite {out}; one file per run", file=sys.stderr)
         return 2
 
+    if args.previous and not args.previous.is_file():
+        print(f"--previous {args.previous} is not a file", file=sys.stderr)
+        return 2
     try:
         run = plan(args.previous or previous_report(), args.since, args.redo, today)
     except PlanError as e:
@@ -974,11 +987,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         facts["coverage"] = [*run["warnings"], *facts["coverage"]]
         facts["since_source"] = run["since_source"]
+        facts["mode"] = run["mode"]
         authenticated = hub.authenticated
         print(f"{hub.requests} Hub requests", file=sys.stderr)
     out.parent.mkdir(parents=True, exist_ok=True)
     text = render(facts, policy, args.run_id, now, commit_id(), previous=run["label"], authenticated=authenticated)
-    out.write_text(text, encoding="utf-8")
+    try:
+        with out.open("x", encoding="utf-8") as f:  # the check above was minutes ago; another run may have written it
+            f.write(text)
+    except FileExistsError:
+        print(f"refusing to overwrite {out}; one file per run", file=sys.stderr)
+        return 2
     if args.json:
         args.json.write_text(json.dumps(facts, indent=2, default=str), encoding="utf-8")
     print(out)
