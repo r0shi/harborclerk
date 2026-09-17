@@ -31,6 +31,13 @@ on its own. All commands run from the repository root.
    - a vendor it did not watch gets a first-run window of 90 days, so adding
      an org to the watchlist surveys that org's recent past.
    A first run uses 90 days.
+   **The state is the report in this checkout, not the one on `main`.** Merge
+   last week's report PR before this week's run and run from a checkout of
+   fresh `origin/main`. If the followed report is not on `origin/main` (its PR
+   is still open, or a closed PR left the file behind) the run still follows
+   it, and its header says so with a ⚠: decide whether that is what you want
+   before publishing. A carried release that cannot be read for a run is
+   named in the report and carried again; it is not dropped.
    **A re-run after a fix to the policy or a rule replaces the report instead
    of following it.** It repeats that report's inputs exactly (window, carried
    releases, known vendors), so nothing it found is lost. A report dated today

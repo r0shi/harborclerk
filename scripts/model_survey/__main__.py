@@ -112,7 +112,9 @@ def report_date(path: Path) -> date | None:
 def state_of(facts: dict[str, Any], now: datetime) -> dict[str, Any]:
     """What the next run needs from this one. `inputs` are what this run was
     given, so a run that replaces it can repeat it exactly; `outputs` are what
-    it could not settle and what it examined, for the run that follows it."""
+    it could not settle and what it examined, for the run that follows it.
+    Carried releases keep their creation date, so one that cannot be read for
+    a run can still be aged out instead of being dropped or kept for ever."""
     return {
         "format": STATE_FORMAT,
         "generated_at": now.isoformat(timespec="seconds"),
@@ -121,41 +123,66 @@ def state_of(facts: dict[str, Any], now: datetime) -> dict[str, Any]:
             "carried": facts["carried"],
             "known_orgs": facts["known_orgs"],
             "seen": facts["seen"],
+            "listed_since": facts["listed_since"],
             "fresh_since": facts["fresh_since"],
             "first_run_since": facts["first_run_since"],
         },
         "outputs": {
-            "waiting": [w["repo"] for w in facts["waiting"]],
-            "over_cap": [r["repo"] for r in facts["not_examined"]],
-            "vendors": [v["org"] for v in facts["vendors"]],
+            "waiting": {w["repo"]: w["created"] for w in facts["waiting"]},
+            "over_cap": {r["repo"]: r["created"] for r in facts["not_examined"]},
+            # A vendor that listed nothing was renamed or mistyped. Once the
+            # watchlist is fixed it must count as new, so it is not recorded.
+            "vendors": [v["org"] for v in facts["vendors"] if v["listed"]],
             "examined": facts["examined_log"],
         },
     }
 
 
+def _iso_day(value: Any) -> bool:
+    try:
+        return isinstance(value, str) and date.fromisoformat(value) is not None
+    except ValueError:
+        return False
+
+
+def _day_or_none(value: Any) -> bool:
+    return value is None or _iso_day(value)
+
+
+def _days_by_repo(value: Any) -> bool:
+    """repo -> creation day; the day may be empty when it was never known."""
+    return isinstance(value, dict) and all(isinstance(k, str) and (v == "" or _iso_day(v)) for k, v in value.items())
+
+
+def _names(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
 _STATE_SHAPE = {
-    "generated_at": str,
-    "since": str,
+    "generated_at": lambda v: isinstance(v, str) and _iso_day(v[:10]),
+    "since": _iso_day,
     "inputs": {
-        "carried": list,
-        "known_orgs": (list, type(None)),
-        "seen": dict,
-        "fresh_since": (str, type(None)),
-        "first_run_since": str,
+        "carried": _days_by_repo,
+        "known_orgs": lambda v: v is None or _names(v),
+        "seen": _days_by_repo,
+        "listed_since": _day_or_none,
+        "fresh_since": _day_or_none,
+        "first_run_since": _iso_day,
     },
-    "outputs": {"waiting": list, "over_cap": list, "vendors": list, "examined": dict},
+    "outputs": {"waiting": _days_by_repo, "over_cap": _days_by_repo, "vendors": _names, "examined": _days_by_repo},
 }
 
 
 def _fits(value: Any, shape: Any) -> bool:
     if isinstance(shape, dict):
         return isinstance(value, dict) and all(_fits(value.get(k), s) for k, s in shape.items())
-    return isinstance(value, shape)
+    return bool(shape(value))
 
 
 def state_from_report(text: str) -> dict[str, Any] | None:
     """The state block of a report, or None when there is none this tool can
-    read: no block, another format, or a block with a key missing (a
+    read: no block, JSON that does not parse (a merge conflict), another
+    format, a key missing or a value that is not what it should be (a
     hand-edited report). Nothing else in a report is parsed: headings and
     lists are for people and may change."""
     found = re.findall(rf"^{re.escape(STATE_HEADING)}\n.*?^```json\n(.*?)\n```", text, flags=re.DOTALL | re.MULTILINE)
@@ -170,9 +197,10 @@ def state_from_report(text: str) -> dict[str, Any] | None:
     return state
 
 
-def pending(state: dict[str, Any]) -> list[str]:
-    """What a report could not settle: may pass later, or over the per-vendor cap."""
-    return list(dict.fromkeys([*state["outputs"]["waiting"], *state["outputs"]["over_cap"]]))
+def pending(state: dict[str, Any]) -> dict[str, str]:
+    """What a report could not settle, with each release's creation day: may
+    pass later, or over the per-vendor cap."""
+    return {**state["outputs"]["waiting"], **state["outputs"]["over_cap"]}
 
 
 def previous_report(directory: Path | None = None) -> Path | None:
@@ -233,9 +261,10 @@ def survey(
     client: httpx.Client,
     *,
     curated: list[dict[str, Any]] | None = None,
-    recheck: list[str] | tuple[str, ...] = (),
+    recheck: dict[str, str] | list[str] | tuple[str, ...] = (),
     known_orgs: set[str] | None = None,
     seen: dict[str, str] | None = None,
+    listed_since: date | None = None,
     fresh_since: date | None = None,
     first_run_since: date | None = None,
     today: date | None = None,
@@ -245,11 +274,16 @@ def survey(
     at `first_run_since`, not the few days since the previous report.
 
     `seen` maps each release earlier runs examined to its creation date. The
-    window overlaps the previous one, and those are skipped. `fresh_since` is
-    where the overlap ends: what was left out by name or task before it was
-    listed by the previous report and is only counted here."""
+    window overlaps the previous one, and those are skipped. The previous
+    report listed what it left out by name or task between `listed_since` and
+    `fresh_since`; those are only counted here. Anything older than
+    `listed_since` was in no report's window and is listed.
+
+    `recheck` maps each carried release to its creation day ("" when it was
+    never known). A list is accepted and means the days are unknown."""
     today = today or utc_now().date()
     seen = {k.lower(): v for k, v in (seen or {}).items()}
+    carried = dict(recheck) if isinstance(recheck, dict) else dict.fromkeys(recheck, "")
     first_run_since = first_run_since or today - timedelta(days=FIRST_RUN_DAYS)
     pin = llamacpp.pinned_tag()
     latest = llamacpp.latest_release(client)
@@ -269,11 +303,12 @@ def survey(
         if not info:
             return None
         model = summarize_model(info)
-        gguf = find_gguf(hub, repo, policy)
+        current = model["repo"]  # not `repo` when the owner has renamed it: builds are published under the new name
+        gguf = find_gguf(hub, current, policy)
         verdict = screen(model, gguf, policy, **arch)
         if note:
             verdict["notes"] = [*verdict["notes"], note]
-        return {"model": model, "gguf": gguf, "flags": flags_for(repo, policy), **verdict}
+        return {"model": model, "gguf": gguf, "flags": flags_for(current, policy), **verdict}
 
     considered: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -324,7 +359,7 @@ def survey(
                 why = f"full-precision copy of {copy_of.split('/', 1)[1]}"
             if why is None:
                 eligible.append(row)
-            elif org_fresh and _day(row) < org_fresh.isoformat():
+            elif org_fresh and (listed_since or org_fresh).isoformat() <= _day(row) < org_fresh.isoformat():
                 overlap_excluded += 1  # the previous report listed it; counted, not listed again
             else:
                 excluded.append({"repo": repo, "created": _day(row), "why": why})
@@ -353,24 +388,46 @@ def survey(
         )
 
     handled = {c["model"]["repo"].lower() for c in considered} | {e["repo"].lower() for e in excluded}
-    rechecked = []
-    for repo in recheck:
+    unreadable: list[dict[str, str]] = []
+    dropped: set[str] = set()
+    for repo, created in carried.items():
         if repo.lower() in handled:
             continue
         handled.add(repo.lower())
         fragment = excluded_fragment(repo, policy)
         if fragment:  # the policy changed since the release was carried
-            excluded.append({"repo": repo, "created": "carried", "why": f"name contains '{fragment}'"})
+            excluded.append({"repo": repo, "created": created or "carried", "why": f"name contains '{fragment}'"})
             continue
         examined = examine(repo, CARRIED_NOTE)
-        if examined:
+        if examined is None:
+            # Renamed to another owner, private for a re-upload, or a 401 that
+            # will pass. One bad run must not lose it: it is carried again
+            # until it is too old to wait for, and the report names it.
+            try:
+                keep = bool(created) and (today - date.fromisoformat(created)).days <= WAIT_DAYS
+            except ValueError:
+                keep = False
+            why = "carried, but not readable this run (renamed, private or gated); "
+            excluded.append(
+                {"repo": repo, "created": created or "carried", "why": why + ("carried again" if keep else "dropped")}
+            )
+            if keep:
+                unreadable.append({"repo": repo, "created": created})
+            else:
+                dropped.add(repo.lower())
+        elif examined["model"]["repo"].lower() not in handled - {repo.lower()}:
+            # The owner may have renamed it; from here on it goes by its current name.
+            handled.add(examined["model"]["repo"].lower())
             considered.append(examined)
-            rechecked.append(repo)
     examined_ids = {c["model"]["repo"].lower() for c in considered}
+    for c in considered:  # a carried release the window reached first is still a carried release
+        if c["model"]["repo"].lower() in {r.lower() for r in carried} and CARRIED_NOTE not in c["notes"]:
+            c["notes"] = [*c["notes"], CARRIED_NOTE]
+    rechecked = [c["model"]["repo"] for c in considered if CARRIED_NOTE in c["notes"]]
     not_examined = [r for r in not_examined if r["repo"].lower() not in examined_ids]
     # What the next run may skip inside its overlap. Entries older than any overlap could reach are dropped.
     horizon = (today - timedelta(days=OVERLAP_DAYS + FIRST_RUN_DAYS)).isoformat()
-    examined_log = {k: v for k, v in seen.items() if v >= horizon}
+    examined_log = {k: v for k, v in seen.items() if v >= horizon and k not in dropped}
     examined_log.update({c["model"]["repo"].lower(): c["model"]["created"] for c in considered})
 
     candidates = rank([c for c in considered if c["verdict"] == "candidate"], curated, today, policy)
@@ -383,6 +440,7 @@ def survey(
             continue
         if may_pass_later(c["reasons"], policy) and age <= WAIT_DAYS:
             waiting.append({"repo": c["model"]["repo"], "created": c["model"]["created"]})
+    waiting += unreadable
 
     def screened_pair(repo: str) -> dict[str, Any]:
         """A successor or gap filler gets the same screen a candidate gets."""
@@ -497,7 +555,8 @@ def survey(
         "candidates": candidates,
         "screened": screened,
         "waiting": waiting,
-        "carried": list(recheck),
+        "carried": carried,
+        "listed_since": listed_since.isoformat() if listed_since else None,
         "known_orgs": sorted(known_orgs) if known_orgs is not None else None,
         "seen": seen,
         "fresh_since": fresh_since.isoformat() if fresh_since else None,
@@ -555,9 +614,14 @@ def render(
         f"# Model survey — {now:%Y-%m-%d}",
         "",
         f"- **Run id:** `{run_id}` · commit `{commit}` · window: releases since {facts['since']} · {len(policy.orgs)} vendors watched",
-        f"- **Previous survey:** {previous or 'none'} · {len(facts['carried'])} release(s) carried into this run, "
-        f"{len(facts['rechecked'])} examined again (the rest are excluded now, or gone) · the window overlaps earlier runs by "
-        f"{OVERLAP_DAYS} days, and {sum(v['already_examined'] for v in facts['vendors'])} release(s) they examined were skipped",
+        (
+            f"- **Previous survey:** {previous} · {len(facts['carried'])} release(s) carried into this run, "
+            f"{len(facts['rechecked'])} examined again (the rest are listed under By name or task with the reason) · the "
+            f"window overlaps earlier runs by {OVERLAP_DAYS} days, and "
+            f"{sum(v['already_examined'] for v in facts['vendors'])} release(s) they examined were skipped"
+            if previous
+            else "- **Previous survey:** none; this is a first run"
+        ),
         f"- **Policy:** {policy.quant} at most {policy.ceiling_gb:g} GB, context at least {policy.min_context}, tool calling in the chat "
         f"template, permissive licence, GGUF from the vendor or {', '.join(policy.gguf_publishers)} (`scripts/model_survey/watchlist.yaml`)",
         f"- **Coverage:** {examined} releases examined · {len(facts['excluded'])} left out by name or task"
@@ -739,26 +803,53 @@ def render(
     return "\n".join(out) + "\n"
 
 
+def _git(*args: str) -> bool:
+    try:
+        r = subprocess.run(["git", *args], cwd=REPORTS.parent, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def provenance_warning(report: Path) -> str | None:
+    """The loop's state is whatever report this checkout holds, which is not
+    always what `main` holds: last week's report may sit in an open PR, or a
+    closed one may have left its file behind. Following such a report is
+    allowed, and the report that does so says it."""
+    try:
+        relative = report.resolve().relative_to(REPORTS.parent.parent.resolve()).as_posix()
+    except ValueError:
+        return None  # a report outside the repository, as --previous allows
+    if _git("cat-file", "-e", f"origin/main:{relative}"):
+        return None
+    return f"`{report.name}` is not on origin/main (an open PR, or a file a closed one left behind), and this run follows it"
+
+
+def _fresh_plan(since: date, today: date, label: str | None, warnings: list[str]) -> dict[str, Any]:
+    return {
+        "since": since,
+        "recheck": {},
+        "known_orgs": None,
+        "seen": {},
+        "listed_since": None,
+        "fresh_since": None,
+        "first_run_since": today - timedelta(days=FIRST_RUN_DAYS),
+        "label": label,
+        "warnings": warnings,
+    }
+
+
 def plan(previous: Path | None, since: date | None, redo: bool, today: date) -> dict[str, Any]:
     """The window, the carried releases and the known vendors for this run.
 
-    Following a report: the window opens at its date, and its outputs are
+    Following a report: the window opens before its date, and its outputs are
     carried. Replacing one (it is dated today, or `--redo`): its inputs are
     repeated exactly, so whatever it found through a carried release or a
     vendor's first-run window is found again. Its outputs would not do: a
     release it settled is no longer pending, and a vendor it surveyed for the
     first time is no longer new."""
     if previous is None:
-        return {
-            "since": since or today - timedelta(days=FIRST_RUN_DAYS),
-            "recheck": [],
-            "known_orgs": None,
-            "seen": {},
-            "fresh_since": None,
-            "first_run_since": today - timedelta(days=FIRST_RUN_DAYS),
-            "label": None,
-            "warnings": [],
-        }
+        return _fresh_plan(since or today - timedelta(days=FIRST_RUN_DAYS), today, None, [])
     state = state_from_report(previous.read_text(encoding="utf-8"))
     if state is None:
         if since is None:
@@ -767,37 +858,34 @@ def plan(previous: Path | None, since: date | None, redo: bool, today: date) -> 
                 "Pass --since to open a fresh window; nothing will be carried."
             )
         warning = f"the state of `{previous.name}` could not be read: nothing was carried and no vendor counts as new"
-        return {
-            "since": since,
-            "recheck": [],
-            "known_orgs": None,
-            "seen": {},
-            "fresh_since": None,
-            "first_run_since": today - timedelta(days=FIRST_RUN_DAYS),
-            "label": f"`{previous.name}`",
-            "warnings": [warning],
-        }
+        return _fresh_plan(since, today, f"`{previous.name}`", [warning])
     repeat = redo or report_date(previous) == today
     inputs, outputs = state["inputs"], state["outputs"]
     if repeat:
         opened = date.fromisoformat(state["since"])
         recheck, known, seen = inputs["carried"], inputs["known_orgs"], inputs["seen"]
+        listed = date.fromisoformat(inputs["listed_since"]) if inputs["listed_since"] else None
         fresh = date.fromisoformat(inputs["fresh_since"]) if inputs["fresh_since"] else None
         first_run_since = date.fromisoformat(inputs["first_run_since"])
     else:
         fresh = report_date(previous) or date.fromisoformat(state["generated_at"][:10])
         opened = fresh - timedelta(days=OVERLAP_DAYS)
+        listed = date.fromisoformat(
+            state["since"]
+        )  # nothing older was in the report's window, so it listed nothing older
         recheck, known, seen = pending(state), outputs["vendors"], outputs["examined"]
         first_run_since = today - timedelta(days=FIRST_RUN_DAYS)
+    warning = provenance_warning(previous)
     return {
         "since": since or opened,
-        "recheck": list(recheck),
+        "recheck": dict(recheck),
         "known_orgs": {o.lower() for o in known} if known is not None else None,
         "seen": dict(seen),
+        "listed_since": listed,
         "fresh_since": fresh,
         "first_run_since": first_run_since,
         "label": f"`{previous.name}`" + (", which this run replaces and whose inputs it repeats" if repeat else ""),
-        "warnings": [],
+        "warnings": [warning] if warning else [],
     }
 
 
@@ -846,6 +934,7 @@ def main(argv: list[str] | None = None) -> int:
             recheck=run["recheck"],
             known_orgs=run["known_orgs"],
             seen=run["seen"],
+            listed_since=run["listed_since"],
             fresh_since=run["fresh_since"],
             first_run_since=run["first_run_since"],
             today=today,

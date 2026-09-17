@@ -42,6 +42,19 @@ class Hub:
         sleep=time.sleep,
     ):
         self._token = os.environ.get("HF_TOKEN") if token == "env" else token
+        if cache_dir:
+            # Answers from the cache decide what is trusted, so the directory
+            # must be ours: a shared /tmp path someone else made is refused, and
+            # so is a symlink, which could point at one. Checked before the
+            # client exists, so a refusal leaks nothing.
+            cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            found = cache_dir.lstat()
+            if cache_dir.is_symlink():
+                raise HubError(f"cache directory {cache_dir} is a symlink")
+            if found.st_uid != os.getuid():
+                raise HubError(f"cache directory {cache_dir} belongs to another user")
+            if found.st_mode & 0o022:
+                raise HubError(f"cache directory {cache_dir} is writable by others; chmod 700 it or use another")
         self._owns_client = client is None
         self._http = client or httpx.Client(timeout=30)
         self._pause = pause_s
@@ -50,15 +63,6 @@ class Hub:
         self._max_tries = max_tries
         self._sleep = sleep
         self.requests = 0
-        if cache_dir:
-            # Answers from the cache decide what is trusted, so the directory
-            # must be ours: a shared /tmp path someone else made is refused.
-            cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            found = cache_dir.stat()
-            if found.st_uid != os.getuid():
-                raise HubError(f"cache directory {cache_dir} belongs to another user")
-            if found.st_mode & 0o022:
-                raise HubError(f"cache directory {cache_dir} is writable by others; chmod 700 it or use another")
 
     def __enter__(self) -> Hub:
         return self
@@ -153,12 +157,13 @@ class Hub:
 
     def model(self, repo: str, *, blobs: bool = False) -> dict[str, Any] | None:
         """One repo, or None when it is not there for us. The Hub redirects a
-        name in the wrong case, and also a repo that was renamed or transferred;
-        only the first is the repo that was asked for, so an answer under a
-        different owner or name is refused. Trust in a GGUF publisher rests on
-        the name that was probed."""
+        name in the wrong case, a repo its owner renamed (`-preview` to final),
+        and a repo transferred to someone else. Trust rests in the owner that
+        was probed: an answer under the same owner is that owner's repo under
+        its current name, and the caller sees the new id; an answer under a
+        different owner is refused."""
         info = self._get(f"/models/{repo}", absent_ok=True, **({"blobs": "true"} if blobs else {}))
-        if info is not None and str(info.get("id", "")).lower() != repo.lower():
+        if info is not None and str(info.get("id", "")).split("/")[0].lower() != repo.split("/")[0].lower():
             return None
         return info
 
