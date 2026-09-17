@@ -59,7 +59,8 @@ exposes the corpus to external agents through an MCP server and a mirrored CLI.
   Its token is read from Keychain at the point of use (`security
   find-generic-password -a harborclerk-bot -s github-token -w`), never pasted;
   only unattended launchers export it for a whole session. See
-  `docs/adr/0001-agent-native-sdlc.md`.
+  `docs/adr/0001-agent-native-sdlc.md`. `.github/CODEOWNERS` lists both, so
+  GitHub requests the right reviewer on every PR without anyone assigning.
 - **No agent merges its own PR.** Branch protection requires one approving
   review.
 - **Signing is human.** No agent runs `make sign` or handles the app-specific
