@@ -24,6 +24,10 @@ JUNIT = """<?xml version="1.0" encoding="utf-8"?>
   </testcase>
   <testcase classname="acceptance.test_live_lifecycle" name="test_h1_soft_deleted_document_leaves_every_retrieval_surface" time="0.3"/>
   <testcase classname="acceptance.test_live_access" name="test_f1_bearer_tool_list_is_exactly_the_tier[search]" time="0.1"/>
+  <testcase classname="acceptance.test_live_access" name="test_f1_bearer_tool_list_is_exactly_the_tier[read]" time="0.1"/>
+  <testcase classname="acceptance.test_live_lifecycle" name="test_h1c_rest_passages_read_refuses_a_deleted_chunk" time="0.0">
+    <skipped type="pytest.xfail" message="#621 follow-up"/>
+  </testcase>
 </testsuite>
 </testsuites>
 """
@@ -44,15 +48,17 @@ def test_parse_junit_classifies_every_outcome(junit: Path) -> None:
     assert by_id["d6"].outcome == "xfailed"
     assert by_id["e2"].outcome == "skipped" and "no local model" in by_id["e2"].message
     assert by_id["h1"].outcome == "passed"
-    assert by_id["f1"].outcome == "passed", "a parametrised id keeps its prefix"
-    assert summary.counts == {"passed": 3, "failed": 1, "xfailed": 1, "skipped": 1}
+    assert by_id["f1[search]"].outcome == "passed" and by_id["f1[read]"].outcome == "passed", "params stay distinct"
+    assert by_id["h1c"].outcome == "xfailed", "a lettered id (h1c) is an id, not a bare test name"
+    assert summary.counts == {"passed": 4, "failed": 1, "xfailed": 2, "skipped": 1}
     assert summary.duration_s == pytest.approx(123.4)
 
 
 def test_area_results_follow_the_smoke_matrix(junit: Path) -> None:
     areas = report.area_results(report.parse_junit(junit))
     assert areas[1][0] == "pass"  # a1
-    assert areas[3][0] == "fail"  # c2 failed, h1 passed: a failure wins
+    assert areas[3][0] == "fail"  # c2 failed, h1 passed, h1c xfailed: a failure wins
+    assert {c.id for c in areas[3][1]} == {"c2", "h1", "h1c"}
     assert areas[4][0] == "partial"  # d6 xfailed
     assert areas[5][0] == "partial"  # e2 skipped
     assert areas[6][0] == "pass"  # f1
@@ -61,6 +67,7 @@ def test_area_results_follow_the_smoke_matrix(junit: Path) -> None:
 
 def test_h_checks_map_to_retrieval_and_ingest_areas() -> None:
     assert report.area_of("h1") == 3 and report.area_of("h2") == 2
+    assert report.area_of("h1b") == 3 and report.area_of("h1c") == 3, "lettered sub-checks follow their parent"
     assert report.area_of("f1[search]") == 6
     assert report.area_of("zz9") is None
 
@@ -93,7 +100,8 @@ def test_render_produces_the_nine_area_table_and_redacts(
     assert "hunter2-secret" not in text and "***" in text
     for area in report.AREAS:
         assert f"| {area} |" in text
-    assert "| Search and Find All | fail | c2 ✗, h1 ✓ |" in text
+    assert "| Search and Find All | fail | c2 ✗, h1 ✓, h1c xfail |" in text
+    assert "f1[search] ✓, f1[read] ✓" in text
     assert "| Ask and Research | partial | e2 skip |" in text
     assert "| Recovery and backup docs | not run |" in text
     assert "**c2**" in text and "abc1234" in text and "qwen3-8b" in text and "live-test" in text

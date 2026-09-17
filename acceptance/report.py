@@ -41,7 +41,8 @@ PREFIX_AREA = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7}
 CHECK_AREA_OVERRIDES = {"h1": 3, "h2": 2}
 NOT_IN_THIS_TIER = {8: "native tier (Status UI, recovery actions, backup docs)", 9: "docs review; manual"}
 
-_ID = re.compile(r"^test_([a-h]\d+)_")
+_ID = re.compile(r"^test_([a-h]\d+[a-z]?)_")  # a1, h1b, ...
+_PARAM = re.compile(r"(\[.*\])$")
 
 
 @dataclass
@@ -73,7 +74,8 @@ def parse_junit(path: Path) -> Summary:
         for case in suite.iter("testcase"):
             name = case.get("name", "")
             m = _ID.match(name)
-            check_id = m.group(1) if m else name
+            param = _PARAM.search(name)
+            check_id = (m.group(1) + (param.group(1) if param else "")) if m else name
             outcome, message = "passed", ""
             for tag, label in (("failure", "failed"), ("error", "error")):
                 node = case.find(tag)
@@ -88,7 +90,7 @@ def parse_junit(path: Path) -> Summary:
 
 
 def area_of(check_id: str) -> int | None:
-    base = check_id.split("[")[0]
+    base = check_id.split("[")[0].rstrip("abcdefghijklmnopqrstuvwxyz")  # h1b -> h1
     if base in CHECK_AREA_OVERRIDES:
         return CHECK_AREA_OVERRIDES[base]
     return PREFIX_AREA.get(base[:1])
