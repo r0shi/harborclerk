@@ -767,10 +767,12 @@ def test_summarize_gguf_chooses_one_build_of_the_quant_never_the_sum() -> None:
     s = summarize_gguf(two_builds, "Q4_K_M")
     assert (s["quant_file"], s["quant_bytes"]) == ("2 shards", 78_000_000_000)
 
-    single_beside_shards = info(("Big-Q4_K_M-long-name.gguf", 7), *((shard.format("", i), 39) for i in (1, 2)))
+    single_beside_shards = info(
+        ("Big-Q4_K_M-a-single-file-with-the-longer-name.gguf", 7), *((shard.format("", i), 39) for i in (1, 2))
+    )
     s = summarize_gguf(single_beside_shards, "Q4_K_M")
-    assert (s["quant_file"], s["quant_bytes"]) == ("Big-Q4_K_M-long-name.gguf", 7)
-    assert file_size(single_beside_shards, "Big-Q4_K_M-long-name.gguf") == 7
+    assert (s["quant_file"], s["quant_bytes"]) == ("Big-Q4_K_M-a-single-file-with-the-longer-name.gguf", 7)
+    assert file_size(single_beside_shards, "Big-Q4_K_M-a-single-file-with-the-longer-name.gguf") == 7
     assert file_size(single_beside_shards, "absent.gguf") is None
 
 
