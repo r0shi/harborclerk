@@ -3,6 +3,8 @@
 # the live checks against a running instance. Change a source and this file
 # together.
 
+# Language values are the ones the pipeline stores on chunks and filters by:
+# the full-text-search configuration names, not ISO codes (worker/stages/chunk.py).
 # Fixed set of people and organisations planted across the sources.
 people: [Eleanor Marlowe, Tomas Reyes, Priya Natarajan, Dev Okafor]
 organisations: [Marlowe Holdings, Quill & Tern Bookbinders, Northgate Paper]
@@ -40,44 +42,44 @@ fixtures:
   lease-agreement.pdf:
     render: text-pdf
     source: lease-agreement.txt
-    language: en
+    language: english
     source_kind: document
   lease-agreement-scan.pdf:
     render: image-pdf
     source: lease-agreement.txt
-    language: en
+    language: english
     source_kind: document
     ocr: true
   vendor-notes.md:
     render: copy
     source: vendor-notes.md
-    language: en
+    language: english
     source_kind: document
   meeting-minutes.txt:
     render: copy
     source: meeting-minutes.txt
-    language: en
+    language: english
     source_kind: document
   meeting-minutes-v2.txt:
     render: copy
     source: meeting-minutes-v2.txt
-    language: en
+    language: english
     source_kind: document
   bail-commercial.txt:
     render: copy
     source: bail-commercial.txt
-    language: fr
+    language: french
     source_kind: document
   handbook.docx:
     render: docx
     source: handbook.txt
-    language: en
+    language: english
     source_kind: document
   invoice-thread.eml:
     render: eml
     source: invoice-email-body.txt
     attachment_source: invoice-attachment.txt
-    language: en
+    language: english
     source_kind: email
   notes.xyz:
     render: copy

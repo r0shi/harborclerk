@@ -190,7 +190,7 @@ def test_c2_french_query_reaches_the_french_document(admin: HarborClerk, corpus:
     assert resp["hits"], resp
     top = resp["hits"][0]
     assert top["doc_id"] == corpus.doc_id(q["expected_top"]), corpus.name_of(top["doc_id"])
-    assert top["language"] == "fr"
+    assert top["language"] == corpus.fixtures[q["expected_top"]].language  # "french": FTS config name, not ISO
 
 
 def test_c3_filters_narrow_correctly(admin: HarborClerk, corpus: Corpus) -> None:
@@ -199,10 +199,11 @@ def test_c3_filters_narrow_correctly(admin: HarborClerk, corpus: Corpus) -> None
     scoped = admin.search("Harbourside Lane", scope=corpus.scope, k=50)
     assert scoped["hits"] and _doc_ids(scoped["hits"]) <= corpus.doc_ids
     # language
-    fr = admin.search("bail loyer", scope=corpus.scope, language="fr", k=20)
-    assert fr["hits"] and all(h["language"] == "fr" for h in fr["hits"])
-    en = admin.search("lease rent", scope=corpus.scope, language="en", k=20)
-    assert corpus.doc_id("bail-commercial.txt") not in _doc_ids(en["hits"])
+    french, english = corpus.fixtures["bail-commercial.txt"].language, corpus.fixtures["lease-agreement.pdf"].language
+    fr = admin.search("bail loyer", scope=corpus.scope, language=french, k=20)
+    assert fr["hits"] and all(h["language"] == french for h in fr["hits"])
+    en = admin.search("lease rent", scope=corpus.scope, language=english, k=20)
+    assert en["hits"] and corpus.doc_id("bail-commercial.txt") not in _doc_ids(en["hits"])
     # mime type (Find All carries mime_type per result)
     pdfs = admin.find_all("lease", scope=corpus.scope, mime_type="application/pdf", presentation="brief")
     assert pdfs["results"] and all(r["mime_type"] == "application/pdf" for r in pdfs["results"])
@@ -364,7 +365,7 @@ def test_d7_document_list_filters_narrow_the_list(admin: HarborClerk, corpus: Co
         return {d["doc_id"] for d in admin.list_documents(doc_ids=ours, limit=200, **filters)["items"]}
 
     assert ids() == corpus.doc_ids
-    fr = ids(language="fr")
+    fr = ids(language=corpus.fixtures["bail-commercial.txt"].language)
     assert fr == {corpus.doc_id("bail-commercial.txt")}, {corpus.name_of(d) for d in fr}
     pdfs = ids(mime_type="application/pdf")
     assert pdfs == {corpus.doc_id(n) for n in LEASE_DOCS}, {corpus.name_of(d) for d in pdfs}

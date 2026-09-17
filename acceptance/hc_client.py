@@ -266,14 +266,20 @@ class McpSession:
     def url_token(cls, base_url: str, raw_key: str, **kw: Any) -> McpSession:
         return cls(f"{base_url.rstrip('/')}/t/{raw_key}", **kw)
 
+    def _connect(self):
+        """mcp 1.28 renamed the transport and moved headers and timeout into an
+        `httpx.AsyncClient`; older installs take them as keyword arguments."""
+        from mcp.client import streamable_http as sh
+
+        if hasattr(sh, "streamable_http_client"):
+            http = httpx.AsyncClient(headers=self._headers, timeout=httpx.Timeout(self._timeout), follow_redirects=True)
+            return sh.streamable_http_client(self.url, http_client=http)
+        return sh.streamablehttp_client(self.url, headers=self._headers, timeout=self._timeout)
+
     async def _with_session(self, fn):
         from mcp import ClientSession
-        from mcp.client.streamable_http import streamablehttp_client
 
-        async with (
-            streamablehttp_client(self.url, headers=self._headers, timeout=self._timeout) as (read, write, _),
-            ClientSession(read, write) as session,
-        ):
+        async with self._connect() as (read, write, _), ClientSession(read, write) as session:
             await session.initialize()
             return await fn(session)
 

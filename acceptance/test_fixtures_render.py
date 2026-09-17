@@ -147,6 +147,6 @@ def test_languages_and_flags_are_declared(rendered: dict[str, Fixture]) -> None:
         if f.unsupported:
             assert f.language is None
             continue
-        assert f.language in ("en", "fr"), f.name
+        assert f.language in ("english", "french"), f.name  # what the pipeline stores on chunks
         assert f.spec["source_kind"] in ("document", "email"), f.name
     assert "é" in rendered["bail-commercial.txt"].path.read_text(encoding="utf-8")
