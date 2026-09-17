@@ -18,13 +18,19 @@ on its own. All commands run from the repository root.
 ## Stage 1: research
 
 1. The loop's state is in the reports: each ends with a versioned **State**
-   block recording what the run was given and what it could not settle. With
-   no flags the tool finds the newest `docs/reports/*-model-survey-*.md` and
-   **follows** it: the window opens at its date; every release it left waiting
-   for a GGUF or over the per-vendor cap is examined again although it is older
-   than the window; and a vendor it did not watch gets a first-run window of 90
-   days, so adding an org to the watchlist surveys that org's recent past. A
-   first run uses 90 days.
+   block recording what the run was given, what it examined and what it could
+   not settle. With no flags the tool finds the newest
+   `docs/reports/*-model-survey-*.md` and **follows** it:
+   - the window opens 30 days before that report, because the Hub dates a repo
+     by its creation and vendors publish days after creating (Gemma 3: eleven);
+     what earlier runs examined is skipped, so nothing is ranked twice. A repo
+     made public more than 30 days after it was created is still missed;
+   - every release listed under **May pass later** (no trusted GGUF yet, an
+     architecture llama.cpp cannot load yet, a template or context a publisher
+     may fix) or **Over the per-vendor cap** is examined again however old;
+   - a vendor it did not watch gets a first-run window of 90 days, so adding
+     an org to the watchlist surveys that org's recent past.
+   A first run uses 90 days.
    **A re-run after a fix to the policy or a rule replaces the report instead
    of following it.** It repeats that report's inputs exactly (window, carried
    releases, known vendors), so nothing it found is lost. A report dated today

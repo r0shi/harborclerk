@@ -54,8 +54,11 @@ class Hub:
             # Answers from the cache decide what is trusted, so the directory
             # must be ours: a shared /tmp path someone else made is refused.
             cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if cache_dir.stat().st_uid != os.getuid():
+            found = cache_dir.stat()
+            if found.st_uid != os.getuid():
                 raise HubError(f"cache directory {cache_dir} belongs to another user")
+            if found.st_mode & 0o022:
+                raise HubError(f"cache directory {cache_dir} is writable by others; chmod 700 it or use another")
 
     def __enter__(self) -> Hub:
         return self
@@ -74,7 +77,8 @@ class Hub:
     def _cache_path(self, path: str, params: dict[str, Any]) -> Path | None:
         if not self._cache:
             return None
-        key = hashlib.sha256(json.dumps([path, sorted(params.items())]).encode()).hexdigest()[:24]
+        # With a token a gated repo is readable; without one it reads as absent. Not the same answer.
+        key = hashlib.sha256(json.dumps([path, sorted(params.items()), bool(self._token)]).encode()).hexdigest()[:24]
         return self._cache / f"{key}.json"
 
     def _send(self, path: str, params: dict[str, Any]) -> httpx.Response:
@@ -133,8 +137,11 @@ class Hub:
             data = r.json()
         if cached:
             partial = cached.with_suffix(f".{os.getpid()}.tmp")
-            partial.write_text(json.dumps(data))
-            os.replace(partial, cached)
+            try:
+                partial.write_text(json.dumps(data))
+                os.replace(partial, cached)
+            finally:
+                partial.unlink(missing_ok=True)
         return data
 
     def org_models(self, org: str, *, limit: int = 500) -> list[dict[str, Any]]:

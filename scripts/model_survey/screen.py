@@ -40,6 +40,7 @@ class Policy:
     flag_name_fragments: list[str]
     pipeline_tags: list[str]
     family_orgs: dict[str, str]
+    full_precision_suffixes: list[str]
 
 
 def load_policy(path: Path = POLICY_FILE) -> Policy:
@@ -83,10 +84,37 @@ def chat_task(tag: str | None, policy: Policy) -> bool:
     return tag is None or tag in policy.pipeline_tags
 
 
+def instruct_sibling(repo: str, listed_ids: set[str]) -> str | None:
+    """`google/gemma-4-12B` is the pretrained base of `google/gemma-4-12B-it`.
+    `listed_ids` are lower-cased. Every search over a vendor's listing uses
+    this: the window, the successor search and the gap search."""
+    sibling = f"{repo.lower()}-it"
+    return sibling if sibling in listed_ids else None
+
+
+def full_precision_duplicate(repo: str, listed_ids: set[str], policy: Policy) -> str | None:
+    """`zai-org/GLM-5.3-BF16` repeats `zai-org/GLM-5.3` and is left out. But
+    NVIDIA publishes `...-30B-A3B-BF16` with no un-suffixed repo at all: there
+    the BF16 repo is the release. Returns the repo it duplicates, if listed."""
+    low = repo.lower()
+    for suffix in policy.full_precision_suffixes:
+        if low.endswith(f"-{suffix}") and low[: -len(suffix) - 1] in listed_ids:
+            return low[: -len(suffix) - 1]
+    return None
+
+
+def release_name(repo: str, policy: Policy) -> str:
+    """The name a GGUF publisher would use: without a full-precision suffix."""
+    for suffix in policy.full_precision_suffixes:
+        if repo.lower().endswith(f"-{suffix}"):
+            return repo[: -len(suffix) - 1]
+    return repo
+
+
 def _family_members(org_rows: list[dict[str, Any]], family: str | None, policy: Policy) -> list[dict[str, Any]]:
     """The vendor's instruct releases of one family: no GGUF repos, nothing the
-    policy excludes by name or task, and no pretrained base that has an `-it`
-    sibling (google/gemma-4-12B beside google/gemma-4-12B-it)."""
+    policy excludes by name or task, no full-precision duplicate, and no
+    pretrained base that has an `-it` sibling."""
     ids = {row["id"].lower() for row in org_rows}
     return [
         row
@@ -95,7 +123,8 @@ def _family_members(org_rows: list[dict[str, Any]], family: str | None, policy: 
         and "gguf" not in row["id"].lower()
         and not excluded_fragment(row["id"], policy)
         and chat_task(row.get("pipeline_tag"), policy)
-        and f"{row['id'].lower()}-it" not in ids
+        and not instruct_sibling(row["id"], ids)
+        and not full_precision_duplicate(row["id"], ids, policy)
     ]
 
 
@@ -227,12 +256,21 @@ def screen(
     return {"verdict": "screened" if reasons else "candidate", "reasons": reasons, "notes": notes}
 
 
-def only_waiting_for_gguf(reasons: list[str], policy: Policy) -> bool:
-    """True when the only thing wrong with a release is that no trusted GGUF of
-    the policy's quant exists yet. Such a release is re-examined by the next
-    survey although it will be older than that survey's window."""
-    waiting = ("no GGUF from", f"no {policy.quant} file")
-    return bool(reasons) and all(r.startswith(waiting) for r in reasons)
+def may_pass_later(reasons: list[str], policy: Policy) -> bool:
+    """True when everything wrong with a release is something time can cure:
+    nobody trusted has built the quant yet, llama.cpp cannot load the
+    architecture yet, or the GGUF's template or context metadata is wrong (a
+    publisher re-uploads those). Such a release is examined again by the next
+    survey although it will be older than its window. A licence, a size over
+    the ceiling and a task that is not chat do not change."""
+    curable = (
+        "no GGUF from",
+        f"no {policy.quant} file",
+        "llama.cpp cannot load architecture",
+        "chat template has no tool calling",
+        "context ",
+    )
+    return bool(reasons) and all(r.startswith(curable) for r in reasons)
 
 
 def _tier_gap(size_gb: float, curated_sizes_gb: list[float], min_gap_gb: float = 4.0) -> bool:

@@ -49,7 +49,7 @@ permissive_licenses: [apache-2.0, mit, bsd-3-clause, gemma, cc-by-4.0, openrail]
 # Repo-name fragments that mark something other than an instruction-tuned
 # general chat model. Case-insensitive.
 exclude_name_fragments:
-  [fp8, fp4, nvfp4, awq, gptq, int4, int8, bnb, mlx, onnx, bf16, -base, sae-, embedding, embed, reranker, guard,
+  [fp8, fp4, nvfp4, awq, gptq, int4, int8, bnb, mlx, onnx, -base, sae-, embedding, embed, reranker, guard,
    asr, tts, audio, omni, image, video, ocr, aligner, reward, -prm, math, translate, drive, world, agentworld,
    ui-, -ui, gui, cua, abliterat, uncensor, obliterat, heretic,
    qat, w4a16, -assistant, mobile, unquantized,
@@ -70,3 +70,9 @@ family_orgs:
   qwen: Qwen
   gemma: google
   gpt-oss: openai
+
+# A repo named `<release>-<suffix>` repeats `<release>` when the vendor lists
+# both, and is the release itself when it does not (NVIDIA publishes only
+# `...-BF16`). Quantised formats stay plain exclusions above: nobody builds a
+# GGUF from an FP8 or NVFP4 repo.
+full_precision_suffixes: [bf16]

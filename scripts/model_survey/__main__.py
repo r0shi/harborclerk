@@ -11,10 +11,14 @@ left for whoever runs the loop: the script states facts, a person or an agent
 states what to do about them.
 
 The loop's state lives in the reports, in a versioned JSON block at the end of
-each one that records the run's inputs as well as its outputs. By default the
-window opens at the previous report's date, and what that report could not
-settle is examined again although it is older than the window: releases
-waiting for a GGUF, and releases over the per-vendor cap. A vendor the
+each one that records the run's inputs as well as its outputs. The Hub dates a
+repo by its creation, and vendors create repos privately and publish them days
+later (Gemma 3: eleven days), so the window opens 30 days before the previous
+report and skips what earlier runs already examined, which the state also
+records. What that report could not settle is examined again however old it
+is: releases that may pass later (no GGUF yet, an architecture llama.cpp
+cannot load yet, a template or context a publisher may fix), and releases over
+the per-vendor cap. A vendor the
 previous report did not watch gets a first-run window. A run on the same day
 as the previous report, or with `--redo`, replaces that report: it repeats its
 inputs exactly (window, carried releases, known vendors), which is what a
@@ -43,12 +47,15 @@ from scripts.model_survey.screen import (
     excluded_fragment,
     family_of,
     flags_for,
+    full_precision_duplicate,
     generation_of,
+    instruct_sibling,
     ladder_gap_fillers,
     load_policy,
-    only_waiting_for_gguf,
+    may_pass_later,
     params_class,
     rank,
+    release_name,
     screen,
     size_matched_successors,
 )
@@ -56,8 +63,9 @@ from scripts.model_survey.screen import (
 REPORTS = Path(__file__).resolve().parents[2] / "docs" / "reports"
 PER_ORG = 12  # releases examined per vendor per run, most liked first; the rest are carried to the next run
 LISTING_LIMIT = 500  # repos listed per vendor, newest first
-SUCCESSORS_EXAMINED = 4  # size-matched successors screened per tier; more than that is reported, not hidden
-GAP_FILLERS_EXAMINED = 4  # the same, per curated family
+SUCCESSORS_EXAMINED = 12  # every size-matched successor of a tier is screened, up to this many; a cut is reported
+GAP_FILLERS_EXAMINED = 12  # the same, per curated family
+OVERLAP_DAYS = 30  # how far before the previous report the window opens, for repos published after they were created
 FIRST_RUN_DAYS = 90  # the window of a first run, and of a vendor the previous report did not watch
 WAIT_DAYS = 120  # how long a release stays on the waiting list
 QUIET_LIKES = 10  # screened releases under this many likes are listed on one line, not tabulated
@@ -104,24 +112,52 @@ def report_date(path: Path) -> date | None:
 def state_of(facts: dict[str, Any], now: datetime) -> dict[str, Any]:
     """What the next run needs from this one. `inputs` are what this run was
     given, so a run that replaces it can repeat it exactly; `outputs` are what
-    it could not settle, for the run that follows it."""
+    it could not settle and what it examined, for the run that follows it."""
     return {
         "format": STATE_FORMAT,
         "generated_at": now.isoformat(timespec="seconds"),
         "since": facts["since"],
-        "inputs": {"carried": facts["carried"], "known_orgs": facts["known_orgs"]},
+        "inputs": {
+            "carried": facts["carried"],
+            "known_orgs": facts["known_orgs"],
+            "seen": facts["seen"],
+            "fresh_since": facts["fresh_since"],
+            "first_run_since": facts["first_run_since"],
+        },
         "outputs": {
             "waiting": [w["repo"] for w in facts["waiting"]],
             "over_cap": [r["repo"] for r in facts["not_examined"]],
             "vendors": [v["org"] for v in facts["vendors"]],
+            "examined": facts["examined_log"],
         },
     }
 
 
+_STATE_SHAPE = {
+    "generated_at": str,
+    "since": str,
+    "inputs": {
+        "carried": list,
+        "known_orgs": (list, type(None)),
+        "seen": dict,
+        "fresh_since": (str, type(None)),
+        "first_run_since": str,
+    },
+    "outputs": {"waiting": list, "over_cap": list, "vendors": list, "examined": dict},
+}
+
+
+def _fits(value: Any, shape: Any) -> bool:
+    if isinstance(shape, dict):
+        return isinstance(value, dict) and all(_fits(value.get(k), s) for k, s in shape.items())
+    return isinstance(value, shape)
+
+
 def state_from_report(text: str) -> dict[str, Any] | None:
     """The state block of a report, or None when there is none this tool can
-    read. Nothing else in a report is parsed: headings and lists are for
-    people and may change."""
+    read: no block, another format, or a block with a key missing (a
+    hand-edited report). Nothing else in a report is parsed: headings and
+    lists are for people and may change."""
     found = re.findall(rf"^{re.escape(STATE_HEADING)}\n.*?^```json\n(.*?)\n```", text, flags=re.DOTALL | re.MULTILINE)
     if not found:
         return None
@@ -129,11 +165,13 @@ def state_from_report(text: str) -> dict[str, Any] | None:
         state = json.loads(found[-1])
     except json.JSONDecodeError:
         return None
-    return state if isinstance(state, dict) and state.get("format") == STATE_FORMAT else None
+    if not isinstance(state, dict) or state.get("format") != STATE_FORMAT or not _fits(state, _STATE_SHAPE):
+        return None
+    return state
 
 
 def pending(state: dict[str, Any]) -> list[str]:
-    """What a report could not settle: waiting for a GGUF, or over the per-vendor cap."""
+    """What a report could not settle: may pass later, or over the per-vendor cap."""
     return list(dict.fromkeys([*state["outputs"]["waiting"], *state["outputs"]["over_cap"]]))
 
 
@@ -155,7 +193,7 @@ def previous_report(directory: Path | None = None) -> Path | None:
 
 def gguf_repo_names(repo: str, policy: Policy) -> list[str]:
     """Where a trusted GGUF build of `org/name` would live, most trusted first."""
-    org, name = repo.split("/", 1)
+    org, name = release_name(repo, policy).split("/", 1)
     names = [f"{org}/{name}-GGUF"]
     for pub in policy.gguf_publishers:
         names.append(f"{pub}/{name}-GGUF")
@@ -197,12 +235,22 @@ def survey(
     curated: list[dict[str, Any]] | None = None,
     recheck: list[str] | tuple[str, ...] = (),
     known_orgs: set[str] | None = None,
+    seen: dict[str, str] | None = None,
+    fresh_since: date | None = None,
+    first_run_since: date | None = None,
     today: date | None = None,
 ) -> dict[str, Any]:
     """`known_orgs` are the vendors the previous report watched. A watched
-    vendor that is not among them has never been surveyed, so its window is a
-    first run's, not the few days since the previous report."""
+    vendor that is not among them has never been surveyed, so its window opens
+    at `first_run_since`, not the few days since the previous report.
+
+    `seen` maps each release earlier runs examined to its creation date. The
+    window overlaps the previous one, and those are skipped. `fresh_since` is
+    where the overlap ends: what was left out by name or task before it was
+    listed by the previous report and is only counted here."""
     today = today or utc_now().date()
+    seen = {k.lower(): v for k, v in (seen or {}).items()}
+    first_run_since = first_run_since or today - timedelta(days=FIRST_RUN_DAYS)
     pin = llamacpp.pinned_tag()
     latest = llamacpp.latest_release(client)
     arch_pin = llamacpp.architectures_at(pin, client)
@@ -242,27 +290,44 @@ def survey(
                 coverage.append(f"`{org}` lists no repos at all: renamed or mistyped in the watchlist?")
         return catalogue[org]
 
+    overlap_excluded = 0
     for org in policy.orgs:
         listing = listing_of(org)
+        ids = {row["id"].lower() for row in listing}
         first_run = known_orgs is not None and org.lower() not in known_orgs
-        org_since = min(since, today - timedelta(days=FIRST_RUN_DAYS)) if first_run else since
+        org_since = min(since, first_run_since) if first_run else since
+        org_fresh = None if first_run else fresh_since
         if len(listing) >= LISTING_LIMIT and _day(listing[-1]) >= org_since.isoformat():
             coverage.append(
                 f"`{org}` has more than {LISTING_LIMIT} repos since {org_since}; the oldest were not listed"
             )
         eligible = []
-        in_window = 0
+        in_window = already = 0
         for row in listing:
-            if _day(row) < org_since.isoformat() or "gguf" in row["id"].lower():
+            repo = row["id"]
+            if _day(row) < org_since.isoformat() or "gguf" in repo.lower():
                 continue
             in_window += 1
-            fragment = excluded_fragment(row["id"], policy)
+            if repo.lower() in seen:
+                already += 1
+                continue
+            fragment = excluded_fragment(repo, policy)
+            copy_of = full_precision_duplicate(repo, ids, policy)
+            why = None
             if fragment:
-                excluded.append({"repo": row["id"], "created": _day(row), "why": f"name contains '{fragment}'"})
+                why = f"name contains '{fragment}'"
             elif not chat_task(row.get("pipeline_tag"), policy):
-                excluded.append({"repo": row["id"], "created": _day(row), "why": f"task is {row.get('pipeline_tag')}"})
-            else:
+                why = f"task is {row.get('pipeline_tag')}"
+            elif instruct_sibling(repo, ids):
+                why = "pretrained base of its -it sibling"
+            elif copy_of:
+                why = f"full-precision copy of {copy_of.split('/', 1)[1]}"
+            if why is None:
                 eligible.append(row)
+            elif org_fresh and _day(row) < org_fresh.isoformat():
+                overlap_excluded += 1  # the previous report listed it; counted, not listed again
+            else:
+                excluded.append({"repo": repo, "created": _day(row), "why": why})
         eligible.sort(key=lambda r: -(r.get("likes") or 0))
         examined_here = 0
         for row in eligible[:PER_ORG]:
@@ -280,18 +345,19 @@ def survey(
                 "org": org,
                 "listed": len(listing),
                 "in_window": in_window,
+                "already_examined": already,
                 "examined": examined_here,
                 "since": org_since.isoformat(),
                 "first_run": first_run,
             }
         )
 
-    seen = {c["model"]["repo"].lower() for c in considered} | {e["repo"].lower() for e in excluded}
+    handled = {c["model"]["repo"].lower() for c in considered} | {e["repo"].lower() for e in excluded}
     rechecked = []
     for repo in recheck:
-        if repo.lower() in seen:
+        if repo.lower() in handled:
             continue
-        seen.add(repo.lower())
+        handled.add(repo.lower())
         fragment = excluded_fragment(repo, policy)
         if fragment:  # the policy changed since the release was carried
             excluded.append({"repo": repo, "created": "carried", "why": f"name contains '{fragment}'"})
@@ -302,6 +368,10 @@ def survey(
             rechecked.append(repo)
     examined_ids = {c["model"]["repo"].lower() for c in considered}
     not_examined = [r for r in not_examined if r["repo"].lower() not in examined_ids]
+    # What the next run may skip inside its overlap. Entries older than any overlap could reach are dropped.
+    horizon = (today - timedelta(days=OVERLAP_DAYS + FIRST_RUN_DAYS)).isoformat()
+    examined_log = {k: v for k, v in seen.items() if v >= horizon}
+    examined_log.update({c["model"]["repo"].lower(): c["model"]["created"] for c in considered})
 
     candidates = rank([c for c in considered if c["verdict"] == "candidate"], curated, today, policy)
     screened = sorted((c for c in considered if c["verdict"] == "screened"), key=lambda c: -(c["model"]["likes"] or 0))
@@ -311,7 +381,7 @@ def survey(
             age = (today - date.fromisoformat(c["model"]["created"])).days
         except ValueError:
             continue
-        if only_waiting_for_gguf(c["reasons"], policy) and age <= WAIT_DAYS:
+        if may_pass_later(c["reasons"], policy) and age <= WAIT_DAYS:
             waiting.append({"repo": c["model"]["repo"], "created": c["model"]["created"]})
 
     def screened_pair(repo: str) -> dict[str, Any]:
@@ -393,6 +463,7 @@ def survey(
             if pair["gguf"] and pair["gguf"]["repo"].lower() in curated_ids:
                 continue
             gap_fillers.append({**f, **pair})
+    gap_fillers.sort(key=lambda f: bool(f["reasons"]))  # those that pass first
 
     watched = {o.lower() for o in policy.orgs} | {p.lower() for p in policy.gguf_publishers}
     outside: dict[str, dict[str, Any]] = {}
@@ -428,6 +499,11 @@ def survey(
         "waiting": waiting,
         "carried": list(recheck),
         "known_orgs": sorted(known_orgs) if known_orgs is not None else None,
+        "seen": seen,
+        "fresh_since": fresh_since.isoformat() if fresh_since else None,
+        "first_run_since": first_run_since.isoformat(),
+        "examined_log": examined_log,
+        "overlap_excluded": overlap_excluded,
         "rechecked": rechecked,
         "vendors": vendors,
         "excluded": excluded,
@@ -479,11 +555,13 @@ def render(
         f"# Model survey — {now:%Y-%m-%d}",
         "",
         f"- **Run id:** `{run_id}` · commit `{commit}` · window: releases since {facts['since']} · {len(policy.orgs)} vendors watched",
-        f"- **Previous survey:** {previous or 'none'} · {len(facts['carried'])} release(s) carried from its lists, "
-        f"{len(facts['rechecked'])} examined again (the rest were already in the window, or are gone)",
+        f"- **Previous survey:** {previous or 'none'} · {len(facts['carried'])} release(s) carried into this run, "
+        f"{len(facts['rechecked'])} examined again (the rest are excluded now, or gone) · the window overlaps earlier runs by "
+        f"{OVERLAP_DAYS} days, and {sum(v['already_examined'] for v in facts['vendors'])} release(s) they examined were skipped",
         f"- **Policy:** {policy.quant} at most {policy.ceiling_gb:g} GB, context at least {policy.min_context}, tool calling in the chat "
         f"template, permissive licence, GGUF from the vendor or {', '.join(policy.gguf_publishers)} (`scripts/model_survey/watchlist.yaml`)",
-        f"- **Coverage:** {examined} releases examined · {len(facts['excluded'])} left out by name or task · "
+        f"- **Coverage:** {examined} releases examined · {len(facts['excluded'])} left out by name or task"
+        f"{f' (and {facts["overlap_excluded"]} more in the overlap, which the previous report listed)' if facts['overlap_excluded'] else ''} · "
         f"{len(facts['not_examined'])} over the cap of {PER_ORG} per vendor · all three are listed below, with a count per vendor"
         + "".join(f" · ⚠ {w}" for w in facts["coverage"]),
         f"- **llama.cpp:** pinned `{lc['pin']}` ({lc['architectures_at_pin']} architectures); latest stable release "
@@ -593,10 +671,11 @@ def render(
         ]
     out += [
         "",
-        "## Waiting for a GGUF",
+        "## May pass later",
         "",
-        f"Screened only because no trusted {policy.quant} build exists yet. The next survey examines "
-        f"these again although they will be older than its window. A release drops off {WAIT_DAYS} days after it was published.",
+        f"Screened only for reasons time can cure: no trusted {policy.quant} build yet, an architecture llama.cpp cannot load "
+        "yet, or a template or context a publisher may fix. The next survey examines these again however old they are. A "
+        f"release drops off {WAIT_DAYS} days after it was published.",
         "",
     ]
     out += [f"- `{w['repo']}` · {w['created']}" for w in facts["waiting"]] or ["- none"]
@@ -635,6 +714,7 @@ def render(
     out += [
         f"- `{v['org']}` · {v['listed']} listed · {v['in_window']} since {v['since']}"
         f"{' (first run for this vendor)' if v['first_run'] else ''} · {v['examined']} examined"
+        f"{f' · {v["already_examined"]} examined by an earlier run' if v['already_examined'] else ''}"
         for v in facts["vendors"]
     ] or ["- none"]
     out += [
@@ -673,6 +753,9 @@ def plan(previous: Path | None, since: date | None, redo: bool, today: date) -> 
             "since": since or today - timedelta(days=FIRST_RUN_DAYS),
             "recheck": [],
             "known_orgs": None,
+            "seen": {},
+            "fresh_since": None,
+            "first_run_since": today - timedelta(days=FIRST_RUN_DAYS),
             "label": None,
             "warnings": [],
         }
@@ -684,18 +767,35 @@ def plan(previous: Path | None, since: date | None, redo: bool, today: date) -> 
                 "Pass --since to open a fresh window; nothing will be carried."
             )
         warning = f"the state of `{previous.name}` could not be read: nothing was carried and no vendor counts as new"
-        return {"since": since, "recheck": [], "known_orgs": None, "label": f"`{previous.name}`", "warnings": [warning]}
+        return {
+            "since": since,
+            "recheck": [],
+            "known_orgs": None,
+            "seen": {},
+            "fresh_since": None,
+            "first_run_since": today - timedelta(days=FIRST_RUN_DAYS),
+            "label": f"`{previous.name}`",
+            "warnings": [warning],
+        }
     repeat = redo or report_date(previous) == today
+    inputs, outputs = state["inputs"], state["outputs"]
     if repeat:
         opened = date.fromisoformat(state["since"])
-        recheck, known = state["inputs"]["carried"], state["inputs"]["known_orgs"]
+        recheck, known, seen = inputs["carried"], inputs["known_orgs"], inputs["seen"]
+        fresh = date.fromisoformat(inputs["fresh_since"]) if inputs["fresh_since"] else None
+        first_run_since = date.fromisoformat(inputs["first_run_since"])
     else:
-        opened = report_date(previous) or date.fromisoformat(state["generated_at"][:10])
-        recheck, known = pending(state), state["outputs"]["vendors"]
+        fresh = report_date(previous) or date.fromisoformat(state["generated_at"][:10])
+        opened = fresh - timedelta(days=OVERLAP_DAYS)
+        recheck, known, seen = pending(state), outputs["vendors"], outputs["examined"]
+        first_run_since = today - timedelta(days=FIRST_RUN_DAYS)
     return {
         "since": since or opened,
         "recheck": list(recheck),
         "known_orgs": {o.lower() for o in known} if known is not None else None,
+        "seen": dict(seen),
+        "fresh_since": fresh,
+        "first_run_since": first_run_since,
         "label": f"`{previous.name}`" + (", which this run replaces and whose inputs it repeats" if repeat else ""),
         "warnings": [],
     }
@@ -739,7 +839,16 @@ def main(argv: list[str] | None = None) -> int:
         Hub(cache_dir=args.cache) as hub,
     ):
         facts = survey(
-            policy, run["since"], hub, client, recheck=run["recheck"], known_orgs=run["known_orgs"], today=today
+            policy,
+            run["since"],
+            hub,
+            client,
+            recheck=run["recheck"],
+            known_orgs=run["known_orgs"],
+            seen=run["seen"],
+            fresh_since=run["fresh_since"],
+            first_run_since=run["first_run_since"],
+            today=today,
         )
         facts["coverage"] = [*run["warnings"], *facts["coverage"]]
         authenticated = hub.authenticated
