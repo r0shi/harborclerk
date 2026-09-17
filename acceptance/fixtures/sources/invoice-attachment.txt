@@ -1,0 +1,13 @@
+NORTHGATE PAPER CO.
+Invoice NP-2025-0471
+Date: 3 June 2025
+Bill to: Quill & Tern Bookbinders Ltd, 14 Harbourside Lane, Bristol
+
+Item                              Qty     Unit     Total
+Archival board 2 mm grey, sheet    40    6.20    248.00
+Book cloth, navy, metre            25   11.50    287.50
+Delivery                            1   35.00     35.00
+
+Subtotal                                          570.50
+VAT 20 percent                                    114.10
+Total due                                         684.60

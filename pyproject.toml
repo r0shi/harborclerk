@@ -69,6 +69,7 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "integration: end-to-end tests requiring external services (Dovecot, etc.). Run with `uv run pytest -m integration`.",
     "requires_models: tests that load embedding/reranker model weights (~2 GB). Run with `uv run pytest -m requires_models`. Skipped in default CI.",
+    "acceptance: drives a running Harbor Clerk instance over HTTP/MCP/CLI (acceptance/). Skipped unless HC_API_BASE is set; see docs/superpowers/specs/2026-09-16-acceptance-suite-design.md.",
 ]
 
 [tool.ruff]

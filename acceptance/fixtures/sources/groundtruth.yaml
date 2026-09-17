@@ -1,0 +1,87 @@
+# Ground truth for the acceptance fixtures. Every value here is asserted by
+# acceptance/test_fixtures_render.py against the sources (offline) and by
+# the live checks against a running instance. Change a source and this file
+# together.
+
+# Language values are the ones the pipeline stores on chunks and filters by:
+# the full-text-search configuration names, not ISO codes (worker/stages/chunk.py).
+# Fixed set of people and organisations planted across the sources.
+people: [Eleanor Marlowe, Tomas Reyes, Priya Natarajan, Dev Okafor]
+organisations: [Marlowe Holdings, Quill & Tern Bookbinders, Northgate Paper]
+
+queries:
+  # C1 / C7: a query with a known best answer and an exact phrase in it.
+  known_answer:
+    query: lease renewal notice period
+    exact_phrase: one further term of three years
+    expected_top: lease-agreement.pdf
+  # C2: bilingual full-text search must reach the French fixture.
+  french:
+    query: renouvellement du bail
+    expected_top: bail-commercial.txt
+  # C4: the near-duplicate pair must surface as a possible conflict.
+  conflict:
+    query: confirm the insurance renewal quotes
+    expected_docs: [meeting-minutes.txt, meeting-minutes-v2.txt]
+  # C5 / F6: Find All must enumerate exactly this set for the phrase.
+  find_all:
+    phrase: standing order
+    expected_docs: [vendor-notes.md, invoice-thread.eml]
+
+email:
+  from_address: accounts@northgatepaper.example
+  from_name: Dev Okafor
+  to_addresses: [tomas.reyes@quillandtern.example]
+  cc_addresses: [priya.natarajan@quillandtern.example]
+  subject: Invoice NP-2025-0471 for Harbourside Lane delivery
+  date: Tue, 03 Jun 2025 09:15:00 +0100
+  message_id: <np-2025-0471@northgatepaper.example>
+  attachment: NP-2025-0471.txt
+
+fixtures:
+  lease-agreement.pdf:
+    render: text-pdf
+    source: lease-agreement.txt
+    language: english
+    source_kind: document
+  lease-agreement-scan.pdf:
+    render: image-pdf
+    source: lease-agreement.txt
+    language: english
+    source_kind: document
+    ocr: true
+  vendor-notes.md:
+    render: copy
+    source: vendor-notes.md
+    language: english
+    source_kind: document
+  meeting-minutes.txt:
+    render: copy
+    source: meeting-minutes.txt
+    language: english
+    source_kind: document
+  meeting-minutes-v2.txt:
+    render: copy
+    source: meeting-minutes-v2.txt
+    language: english
+    source_kind: document
+  bail-commercial.txt:
+    render: copy
+    source: bail-commercial.txt
+    language: french
+    source_kind: document
+  handbook.docx:
+    render: docx
+    source: handbook.txt
+    language: english
+    source_kind: document
+  invoice-thread.eml:
+    render: eml
+    source: invoice-email-body.txt
+    attachment_source: invoice-attachment.txt
+    language: english
+    source_kind: email
+  notes.xyz:
+    render: copy
+    source: notes.xyz
+    unsupported: true
