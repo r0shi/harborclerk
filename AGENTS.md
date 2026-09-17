@@ -123,7 +123,7 @@ wrong place.
 | Design specs and implementation plans | `docs/superpowers/{specs,plans}/` |
 | Decisions, with rejected alternatives | `docs/adr/` |
 | Dated reports: evals, acceptance, field work | `docs/reports/` |
-| Skills: `verify`, `build-macos` | `.claude/skills/*/SKILL.md` — tracked, no machine-specific paths |
+| Skills: `verify`, `build-macos`, `acceptance`, `model-refresh` | `.claude/skills/*/SKILL.md` — tracked, no machine-specific paths |
 | Eval harness and methodology | `scripts/test_corpora/`, `docs/evaluation.md` |
 | Integration setup (MCP, CLI, connectors) | `docs/integrations.md` |
 | Pipeline stages, queues, `mark_stage_done`, extraction paths, storage, retrieval, async traps | `src/harbor_clerk/AGENTS.md` |
