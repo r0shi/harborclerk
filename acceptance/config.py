@@ -34,6 +34,7 @@ class AcceptanceConfig:
     wipe: bool
     keep: bool
     config_json: Path | None  # the native app's config.json, only when the suite may flip enable_cli_access
+    allow_model_swap: bool  # may activate a downloaded model when none is active (changes the instance)
     run_id: str
     ingest_timeout_s: int
     ask_timeout_s: int
@@ -114,6 +115,7 @@ def load_config() -> AcceptanceConfig:
         wipe=wipe,
         keep=_flag("HC_ACCEPTANCE_KEEP"),
         config_json=config_json,
+        allow_model_swap=disposable or _flag("HC_ACCEPTANCE_ALLOW_MODEL_SWAP"),
         run_id=os.environ.get("HC_ACCEPTANCE_RUN_ID", "").strip() or secrets.token_hex(4),
         ingest_timeout_s=int(os.environ.get("HC_ACCEPTANCE_INGEST_TIMEOUT", "900")),
         ask_timeout_s=int(os.environ.get("HC_ACCEPTANCE_ASK_TIMEOUT", "300")),

@@ -211,6 +211,7 @@ def _cfg(tmp_path: Path, config_json: Path | None) -> AcceptanceConfig:
         wipe=False,
         keep=False,
         config_json=config_json,
+        allow_model_swap=False,
         run_id="offline",
         ingest_timeout_s=1,
         ask_timeout_s=1,
@@ -333,3 +334,43 @@ def test_empty_folder_session_removes_the_directory_when_registration_fails(tmp_
     with pytest.raises(RuntimeError, match="409"), access.empty_folder_session(admin, folder, "/instance/empty"):
         pass
     assert admin.deleted == [] and not folder.exists()
+
+
+class FakePopulatedAdmin(FakeAdmin):
+    """Adds what `populated_folder_session` needs: an ingest wait, the document
+    mapping, and a folder delete that can 404 (the folder was already removed)."""
+
+    def __init__(self, *, gone_on_delete: bool = False):
+        super().__init__()
+        self.gone_on_delete = gone_on_delete
+
+    def wait_for_folder_ingest(self, folder_id: str, *, expected_files: int, timeout_s: float, poll_s: float = 3.0):
+        return {"completed_files": expected_files}
+
+    def documents_under(self, folder_path: str, expected=None):
+        return {access.SECOND_FOLDER_SOURCE: {"doc_id": "d-second"}}
+
+    def folder_delete(self, folder_id: str) -> None:
+        if self.gone_on_delete:
+            raise httpx.HTTPStatusError(
+                "404", request=httpx.Request("DELETE", "http://x"), response=httpx.Response(404)
+            )
+        super().folder_delete(folder_id)
+
+
+def test_populated_folder_session_renders_registers_and_cleans_up(tmp_path: Path) -> None:
+    admin = FakePopulatedAdmin()
+    folder = tmp_path / "second"
+    with access.populated_folder_session(admin, folder, "/instance/second", source_text="x", timeout_s=1) as f:
+        assert f.doc_id == "d-second" and f.phrase == access.SECOND_FOLDER_PHRASE
+        assert (folder / access.SECOND_FOLDER_SOURCE).read_text() == "x"
+    assert admin.deleted == ["empty-1"] and not folder.exists()
+
+
+def test_populated_folder_session_tolerates_a_folder_a_check_already_deleted(tmp_path: Path) -> None:
+    """H2 deletes the folder itself; the teardown's 404 must not mask H2's result."""
+    admin = FakePopulatedAdmin(gone_on_delete=True)
+    folder = tmp_path / "second"
+    with access.populated_folder_session(admin, folder, "/instance/second", source_text="x", timeout_s=1):
+        pass
+    assert not folder.exists(), "the files must go even when the folder was already gone"

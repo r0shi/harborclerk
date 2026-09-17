@@ -31,6 +31,7 @@ def _cfg(tmp_path: Path, **over: Any) -> AcceptanceConfig:
         wipe=False,
         keep=False,
         config_json=None,
+        allow_model_swap=False,
         run_id="offline",
         ingest_timeout_s=5,
         ask_timeout_s=5,

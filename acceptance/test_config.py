@@ -157,6 +157,7 @@ def test_folder_path_in_instance_maps_to_the_container_side(tmp_path: Path) -> N
         wipe=False,
         keep=False,
         config_json=None,
+        allow_model_swap=False,
         run_id="abc123",
         ingest_timeout_s=1,
         ask_timeout_s=1,

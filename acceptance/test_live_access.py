@@ -21,6 +21,7 @@ from acceptance.access import (
     EXIT_CONNECTION,
     EXIT_OK,
     TIER_TOOLS,
+    PopulatedFolder,
     mcp_probe,
     run_cli,
 )
@@ -244,3 +245,35 @@ def test_g7_deleted_key_is_refused_on_both_surfaces(cfg, admin: HarborClerk, key
     admin.delete_api_key(key["key_id"])
     assert mcp_probe(cfg.api_base, raw, verify=not cfg.insecure) == 401
     assert mcp_probe(cfg.api_base, raw, url_token=True, verify=not cfg.insecure) == 401
+
+
+def test_g8_scoped_key_cannot_read_a_document_outside_its_folder(
+    admin: HarborClerk, tier_keys: dict, second_folder: PopulatedFolder, mcp
+) -> None:
+    """Folder scope on the document surface, over MCP and over REST."""
+    raw = tier_keys["full"]["raw_key"]
+    result = mcp.bearer(raw).call_tool("kb_get_document", {"doc_id": second_folder.doc_id})
+    text = tool_error(result) or tool_json(result).get("error") or ""
+    assert "not found" in text.lower(), f"a fixture-scoped key read a document from another folder: {text[:200]}"
+    key = admin.with_key(raw)
+    try:
+        assert key.request("GET", f"/api/docs/{second_folder.doc_id}").status_code == 404
+    finally:
+        key.close()
+    assert second_folder.phrase not in tool_json(
+        mcp.bearer(raw).call_tool("kb_search", {"query": second_folder.phrase, "k": 5})
+    )
+
+
+def test_g9_scoped_key_with_documents_but_no_match_says_the_query_would_match_unscoped(
+    keys: KeyFactory, second_folder: PopulatedFolder, mcp
+) -> None:
+    """The other branch of `would_match_unscoped`: the key sees documents, none
+    of which match a phrase that exists elsewhere on the instance."""
+    raw = keys.create("g9-second-scope", scope_folder_ids=[second_folder.folder_id])["raw_key"]
+    session = mcp.bearer(raw)
+    own = tool_json(session.call_tool("kb_search", {"query": second_folder.phrase, "k": 5}))["hits"]
+    assert {h["doc_id"] for h in own} == {second_folder.doc_id}, "the scoped key must see its own folder"
+    resp = tool_json(session.call_tool("kb_search", {"query": "Harbourside Lane loading bay", "k": 10}))
+    assert resp["hits"] == [], resp
+    assert resp.get("would_match_unscoped", 0) > 0, resp

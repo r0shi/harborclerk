@@ -193,6 +193,49 @@ def empty_folder_session(admin: Any, folder_path: Path, path_in_instance: str) -
             shutil.rmtree(folder_path, ignore_errors=True)
 
 
+# ── a second, populated watched folder (documents outside the fixture scope) ─
+
+
+@dataclass
+class PopulatedFolder:
+    folder_id: str
+    path: str
+    doc_id: str
+    phrase: str  # a phrase found only in this folder's document
+
+
+SECOND_FOLDER_SOURCE = "second-folder-note.txt"
+SECOND_FOLDER_PHRASE = "cormorant ledger"
+
+
+@contextmanager
+def populated_folder_session(
+    admin: Any, folder_path: Path, path_in_instance: str, *, source_text: str, timeout_s: float
+) -> Iterator[PopulatedFolder]:
+    """Render one document into a new folder, register it, wait for it to be
+    ready, yield; then remove the folder (cascading the document) and the
+    files, tolerating a folder a check already deleted (H2)."""
+    folder_path.mkdir(parents=True, exist_ok=False)
+    folder_id: str | None = None
+    try:
+        (folder_path / SECOND_FOLDER_SOURCE).write_text(source_text, encoding="utf-8")
+        folder = admin.folder_create(path_in_instance)
+        folder_id = folder["folder_id"]
+        admin.wait_for_folder_ingest(folder_id, expected_files=1, timeout_s=timeout_s)
+        docs = admin.documents_under(folder["path"], expected={SECOND_FOLDER_SOURCE})
+        yield PopulatedFolder(folder_id, folder["path"], docs[SECOND_FOLDER_SOURCE]["doc_id"], SECOND_FOLDER_PHRASE)
+    finally:
+        try:
+            if folder_id is not None:
+                try:
+                    admin.folder_delete(folder_id)
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code != 404:
+                        raise
+        finally:
+            shutil.rmtree(folder_path, ignore_errors=True)
+
+
 # ── raw MCP probe ───────────────────────────────────────────────────────────
 
 _INITIALIZE = {

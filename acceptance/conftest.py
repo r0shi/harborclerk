@@ -28,10 +28,23 @@ from typing import Any, Protocol
 import httpx
 import pytest
 
-from acceptance.access import EXIT_CLI_DISABLED, EXIT_OK, cli_access_toggled, empty_folder_session, run_cli
+from acceptance.access import (
+    EXIT_CLI_DISABLED,
+    EXIT_OK,
+    PopulatedFolder,
+    cli_access_toggled,
+    empty_folder_session,
+    populated_folder_session,
+    run_cli,
+)
 from acceptance.config import WIPE_MAX_DOCUMENTS, AcceptanceConfig, load_config
-from acceptance.fixtures.render import Fixture, load_groundtruth, materialize
+from acceptance.fixtures.render import Fixture, load_groundtruth, materialize, source_text
 from acceptance.hc_client import HarborClerk, McpSession
+
+
+def _bind_documents_under(client: HarborClerk) -> None:
+    """`populated_folder_session` needs the mapping helper on the client object."""
+    client.documents_under = lambda folder_path, expected=None: documents_under(client, folder_path, expected=expected)  # type: ignore[attr-defined]
 
 
 class AdminClient(Protocol):
@@ -68,6 +81,7 @@ def admin(cfg: AcceptanceConfig) -> Iterator[HarborClerk]:
         pytest.skip(
             "Compose targets are not supported yet (watcher auto-discovery creates a twin folder); see the spec"
         )
+    _bind_documents_under(client)
     yield client
     client.close()
 
@@ -232,6 +246,21 @@ def empty_folder(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> I
     none of the fixtures (G3)."""
     name = f"{cfg.folder_name}-empty"
     with empty_folder_session(admin, cfg.folder_root / name, str(Path(cfg.folder_path_in_instance).parent / name)) as f:
+        yield f
+
+
+@pytest.fixture(scope="session")
+def second_folder(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[PopulatedFolder]:
+    """A second watched folder holding one document the fixture-scoped keys
+    must not see (G8, G9)."""
+    name = f"{cfg.folder_name}-second"
+    with populated_folder_session(
+        admin,
+        cfg.folder_root / name,
+        str(Path(cfg.folder_path_in_instance).parent / name),
+        source_text=source_text("second-folder-note.txt"),
+        timeout_s=cfg.ingest_timeout_s,
+    ) as f:
         yield f
 
 

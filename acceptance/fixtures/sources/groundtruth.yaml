@@ -81,6 +81,14 @@ fixtures:
     attachment_source: invoice-attachment.txt
     language: english
     source_kind: email
+  deletion-target.txt:
+    render: copy
+    source: deletion-target.txt
+    language: english
+    source_kind: document
+    # H1 soft-deletes this one; no other check depends on it.
+    deletion_target: true
+    unique_phrase: heron ledger reconciliation
   notes.xyz:
     render: copy
     source: notes.xyz

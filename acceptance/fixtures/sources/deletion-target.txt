@@ -1,0 +1,6 @@
+HERON LEDGER RECONCILIATION
+
+Internal note, 1 July 2025. The heron ledger reconciliation for the second
+quarter is complete. Three invoices from Northgate Paper Co. were matched to
+deliveries; one credit note is outstanding. This note exists so that the
+acceptance suite can delete a document nothing else depends on.

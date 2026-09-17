@@ -1,0 +1,5 @@
+CORMORANT LEDGER
+
+A note kept in a different folder from the workshop papers. The cormorant
+ledger records petty cash for the front office and nothing else. It is used
+by the acceptance suite as a document outside the fixture folder's scope.
