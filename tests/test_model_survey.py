@@ -15,6 +15,7 @@ from scripts.model_survey.screen import (
     family_of,
     flags_for,
     generation_of,
+    ladder_gap_fillers,
     load_policy,
     params_class,
     rank,
@@ -30,7 +31,7 @@ CURATED = [
     {"id": "qwen3-4b", "family": "qwen", "generation": (3,), "size_bytes": 2_500_000_000},
     {"id": "qwen3-8b", "family": "qwen", "generation": (3,), "size_bytes": 5_030_000_000},
     {"id": "gpt-oss-20b", "family": "gpt-oss", "generation": (), "size_bytes": 11_600_000_000},
-    {"id": "gemma4-26b-a4b", "family": "gemma", "generation": (4,), "size_bytes": 17_000_000_000},
+    {"id": "gemma4-26b-a4b", "family": "gemma", "generation": (4,), "size_bytes": 17_000_000_000, "params_b": 26.0},
     {"id": "qwen36-35b-a3b", "family": "qwen", "generation": (3, 6), "size_bytes": 22_134_528_992},
 ]
 
@@ -325,3 +326,51 @@ def test_exclusions_cover_gui_agents_and_derivative_uncensored_builds() -> None:
     ):
         assert excluded_fragment(name, POLICY), name
     assert excluded_fragment("ibm-granite/granite-4.2-8b", POLICY) is None
+
+
+def _rows(*ids: str, tag: str = "image-text-to-text") -> list[dict]:
+    return [{"id": i, "createdAt": "2026-04-02T00:00:00Z", "pipeline_tag": tag} for i in ids]
+
+
+def test_ladder_gap_fillers_find_the_sibling_the_window_and_successor_search_miss() -> None:
+    """Gemma 4 12B is the same generation as the curated Gemma and older than
+    any survey window, and it sits in the 5 to 11.6 GB gap. Google files it
+    under `any-to-any`, which the policy has to admit."""
+    rows = _rows("google/gemma-4-12B-it", "google/gemma-4-12B", tag="any-to-any") + _rows(
+        "google/gemma-4-26B-A4B-it",  # the curated model itself
+        "google/gemma-4-12B-it-qat-q4_0-unquantized",
+        "google/gemma-4-12B-it-assistant",  # a speculative-decoding drafter
+        "google/gemma-3-12b-it",  # a generation the registry has moved past
+    )
+    found = ladder_gap_fillers(CURATED, rows, "gemma", POLICY)
+    assert [f["repo"] for f in found] == ["google/gemma-4-12B-it"], found
+    assert found[0]["gap_gb"] == [5.0, 11.6]
+    assert "any-to-any" in POLICY.pipeline_tags
+    assert ladder_gap_fillers(CURATED, rows, "granite", POLICY) == [], (
+        "a family that is not curated has no ladder to fill"
+    )
+
+
+def test_ladder_gap_fillers_accept_a_newer_generation_above_their_own_family() -> None:
+    """The 5 to 11.6 GB gap sits above qwen3-8b. A Qwen3.5 14B is newer than
+    that neighbour although older than the newest Qwen carried, so it counts;
+    Qwen3-14B is the neighbour's own generation and does not."""
+    rows = _rows("Qwen/Qwen3.5-14B", "Qwen/Qwen3-14B", tag="text-generation")
+    found = ladder_gap_fillers(CURATED, rows, "qwen", POLICY)
+    assert [f["repo"] for f in found] == ["Qwen/Qwen3.5-14B"], found
+
+
+def test_hub_follows_the_redirect_for_a_repo_name_in_the_wrong_case() -> None:
+    """`unsloth/gemma-4-12B-it-GGUF` lives at `gemma-4-12b-it-GGUF`; the Hub
+    answers the first spelling with a 307, which once ended the whole run."""
+    import httpx
+
+    from scripts.model_survey.hf import Hub
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/unsloth/gemma-4-12B-it-GGUF"):
+            return httpx.Response(307, headers={"Location": "/api/models/unsloth/gemma-4-12b-it-GGUF"})
+        return httpx.Response(200, json={"id": "unsloth/gemma-4-12b-it-GGUF"})
+
+    hub = Hub(httpx.Client(transport=httpx.MockTransport(handler)), pause_s=0)
+    assert hub.model("unsloth/gemma-4-12B-it-GGUF") == {"id": "unsloth/gemma-4-12b-it-GGUF"}

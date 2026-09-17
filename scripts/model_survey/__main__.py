@@ -29,7 +29,9 @@ from scripts.model_survey.screen import (
     family_of,
     flags_for,
     generation_of,
+    ladder_gap_fillers,
     load_policy,
+    params_class,
     rank,
     screen,
     size_matched_successors,
@@ -51,6 +53,7 @@ def curated_models() -> list[dict[str, Any]]:
             "context_window": m.context_window,
             "family": family_of(m.huggingface_repo),
             "generation": generation_of(m.huggingface_repo),
+            "params_b": params_class(m.huggingface_repo),
         }
         for m in MODELS.values()
     ]
@@ -138,6 +141,16 @@ def survey(policy: Policy, since: date, hub: Hub, client: httpx.Client) -> dict[
             {**c, "generation": list(c["generation"]), "gguf": gguf, "successors": successors, "findings": findings}
         )
 
+    gap_fillers = []
+    curated_ids = {c["repo"].lower() for c in curated}
+    for family, org in policy.family_orgs.items():
+        for f in ladder_gap_fillers(curated, catalogue.get(org, []), family, policy)[:3]:
+            fg = find_gguf(hub, f["repo"], policy)
+            if fg and fg["repo"].lower() in curated_ids:
+                continue
+            fm = summarize_model(hub.model(f["repo"]) or {"id": f["repo"]})
+            gap_fillers.append({**f, "license": fm.get("license"), "likes": fm.get("likes"), "gguf": fg})
+
     watched = {o.lower() for o in policy.orgs} | {p.lower() for p in policy.gguf_publishers}
     outside: dict[str, dict[str, Any]] = {}
     for tag in policy.pipeline_tags:
@@ -164,6 +177,7 @@ def survey(policy: Policy, since: date, hub: Hub, client: httpx.Client) -> dict[
             "only_at_head": sorted(arch_head - arch_pin),
         },
         "curated": audit,
+        "gap_fillers": gap_fillers,
         "candidates": candidates,
         "screened": screened,
         "outside_watchlist": sorted(outside.values(), key=lambda r: -r["likes"])[:12],
@@ -244,6 +258,25 @@ def render(facts: dict[str, Any], policy: Policy, run_id: str, now: datetime) ->
             )
     if not tier_rows:
         out.append("| – | none found | | | | | | |")
+    out += [
+        "",
+        "## Gaps in the size ladder",
+        "",
+        "Members of a curated family that would sit in a gap of the ladder wider than 4 GB.",
+        "",
+    ]
+    out += [
+        "| Release | Released | Licence | Gap | GGUF | Q4 GB | Context | Arch |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for f in facts["gap_fillers"]:
+        g = f["gguf"] or {}
+        out.append(
+            f"| `{f['repo']}` | {f['created']} | {f['license']} | {f['gap_gb'][0]:g} to {f['gap_gb'][1]:g} GB | `{g.get('repo', '–')}` | "
+            f"{_gb(g.get('quant_bytes'))} | {g.get('context_length', '–')} | {g.get('architecture', '–')} |"
+        )
+    if not facts["gap_fillers"]:
+        out.append("| none found | | | | | | | |")
     out += [
         "",
         "## llama.cpp",

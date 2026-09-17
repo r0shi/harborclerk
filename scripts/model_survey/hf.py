@@ -59,7 +59,8 @@ class Hub:
         for attempt in range(self._max_tries):
             self._sleep(self._pause)  # be a polite client
             self.requests += 1
-            r = self._http.get(f"{API}{path}", params=params)
+            # The Hub redirects a repo name whose case differs from the canonical one.
+            r = self._http.get(f"{API}{path}", params=params, follow_redirects=True)
             if r.status_code == 429 or r.status_code >= 500:
                 # The Hub rate-limits bursts; honour Retry-After, else back off.
                 retry_after = r.headers.get("Retry-After", "")

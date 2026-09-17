@@ -37,6 +37,9 @@ on its own. All commands run from the repository root.
    - what the curated-set audit found that is simply wrong (a context window
      below the GGUF's, a stale publisher) and can be fixed without an eval;
    - whether the llama.cpp pin blocks anything in the ranking;
+   - what is carried forward: candidates on the tracking issue (#551) that
+     nobody has evaluated yet. The window only finds what is new, so an open
+     candidate from an earlier survey disappears unless the Reading names it;
    - what was **not** verified. No model is run in this stage: tool-calling
      behaviour under llama-server, French quality, throughput on the mini and
      every vendor benchmark are unverified until stage 3, and the Reading says so.

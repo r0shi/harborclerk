@@ -97,6 +97,58 @@ def size_matched_successors(
     return sorted(found, key=lambda f: (tuple(-g for g in f["generation"]), abs(f["params_b"] - size)))
 
 
+def ladder_gap_fillers(
+    curated: list[dict[str, Any]], org_rows: list[dict[str, Any]], family: str, policy: Policy, min_gap_gb: float = 4.0
+) -> list[dict[str, Any]]:
+    """Members of a curated family whose estimated Q4 size (0.6 GB per billion
+    parameters) lands in a gap of the curated size ladder wider than
+    `min_gap_gb`. These are neither new nor successors, so the window and the
+    successor search both miss them: Gemma 4 12B sat in the 5 to 11.6 GB gap
+    for months.
+
+    A filler must be at least as new as the newest generation the registry
+    carries for its family, or newer than the curated model it would sit
+    above when that model is its own family. Anything older is a model the
+    registry has already moved past."""
+    ladder = sorted(curated, key=lambda c: c["size_bytes"])
+    gaps = [
+        (lo, hi)
+        for lo, hi in zip(ladder, ladder[1:], strict=False)
+        if (hi["size_bytes"] - lo["size_bytes"]) / 1e9 > min_gap_gb
+    ]
+    mine = [c for c in curated if c["family"] == family]
+    if not gaps or not mine:
+        return []
+    newest = max(tuple(c["generation"]) for c in mine)
+    carried = {c["params_b"] for c in mine if c.get("params_b") is not None}
+    ids = {row["id"].lower() for row in org_rows}
+    found = []
+    for row in org_rows:
+        repo = row["id"]
+        if family_of(repo) != family or "gguf" in repo.lower() or excluded_fragment(repo, policy):
+            continue
+        if row.get("pipeline_tag") not in policy.pipeline_tags or f"{repo.lower()}-it" in ids:
+            continue
+        size, generation = params_class(repo), generation_of(repo)
+        if size is None or size in carried:
+            continue
+        est = size * 0.6
+        for lo, hi in gaps:
+            if not lo["size_bytes"] / 1e9 + 1 < est < hi["size_bytes"] / 1e9 - 1:
+                continue
+            above_own_family = lo["family"] == family and generation > tuple(lo["generation"])
+            if generation >= newest or above_own_family:
+                found.append(
+                    {
+                        "repo": repo,
+                        "created": (row.get("createdAt") or "")[:10],
+                        "params_b": size,
+                        "gap_gb": [round(lo["size_bytes"] / 1e9, 1), round(hi["size_bytes"] / 1e9, 1)],
+                    }
+                )
+    return sorted(found, key=lambda f: (tuple(-g for g in generation_of(f["repo"])), f["repo"]))
+
+
 def excluded_fragment(name: str, policy: Policy) -> str | None:
     low = name.lower()
     return next((f for f in policy.exclude_name_fragments if f in low), None)

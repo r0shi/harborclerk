@@ -50,13 +50,16 @@ permissive_licenses: [apache-2.0, mit, bsd-3-clause, gemma, cc-by-4.0, openrail,
 exclude_name_fragments:
   [fp8, fp4, nvfp4, awq, gptq, int4, int8, bnb, mlx, onnx, bf16, -base, sae-, embedding, embed, reranker, guard,
    asr, tts, audio, omni, image, video, ocr, aligner, reward, -prm, math, translate, drive, world, agentworld,
-   ui-, -ui, gui, cua, abliterat, uncensor, obliterat, heretic]
+   ui-, -ui, gui, cua, abliterat, uncensor, obliterat, heretic,
+   qat, w4a16, -assistant, mobile, unquantized]
 
 # Flagged in the report rather than excluded: may still be worth a look.
 flag_name_fragments: [coder, code, distill, reasoning, thinking]
 
-# Tasks that can hold a general chat model on the Hub.
-pipeline_tags: [text-generation, image-text-to-text]
+# Tasks that can hold a general chat model on the Hub. `any-to-any` is here
+# because Google files Gemma 4 12B under it; the architecture check still
+# decides whether llama.cpp can load what the tag admits.
+pipeline_tags: [text-generation, image-text-to-text, any-to-any]
 
 # The vendor org that publishes each curated family, so the audit can look for
 # a size-matched successor of every curated model regardless of the window.
