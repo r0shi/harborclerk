@@ -53,7 +53,9 @@ EXIT_OK, EXIT_USAGE, EXIT_CONNECTION, EXIT_CLI_DISABLED, EXIT_AUTH, EXIT_HTTP = 
 
 def cli_env(api_base: str, raw_key: str, *, insecure: bool = False) -> dict[str, str]:
     """The environment the harbor-clerk CLI reads (src/harbor_clerk/cli/config.py)."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("HARBOR_CLERK_")}
+    # VIRTUAL_ENV from an activated foreign venv makes `uv run` print a warning
+    # on stderr, where the CLI's structured error also goes.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HARBOR_CLERK_") and k != "VIRTUAL_ENV"}
     env["HARBOR_CLERK_URL"] = api_base
     env["HARBOR_CLERK_API_KEY"] = raw_key
     if insecure:
@@ -74,8 +76,13 @@ class CliResult:
 
     @property
     def error(self) -> Any:
-        """The structured error the CLI writes to stderr on failure (cli/errors.py write_error)."""
-        return json.loads(self.stderr)
+        """The structured error the CLI writes to stderr on failure
+        (cli/errors.py write_error). Anything before the first `{` is tooling
+        noise (a `uv` warning, say), not the error."""
+        start = self.stderr.find("{")
+        if start < 0:
+            raise ValueError(f"no JSON error on stderr: {self.stderr[:300]!r}")
+        return json.loads(self.stderr[start:])
 
 
 def run_cli(api_base: str, raw_key: str, *args: str, insecure: bool = False, timeout_s: float = 120) -> CliResult:
@@ -95,21 +102,43 @@ def run_cli(api_base: str, raw_key: str, *args: str, insecure: bool = False, tim
 # ── CLI access toggle ───────────────────────────────────────────────────────
 
 
+def _read_config(config_json: Path) -> dict[str, Any]:
+    raw = config_json.read_bytes()
+    return json.loads(raw) if raw.strip() else {}
+
+
+def _write_config_atomically(config_json: Path, data: dict[str, Any]) -> None:
+    """Temp file + rename, the codebase's own idiom: the API re-reads this
+    file per CLI request and the Swift app polls its mtime, so neither may see
+    a truncated file."""
+    tmp = config_json.with_name(config_json.name + ".acceptance-tmp")
+    tmp.write_bytes(json.dumps(data, indent=2).encode("utf-8") + b"\n")
+    os.replace(tmp, config_json)
+
+
 @contextmanager
 def cli_access_toggled(config_json: Path, enabled: bool) -> Iterator[None]:
     """Flip `enable_cli_access` in the native app's config.json for the block.
 
-    There is no API for it: the API re-reads this file on every CLI request
-    (config.refresh_cli_access_setting). The original bytes are written back in
-    a finally, so a failing check cannot leave the operator's setting flipped."""
-    original = config_json.read_bytes()
-    data = json.loads(original or b"{}")
-    data["enable_cli_access"] = enabled
-    config_json.write_bytes(json.dumps(data, indent=2).encode("utf-8") + b"\n")
+    There is no API for it: the API re-reads this file when a CLI request
+    reaches the MCP auth middleware (config.refresh_cli_access_setting). Only
+    that one key is touched, and it is restored from its original value in a
+    finally after re-reading the file, so a check that fails cannot leave the
+    operator's setting flipped and anything the app or the API wrote to other
+    keys meanwhile survives. Formatting is normalised to two-space JSON."""
+    before = _read_config(config_json)
+    had_key = "enable_cli_access" in before
+    original = before.get("enable_cli_access")
+    _write_config_atomically(config_json, {**before, "enable_cli_access": enabled})
     try:
         yield
     finally:
-        config_json.write_bytes(original)
+        current = _read_config(config_json)
+        if had_key:
+            current["enable_cli_access"] = original
+        else:
+            current.pop("enable_cli_access", None)
+        _write_config_atomically(config_json, current)
 
 
 # ── a second, empty watched folder (for scope checks) ───────────────────────

@@ -2,7 +2,10 @@
 IDs match docs/superpowers/specs/2026-09-16-acceptance-suite-design.md.
 
 Keys are scoped to the fixture folder so the MCP and CLI results being compared
-cover the same documents on any instance.
+cover the same documents on any instance. The CLI gate is judged by CLI exit
+codes, never by the health endpoint: the API re-reads `enable_cli_access` only
+when a CLI request reaches the MCP auth middleware, so health reports the
+setting as of the last CLI request it saw.
 """
 
 from __future__ import annotations
@@ -71,21 +74,17 @@ def test_f3_kb_search_and_kb_find_all_carry_citations(tier_keys: dict, corpus: C
 
 
 def test_f4_cli_disabled_exits_3_and_is_audited(cfg, admin: HarborClerk, tier_keys: dict, cli_access) -> None:
-    """The API re-reads enable_cli_access only when a CLI request reaches the
-    MCP auth middleware (mcp_server.py), so /api/system/health reports the old
-    value until the CLI is actually called: call first, then read health."""
+    """The healing request after the block runs whatever happened inside it, so
+    a failed assertion cannot leave the in-memory gate behind the restored file."""
     key = tier_keys["full"]
     search = ("search", "Harbourside Lane", "-k", "1")
     if cli_access.enabled:
-        with cli_access.toggled(False):
-            result = run_cli(cfg.api_base, key["raw_key"], *search, insecure=cfg.insecure)
-            assert cli_access.enabled is False, (
-                "config.json was written and a CLI request made, but health still says enabled"
-            )
-        # Restored on disk; the gate follows on the next CLI request, which must now succeed.
-        after = run_cli(cfg.api_base, key["raw_key"], *search, insecure=cfg.insecure)
+        try:
+            with cli_access.toggled(False):
+                result = run_cli(cfg.api_base, key["raw_key"], *search, insecure=cfg.insecure)
+        finally:
+            after = run_cli(cfg.api_base, key["raw_key"], *search, insecure=cfg.insecure)
         assert after.code == EXIT_OK, f"CLI access was not restored: exit {after.code} {after.stderr[:200]}"
-        assert cli_access.enabled is True
     else:
         result = run_cli(cfg.api_base, key["raw_key"], *search, insecure=cfg.insecure)
     assert result.code == EXIT_CLI_DISABLED, (result.code, result.stderr[:300])
@@ -94,55 +93,57 @@ def test_f4_cli_disabled_exits_3_and_is_audited(cfg, admin: HarborClerk, tier_ke
     assert denied and denied[0]["request_type"] == "cli_tool" and denied[0]["status"] == "denied", denied
 
 
-def _require_cli(cli_access) -> None:
-    if not cli_access.enabled:
-        pytest.skip("CLI access is disabled on this instance; F5/F6 compare the CLI against MCP")
-
-
 def test_f5_cli_search_matches_kb_search(cfg, tier_keys: dict, corpus: Corpus, mcp, cli_access) -> None:
-    _require_cli(cli_access)
     raw = tier_keys["full"]["raw_key"]
     query = "Harbourside Lane"
-    via_mcp = tool_json(mcp.bearer(raw).call_tool("kb_search", {"query": query, "k": 20}))
-    via_cli = run_cli(cfg.api_base, raw, "search", query, "-k", "20", insecure=cfg.insecure)
+    with cli_access.ensured():
+        via_mcp = tool_json(mcp.bearer(raw).call_tool("kb_search", {"query": query, "k": 20}))
+        via_cli = run_cli(cfg.api_base, raw, "search", query, "-k", "20", insecure=cfg.insecure)
     assert via_cli.code == EXIT_OK, via_cli.stderr[:300]
     mcp_hits = {h["chunk_id"]: h["citation"] for h in via_mcp["hits"]}
     cli_hits = {h["chunk_id"]: h["citation"] for h in via_cli.json["hits"]}
-    assert mcp_hits and set(cli_hits) == set(mcp_hits), {
+    diagnostics = {
         "mcp_only": set(mcp_hits) - set(cli_hits),
         "cli_only": set(cli_hits) - set(mcp_hits),
+        "reranker_status": (via_mcp.get("reranker_status"), via_cli.json.get("reranker_status")),
     }
+    assert mcp_hits and set(cli_hits) == set(mcp_hits), diagnostics
     assert cli_hits == mcp_hits, "citation strings differ between CLI and MCP for the same chunks"
 
 
-def test_f6_cli_find_all_and_expand_context_match_mcp(cfg, tier_keys: dict, corpus: Corpus, mcp, cli_access) -> None:
-    _require_cli(cli_access)
+def test_f6_cli_find_all_and_expand_context_match_mcp(
+    cfg, admin: HarborClerk, tier_keys: dict, corpus: Corpus, mcp, cli_access
+) -> None:
     raw = tier_keys["full"]["raw_key"]
+    session = mcp.bearer(raw)
     q = corpus.groundtruth["queries"]["find_all"]
-    via_mcp = tool_json(
-        mcp.bearer(raw).call_tool(
-            "kb_find_all", {"query": q["phrase"], "text_contains": q["phrase"], "presentation": "full"}
+    args = {"query": q["phrase"], "text_contains": q["phrase"], "presentation": "full"}
+    with cli_access.ensured():
+        via_mcp = tool_json(session.call_tool("kb_find_all", args))
+        via_cli = run_cli(
+            cfg.api_base,
+            raw,
+            "find-all",
+            q["phrase"],
+            "--text-contains",
+            q["phrase"],
+            "--presentation",
+            "full",
+            insecure=cfg.insecure,
         )
-    )
-    via_cli = run_cli(
-        cfg.api_base,
-        raw,
-        "find-all",
-        q["phrase"],
-        "--text-contains",
-        q["phrase"],
-        "--presentation",
-        "full",
-        insecure=cfg.insecure,
-    )
-    assert via_cli.code == EXIT_OK, via_cli.stderr[:300]
-    assert {r["doc_id"] for r in via_cli.json["results"]} == {r["doc_id"] for r in via_mcp["results"]}
-    chunk_id = via_mcp["results"][0]["top_chunk"]["chunk_id"]
-    expanded = run_cli(cfg.api_base, raw, "expand-context", chunk_id, "-n", "1", insecure=cfg.insecure)
-    assert expanded.code == EXIT_OK, expanded.stderr[:300]
-    chunks = expanded.json["chunks"]
-    assert chunk_id in {c["chunk_id"] for c in chunks}, "the target chunk is missing from its own expansion"
-    assert expanded.json["target_chunk_num"] is not None
+        assert via_cli.code == EXIT_OK, via_cli.stderr[:300]
+        assert {r["doc_id"] for r in via_cli.json["results"]} == {r["doc_id"] for r in via_mcp["results"]}
+        # expand-context: CLI and tool return the same chunk window, and the window has neighbours
+        first = via_mcp["results"][0]
+        chunk_id = first["top_chunk"]["chunk_id"]
+        mcp_ctx = tool_json(session.call_tool("kb_expand_context", {"chunk_id": chunk_id, "n": 1}))
+        cli_ctx = run_cli(cfg.api_base, raw, "expand-context", chunk_id, "-n", "1", insecure=cfg.insecure)
+    assert cli_ctx.code == EXIT_OK, cli_ctx.stderr[:300]
+    cli_ids = [c["chunk_id"] for c in cli_ctx.json["chunks"]]
+    assert cli_ids == [c["chunk_id"] for c in mcp_ctx["chunks"]], "expand-context windows differ between CLI and MCP"
+    assert chunk_id in cli_ids, "the target chunk is missing from its own expansion"
+    if admin.document_outline(first["doc_id"])["chunk_count"] > 1:
+        assert len(cli_ids) >= 2, "a document with several chunks must expand to at least one neighbour"
 
 
 def test_f7_cli_exit_codes_for_auth_and_connection_failures(cfg) -> None:
@@ -157,9 +158,7 @@ def test_f7_cli_exit_codes_for_auth_and_connection_failures(cfg) -> None:
 # ── G. API key scope, limits and audit ──────────────────────────────────────
 
 
-def test_g1_out_of_tier_tool_call_is_refused_and_audited(
-    admin: HarborClerk, tier_keys: dict, corpus: Corpus, mcp
-) -> None:
+def test_g1_out_of_tier_tool_call_is_refused_and_audited(admin: HarborClerk, tier_keys: dict, mcp) -> None:
     key = tier_keys["search"]
     result = mcp.bearer(key["raw_key"]).call_tool(
         "kb_read_passages", {"chunk_ids": ["00000000-0000-0000-0000-000000000000"]}
@@ -211,10 +210,10 @@ def test_g4_rate_limit_refuses_the_third_call_and_recovers(
 
 
 def test_g5_expired_key_is_refused_on_both_surfaces(cfg, keys: KeyFactory, corpus: Corpus) -> None:
-    expires = (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=4)).isoformat()
+    expires = (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=10)).isoformat()
     raw = keys.create("g5-expiring", scope_folder_ids=[corpus.folder_id], expires_at=expires)["raw_key"]
     assert mcp_probe(cfg.api_base, raw, verify=not cfg.insecure) == 200
-    time.sleep(5)
+    time.sleep(11)
     assert mcp_probe(cfg.api_base, raw, verify=not cfg.insecure) == 401
     assert mcp_probe(cfg.api_base, raw, url_token=True, verify=not cfg.insecure) == 401
 
@@ -226,16 +225,18 @@ def test_g6_audit_distinguishes_mcp_and_cli_calls(
     assert tool_error(mcp.bearer(key["raw_key"]).call_tool("kb_search", {"query": "lease", "k": 1})) is None
     types = {(r["request_type"], r["endpoint"], r["status"]) for r in _rows(admin, key["key_id"])}
     assert ("mcp_tool", "kb_search", "ok") in types, types
-    if cli_access.enabled:
+    with cli_access.ensured():
         assert (
             run_cli(cfg.api_base, key["raw_key"], "search", "lease", "-k", "1", insecure=cfg.insecure).code == EXIT_OK
         )
-        types = {(r["request_type"], r["endpoint"], r["status"]) for r in _rows(admin, key["key_id"])}
-        assert ("cli_tool", "kb_search", "ok") in types, types
+    types = {(r["request_type"], r["endpoint"], r["status"]) for r in _rows(admin, key["key_id"])}
+    assert ("cli_tool", "kb_search", "ok") in types, types
 
 
-def test_g7_deleted_key_is_refused_on_both_surfaces(cfg, admin: HarborClerk, corpus: Corpus) -> None:
-    key = admin.create_api_key(f"acceptance-{cfg.run_id}-g7-deleted", scope_folder_ids=[corpus.folder_id])
+def test_g7_deleted_key_is_refused_on_both_surfaces(cfg, admin: HarborClerk, keys: KeyFactory, corpus: Corpus) -> None:
+    # Through the factory so a failed probe cannot leave an active key behind;
+    # the teardown's second DELETE on an already-deleted key is a harmless 204.
+    key = keys.create("g7-deleted", scope_folder_ids=[corpus.folder_id])
     raw = key["raw_key"]
     assert mcp_probe(cfg.api_base, raw, verify=not cfg.insecure) == 200
     assert mcp_probe(cfg.api_base, raw, url_token=True, verify=not cfg.insecure) == 200

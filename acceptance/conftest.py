@@ -24,7 +24,7 @@ from typing import Any, Protocol
 import httpx
 import pytest
 
-from acceptance.access import cli_access_toggled, empty_folder_session
+from acceptance.access import EXIT_CLI_DISABLED, EXIT_OK, cli_access_toggled, empty_folder_session, run_cli
 from acceptance.config import WIPE_MAX_DOCUMENTS, AcceptanceConfig, load_config
 from acceptance.fixtures.render import Fixture, load_groundtruth, materialize
 from acceptance.hc_client import HarborClerk, McpSession
@@ -232,16 +232,29 @@ def empty_folder(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> I
 
 
 class CliAccess:
-    """What the instance's CLI gate currently is, and a way to flip it when
-    the operator has pointed the suite at the native config.json."""
+    """What the instance's CLI gate currently is, judged by a real CLI request
+    (the health endpoint reports the setting only as of the last CLI request
+    the API saw), and a way to flip it when the operator has pointed the suite
+    at the native config.json."""
 
-    def __init__(self, admin: HarborClerk, cfg: AcceptanceConfig):
-        self._admin = admin
+    def __init__(self, cfg: AcceptanceConfig, raw_key: str):
         self._cfg = cfg
+        self._raw_key = raw_key
+
+    def probe(self) -> int:
+        """Exit code of a minimal CLI search; also makes the API re-read the gate."""
+        return run_cli(
+            self._cfg.api_base, self._raw_key, "search", "probe", "-k", "1", insecure=self._cfg.insecure
+        ).code
 
     @property
     def enabled(self) -> bool:
-        return bool(self._admin.health().get("enable_cli_access"))
+        code = self.probe()
+        if code == EXIT_OK:
+            return True
+        if code == EXIT_CLI_DISABLED:
+            return False
+        raise RuntimeError(f"CLI probe exited {code}; cannot tell whether CLI access is enabled")
 
     def toggled(self, enabled: bool):
         if self._cfg.config_json is None:
@@ -250,10 +263,25 @@ class CliAccess:
             )
         return cli_access_toggled(self._cfg.config_json, enabled)
 
+    @contextmanager
+    def ensured(self) -> Iterator[None]:
+        """CLI access on for the block: as found, or flipped and then restored
+        with a healing probe so the in-memory gate follows the file back."""
+        if self.enabled:
+            yield
+            return
+        if self._cfg.config_json is None:
+            pytest.skip("CLI access is disabled on this instance and HC_ACCEPTANCE_CONFIG_JSON is not set")
+        try:
+            with self.toggled(True):
+                yield
+        finally:
+            self.probe()
+
 
 @pytest.fixture(scope="session")
-def cli_access(cfg: AcceptanceConfig, admin: HarborClerk) -> CliAccess:
-    return CliAccess(admin, cfg)
+def cli_access(cfg: AcceptanceConfig, keys: KeyFactory, corpus: Corpus) -> CliAccess:
+    return CliAccess(cfg, keys.create("cli-probe", scope_folder_ids=[corpus.folder_id])["raw_key"])
 
 
 @pytest.fixture(scope="session")

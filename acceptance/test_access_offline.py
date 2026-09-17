@@ -29,24 +29,61 @@ def test_cli_env_maps_the_suite_settings_onto_the_cli_variables(monkeypatch: pyt
     assert "PATH" in env, "the CLI still needs the rest of the environment"
 
 
-def test_cli_access_toggle_restores_the_original_bytes(tmp_path: Path) -> None:
+def test_cli_env_drops_a_foreign_virtualenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With VIRTUAL_ENV pointing elsewhere, `uv run` prints a warning on stderr,
+    where the CLI's structured error also goes."""
+    monkeypatch.setenv("VIRTUAL_ENV", "/somewhere/else")
+    assert "VIRTUAL_ENV" not in access.cli_env("http://x", "hc_k")
+
+
+def test_cli_error_is_parsed_past_tooling_noise_on_stderr() -> None:
+    result = access.CliResult(
+        code=access.EXIT_AUTH,
+        stdout="",
+        stderr='warning: `VIRTUAL_ENV=/x` does not match the project environment path\n{"error_kind": "auth", "message": "401"}\n',
+    )
+    assert result.error["error_kind"] == "auth"
+    with pytest.raises(ValueError, match="no JSON error"):
+        _ = access.CliResult(code=1, stdout="", stderr="harbor-clerk: Missing API key").error
+
+
+def test_cli_access_toggle_restores_the_original_value(tmp_path: Path) -> None:
     cfg = tmp_path / "config.json"
-    original = b'{\n  "api_port": 8100,\n  "enable_cli_access": true\n}\n'
-    cfg.write_bytes(original)
+    cfg.write_text('{\n  "api_port": 8100,\n  "enable_cli_access": true\n}\n')
     with access.cli_access_toggled(cfg, False):
         assert json.loads(cfg.read_text())["enable_cli_access"] is False
         assert json.loads(cfg.read_text())["api_port"] == 8100, "other settings must survive the flip"
-    assert cfg.read_bytes() == original
+    assert json.loads(cfg.read_text()) == {"api_port": 8100, "enable_cli_access": True}
 
 
 def test_cli_access_toggle_restores_even_when_the_block_raises(tmp_path: Path) -> None:
     cfg = tmp_path / "config.json"
-    original = b'{"enable_cli_access": true}'
-    cfg.write_bytes(original)
+    cfg.write_text('{"enable_cli_access": true}')
     with pytest.raises(RuntimeError, match="boom"), access.cli_access_toggled(cfg, False):
         assert json.loads(cfg.read_text())["enable_cli_access"] is False
         raise RuntimeError("boom")
-    assert cfg.read_bytes() == original, "a failing check must not leave the operator's CLI gate flipped"
+    assert json.loads(cfg.read_text()) == {"enable_cli_access": True}, "a failing check must not leave the gate flipped"
+
+
+def test_cli_access_toggle_keeps_what_other_writers_changed_meanwhile(tmp_path: Path) -> None:
+    """The API and the Swift app both write this file; the restore must put
+    back only the one key it flipped, not the whole file as it was."""
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"enable_cli_access": true, "llm_model_id": "a"}')
+    with access.cli_access_toggled(cfg, False):
+        data = json.loads(cfg.read_text())
+        data["llm_model_id"] = "b"  # the app changed a setting during the block
+        cfg.write_text(json.dumps(data))
+    assert json.loads(cfg.read_text()) == {"enable_cli_access": True, "llm_model_id": "b"}
+
+
+def test_cli_access_toggle_removes_the_key_it_added(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"api_port": 8100}')
+    with access.cli_access_toggled(cfg, True):
+        assert json.loads(cfg.read_text())["enable_cli_access"] is True
+    assert json.loads(cfg.read_text()) == {"api_port": 8100}
+    assert not list(tmp_path.glob("*.acceptance-tmp")), "the atomic write must not leave its temp file"
 
 
 class FakeAdmin:
