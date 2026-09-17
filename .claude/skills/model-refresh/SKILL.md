@@ -18,10 +18,16 @@ on its own. All commands run from the repository root.
 ## Stage 1: research
 
 1. The loop's state is in the reports. With no flags the tool finds the newest
-   `docs/reports/*-model-survey-*.md`, opens the window at its date, and
-   examines again every release it listed under **Waiting for a GGUF**, so a
-   model nobody had quantised last time is not lost when it falls out of the
-   window. Pass `--since` only to override (a first run defaults to 90 days).
+   `docs/reports/*-model-survey-*.md` and takes three things from it: the
+   window opens at its date; every release it listed under **Waiting for a
+   GGUF** or **Over the per-vendor cap** is examined again although it is older
+   than the window; and a vendor missing from its **Vendors** list gets a
+   first-run window of 90 days, so adding an org to the watchlist surveys that
+   org's recent past, not just the days since. A first run uses 90 days.
+   **Re-running after a fix to the policy or a rule needs the same window
+   again, not the days since the report being corrected.** A report dated today
+   is treated that way automatically; on a later day pass `--redo`. Withdraw
+   the corrected report in the same PR.
 2. Run it. The cache makes a re-run free for six hours; `HF_TOKEN`, if the
    environment has one, raises the Hub's rate limit and is never stored. A
    rejected token or a failed listing ends the run with an error; it never
@@ -57,8 +63,11 @@ on its own. All commands run from the repository root.
    model whatever its name or popularity; a third-party distill is not a vendor
    release.
 4. If a ranking looks wrong, fix the **policy** (`scripts/model_survey/watchlist.yaml`)
-   or the **rule** (`screen.py`, with a test), not the report. A new vendor seen
-   under "Trending outside the watchlist" is added to the watchlist in the same PR.
+   or the **rule** (`screen.py`, with a test), not the report, then run again
+   (step 1 explains which window that run gets). A new vendor seen under
+   "Trending outside the watchlist" is added to the watchlist only after its
+   model card has been read; popularity alone is not a reason. A ⚠ about a
+   vendor that lists nothing means the org was renamed: fix the watchlist.
 5. Publish as the machine user, from a scratch worktree, exactly as the
    `acceptance` skill's "Publish" section does: branch from fresh `origin/main`,
    add the one report file (and any policy change), commit as `John-Doebot` with

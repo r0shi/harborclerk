@@ -76,6 +76,29 @@ def params_class(name: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+def chat_task(tag: str | None, policy: Policy) -> bool:
+    """A task the policy admits, or no task at all. Mistral publishes its
+    releases without a pipeline tag, so a missing tag cannot mean "not chat";
+    the GGUF, template and architecture checks decide for those."""
+    return tag is None or tag in policy.pipeline_tags
+
+
+def _family_members(org_rows: list[dict[str, Any]], family: str | None, policy: Policy) -> list[dict[str, Any]]:
+    """The vendor's instruct releases of one family: no GGUF repos, nothing the
+    policy excludes by name or task, and no pretrained base that has an `-it`
+    sibling (google/gemma-4-12B beside google/gemma-4-12B-it)."""
+    ids = {row["id"].lower() for row in org_rows}
+    return [
+        row
+        for row in org_rows
+        if family_of(row["id"]) == family
+        and "gguf" not in row["id"].lower()
+        and not excluded_fragment(row["id"], policy)
+        and chat_task(row.get("pipeline_tag"), policy)
+        and f"{row['id'].lower()}-it" not in ids
+    ]
+
+
 def size_matched_successors(
     curated: dict[str, Any], org_rows: list[dict[str, Any]], policy: Policy
 ) -> list[dict[str, Any]]:
@@ -87,12 +110,8 @@ def size_matched_successors(
     if size is None:
         return []
     found = []
-    for row in org_rows:
+    for row in _family_members(org_rows, curated["family"], policy):
         repo = row["id"]
-        if family_of(repo) != curated["family"] or "gguf" in repo.lower() or excluded_fragment(repo, policy):
-            continue
-        if row.get("pipeline_tag") not in policy.pipeline_tags:
-            continue
         gen, other = generation_of(repo), params_class(repo)
         if other is None or gen <= tuple(curated["generation"]) or not (0.6 * size <= other <= 1.6 * size):
             continue
@@ -124,14 +143,9 @@ def ladder_gap_fillers(
         return []
     newest = max(tuple(c["generation"]) for c in mine)
     carried = {c["params_b"] for c in mine if c.get("params_b") is not None}
-    ids = {row["id"].lower() for row in org_rows}
     found = []
-    for row in org_rows:
+    for row in _family_members(org_rows, family, policy):
         repo = row["id"]
-        if family_of(repo) != family or "gguf" in repo.lower() or excluded_fragment(repo, policy):
-            continue
-        if row.get("pipeline_tag") not in policy.pipeline_tags or f"{repo.lower()}-it" in ids:
-            continue
         size, generation = params_class(repo), generation_of(repo)
         if size is None or size in carried:
             continue
@@ -163,13 +177,24 @@ def flags_for(name: str, policy: Policy) -> list[str]:
 
 
 def screen(
-    model: dict[str, Any], gguf: dict[str, Any] | None, policy: Policy, *, arch_at_pin: set[str], arch_at_head: set[str]
+    model: dict[str, Any],
+    gguf: dict[str, Any] | None,
+    policy: Policy,
+    *,
+    arch_at_pin: set[str],
+    arch_at_head: set[str],
+    arch_at_release: set[str] | None = None,
+    release_tag: str | None = None,
 ) -> dict[str, Any]:
     """Why a release is or is not a candidate. Every reason is recorded, not
-    just the first, so the report can say what would have to change."""
+    just the first, so the report can say what would have to change.
+
+    An architecture past the pin is a note, not a reason, and the note says
+    whether the latest stable release carries it or only master does: the
+    first can be pinned today, the second needs a rolling build."""
     reasons: list[str] = []
     notes: list[str] = []
-    if model.get("pipeline_tag") not in policy.pipeline_tags:
+    if not chat_task(model.get("pipeline_tag"), policy):
         reasons.append(f"not a chat model on the Hub (pipeline: {model.get('pipeline_tag')})")
     license_id = str(model.get("license") or "unknown").lower()
     if license_id not in policy.permissive_licenses:
@@ -191,7 +216,14 @@ def screen(
         if arch and arch not in arch_at_head:
             reasons.append(f"llama.cpp cannot load architecture {arch!r}, even at head")
         elif arch and arch not in arch_at_pin:
-            notes.append(f"architecture {arch!r} needs a llama.cpp upgrade past the pin")
+            note = f"architecture {arch!r} needs a llama.cpp upgrade past the pin"
+            if arch_at_release is not None:
+                note += (
+                    f" ({release_tag} has it)"
+                    if arch in arch_at_release
+                    else f" (only master has it, not the stable release {release_tag})"
+                )
+            notes.append(note)
     return {"verdict": "screened" if reasons else "candidate", "reasons": reasons, "notes": notes}
 
 

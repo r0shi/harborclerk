@@ -51,7 +51,8 @@ exclude_name_fragments:
   [fp8, fp4, nvfp4, awq, gptq, int4, int8, bnb, mlx, onnx, bf16, -base, sae-, embedding, embed, reranker, guard,
    asr, tts, audio, omni, image, video, ocr, aligner, reward, -prm, math, translate, drive, world, agentworld,
    ui-, -ui, gui, cua, abliterat, uncensor, obliterat, heretic,
-   qat, w4a16, -assistant, mobile, unquantized]
+   qat, w4a16, -assistant, mobile, unquantized,
+   probe, checkpoint, experiment, classifier]
 
 # Flagged in the report rather than excluded: may still be worth a look.
 flag_name_fragments: [coder, code, distill, reasoning, thinking]
@@ -59,6 +60,7 @@ flag_name_fragments: [coder, code, distill, reasoning, thinking]
 # Tasks that can hold a general chat model on the Hub. `any-to-any` is here
 # because Google files Gemma 4 12B under it; the architecture check still
 # decides whether llama.cpp can load what the tag admits.
+# A release with no tag at all is examined too: Mistral publishes without one.
 pipeline_tags: [text-generation, image-text-to-text, any-to-any]
 
 # The vendor org that publishes each curated family, so the audit can look for

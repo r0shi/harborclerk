@@ -20,6 +20,8 @@ import httpx
 
 API = "https://huggingface.co/api"
 _SHARD = re.compile(r"-\d{5}-of-\d{5}\.gguf$")
+MAX_BACKOFF_S = 300.0
+MAX_RETRY_AFTER_S = 600.0  # a server may ask for more; an unattended run will not wait longer
 _NOT_THE_MODEL = ("mmproj", "imatrix", "mtp", "draft", "eagle")
 
 
@@ -33,10 +35,10 @@ class Hub:
         client: httpx.Client | None = None,
         *,
         token: str | None = "env",
-        pause_s: float = 0.25,
+        pause_s: float = 0.65,  # the Hub allows 500 requests per 300 s
         cache_dir: Path | None = None,
         cache_ttl_s: float = 6 * 3600,
-        max_tries: int = 6,
+        max_tries: int = 8,  # 5+10+20+40+80+160+300 s outlasts the Hub's 300 s window
         sleep=time.sleep,
     ):
         self._token = os.environ.get("HF_TOKEN") if token == "env" else token
@@ -83,7 +85,7 @@ class Hub:
         for attempt in range(self._max_tries):
             self._sleep(self._pause)  # be a polite client
             self.requests += 1
-            wait = min(120.0, 5.0 * 2**attempt)
+            wait = min(MAX_BACKOFF_S, 5.0 * 2**attempt)
             try:
                 # The Hub redirects a repo name whose case differs from the canonical one.
                 response = self._http.get(f"{API}{path}", params=params, headers=headers, follow_redirects=True)
@@ -95,7 +97,7 @@ class Hub:
                     return response
                 retry_after = response.headers.get("Retry-After", "")
                 if retry_after.isdigit():
-                    wait = float(retry_after)
+                    wait = min(MAX_RETRY_AFTER_S, float(retry_after))
             if attempt + 1 < self._max_tries:
                 self._sleep(wait)
         if last_error is not None or response is None:
