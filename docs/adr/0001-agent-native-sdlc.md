@@ -76,9 +76,10 @@ two Macs. Before this decision:
   so new material there is tracked by default.
 - `AGENTS.md` gains an Identities section and Map rows for skills, decisions
   and reports.
-- An isolated data-directory and port override for the Mac app is the first
-  product change in the sequence; the acceptance and benchmark loops depend
-  on it.
+- An isolated data-directory and port override for the Mac app is required
+  before wipe mode or the eval sweep can run on the larger machine. The
+  acceptance suite's default folder-scoped mode does not depend on it (see
+  `docs/superpowers/specs/2026-09-16-acceptance-suite-design.md`).
 - `ModelInfo` needs a memory requirement. That also closes #556.
 - #536 is resolved by decision 3 rather than by a CI heuristic.
 - Every skill that a loop runs ends by leaving a durable trace on GitHub.
