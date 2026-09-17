@@ -336,13 +336,14 @@ def survey(
     unreadable: list[dict[str, str]] = []
     dropped: set[str] = set()
 
-    def left_out_reason(repo: str, ids: set[str], tag: str | None, *, tag_known: bool) -> str | None:
+    def left_out_reason(repo: str, ids: set[str], tag: str | None) -> str | None:
         """Why a release is not examined at all. The window and the carried
-        list both ask, so a carried release meets the same exclusions."""
+        list both ask, so a carried release meets the same exclusions. A
+        carried release comes without a task, which `chat_task` lets through."""
         fragment = excluded_fragment(repo, policy)
         if fragment:
             return f"name contains '{fragment}'"
-        if tag_known and not chat_task(tag, policy):
+        if not chat_task(tag, policy):
             return f"task is {tag}"
         if instruct_sibling(repo, ids):
             return "pretrained base of its -it sibling"
@@ -395,7 +396,7 @@ def survey(
             if repo.lower() in seen:
                 already += 1
                 continue
-            why = left_out_reason(repo, ids, row.get("pipeline_tag"), tag_known=True)
+            why = left_out_reason(repo, ids, row.get("pipeline_tag"))
             if why:
                 leave_out(repo, _day(row), why)
             else:
@@ -433,9 +434,7 @@ def survey(
         handled.add(repo.lower())
         org = watched.get(repo.split("/")[0].lower())
         ids = {row["id"].lower() for row in listing_of(org)} if org else set()
-        why = left_out_reason(
-            repo, ids, None, tag_known=False
-        )  # the policy or the listing changed since it was carried
+        why = left_out_reason(repo, ids, None)  # the policy or the listing changed since it was carried
         if why:
             leave_out(repo, created, why)
             continue

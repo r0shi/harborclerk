@@ -1624,7 +1624,9 @@ def test_main_hands_the_plan_to_the_survey_and_writes_the_report_and_the_facts(t
 
     reports = tmp_path / "reports"
     reports.mkdir()
-    _report(reports, "2026-09-10-model-survey-r0.md", _run(_soon_world()), generated="2026-09-10T09:00:00+00:00")
+    before = _soon_world()
+    before.release("acme/Thing-Probe-7B", "2026-09-05")  # left out by name, and recorded as such
+    _report(reports, "2026-09-10-model-survey-r0.md", _run(before), generated="2026-09-10T09:00:00+00:00")
     monkeypatch.setattr(cli, "REPORTS", reports)
     monkeypatch.setattr(cli, "utc_now", lambda: datetime(2026, 9, 17, 23, 30, tzinfo=UTC))
     handed: dict = {}
@@ -1644,7 +1646,7 @@ def test_main_hands_the_plan_to_the_survey_and_writes_the_report_and_the_facts(t
         "recheck": {"acme/Soon-7B": "2026-09-10"},
         "known_orgs": {"acme"},
         "seen": {"acme/soon-7b": "2026-09-10"},
-        "left_out": {},
+        "left_out": {"acme/thing-probe-7b": "2026-09-05"},
         "first_run_since": date(2026, 6, 19),
         "today": date(2026, 9, 17),
     }
