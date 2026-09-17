@@ -33,6 +33,7 @@ class AcceptanceConfig:
     disposable: bool
     wipe: bool
     keep: bool
+    config_json: Path | None  # the native app's config.json, only when the suite may flip enable_cli_access
     run_id: str
     ingest_timeout_s: int
     ask_timeout_s: int
@@ -93,6 +94,11 @@ def load_config() -> AcceptanceConfig:
     if wipe and urlsplit(api_base).hostname not in ("localhost", "127.0.0.1", "::1"):
         pytest.fail(f"HC_ACCEPTANCE_WIPE=1 is only allowed against a loopback instance, not {api_base}")
 
+    config_json_env = os.environ.get("HC_ACCEPTANCE_CONFIG_JSON", "").strip()
+    config_json = Path(config_json_env).expanduser() if config_json_env else None
+    if config_json is not None and not config_json.is_file():
+        pytest.fail(f"HC_ACCEPTANCE_CONFIG_JSON={config_json} is not a file")
+
     return AcceptanceConfig(
         api_base=api_base,
         username=username,
@@ -103,6 +109,7 @@ def load_config() -> AcceptanceConfig:
         disposable=disposable,
         wipe=wipe,
         keep=_flag("HC_ACCEPTANCE_KEEP"),
+        config_json=config_json,
         run_id=os.environ.get("HC_ACCEPTANCE_RUN_ID", "").strip() or secrets.token_hex(4),
         ingest_timeout_s=int(os.environ.get("HC_ACCEPTANCE_INGEST_TIMEOUT", "900")),
         ask_timeout_s=int(os.environ.get("HC_ACCEPTANCE_ASK_TIMEOUT", "300")),

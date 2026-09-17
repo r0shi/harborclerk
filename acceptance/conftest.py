@@ -18,11 +18,13 @@ import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
 import pytest
 
+from acceptance.access import cli_access_toggled, empty_folder_session
 from acceptance.config import WIPE_MAX_DOCUMENTS, AcceptanceConfig, load_config
 from acceptance.fixtures.render import Fixture, load_groundtruth, materialize
 from acceptance.hc_client import HarborClerk, McpSession
@@ -218,6 +220,40 @@ def keys(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[
     failed = factory.cleanup()
     if failed:
         pytest.fail(f"API keys created by this run could not be deleted and are still active: {failed}")
+
+
+@pytest.fixture(scope="session")
+def empty_folder(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[dict[str, Any]]:
+    """A second, registered, empty watched folder: a key scoped to it can see
+    none of the fixtures (G3)."""
+    name = f"{cfg.folder_name}-empty"
+    with empty_folder_session(admin, cfg.folder_root / name, str(Path(cfg.folder_path_in_instance).parent / name)) as f:
+        yield f
+
+
+class CliAccess:
+    """What the instance's CLI gate currently is, and a way to flip it when
+    the operator has pointed the suite at the native config.json."""
+
+    def __init__(self, admin: HarborClerk, cfg: AcceptanceConfig):
+        self._admin = admin
+        self._cfg = cfg
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._admin.health().get("enable_cli_access"))
+
+    def toggled(self, enabled: bool):
+        if self._cfg.config_json is None:
+            pytest.skip(
+                "flipping CLI access needs HC_ACCEPTANCE_CONFIG_JSON pointing at the native config.json on this host"
+            )
+        return cli_access_toggled(self._cfg.config_json, enabled)
+
+
+@pytest.fixture(scope="session")
+def cli_access(cfg: AcceptanceConfig, admin: HarborClerk) -> CliAccess:
+    return CliAccess(admin, cfg)
 
 
 @pytest.fixture(scope="session")
