@@ -193,6 +193,114 @@ def empty_folder_session(admin: Any, folder_path: Path, path_in_instance: str) -
             shutil.rmtree(folder_path, ignore_errors=True)
 
 
+# ── a second, populated watched folder (documents outside the fixture scope) ─
+
+
+@dataclass
+class PopulatedFolder:
+    folder_id: str
+    path: str
+    doc_id: str
+    phrase: str  # a phrase found only in this folder's document
+
+
+SECOND_FOLDER_SOURCE = "second-folder-note.txt"
+SECOND_FOLDER_PHRASE = "cormorant ledger"
+
+
+def choose_model(status: dict[str, Any], models: list[dict[str, Any]], *, allow_swap: bool) -> tuple[str, str]:
+    """What the Ask checks should do about the model, from `models/status` and
+    `models`. Returns (action, detail):
+
+    - ("use", id): a model is active and ready; use it as found.
+    - ("wait", id): a model is configured but llama-server is still loading it
+      (just restarted, weights loading); wait for it rather than swap.
+    - ("activate", id): nothing is configured; the smallest downloaded model may
+      be activated because the run is allowed to change the instance. It stays
+      active: there was nothing to restore, and deactivating is never called.
+    - ("skip", reason): nothing downloaded, or a swap is not allowed."""
+    state, model_id = status.get("state"), status.get("model_id")
+    if model_id and state == "ready":
+        return "use", model_id
+    if model_id and state == "loading":
+        return "wait", model_id
+    downloaded = [m for m in models if m.get("downloaded")]
+    if not downloaded:
+        return "skip", "no local model is downloaded on this instance; the Ask checks need one"
+    if not allow_swap:
+        return "skip", (
+            "no model is active; activating one changes the instance, allowed only with "
+            "HC_ACCEPTANCE_DISPOSABLE=1 or HC_ACCEPTANCE_ALLOW_MODEL_SWAP=1"
+        )
+    return "activate", min(downloaded, key=lambda m: m["size_bytes"])["id"]
+
+
+@contextmanager
+def populated_folder_session(
+    admin: Any,
+    folder_path: Path,
+    path_in_instance: str,
+    *,
+    source_text: str,
+    timeout_s: float,
+    documents_under: Any,
+) -> Iterator[PopulatedFolder]:
+    """Render one document into a new folder, register it, wait for it to be
+    ready, yield; then remove the folder (cascading the document) and the
+    files, tolerating a folder a check already deleted (H2)."""
+    folder_path.mkdir(parents=True, exist_ok=False)
+    folder_id: str | None = None
+    try:
+        (folder_path / SECOND_FOLDER_SOURCE).write_text(source_text, encoding="utf-8")
+        folder = admin.folder_create(path_in_instance)
+        folder_id = folder["folder_id"]
+        admin.wait_for_folder_ingest(folder_id, expected_files=1, timeout_s=timeout_s)
+        docs = documents_under(folder["path"], {SECOND_FOLDER_SOURCE})
+        yield PopulatedFolder(folder_id, folder["path"], docs[SECOND_FOLDER_SOURCE]["doc_id"], SECOND_FOLDER_PHRASE)
+    finally:
+        try:
+            if folder_id is not None:
+                try:
+                    admin.folder_delete(folder_id)
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code != 404:
+                        raise
+        finally:
+            shutil.rmtree(folder_path, ignore_errors=True)
+
+
+# ── Ask and deletion helpers (plain functions so they are testable offline) ─
+
+
+def ask_once(admin: Any, *, title: str, scope: dict[str, Any], question: str, timeout_s: float) -> dict[str, Any]:
+    """One scoped Ask; returns the `done` event. The conversation is deleted in
+    a finally so the run leaves none behind, also when the stream times out."""
+    conv = admin.create_conversation(title, scope=scope)
+    try:
+        events = admin.stream_ask(conv, question, timeout_s=timeout_s)
+    finally:
+        try:
+            admin.delete_conversation(conv)
+        except httpx.HTTPStatusError:
+            pass
+    done = next((e for e in events if e.get("type") == "done"), None)
+    if done is None:
+        raise AssertionError(f"no done event in {len(events)} events; last: {events[-1] if events else None}")
+    return done
+
+
+def ensure_deleted(admin: Any, doc_id: str) -> bool:
+    """Soft-delete `doc_id` if it is still active; True if this call deleted it.
+    The admin detail route returns a soft-deleted document with status
+    "deleted", so the gate is the status, not the status code; gating on the
+    code re-deleted on every call and wrote an audit row each time."""
+    detail = admin.request("GET", f"/api/docs/{doc_id}")
+    if detail.status_code == 200 and detail.json().get("status") == "active":
+        admin.delete_document(doc_id)
+        return True
+    return False
+
+
 # ── raw MCP probe ───────────────────────────────────────────────────────────
 
 _INITIALIZE = {

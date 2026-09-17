@@ -211,9 +211,11 @@ def _cfg(tmp_path: Path, config_json: Path | None) -> AcceptanceConfig:
         wipe=False,
         keep=False,
         config_json=config_json,
+        allow_model_swap=False,
         run_id="offline",
         ingest_timeout_s=1,
         ask_timeout_s=1,
+        model_timeout_s=1,
     )
 
 
@@ -331,5 +333,151 @@ def test_empty_folder_session_removes_the_directory_when_registration_fails(tmp_
     admin = FakeAdmin(create_error=RuntimeError("409"))
     folder = tmp_path / "empty"
     with pytest.raises(RuntimeError, match="409"), access.empty_folder_session(admin, folder, "/instance/empty"):
+        pass
+    assert admin.deleted == [] and not folder.exists()
+
+
+class FakePopulatedAdmin(FakeAdmin):
+    """Adds what `populated_folder_session` needs: an ingest wait, the document
+    mapping, and a folder delete that can 404 (the folder was already removed)."""
+
+    def __init__(self, *, gone_on_delete: bool = False):
+        super().__init__()
+        self.gone_on_delete = gone_on_delete
+
+    def wait_for_folder_ingest(self, folder_id: str, *, expected_files: int, timeout_s: float, poll_s: float = 3.0):
+        return {"completed_files": expected_files}
+
+    def folder_delete(self, folder_id: str) -> None:
+        if self.gone_on_delete:
+            raise httpx.HTTPStatusError(
+                "404", request=httpx.Request("DELETE", "http://x"), response=httpx.Response(404)
+            )
+        super().folder_delete(folder_id)
+
+
+def test_populated_folder_session_renders_registers_and_cleans_up(tmp_path: Path) -> None:
+    admin = FakePopulatedAdmin()
+    folder = tmp_path / "second"
+    mapper = lambda path, expected: {access.SECOND_FOLDER_SOURCE: {"doc_id": "d-second"}}  # noqa: E731
+    with access.populated_folder_session(
+        admin, folder, "/instance/second", source_text="x", timeout_s=1, documents_under=mapper
+    ) as f:
+        assert f.doc_id == "d-second" and f.phrase == access.SECOND_FOLDER_PHRASE
+        assert (folder / access.SECOND_FOLDER_SOURCE).read_text() == "x"
+    assert admin.deleted == ["empty-1"] and not folder.exists()
+
+
+def test_populated_folder_session_tolerates_a_folder_a_check_already_deleted(tmp_path: Path) -> None:
+    """H2 deletes the folder itself; the teardown's 404 must not mask H2's result."""
+    admin = FakePopulatedAdmin(gone_on_delete=True)
+    folder = tmp_path / "second"
+    mapper = lambda path, expected: {access.SECOND_FOLDER_SOURCE: {"doc_id": "d-second"}}  # noqa: E731
+    with access.populated_folder_session(
+        admin, folder, "/instance/second", source_text="x", timeout_s=1, documents_under=mapper
+    ):
+        pass
+    assert not folder.exists(), "the files must go even when the folder was already gone"
+
+
+# ── choose_model ────────────────────────────────────────────────────────────
+
+_MODELS = [
+    {"id": "big", "downloaded": True, "size_bytes": 20},
+    {"id": "small", "downloaded": True, "size_bytes": 5},
+    {"id": "tiny-not-here", "downloaded": False, "size_bytes": 2},
+]
+
+
+def test_choose_model_uses_a_ready_model_as_found() -> None:
+    assert access.choose_model({"state": "ready", "model_id": "big"}, _MODELS, allow_swap=True) == ("use", "big")
+
+
+def test_choose_model_waits_for_a_loading_model_instead_of_swapping() -> None:
+    """A model restarting or loading weights is configured; swapping it out
+    would change the operator's instance for no reason."""
+    assert access.choose_model({"state": "loading", "model_id": "big"}, _MODELS, allow_swap=True) == ("wait", "big")
+
+
+def test_choose_model_activates_the_smallest_downloaded_only_when_allowed() -> None:
+    nothing = {"state": "deactivated", "model_id": None}
+    assert access.choose_model(nothing, _MODELS, allow_swap=True) == ("activate", "small")
+    action, reason = access.choose_model(nothing, _MODELS, allow_swap=False)
+    assert action == "skip" and "ALLOW_MODEL_SWAP" in reason
+
+
+def test_choose_model_skips_when_nothing_is_downloaded() -> None:
+    action, reason = access.choose_model(
+        {"state": "deactivated"}, [{"id": "x", "downloaded": False, "size_bytes": 1}], allow_swap=True
+    )
+    assert action == "skip" and "downloaded" in reason
+
+
+# ── ask_once and ensure_deleted ─────────────────────────────────────────────
+
+
+class FakeAskAdmin:
+    def __init__(self, *, stream_error: Exception | None = None, doc_status: str = "active"):
+        self.stream_error = stream_error
+        self.doc_status = doc_status
+        self.created: list[str] = []
+        self.deleted_conversations: list[str] = []
+        self.deleted_documents: list[str] = []
+
+    def create_conversation(self, title: str, *, scope=None) -> str:
+        self.created.append(title)
+        return "conv-1"
+
+    def stream_ask(self, conv_id: str, content: str, *, timeout_s: float):
+        if self.stream_error:
+            raise self.stream_error
+        return [{"type": "text", "content": "hi"}, {"type": "done", "rag_context": {"citations": []}}]
+
+    def delete_conversation(self, conv_id: str) -> None:
+        self.deleted_conversations.append(conv_id)
+
+    def request(self, method: str, path: str, **kw: Any) -> httpx.Response:
+        return httpx.Response(
+            200, json={"doc_id": "d", "status": self.doc_status}, request=httpx.Request(method, "http://x" + path)
+        )
+
+    def delete_document(self, doc_id: str) -> None:
+        self.deleted_documents.append(doc_id)
+        self.doc_status = "deleted"
+
+
+def test_ask_once_returns_done_and_deletes_the_conversation() -> None:
+    admin = FakeAskAdmin()
+    done = access.ask_once(admin, title="acceptance-r", scope={"folder_ids": ["f"]}, question="q", timeout_s=5)
+    assert done["type"] == "done" and admin.created == ["acceptance-r"] and admin.deleted_conversations == ["conv-1"]
+
+
+def test_ask_once_deletes_the_conversation_when_the_stream_times_out() -> None:
+    admin = FakeAskAdmin(stream_error=TimeoutError("ask exceeded 300s"))
+    with pytest.raises(TimeoutError):
+        access.ask_once(admin, title="acceptance-r", scope={}, question="q", timeout_s=5)
+    assert admin.deleted_conversations == ["conv-1"], "a timed-out Ask must not leave its conversation behind"
+
+
+def test_ensure_deleted_deletes_once_and_only_an_active_document() -> None:
+    """Gating on the status code re-deleted on every call: the admin detail
+    route returns a soft-deleted document as 200 with status "deleted"."""
+    admin = FakeAskAdmin()
+    assert access.ensure_deleted(admin, "d") is True
+    assert access.ensure_deleted(admin, "d") is False
+    assert admin.deleted_documents == ["d"], "the second call must not delete again"
+
+
+def test_populated_folder_session_removes_the_directory_when_registration_fails(tmp_path: Path) -> None:
+    admin = FakePopulatedAdmin()
+    admin.create_error = RuntimeError("409")
+    folder = tmp_path / "second"
+    mapper = lambda path, expected: {}  # noqa: E731
+    with (
+        pytest.raises(RuntimeError, match="409"),
+        access.populated_folder_session(
+            admin, folder, "/instance/second", source_text="x", timeout_s=1, documents_under=mapper
+        ),
+    ):
         pass
     assert admin.deleted == [] and not folder.exists()

@@ -2,7 +2,9 @@
 
 Dated outputs of loops and field work: eval runs, acceptance passes, model
 surveys, benchmark results, field reports. One file per run, named
-`YYYY-MM-DD-<kind>-<slug>.md`. Reports are evidence; the public claim ladder
+`YYYY-MM-DD-<kind>-<slug>.md`; loop-generated reports include the run id in
+the slug so two runs on one day are two files, and a generator never
+overwrites an existing file. Reports are evidence; the public claim ladder
 and known limitations they support live in [`docs/evaluation.md`](../evaluation.md),
 and numeric results stay here rather than in the README.
 

@@ -225,6 +225,10 @@ class HarborClerk:
     def reprocess_document(self, doc_id: str) -> Any:
         return self._json("POST", f"/api/docs/{doc_id}/reprocess")
 
+    def delete_document(self, doc_id: str) -> None:
+        """Soft delete (admin). Used only on documents this run created."""
+        self._json("DELETE", f"/api/docs/{doc_id}")
+
     def wait_for_document_ready(self, doc_id: str, *, timeout_s: float, poll_s: float = 3.0) -> dict[str, Any]:
         """Judged from the document's own stage jobs, not the instance queues."""
         deadline = time.monotonic() + timeout_s
@@ -250,6 +254,74 @@ class HarborClerk:
 
     def key_requests(self, key_id: str, **params: Any) -> dict[str, Any]:
         return self._json("GET", f"/api/api-keys/{key_id}/usage/requests", params=params)
+
+    # ── models and Ask ──────────────────────────────────────────────────
+
+    def list_models(self) -> list[dict[str, Any]]:
+        data = self._json("GET", "/api/chat/models")
+        return data if isinstance(data, list) else data.get("models", [])
+
+    def model_status(self) -> dict[str, Any]:
+        return self._json("GET", "/api/chat/models/status")
+
+    def activate_model(self, model_id: str) -> Any:
+        """Admin. Loads the model into llama-server; 404 if it is not downloaded."""
+        return self._json("PUT", f"/api/chat/models/{model_id}/activate")
+
+    def wait_for_model_ready(
+        self, model_id: str, *, timeout_s: float, consecutive: int = 3, poll_s: float = 3.0
+    ) -> None:
+        """llama-server reports ready before it can serve, so require `consecutive` ready polls in a row."""
+        deadline = time.monotonic() + timeout_s
+        streak = 0
+        status: dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            status = self.model_status()
+            streak = streak + 1 if status.get("state") == "ready" and status.get("model_id") == model_id else 0
+            if streak >= consecutive:
+                return
+            time.sleep(poll_s)
+        raise TimeoutError(f"model {model_id} not ready in {timeout_s:.0f}s: {status}")
+
+    def create_conversation(self, title: str, *, scope: dict[str, Any] | None = None) -> str:
+        body: dict[str, Any] = {"title": title}
+        if scope:
+            body["scope"] = scope
+        return self._json("POST", "/api/chat/conversations", json=body)["conversation_id"]
+
+    def delete_conversation(self, conv_id: str) -> None:
+        self._json("DELETE", f"/api/chat/conversations/{conv_id}")
+
+    def stream_ask(self, conv_id: str, content: str, *, timeout_s: float) -> list[dict[str, Any]]:
+        """Send one message and drain the SSE stream; returns every event, the
+        last of which is `done` with `rag_context.citations` when there were any.
+
+        `timeout_s` is the whole answer's budget, not the gap between events: an
+        agentic answer that keeps calling tools streams steadily and would
+        otherwise run for as long as the model cares to (one did, for 19 min).
+        Leaving the `with` block closes the connection, which is the only
+        cancellation the endpoint offers."""
+        events: list[dict[str, Any]] = []
+        deadline = time.monotonic() + timeout_s
+        with self._http.stream(
+            "POST",
+            f"/api/chat/conversations/{conv_id}/messages",
+            json={"content": content},
+            timeout=httpx.Timeout(connect=10, read=min(timeout_s, 120), write=10, pool=10),
+        ) as r:
+            if r.status_code >= 400:
+                r.read()
+                raise httpx.HTTPStatusError(f"ask -> {r.status_code}: {r.text[:300]}", request=r.request, response=r)
+            for line in r.iter_lines():
+                if line.startswith("data: ") and line[6:].strip():
+                    event = json.loads(line[6:])
+                    events.append(event)
+                    if event.get("type") == "done":
+                        break  # an answer that finishes is an answer, however late
+                if time.monotonic() > deadline:
+                    kinds = [e.get("type") for e in events[-5:]]
+                    raise TimeoutError(f"ask exceeded {timeout_s:.0f}s after {len(events)} events; last: {kinds}")
+        return events
 
 
 class McpSession:

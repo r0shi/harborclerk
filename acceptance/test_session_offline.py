@@ -31,9 +31,11 @@ def _cfg(tmp_path: Path, **over: Any) -> AcceptanceConfig:
         wipe=False,
         keep=False,
         config_json=None,
+        allow_model_swap=False,
         run_id="offline",
         ingest_timeout_s=5,
         ask_timeout_s=5,
+        model_timeout_s=5,
     )
     base.update(over)
     return AcceptanceConfig(**base)
@@ -347,3 +349,106 @@ def test_wait_for_document_ready_detects_the_error_status_immediately() -> None:
 
     with Client("http://localhost:1") as client, pytest.raises(RuntimeError, match="boom"):
         client.wait_for_document_ready("d1", timeout_s=2, poll_s=0.1)
+
+
+def test_stream_ask_enforces_a_total_budget_not_a_per_event_gap() -> None:
+    """A tool-calling answer streams an event every second or so and could
+    otherwise run for as long as the model likes; the budget is for the
+    whole answer."""
+    import time as _time
+
+    def slow_events():
+        for i in range(50):
+            _time.sleep(0.05)
+            yield f'data: {{"type": "tool_call", "n": {i}}}\n\n'.encode()
+
+    class SlowStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield from slow_events()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=SlowStream())
+        return httpx.Response(200, json={})
+
+    with HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client:
+        started = _time.monotonic()
+        with pytest.raises(TimeoutError, match="exceeded 0s|exceeded"):
+            client.stream_ask("c1", "q", timeout_s=0.3)
+        assert _time.monotonic() - started < 2.0, "the budget must cut the stream short"
+
+
+def test_stream_ask_returns_events_through_done() -> None:
+    body = b'data: {"type": "text", "content": "hi"}\n\ndata: {"type": "done", "rag_context": {"citations": []}}\n\ndata: {"type": "after"}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+    with HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client:
+        events = client.stream_ask("c1", "q", timeout_s=5)
+    assert [e["type"] for e in events] == ["text", "done"], "reading stops at done"
+
+
+def test_wait_for_model_ready_requires_consecutive_ready_polls() -> None:
+    """llama-server reports ready before it can serve; one ready poll is not enough."""
+    sequence = iter(
+        [
+            {"state": "ready", "model_id": "m"},
+            {"state": "loading", "model_id": "m"},
+            {"state": "ready", "model_id": "m"},
+            {"state": "ready", "model_id": "m"},
+            {"state": "ready", "model_id": "m"},
+        ]
+    )
+    seen: list[str] = []
+
+    class Client(HarborClerk):
+        def model_status(self) -> dict[str, Any]:
+            status = next(sequence)
+            seen.append(status["state"])
+            return status
+
+    with Client("http://localhost:1") as client:
+        client.wait_for_model_ready("m", timeout_s=5, consecutive=3, poll_s=0.01)
+    assert seen == ["ready", "loading", "ready", "ready", "ready"], "the streak must restart after a non-ready poll"
+
+
+def test_wait_for_model_ready_times_out_with_the_last_status() -> None:
+    class Client(HarborClerk):
+        def model_status(self) -> dict[str, Any]:
+            return {"state": "loading", "model_id": "m"}
+
+    with Client("http://localhost:1") as client, pytest.raises(TimeoutError, match="loading"):
+        client.wait_for_model_ready("m", timeout_s=0.05, poll_s=0.01)
+
+
+def test_stream_ask_raises_on_an_http_error_with_the_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"detail": "No model is active"})
+
+    with (
+        HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(httpx.HTTPStatusError, match="No model"),
+    ):
+        client.stream_ask("c1", "q", timeout_s=5)
+
+
+def test_stream_ask_ignores_comment_and_blank_lines_and_a_late_done_still_counts() -> None:
+    """SSE keepalive comments and blank lines are not events; a done event that
+    arrives after the deadline is still an answer, because the stream ended."""
+    import time as _time
+
+    class LateDone(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b": keepalive\n\n"
+            yield b"\n"
+            yield b'data: {"type": "text", "content": "x"}\n\n'
+            _time.sleep(0.15)
+            yield b'data: {"type": "done", "rag_context": null}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=LateDone())
+
+    with HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client:
+        events = client.stream_ask("c1", "q", timeout_s=0.1)
+    assert [e["type"] for e in events] == ["text", "done"]

@@ -4,11 +4,15 @@ One folder of rendered fixtures is added to the instance under a per-run
 name, ingested, and deleted at the end. Deleting the watched folder cascades
 to its documents, so folder-scoped runs leave every other document on the
 instance untouched. What a run does leave: audit rows (login, key create and
-delete, reprocess), soft-deleted keys, and, when `HC_ACCEPTANCE_CONFIG_JSON`
-is set, a rewritten config.json with the same settings in two-space JSON and
-`enable_cli_access` spelled out. A second, empty watched folder is registered
-and removed for the scope checks. Wipe mode is opt-in and double-guarded
-(see `config.py`).
+delete, reprocess, one document soft-deleted, conversations created and
+deleted), soft-deleted keys, three extra watched folders registered and
+removed (one empty, one with a single document, one for H2), and, when
+`HC_ACCEPTANCE_CONFIG_JSON` is set, a rewritten config.json with the same
+settings in two-space JSON and `enable_cli_access` spelled out. If no model
+was active and the run was allowed to activate one, that model stays active
+and becomes the app's persisted default (activation writes `llm_model_id` to
+config.json). `HC_ACCEPTANCE_KEEP=1` keeps only the fixture folder. Wipe mode
+is opt-in and double-guarded (see `config.py`).
 
 The setup and teardown are plain functions so they can be tested offline
 with a fake client; the pytest fixtures only bind them to the session.
@@ -28,9 +32,17 @@ from typing import Any, Protocol
 import httpx
 import pytest
 
-from acceptance.access import EXIT_CLI_DISABLED, EXIT_OK, cli_access_toggled, empty_folder_session, run_cli
+from acceptance.access import (
+    EXIT_CLI_DISABLED,
+    EXIT_OK,
+    PopulatedFolder,
+    cli_access_toggled,
+    empty_folder_session,
+    populated_folder_session,
+    run_cli,
+)
 from acceptance.config import WIPE_MAX_DOCUMENTS, AcceptanceConfig, load_config
-from acceptance.fixtures.render import Fixture, load_groundtruth, materialize
+from acceptance.fixtures.render import Fixture, load_groundtruth, materialize, source_text
 from acceptance.hc_client import HarborClerk, McpSession
 
 
@@ -80,6 +92,7 @@ class Corpus:
     groundtruth: dict[str, Any]
     docs: dict[str, dict[str, Any]] = field(default_factory=dict)  # fixture name -> DocumentSummary
     source_digests: dict[str, str] = field(default_factory=dict)  # fixture name -> sha256 at render time
+    deleted_chunk_id: str | None = None  # set by H1 for H1c
 
     @property
     def scope(self) -> dict[str, list[str]]:
@@ -232,6 +245,22 @@ def empty_folder(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> I
     none of the fixtures (G3)."""
     name = f"{cfg.folder_name}-empty"
     with empty_folder_session(admin, cfg.folder_root / name, str(Path(cfg.folder_path_in_instance).parent / name)) as f:
+        yield f
+
+
+@pytest.fixture(scope="session")
+def second_folder(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[PopulatedFolder]:
+    """A second watched folder holding one document the fixture-scoped keys
+    must not see (G8, G9)."""
+    name = f"{cfg.folder_name}-second"
+    with populated_folder_session(
+        admin,
+        cfg.folder_root / name,
+        str(Path(cfg.folder_path_in_instance).parent / name),
+        source_text=source_text("second-folder-note.txt"),
+        timeout_s=cfg.ingest_timeout_s,
+        documents_under=lambda path, expected: documents_under(admin, path, expected=expected),
+    ) as f:
         yield f
 
 

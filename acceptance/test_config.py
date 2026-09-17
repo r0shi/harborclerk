@@ -128,6 +128,21 @@ def test_config_json_is_refused_for_a_non_loopback_instance(monkeypatch: pytest.
         config.load_config()
 
 
+def test_allow_model_swap_follows_disposable_or_its_own_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    base = dict(
+        HC_API_BASE="http://localhost:8100",
+        HC_USERNAME="a@b.c",
+        HC_PASSWORD="x",
+        HC_ACCEPTANCE_FOLDER_ROOT=str(tmp_path),
+    )
+    _env(monkeypatch, **base)
+    assert config.load_config().allow_model_swap is False
+    _env(monkeypatch, **base, HC_ACCEPTANCE_DISPOSABLE="1")
+    assert config.load_config().allow_model_swap is True
+    _env(monkeypatch, **base, HC_ACCEPTANCE_ALLOW_MODEL_SWAP="true")
+    assert config.load_config().allow_model_swap is True
+
+
 def test_config_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _env(
         monkeypatch,
@@ -157,9 +172,11 @@ def test_folder_path_in_instance_maps_to_the_container_side(tmp_path: Path) -> N
         wipe=False,
         keep=False,
         config_json=None,
+        allow_model_swap=False,
         run_id="abc123",
         ingest_timeout_s=1,
         ask_timeout_s=1,
+        model_timeout_s=1,
     )
     assert cfg.folder_path == tmp_path / "hc-acceptance-abc123"
     assert cfg.folder_path_in_instance == "/data/watch/hc-acceptance-abc123"
