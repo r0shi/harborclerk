@@ -10,13 +10,16 @@ name, by task, or by the per-vendor cap). The "Reading" section at the top is
 left for whoever runs the loop: the script states facts, a person or an agent
 states what to do about them.
 
-The loop's state lives in the reports. By default the window opens at the
-previous report's date, and what that report could not settle is examined
-again although it is older than the window: releases waiting for a GGUF, and
-releases over the per-vendor cap. A vendor the previous report did not watch
-gets a first-run window. A run on the same day as the previous report, or with
-`--redo`, repeats that report's window instead of opening an empty one: that
-is what a re-run after a policy fix needs.
+The loop's state lives in the reports, in a versioned JSON block at the end of
+each one that records the run's inputs as well as its outputs. By default the
+window opens at the previous report's date, and what that report could not
+settle is examined again although it is older than the window: releases
+waiting for a GGUF, and releases over the per-vendor cap. A vendor the
+previous report did not watch gets a first-run window. A run on the same day
+as the previous report, or with `--redo`, replaces that report: it repeats its
+inputs exactly (window, carried releases, known vendors), which is what a
+re-run after a policy fix needs. A previous report whose state cannot be read
+ends the run unless `--since` starts a fresh window.
 """
 
 from __future__ import annotations
@@ -53,19 +56,23 @@ from scripts.model_survey.screen import (
 REPORTS = Path(__file__).resolve().parents[2] / "docs" / "reports"
 PER_ORG = 12  # releases examined per vendor per run, most liked first; the rest are carried to the next run
 LISTING_LIMIT = 500  # repos listed per vendor, newest first
-SUCCESSORS_PER_TIER = 2
+SUCCESSORS_EXAMINED = 4  # size-matched successors screened per tier; more than that is reported, not hidden
+GAP_FILLERS_EXAMINED = 4  # the same, per curated family
 FIRST_RUN_DAYS = 90  # the window of a first run, and of a vendor the previous report did not watch
 WAIT_DAYS = 120  # how long a release stays on the waiting list
 QUIET_LIKES = 10  # screened releases under this many likes are listed on one line, not tabulated
-WAITING_HEADING = "## Waiting for a GGUF"
-OVER_CAP_HEADING = "### Over the per-vendor cap"
-VENDORS_HEADING = "## Vendors"
+STATE_FORMAT = 1
+STATE_HEADING = "## State"
 CARRIED_NOTE = "carried from the previous survey"
 
 
-def utc_today() -> date:
+class PlanError(RuntimeError):
+    """The previous report cannot tell this run what to do."""
+
+
+def utc_now() -> datetime:
     """The Hub's dates are UTC, so the window and the report's date are too."""
-    return datetime.now(UTC).date()
+    return datetime.now(UTC)
 
 
 def curated_models() -> list[dict[str, Any]]:
@@ -87,13 +94,6 @@ def curated_models() -> list[dict[str, Any]]:
     ]
 
 
-def previous_report(directory: Path | None = None) -> Path | None:
-    """The newest survey report; the date prefix makes name order date order."""
-    directory = REPORTS if directory is None else directory
-    found = sorted(directory.glob("*-model-survey-*.md")) if directory.is_dir() else []
-    return found[-1] if found else None
-
-
 def report_date(path: Path) -> date | None:
     try:
         return date.fromisoformat(path.name[:10])
@@ -101,33 +101,56 @@ def report_date(path: Path) -> date | None:
         return None
 
 
-def _section(text: str, heading: str) -> str:
-    """The body under one heading, up to the next heading of any level."""
-    if heading not in text:
-        return ""
-    return re.split(r"\n#{2,3} ", text.split(heading, 1)[1], maxsplit=1)[0]
+def state_of(facts: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """What the next run needs from this one. `inputs` are what this run was
+    given, so a run that replaces it can repeat it exactly; `outputs` are what
+    it could not settle, for the run that follows it."""
+    return {
+        "format": STATE_FORMAT,
+        "generated_at": now.isoformat(timespec="seconds"),
+        "since": facts["since"],
+        "inputs": {"carried": facts["carried"], "known_orgs": facts["known_orgs"]},
+        "outputs": {
+            "waiting": [w["repo"] for w in facts["waiting"]],
+            "over_cap": [r["repo"] for r in facts["not_examined"]],
+            "vendors": [v["org"] for v in facts["vendors"]],
+        },
+    }
 
 
-def _bullets(section: str) -> list[str]:
-    return re.findall(r"^- `([^`\s]+)`", section, flags=re.MULTILINE)
+def state_from_report(text: str) -> dict[str, Any] | None:
+    """The state block of a report, or None when there is none this tool can
+    read. Nothing else in a report is parsed: headings and lists are for
+    people and may change."""
+    found = re.findall(rf"^{re.escape(STATE_HEADING)}\n.*?^```json\n(.*?)\n```", text, flags=re.DOTALL | re.MULTILINE)
+    if not found:
+        return None
+    try:
+        state = json.loads(found[-1])
+    except json.JSONDecodeError:
+        return None
+    return state if isinstance(state, dict) and state.get("format") == STATE_FORMAT else None
 
 
-def pending_from_report(text: str) -> list[str]:
-    """What a report could not settle: releases waiting for a GGUF, and
-    releases it did not examine because of the per-vendor cap."""
-    found = _bullets(_section(text, WAITING_HEADING)) + _bullets(_section(text, OVER_CAP_HEADING))
-    return [repo for repo in dict.fromkeys(found) if "/" in repo]
+def pending(state: dict[str, Any]) -> list[str]:
+    """What a report could not settle: waiting for a GGUF, or over the per-vendor cap."""
+    return list(dict.fromkeys([*state["outputs"]["waiting"], *state["outputs"]["over_cap"]]))
 
 
-def vendors_from_report(text: str) -> set[str] | None:
-    """The vendors a report watched, lower-cased; None when it does not say."""
-    found = _bullets(_section(text, VENDORS_HEADING))
-    return {v.lower() for v in found} or None
+def previous_report(directory: Path | None = None) -> Path | None:
+    """The newest survey report: by the date in its name, then by when its
+    state says it was generated, because run ids do not sort (`ix-10` comes
+    before `ix-3`)."""
+    directory = REPORTS if directory is None else directory
+    if not directory.is_dir():
+        return None
 
+    def order(path: Path) -> tuple[str, str, str]:
+        state = state_from_report(path.read_text(encoding="utf-8")) or {}
+        return (path.name[:10], str(state.get("generated_at", "")), path.name)
 
-def window_from_report(text: str) -> date | None:
-    m = re.search(r"window: releases since (\d{4}-\d{2}-\d{2})", text)
-    return date.fromisoformat(m.group(1)) if m else None
+    found = sorted(directory.glob("*-model-survey-*.md"), key=order)
+    return found[-1] if found else None
 
 
 def gguf_repo_names(repo: str, policy: Policy) -> list[str]:
@@ -142,16 +165,23 @@ def gguf_repo_names(repo: str, policy: Policy) -> list[str]:
 
 
 def find_gguf(hub: Hub, repo: str, policy: Policy) -> dict[str, Any] | None:
-    fallback = None
+    """The most trusted build that would pass the screen's GGUF-side checks;
+    failing that, the most trusted build with the quant; failing that, the
+    first repo that exists. A vendor build with a short context or a template
+    without tools must not hide a trusted publisher's build that has both."""
+    with_quant = existing = None
     for candidate in gguf_repo_names(repo, policy):
         info = hub.model(candidate, blobs=True)
         if not info:
             continue
         summary = summarize_gguf(info, policy.quant)
-        if summary["quant_bytes"]:
+        existing = existing or summary
+        if not summary["quant_bytes"]:
+            continue
+        with_quant = with_quant or summary
+        if (summary["context_length"] or 0) >= policy.min_context and summary["tool_calls_in_template"]:
             return summary
-        fallback = fallback or summary
-    return fallback
+    return with_quant or existing
 
 
 def _day(row: dict[str, Any]) -> str:
@@ -172,7 +202,7 @@ def survey(
     """`known_orgs` are the vendors the previous report watched. A watched
     vendor that is not among them has never been surveyed, so its window is a
     first run's, not the few days since the previous report."""
-    today = today or utc_today()
+    today = today or utc_now().date()
     pin = llamacpp.pinned_tag()
     latest = llamacpp.latest_release(client)
     arch_pin = llamacpp.architectures_at(pin, client)
@@ -256,13 +286,22 @@ def survey(
             }
         )
 
-    seen = {c["model"]["repo"].lower() for c in considered}
+    seen = {c["model"]["repo"].lower() for c in considered} | {e["repo"].lower() for e in excluded}
     rechecked = []
     for repo in recheck:
-        examined = None if repo.lower() in seen else examine(repo, CARRIED_NOTE)
+        if repo.lower() in seen:
+            continue
+        seen.add(repo.lower())
+        fragment = excluded_fragment(repo, policy)
+        if fragment:  # the policy changed since the release was carried
+            excluded.append({"repo": repo, "created": "carried", "why": f"name contains '{fragment}'"})
+            continue
+        examined = examine(repo, CARRIED_NOTE)
         if examined:
             considered.append(examined)
             rechecked.append(repo)
+    examined_ids = {c["model"]["repo"].lower() for c in considered}
+    not_examined = [r for r in not_examined if r["repo"].lower() not in examined_ids]
 
     candidates = rank([c for c in considered if c["verdict"] == "candidate"], curated, today, policy)
     screened = sorted((c for c in considered if c["verdict"] == "screened"), key=lambda c: -(c["model"]["likes"] or 0))
@@ -293,10 +332,17 @@ def survey(
         info = hub.model(c["repo"], blobs=True)
         gguf = summarize_gguf(info, policy.quant) if info else None
         org = policy.family_orgs.get(c["family"] or "")
+        matched = size_matched_successors(c, listing_of(org) if org else [], policy)
+        if len(matched) > SUCCESSORS_EXAMINED:
+            coverage.append(
+                f"`{c['id']}` has {len(matched)} size-matched successors; only the first {SUCCESSORS_EXAMINED} were screened"
+            )
         successors = [
             {**s, "generation": list(s["generation"]), **screened_pair(s["repo"])}
-            for s in size_matched_successors(c, listing_of(org) if org else [], policy)[:SUCCESSORS_PER_TIER]
+            for s in matched[:SUCCESSORS_EXAMINED]
         ]
+        successors.sort(key=lambda s: bool(s["reasons"]))  # those that pass first; the order within each is kept
+        passing = [s["repo"] for s in successors if not s["reasons"]]
         findings = []
         if info is None:
             findings.append("the GGUF repo is not reachable on the Hub (deleted, renamed, private or gated)")
@@ -314,10 +360,14 @@ def survey(
             findings.append(f"registry context_window {c['context_window']} leaves the GGUF's {ctx} unused")
         if gguf and gguf["architecture"] and gguf["architecture"] not in arch_pin:
             findings.append(f"architecture {gguf['architecture']!r} is not in the pinned llama.cpp")
-        if successors:
-            findings.append("size-matched successor: " + ", ".join(s["repo"] for s in successors))
+        if passing:
+            findings.append("size-matched successor: " + ", ".join(passing))
+        elif successors:
+            findings.append("size-matched successors exist, but none passes the screen yet")
         elif any(
-            family_of(k["model"]["repo"]) == c["family"] and generation_of(k["model"]["repo"]) > tuple(c["generation"])
+            family_of(k["model"]["repo"]) == c["family"]
+            and k["model"]["repo"].split("/")[0].lower() == (org or "").lower()
+            and generation_of(k["model"]["repo"]) > tuple(c["generation"])
             for k in candidates
         ):
             findings.append("a newer generation of the family exists, but not in this size class")
@@ -333,7 +383,12 @@ def survey(
             coverage.append(
                 f"the successor and gap search saw only the newest {LISTING_LIMIT} repos of `{org}`, back to {_day(listing[-1])}"
             )
-        for f in ladder_gap_fillers(curated, listing, family, policy)[:3]:
+        fillers = ladder_gap_fillers(curated, listing, family, policy)
+        if len(fillers) > GAP_FILLERS_EXAMINED:
+            coverage.append(
+                f"`{family}` has {len(fillers)} gap fillers; only the first {GAP_FILLERS_EXAMINED} were screened"
+            )
+        for f in fillers[:GAP_FILLERS_EXAMINED]:
             pair = screened_pair(f["repo"])
             if pair["gguf"] and pair["gguf"]["repo"].lower() in curated_ids:
                 continue
@@ -372,6 +427,7 @@ def survey(
         "screened": screened,
         "waiting": waiting,
         "carried": list(recheck),
+        "known_orgs": sorted(known_orgs) if known_orgs is not None else None,
         "rechecked": rechecked,
         "vendors": vendors,
         "excluded": excluded,
@@ -537,9 +593,9 @@ def render(
         ]
     out += [
         "",
-        WAITING_HEADING,
+        "## Waiting for a GGUF",
         "",
-        f"Screened only because no trusted {policy.quant} build exists yet. The next survey reads this list and examines "
+        f"Screened only because no trusted {policy.quant} build exists yet. The next survey examines "
         f"these again although they will be older than its window. A release drops off {WAIT_DAYS} days after it was published.",
         "",
     ]
@@ -548,10 +604,10 @@ def render(
         "",
         "## Left out before examination",
         "",
-        OVER_CAP_HEADING,
+        "### Over the per-vendor cap",
         "",
-        f"The least liked of a vendor's eligible releases, past the {PER_ORG} that were examined. The next survey reads "
-        "this list and examines them.",
+        f"The least liked of a vendor's eligible releases, past the {PER_ORG} that were examined. The next survey "
+        "examines them.",
         "",
     ]
     out += [f"- `{r['repo']}` · {r['created']} · {r['likes']} likes" for r in facts["not_examined"]] or ["- none"]
@@ -570,9 +626,9 @@ def render(
     out += [f"- `{org}`: {'; '.join(names)}" for org, names in sorted(by_org.items())] or ["- none"]
     out += [
         "",
-        VENDORS_HEADING,
+        "## Vendors",
         "",
-        "What each watched vendor's listing held. The next survey reads this list: a vendor that is not on it gets a "
+        "What each watched vendor's listing held. A vendor the next survey does not find here gets a "
         f"first-run window of {FIRST_RUN_DAYS} days.",
         "",
     ]
@@ -589,30 +645,59 @@ def render(
         "",
     ]
     out += [f"- `{r['repo']}` · {r['created']} · {r['likes']} likes" for r in facts["outside_watchlist"]] or ["- none"]
+    out += [
+        "",
+        STATE_HEADING,
+        "",
+        "Read by the next run, not by people: the window and carried releases this run was given, and what it could not "
+        "settle. Nothing else in a report is parsed.",
+        "",
+        "```json",
+        json.dumps(state_of(facts, now), indent=1, sort_keys=True),
+        "```",
+    ]
     return "\n".join(out) + "\n"
 
 
 def plan(previous: Path | None, since: date | None, redo: bool, today: date) -> dict[str, Any]:
     """The window, the carried releases and the known vendors for this run.
 
-    A previous report dated today is one this run replaces, so its window is
-    repeated rather than opened empty; `--redo` asks for the same after a
-    policy fix on a later day."""
+    Following a report: the window opens at its date, and its outputs are
+    carried. Replacing one (it is dated today, or `--redo`): its inputs are
+    repeated exactly, so whatever it found through a carried release or a
+    vendor's first-run window is found again. Its outputs would not do: a
+    release it settled is no longer pending, and a vendor it surveyed for the
+    first time is no longer new."""
     if previous is None:
         return {
             "since": since or today - timedelta(days=FIRST_RUN_DAYS),
             "recheck": [],
             "known_orgs": None,
             "label": None,
+            "warnings": [],
         }
-    text = previous.read_text(encoding="utf-8")
+    state = state_from_report(previous.read_text(encoding="utf-8"))
+    if state is None:
+        if since is None:
+            raise PlanError(
+                f"{previous.name} has no state block this tool can read (format {STATE_FORMAT}). "
+                "Pass --since to open a fresh window; nothing will be carried."
+            )
+        warning = f"the state of `{previous.name}` could not be read: nothing was carried and no vendor counts as new"
+        return {"since": since, "recheck": [], "known_orgs": None, "label": f"`{previous.name}`", "warnings": [warning]}
     repeat = redo or report_date(previous) == today
-    opened = (window_from_report(text) if repeat else report_date(previous)) or today - timedelta(days=FIRST_RUN_DAYS)
+    if repeat:
+        opened = date.fromisoformat(state["since"])
+        recheck, known = state["inputs"]["carried"], state["inputs"]["known_orgs"]
+    else:
+        opened = report_date(previous) or date.fromisoformat(state["generated_at"][:10])
+        recheck, known = pending(state), state["outputs"]["vendors"]
     return {
         "since": since or opened,
-        "recheck": pending_from_report(text),
-        "known_orgs": vendors_from_report(text),
-        "label": f"`{previous.name}`" + (", whose window this run repeats" if repeat else ""),
+        "recheck": list(recheck),
+        "known_orgs": {o.lower() for o in known} if known is not None else None,
+        "label": f"`{previous.name}`" + (", which this run replaces and whose inputs it repeats" if repeat else ""),
+        "warnings": [],
     }
 
 
@@ -622,14 +707,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--since", type=date.fromisoformat, help="override the window's start")
     ap.add_argument("--previous", type=Path, help="the previous survey report; default: the newest in docs/reports")
     ap.add_argument(
-        "--redo", action="store_true", help="repeat the previous report's window, after a policy or rule fix"
+        "--redo", action="store_true", help="replace the previous report: repeat its inputs, after a policy or rule fix"
     )
-    ap.add_argument("--run-id", default=f"survey-{datetime.now():%Y%m%d-%H%M}")
+    ap.add_argument("--run-id", default=f"survey-{utc_now():%Y%m%d-%H%M}")
     ap.add_argument("--json", type=Path, help="also write the gathered facts here")
     ap.add_argument("--cache", type=Path, help="directory for a 6-hour response cache, so re-runs do not re-fetch")
     args = ap.parse_args(argv)
 
-    today = utc_today()
+    now = utc_now()
+    today = now.date()
     out = args.out
     if out.suffix != ".md":
         out = out / f"{today:%Y-%m-%d}-model-survey-{args.run_id}.md"
@@ -637,7 +723,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refusing to overwrite {out}; one file per run", file=sys.stderr)
         return 2
 
-    run = plan(args.previous or previous_report(), args.since, args.redo, today)
+    try:
+        run = plan(args.previous or previous_report(), args.since, args.redo, today)
+    except PlanError as e:
+        print(e, file=sys.stderr)
+        return 2
     print(
         f"window since {run['since']}; {len(run['recheck'])} carried; previous: {run['label'] or 'none'}",
         file=sys.stderr,
@@ -651,10 +741,10 @@ def main(argv: list[str] | None = None) -> int:
         facts = survey(
             policy, run["since"], hub, client, recheck=run["recheck"], known_orgs=run["known_orgs"], today=today
         )
+        facts["coverage"] = [*run["warnings"], *facts["coverage"]]
         authenticated = hub.authenticated
         print(f"{hub.requests} Hub requests", file=sys.stderr)
     out.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.combine(today, datetime.min.time())
     text = render(facts, policy, args.run_id, now, commit_id(), previous=run["label"], authenticated=authenticated)
     out.write_text(text, encoding="utf-8")
     if args.json:

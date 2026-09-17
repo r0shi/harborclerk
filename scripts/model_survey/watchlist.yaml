@@ -42,8 +42,9 @@ quant: Q4_K_M
 ceiling_gb: 24
 min_context: 32768
 
-# Licences the project can ship a pointer to without per-user agreements.
-permissive_licenses: [apache-2.0, mit, bsd-3-clause, gemma, cc-by-4.0, openrail, llama3.3, llama4]
+# Licences the project can ship a pointer to without a per-user agreement. The
+# Llama licences are not here: Meta's repos are gated behind exactly that.
+permissive_licenses: [apache-2.0, mit, bsd-3-clause, gemma, cc-by-4.0, openrail]
 
 # Repo-name fragments that mark something other than an instruction-tuned
 # general chat model. Case-insensitive.

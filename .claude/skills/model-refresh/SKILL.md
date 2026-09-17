@@ -17,30 +17,37 @@ on its own. All commands run from the repository root.
 
 ## Stage 1: research
 
-1. The loop's state is in the reports. With no flags the tool finds the newest
-   `docs/reports/*-model-survey-*.md` and takes three things from it: the
-   window opens at its date; every release it listed under **Waiting for a
-   GGUF** or **Over the per-vendor cap** is examined again although it is older
-   than the window; and a vendor missing from its **Vendors** list gets a
-   first-run window of 90 days, so adding an org to the watchlist surveys that
-   org's recent past, not just the days since. A first run uses 90 days.
-   **Re-running after a fix to the policy or a rule needs the same window
-   again, not the days since the report being corrected.** A report dated today
-   is treated that way automatically; on a later day pass `--redo`. Withdraw
-   the corrected report in the same PR.
+1. The loop's state is in the reports: each ends with a versioned **State**
+   block recording what the run was given and what it could not settle. With
+   no flags the tool finds the newest `docs/reports/*-model-survey-*.md` and
+   **follows** it: the window opens at its date; every release it left waiting
+   for a GGUF or over the per-vendor cap is examined again although it is older
+   than the window; and a vendor it did not watch gets a first-run window of 90
+   days, so adding an org to the watchlist surveys that org's recent past. A
+   first run uses 90 days.
+   **A re-run after a fix to the policy or a rule replaces the report instead
+   of following it.** It repeats that report's inputs exactly (window, carried
+   releases, known vendors), so nothing it found is lost. A report dated today
+   is replaced automatically; on a later day pass `--redo`. Withdraw the
+   replaced report in the same PR. If the previous report has no state block
+   this tool can read, the run stops; `--since` opens a fresh window and the
+   report says nothing was carried.
 2. Run it. The cache makes a re-run free for six hours; `HF_TOKEN`, if the
    environment has one, raises the Hub's rate limit and is never stored. A
    rejected token or a failed listing ends the run with an error; it never
-   produces an empty report.
+   produces an empty report. A run makes a few hundred requests, paced under
+   the Hub's limit, so it takes several minutes.
    ```bash
-   RUN=survey-$(date +%Y%m%d-%H%M)
+   RUN=survey-$(date -u +%Y%m%d-%H%M)
    uv run python -m scripts.model_survey --out docs/reports/ --run-id $RUN \
-     --json /tmp/$RUN.json --cache /tmp/hc-model-survey-cache
+     --json "${TMPDIR:-/tmp}/$RUN.json" --cache "${TMPDIR:-/tmp}/hc-model-survey-cache-$(id -u)"
    ```
-   It prints the report path. It refuses to overwrite: one file per run. Read
-   the header's **Coverage** line: what was left out by name, by task or by
-   the per-vendor cap is listed at the end of the report, and a ⚠ there means
-   a vendor's listing did not reach back to the window.
+   It prints the window it chose and the report path. It refuses to overwrite:
+   one file per run. Read the header's **Coverage** line: what was left out by
+   name, by task or by the per-vendor cap is listed at the end of the report,
+   with a count per vendor, and a ⚠ there is something to act on (a vendor
+   that lists nothing was renamed; a listing that does not reach the window
+   needs a narrower window).
 3. Read the whole report, then write its **Reading** section. That section is
    the only part a person writes; everything below it is generated. It states:
    - the headline: the top candidate and why it ranks there, in one paragraph;

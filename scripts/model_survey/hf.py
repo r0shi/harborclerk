@@ -51,7 +51,11 @@ class Hub:
         self._sleep = sleep
         self.requests = 0
         if cache_dir:
-            cache_dir.mkdir(parents=True, exist_ok=True)
+            # Answers from the cache decide what is trusted, so the directory
+            # must be ours: a shared /tmp path someone else made is refused.
+            cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if cache_dir.stat().st_uid != os.getuid():
+                raise HubError(f"cache directory {cache_dir} belongs to another user")
 
     def __enter__(self) -> Hub:
         return self
@@ -108,7 +112,10 @@ class Hub:
     def _get(self, path: str, *, absent_ok: bool = False, **params: Any) -> Any:
         cached = self._cache_path(path, params)
         if cached and cached.exists() and time.time() - cached.stat().st_mtime < self._ttl:
-            return json.loads(cached.read_text())
+            try:
+                return json.loads(cached.read_text())
+            except json.JSONDecodeError:
+                pass  # a run killed mid-write; fetch again
         r = self._send(path, params)
         if r.status_code == 401 and self._token:
             # With a token the Hub answers 404 for a missing repo, so 401 can
@@ -125,7 +132,9 @@ class Hub:
                 raise HubError(f"the Hub answered {r.status_code} for {path}")
             data = r.json()
         if cached:
-            cached.write_text(json.dumps(data))
+            partial = cached.with_suffix(f".{os.getpid()}.tmp")
+            partial.write_text(json.dumps(data))
+            os.replace(partial, cached)
         return data
 
     def org_models(self, org: str, *, limit: int = 500) -> list[dict[str, Any]]:
