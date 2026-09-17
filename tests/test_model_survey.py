@@ -421,6 +421,7 @@ class World:
         self.arch_release = self.arch_pin | {"relarch"}
         self.arch_head = self.arch_release | {"newarch"}
         self.requests: list = []
+        self.good_tokens = {"t", "t0ken", "from-env"}
 
     def release(self, repo: str, created: str, *, likes: int = 100, licence="apache-2.0", tag="text-generation"):
         """A release in its vendor's listing and readable on its own. `tag=None` is a repo with no task."""
@@ -457,6 +458,9 @@ class World:
             )
         if host == "api.github.com":
             return httpx.Response(200, json={"tag_name": "v9.9.9", "published_at": "2026-09-14T00:00:00Z"})
+        if path == "/api/whoami-v2":
+            good = request.headers.get("Authorization") in {f"Bearer {t}" for t in self.good_tokens}
+            return httpx.Response(200 if good else 401, json={"name": "someone"})
         if path == "/api/models":
             params = request.url.params
             return httpx.Response(
@@ -473,7 +477,7 @@ class World:
         from scripts.model_survey.hf import Hub
 
         client = httpx.Client(transport=httpx.MockTransport(self.handler))
-        return Hub(client, pause_s=0, sleep=lambda s: None, **{"token": None, **hub_kwargs}), client
+        return Hub(client, **{"token": None, "pause_s": 0, "sleep": lambda s: None, **hub_kwargs}), client
 
 
 def _policy(**over):
@@ -533,7 +537,7 @@ def test_survey_examines_the_window_ranks_what_passes_and_names_what_it_left_out
     assert {(e["repo"], e["why"]) for e in facts["excluded"]} == {
         ("Qwen/Qwen-AgentWorld-35B-A3B", "name contains 'world'"),
         ("Qwen/Qwen3.8-Speech-2B", "task is automatic-speech-recognition"),
-        ("acme/Gated-7B", "not readable (gated or removed)"),
+        ("acme/Gated-7B", "not readable this run (renamed, private or gated); carried to the next"),
     }
     assert [(x["org"], x["listed"], x["in_window"], x["examined"]) for x in facts["vendors"]] == [
         ("Qwen", 4, 3, 1),
@@ -1398,32 +1402,27 @@ def test_gap_fillers_past_the_number_screened_are_reported_and_those_that_pass_c
 def test_a_repo_published_after_it_was_created_is_found_by_the_overlap_and_nothing_is_examined_twice() -> None:
     """Gemma 3 was created eleven days before it was announced. A window that
     opens at the previous report misses such a repo for good."""
+    from scripts.model_survey.__main__ import survey
+
     w = World()
     w.release("acme/Seen-7B", "2026-09-01")  # the previous run examined it
     w.release("acme/Late-7B", "2026-09-02")  # created before the previous report, private until after it
     w.release("acme/New-7B", "2026-09-12")
-    w.release("acme/Old-Probe-7B", "2026-09-03")  # left out by name last time too, and listed then
-    w.release("acme/Older-Probe-7B", "2026-08-12")  # before the previous report's window: no report has listed it
+    w.release("acme/Old-Probe-7B", "2026-09-03")  # the previous report listed it as left out
+    w.release("acme/Late-Probe-7B", "2026-09-03")  # the same day, but private then: no report has listed it
     w.release("acme/New-Probe-7B", "2026-09-12")
     seen = {"acme/Seen-7B": "2026-09-01", "acme/Ancient-7B": "2026-01-01"}
-    from scripts.model_survey.__main__ import survey
-
+    left_out = {"acme/Old-Probe-7B": "2026-09-03", "acme/Ancient-Probe-7B": "2026-01-01"}
     hub, client = w.clients()
     w.gguf("Qwen/Qwen3-8B-GGUF", {"Qwen3-8B-Q4_K_M.gguf": 5_030_000_000}, arch="qwen3", ctx=40960)
     facts = survey(
-        _policy(),
-        date(2026, 8, 11),
-        hub,
-        client,
-        curated=[_curated()],
-        seen=seen,
-        listed_since=date(2026, 9, 1),
-        fresh_since=date(2026, 9, 10),
-        today=TODAY,
+        _policy(), date(2026, 8, 11), hub, client, curated=[_curated()], seen=seen, left_out=left_out, today=TODAY
     )
     assert sorted(c["model"]["repo"] for c in facts["screened"]) == ["acme/Late-7B", "acme/New-7B"]
-    assert [e["repo"] for e in facts["excluded"]] == ["acme/New-Probe-7B", "acme/Older-Probe-7B"]
-    assert facts["overlap_excluded"] == 1
+    assert [e["repo"] for e in facts["excluded"]] == ["acme/New-Probe-7B", "acme/Late-Probe-7B"]
+    assert facts["overlap_excluded"] == 1, (
+        "what an earlier report listed is counted; that it was listed is a record, not a date"
+    )
     acme = facts["vendors"][1]
     assert (acme["in_window"], acme["already_examined"], acme["examined"]) == (6, 1, 2)
     assert facts["examined_log"] == {
@@ -1431,6 +1430,11 @@ def test_a_repo_published_after_it_was_created_is_found_by_the_overlap_and_nothi
         "acme/late-7b": "2026-09-02",
         "acme/new-7b": "2026-09-12",
     }
+    assert facts["left_out_log"] == {
+        "acme/old-probe-7b": "2026-09-03",
+        "acme/late-probe-7b": "2026-09-03",
+        "acme/new-probe-7b": "2026-09-12",
+    }, "the ancient entry is past any overlap and is dropped"
 
 
 def test_a_release_blocked_on_llama_cpp_is_carried_like_one_waiting_for_a_gguf() -> None:
@@ -1448,48 +1452,51 @@ def test_the_plan_follows_a_report_with_an_overlap_and_repeats_the_one_it_replac
     today = date(2026, 9, 24)
     first = plan(None, None, False, today)
     assert (first["since"], first["recheck"], first["known_orgs"], first["seen"]) == (date(2026, 6, 26), {}, None, {})
-    assert first["fresh_since"] is None and first["first_run_since"] == date(2026, 6, 26) and first["label"] is None
+    assert first["left_out"] == {} and first["first_run_since"] == date(2026, 6, 26) and first["label"] is None
+    assert first["since_source"] == "90 days, a first run's"
+    assert plan(None, date(2026, 7, 22), False, today)["since_source"] == "given with --since"
 
+    w = _soon_world()
+    w.release("Qwen/Qwen3.8-Probe-7B", "2026-09-11")
     given = {
         "recheck": {"acme/Gone-7B": "2026-02-01"},
         "known_orgs": {"qwen"},
         "seen": {"acme/Before-7B": "2026-07-30"},
+        "left_out": {"acme/Before-Probe-7B": "2026-07-30"},
     }
-    facts = _run(
-        _soon_world(),
-        listed_since=date(2026, 8, 1),
-        fresh_since=date(2026, 8, 20),
-        first_run_since=date(2026, 6, 1),
-        **given,
-    )
-    last_week = _report(tmp_path, "2026-09-17-model-survey-r0.md", facts)
+    last_week = _report(tmp_path, "2026-09-17-model-survey-r0.md", _run(w, first_run_since=date(2026, 6, 1), **given))
 
     follow = plan(last_week, None, False, today)
-    assert follow["since"] == date(2026, 8, 18), "thirty days before the report it follows"
-    assert follow["fresh_since"] == date(2026, 9, 17) and follow["first_run_since"] == date(2026, 6, 26)
-    assert follow["listed_since"] == date(2026, 7, 22), "the report it follows listed nothing older than its own window"
+    assert follow["since"] == date(2026, 8, 18) and follow["since_source"] == "30 days before the report it follows"
+    assert follow["first_run_since"] == date(2026, 6, 26)
     assert follow["recheck"] == {"acme/Soon-7B": "2026-09-10"}
-    assert follow["known_orgs"] == {"acme"}, "Qwen listed nothing in that run, so it must still count as new"
+    assert follow["known_orgs"] == {"qwen", "acme"}, "lower-cased, however the watchlist spells them"
     assert follow["seen"] == {"acme/before-7b": "2026-07-30", "acme/soon-7b": "2026-09-10"}
+    assert follow["left_out"] == {"acme/before-probe-7b": "2026-07-30", "qwen/qwen3.8-probe-7b": "2026-09-11"}
     assert follow["label"] == "`2026-09-17-model-survey-r0.md`"
 
     # Replacing it, after a policy fix and a week later: everything it was given, nothing it left over.
     redo = plan(last_week, None, True, today)
-    assert (redo["since"], redo["fresh_since"], redo["first_run_since"]) == (
-        date(2026, 7, 22),
-        date(2026, 8, 20),
-        date(2026, 6, 1),
-    )
+    assert (redo["since"], redo["first_run_since"]) == (date(2026, 7, 22), date(2026, 6, 1))
+    assert redo["since_source"] == "repeated from the replaced report, where it was given by the caller"
     assert redo["recheck"] == {"acme/Gone-7B": "2026-02-01"} and redo["known_orgs"] == {"qwen"}
-    assert redo["seen"] == {"acme/before-7b": "2026-07-30"} and redo["listed_since"] == date(2026, 8, 1)
+    assert redo["seen"] == {"acme/before-7b": "2026-07-30"} and redo["left_out"] == {
+        "acme/before-probe-7b": "2026-07-30"
+    }
     assert "which this run replaces" in redo["label"]
 
     # A report dated today is one this run replaces. Following it would survey nothing.
-    todays = _report(tmp_path, "2026-09-24-model-survey-r1.md", facts)
+    todays = _report(tmp_path, "2026-09-24-model-survey-r1.md", _run(w, first_run_since=date(2026, 6, 1), **given))
     same_day = plan(todays, None, False, today)
     assert (same_day["since"], same_day["recheck"]) == (date(2026, 7, 22), {"acme/Gone-7B": "2026-02-01"})
 
-    assert plan(last_week, date(2026, 1, 1), False, today)["since"] == date(2026, 1, 1), "--since overrides"
+    override = plan(last_week, date(2026, 1, 1), False, today)
+    assert (override["since"], override["since_source"]) == (date(2026, 1, 1), "given with --since")
+
+    # Passed with --previous under a name that carries no date: the day its state was written.
+    undated = tmp_path / "last-survey.md"
+    undated.write_text(last_week.read_text())
+    assert plan(undated, None, False, today)["since"] == date(2026, 8, 18)
 
 
 def test_replacing_a_report_on_a_later_day_gives_a_new_vendor_the_same_first_run_window() -> None:
@@ -1637,13 +1644,13 @@ def test_main_hands_the_plan_to_the_survey_and_writes_the_report_and_the_facts(t
         "recheck": {"acme/Soon-7B": "2026-09-10"},
         "known_orgs": {"acme"},
         "seen": {"acme/soon-7b": "2026-09-10"},
-        "listed_since": date(2026, 7, 22),
-        "fresh_since": date(2026, 9, 10),
+        "left_out": {},
         "first_run_since": date(2026, 6, 19),
         "today": date(2026, 9, 17),
     }
     written = (reports / "2026-09-17-model-survey-r1.md").read_text()
     assert "Previous survey:** `2026-09-10-model-survey-r0.md`" in written
+    assert "window: releases since 2026-08-11 (30 days before the report it follows)" in written
     assert cli.state_from_report(written)["generated_at"] == "2026-09-17T23:30:00+00:00"
     assert json.loads(facts_path.read_text())["since"] == "2026-08-11"
 
@@ -1672,9 +1679,9 @@ def test_a_carried_release_that_cannot_be_read_for_one_run_is_named_and_carried_
     seen = {"acme/soon-7b": "2026-09-10", "acme/stale-7b": "2026-08-01"}
     facts = _run(w, recheck=carried, seen=seen)
     assert [(e["repo"], e["why"]) for e in facts["excluded"]] == [
-        ("acme/Soon-7B", "carried, but not readable this run (renamed, private or gated); carried again"),
-        ("acme/Stale-7B", "carried, but not readable this run (renamed, private or gated); dropped"),
-        ("acme/Undated-7B", "carried, but not readable this run (renamed, private or gated); dropped"),
+        ("acme/Soon-7B", "not readable this run (renamed, private or gated); carried to the next"),
+        ("acme/Stale-7B", "not readable this run (renamed, private or gated); dropped"),
+        ("acme/Undated-7B", "not readable this run (renamed, private or gated); dropped"),
     ]
     assert facts["waiting"] == [{"repo": "acme/Soon-7B", "created": "2026-09-10"}] and facts["rechecked"] == []
     assert "acme/stale-7b" not in facts["examined_log"], "dropped, so a later window may find it again"
@@ -1751,7 +1758,8 @@ def test_a_state_block_with_a_value_of_the_wrong_form_is_unreadable_not_a_crash(
 
     for path, value in (
         (("since",), "2026-9-1"),
-        (("inputs", "fresh_since"), "last week"),
+        (("inputs", "left_out"), {"acme/x": "last week"}),
+        (("inputs", "since_source"), None),
         (("inputs", "first_run_since"), None),
         (("outputs", "examined"), {"acme/x": None}),
         (("outputs", "waiting"), ["acme/x"]),
@@ -1772,11 +1780,7 @@ def test_a_first_run_vendors_exclusions_are_all_listed_because_no_report_has_lis
     w.release("newco/Old-Probe-7B", "2026-09-03")  # inside the overlap, but newco was not watched then
     w.release("acme/Old-Probe-7B", "2026-09-03")
     facts = _run(
-        w,
-        policy=_policy(orgs=["acme", "newco"]),
-        known_orgs={"acme"},
-        listed_since=date(2026, 8, 1),
-        fresh_since=date(2026, 9, 10),
+        w, policy=_policy(orgs=["acme", "newco"]), known_orgs={"acme"}, left_out={"acme/Old-Probe-7B": "2026-09-03"}
     )
     assert [e["repo"] for e in facts["excluded"]] == ["newco/Old-Probe-7B"] and facts["overlap_excluded"] == 1
 
@@ -1855,3 +1859,167 @@ def test_a_first_run_says_so_instead_of_describing_an_overlap() -> None:
 
     header = render(_run(World()), _policy(), "r1", datetime(2026, 9, 17)).split("## Reading")[0]
     assert "- **Previous survey:** none; this is a first run" in header and "overlaps" not in header
+
+
+# --- review round 6 -----------------------------------------------------------------------------------------------
+
+
+def test_a_release_that_cannot_be_read_is_carried_whether_the_window_or_the_carried_list_reached_it() -> None:
+    """The window files an unreadable release first, so the carried list's
+    own handling never saw it: an over-cap release that read as absent for one
+    run was dropped, and so was any window release."""
+    from datetime import datetime
+
+    from scripts.model_survey.__main__ import pending, render, state_from_report
+
+    w = World()
+    for repo in ("acme/Carried-7B", "acme/Fresh-7B"):
+        w.release(repo, "2026-08-20")
+        del w.repos[repo]  # listed in the window, and answering 401 this run
+    facts = _run(w, recheck={"acme/Carried-7B": "2026-08-20"})
+    assert {(e["repo"], e["why"]) for e in facts["excluded"]} == {
+        ("acme/Carried-7B", "not readable this run (renamed, private or gated); carried to the next"),
+        ("acme/Fresh-7B", "not readable this run (renamed, private or gated); carried to the next"),
+    }
+    assert facts["examined_log"] == {}, "neither was examined, so neither may be skipped as examined"
+    state = state_from_report(render(facts, _policy(), "r1", datetime(2026, 9, 17)))
+    assert pending(state) == {"acme/Carried-7B": "2026-08-20", "acme/Fresh-7B": "2026-08-20"}
+
+    w.release("acme/Fresh-7B", "2026-08-20")  # readable again two weeks later, and built; the window has moved past it
+    w.gguf("unsloth/Fresh-7B-GGUF", {"Fresh-7B-Q4_K_M.gguf": 4_000_000_000})
+    from scripts.model_survey.__main__ import survey
+
+    hub, client = w.clients()
+    w.gguf("Qwen/Qwen3-8B-GGUF", {"Qwen3-8B-Q4_K_M.gguf": 5_030_000_000}, arch="qwen3", ctx=40960)
+    later = survey(
+        _policy(), date(2026, 8, 25), hub, client, curated=[_curated()], recheck=pending(state),
+        seen=state["outputs"]["examined"], today=date(2026, 10, 1),
+    )  # fmt: skip
+    assert [c["model"]["repo"] for c in later["candidates"]] == ["acme/Fresh-7B"]
+
+
+def test_a_carried_release_meets_every_exclusion_the_window_applies() -> None:
+    w = World()
+    for repo in ("acme/Thing-9B", "acme/Thing-9B-it", "acme/Plain-7B", "acme/Plain-7B-BF16"):
+        w.release(repo, "2026-06-01")  # older than the window: only the carried list reaches them
+        w.gguf(f"unsloth/{repo.split('/')[1]}-GGUF", {"m-Q4_K_M.gguf": 5_000_000_000})
+    carried = {"acme/Thing-9B": "2026-06-01", "acme/Plain-7B-BF16": "2026-06-01", "acme/Thing-9B-it": "2026-06-01"}
+    facts = _run(w, recheck=carried)
+    assert [c["model"]["repo"] for c in facts["candidates"]] == ["acme/Thing-9B-it"]
+    assert [(e["repo"], e["why"]) for e in facts["excluded"]] == [
+        ("acme/Thing-9B", "pretrained base of its -it sibling"),
+        ("acme/Plain-7B-BF16", "full-precision copy of plain-7b"),
+    ]
+
+
+def test_a_state_block_without_a_key_that_may_be_null_is_still_unreadable(tmp_path) -> None:
+    """`None` is a value `known_orgs` allows. Absent is not `None`."""
+    from scripts.model_survey import __main__ as cli
+
+    state = cli.state_from_report(_report(tmp_path, "2026-09-10-model-survey-r0.md", _run(_soon_world())).read_text())
+    assert state["inputs"]["known_orgs"] is None
+    broken = json.loads(json.dumps(state))
+    del broken["inputs"]["known_orgs"]
+    assert cli.state_from_report(f"## State\n\n```json\n{json.dumps(broken)}\n```\n") is None
+
+
+def test_on_one_day_a_report_with_unreadable_state_is_the_newest_so_the_run_stops(tmp_path) -> None:
+    from scripts.model_survey import __main__ as cli
+
+    _report(tmp_path, "2026-09-17-model-survey-a.md", _run(_soon_world()), generated="2026-09-17T09:00:00+00:00")
+    (tmp_path / "2026-09-17-model-survey-b.md").write_text("# written later; its state block was lost in a merge\n")
+    _report(tmp_path, "2026-09-17-model-survey-c.md", _run(_soon_world()), generated="2026-09-17T08:00:00+00:00")
+    newest = cli.previous_report(tmp_path)
+    assert newest.name == "2026-09-17-model-survey-b.md", "replacing `a` in silence would lose whatever `b` recorded"
+    with pytest.raises(cli.PlanError):
+        cli.plan(newest, None, False, date(2026, 9, 17))
+
+
+def test_every_request_is_paced() -> None:
+    w = World()
+    w.gguf("x/ok", {})
+    sleeps: list[float] = []
+    hub, _ = w.clients(pause_s=0.65, sleep=sleeps.append)
+    hub.model("x/ok")
+    hub.model("x/missing")
+    assert sleeps == [0.65, 0.65] and hub.requests == 2
+
+
+@pytest.mark.parametrize("mode", [0o720, 0o702])
+def test_a_cache_directory_writable_by_the_group_or_by_anyone_is_refused(tmp_path, mode: int) -> None:
+    from scripts.model_survey import hf
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(mode)
+    with pytest.raises(hf.HubError, match="writable by others"):
+        hf.Hub(token=None, cache_dir=shared)
+
+
+def test_a_known_vendor_is_known_however_its_name_is_cased() -> None:
+    w = World()
+    w.release("Qwen/Qwen3.5-Earlier-7B", "2026-07-01")  # before the window; a first-run window would reach it
+    facts = _run(w, known_orgs={"Qwen", "ACME"})
+    assert [(x["org"], x["first_run"]) for x in facts["vendors"]] == [("Qwen", False), ("acme", False)]
+    assert facts["screened"] == []
+
+
+def test_git_that_cannot_run_means_not_on_main_rather_than_a_crash(monkeypatch) -> None:
+    from scripts.model_survey import __main__ as cli
+
+    def no_git(*a, **k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(cli.subprocess, "run", no_git)
+    assert cli._git("cat-file", "-e", "origin/main:x") is False
+
+
+def test_a_carried_release_with_an_unreadable_day_is_dropped_not_kept_for_ever() -> None:
+    from datetime import timedelta
+
+    from scripts.model_survey.__main__ import WAIT_DAYS
+
+    last_day = (TODAY - timedelta(days=WAIT_DAYS)).isoformat()
+    day_after = (TODAY - timedelta(days=WAIT_DAYS + 1)).isoformat()
+    facts = _run(
+        World(), recheck={"acme/Garbled-7B": "soon", "acme/LastDay-7B": last_day, "acme/DayAfter-7B": day_after}
+    )
+    assert [w["repo"] for w in facts["waiting"]] == ["acme/LastDay-7B"]
+    assert [e["why"].rsplit("; ", 1)[1] for e in facts["excluded"]] == ["dropped", "carried to the next", "dropped"]
+
+
+def test_a_successor_that_cannot_be_read_is_screened_as_unknown_not_skipped() -> None:
+    w = World()
+    w.release("Qwen/Qwen3.5-9B", "2026-02-27")
+    del w.repos["Qwen/Qwen3.5-9B"]
+    successor = _run(w, policy=_policy(orgs=["acme"]))["curated"][0]["successors"][0]
+    assert successor["repo"] == "Qwen/Qwen3.5-9B" and "licence is unknown" in successor["reasons"]
+
+
+def test_the_successor_size_band_and_the_full_precision_rule_in_the_family_search() -> None:
+    rows = _rows(
+        "Qwen/Qwen3.5-4.8B", "Qwen/Qwen3.5-4.7B", "Qwen/Qwen3.5-12.8B", "Qwen/Qwen3.5-12.9B", tag="text-generation"
+    )
+    assert [f["repo"] for f in size_matched_successors(_curated(), rows, POLICY)] == [
+        "Qwen/Qwen3.5-4.8B",
+        "Qwen/Qwen3.5-12.8B",
+    ]
+    rows = _rows("Qwen/Qwen3.5-9B", "Qwen/Qwen3.5-9B-BF16", "Qwen/Qwen3.6-9B-BF16", tag="text-generation")
+    found = [f["repo"] for f in size_matched_successors(_curated(), rows, POLICY)]
+    assert found == ["Qwen/Qwen3.6-9B-BF16", "Qwen/Qwen3.5-9B"], "a BF16 copy is dropped; a BF16-only release is kept"
+
+
+def test_a_401_with_a_good_token_means_absent_and_with_a_bad_one_ends_the_run(tmp_path) -> None:
+    """What the Hub answers for a missing repo when a token is sent was an
+    assumption. The token is checked instead, once."""
+    from scripts.model_survey.hf import HubError
+
+    w = World()
+    good, _ = w.clients(token="t0ken", cache_dir=tmp_path / "good")
+    assert good.model("acme/Missing-7B-GGUF") is None and good.model("acme/Other-7B-GGUF") is None
+    asked = [r.url.path for r in w.requests]
+    assert asked.count("/api/whoami-v2") == 1, asked
+    bad, _ = w.clients(token="expired", cache_dir=tmp_path / "bad")
+    with pytest.raises(HubError, match="HF_TOKEN"):
+        bad.model("acme/Missing-7B-GGUF")
+    assert list((tmp_path / "bad").iterdir()) == []

@@ -63,6 +63,7 @@ class Hub:
         self._max_tries = max_tries
         self._sleep = sleep
         self.requests = 0
+        self._token_verified: bool | None = None
 
     def __enter__(self) -> Hub:
         return self
@@ -125,10 +126,8 @@ class Hub:
             except json.JSONDecodeError:
                 pass  # a run killed mid-write; fetch again
         r = self._send(path, params)
-        if r.status_code == 401 and self._token:
-            # With a token the Hub answers 404 for a missing repo, so 401 can
-            # only mean the token itself. Raised, and never cached.
-            raise HubError("the Hub rejected HF_TOKEN (401); unset it or replace it")
+        if r.status_code == 401 and self._token and not self._token_ok():
+            raise HubError("the Hub rejected HF_TOKEN (401); unset it or replace it")  # raised, and never cached
         # Without a token the Hub answers 401 for a repo that does not exist (it
         # will not confirm whether a private one does), and 403 for a gated one.
         # Only a probe for one repo may read those as "nothing there for us": on
@@ -147,6 +146,14 @@ class Hub:
             finally:
                 partial.unlink(missing_ok=True)
         return data
+
+    def _token_ok(self) -> bool:
+        """Asked once, on the first 401. What a 401 means with a token is not
+        assumed: a rejected token fails the run, a good one leaves the 401 to
+        mean what it means without one."""
+        if self._token_verified is None:
+            self._token_verified = self._send("/whoami-v2", {}).status_code == 200
+        return self._token_verified
 
     def org_models(self, org: str, *, limit: int = 500) -> list[dict[str, Any]]:
         """Newest repos of an org, newest first (the list API is summary only)."""

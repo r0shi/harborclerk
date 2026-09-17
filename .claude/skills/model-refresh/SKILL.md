@@ -18,8 +18,8 @@ on its own. All commands run from the repository root.
 ## Stage 1: research
 
 1. The loop's state is in the reports: each ends with a versioned **State**
-   block recording what the run was given, what it examined and what it could
-   not settle. With no flags the tool finds the newest
+   block recording what the run was given, what it examined, what it left out
+   by name or task, and what it could not settle. With no flags the tool finds the newest
    `docs/reports/*-model-survey-*.md` and **follows** it:
    - the window opens 30 days before that report, because the Hub dates a repo
      by its creation and vendors publish days after creating (Gemma 3: eleven);
@@ -36,8 +36,11 @@ on its own. All commands run from the repository root.
    fresh `origin/main`. If the followed report is not on `origin/main` (its PR
    is still open, or a closed PR left the file behind) the run still follows
    it, and its header says so with a ⚠: decide whether that is what you want
-   before publishing. A carried release that cannot be read for a run is
-   named in the report and carried again; it is not dropped.
+   before publishing. A release that cannot be read for a run, from the window
+   or the carried list, is named in the report and carried to the next run; it
+   is not dropped and not logged as examined. With `HF_TOKEN` set, a 401 makes
+   the tool check the token once: a rejected token ends the run, a good one
+   leaves the 401 to mean the repo is absent.
    **A re-run after a fix to the policy or a rule replaces the report instead
    of following it.** It repeats that report's inputs exactly (window, carried
    releases, known vendors), so nothing it found is lost. A report dated today
