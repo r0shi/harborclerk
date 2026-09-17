@@ -4,12 +4,17 @@ mapping, the CLI-access toggle's restore, and the empty-folder cleanup."""
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from acceptance import access
+from acceptance.config import AcceptanceConfig
+from acceptance.conftest import CliAccess
 
 
 def test_tier_contract_is_nested_and_excludes_admin_tools() -> None:
@@ -29,6 +34,19 @@ def test_cli_env_maps_the_suite_settings_onto_the_cli_variables(monkeypatch: pyt
     assert "PATH" in env, "the CLI still needs the rest of the environment"
 
 
+def test_cli_env_never_forwards_the_suite_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HC_PASSWORD", "admin-secret")
+    monkeypatch.setenv("HC_API_BASE", "http://localhost:8100")
+    env = access.cli_env("http://x", "hc_k")
+    assert not any(k.startswith("HC_") for k in env), "the admin password must not reach a CLI subprocess"
+
+
+def test_cli_command_puts_json_after_the_subcommand() -> None:
+    cmd = access.cli_command("search", "q", "-k", "1")
+    assert cmd[-1] == "--json" and cmd.index("harbor-clerk") < cmd.index("search") < cmd.index("--json")
+    assert "--frozen" in cmd and "--no-sync" in cmd, "the CLI runner must never re-lock or install"
+
+
 def test_cli_env_drops_a_foreign_virtualenv(monkeypatch: pytest.MonkeyPatch) -> None:
     """With VIRTUAL_ENV pointing elsewhere, `uv run` prints a warning on stderr,
     where the CLI's structured error also goes."""
@@ -43,6 +61,8 @@ def test_cli_error_is_parsed_past_tooling_noise_on_stderr() -> None:
         stderr='warning: `VIRTUAL_ENV=/x` does not match the project environment path\n{"error_kind": "auth", "message": "401"}\n',
     )
     assert result.error["error_kind"] == "auth"
+    trailing = access.CliResult(code=2, stdout="", stderr='{"error_kind": "connection"}\nwarning: something after\n')
+    assert trailing.error["error_kind"] == "connection", "noise after the JSON must not break parsing either"
     with pytest.raises(ValueError, match="no JSON error"):
         _ = access.CliResult(code=1, stdout="", stderr="harbor-clerk: Missing API key").error
 
@@ -77,13 +97,147 @@ def test_cli_access_toggle_keeps_what_other_writers_changed_meanwhile(tmp_path: 
     assert json.loads(cfg.read_text()) == {"enable_cli_access": True, "llm_model_id": "b"}
 
 
-def test_cli_access_toggle_removes_the_key_it_added(tmp_path: Path) -> None:
+def test_cli_access_toggle_restores_an_absent_key_as_an_explicit_false(tmp_path: Path) -> None:
+    """The API applies only keys present in the file (config._apply_to), so
+    removing the key would leave the running API on the value this block set.
+    False is the setting's default and the Swift toggle's default reading."""
     cfg = tmp_path / "config.json"
     cfg.write_text('{"api_port": 8100}')
     with access.cli_access_toggled(cfg, True):
         assert json.loads(cfg.read_text())["enable_cli_access"] is True
-    assert json.loads(cfg.read_text()) == {"api_port": 8100}
+    assert json.loads(cfg.read_text()) == {"api_port": 8100, "enable_cli_access": False}
     assert not list(tmp_path.glob("*.acceptance-tmp")), "the atomic write must not leave its temp file"
+
+
+def test_cli_access_toggle_preserves_the_file_mode(tmp_path: Path) -> None:
+    """config.json holds secret_key and the product writes it 0600."""
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"enable_cli_access": false, "secret_key": "s"}')
+    os.chmod(cfg, 0o600)
+    with access.cli_access_toggled(cfg, True):
+        assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
+    assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
+
+
+def test_cli_access_toggle_tolerates_a_non_object_file(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.json"
+    cfg.write_text("[]")
+    with access.cli_access_toggled(cfg, True):
+        assert json.loads(cfg.read_text()) == {"enable_cli_access": True}
+    assert json.loads(cfg.read_text()) == {"enable_cli_access": False}
+
+
+def test_mcp_probe_builds_both_auth_surfaces() -> None:
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, request.headers.get("Authorization")))
+        body = json.loads(request.content)
+        assert body["method"] == "initialize"
+        return httpx.Response(200, json={})
+
+    t = httpx.MockTransport(handler)
+    assert access.mcp_probe("http://test/", "hc_k", transport=t) == 200
+    assert access.mcp_probe("http://test", "hc_k", url_token=True, transport=t) == 200
+    assert seen == [("/mcp/", "Bearer hc_k"), ("/t/hc_k", None)]
+
+
+# ── CliAccess with a fake CLI ───────────────────────────────────────────────
+
+
+class _Result:
+    def __init__(self, code: int):
+        self.code = code
+
+
+class _FakeCli:
+    """A CLI whose exit code follows the file: 0 when enable_cli_access is
+    true, 3 otherwise. `stuck_on` simulates an API whose in-memory gate stopped
+    following the file."""
+
+    def __init__(self, config_json: Path | None, *, stuck_on: int | None = None):
+        self.config_json = config_json
+        self.stuck_on = stuck_on
+        self.calls = 0
+
+    def __call__(self, api_base: str, raw_key: str, *args: str, insecure: bool = False) -> _Result:
+        self.calls += 1
+        if self.stuck_on is not None:
+            return _Result(self.stuck_on)
+        if self.config_json is None:
+            return _Result(access.EXIT_CLI_DISABLED)
+        data = json.loads(self.config_json.read_text() or "{}")
+        return _Result(access.EXIT_OK if data.get("enable_cli_access") else access.EXIT_CLI_DISABLED)
+
+
+def _cfg(tmp_path: Path, config_json: Path | None) -> AcceptanceConfig:
+    return AcceptanceConfig(
+        api_base="http://localhost:8100",
+        username="a@b.c",
+        password="x",
+        folder_root=tmp_path,
+        folder_root_in_instance=None,
+        insecure=False,
+        disposable=False,
+        wipe=False,
+        keep=False,
+        config_json=config_json,
+        run_id="offline",
+        ingest_timeout_s=1,
+        ask_timeout_s=1,
+    )
+
+
+def test_cli_access_enabled_is_read_from_the_exit_code(tmp_path: Path) -> None:
+    on = CliAccess(_cfg(tmp_path, None), "hc_k", runner=lambda *a, **k: _Result(access.EXIT_OK))
+    off = CliAccess(_cfg(tmp_path, None), "hc_k", runner=lambda *a, **k: _Result(access.EXIT_CLI_DISABLED))
+    odd = CliAccess(_cfg(tmp_path, None), "hc_k", runner=lambda *a, **k: _Result(access.EXIT_CONNECTION))
+    assert on.enabled is True and off.enabled is False
+    with pytest.raises(RuntimeError, match="exited 2"):
+        _ = odd.enabled
+
+
+def test_cli_access_toggle_skips_without_the_config_path(tmp_path: Path) -> None:
+    ca = CliAccess(_cfg(tmp_path, None), "hc_k", runner=_FakeCli(None))
+    with pytest.raises(pytest.skip.Exception, match="HC_ACCEPTANCE_CONFIG_JSON"):
+        ca.toggled(True)
+    with pytest.raises(pytest.skip.Exception, match="disabled"), ca.ensured():
+        pass
+
+
+def test_cli_access_ensured_flips_on_and_restores_off(tmp_path: Path) -> None:
+    cfg_json = tmp_path / "config.json"
+    cfg_json.write_text("{}")  # gate off by default, key absent: the case that bit
+    fake = _FakeCli(cfg_json)
+    ca = CliAccess(_cfg(tmp_path, cfg_json), "hc_k", runner=fake)
+    with ca.ensured():
+        assert json.loads(cfg_json.read_text())["enable_cli_access"] is True
+    assert json.loads(cfg_json.read_text())["enable_cli_access"] is False
+    assert fake.calls >= 2, "a probe before and a healing probe after"
+
+
+def test_cli_access_ensured_heals_even_when_the_block_raises(tmp_path: Path) -> None:
+    cfg_json = tmp_path / "config.json"
+    cfg_json.write_text('{"enable_cli_access": false}')
+    fake = _FakeCli(cfg_json)
+    ca = CliAccess(_cfg(tmp_path, cfg_json), "hc_k", runner=fake)
+    calls_before = 0
+    with pytest.raises(RuntimeError, match="check failed"), ca.ensured():
+        calls_before = fake.calls
+        raise RuntimeError("check failed")
+    assert fake.calls == calls_before + 1, "the healing probe must run when the block fails"
+    assert json.loads(cfg_json.read_text())["enable_cli_access"] is False
+
+
+def test_cli_access_ensured_fails_loudly_when_the_gate_does_not_follow_the_file(tmp_path: Path) -> None:
+    """A restore that the API did not pick up is the state this suite must
+    never leave silently."""
+    cfg_json = tmp_path / "config.json"
+    cfg_json.write_text('{"enable_cli_access": false}')
+    fake = _FakeCli(cfg_json)
+    ca = CliAccess(_cfg(tmp_path, cfg_json), "hc_k", runner=fake)
+    with pytest.raises(pytest.fail.Exception, match="did not return to disabled"), ca.ensured():
+        fake.stuck_on = access.EXIT_OK  # from here on the API keeps saying enabled
 
 
 class FakeAdmin:

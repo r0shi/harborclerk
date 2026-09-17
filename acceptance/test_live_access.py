@@ -16,7 +16,6 @@ import time
 import pytest
 
 from acceptance.access import (
-    ADMIN_ONLY_TOOLS,
     EXIT_AUTH,
     EXIT_CLI_DISABLED,
     EXIT_CONNECTION,
@@ -51,7 +50,6 @@ def _rows(admin: HarborClerk, key_id: str) -> list[dict]:
 def test_f1_bearer_tool_list_is_exactly_the_tier(tier: str, tier_keys: dict, mcp) -> None:
     listed = set(mcp.bearer(tier_keys[tier]["raw_key"]).list_tool_names())
     assert listed == TIER_TOOLS[tier], {"missing": TIER_TOOLS[tier] - listed, "extra": listed - TIER_TOOLS[tier]}
-    assert not (listed & ADMIN_ONLY_TOOLS)
 
 
 def test_f2_url_token_lists_the_same_tools_as_bearer(tier_keys: dict, mcp) -> None:
@@ -90,7 +88,8 @@ def test_f4_cli_disabled_exits_3_and_is_audited(cfg, admin: HarborClerk, tier_ke
     assert result.code == EXIT_CLI_DISABLED, (result.code, result.stderr[:300])
     assert result.error["error_kind"] == "cli_disabled", result.stderr
     denied = [r for r in _rows(admin, key["key_id"]) if r["status_detail"] == "cli_access_disabled"]
-    assert denied and denied[0]["request_type"] == "cli_tool" and denied[0]["status"] == "denied", denied
+    assert denied, "the refusal was not audited"
+    assert (denied[0]["request_type"], denied[0]["status"], denied[0]["endpoint"]) == ("cli_tool", "denied", "<gate>")
 
 
 def test_f5_cli_search_matches_kb_search(cfg, tier_keys: dict, corpus: Corpus, mcp, cli_access) -> None:
@@ -102,11 +101,7 @@ def test_f5_cli_search_matches_kb_search(cfg, tier_keys: dict, corpus: Corpus, m
     assert via_cli.code == EXIT_OK, via_cli.stderr[:300]
     mcp_hits = {h["chunk_id"]: h["citation"] for h in via_mcp["hits"]}
     cli_hits = {h["chunk_id"]: h["citation"] for h in via_cli.json["hits"]}
-    diagnostics = {
-        "mcp_only": set(mcp_hits) - set(cli_hits),
-        "cli_only": set(cli_hits) - set(mcp_hits),
-        "reranker_status": (via_mcp.get("reranker_status"), via_cli.json.get("reranker_status")),
-    }
+    diagnostics = {"mcp_only": set(mcp_hits) - set(cli_hits), "cli_only": set(cli_hits) - set(mcp_hits)}
     assert mcp_hits and set(cli_hits) == set(mcp_hits), diagnostics
     assert cli_hits == mcp_hits, "citation strings differ between CLI and MCP for the same chunks"
 
@@ -185,9 +180,12 @@ def test_g2_read_tier_reads_passages_and_documents_over_mcp_search_tier_cannot(
 
 def test_g3_key_scoped_to_an_empty_folder_sees_nothing_and_says_why(keys: KeyFactory, empty_folder: dict, mcp) -> None:
     raw = keys.create("g3-empty-scope", scope_folder_ids=[empty_folder["folder_id"]])["raw_key"]
-    resp = tool_json(mcp.bearer(raw).call_tool("kb_search", {"query": "Harbourside Lane", "k": 10}))
+    session = mcp.bearer(raw)
+    resp = tool_json(session.call_tool("kb_search", {"query": "Harbourside Lane", "k": 10}))
     assert resp["hits"] == [], resp
     assert resp.get("would_match_unscoped", 0) > 0, "an empty scoped result must say the query would match unscoped"
+    found = tool_json(session.call_tool("kb_find_all", {"query": "standing order", "text_contains": "standing order"}))
+    assert found["results"] == [], found
 
 
 def test_g4_rate_limit_refuses_the_third_call_and_recovers(

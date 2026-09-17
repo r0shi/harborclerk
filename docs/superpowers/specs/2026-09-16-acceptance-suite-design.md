@@ -201,8 +201,12 @@ Modes:
   the folder's own progress (never the instance-wide queues, which other work
   would keep busy), yields, then deletes the folder (cascading its documents)
   and every API key it created, in a `finally` that also runs when ingest
-  fails. No other document on the instance is touched; the run leaves audit
-  rows and soft-deleted keys, which is the trail it should leave. All
+  fails. No other document on the instance is touched. The run leaves audit
+  rows and soft-deleted keys, registers and removes a second empty folder for
+  the scope checks, and, when `HC_ACCEPTANCE_CONFIG_JSON` is set, rewrites
+  config.json with the same settings in two-space JSON and `enable_cli_access`
+  spelled out (the API applies only keys present in the file, so a key the
+  suite added is restored as an explicit `false`, never removed). All
   searches carry `scope.folder_ids=[fixture folder]` unless the check is
   about scope itself.
 - **Wipe (`HC_ACCEPTANCE_WIPE=1`).** Deletes every watched folder, then calls

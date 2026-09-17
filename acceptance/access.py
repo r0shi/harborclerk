@@ -53,9 +53,11 @@ EXIT_OK, EXIT_USAGE, EXIT_CONNECTION, EXIT_CLI_DISABLED, EXIT_AUTH, EXIT_HTTP = 
 
 def cli_env(api_base: str, raw_key: str, *, insecure: bool = False) -> dict[str, str]:
     """The environment the harbor-clerk CLI reads (src/harbor_clerk/cli/config.py)."""
-    # VIRTUAL_ENV from an activated foreign venv makes `uv run` print a warning
-    # on stderr, where the CLI's structured error also goes.
-    env = {k: v for k, v in os.environ.items() if not k.startswith("HARBOR_CLERK_") and k != "VIRTUAL_ENV"}
+    # HARBOR_CLERK_*: stale values from the shell would override ours. HC_*: the
+    # suite's own settings, including the admin password, have no business in
+    # a CLI subprocess. VIRTUAL_ENV from a foreign venv makes `uv run` print a
+    # warning on stderr, where the CLI's structured error also goes.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("HARBOR_CLERK_", "HC_")) and k != "VIRTUAL_ENV"}
     env["HARBOR_CLERK_URL"] = api_base
     env["HARBOR_CLERK_API_KEY"] = raw_key
     if insecure:
@@ -82,14 +84,20 @@ class CliResult:
         start = self.stderr.find("{")
         if start < 0:
             raise ValueError(f"no JSON error on stderr: {self.stderr[:300]!r}")
-        return json.loads(self.stderr[start:])
+        payload, _ = json.JSONDecoder().raw_decode(self.stderr[start:])
+        return payload
+
+
+def cli_command(*args: str) -> list[str]:
+    """`harbor-clerk <args> --json` from this checkout's environment, not the
+    instance's installed shim: parity is checked against the CLI in the tree.
+    `--json` goes after the subcommand: the CLI's global flags are per-command."""
+    return ["uv", "run", "--frozen", "--no-sync", "harbor-clerk", *args, "--json"]
 
 
 def run_cli(api_base: str, raw_key: str, *args: str, insecure: bool = False, timeout_s: float = 120) -> CliResult:
-    """Run `harbor-clerk <args> --json` from the repository's own environment.
-    `--json` goes after the subcommand: the CLI's global flags are per-command."""
     proc = subprocess.run(
-        ["uv", "run", "--frozen", "--no-sync", "harbor-clerk", *args, "--json"],
+        cli_command(*args),
         cwd=REPO,
         env=cli_env(api_base, raw_key, insecure=insecure),
         capture_output=True,
@@ -103,16 +111,24 @@ def run_cli(api_base: str, raw_key: str, *args: str, insecure: bool = False, tim
 
 
 def _read_config(config_json: Path) -> dict[str, Any]:
+    """The file as a dict; anything else (empty, non-object) reads as {} the
+    way the product's own reader treats it."""
     raw = config_json.read_bytes()
-    return json.loads(raw) if raw.strip() else {}
+    data = json.loads(raw) if raw.strip() else {}
+    return data if isinstance(data, dict) else {}
 
 
 def _write_config_atomically(config_json: Path, data: dict[str, Any]) -> None:
-    """Temp file + rename, the codebase's own idiom: the API re-reads this
-    file per CLI request and the Swift app polls its mtime, so neither may see
-    a truncated file."""
+    """Temp file + fsync + rename, the codebase's own idiom: the API re-reads
+    this file per CLI request and the Swift app polls its mtime, so neither
+    may see a truncated file. The mode is copied from the original: the file
+    holds `secret_key`, and the product writes it 0600."""
     tmp = config_json.with_name(config_json.name + ".acceptance-tmp")
-    tmp.write_bytes(json.dumps(data, indent=2).encode("utf-8") + b"\n")
+    with tmp.open("wb") as fh:
+        fh.write(json.dumps(data, indent=2).encode("utf-8") + b"\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    shutil.copymode(config_json, tmp)
     os.replace(tmp, config_json)
 
 
@@ -122,22 +138,24 @@ def cli_access_toggled(config_json: Path, enabled: bool) -> Iterator[None]:
 
     There is no API for it: the API re-reads this file when a CLI request
     reaches the MCP auth middleware (config.refresh_cli_access_setting). Only
-    that one key is touched, and it is restored from its original value in a
-    finally after re-reading the file, so a check that fails cannot leave the
-    operator's setting flipped and anything the app or the API wrote to other
-    keys meanwhile survives. Formatting is normalised to two-space JSON."""
+    that one key is touched, and it is restored in a finally after re-reading
+    the file, so anything the app or the API wrote to other keys meanwhile
+    survives. Formatting is normalised to two-space JSON.
+
+    The API applies only the keys *present* in the file (config._apply_to), so
+    a key that was absent is restored as an explicit `false`, the setting's
+    default, never by removal: removing it would leave the running API on the
+    value this block set, with the file and the Preferences toggle saying
+    otherwise. Whether the gate actually followed is the caller's to check
+    with a CLI request; `CliAccess.ensured` does."""
     before = _read_config(config_json)
-    had_key = "enable_cli_access" in before
-    original = before.get("enable_cli_access")
+    original = before.get("enable_cli_access", False)
     _write_config_atomically(config_json, {**before, "enable_cli_access": enabled})
     try:
         yield
     finally:
         current = _read_config(config_json)
-        if had_key:
-            current["enable_cli_access"] = original
-        else:
-            current.pop("enable_cli_access", None)
+        current["enable_cli_access"] = original
         _write_config_atomically(config_json, current)
 
 
@@ -175,7 +193,14 @@ _INITIALIZE = {
 }
 
 
-def mcp_probe(api_base: str, raw_key: str, *, url_token: bool = False, verify: bool = True) -> int:
+def mcp_probe(
+    api_base: str,
+    raw_key: str,
+    *,
+    url_token: bool = False,
+    verify: bool = True,
+    transport: httpx.BaseTransport | None = None,
+) -> int:
     """HTTP status of an MCP `initialize` with this key on one of the two auth
     surfaces. 200 means the key was accepted; 401 means refused. Used where
     the outcome is the status itself (expired, deleted) and a client session
@@ -185,5 +210,5 @@ def mcp_probe(api_base: str, raw_key: str, *, url_token: bool = False, verify: b
     headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
     if not url_token:
         headers["Authorization"] = f"Bearer {raw_key}"
-    with httpx.Client(verify=verify, timeout=30, follow_redirects=False) as http:
+    with httpx.Client(verify=verify, timeout=30, follow_redirects=False, transport=transport) as http:
         return http.post(url, json=_INITIALIZE, headers=headers).status_code

@@ -3,9 +3,12 @@
 One folder of rendered fixtures is added to the instance under a per-run
 name, ingested, and deleted at the end. Deleting the watched folder cascades
 to its documents, so folder-scoped runs leave every other document on the
-instance untouched; they do leave audit rows (login, key create and delete,
-reprocess) and soft-deleted keys, which is the trail they should leave. Wipe
-mode is opt-in and double-guarded (see `config.py`).
+instance untouched. What a run does leave: audit rows (login, key create and
+delete, reprocess), soft-deleted keys, and, when `HC_ACCEPTANCE_CONFIG_JSON`
+is set, a rewritten config.json with the same settings in two-space JSON and
+`enable_cli_access` spelled out. A second, empty watched folder is registered
+and removed for the scope checks. Wipe mode is opt-in and double-guarded
+(see `config.py`).
 
 The setup and teardown are plain functions so they can be tested offline
 with a fake client; the pytest fixtures only bind them to the session.
@@ -235,15 +238,17 @@ class CliAccess:
     """What the instance's CLI gate currently is, judged by a real CLI request
     (the health endpoint reports the setting only as of the last CLI request
     the API saw), and a way to flip it when the operator has pointed the suite
-    at the native config.json."""
+    at the native config.json. `runner` is `run_cli` in production and a fake
+    in the offline tests."""
 
-    def __init__(self, cfg: AcceptanceConfig, raw_key: str):
+    def __init__(self, cfg: AcceptanceConfig, raw_key: str, runner=run_cli):
         self._cfg = cfg
         self._raw_key = raw_key
+        self._runner = runner
 
     def probe(self) -> int:
         """Exit code of a minimal CLI search; also makes the API re-read the gate."""
-        return run_cli(
+        return self._runner(
             self._cfg.api_base, self._raw_key, "search", "probe", "-k", "1", insecure=self._cfg.insecure
         ).code
 
@@ -265,8 +270,12 @@ class CliAccess:
 
     @contextmanager
     def ensured(self) -> Iterator[None]:
-        """CLI access on for the block: as found, or flipped and then restored
-        with a healing probe so the in-memory gate follows the file back."""
+        """CLI access on for the block: as found, or flipped and then restored.
+
+        The probe after the restore is load-bearing: it makes the API re-read
+        the file and proves the gate went back to disabled. If it did not, the
+        run fails here rather than leaving the instance in a state the file
+        does not describe."""
         if self.enabled:
             yield
             return
@@ -276,7 +285,12 @@ class CliAccess:
             with self.toggled(True):
                 yield
         finally:
-            self.probe()
+            code = self.probe()
+            if code != EXIT_CLI_DISABLED:
+                pytest.fail(
+                    f"CLI access did not return to disabled after the restore (probe exit {code}); "
+                    "the API's in-memory gate no longer matches config.json"
+                )
 
 
 @pytest.fixture(scope="session")
