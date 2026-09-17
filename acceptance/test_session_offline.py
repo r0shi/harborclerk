@@ -30,6 +30,7 @@ def _cfg(tmp_path: Path, **over: Any) -> AcceptanceConfig:
         disposable=False,
         wipe=False,
         keep=False,
+        config_json=None,
         run_id="offline",
         ingest_timeout_s=5,
         ask_timeout_s=5,

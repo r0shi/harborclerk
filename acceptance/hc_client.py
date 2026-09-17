@@ -219,6 +219,9 @@ class HarborClerk:
     def document_entities(self, doc_id: str) -> dict[str, Any]:
         return self._json("GET", f"/api/docs/{doc_id}/entities")
 
+    def document_outline(self, doc_id: str) -> dict[str, Any]:
+        return self._json("GET", f"/api/docs/{doc_id}/outline")
+
     def reprocess_document(self, doc_id: str) -> Any:
         return self._json("POST", f"/api/docs/{doc_id}/reprocess")
 

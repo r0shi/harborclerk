@@ -3,9 +3,12 @@
 One folder of rendered fixtures is added to the instance under a per-run
 name, ingested, and deleted at the end. Deleting the watched folder cascades
 to its documents, so folder-scoped runs leave every other document on the
-instance untouched; they do leave audit rows (login, key create and delete,
-reprocess) and soft-deleted keys, which is the trail they should leave. Wipe
-mode is opt-in and double-guarded (see `config.py`).
+instance untouched. What a run does leave: audit rows (login, key create and
+delete, reprocess), soft-deleted keys, and, when `HC_ACCEPTANCE_CONFIG_JSON`
+is set, a rewritten config.json with the same settings in two-space JSON and
+`enable_cli_access` spelled out. A second, empty watched folder is registered
+and removed for the scope checks. Wipe mode is opt-in and double-guarded
+(see `config.py`).
 
 The setup and teardown are plain functions so they can be tested offline
 with a fake client; the pytest fixtures only bind them to the session.
@@ -15,14 +18,17 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
 import pytest
 
+from acceptance.access import EXIT_CLI_DISABLED, EXIT_OK, cli_access_toggled, empty_folder_session, run_cli
 from acceptance.config import WIPE_MAX_DOCUMENTS, AcceptanceConfig, load_config
 from acceptance.fixtures.render import Fixture, load_groundtruth, materialize
 from acceptance.hc_client import HarborClerk, McpSession
@@ -218,6 +224,100 @@ def keys(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[
     failed = factory.cleanup()
     if failed:
         pytest.fail(f"API keys created by this run could not be deleted and are still active: {failed}")
+
+
+@pytest.fixture(scope="session")
+def empty_folder(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> Iterator[dict[str, Any]]:
+    """A second, registered, empty watched folder: a key scoped to it can see
+    none of the fixtures (G3)."""
+    name = f"{cfg.folder_name}-empty"
+    with empty_folder_session(admin, cfg.folder_root / name, str(Path(cfg.folder_path_in_instance).parent / name)) as f:
+        yield f
+
+
+class CliAccess:
+    """What the instance's CLI gate currently is, judged by a real CLI request
+    (the health endpoint reports the setting only as of the last CLI request
+    the API saw), and a way to flip it when the operator has pointed the suite
+    at the native config.json. `runner` is `run_cli` in production and a fake
+    in the offline tests."""
+
+    def __init__(self, cfg: AcceptanceConfig, raw_key: str, runner=run_cli, sleeper=time.sleep):
+        self._cfg = cfg
+        self._raw_key = raw_key
+        self._runner = runner
+        self._sleeper = sleeper
+        self.flipped = False
+
+    def probe(self) -> int:
+        """Exit code of a minimal CLI search; also makes the API re-read the gate."""
+        return self._runner(
+            self._cfg.api_base, self._raw_key, "search", "probe", "-k", "1", insecure=self._cfg.insecure
+        ).code
+
+    @property
+    def enabled(self) -> bool:
+        code = self.probe()
+        if code == EXIT_OK:
+            return True
+        if code == EXIT_CLI_DISABLED:
+            return False
+        raise RuntimeError(f"CLI probe exited {code}; cannot tell whether CLI access is enabled")
+
+    def toggled(self, enabled: bool):
+        if self._cfg.config_json is None:
+            pytest.skip(
+                "flipping CLI access needs HC_ACCEPTANCE_CONFIG_JSON pointing at the native config.json on this host"
+            )
+        self.flipped = True
+        return cli_access_toggled(self._cfg.config_json, enabled)
+
+    def verify_settled(self, expected_enabled: bool, *, settle_s: float = 3.5) -> None:
+        """Closes the race with the Swift app: it caches config.json on a 3 s
+        poll and writes the whole dict on any save, so a save landing within
+        3 s of a restore can write the flipped value back. If this session
+        flipped the gate, wait past that window and check the gate once more;
+        a mismatch fails the run rather than leaving the instance changed."""
+        if not self.flipped:
+            return
+        self._sleeper(settle_s)
+        if self.enabled != expected_enabled:
+            pytest.fail(
+                f"CLI access is {'enabled' if not expected_enabled else 'disabled'} after the run but was "
+                f"{'disabled' if not expected_enabled else 'enabled'} before it; a writer restored a flipped value"
+            )
+
+    @contextmanager
+    def ensured(self) -> Iterator[None]:
+        """CLI access on for the block: as found, or flipped and then restored.
+
+        The probe after the restore is load-bearing: it makes the API re-read
+        the file and proves the gate went back to disabled. If it did not, the
+        run fails here rather than leaving the instance in a state the file
+        does not describe."""
+        if self.enabled:
+            yield
+            return
+        if self._cfg.config_json is None:
+            pytest.skip("CLI access is disabled on this instance and HC_ACCEPTANCE_CONFIG_JSON is not set")
+        try:
+            with self.toggled(True):
+                yield
+        finally:
+            code = self.probe()
+            if code != EXIT_CLI_DISABLED:
+                pytest.fail(
+                    f"CLI access did not return to disabled after the restore (probe exit {code}); "
+                    "the API's in-memory gate no longer matches config.json"
+                )
+
+
+@pytest.fixture(scope="session")
+def cli_access(cfg: AcceptanceConfig, keys: KeyFactory, corpus: Corpus) -> Iterator[CliAccess]:
+    access = CliAccess(cfg, keys.create("cli-probe", scope_folder_ids=[corpus.folder_id])["raw_key"])
+    initial = access.enabled
+    yield access
+    access.verify_settled(initial)
 
 
 @pytest.fixture(scope="session")

@@ -201,10 +201,19 @@ Modes:
   the folder's own progress (never the instance-wide queues, which other work
   would keep busy), yields, then deletes the folder (cascading its documents)
   and every API key it created, in a `finally` that also runs when ingest
-  fails. No other document on the instance is touched; the run leaves audit
-  rows and soft-deleted keys, which is the trail it should leave. All
-  searches carry `scope.folder_ids=[fixture folder]` unless the check is
-  about scope itself.
+  fails. No other document on the instance is touched. The run leaves audit
+  rows and soft-deleted keys, registers and removes a second empty folder for
+  the scope checks, and, when `HC_ACCEPTANCE_CONFIG_JSON` is set, rewrites
+  config.json with the same settings in two-space JSON and `enable_cli_access`
+  spelled out (the API applies only keys present in the file, so a key the
+  suite added is restored as an explicit `false`, never removed). While a
+  flip is in effect, other CLI clients are admitted or refused accordingly:
+  three short windows for F5, F6 and G6 on an instance whose gate is off,
+  one for F4 on an instance whose gate is on. The Swift app caches the file
+  on a 3 s poll and writes the whole dict on any save, so the session ends
+  with a delayed re-check of the gate and fails if it does not match the
+  state found at the start. All searches carry
+  `scope.folder_ids=[fixture folder]` unless the check is about scope itself.
 - **Wipe (`HC_ACCEPTANCE_WIPE=1`).** Deletes every watched folder, then calls
   `delete-all-documents` with the literal confirmation, then proceeds as
   above. Refuses unless `HC_ACCEPTANCE_DISPOSABLE=1` is set and
