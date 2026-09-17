@@ -53,12 +53,15 @@ exposes the corpus to external agents through an MCP server and a mirrored CLI.
 
 ## Identities
 
-- **Unattended sessions run as the machine user** (`GH_TOKEN` and the git
-  author set to the bot) once the account exists; sessions the owner drives
-  run as the owner. The bot never holds admin. Until the bot exists, nothing
-  runs unattended against GitHub. See `docs/adr/0001-agent-native-sdlc.md`.
-- **No agent merges its own PR.** Branch protection will require one approving
-  review once the bot exists; until then this is a rule, not a gate.
+- **The machine user is `John-Doebot`** (write, never admin). Agent-produced
+  PRs are opened as the bot from any session, so the owner approves agent work;
+  the owner's own PRs are approved by the bot after an unprimed agent review.
+  Its token is read from Keychain at the point of use (`security
+  find-generic-password -a harborclerk-bot -s github-token -w`), never pasted;
+  only unattended launchers export it for a whole session. See
+  `docs/adr/0001-agent-native-sdlc.md`.
+- **No agent merges its own PR.** Branch protection requires one approving
+  review.
 - **Signing is human.** No agent runs `make sign` or handles the app-specific
   password.
 

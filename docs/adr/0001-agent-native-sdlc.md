@@ -38,9 +38,13 @@ two Macs. Before this decision:
    an organization, and this repository is owned by the owner's personal
    account. The bot's reach is therefore bounded by its collaborator role
    (write, never admin) rather than by the token. The token lives in the
-   Keychain of each machine that runs unattended sessions and is never pasted
-   into a conversation. Unattended sessions export `GH_TOKEN` and the git
-   author for the bot. Interactive sessions the owner drives run as the owner.
+   Keychain of each machine and is never pasted into a conversation. The
+   account is `John-Doebot`. Agent-produced PRs are opened as the bot from any
+   session, interactive or not, so the owner is always the approver of agent
+   work; the owner's own PRs are approved by the bot after an unprimed agent
+   review. Interactive sessions otherwise run as the owner and read the bot
+   token from Keychain at the point of use; unattended launchers export it for
+   the session, with the git author set to the bot.
 3. **No agent merges its own pull request.** Branch protection moves to one
    required approving review. The bot reviews the owner's PRs unprimed and
    approves; the owner approves the bot's PRs after reading its unprimed
