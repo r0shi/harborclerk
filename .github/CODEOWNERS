@@ -1,0 +1,7 @@
+# Review routing, not ownership: GitHub requests a review from every listed
+# owner except the author, so a PR the owner opens is routed to the bot and a
+# PR the bot opens is routed to the owner, with nobody assigning anyone. Both
+# hold write and neither is admin (ADR 0001). Branch protection requires one
+# approving review; `require_code_owner_reviews` is deliberately off, so this
+# file routes and never gates.
+*   @r0shi @John-Doebot
