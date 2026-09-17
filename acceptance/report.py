@@ -121,19 +121,37 @@ def area_results(summary: Summary) -> dict[int, tuple[str, list[Check]]]:
     return out
 
 
+_BOOLEAN_SPELLINGS = {"1", "0", "true", "false", "yes", "no", "on", "off"}
+
+
+def _is_secret(key: str, value: str) -> bool:
+    """Credential-bearing settings, or anything that looks like a credential;
+    never flag spellings or plain numbers, which appear in reports legitimately."""
+    if not key.startswith("HC_") or len(value) <= 3:
+        return False
+    if value.lower() in _BOOLEAN_SPELLINGS or value.isdigit():
+        return False
+    return key in ("HC_USERNAME", "HC_PASSWORD") or any(w in key for w in ("PASSWORD", "TOKEN", "SECRET", "KEY"))
+
+
 def redact(text: str, env: dict[str, str] | None = None) -> str:
-    """Replace every non-trivial HC_* environment value wherever it appears."""
+    """Replace every credential-bearing HC_* value wherever it appears."""
     env = os.environ if env is None else env
     for key, value in env.items():
-        if key.startswith("HC_") and len(value) > 3 and key not in ("HC_API_BASE", "HC_ACCEPTANCE_RUN_ID"):
+        if _is_secret(key, value):
             text = text.replace(value, "***")
     return text
 
 
-def _git_short_head(repo: Path) -> str:
+def _git_describe(repo: Path) -> str:
+    """The suite's commit, with `-dirty` when the tree had uncommitted changes:
+    a report generated from a dirty tree cites a commit that did not produce it."""
     try:
         return subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"], check=True, capture_output=True, text=True
+            ["git", "-C", str(repo), "describe", "--always", "--dirty", "--exclude=*"],
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
@@ -173,18 +191,21 @@ def render(
     instance_build: str | None,
     model: str | None,
     deployment: str,
+    wipe: bool = False,
     now: dt.datetime | None = None,
 ) -> str:
     now = now or dt.datetime.now().astimezone()
     areas = area_results(summary)
-    mode = "wipe mode (instance emptied first)" if _flag("HC_ACCEPTANCE_WIPE") else "folder-scoped; every search scoped"
+    mode = "wipe mode (instance emptied first)" if wipe else "folder-scoped; every search scoped"
+    corpus = "acceptance fixtures rendered into one watched folder"
+    corpus += "; instance emptied first" if wipe else " (folder-scoped run); instance database as found"
     lines = [
         f"# Acceptance run — {now:%Y-%m-%d} — {socket.gethostname().split('.')[0]}",
         "",
-        "- **Suite commit:** `" + _git_short_head(repo) + "`",
+        "- **Suite commit:** `" + _git_describe(repo) + "`",
         f"- **Instance:** {api_base} · build `{instance_build or 'unknown'}` · {deployment}",
         f"- **Machine:** {_machine()} · {_os_version()}",
-        "- **Corpus:** acceptance fixtures rendered into one watched folder (folder-scoped run); instance database as found",
+        f"- **Corpus:** {corpus}",
         f"- **Model under test:** {model or 'none active (Ask checks skipped)'} · judge model: n/a · cloud spend: n/a",
         f"- **Run id:** `{run_id}` · duration {summary.duration_s:.0f} s · "
         + ", ".join(f"{v} {k}" for k, v in sorted(summary.counts.items())),
@@ -238,6 +259,34 @@ def probe_instance(
     return build, model, deployment
 
 
+def verify_clean(api_base: str, run_id: str) -> list[str]:
+    """What an acceptance run should have removed and did not, as lines; empty
+    means clean. Needs HC_USERNAME/HC_PASSWORD, like --probe."""
+    from acceptance.hc_client import HarborClerk
+
+    with HarborClerk(api_base, verify=not _flag("HC_INSECURE")) as client:
+        client.login(os.environ["HC_USERNAME"], os.environ["HC_PASSWORD"])
+        left: list[str] = []
+        left += [
+            f"watched folder still registered: {f['path']}"
+            for f in client.folder_list()
+            if "hc-acceptance" in (f.get("path") or "")
+        ]
+        keys = client._json("GET", "/api/api-keys")
+        left += [
+            f"API key still active: {k['name']}" for k in keys if k["name"].startswith("acceptance-") and k["is_active"]
+        ]
+        convs = client._json("GET", "/api/chat/conversations") or []
+        left += [
+            f"conversation left: {c.get('title')}" for c in convs if (c.get("title") or "").startswith("acceptance-")
+        ]
+        left += [
+            f"document from a run folder still active: {d['doc_id']}"
+            for d in client.list_documents(q="hc-acceptance", limit=20)["items"]
+        ]
+        return left
+
+
 def _glyph(outcome: str) -> str:
     return {"passed": "✓", "failed": "✗", "error": "✗", "skipped": "skip", "xfailed": "xfail"}[outcome]
 
@@ -256,7 +305,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="log in with HC_USERNAME/HC_PASSWORD and read build, active model and platform from the instance",
     )
+    ap.add_argument("--wipe", action="store_true", help="the run emptied the instance first (HC_ACCEPTANCE_WIPE=1)")
+    ap.add_argument(
+        "--verify-clean",
+        action="store_true",
+        help="log in and list anything the run left: hc-acceptance folders, active acceptance keys, conversations",
+    )
     args = ap.parse_args(argv)
+    if args.verify_clean:
+        leftovers = verify_clean(args.api_base, args.run_id)
+        for line in leftovers:
+            print(line)
+        return 1 if leftovers else 0
     summary = parse_junit(args.junit)
     repo = Path(__file__).resolve().parents[1]
     build, model, deployment = args.instance_build, args.model, args.deployment
@@ -270,11 +330,15 @@ def main(argv: list[str] | None = None) -> int:
         instance_build=build,
         model=model,
         deployment=deployment,
+        wipe=args.wipe,
     )
     out = args.out
     if out.suffix != ".md":
         out.mkdir(parents=True, exist_ok=True)
-        out = out / f"{dt.date.today():%Y-%m-%d}-acceptance-{socket.gethostname().split('.')[0]}.md"
+        out = out / f"{dt.date.today():%Y-%m-%d}-acceptance-{socket.gethostname().split('.')[0]}-{args.run_id}.md"
+    if out.exists():
+        print(f"refusing to overwrite {out}; one file per run", file=sys.stderr)
+        return 2
     out.write_text(text, encoding="utf-8")
     print(out)
     return 0

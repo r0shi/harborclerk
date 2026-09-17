@@ -138,13 +138,15 @@ release template can be filled from the run.
 | G5 | A key created with an expiry seconds ahead is refused with 401 once it passes |
 | G6 | After one MCP call and one CLI call with the same key, `GET /api/api-keys/{id}/usage/requests` contains one `mcp_tool` and one `cli_tool` row. Runs before session teardown: deleting a key soft-deletes it and nulls the FK on its request-log rows |
 | G7 | A deleted key is refused with 401 on both `/mcp/` and `/t/` |
+| G8 | A key scoped to the fixture folder cannot read a document from a second, populated folder: `kb_get_document` says not found, REST detail is 404, `kb_search` never returns it |
+| G9 | A key scoped to that second folder gets an empty result for a query with a literal filter its document cannot satisfy, and the result is annotated with `would_match_unscoped` (the populated-scope branch G3 cannot reach; the count is the unscoped candidate count for the query alone) |
 
 ### H. Deletion
 
 | ID | Check |
 |---|---|
 | H1 | Soft-deleting a dedicated fixture removes it from REST search (with and without a text filter), Find All, the document list, `kb_search`, and `kb_read_passages` for a folder-scoped key (whose visibility set filters on status); a scoped Ask must not cite it (regression for #621/#622). Reading the deleted chunk by id still succeeds for unscoped principals over REST `passages/read` and MCP `kb_read_passages`: the "#621 follow-up" of the v0.9.2 notes, recorded as strict expected failures H1c/H1d |
-| H2 | Deleting the fixture folder removes every fixture document and leaves the request log intact |
+| H2 | Deleting a folder registered for the check removes its document and the folder, and every request-log row a key wrote against it is still there afterwards |
 
 Claims deliberately not covered here: onboarding routes, Status UI, Research,
 backup docs, OAuth, IMAP. The first two are the native tier; Research is the

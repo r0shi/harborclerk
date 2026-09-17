@@ -35,6 +35,7 @@ def _cfg(tmp_path: Path, **over: Any) -> AcceptanceConfig:
         run_id="offline",
         ingest_timeout_s=5,
         ask_timeout_s=5,
+        model_timeout_s=5,
     )
     base.update(over)
     return AcceptanceConfig(**base)
@@ -430,3 +431,24 @@ def test_stream_ask_raises_on_an_http_error_with_the_body() -> None:
         pytest.raises(httpx.HTTPStatusError, match="No model"),
     ):
         client.stream_ask("c1", "q", timeout_s=5)
+
+
+def test_stream_ask_ignores_comment_and_blank_lines_and_a_late_done_still_counts() -> None:
+    """SSE keepalive comments and blank lines are not events; a done event that
+    arrives after the deadline is still an answer, because the stream ended."""
+    import time as _time
+
+    class LateDone(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b": keepalive\n\n"
+            yield b"\n"
+            yield b'data: {"type": "text", "content": "x"}\n\n'
+            _time.sleep(0.15)
+            yield b'data: {"type": "done", "rag_context": null}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=LateDone())
+
+    with HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client:
+        events = client.stream_ask("c1", "q", timeout_s=0.1)
+    assert [e["type"] for e in events] == ["text", "done"]

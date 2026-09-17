@@ -9,8 +9,10 @@ deleted), soft-deleted keys, three extra watched folders registered and
 removed (one empty, one with a single document, one for H2), and, when
 `HC_ACCEPTANCE_CONFIG_JSON` is set, a rewritten config.json with the same
 settings in two-space JSON and `enable_cli_access` spelled out. If no model
-was active and the run was allowed to activate one, that model stays active.
-Wipe mode is opt-in and double-guarded (see `config.py`).
+was active and the run was allowed to activate one, that model stays active
+and becomes the app's persisted default (activation writes `llm_model_id` to
+config.json). `HC_ACCEPTANCE_KEEP=1` keeps only the fixture folder. Wipe mode
+is opt-in and double-guarded (see `config.py`).
 
 The setup and teardown are plain functions so they can be tested offline
 with a fake client; the pytest fixtures only bind them to the session.

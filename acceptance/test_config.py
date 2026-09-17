@@ -176,6 +176,7 @@ def test_folder_path_in_instance_maps_to_the_container_side(tmp_path: Path) -> N
         run_id="abc123",
         ingest_timeout_s=1,
         ask_timeout_s=1,
+        model_timeout_s=1,
     )
     assert cfg.folder_path == tmp_path / "hc-acceptance-abc123"
     assert cfg.folder_path_in_instance == "/data/watch/hc-acceptance-abc123"

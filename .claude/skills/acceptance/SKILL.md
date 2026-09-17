@@ -26,10 +26,10 @@ run from the repository root.
    ```
    If either is missing, stop and say which one.
 3. Decide the mode. **Folder-scoped is the default and is safe on any
-   instance.** It adds and removes three watched folders (the fixtures, an
-   empty one, one with a single document), soft-deletes one of its own
-   documents, creates and deletes two conversations, and leaves audit rows and
-   soft-deleted keys; no other document is touched. **Wipe mode**
+   instance.** It adds and removes four watched folders (the fixtures, an
+   empty one, one with a single document, one for H2), soft-deletes one of
+   its own documents, creates and deletes two conversations, and leaves audit
+   rows and soft-deleted keys; no other document is touched. **Wipe mode**
    (`HC_ACCEPTANCE_WIPE=1`) empties the instance and is only for the mini:
    it also needs `HC_ACCEPTANCE_DISPOSABLE=1`, a loopback `HC_API_BASE`, and at
    most 500 documents on the instance.
@@ -38,19 +38,20 @@ run from the repository root.
    (the suite refuses it for a remote instance anyway). The Ask checks use the
    model that is active; with `HC_ACCEPTANCE_DISPOSABLE=1` or
    `HC_ACCEPTANCE_ALLOW_MODEL_SWAP=1` they may activate the smallest downloaded
-   model when none is, and it stays active.
+   model when none is; it then stays active and becomes the app's persisted
+   default (activation writes `llm_model_id` to config.json).
 
 ## Run
 
 ```bash
-set -o pipefail; RUN=acc-$(date +%Y%m%d-%H%M); mkdir -p /tmp/hc-acceptance
+set -o pipefail; RUN=acc-$(date +%Y%m%d-%H%M); WORK=$(mktemp -d)   # private: the log carries assertion bodies
 CONFIG_JSON="$HOME/Library/Application Support/Harbor Clerk/config.json"   # mini only; "" elsewhere
 HC_API_BASE=http://localhost:8100 \
 HC_USERNAME="$(security find-generic-password -s harbor-clerk-acceptance | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p')" \
 HC_PASSWORD="$(security find-generic-password -s harbor-clerk-acceptance -w)" \
 HC_ACCEPTANCE_RUN_ID=$RUN HC_ACCEPTANCE_CONFIG_JSON="$CONFIG_JSON" \
-uv run pytest acceptance/ -m acceptance -v -p no:cacheprovider --junitxml=/tmp/hc-acceptance/$RUN.xml 2>&1 | tee /tmp/hc-acceptance/$RUN.log | tail -40
-echo "pytest exit: ${PIPESTATUS[0]}"
+uv run pytest acceptance/ -m acceptance -v -p no:cacheprovider --junitxml=$WORK/$RUN.xml 2>&1 | tee $WORK/$RUN.log | tail -40
+echo "pytest exit: $?"   # pipefail makes this pytest's code in bash and zsh alike
 ```
 
 Expect six to seven minutes: ingest with OCR, a reprocess, a live-added file,
@@ -60,15 +61,20 @@ something to retry blind.
 
 ## Report
 
+The tree must be clean first: the report cites the suite commit, and a
+`-dirty` suffix in the header means it was generated from uncommitted code.
+Commit or stash, then:
+
 ```bash
 HC_USERNAME="$(security find-generic-password -s harbor-clerk-acceptance | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p')" \
 HC_PASSWORD="$(security find-generic-password -s harbor-clerk-acceptance -w)" \
-uv run python -m acceptance.report --junit /tmp/hc-acceptance/$RUN.xml --out docs/reports/ \
-  --api-base http://localhost:8100 --run-id $RUN --probe
+uv run python -m acceptance.report --junit $WORK/$RUN.xml --out docs/reports/ \
+  --api-base http://localhost:8100 --run-id $RUN --probe ${HC_ACCEPTANCE_WIPE:+--wipe}
 ```
 
-`--probe` logs in and records the instance build, the active model and the
-platform in the header.
+It prints the path it wrote (one file per run, never overwritten). `--probe`
+logs in and records the instance build, the active model and the platform in
+the header.
 
 The generator redacts every `HC_*` value before writing. Read the report once
 before committing it: it is the durable trace of this run.
@@ -80,14 +86,22 @@ a fresh `main` so the report PR never stacks. `GH_TOKEN` steers `gh` only; git
 pushes through a credential helper, so give git the bot's token per command
 via an inline helper (it never reaches the process list or the environment).
 
+Use a scratch worktree so the operator's checkout is never switched, add the
+one file the generator printed, and sign nothing with the owner's key.
+
 ```bash
-git checkout main && git pull --ff-only && git checkout -b report/acceptance-$RUN && git add docs/reports/ && \
-git -c user.name="John-Doebot" -c user.email="330166301+John-Doebot@users.noreply.github.com" \
+REPORT=docs/reports/$(ls -t docs/reports | head -1)   # the file --out just printed
+git fetch -q origin main && WT=$(mktemp -d) && git worktree add -q "$WT" -b report/acceptance-$RUN origin/main && \
+cp "$REPORT" "$WT/$REPORT" && git -C "$WT" add "$REPORT" && \
+git -C "$WT" -c user.name="John-Doebot" -c user.email="330166301+John-Doebot@users.noreply.github.com" -c commit.gpgsign=false \
   commit -m "docs(reports): acceptance run $RUN" && \
-git -c credential.helper= \
+git -C "$WT" -c credential.helper= \
     -c 'credential.helper=!f() { echo username=John-Doebot; echo "password=$(security find-generic-password -a harborclerk-bot -s github-token -w)"; }; f' \
-    push -u origin report/acceptance-$RUN
+    push -u origin report/acceptance-$RUN && git worktree remove "$WT"
 ```
+
+The inline helper covers the HTTPS remote this repository uses; an SSH remote
+would need the bot's deploy key instead.
 
 Write the PR body to a file first: the counts and duration, each failing check
 with its assertion message, the expected failures with their issue references,
@@ -103,9 +117,18 @@ when the owner asks.
 
 ## Afterwards
 
-Confirm the instance is clean: no watched folder named `hc-acceptance-*`, no
-active API key named `acceptance-<run>-*`, no conversation titled
-`acceptance`, `config.json`'s `enable_cli_access` as it was. The suite fails
-loudly when a key cannot be deleted or the CLI gate did not follow the file;
-folder removal is attempted, not verified, so check it here. If anything is
-left, say so first, before anything about the results.
+Confirm the instance is clean. The suite fails loudly when a key cannot be
+deleted or the CLI gate did not follow the file; folder and conversation
+removal are attempted, not verified, so verify them:
+
+```bash
+HC_USERNAME="$(security find-generic-password -s harbor-clerk-acceptance | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p')" \
+HC_PASSWORD="$(security find-generic-password -s harbor-clerk-acceptance -w)" \
+uv run python -m acceptance.report --junit $WORK/$RUN.xml --out /dev/null --api-base http://localhost:8100 --run-id $RUN --verify-clean
+```
+
+Exit 0 and no output means clean; each line printed is something the run
+left (a `hc-acceptance-*` folder, an active `acceptance-*` key, an
+`acceptance-*` conversation). Also confirm `config.json`'s `enable_cli_access`
+is as it was. If anything is left, say so first, before anything about the
+results.

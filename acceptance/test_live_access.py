@@ -264,7 +264,7 @@ def test_g8_scoped_key_cannot_read_a_document_outside_its_folder(
     assert second_folder.doc_id not in {h["doc_id"] for h in hits}, "kb_search leaked the other folder's document"
 
 
-def test_g9_scoped_key_with_documents_but_no_match_says_the_query_would_match_unscoped(
+def test_g9_empty_scoped_result_for_a_populated_scope_is_annotated(
     keys: KeyFactory, second_folder: PopulatedFolder, mcp
 ) -> None:
     """The other branch of `would_match_unscoped`: the key sees documents, and

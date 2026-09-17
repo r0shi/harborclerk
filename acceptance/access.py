@@ -269,6 +269,38 @@ def populated_folder_session(
             shutil.rmtree(folder_path, ignore_errors=True)
 
 
+# ── Ask and deletion helpers (plain functions so they are testable offline) ─
+
+
+def ask_once(admin: Any, *, title: str, scope: dict[str, Any], question: str, timeout_s: float) -> dict[str, Any]:
+    """One scoped Ask; returns the `done` event. The conversation is deleted in
+    a finally so the run leaves none behind, also when the stream times out."""
+    conv = admin.create_conversation(title, scope=scope)
+    try:
+        events = admin.stream_ask(conv, question, timeout_s=timeout_s)
+    finally:
+        try:
+            admin.delete_conversation(conv)
+        except httpx.HTTPStatusError:
+            pass
+    done = next((e for e in events if e.get("type") == "done"), None)
+    if done is None:
+        raise AssertionError(f"no done event in {len(events)} events; last: {events[-1] if events else None}")
+    return done
+
+
+def ensure_deleted(admin: Any, doc_id: str) -> bool:
+    """Soft-delete `doc_id` if it is still active; True if this call deleted it.
+    The admin detail route returns a soft-deleted document with status
+    "deleted", so the gate is the status, not the status code; gating on the
+    code re-deleted on every call and wrote an audit row each time."""
+    detail = admin.request("GET", f"/api/docs/{doc_id}")
+    if detail.status_code == 200 and detail.json().get("status") == "active":
+        admin.delete_document(doc_id)
+        return True
+    return False
+
+
 # ── raw MCP probe ───────────────────────────────────────────────────────────
 
 _INITIALIZE = {

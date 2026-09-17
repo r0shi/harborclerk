@@ -72,15 +72,22 @@ def test_h_checks_map_to_retrieval_and_ingest_areas() -> None:
     assert report.area_of("zz9") is None
 
 
-def test_redaction_removes_every_suite_secret() -> None:
+def test_redaction_removes_credentials_and_nothing_else() -> None:
     env = {
         "HC_PASSWORD": "hunter2-secret",
         "HC_USERNAME": "alex@example.com",
         "HC_API_BASE": "http://localhost:8100",
+        "HC_ACCEPTANCE_DISPOSABLE": "true",
+        "HC_ACCEPTANCE_INGEST_TIMEOUT": "1800",
+        "HC_ACCEPTANCE_RUN_ID": "live16",
+        "HC_BOT_TOKEN": "ghp_abcdef",
         "HC_X": "ab",
     }
-    text = "login for alex@example.com failed: hunter2-secret at http://localhost:8100 ab"
-    assert report.redact(text, env) == "login for *** failed: *** at http://localhost:8100 ab"
+    text = "login for alex@example.com failed: hunter2-secret at http://localhost:8100; assert x is true; 1800 s; live16 ghp_abcdef ab"
+    assert (
+        report.redact(text, env)
+        == "login for *** failed: *** at http://localhost:8100; assert x is true; 1800 s; live16 *** ab"
+    )
 
 
 def test_render_produces_the_nine_area_table_and_redacts(
@@ -107,12 +114,81 @@ def test_render_produces_the_nine_area_table_and_redacts(
     assert "**c2**" in text and "abc1234" in text and "qwen3-8b" in text and "live-test" in text
 
 
-def test_main_writes_a_dated_report_into_the_directory(junit: Path, tmp_path: Path) -> None:
+def test_main_writes_one_file_per_run_and_never_overwrites(junit: Path, tmp_path: Path, capsys) -> None:
     out_dir = tmp_path / "reports"
     assert report.main(["--junit", str(junit), "--out", str(out_dir), "--api-base", "http://x", "--run-id", "r1"]) == 0
     files = list(out_dir.glob("*-acceptance-*.md"))
     assert len(files) == 1 and files[0].name.startswith(f"{dt.date.today():%Y-%m-%d}-acceptance-")
-    assert "r1" in files[0].read_text()
+    assert files[0].name.endswith("-r1.md") and "r1" in files[0].read_text()
+    assert report.main(["--junit", str(junit), "--out", str(out_dir), "--api-base", "http://x", "--run-id", "r2"]) == 0
+    assert len(list(out_dir.glob("*-acceptance-*.md"))) == 2, "a second run the same day is a second file"
+    assert report.main(["--junit", str(junit), "--out", str(out_dir), "--api-base", "http://x", "--run-id", "r1"]) == 2
+    assert "refusing to overwrite" in capsys.readouterr().err
+
+
+def test_main_accepts_an_explicit_md_path_and_records_wipe_mode(junit: Path, tmp_path: Path) -> None:
+    out = tmp_path / "custom.md"
+    assert (
+        report.main(["--junit", str(junit), "--out", str(out), "--api-base", "http://x", "--run-id", "r1", "--wipe"])
+        == 0
+    )
+    text = out.read_text()
+    assert "wipe mode" in text and "instance emptied first" in text
+
+
+def test_suite_commit_marks_a_dirty_tree(tmp_path: Path) -> None:
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "f").write_text("a")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "add", "f"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "x"], check=True)
+    assert not report._git_describe(repo).endswith("-dirty")
+    (repo / "f").write_text("b")
+    assert report._git_describe(repo).endswith("-dirty"), "a report from uncommitted code must say so"
+
+
+def test_verify_clean_lists_what_a_run_left(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from acceptance import hc_client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/auth/login":
+            return httpx.Response(200, json={"access_token": "t", "token_type": "bearer", "user": {"role": "admin"}})
+        if path == "/api/watch/folders":
+            return httpx.Response(
+                200, json=[{"folder_id": "f", "path": "/tmp/hc-acceptance-x"}, {"folder_id": "g", "path": "/real"}]
+            )
+        if path == "/api/api-keys":
+            return httpx.Response(
+                200,
+                json=[{"name": "acceptance-x-g4", "is_active": True}, {"name": "acceptance-x-a3", "is_active": False}],
+            )
+        if path == "/api/chat/conversations":
+            return httpx.Response(200, json=[{"title": "acceptance-x"}, {"title": "mine"}])
+        if path == "/api/docs":
+            return httpx.Response(200, json={"items": [], "total": 0})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    original = hc_client.HarborClerk.__init__
+
+    def patched(self, base_url, **kw):
+        original(self, base_url, transport=transport, **{k: v for k, v in kw.items() if k != "transport"})
+
+    monkeypatch.setattr(hc_client.HarborClerk, "__init__", patched)
+    monkeypatch.setenv("HC_USERNAME", "a@b.c")
+    monkeypatch.setenv("HC_PASSWORD", "x")
+    assert report.verify_clean("http://test", "x") == [
+        "watched folder still registered: /tmp/hc-acceptance-x",
+        "API key still active: acceptance-x-g4",
+        "conversation left: acceptance-x",
+    ]
 
 
 def test_parse_junit_keeps_an_error_that_also_carries_a_skip(tmp_path: Path) -> None:

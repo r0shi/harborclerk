@@ -313,15 +313,14 @@ class HarborClerk:
                 r.read()
                 raise httpx.HTTPStatusError(f"ask -> {r.status_code}: {r.text[:300]}", request=r.request, response=r)
             for line in r.iter_lines():
+                if line.startswith("data: ") and line[6:].strip():
+                    event = json.loads(line[6:])
+                    events.append(event)
+                    if event.get("type") == "done":
+                        break  # an answer that finishes is an answer, however late
                 if time.monotonic() > deadline:
                     kinds = [e.get("type") for e in events[-5:]]
                     raise TimeoutError(f"ask exceeded {timeout_s:.0f}s after {len(events)} events; last: {kinds}")
-                if not line.startswith("data: ") or not line[6:].strip():
-                    continue
-                event = json.loads(line[6:])
-                events.append(event)
-                if event.get("type") == "done":
-                    break
         return events
 
 

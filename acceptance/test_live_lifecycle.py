@@ -6,10 +6,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import httpx
 import pytest
 
-from acceptance.access import choose_model, populated_folder_session
+from acceptance.access import ask_once, choose_model, ensure_deleted, populated_folder_session
 from acceptance.conftest import Corpus, KeyFactory, documents_under
 from acceptance.fixtures.render import source_text
 from acceptance.hc_client import HarborClerk, tool_error, tool_json
@@ -34,7 +33,7 @@ def active_model(cfg, admin: HarborClerk) -> str:
     if action == "activate":
         admin.activate_model(detail)
     if action in ("activate", "wait"):
-        admin.wait_for_model_ready(detail, timeout_s=cfg.ask_timeout_s)
+        admin.wait_for_model_ready(detail, timeout_s=cfg.model_timeout_s)
     return detail
 
 
@@ -44,20 +43,10 @@ def test_e1_active_model_reports_ready_repeatedly(admin: HarborClerk, active_mod
     assert listed[active_model]["active"] and listed[active_model]["downloaded"], listed[active_model]
 
 
-def _ask(admin: HarborClerk, corpus: Corpus, question: str, timeout_s: float) -> dict:
-    """One scoped Ask; returns the `done` event. The conversation is deleted
-    afterwards so the run leaves none behind."""
-    conv = admin.create_conversation("acceptance", scope=corpus.scope)
-    try:
-        events = admin.stream_ask(conv, question, timeout_s=timeout_s)
-    finally:
-        try:
-            admin.delete_conversation(conv)
-        except httpx.HTTPStatusError:
-            pass
-    done = next((e for e in events if e.get("type") == "done"), None)
-    assert done is not None, f"no done event in {len(events)} events; last: {events[-1] if events else None}"
-    return done
+def _ask(admin: HarborClerk, corpus: Corpus, question: str, cfg) -> dict:
+    return ask_once(
+        admin, title=f"acceptance-{cfg.run_id}", scope=corpus.scope, question=question, timeout_s=cfg.ask_timeout_s
+    )
 
 
 def test_e2_ask_answers_with_citations_from_the_fixture_folder(
@@ -67,7 +56,7 @@ def test_e2_ask_answers_with_citations_from_the_fixture_folder(
         admin,
         corpus,
         "How much notice must the tenant give to renew the lease at 14 Harbourside Lane? Cite the document.",
-        cfg.ask_timeout_s,
+        cfg,
     )
     assert done.get("model_id") == active_model, done.get("model_id")
     citations = (done.get("rag_context") or {}).get("citations") or []
@@ -84,14 +73,8 @@ def test_e2_ask_answers_with_citations_from_the_fixture_folder(
 
 
 def _ensure_deleted(admin: HarborClerk, corpus: Corpus) -> str:
-    """Soft-delete the deletion-target fixture if it is still active; idempotent
-    so H1 and its follow-ups do not depend on each other's order. The admin
-    detail route returns a soft-deleted document with status "deleted", so the
-    gate is the status, not the status code."""
     doc_id = corpus.doc_id(DELETION_TARGET)
-    detail = admin.request("GET", f"/api/docs/{doc_id}")
-    if detail.status_code == 200 and detail.json().get("status") == "active":
-        admin.delete_document(doc_id)
+    ensure_deleted(admin, doc_id)
     return doc_id
 
 
@@ -119,6 +102,7 @@ def test_h1_soft_deleted_document_leaves_every_retrieval_surface(
     before = admin.search(phrase, scope=corpus.scope, text_contains=phrase, k=5)["hits"]
     assert before and {h["doc_id"] for h in before} == {doc_id}, "the target must be retrievable before deletion"
     chunk_id = before[0]["chunk_id"]
+    corpus.deleted_chunk_id = chunk_id  # recorded now, so H1c/H1d still run if an assertion below fails
     mcp_before = tool_json(session.call_tool("kb_search", {"query": phrase, "k": 10}))["hits"]
     assert doc_id in {h["doc_id"] for h in mcp_before}, "MCP must retrieve the target before deletion"
 
@@ -140,26 +124,33 @@ def test_h1_soft_deleted_document_leaves_every_retrieval_surface(
     passages = session.call_tool("kb_read_passages", {"chunk_ids": [chunk_id]})
     err = tool_error(passages)
     assert err or not tool_json(passages)["passages"], "kb_read_passages (scoped key) returned the deleted chunk"
-    corpus.deleted_chunk_id = chunk_id  # for H1c / H1d
 
 
 XFAIL_621 = "#621 follow-up (v0.9.2 known limitation): a deleted chunk is still readable by id for unscoped principals"
 
 
 @pytest.mark.xfail(strict=True, reason=XFAIL_621)
-def test_h1c_rest_passages_read_refuses_a_deleted_chunk(admin: HarborClerk, corpus: Corpus, keys: KeyFactory) -> None:
-    """REST passages/read, as admin and as a folder-scoped key: neither path
-    filters on document status. Strict xfail: fixing it turns this into an
-    XPASS failure and the marker comes off."""
+def test_h1c_rest_passages_read_refuses_a_deleted_chunk_for_admin(admin: HarborClerk, corpus: Corpus) -> None:
+    """REST passages/read as admin does not filter on document status. Strict
+    xfail: fixing it turns this into an XPASS failure and the marker comes off."""
     chunk_id = _deleted_chunk_id(admin, corpus)
-    as_admin = admin.request("POST", "/api/passages/read", json={"chunk_ids": [chunk_id]})
-    assert as_admin.status_code >= 400 or not as_admin.json()["passages"], "REST passages/read (admin) returned it"
-    key = admin.with_key(keys.create("h1c-scoped", scope_folder_ids=[corpus.folder_id])["raw_key"])
+    resp = admin.request("POST", "/api/passages/read", json={"chunk_ids": [chunk_id]})
+    assert resp.status_code >= 400 or not resp.json()["passages"], "REST passages/read (admin) returned it"
+
+
+@pytest.mark.xfail(strict=True, reason=XFAIL_621)
+def test_h1e_rest_passages_read_refuses_a_deleted_chunk_for_a_scoped_key(
+    admin: HarborClerk, corpus: Corpus, keys: KeyFactory
+) -> None:
+    """The REST scoped-key path lacks the status filter too; a separate check
+    so a fix to one path is visible on its own."""
+    chunk_id = _deleted_chunk_id(admin, corpus)
+    key = admin.with_key(keys.create("h1e-scoped", scope_folder_ids=[corpus.folder_id])["raw_key"])
     try:
-        as_key = key.request("POST", "/api/passages/read", json={"chunk_ids": [chunk_id]})
+        resp = key.request("POST", "/api/passages/read", json={"chunk_ids": [chunk_id]})
     finally:
         key.close()
-    assert as_key.status_code >= 400 or not as_key.json()["passages"], "REST passages/read (scoped key) returned it"
+    assert resp.status_code >= 400 or not resp.json()["passages"], "REST passages/read (scoped key) returned it"
 
 
 @pytest.mark.xfail(strict=True, reason=XFAIL_621)
@@ -185,7 +176,7 @@ def test_h1b_ask_does_not_cite_a_deleted_document(admin: HarborClerk, corpus: Co
         corpus,
         "Which supplier's invoices were matched to deliveries at Harbourside Lane, and what is the invoice number? "
         "Cite the document.",
-        cfg.ask_timeout_s,
+        cfg,
     )
     cited = {c["doc_id"] for c in (done.get("rag_context") or {}).get("citations") or []}
     assert cited, f"the answer carried no citations: {done}"
@@ -216,5 +207,6 @@ def test_h2_deleting_a_folder_removes_its_documents_and_keeps_the_audit_trail(
         assert detail.status_code == 404 or detail.json().get("status") == "deleted", detail.text[:200]
         assert not admin.list_documents(doc_ids=folder.doc_id, limit=5)["items"]
         assert folder.folder_id not in {f["folder_id"] for f in admin.folder_list()}
-        rows_after = admin.key_requests(key["key_id"], page_size=50)["items"]
-        assert len(rows_after) >= len(rows_before), "deleting the folder removed request-log rows"
+        rows_after = {r["request_id"] for r in admin.key_requests(key["key_id"], page_size=50)["items"]}
+        missing = {r["request_id"] for r in rows_before} - rows_after
+        assert not missing, f"deleting the folder removed request-log rows: {missing}"
