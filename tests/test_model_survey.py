@@ -1238,7 +1238,11 @@ def test_only_the_state_block_is_parsed_so_a_trending_repo_is_never_carried() ->
     report = render(_run(w), _policy(), "r1", datetime(2026, 9, 17))
     assert "- `Edge0/Edge0-35B-A3B-preview`" in report.split("## Trending outside the watchlist")[1]
     assert pending(state_from_report(report)) == ["acme/Soon-7B"]
-    reading = report.replace("_Written by whoever ran the loop", "## State\n\nsomeone quoting the heading\n\n_Written")
+    quoted = (
+        '## State\n\n```json\n{"format": 1, "outputs": {"waiting": ["evil/Repo"], "over_cap": []}}\n```\n\n_Written'
+    )
+    reading = report.replace("_Written by whoever ran the loop", quoted)
+    assert reading != report
     assert pending(state_from_report(reading)) == ["acme/Soon-7B"], "the last state block is the report's own"
 
 
