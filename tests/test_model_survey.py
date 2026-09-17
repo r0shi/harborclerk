@@ -2025,3 +2025,13 @@ def test_a_401_with_a_good_token_means_absent_and_with_a_bad_one_ends_the_run(tm
     with pytest.raises(HubError, match="HF_TOKEN"):
         bad.model("acme/Missing-7B-GGUF")
     assert list((tmp_path / "bad").iterdir()) == []
+
+
+def test_an_old_report_with_unreadable_state_does_not_outrank_a_newer_readable_one(tmp_path) -> None:
+    """Unreadable counts as the newest of its own day only. Otherwise one
+    report from a tool that wrote no state would stop every run for ever."""
+    from scripts.model_survey.__main__ import previous_report
+
+    (tmp_path / "2026-09-03-model-survey-old.md").write_text("# from before reports carried state\n")
+    _report(tmp_path, "2026-09-10-model-survey-r0.md", _run(_soon_world()), generated="2026-09-10T09:00:00+00:00")
+    assert previous_report(tmp_path).name == "2026-09-10-model-survey-r0.md"
