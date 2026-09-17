@@ -374,3 +374,44 @@ def test_hub_follows_the_redirect_for_a_repo_name_in_the_wrong_case() -> None:
 
     hub = Hub(httpx.Client(transport=httpx.MockTransport(handler)), pause_s=0)
     assert hub.model("unsloth/gemma-4-12B-it-GGUF") == {"id": "unsloth/gemma-4-12b-it-GGUF"}
+
+
+def test_main_refuses_to_overwrite_before_making_any_request(tmp_path, monkeypatch, capsys) -> None:
+    """One file per run. The refusal comes first, so it costs the Hub nothing."""
+    from scripts.model_survey import __main__ as cli
+
+    def no_survey(*a, **k):
+        raise AssertionError("the survey ran although the report already exists")
+
+    monkeypatch.setattr(cli, "survey", no_survey)
+    existing = tmp_path / "report.md"
+    existing.write_text("kept")
+    assert cli.main(["--out", str(existing)]) == 2
+    assert existing.read_text() == "kept"
+    assert "refusing to overwrite" in capsys.readouterr().err
+
+
+def test_report_header_names_the_commit_it_ran_from() -> None:
+    """docs/reports/README.md asks every loop report for its commit."""
+    from datetime import datetime
+
+    from scripts.model_survey.__main__ import commit_id, render
+
+    facts = {
+        "since": "2026-07-22",
+        "llamacpp": {
+            "pin": "b1",
+            "architectures_at_pin": 1,
+            "architectures_at_head": 2,
+            "latest": {"tag": "v1", "published": "2026-09-14"},
+            "only_at_head": [],
+        },
+        "candidates": [],
+        "screened": [],
+        "curated": [],
+        "gap_fillers": [],
+        "outside_watchlist": [],
+    }
+    text = render(facts, POLICY, "r1", datetime(2026, 9, 17), commit="abc1234-dirty")
+    assert "commit `abc1234-dirty`" in text.split("## Reading")[0]
+    assert commit_id() != "", "falls back to 'unknown', never to an empty string"

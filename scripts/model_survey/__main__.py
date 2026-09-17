@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -192,12 +193,27 @@ def _b(n: int | None) -> str:
     return f"{n / 1e9:.1f}B" if n else "–"
 
 
-def render(facts: dict[str, Any], policy: Policy, run_id: str, now: datetime) -> str:
+def commit_id() -> str:
+    """The commit the tool and its policy ran from; `-dirty` when the tree was not clean."""
+    try:
+        r = subprocess.run(
+            ["git", "describe", "--always", "--dirty"],
+            cwd=Path(__file__).parent,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "unknown"
+
+
+def render(facts: dict[str, Any], policy: Policy, run_id: str, now: datetime, commit: str = "unknown") -> str:
     lc = facts["llamacpp"]
     out = [
         f"# Model survey — {now:%Y-%m-%d}",
         "",
-        f"- **Run id:** `{run_id}` · window: releases since {facts['since']} · {len(policy.orgs)} vendors watched",
+        f"- **Run id:** `{run_id}` · commit `{commit}` · window: releases since {facts['since']} · {len(policy.orgs)} vendors watched",
         f"- **Policy:** {policy.quant} at most {policy.ceiling_gb:g} GB, context at least {policy.min_context}, tool calling in the chat "
         f"template, permissive licence, GGUF from the vendor or {', '.join(policy.gguf_publishers)} (`scripts/model_survey/watchlist.yaml`)",
         f"- **llama.cpp:** pinned `{lc['pin']}` ({lc['architectures_at_pin']} architectures); upstream latest "
@@ -307,19 +323,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cache", type=Path, help="directory for a 6-hour response cache, so re-runs do not re-fetch")
     args = ap.parse_args(argv)
 
+    out = args.out
+    if out.suffix != ".md":
+        out = out / f"{date.today():%Y-%m-%d}-model-survey-{args.run_id}.md"
+    if out.exists():  # before any request: a refused run costs the Hub nothing
+        print(f"refusing to overwrite {out}; one file per run", file=sys.stderr)
+        return 2
+
     policy = load_policy()
     with httpx.Client(timeout=30, headers={"User-Agent": "harbor-clerk-model-survey"}) as client:
         hub = Hub(cache_dir=args.cache)
         facts = survey(policy, args.since, hub, client)
         print(f"{hub.requests} Hub requests", file=sys.stderr)
-    out = args.out
-    if out.suffix != ".md":
-        out.mkdir(parents=True, exist_ok=True)
-        out = out / f"{date.today():%Y-%m-%d}-model-survey-{args.run_id}.md"
-    if out.exists():
-        print(f"refusing to overwrite {out}; one file per run", file=sys.stderr)
-        return 2
-    out.write_text(render(facts, policy, args.run_id, datetime.now()), encoding="utf-8")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render(facts, policy, args.run_id, datetime.now(), commit_id()), encoding="utf-8")
     if args.json:
         args.json.write_text(json.dumps(facts, indent=2, default=str), encoding="utf-8")
     print(out)
