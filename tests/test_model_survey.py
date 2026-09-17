@@ -2174,10 +2174,11 @@ def test_the_policys_limits_are_inclusive_where_it_says_at_least_and_at_most() -
 
 @pytest.mark.parametrize(
     ("size_gb", "fills"),
-    [(8.0, True), (6.1, True), (5.9, False), (10.5, True), (10.7, False), (19.0, True), (21.5, False), (3.5, False)],
+    [(8.0, True), (6.1, True), (5.9, False), (10.5, True), (10.7, False), (19.0, True), (21.5, False), (3.8, False)],
 )
 def test_the_gap_bonus_needs_a_wide_gap_and_a_gigabyte_of_room_on_each_side(size_gb: float, fills: bool) -> None:
-    """The curated ladder is 2.5, 5.03, 11.6, 17 and 22.1 GB. Every step but the first is wider than 4 GB."""
+    """The curated ladder is 2.5, 5.03, 11.6, 17 and 22.1 GB. Every step but the first is wider than 4 GB;
+    3.8 GB has its gigabyte of room inside the first step, so only the width rule keeps it out."""
     candidate = {"model": _model("acme/Mid-7B"), "gguf": _gguf("unsloth/X-GGUF", quant_bytes=int(size_gb * 1e9))}
     assert ("fills a gap in the size ladder" in score(candidate, CURATED, date(2026, 9, 17))) is fills
 
@@ -2200,9 +2201,9 @@ def test_equal_scores_are_ordered_by_name_and_screened_releases_by_likes() -> No
     twins = [{"model": _model(f"acme/{n}-7B"), "gguf": _gguf("unsloth/X-GGUF")} for n in ("Zeta", "Alpha")]
     assert [c["model"]["repo"] for c in rank(twins, CURATED, date(2026, 9, 17))] == ["acme/Alpha-7B", "acme/Zeta-7B"]
     w = World()
-    w.release("acme/Quiet-7B", "2026-08-01", likes=3)
+    w.release("Qwen/Qwen3.8-Quiet-7B", "2026-08-01", likes=3, licence="other")  # the first vendor surveyed
     w.release("acme/Loud-7B", "2026-08-01", likes=900)
-    assert [c["model"]["repo"] for c in _run(w)["screened"]] == ["acme/Loud-7B", "acme/Quiet-7B"]
+    assert [c["model"]["repo"] for c in _run(w)["screened"]] == ["acme/Loud-7B", "Qwen/Qwen3.8-Quiet-7B"]
 
 
 def test_trending_outside_the_watchlist_keeps_the_twelve_most_liked() -> None:
