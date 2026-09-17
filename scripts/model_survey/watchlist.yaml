@@ -1,0 +1,78 @@
+# What the model survey watches and how it screens. Policy lives here so a
+# change to the policy is a reviewed diff, not a judgement made on the day.
+
+# Vendors whose new releases are listed. Order is irrelevant.
+orgs:
+  - Qwen
+  - google
+  - openai
+  - mistralai
+  - microsoft
+  - ibm-granite
+  - meta-llama
+  - deepseek-ai
+  - zai-org
+  - moonshotai
+  - nvidia
+  - allenai
+  - HuggingFaceTB
+  - LiquidAI
+  - tencent
+  - baidu
+  - InternScience
+  - inclusionAI
+  - MiniMaxAI
+  - stepfun-ai
+  - ServiceNow-AI
+  - arcee-ai
+  - NousResearch
+  - CohereLabs
+  - swiss-ai
+  - apple
+  - openbmb
+
+# GGUF publishers, most trusted first. The vendor's own org is always tried
+# first. Anything else (abliterated, "uncensored", merges, distills by third
+# parties) is never a candidate.
+gguf_publishers: [unsloth, ggml-org, bartowski, lmstudio-community]
+
+quant: Q4_K_M
+# The heaviest GGUF the product will curate: the 32 GB Mac mini must load it
+# with room for the embedder, reranker, Postgres and KV cache.
+ceiling_gb: 24
+min_context: 32768
+
+# Licences the project can ship a pointer to without a per-user agreement. The
+# Llama licences are not here: Meta's repos are gated behind exactly that.
+permissive_licenses: [apache-2.0, mit, bsd-3-clause, gemma, cc-by-4.0, openrail]
+
+# Repo-name fragments that mark something other than an instruction-tuned
+# general chat model. Case-insensitive.
+exclude_name_fragments:
+  [fp8, fp4, nvfp4, awq, gptq, int4, int8, bnb, mlx, onnx, -base, sae-, embedding, embed, reranker, guard,
+   asr, tts, audio, omni, image, video, ocr, aligner, reward, -prm, math, translate, drive, world, agentworld,
+   ui-, -ui, gui-, -gui, cua, abliterat, uncensor, obliterat, heretic,
+   qat, w4a16, -assistant, mobile, unquantized,
+   probe, checkpoint, experiment, classifier]
+
+# Flagged in the report rather than excluded: may still be worth a look.
+flag_name_fragments: [coder, code, distill, reasoning, thinking]
+
+# Tasks that can hold a general chat model on the Hub. `any-to-any` is here
+# because Google files Gemma 4 12B under it; the architecture check still
+# decides whether llama.cpp can load what the tag admits.
+# A release with no tag at all is examined too: Mistral publishes without one.
+pipeline_tags: [text-generation, image-text-to-text, any-to-any]
+
+# The vendor org that publishes each curated family, so the audit can look for
+# a size-matched successor of every curated model regardless of the window.
+family_orgs:
+  qwen: Qwen
+  gemma: google
+  gpt-oss: openai
+
+# A repo named `<release>-<suffix>` repeats `<release>` when the vendor lists
+# both, and is the release itself when it does not (NVIDIA publishes only
+# `...-BF16`). Quantised formats stay plain exclusions above: nobody builds a
+# GGUF from an FP8 or NVFP4 repo.
+full_precision_suffixes: [bf16]
