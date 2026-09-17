@@ -93,6 +93,41 @@ def test_compose_target_is_skipped_with_the_reason(monkeypatch: pytest.MonkeyPat
         config.load_config()
 
 
+def test_config_json_must_be_a_file_and_is_tilde_expanded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    base = dict(
+        HC_API_BASE="http://localhost:8100",
+        HC_USERNAME="a@b.c",
+        HC_PASSWORD="x",
+        HC_ACCEPTANCE_FOLDER_ROOT=str(tmp_path),
+    )
+    _env(monkeypatch, **base, HC_ACCEPTANCE_CONFIG_JSON=str(tmp_path / "missing.json"))
+    with pytest.raises(pytest.fail.Exception, match="is not a file"):
+        config.load_config()
+    cfg_json = tmp_path / "config.json"
+    cfg_json.write_text("{}")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _env(monkeypatch, **base, HC_ACCEPTANCE_CONFIG_JSON="~/config.json")
+    assert config.load_config().config_json == cfg_json
+    _env(monkeypatch, **base)
+    assert config.load_config().config_json is None
+
+
+def test_config_json_is_refused_for_a_non_loopback_instance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The file is local; a remote API never reads it, and the checks would fail with misleading messages."""
+    cfg_json = tmp_path / "config.json"
+    cfg_json.write_text("{}")
+    _env(
+        monkeypatch,
+        HC_API_BASE="https://mini.local:8443",
+        HC_USERNAME="a@b.c",
+        HC_PASSWORD="x",
+        HC_ACCEPTANCE_FOLDER_ROOT=str(tmp_path),
+        HC_ACCEPTANCE_CONFIG_JSON=str(cfg_json),
+    )
+    with pytest.raises(pytest.fail.Exception, match="loopback"):
+        config.load_config()
+
+
 def test_config_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _env(
         monkeypatch,

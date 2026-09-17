@@ -20,9 +20,9 @@ import httpx
 
 REPO = Path(__file__).resolve().parents[1]
 
-# The documented tier contract (docs/architecture.md, generated from
-# api/scope.py). Spelled out here rather than imported so a change to the
-# product's table is a failing check, not a moving target.
+# The tier contract, spelled out rather than imported so a change to the
+# product's table (src/harbor_clerk/api/scope.py) is a failing check, not a
+# moving target; an offline test compares these to the source.
 SEARCH_TOOLS = frozenset(
     {"kb_search", "kb_batch_search", "kb_corpus_overview", "kb_list_recent", "kb_find_all", "kb_documents_by_date"}
 )
@@ -118,17 +118,29 @@ def _read_config(config_json: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _read_config_or(config_json: Path, fallback: dict[str, Any]) -> dict[str, Any]:
+    """Like `_read_config`, but a missing or unparseable file yields `fallback`
+    instead of raising: used at restore time, where raising would skip the
+    restore write and mask the check's own failure."""
+    try:
+        return _read_config(config_json)
+    except (OSError, ValueError):
+        return dict(fallback)
+
+
 def _write_config_atomically(config_json: Path, data: dict[str, Any]) -> None:
     """Temp file + fsync + rename, the codebase's own idiom: the API re-reads
     this file per CLI request and the Swift app polls its mtime, so neither
-    may see a truncated file. The mode is copied from the original: the file
-    holds `secret_key`, and the product writes it 0600."""
+    may see a truncated file. The temp file is created 0600 (the file holds
+    `secret_key`) and then given the original's mode."""
     tmp = config_json.with_name(config_json.name + ".acceptance-tmp")
-    with tmp.open("wb") as fh:
-        fh.write(json.dumps(data, indent=2).encode("utf-8") + b"\n")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8") + b"\n")
         fh.flush()
         os.fsync(fh.fileno())
-    shutil.copymode(config_json, tmp)
+    if config_json.exists():
+        shutil.copymode(config_json, tmp)
     os.replace(tmp, config_json)
 
 
@@ -154,7 +166,9 @@ def cli_access_toggled(config_json: Path, enabled: bool) -> Iterator[None]:
     try:
         yield
     finally:
-        current = _read_config(config_json)
+        # Re-read so other writers' changes survive; if the file is unreadable
+        # right now, restore from what it was rather than skip the restore.
+        current = _read_config_or(config_json, before)
         current["enable_cli_access"] = original
         _write_config_atomically(config_json, current)
 

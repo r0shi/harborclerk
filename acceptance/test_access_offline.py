@@ -23,6 +23,17 @@ def test_tier_contract_is_nested_and_excludes_admin_tools() -> None:
     assert len(access.SEARCH_TOOLS) == 6 and len(access.READ_TOOLS) == 11 and len(access.FULL_TOOLS) == 17
 
 
+def test_tier_contract_matches_the_source() -> None:
+    """The constants are spelled out so drift is a failing check; this makes
+    the drift visible in CI rather than only on a live run."""
+    from harbor_clerk.api import scope
+
+    assert access.SEARCH_TOOLS == scope.SEARCH_TIER_TOOLS
+    assert access.READ_TOOLS == scope.READ_TIER_TOOLS
+    assert access.FULL_TOOLS == scope.FULL_TIER_TOOLS
+    assert access.ADMIN_ONLY_TOOLS == scope.ADMIN_ONLY_TOOLS
+
+
 def test_cli_env_maps_the_suite_settings_onto_the_cli_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HARBOR_CLERK_API_KEY", "stale-from-the-shell")
     monkeypatch.setenv("HARBOR_CLERK_URL", "https://stale")
@@ -117,6 +128,24 @@ def test_cli_access_toggle_preserves_the_file_mode(tmp_path: Path) -> None:
     with access.cli_access_toggled(cfg, True):
         assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
     assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
+
+
+def test_cli_access_toggle_restores_even_if_the_file_is_unreadable_at_the_end(tmp_path: Path) -> None:
+    """A raise in the finally would skip the restore write and mask the
+    check's own failure; the restore falls back to what the file was."""
+    cfg = tmp_path / "config.json"
+    cfg.write_text('{"enable_cli_access": false, "api_port": 8100}')
+    with access.cli_access_toggled(cfg, True):
+        cfg.write_text("{ not json")  # a torn write by another process, say
+    assert json.loads(cfg.read_text()) == {"enable_cli_access": False, "api_port": 8100}
+
+
+def test_cli_access_toggle_keeps_non_ascii_values_readable(tmp_path: Path) -> None:
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"enable_cli_access": False, "watch_label": "Dossiers – clés"}, ensure_ascii=False))
+    with access.cli_access_toggled(cfg, True):
+        pass
+    assert "Dossiers – clés" in cfg.read_text(encoding="utf-8")
 
 
 def test_cli_access_toggle_tolerates_a_non_object_file(tmp_path: Path) -> None:
@@ -227,6 +256,32 @@ def test_cli_access_ensured_heals_even_when_the_block_raises(tmp_path: Path) -> 
         raise RuntimeError("check failed")
     assert fake.calls == calls_before + 1, "the healing probe must run when the block fails"
     assert json.loads(cfg_json.read_text())["enable_cli_access"] is False
+
+
+def test_cli_access_verify_settled_waits_and_checks_only_after_a_flip(tmp_path: Path) -> None:
+    cfg_json = tmp_path / "config.json"
+    cfg_json.write_text('{"enable_cli_access": false}')
+    slept: list[float] = []
+    fake = _FakeCli(cfg_json)
+    ca = CliAccess(_cfg(tmp_path, cfg_json), "hc_k", runner=fake, sleeper=slept.append)
+    ca.verify_settled(False)
+    assert slept == [], "no flip, nothing to wait for"
+    with ca.ensured():
+        pass
+    ca.verify_settled(False)
+    assert slept == [3.5], "after a flip, wait past the Swift app's 3 s poll before re-checking"
+
+
+def test_cli_access_verify_settled_fails_when_a_writer_restored_the_flipped_value(tmp_path: Path) -> None:
+    cfg_json = tmp_path / "config.json"
+    cfg_json.write_text('{"enable_cli_access": false}')
+    fake = _FakeCli(cfg_json)
+    ca = CliAccess(_cfg(tmp_path, cfg_json), "hc_k", runner=fake, sleeper=lambda s: None)
+    with ca.ensured():
+        pass
+    cfg_json.write_text('{"enable_cli_access": true}')  # the app saved its cached, flipped copy
+    with pytest.raises(pytest.fail.Exception, match="a writer restored a flipped value"):
+        ca.verify_settled(False)
 
 
 def test_cli_access_ensured_fails_loudly_when_the_gate_does_not_follow_the_file(tmp_path: Path) -> None:

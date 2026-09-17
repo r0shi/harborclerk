@@ -98,6 +98,10 @@ def load_config() -> AcceptanceConfig:
     config_json = Path(config_json_env).expanduser() if config_json_env else None
     if config_json is not None and not config_json.is_file():
         pytest.fail(f"HC_ACCEPTANCE_CONFIG_JSON={config_json} is not a file")
+    if config_json is not None and urlsplit(api_base).hostname not in ("localhost", "127.0.0.1", "::1"):
+        pytest.fail(
+            f"HC_ACCEPTANCE_CONFIG_JSON only makes sense for a loopback instance; {api_base} cannot read this file"
+        )
 
     return AcceptanceConfig(
         api_base=api_base,

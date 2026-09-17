@@ -127,6 +127,7 @@ def test_f6_cli_find_all_and_expand_context_match_mcp(
             insecure=cfg.insecure,
         )
         assert via_cli.code == EXIT_OK, via_cli.stderr[:300]
+        assert via_mcp["results"], via_mcp
         assert {r["doc_id"] for r in via_cli.json["results"]} == {r["doc_id"] for r in via_mcp["results"]}
         # expand-context: CLI and tool return the same chunk window, and the window has neighbours
         first = via_mcp["results"][0]
@@ -169,7 +170,9 @@ def test_g2_read_tier_reads_passages_and_documents_over_mcp_search_tier_cannot(
 ) -> None:
     doc_id = corpus.doc_id("lease-agreement.pdf")
     read = mcp.bearer(tier_keys["read"]["raw_key"])
-    hit = tool_json(read.call_tool("kb_search", {"query": "renewal notice", "k": 1}))["hits"][0]
+    hits = tool_json(read.call_tool("kb_search", {"query": "renewal notice", "k": 1}))["hits"]
+    assert hits, "the read-tier key found nothing to read"
+    hit = hits[0]
     passages = tool_json(read.call_tool("kb_read_passages", {"chunk_ids": [hit["chunk_id"]]}))["passages"]
     assert passages and passages[0]["chunk_id"] == hit["chunk_id"]
     doc = tool_json(read.call_tool("kb_get_document", {"doc_id": doc_id}))

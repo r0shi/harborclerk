@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -241,10 +242,12 @@ class CliAccess:
     at the native config.json. `runner` is `run_cli` in production and a fake
     in the offline tests."""
 
-    def __init__(self, cfg: AcceptanceConfig, raw_key: str, runner=run_cli):
+    def __init__(self, cfg: AcceptanceConfig, raw_key: str, runner=run_cli, sleeper=time.sleep):
         self._cfg = cfg
         self._raw_key = raw_key
         self._runner = runner
+        self._sleeper = sleeper
+        self.flipped = False
 
     def probe(self) -> int:
         """Exit code of a minimal CLI search; also makes the API re-read the gate."""
@@ -266,7 +269,23 @@ class CliAccess:
             pytest.skip(
                 "flipping CLI access needs HC_ACCEPTANCE_CONFIG_JSON pointing at the native config.json on this host"
             )
+        self.flipped = True
         return cli_access_toggled(self._cfg.config_json, enabled)
+
+    def verify_settled(self, expected_enabled: bool, *, settle_s: float = 3.5) -> None:
+        """Closes the race with the Swift app: it caches config.json on a 3 s
+        poll and writes the whole dict on any save, so a save landing within
+        3 s of a restore can write the flipped value back. If this session
+        flipped the gate, wait past that window and check the gate once more;
+        a mismatch fails the run rather than leaving the instance changed."""
+        if not self.flipped:
+            return
+        self._sleeper(settle_s)
+        if self.enabled != expected_enabled:
+            pytest.fail(
+                f"CLI access is {'enabled' if not expected_enabled else 'disabled'} after the run but was "
+                f"{'disabled' if not expected_enabled else 'enabled'} before it; a writer restored a flipped value"
+            )
 
     @contextmanager
     def ensured(self) -> Iterator[None]:
@@ -294,8 +313,11 @@ class CliAccess:
 
 
 @pytest.fixture(scope="session")
-def cli_access(cfg: AcceptanceConfig, keys: KeyFactory, corpus: Corpus) -> CliAccess:
-    return CliAccess(cfg, keys.create("cli-probe", scope_folder_ids=[corpus.folder_id])["raw_key"])
+def cli_access(cfg: AcceptanceConfig, keys: KeyFactory, corpus: Corpus) -> Iterator[CliAccess]:
+    access = CliAccess(cfg, keys.create("cli-probe", scope_folder_ids=[corpus.folder_id])["raw_key"])
+    initial = access.enabled
+    yield access
+    access.verify_settled(initial)
 
 
 @pytest.fixture(scope="session")
