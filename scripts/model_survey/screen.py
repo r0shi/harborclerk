@@ -18,7 +18,9 @@ import yaml
 
 POLICY_FILE = Path(__file__).with_name("watchlist.yaml")
 
-# Family stems, longest first so "gpt-oss" wins over "gpt" and "ministral" over "mistral".
+# Family stems. The family is the stem that appears earliest in the repo name,
+# the longest one on a tie, so `Qwen4-Agents-8B` is a Qwen and `gpt-oss-20b` is
+# not a "gpt".
 _FAMILIES = [
     "gpt-oss", "ministral", "magistral", "mistral", "deepseek", "nemotron", "hunyuan", "granite", "smollm",
     "agents", "apertus", "command", "minimax", "hermes", "apriel", "trinity", "qwen", "gemma", "llama", "ernie",
@@ -46,7 +48,8 @@ def load_policy(path: Path = POLICY_FILE) -> Policy:
 
 def family_of(name: str) -> str | None:
     low = name.lower().split("/")[-1]
-    return next((f for f in _FAMILIES if f in low), None)
+    hits = [(low.index(f), -len(f), f) for f in _FAMILIES if f in low]
+    return min(hits)[2] if hits else None
 
 
 def generation_of(name: str) -> tuple[int, ...]:
@@ -168,7 +171,7 @@ def screen(
     notes: list[str] = []
     if model.get("pipeline_tag") not in policy.pipeline_tags:
         reasons.append(f"not a chat model on the Hub (pipeline: {model.get('pipeline_tag')})")
-    license_id = (model.get("license") or "unknown").lower()
+    license_id = str(model.get("license") or "unknown").lower()
     if license_id not in policy.permissive_licenses:
         reasons.append(f"licence is {license_id}")
     if gguf is None:
@@ -192,27 +195,43 @@ def screen(
     return {"verdict": "screened" if reasons else "candidate", "reasons": reasons, "notes": notes}
 
 
+def only_waiting_for_gguf(reasons: list[str], policy: Policy) -> bool:
+    """True when the only thing wrong with a release is that no trusted GGUF of
+    the policy's quant exists yet. Such a release is re-examined by the next
+    survey although it will be older than that survey's window."""
+    waiting = ("no GGUF from", f"no {policy.quant} file")
+    return bool(reasons) and all(r.startswith(waiting) for r in reasons)
+
+
 def _tier_gap(size_gb: float, curated_sizes_gb: list[float], min_gap_gb: float = 4.0) -> bool:
     """True when `size_gb` lands in a gap of the curated ladder wider than `min_gap_gb`."""
     ladder = sorted(curated_sizes_gb)
     return any(lo + 1 < size_gb < hi - 1 for lo, hi in zip(ladder, ladder[1:], strict=False) if hi - lo > min_gap_gb)
 
 
-def score(candidate: dict[str, Any], curated: list[dict[str, Any]], today: date) -> dict[str, float]:
+def score(
+    candidate: dict[str, Any], curated: list[dict[str, Any]], today: date, policy: Policy | None = None
+) -> dict[str, float]:
     """Score components, so the report can show why something ranks where it does.
 
     A newer generation of a family already curated dominates: the product has
     tuned prompts, slot counts and context for that family, so its successor is
-    the cheapest large win. Popularity and recency order the rest."""
+    the cheapest large win. Only the family's own vendor can publish a
+    successor; another org's build on a newer base is a derivative and scores
+    as one. Popularity and recency order the rest."""
     model, gguf = candidate["model"], candidate["gguf"]
     family, generation = family_of(model["repo"]), generation_of(model["repo"])
     same_family = [c for c in curated if c["family"] == family and family]
-    newest_curated = max((c["generation"] for c in same_family), default=())
+    newest_curated = max((tuple(c["generation"]) for c in same_family), default=())
+    vendor = policy.family_orgs.get(family or "") if policy else None
+    from_vendor = vendor is None or model["repo"].split("/")[0].lower() == vendor.lower()
     parts: dict[str, float] = {}
-    if same_family and generation > newest_curated:
+    if same_family and from_vendor and generation > newest_curated:
         parts["successor of a curated family"] = 40.0
-    elif same_family:
+    elif same_family and from_vendor:
         parts["same family as a curated model"] = 15.0
+    elif same_family:
+        parts["derived from a curated family"] = 15.0
     parts["popularity"] = round(min(20.0, 5.0 * math.log10((model.get("likes") or 0) + 1)), 1)
     try:
         age_days = (today - date.fromisoformat(model["created"])).days
@@ -225,9 +244,11 @@ def score(candidate: dict[str, Any], curated: list[dict[str, Any]], today: date)
     return parts
 
 
-def rank(candidates: list[dict[str, Any]], curated: list[dict[str, Any]], today: date) -> list[dict[str, Any]]:
+def rank(
+    candidates: list[dict[str, Any]], curated: list[dict[str, Any]], today: date, policy: Policy | None = None
+) -> list[dict[str, Any]]:
     ranked = []
     for c in candidates:
-        parts = score(c, curated, today)
+        parts = score(c, curated, today, policy)
         ranked.append({**c, "score": round(sum(parts.values()), 1), "score_parts": parts})
     return sorted(ranked, key=lambda c: (-c["score"], c["model"]["repo"]))

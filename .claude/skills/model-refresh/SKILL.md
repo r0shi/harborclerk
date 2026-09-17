@@ -17,17 +17,24 @@ on its own. All commands run from the repository root.
 
 ## Stage 1: research
 
-1. Find the previous survey: the newest `docs/reports/*-model-survey-*.md`. Its
-   date is this run's `--since`, so nothing falls between two surveys. With no
-   previous survey, use 90 days.
+1. The loop's state is in the reports. With no flags the tool finds the newest
+   `docs/reports/*-model-survey-*.md`, opens the window at its date, and
+   examines again every release it listed under **Waiting for a GGUF**, so a
+   model nobody had quantised last time is not lost when it falls out of the
+   window. Pass `--since` only to override (a first run defaults to 90 days).
 2. Run it. The cache makes a re-run free for six hours; `HF_TOKEN`, if the
-   environment has one, raises the Hub's rate limit and is never stored.
+   environment has one, raises the Hub's rate limit and is never stored. A
+   rejected token or a failed listing ends the run with an error; it never
+   produces an empty report.
    ```bash
    RUN=survey-$(date +%Y%m%d-%H%M)
-   uv run python -m scripts.model_survey --out docs/reports/ --since <date> --run-id $RUN \
+   uv run python -m scripts.model_survey --out docs/reports/ --run-id $RUN \
      --json /tmp/$RUN.json --cache /tmp/hc-model-survey-cache
    ```
-   It prints the report path. It refuses to overwrite: one file per run.
+   It prints the report path. It refuses to overwrite: one file per run. Read
+   the header's **Coverage** line: what was left out by name, by task or by
+   the per-vendor cap is listed at the end of the report, and a ⚠ there means
+   a vendor's listing did not reach back to the window.
 3. Read the whole report, then write its **Reading** section. That section is
    the only part a person writes; everything below it is generated. It states:
    - the headline: the top candidate and why it ranks there, in one paragraph;

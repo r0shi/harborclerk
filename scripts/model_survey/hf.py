@@ -20,6 +20,11 @@ import httpx
 
 API = "https://huggingface.co/api"
 _SHARD = re.compile(r"-\d{5}-of-\d{5}\.gguf$")
+_NOT_THE_MODEL = ("mmproj", "imatrix", "mtp", "draft", "eagle")
+
+
+class HubError(RuntimeError):
+    """The Hub could not be read. Never means "the repo is absent"."""
 
 
 class Hub:
@@ -27,16 +32,16 @@ class Hub:
         self,
         client: httpx.Client | None = None,
         *,
+        token: str | None = "env",
         pause_s: float = 0.25,
         cache_dir: Path | None = None,
         cache_ttl_s: float = 6 * 3600,
         max_tries: int = 6,
         sleep=time.sleep,
     ):
-        headers = {"User-Agent": "harbor-clerk-model-survey"}
-        if os.environ.get("HF_TOKEN"):
-            headers["Authorization"] = f"Bearer {os.environ['HF_TOKEN']}"
-        self._http = client or httpx.Client(timeout=30, headers=headers)
+        self._token = os.environ.get("HF_TOKEN") if token == "env" else token
+        self._owns_client = client is None
+        self._http = client or httpx.Client(timeout=30)
         self._pause = pause_s
         self._cache = cache_dir
         self._ttl = cache_ttl_s
@@ -46,50 +51,105 @@ class Hub:
         if cache_dir:
             cache_dir.mkdir(parents=True, exist_ok=True)
 
+    def __enter__(self) -> Hub:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    @property
+    def authenticated(self) -> bool:
+        return bool(self._token)
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._http.close()
+
     def _cache_path(self, path: str, params: dict[str, Any]) -> Path | None:
         if not self._cache:
             return None
         key = hashlib.sha256(json.dumps([path, sorted(params.items())]).encode()).hexdigest()[:24]
         return self._cache / f"{key}.json"
 
-    def _get(self, path: str, **params: Any) -> Any:
-        cached = self._cache_path(path, params)
-        if cached and cached.exists() and time.time() - cached.stat().st_mtime < self._ttl:
-            return json.loads(cached.read_text())
+    def _send(self, path: str, params: dict[str, Any]) -> httpx.Response:
+        """One GET with retries: 429 and 5xx back off (honouring Retry-After),
+        and so does a transport error, because one timeout among hundreds of
+        requests must not end an unattended run. No sleep follows the last try."""
+        headers = {"User-Agent": "harbor-clerk-model-survey"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        last_error: httpx.TransportError | None = None
+        response: httpx.Response | None = None
         for attempt in range(self._max_tries):
             self._sleep(self._pause)  # be a polite client
             self.requests += 1
-            # The Hub redirects a repo name whose case differs from the canonical one.
-            r = self._http.get(f"{API}{path}", params=params, follow_redirects=True)
-            if r.status_code == 429 or r.status_code >= 500:
-                # The Hub rate-limits bursts; honour Retry-After, else back off.
-                retry_after = r.headers.get("Retry-After", "")
-                self._sleep(float(retry_after) if retry_after.isdigit() else min(120.0, 5.0 * 2**attempt))
-                continue
-            break
-        else:
-            r.raise_for_status()
-        # An unauthenticated caller gets 401 for a repo that does not exist (the
-        # Hub will not confirm whether a private one does), so all three mean
-        # "nothing there for us".
-        if r.status_code in (401, 403, 404):
+            wait = min(120.0, 5.0 * 2**attempt)
+            try:
+                # The Hub redirects a repo name whose case differs from the canonical one.
+                response = self._http.get(f"{API}{path}", params=params, headers=headers, follow_redirects=True)
+                last_error = None
+            except httpx.TransportError as e:
+                response, last_error = None, e
+            else:
+                if response.status_code != 429 and response.status_code < 500:
+                    return response
+                retry_after = response.headers.get("Retry-After", "")
+                if retry_after.isdigit():
+                    wait = float(retry_after)
+            if attempt + 1 < self._max_tries:
+                self._sleep(wait)
+        if last_error is not None or response is None:
+            raise last_error or HubError(f"no response for {path}")
+        response.raise_for_status()
+        return response
+
+    def _get(self, path: str, *, absent_ok: bool = False, **params: Any) -> Any:
+        cached = self._cache_path(path, params)
+        if cached and cached.exists() and time.time() - cached.stat().st_mtime < self._ttl:
+            return json.loads(cached.read_text())
+        r = self._send(path, params)
+        if r.status_code == 401 and self._token:
+            # With a token the Hub answers 404 for a missing repo, so 401 can
+            # only mean the token itself. Raised, and never cached.
+            raise HubError("the Hub rejected HF_TOKEN (401); unset it or replace it")
+        # Without a token the Hub answers 401 for a repo that does not exist (it
+        # will not confirm whether a private one does), and 403 for a gated one.
+        # Only a probe for one repo may read those as "nothing there for us": on
+        # a listing they would turn a failed survey into an empty one.
+        if absent_ok and r.status_code in (401, 403, 404):
             data = None
         else:
-            r.raise_for_status()
+            if r.status_code >= 400:
+                raise HubError(f"the Hub answered {r.status_code} for {path}")
             data = r.json()
         if cached:
             cached.write_text(json.dumps(data))
         return data
 
-    def org_models(self, org: str, *, limit: int = 60) -> list[dict[str, Any]]:
+    def org_models(self, org: str, *, limit: int = 500) -> list[dict[str, Any]]:
         """Newest repos of an org, newest first (the list API is summary only)."""
-        return self._get("/models", author=org, sort="createdAt", direction=-1, limit=limit) or []
+        return self._get("/models", author=org, sort="createdAt", direction=-1, limit=limit)
 
     def trending(self, pipeline_tag: str, *, limit: int = 40) -> list[dict[str, Any]]:
-        return self._get("/models", pipeline_tag=pipeline_tag, sort="trendingScore", direction=-1, limit=limit) or []
+        return self._get("/models", pipeline_tag=pipeline_tag, sort="trendingScore", direction=-1, limit=limit)
 
     def model(self, repo: str, *, blobs: bool = False) -> dict[str, Any] | None:
-        return self._get(f"/models/{repo}", **({"blobs": "true"} if blobs else {}))
+        """One repo, or None when it is not there for us. The Hub redirects a
+        name in the wrong case, and also a repo that was renamed or transferred;
+        only the first is the repo that was asked for, so an answer under a
+        different owner or name is refused. Trust in a GGUF publisher rests on
+        the name that was probed."""
+        info = self._get(f"/models/{repo}", absent_ok=True, **({"blobs": "true"} if blobs else {}))
+        if info is not None and str(info.get("id", "")).lower() != repo.lower():
+            return None
+        return info
+
+
+def _text(value: Any) -> str | None:
+    """Card fields are usually a string and occasionally a list of them."""
+    if isinstance(value, list):
+        value = next((v for v in value if v), None)
+    return str(value) if value else None
 
 
 def summarize_model(info: dict[str, Any]) -> dict[str, Any]:
@@ -102,7 +162,7 @@ def summarize_model(info: dict[str, Any]) -> dict[str, Any]:
         "created": (info.get("createdAt") or "")[:10],
         "modified": (info.get("lastModified") or "")[:10],
         "pipeline_tag": info.get("pipeline_tag"),
-        "license": card.get("license") or license_tag,
+        "license": _text(card.get("license")) or license_tag,
         "params": (info.get("safetensors") or {}).get("total"),
         "model_type": config.get("model_type"),
         "likes": info.get("likes", 0),
@@ -110,26 +170,30 @@ def summarize_model(info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def file_size(info: dict[str, Any], filename: str) -> int | None:
+    """Size of one named file in a repo fetched with blobs, None when it is not there."""
+    return next((s.get("size") or 0 for s in info.get("siblings", []) if s.get("rfilename") == filename), None)
+
+
 def summarize_gguf(info: dict[str, Any], quant: str) -> dict[str, Any]:
     """The facts the survey keeps from a GGUF repo: architecture, context, the
     chat template's tool-calling support, and the size of one quantisation.
 
     A quant can be one file or several shards; multimodal projectors (mmproj),
-    speculative drafters (MTP/, draft) and imatrix files are not part of it."""
+    speculative drafters (MTP/, draft) and imatrix files are not part of it. A
+    repo can hold several builds of one quant (`Q4_K_M/` beside `UD-Q4_K_M/`):
+    one is chosen, the shortest name, never the sum of all of them."""
     gguf = info.get("gguf") or {}
     template = gguf.get("chat_template") or ""
-    files = []
+    builds: dict[str, list[tuple[str, int]]] = {}
     for s in info.get("siblings", []):
         name = s.get("rfilename", "")
         low = name.lower()
-        if not low.endswith(".gguf") or quant.lower() not in low:
+        if not low.endswith(".gguf") or quant.lower() not in low or any(x in low for x in _NOT_THE_MODEL):
             continue
-        if any(x in low for x in ("mmproj", "imatrix", "mtp", "draft", "eagle")):
-            continue
-        files.append((name, s.get("size") or 0))
-    # Prefer a single-file quant; otherwise sum the shards of one quant directory.
-    singles = [f for f in files if not _SHARD.search(f[0])]
-    chosen = [min(singles, key=lambda f: len(f[0]))] if singles else files
+        builds.setdefault(_SHARD.sub("", name), []).append((name, s.get("size") or 0))
+    # Prefer a single-file build; then the shortest name.
+    chosen = min(builds.values(), key=lambda files: (len(files) > 1, len(files[0][0])), default=[])
     return {
         "repo": info["id"],
         "modified": (info.get("lastModified") or "")[:10],

@@ -3,6 +3,7 @@ from a real run (2026-09-17) and trimmed; the network is never touched."""
 
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -17,8 +18,10 @@ from scripts.model_survey.screen import (
     generation_of,
     ladder_gap_fillers,
     load_policy,
+    only_waiting_for_gguf,
     params_class,
     rank,
+    score,
     screen,
     size_matched_successors,
 )
@@ -391,27 +394,530 @@ def test_main_refuses_to_overwrite_before_making_any_request(tmp_path, monkeypat
     assert "refusing to overwrite" in capsys.readouterr().err
 
 
-def test_report_header_names_the_commit_it_ran_from() -> None:
-    """docs/reports/README.md asks every loop report for its commit."""
+# --- a small Hub and GitHub, served through a mock transport ------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_token(monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+
+
+TOOLS_TEMPLATE = "{% if tools %}<tool_call>{% endif %}"
+
+
+class World:
+    """Listings, repos, redirects and the two GitHub endpoints the survey reads."""
+
+    def __init__(self) -> None:
+        self.listings: dict[str, list[dict]] = {}
+        self.repos: dict[str, dict] = {}
+        self.trending: list[dict] = []
+        self.redirects: dict[str, str] = {}
+        self.arch_pin = {f"arch{i}" for i in range(60)} | {"qwen3", "qwen35"}
+        self.arch_head = self.arch_pin | {"newarch"}
+        self.requests: list = []
+
+    def release(self, repo: str, created: str, *, likes: int = 100, licence="apache-2.0", tag="text-generation"):
+        org = repo.split("/")[0]
+        self.listings.setdefault(org, []).append(
+            {"id": repo, "createdAt": f"{created}T00:00:00Z", "pipeline_tag": tag, "likes": likes}
+        )
+        self.listings[org].sort(key=lambda r: r["createdAt"], reverse=True)
+        self.repos[repo] = {
+            "id": repo,
+            "createdAt": f"{created}T00:00:00Z",
+            "pipeline_tag": tag,
+            "likes": likes,
+            "cardData": {"license": licence},
+        }
+
+    def gguf(self, repo: str, files: dict[str, int], *, arch="qwen35", ctx=262144, template=TOOLS_TEMPLATE):
+        self.repos[repo] = {
+            "id": repo,
+            "lastModified": "2026-08-20T00:00:00Z",
+            "gguf": {"architecture": arch, "context_length": ctx, "chat_template": template},
+            "siblings": [{"rfilename": n, "size": s} for n, s in files.items()],
+        }
+
+    def handler(self, request):
+        import httpx
+
+        self.requests.append(request)
+        host, path = request.url.host, request.url.path
+        if host == "raw.githubusercontent.com":
+            names = self.arch_head if "/master/" in path else self.arch_pin
+            return httpx.Response(
+                200, text="\n".join(f'{{ LLM_ARCH_X{i}, "{n}" }},' for i, n in enumerate(sorted(names)))
+            )
+        if host == "api.github.com":
+            return httpx.Response(200, json={"tag_name": "v9.9.9", "published_at": "2026-09-14T00:00:00Z"})
+        if path == "/api/models":
+            params = request.url.params
+            return httpx.Response(
+                200, json=self.listings.get(params["author"], []) if "author" in params else self.trending
+            )
+        repo = path.removeprefix("/api/models/")
+        if repo in self.redirects:
+            return httpx.Response(307, headers={"Location": f"/api/models/{self.redirects[repo]}"})
+        return httpx.Response(200, json=self.repos[repo]) if repo in self.repos else httpx.Response(401)
+
+    def clients(self, **hub_kwargs):
+        import httpx
+
+        from scripts.model_survey.hf import Hub
+
+        client = httpx.Client(transport=httpx.MockTransport(self.handler))
+        return Hub(client, pause_s=0, sleep=lambda s: None, **{"token": None, **hub_kwargs}), client
+
+
+def _policy(**over):
+    import dataclasses
+
+    return dataclasses.replace(POLICY, **{"orgs": ["Qwen", "acme"], "family_orgs": {"qwen": "Qwen"}, **over})
+
+
+def _curated(**over) -> dict:
+    return {
+        "id": "qwen3-8b",
+        "name": "Qwen3 8B",
+        "repo": "Qwen/Qwen3-8B-GGUF",
+        "filename": "Qwen3-8B-Q4_K_M.gguf",
+        "size_bytes": 5_030_000_000,
+        "context_window": 32768,
+        "family": "qwen",
+        "generation": (3,),
+        "params_b": 8.0,
+        **over,
+    }
+
+
+SINCE, TODAY = date(2026, 7, 22), date(2026, 9, 17)
+
+
+def _run(world: World, *, curated=None, policy=None, **kw) -> dict:
+    from scripts.model_survey.__main__ import survey
+
+    hub, client = world.clients()
+    if curated is None:
+        world.gguf("Qwen/Qwen3-8B-GGUF", {"Qwen3-8B-Q4_K_M.gguf": 5_030_000_000}, arch="qwen3", ctx=40960)
+        curated = [_curated()]
+    return survey(policy or _policy(), SINCE, hub, client, curated=curated, today=TODAY, **kw)
+
+
+def test_survey_examines_the_window_ranks_what_passes_and_names_what_it_left_out() -> None:
+    w = World()
+    w.release("Qwen/Qwen3.8-27B", "2026-08-05", likes=15500)
+    w.gguf("unsloth/Qwen3.8-27B-GGUF", {"Qwen3.8-27B-UD-Q4_K_M.gguf": 16_464_440_224})
+    w.release("Qwen/Qwen2.5-7B-Instruct", "2024-09-01")  # before the window
+    w.gguf("Qwen/Qwen2.5-7B-Instruct-GGUF", {"qwen2.5-7b-instruct-q4_k_m.gguf": 4_000_000_000})
+    w.release("Qwen/Qwen-AgentWorld-35B-A3B", "2026-08-01")  # a world model, by name
+    w.release("Qwen/Qwen3.8-Speech-2B", "2026-08-02", tag="automatic-speech-recognition")
+    w.release("acme/Closed-7B", "2026-08-03", licence="other")
+    w.gguf("acme/Closed-7B-GGUF", {"Closed-7B-Q4_K_M.gguf": 4_000_000_000})
+
+    facts = _run(w)
+    assert [c["model"]["repo"] for c in facts["candidates"]] == ["Qwen/Qwen3.8-27B"]
+    assert facts["candidates"][0]["score_parts"]["successor of a curated family"] == 40.0
+    assert [(c["model"]["repo"], c["reasons"]) for c in facts["screened"]] == [("acme/Closed-7B", ["licence is other"])]
+    assert {(e["repo"], e["why"]) for e in facts["excluded"]} == {
+        ("Qwen/Qwen-AgentWorld-35B-A3B", "name contains 'world'"),
+        ("Qwen/Qwen3.8-Speech-2B", "task is automatic-speech-recognition"),
+    }
+    everything = json.dumps(facts, default=str)
+    assert "Qwen2.5-7B-Instruct" not in everything, "a release older than the window was examined"
+
+
+def test_find_gguf_prefers_the_vendor_then_publishers_in_policy_order_and_knows_bartowskis_naming() -> None:
+    from scripts.model_survey.__main__ import find_gguf
+
+    q4 = {"m-Q4_K_M.gguf": 4_000_000_000}
+    w = World()
+    for repo in (
+        "acme/A-7B-GGUF",
+        "unsloth/A-7B-GGUF",
+        "unsloth/B-7B-GGUF",
+        "bartowski/B-7B-GGUF",
+        "bartowski/acme_C-7B-GGUF",
+    ):
+        w.gguf(repo, q4)
+    w.gguf("unsloth/D-7B-GGUF", {"m-Q8_0.gguf": 8_000_000_000})  # exists, but not the policy's quant
+    w.gguf("bartowski/D-7B-GGUF", q4)
+    hub, _ = w.clients()
+    assert POLICY.gguf_publishers.index("unsloth") < POLICY.gguf_publishers.index("bartowski")
+    assert find_gguf(hub, "acme/A-7B", POLICY)["repo"] == "acme/A-7B-GGUF"
+    assert find_gguf(hub, "acme/B-7B", POLICY)["repo"] == "unsloth/B-7B-GGUF"
+    assert find_gguf(hub, "acme/C-7B", POLICY)["repo"] == "bartowski/acme_C-7B-GGUF"
+    assert find_gguf(hub, "acme/D-7B", POLICY)["repo"] == "bartowski/D-7B-GGUF", "a repo without the quant must not win"
+    assert find_gguf(hub, "acme/E-7B", POLICY) is None
+
+
+def test_the_audit_says_so_when_a_curated_repo_or_its_registered_file_is_gone() -> None:
+    """The worst drift the audit can find must not read as a clean bill of health."""
+    w = World()
+    w.gguf("Qwen/Renamed-GGUF", {"Qwen3-8B-UD-Q4_K_M.gguf": 5_030_000_000}, arch="qwen3", ctx=40960)
+    w.gguf("Qwen/Fine-GGUF", {"Qwen3-8B-Q4_K_M.gguf": 5_030_000_000}, arch="qwen3", ctx=40960)
+    curated = [
+        _curated(id="gone", repo="Qwen/Gone-GGUF"),
+        _curated(id="renamed", repo="Qwen/Renamed-GGUF"),
+        _curated(id="fine", repo="Qwen/Fine-GGUF"),
+    ]
+    findings = {c["id"]: c["findings"] for c in _run(w, curated=curated)["curated"]}
+    assert findings["gone"] == ["the GGUF repo is not reachable on the Hub (deleted, renamed, private or gated)"]
+    assert findings["renamed"] == ["registry file `Qwen3-8B-Q4_K_M.gguf` is not in the repo"]
+    assert findings["fine"] == []
+
+
+def test_the_audit_measures_the_registered_file_and_reports_context_and_architecture_drift() -> None:
+    w = World()
+    # The shortest Q4_K_M name matches the registry's size; the registered file does not.
+    w.gguf(
+        "Qwen/Drift-GGUF",
+        {"Qwen3-8B-Q4_K_M.gguf": 5_030_000_000, "Qwen3-8B-UD-Q4_K_M.gguf": 6_500_000_000},
+        arch="qwen3",
+        ctx=40960,
+    )
+    w.gguf("Qwen/Short-GGUF", {"Qwen3-8B-Q4_K_M.gguf": 5_030_000_000}, arch="qwen3", ctx=16384)
+    w.gguf("Qwen/Unused-GGUF", {"Qwen3-8B-Q4_K_M.gguf": 5_030_000_000}, arch="qwen3", ctx=262144)
+    w.gguf("Qwen/Newarch-GGUF", {"Qwen3-8B-Q4_K_M.gguf": 5_030_000_000}, arch="newarch", ctx=40960)
+    curated = [
+        _curated(id="drift", repo="Qwen/Drift-GGUF", filename="Qwen3-8B-UD-Q4_K_M.gguf"),
+        _curated(id="short", repo="Qwen/Short-GGUF"),
+        _curated(id="unused", repo="Qwen/Unused-GGUF"),
+        _curated(id="newarch", repo="Qwen/Newarch-GGUF"),
+    ]
+    findings = {c["id"]: c["findings"] for c in _run(w, curated=curated)["curated"]}
+    assert findings["drift"] == ["registry size 5.03 GB but the file is 6.50 GB"]
+    assert findings["short"] == ["registry context_window 32768 EXCEEDS the GGUF's 16384"]
+    assert findings["unused"] == ["registry context_window 32768 leaves the GGUF's 262144 unused"]
+    assert findings["newarch"] == ["architecture 'newarch' is not in the pinned llama.cpp"]
+
+
+def test_successors_are_screened_like_candidates() -> None:
+    w = World()
+    w.release("Qwen/Qwen3.5-9B", "2026-02-27", licence="other")
+    w.gguf("unsloth/Qwen3.5-9B-GGUF", {"Qwen3.5-9B-Q4_K_M.gguf": 5_700_000_000}, arch="newarch")
+    successor = _run(w)["curated"][0]["successors"][0]
+    assert successor["repo"] == "Qwen/Qwen3.5-9B" and successor["reasons"] == ["licence is other"]
+    assert successor["notes"] == ["architecture 'newarch' needs a llama.cpp upgrade past the pin"]
+
+
+def test_the_per_vendor_cap_keeps_the_most_liked_and_names_the_rest() -> None:
+    from scripts.model_survey import __main__ as cli
+
+    w = World()
+    for i in range(1, cli.PER_ORG + 3):
+        w.release(f"acme/Thing{i}-7B", "2026-08-10", likes=i)
+    facts = _run(w)
+    examined = {c["model"]["repo"] for c in facts["screened"]}
+    assert len(examined) == cli.PER_ORG and "acme/Thing1-7B" not in examined and "acme/Thing14-7B" in examined
+    assert [r["repo"] for r in facts["not_examined"]] == ["acme/Thing2-7B", "acme/Thing1-7B"]
+
+
+def test_a_listing_that_does_not_reach_back_to_the_window_is_reported(monkeypatch) -> None:
+    from scripts.model_survey import __main__ as cli
+
+    monkeypatch.setattr(cli, "LISTING_LIMIT", 3)
+    w = World()
+    for i in range(3):
+        w.release(f"acme/Thing{i}-7B", "2026-08-10")
+    w.release("Qwen/Qwen3.8-27B", "2026-08-05")
+    assert _run(w)["coverage"] == ["`acme` has more than 3 repos since 2026-07-22; the oldest were not listed"]
+
+
+def test_a_release_waiting_for_a_gguf_is_carried_to_the_next_survey_and_examined_again() -> None:
     from datetime import datetime
 
-    from scripts.model_survey.__main__ import commit_id, render
+    from scripts.model_survey.__main__ import CARRIED_NOTE, pending_from_report, render
 
-    facts = {
-        "since": "2026-07-22",
-        "llamacpp": {
-            "pin": "b1",
-            "architectures_at_pin": 1,
-            "architectures_at_head": 2,
-            "latest": {"tag": "v1", "published": "2026-09-14"},
-            "only_at_head": [],
-        },
-        "candidates": [],
-        "screened": [],
-        "curated": [],
-        "gap_fillers": [],
-        "outside_watchlist": [],
-    }
-    text = render(facts, POLICY, "r1", datetime(2026, 9, 17), commit="abc1234-dirty")
-    assert "commit `abc1234-dirty`" in text.split("## Reading")[0]
-    assert commit_id() != "", "falls back to 'unknown', never to an empty string"
+    w = World()
+    w.release("acme/Soon-7B", "2026-09-10")  # in the window, nobody has built it yet
+    w.release("acme/Late-7B", "2026-07-01")  # older than the window, on the previous waiting list, built since
+    w.gguf("unsloth/Late-7B-GGUF", {"Late-7B-Q4_K_M.gguf": 4_000_000_000})
+    w.release("acme/Never-7B", "2026-03-01")  # carried, still nothing, and past the waiting period
+    w.release("acme/Closed-7B", "2026-09-01", licence="other")  # no GGUF either, but that is not all that is wrong
+
+    facts = _run(w, recheck=["acme/Late-7B", "acme/Never-7B", "acme/Soon-7B"])
+    late = next(c for c in facts["candidates"] if c["model"]["repo"] == "acme/Late-7B")
+    assert late["notes"] == [CARRIED_NOTE]
+    assert [x["repo"] for x in facts["waiting"]] == ["acme/Soon-7B"]
+    assert sum(c["model"]["repo"] == "acme/Soon-7B" for c in facts["screened"]) == 1, "examined twice"
+
+    report = render(facts, _policy(), "r1", datetime(2026, 9, 17), previous="2026-08-01-model-survey-r0.md")
+    assert pending_from_report(report) == ["acme/Soon-7B"]
+    assert "3 release(s) carried" in report.split("## Reading")[0]
+    assert pending_from_report("# no such section") == []
+
+
+def test_trending_outside_the_watchlist_leaves_out_watched_vendors_and_gguf_publishers() -> None:
+    w = World()
+    row = {"createdAt": "2026-09-01T00:00:00Z", "likes": 9}
+    w.trending = [
+        {"id": "Qwen/Qwen3.8-27B", **row},
+        {"id": "unsloth/Something-7B", **row},
+        {"id": "Edge0/Edge0-35B-A3B-preview", **row},
+        {"id": "Edge0/Old-7B", "createdAt": "2025-01-01T00:00:00Z", "likes": 9},
+    ]
+    assert [r["repo"] for r in _run(w)["outside_watchlist"]] == ["Edge0/Edge0-35B-A3B-preview"]
+
+
+def test_a_redirect_to_another_owner_is_not_the_trusted_publisher() -> None:
+    from scripts.model_survey.__main__ import find_gguf
+
+    w = World()
+    w.gguf("randomuser/Foo-7B-GGUF", {"Foo-7B-Q4_K_M.gguf": 4_000_000_000})
+    w.redirects["unsloth/Foo-7B-GGUF"] = "randomuser/Foo-7B-GGUF"
+    hub, _ = w.clients()
+    assert hub.model("unsloth/Foo-7B-GGUF") is None
+    assert find_gguf(hub, "acme/Foo-7B", POLICY) is None
+
+
+def test_a_rejected_token_fails_the_run_and_is_never_cached(tmp_path) -> None:
+    """Every answer is 401 with a bad token. Read as "absent", that is an empty
+    survey that exits 0, cached for six hours."""
+    import httpx
+
+    from scripts.model_survey.hf import Hub, HubError
+
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(401)))
+    hub = Hub(client, token="expired", pause_s=0, cache_dir=tmp_path)
+    with pytest.raises(HubError, match="HF_TOKEN"):
+        hub.model("Qwen/Qwen3-8B-GGUF")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_listing_that_fails_is_an_error_not_an_empty_vendor() -> None:
+    import httpx
+
+    from scripts.model_survey.hf import Hub, HubError
+
+    hub = Hub(httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(401))), token=None, pause_s=0)
+    with pytest.raises(HubError):
+        hub.org_models("Qwen")
+    with pytest.raises(HubError):
+        hub.trending("text-generation")
+    assert hub.model("Qwen/whatever") is None, "a probe for one repo may still read 401 as absent"
+
+
+def test_the_token_is_sent_as_a_bearer_header_and_only_when_there_is_one(monkeypatch) -> None:
+    w = World()
+    w.gguf("x/ok", {})
+    for kwargs, expected in (({"token": "t0ken"}, "Bearer t0ken"), ({"token": None}, None)):
+        hub, _ = w.clients(**kwargs)
+        hub.model("x/ok")
+        assert w.requests[-1].headers.get("Authorization") == expected
+    monkeypatch.setenv("HF_TOKEN", "from-env")
+    hub, _ = w.clients(token="env")
+    hub.model("x/ok")
+    assert w.requests[-1].headers.get("Authorization") == "Bearer from-env" and hub.authenticated
+
+
+def test_hub_retries_5xx_and_transport_errors_caps_the_backoff_and_does_not_sleep_after_the_last_try() -> None:
+    import httpx
+
+    from scripts.model_survey.hf import Hub
+
+    answers = [httpx.Response(503), httpx.ReadTimeout("slow"), httpx.Response(200, json={"id": "x/ok"})]
+
+    def flaky(request):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    sleeps: list[float] = []
+    hub = Hub(httpx.Client(transport=httpx.MockTransport(flaky)), token=None, pause_s=0, sleep=sleeps.append)
+    assert hub.model("x/ok") == {"id": "x/ok"} and hub.requests == 3
+
+    def down(request):
+        raise httpx.ConnectError("down")
+
+    sleeps.clear()
+    hub = Hub(
+        httpx.Client(transport=httpx.MockTransport(down)), token=None, pause_s=0, max_tries=8, sleep=sleeps.append
+    )
+    with pytest.raises(httpx.ConnectError):
+        hub.model("x/ok")
+    waits = [s for s in sleeps if s]
+    assert waits == [5.0, 10.0, 20.0, 40.0, 80.0, 120.0, 120.0], "seven waits for eight tries, capped at two minutes"
+
+
+def test_hub_cache_expires(tmp_path) -> None:
+    w = World()
+    w.gguf("x/ok", {})
+    hub, _ = w.clients(cache_dir=tmp_path, cache_ttl_s=0)
+    hub.model("x/ok")
+    hub.model("x/ok")
+    assert hub.requests == 2
+    hub, _ = w.clients(cache_dir=tmp_path, cache_ttl_s=3600)
+    hub.model("x/ok")
+    assert hub.requests == 0
+
+
+def test_summarize_gguf_chooses_one_build_of_the_quant_never_the_sum() -> None:
+    from scripts.model_survey.hf import file_size
+
+    def info(*files: tuple[str, int]) -> dict:
+        return {"id": "unsloth/Big-GGUF", "siblings": [{"rfilename": n, "size": s} for n, s in files]}
+
+    shard = "Big-{}Q4_K_M-0000{}-of-00002.gguf"
+    two_builds = info(
+        *((f"Q4_K_M/{shard.format('', i)}", 39_000_000_000) for i in (1, 2)),
+        *((f"UD-Q4_K_M/{shard.format('UD-', i)}", 40_000_000_000) for i in (1, 2)),
+    )
+    s = summarize_gguf(two_builds, "Q4_K_M")
+    assert (s["quant_file"], s["quant_bytes"]) == ("2 shards", 78_000_000_000)
+
+    single_beside_shards = info(("Big-Q4_K_M-long-name.gguf", 7), *((shard.format("", i), 39) for i in (1, 2)))
+    s = summarize_gguf(single_beside_shards, "Q4_K_M")
+    assert (s["quant_file"], s["quant_bytes"]) == ("Big-Q4_K_M-long-name.gguf", 7)
+    assert file_size(single_beside_shards, "Big-Q4_K_M-long-name.gguf") == 7
+    assert file_size(single_beside_shards, "absent.gguf") is None
+
+
+def test_a_list_valued_licence_does_not_end_the_run() -> None:
+    m = summarize_model({"id": "acme/Dual-7B", "cardData": {"license": ["apache-2.0", "mit"]}})
+    assert m["license"] == "apache-2.0"
+    verdict = screen(
+        {**_model("acme/Dual-7B"), "license": ["MIT"]},
+        _gguf("unsloth/X-GGUF"),
+        POLICY,
+        arch_at_pin={"qwen35"},
+        arch_at_head={"qwen35"},
+    )
+    assert "licence is ['mit']" in verdict["reasons"]
+
+
+def test_parse_architectures_and_the_guard_against_a_reshaped_table() -> None:
+    import httpx
+
+    sample = """
+    static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
+        { LLM_ARCH_QWEN3,       "qwen3"       },
+        { LLM_ARCH_QWEN35MOE,   "qwen35moe"   },
+        {LLM_ARCH_GPT_OSS,"gpt-oss"},
+        { LLM_ARCH_UNKNOWN,     "(unknown)"   },
+    };"""
+    assert llamacpp.parse_architectures(sample) == {"qwen3", "qwen35moe", "gpt-oss"}
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=sample)))
+    with pytest.raises(ValueError, match="reshaped"):
+        llamacpp.architectures_at("master", client)
+
+
+def test_latest_release_reads_the_tag_and_the_day() -> None:
+    import httpx
+
+    body = {"tag_name": "v0.4.1", "published_at": "2026-09-14T08:00:00Z"}
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    assert llamacpp.latest_release(client) == {"tag": "v0.4.1", "published": "2026-09-14"}
+
+
+def test_screen_refuses_a_task_that_is_not_chat() -> None:
+    verdict = screen(
+        _model("acme/Ears-7B", pipeline_tag="automatic-speech-recognition"),
+        _gguf("unsloth/X-GGUF"),
+        POLICY,
+        arch_at_pin={"qwen35"},
+        arch_at_head={"qwen35"},
+    )
+    assert verdict["reasons"] == ["not a chat model on the Hub (pipeline: automatic-speech-recognition)"]
+
+
+def test_only_the_familys_vendor_publishes_a_successor() -> None:
+    today = date(2026, 9, 17)
+    vendor = {"model": _model("Qwen/Qwen4-14B"), "gguf": _gguf("unsloth/X-GGUF")}
+    remix = {"model": _model("arcee-ai/Arcee-Qwen4-Remix-14B"), "gguf": _gguf("unsloth/X-GGUF")}
+    assert "successor of a curated family" in score(vendor, CURATED, today, POLICY)
+    parts = score(remix, CURATED, today, POLICY)
+    assert "successor of a curated family" not in parts and parts["derived from a curated family"] == 15.0
+
+
+def test_the_family_is_the_earliest_stem_in_the_name() -> None:
+    assert family_of("Qwen/Qwen4-Agents-8B") == "qwen"
+    assert family_of("InternScience/Agents-A1") == "agents"
+    assert family_of("openai/gpt-oss-20b") == "gpt-oss"
+
+
+def test_recency_fades_over_ninety_days() -> None:
+    def recency(created: str) -> float:
+        return score(
+            {"model": _model("acme/New-7B", created=created), "gguf": _gguf("unsloth/X-GGUF")},
+            CURATED,
+            date(2026, 9, 17),
+        )["recency"]
+
+    assert recency("2026-09-17") == 10.0 and recency("2026-08-05") == 5.2 and recency("2026-01-01") == 0.0
+
+
+def test_successors_come_newest_generation_first_then_closest_in_size() -> None:
+    rows = _rows("Qwen/Qwen3.5-9B", "Qwen/Qwen3.8-12B", "Qwen/Qwen3.8-9B", tag="text-generation")
+    found = size_matched_successors(_curated(), rows, POLICY)
+    assert [f["repo"] for f in found] == ["Qwen/Qwen3.8-9B", "Qwen/Qwen3.8-12B", "Qwen/Qwen3.5-9B"]
+
+
+def test_only_waiting_for_gguf_means_nothing_else_is_wrong() -> None:
+    assert only_waiting_for_gguf(["no GGUF from the vendor or a trusted publisher"], POLICY)
+    assert only_waiting_for_gguf(["no Q4_K_M file in unsloth/X-GGUF"], POLICY)
+    assert not only_waiting_for_gguf(["licence is other", "no GGUF from the vendor or a trusted publisher"], POLICY)
+    assert not only_waiting_for_gguf([], POLICY)
+
+
+def test_every_curated_family_names_its_vendor() -> None:
+    """The successor bonus is restricted to the family's vendor, so a curated
+    family without one in the policy would hand the bonus to anyone."""
+    from scripts.model_survey.__main__ import curated_models
+
+    assert {c["family"] for c in curated_models()} <= set(POLICY.family_orgs)
+
+
+def test_the_previous_report_sets_the_window(tmp_path) -> None:
+    from scripts.model_survey.__main__ import previous_report, report_date
+
+    assert previous_report(tmp_path) is None and previous_report(tmp_path / "absent") is None
+    for name in ("2026-09-17-model-survey-a.md", "2026-10-01-model-survey-b.md", "2026-10-05-acceptance-x.md"):
+        (tmp_path / name).write_text("")
+    newest = previous_report(tmp_path)
+    assert newest.name == "2026-10-01-model-survey-b.md" and report_date(newest) == date(2026, 10, 1)
+    assert report_date(tmp_path / "notes.md") is None
+
+
+def test_commit_id_falls_back_to_unknown(monkeypatch) -> None:
+    import subprocess
+
+    from scripts.model_survey import __main__ as cli
+
+    def no_git(*a, **k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(cli.subprocess, "run", no_git)
+    assert cli.commit_id() == "unknown"
+    monkeypatch.setattr(
+        cli.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 128, stdout="", stderr="not a repo")
+    )
+    assert cli.commit_id() == "unknown"
+
+
+def test_the_report_shows_what_was_found_and_what_was_left_out() -> None:
+    from datetime import datetime
+
+    from scripts.model_survey.__main__ import render
+
+    w = World()
+    w.release("Qwen/Qwen3.8-27B", "2026-08-05", likes=15500)
+    w.gguf("unsloth/Qwen3.8-27B-GGUF", {"Qwen3.8-27B-UD-Q4_K_M.gguf": 16_464_440_224})
+    w.release("Qwen/Qwen-AgentWorld-35B-A3B", "2026-08-01")
+    w.release("acme/Closed-7B", "2026-08-03", licence="other", likes=50)
+    w.release("acme/Quiet-7B", "2026-08-03", licence="other", likes=2)
+    facts = _run(w)
+    facts["coverage"] = ["`acme` has more than 500 repos"]
+    text = render(facts, _policy(), "r1", datetime(2026, 9, 17), commit="abc1234-dirty", authenticated=True)
+    header = text.split("## Reading")[0]
+    assert "commit `abc1234-dirty`" in header and "with a token" in header and "⚠ `acme` has more than 500" in header
+    assert "3 releases examined · 1 left out by name or task" in header
+    assert "| 1 | `Qwen/Qwen3.8-27B` | 2026-08-05 | apache-2.0 |" in text and "| 16.5 | 262144 | qwen35 |" in text
+    assert "| `acme/Closed-7B` | 2026-08-03 | 50 | licence is other; no GGUF" in text
+    assert "And 1 with under 10 likes: `acme/Quiet-7B` (licence is other" in text
+    assert "- `Qwen`: `Qwen-AgentWorld-35B-A3B` (name contains 'world')" in text
+    assert (
+        "| `qwen3-8b` | `Qwen/Qwen3-8B-GGUF` | 32768 | 40960 | 2026-08-20 | a newer generation of the family exists, but not in this size class |"
+        in text
+    )

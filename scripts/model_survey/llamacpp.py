@@ -10,6 +10,7 @@ import httpx
 
 REPO = Path(__file__).resolve().parents[2]
 BUILD_SCRIPT = REPO / "macos" / "scripts" / "build-llama.sh"
+MIN_ARCHITECTURES = 50  # b9018 has 126
 RAW = "https://raw.githubusercontent.com/ggml-org/llama.cpp/{ref}/src/llama-arch.cpp"
 
 
@@ -27,9 +28,17 @@ def parse_architectures(arch_cpp: str) -> set[str]:
 
 
 def architectures_at(ref: str, client: httpx.Client) -> set[str]:
+    """Raises rather than return a near-empty set: if upstream reshapes the
+    table, an empty parse would screen every release as unloadable and give
+    every curated model a finding."""
     r = client.get(RAW.format(ref=ref))
     r.raise_for_status()
-    return parse_architectures(r.text)
+    found = parse_architectures(r.text)
+    if len(found) < MIN_ARCHITECTURES:
+        raise ValueError(
+            f"parsed {len(found)} architectures from llama-arch.cpp at {ref}; upstream has probably reshaped the table"
+        )
+    return found
 
 
 def latest_release(client: httpx.Client) -> dict[str, str]:
