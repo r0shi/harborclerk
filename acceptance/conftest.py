@@ -4,11 +4,13 @@ One folder of rendered fixtures is added to the instance under a per-run
 name, ingested, and deleted at the end. Deleting the watched folder cascades
 to its documents, so folder-scoped runs leave every other document on the
 instance untouched. What a run does leave: audit rows (login, key create and
-delete, reprocess), soft-deleted keys, and, when `HC_ACCEPTANCE_CONFIG_JSON`
-is set, a rewritten config.json with the same settings in two-space JSON and
-`enable_cli_access` spelled out. A second, empty watched folder is registered
-and removed for the scope checks. Wipe mode is opt-in and double-guarded
-(see `config.py`).
+delete, reprocess, one document soft-deleted, conversations created and
+deleted), soft-deleted keys, three extra watched folders registered and
+removed (one empty, one with a single document, one for H2), and, when
+`HC_ACCEPTANCE_CONFIG_JSON` is set, a rewritten config.json with the same
+settings in two-space JSON and `enable_cli_access` spelled out. If no model
+was active and the run was allowed to activate one, that model stays active.
+Wipe mode is opt-in and double-guarded (see `config.py`).
 
 The setup and teardown are plain functions so they can be tested offline
 with a fake client; the pytest fixtures only bind them to the session.
@@ -40,11 +42,6 @@ from acceptance.access import (
 from acceptance.config import WIPE_MAX_DOCUMENTS, AcceptanceConfig, load_config
 from acceptance.fixtures.render import Fixture, load_groundtruth, materialize, source_text
 from acceptance.hc_client import HarborClerk, McpSession
-
-
-def _bind_documents_under(client: HarborClerk) -> None:
-    """`populated_folder_session` needs the mapping helper on the client object."""
-    client.documents_under = lambda folder_path, expected=None: documents_under(client, folder_path, expected=expected)  # type: ignore[attr-defined]
 
 
 class AdminClient(Protocol):
@@ -81,7 +78,6 @@ def admin(cfg: AcceptanceConfig) -> Iterator[HarborClerk]:
         pytest.skip(
             "Compose targets are not supported yet (watcher auto-discovery creates a twin folder); see the spec"
         )
-    _bind_documents_under(client)
     yield client
     client.close()
 
@@ -261,6 +257,7 @@ def second_folder(cfg: AcceptanceConfig, admin: HarborClerk, corpus: Corpus) -> 
         str(Path(cfg.folder_path_in_instance).parent / name),
         source_text=source_text("second-folder-note.txt"),
         timeout_s=cfg.ingest_timeout_s,
+        documents_under=lambda path, expected: documents_under(admin, path, expected=expected),
     ) as f:
         yield f
 

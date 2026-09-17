@@ -113,3 +113,62 @@ def test_main_writes_a_dated_report_into_the_directory(junit: Path, tmp_path: Pa
     files = list(out_dir.glob("*-acceptance-*.md"))
     assert len(files) == 1 and files[0].name.startswith(f"{dt.date.today():%Y-%m-%d}-acceptance-")
     assert "r1" in files[0].read_text()
+
+
+def test_parse_junit_keeps_an_error_that_also_carries_a_skip(tmp_path: Path) -> None:
+    """A fixture teardown error on a skipped or xfailed test must not read as a skip."""
+    junit = tmp_path / "j.xml"
+    junit.write_text(
+        """<testsuite name="pytest" tests="2" time="1.0">
+  <testcase classname="x" name="test_e2_ask" time="0.1">
+    <skipped type="pytest.skip" message="no model"/>
+    <error message="teardown failed: folder_delete 500">trace</error>
+  </testcase>
+  <testcase classname="x" name="test_zz9_future_area" time="0.1"/>
+</testsuite>"""
+    )
+    summary = report.parse_junit(junit)
+    by_id = {c.id: c for c in summary.checks}
+    assert by_id["e2"].outcome == "error" and "teardown" in by_id["e2"].message
+    areas = report.area_results(summary)
+    unmapped = [c.id for c in areas[report.UNMAPPED][1]]
+    assert unmapped == ["test_zz9_future_area"], "a name with no area keeps its full name and is surfaced, not dropped"
+    text = report.render(
+        summary,
+        api_base="http://x",
+        run_id="r",
+        repo=Path(__file__).resolve().parents[1],
+        instance_build=None,
+        model=None,
+        deployment="d",
+    )
+    assert "Unmapped checks" in text and "test_zz9_future_area" in text
+
+
+def test_probe_instance_reads_build_model_and_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    from acceptance import hc_client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/system/health":
+            return httpx.Response(200, json={"status": "healthy", "build": "abc1234"})
+        if path == "/api/auth/login":
+            return httpx.Response(200, json={"access_token": "t", "token_type": "bearer", "user": {"role": "admin"}})
+        if path == "/api/chat/models/status":
+            return httpx.Response(200, json={"state": "ready", "model_id": "qwen3-8b"})
+        if path == "/api/watch/system":
+            return httpx.Response(200, json={"platform": "docker"})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    original = hc_client.HarborClerk.__init__
+
+    def patched(self, base_url, **kw):  # route the probe's client through the fake
+        original(self, base_url, transport=transport, **{k: v for k, v in kw.items() if k != "transport"})
+
+    monkeypatch.setattr(hc_client.HarborClerk, "__init__", patched)
+    monkeypatch.setenv("HC_USERNAME", "a@b.c")
+    monkeypatch.setenv("HC_PASSWORD", "x")
+    assert report.probe_instance("http://test", None, None, "macOS native") == ("abc1234", "qwen3-8b", "Docker Compose")

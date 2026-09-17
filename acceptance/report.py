@@ -25,6 +25,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from acceptance.config import _flag
+
 AREAS = [
     "Startup and onboarding",
     "Ingest and Status",
@@ -82,7 +84,7 @@ def parse_junit(path: Path) -> Summary:
                 if node is not None:
                     outcome, message = label, (node.get("message") or node.text or "").strip()
             skipped = case.find("skipped")
-            if skipped is not None:
+            if skipped is not None and outcome == "passed":  # a teardown error on a skipped test stays an error
                 outcome = "xfailed" if (skipped.get("type") or "") == "pytest.xfail" else "skipped"
                 message = (skipped.get("message") or "").strip()
             checks.append(Check(check_id, name, outcome, message))
@@ -96,15 +98,18 @@ def area_of(check_id: str) -> int | None:
     return PREFIX_AREA.get(base[:1])
 
 
+UNMAPPED = 0  # pseudo-area for checks whose id maps to no smoke area; never dropped silently
+
+
 def area_results(summary: Summary) -> dict[int, tuple[str, list[Check]]]:
     by_area: dict[int, list[Check]] = {}
     for c in summary.checks:
-        area = area_of(c.id)
-        if area is not None:
-            by_area.setdefault(area, []).append(c)
+        by_area.setdefault(area_of(c.id) or UNMAPPED, []).append(c)
     out: dict[int, tuple[str, list[Check]]] = {}
-    for n in range(1, len(AREAS) + 1):
+    for n in [*range(1, len(AREAS) + 1), UNMAPPED]:
         checks = by_area.get(n, [])
+        if n == UNMAPPED and not checks:
+            continue
         if not checks:
             out[n] = ("not run", [])
         elif any(c.outcome in ("failed", "error") for c in checks):
@@ -172,6 +177,7 @@ def render(
 ) -> str:
     now = now or dt.datetime.now().astimezone()
     areas = area_results(summary)
+    mode = "wipe mode (instance emptied first)" if _flag("HC_ACCEPTANCE_WIPE") else "folder-scoped; every search scoped"
     lines = [
         f"# Acceptance run — {now:%Y-%m-%d} — {socket.gethostname().split('.')[0]}",
         "",
@@ -182,7 +188,7 @@ def render(
         f"- **Model under test:** {model or 'none active (Ask checks skipped)'} · judge model: n/a · cloud spend: n/a",
         f"- **Run id:** `{run_id}` · duration {summary.duration_s:.0f} s · "
         + ", ".join(f"{v} {k}" for k, v in sorted(summary.counts.items())),
-        "- **Method:** `uv run pytest acceptance/ -m acceptance`, API tier only; every search folder-scoped; fresh captures",
+        f"- **Method:** `uv run pytest acceptance/ -m acceptance`, API tier only; {mode}; fresh captures",
         "",
         "| Area | Result | Checks |",
         "| --- | --- | --- |",
@@ -195,6 +201,10 @@ def render(
             continue
         ids = ", ".join(f"{c.id} {_glyph(c.outcome)}" for c in checks)
         lines.append(f"| {name} | {result} | {ids} |")
+    if UNMAPPED in areas:
+        result, checks = areas[UNMAPPED]
+        ids = ", ".join(f"{c.id} {_glyph(c.outcome)}" for c in checks)
+        lines.append(f"| Unmapped checks (fix `report.PREFIX_AREA`) | {result} | {ids} |")
     failed = [c for c in summary.checks if c.outcome in ("failed", "error")]
     partial = [c for c in summary.checks if c.outcome in ("skipped", "xfailed")]
     lines += ["", "## Failing checks", ""]
@@ -215,15 +225,16 @@ def probe_instance(
     from acceptance.hc_client import HarborClerk
 
     username, password = os.environ.get("HC_USERNAME", ""), os.environ.get("HC_PASSWORD", "")
-    with HarborClerk(api_base, verify=os.environ.get("HC_INSECURE", "") != "1") as client:
+    with HarborClerk(api_base, verify=not _flag("HC_INSECURE")) as client:
         build = build or client.health().get("build")
         if username and password:
             client.login(username, password)
             status = client.model_status()
             model = model or (status.get("model_id") if status.get("state") == "ready" else None)
             platform_name = client.watch_system().get("platform")
-            if platform_name == "docker":
-                deployment = "Docker Compose"
+            deployment = {"docker": "Docker Compose", "macos": "macOS native"}.get(
+                platform_name, platform_name or deployment
+            )
     return build, model, deployment
 
 

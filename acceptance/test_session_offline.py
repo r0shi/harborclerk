@@ -386,3 +386,47 @@ def test_stream_ask_returns_events_through_done() -> None:
     with HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client:
         events = client.stream_ask("c1", "q", timeout_s=5)
     assert [e["type"] for e in events] == ["text", "done"], "reading stops at done"
+
+
+def test_wait_for_model_ready_requires_consecutive_ready_polls() -> None:
+    """llama-server reports ready before it can serve; one ready poll is not enough."""
+    sequence = iter(
+        [
+            {"state": "ready", "model_id": "m"},
+            {"state": "loading", "model_id": "m"},
+            {"state": "ready", "model_id": "m"},
+            {"state": "ready", "model_id": "m"},
+            {"state": "ready", "model_id": "m"},
+        ]
+    )
+    seen: list[str] = []
+
+    class Client(HarborClerk):
+        def model_status(self) -> dict[str, Any]:
+            status = next(sequence)
+            seen.append(status["state"])
+            return status
+
+    with Client("http://localhost:1") as client:
+        client.wait_for_model_ready("m", timeout_s=5, consecutive=3, poll_s=0.01)
+    assert seen == ["ready", "loading", "ready", "ready", "ready"], "the streak must restart after a non-ready poll"
+
+
+def test_wait_for_model_ready_times_out_with_the_last_status() -> None:
+    class Client(HarborClerk):
+        def model_status(self) -> dict[str, Any]:
+            return {"state": "loading", "model_id": "m"}
+
+    with Client("http://localhost:1") as client, pytest.raises(TimeoutError, match="loading"):
+        client.wait_for_model_ready("m", timeout_s=0.05, poll_s=0.01)
+
+
+def test_stream_ask_raises_on_an_http_error_with_the_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"detail": "No model is active"})
+
+    with (
+        HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client,
+        pytest.raises(httpx.HTTPStatusError, match="No model"),
+    ):
+        client.stream_ask("c1", "q", timeout_s=5)

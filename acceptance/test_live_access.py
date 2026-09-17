@@ -260,16 +260,18 @@ def test_g8_scoped_key_cannot_read_a_document_outside_its_folder(
         assert key.request("GET", f"/api/docs/{second_folder.doc_id}").status_code == 404
     finally:
         key.close()
-    assert second_folder.phrase not in tool_json(
-        mcp.bearer(raw).call_tool("kb_search", {"query": second_folder.phrase, "k": 5})
-    )
+    hits = tool_json(mcp.bearer(raw).call_tool("kb_search", {"query": second_folder.phrase, "k": 5}))["hits"]
+    assert second_folder.doc_id not in {h["doc_id"] for h in hits}, "kb_search leaked the other folder's document"
 
 
 def test_g9_scoped_key_with_documents_but_no_match_says_the_query_would_match_unscoped(
     keys: KeyFactory, second_folder: PopulatedFolder, mcp
 ) -> None:
-    """The other branch of `would_match_unscoped`: the key sees documents, none
-    of which match a phrase that exists elsewhere on the instance."""
+    """The other branch of `would_match_unscoped`: the key sees documents, and
+    the scoped result is empty. The annotation is the unscoped candidate count
+    for the query alone (mcp_server.py, without the text filter), so it is > 0
+    on any instance with an active document; what this checks is that the
+    empty-scoped path is reached and annotated for a populated scope."""
     raw = keys.create("g9-second-scope", scope_folder_ids=[second_folder.folder_id])["raw_key"]
     session = mcp.bearer(raw)
     own = tool_json(session.call_tool("kb_search", {"query": second_folder.phrase, "k": 5}))["hits"]

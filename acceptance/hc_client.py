@@ -274,6 +274,7 @@ class HarborClerk:
         """llama-server reports ready before it can serve, so require `consecutive` ready polls in a row."""
         deadline = time.monotonic() + timeout_s
         streak = 0
+        status: dict[str, Any] = {}
         while time.monotonic() < deadline:
             status = self.model_status()
             streak = streak + 1 if status.get("state") == "ready" and status.get("model_id") == model_id else 0

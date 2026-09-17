@@ -208,9 +208,42 @@ SECOND_FOLDER_SOURCE = "second-folder-note.txt"
 SECOND_FOLDER_PHRASE = "cormorant ledger"
 
 
+def choose_model(status: dict[str, Any], models: list[dict[str, Any]], *, allow_swap: bool) -> tuple[str, str]:
+    """What the Ask checks should do about the model, from `models/status` and
+    `models`. Returns (action, detail):
+
+    - ("use", id): a model is active and ready; use it as found.
+    - ("wait", id): a model is configured but llama-server is still loading it
+      (just restarted, weights loading); wait for it rather than swap.
+    - ("activate", id): nothing is configured; the smallest downloaded model may
+      be activated because the run is allowed to change the instance. It stays
+      active: there was nothing to restore, and deactivating is never called.
+    - ("skip", reason): nothing downloaded, or a swap is not allowed."""
+    state, model_id = status.get("state"), status.get("model_id")
+    if model_id and state == "ready":
+        return "use", model_id
+    if model_id and state == "loading":
+        return "wait", model_id
+    downloaded = [m for m in models if m.get("downloaded")]
+    if not downloaded:
+        return "skip", "no local model is downloaded on this instance; the Ask checks need one"
+    if not allow_swap:
+        return "skip", (
+            "no model is active; activating one changes the instance, allowed only with "
+            "HC_ACCEPTANCE_DISPOSABLE=1 or HC_ACCEPTANCE_ALLOW_MODEL_SWAP=1"
+        )
+    return "activate", min(downloaded, key=lambda m: m["size_bytes"])["id"]
+
+
 @contextmanager
 def populated_folder_session(
-    admin: Any, folder_path: Path, path_in_instance: str, *, source_text: str, timeout_s: float
+    admin: Any,
+    folder_path: Path,
+    path_in_instance: str,
+    *,
+    source_text: str,
+    timeout_s: float,
+    documents_under: Any,
 ) -> Iterator[PopulatedFolder]:
     """Render one document into a new folder, register it, wait for it to be
     ready, yield; then remove the folder (cascading the document) and the
@@ -222,7 +255,7 @@ def populated_folder_session(
         folder = admin.folder_create(path_in_instance)
         folder_id = folder["folder_id"]
         admin.wait_for_folder_ingest(folder_id, expected_files=1, timeout_s=timeout_s)
-        docs = admin.documents_under(folder["path"], expected={SECOND_FOLDER_SOURCE})
+        docs = documents_under(folder["path"], {SECOND_FOLDER_SOURCE})
         yield PopulatedFolder(folder_id, folder["path"], docs[SECOND_FOLDER_SOURCE]["doc_id"], SECOND_FOLDER_PHRASE)
     finally:
         try:

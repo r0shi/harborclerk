@@ -347,9 +347,6 @@ class FakePopulatedAdmin(FakeAdmin):
     def wait_for_folder_ingest(self, folder_id: str, *, expected_files: int, timeout_s: float, poll_s: float = 3.0):
         return {"completed_files": expected_files}
 
-    def documents_under(self, folder_path: str, expected=None):
-        return {access.SECOND_FOLDER_SOURCE: {"doc_id": "d-second"}}
-
     def folder_delete(self, folder_id: str) -> None:
         if self.gone_on_delete:
             raise httpx.HTTPStatusError(
@@ -361,7 +358,10 @@ class FakePopulatedAdmin(FakeAdmin):
 def test_populated_folder_session_renders_registers_and_cleans_up(tmp_path: Path) -> None:
     admin = FakePopulatedAdmin()
     folder = tmp_path / "second"
-    with access.populated_folder_session(admin, folder, "/instance/second", source_text="x", timeout_s=1) as f:
+    mapper = lambda path, expected: {access.SECOND_FOLDER_SOURCE: {"doc_id": "d-second"}}  # noqa: E731
+    with access.populated_folder_session(
+        admin, folder, "/instance/second", source_text="x", timeout_s=1, documents_under=mapper
+    ) as f:
         assert f.doc_id == "d-second" and f.phrase == access.SECOND_FOLDER_PHRASE
         assert (folder / access.SECOND_FOLDER_SOURCE).read_text() == "x"
     assert admin.deleted == ["empty-1"] and not folder.exists()
@@ -371,6 +371,42 @@ def test_populated_folder_session_tolerates_a_folder_a_check_already_deleted(tmp
     """H2 deletes the folder itself; the teardown's 404 must not mask H2's result."""
     admin = FakePopulatedAdmin(gone_on_delete=True)
     folder = tmp_path / "second"
-    with access.populated_folder_session(admin, folder, "/instance/second", source_text="x", timeout_s=1):
+    mapper = lambda path, expected: {access.SECOND_FOLDER_SOURCE: {"doc_id": "d-second"}}  # noqa: E731
+    with access.populated_folder_session(
+        admin, folder, "/instance/second", source_text="x", timeout_s=1, documents_under=mapper
+    ):
         pass
     assert not folder.exists(), "the files must go even when the folder was already gone"
+
+
+# ── choose_model ────────────────────────────────────────────────────────────
+
+_MODELS = [
+    {"id": "big", "downloaded": True, "size_bytes": 20},
+    {"id": "small", "downloaded": True, "size_bytes": 5},
+    {"id": "tiny-not-here", "downloaded": False, "size_bytes": 2},
+]
+
+
+def test_choose_model_uses_a_ready_model_as_found() -> None:
+    assert access.choose_model({"state": "ready", "model_id": "big"}, _MODELS, allow_swap=True) == ("use", "big")
+
+
+def test_choose_model_waits_for_a_loading_model_instead_of_swapping() -> None:
+    """A model restarting or loading weights is configured; swapping it out
+    would change the operator's instance for no reason."""
+    assert access.choose_model({"state": "loading", "model_id": "big"}, _MODELS, allow_swap=True) == ("wait", "big")
+
+
+def test_choose_model_activates_the_smallest_downloaded_only_when_allowed() -> None:
+    nothing = {"state": "deactivated", "model_id": None}
+    assert access.choose_model(nothing, _MODELS, allow_swap=True) == ("activate", "small")
+    action, reason = access.choose_model(nothing, _MODELS, allow_swap=False)
+    assert action == "skip" and "ALLOW_MODEL_SWAP" in reason
+
+
+def test_choose_model_skips_when_nothing_is_downloaded() -> None:
+    action, reason = access.choose_model(
+        {"state": "deactivated"}, [{"id": "x", "downloaded": False, "size_bytes": 1}], allow_swap=True
+    )
+    assert action == "skip" and "downloaded" in reason
