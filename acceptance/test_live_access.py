@@ -274,6 +274,10 @@ def test_g9_scoped_key_with_documents_but_no_match_says_the_query_would_match_un
     session = mcp.bearer(raw)
     own = tool_json(session.call_tool("kb_search", {"query": second_folder.phrase, "k": 5}))["hits"]
     assert {h["doc_id"] for h in own} == {second_folder.doc_id}, "the scoped key must see its own folder"
-    resp = tool_json(session.call_tool("kb_search", {"query": "Harbourside Lane loading bay", "k": 10}))
+    # The vector leg returns the nearest chunk in scope for any query, so the
+    # empty-scoped-result path needs a literal filter that nothing in the
+    # second folder satisfies while the fixture folder does.
+    args = {"query": "Harbourside Lane", "text_contains": "Harbourside Lane", "k": 10}
+    resp = tool_json(session.call_tool("kb_search", args))
     assert resp["hits"] == [], resp
     assert resp.get("would_match_unscoped", 0) > 0, resp

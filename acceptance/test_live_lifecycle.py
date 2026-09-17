@@ -112,16 +112,22 @@ def test_h1_soft_deleted_document_leaves_every_retrieval_surface(
     before = admin.search(phrase, scope=corpus.scope, text_contains=phrase, k=5)["hits"]
     assert before and {h["doc_id"] for h in before} == {doc_id}, "the target must be retrievable before deletion"
     chunk_id = before[0]["chunk_id"]
-    assert tool_json(session.call_tool("kb_search", {"query": phrase, "k": 5}))["hits"], "MCP saw nothing before"
+    mcp_before = tool_json(session.call_tool("kb_search", {"query": phrase, "k": 10}))["hits"]
+    assert doc_id in {h["doc_id"] for h in mcp_before}, "MCP must retrieve the target before deletion"
 
     _ensure_deleted(admin, corpus)
 
+    # Hybrid search still returns the nearest *other* chunks for any query, so
+    # the contract is "the deleted document is absent", not "no hits".
     detail = admin.request("GET", f"/api/docs/{doc_id}")
     assert detail.status_code == 404 or detail.json().get("status") == "deleted", detail.text[:200]
     assert not admin.search(phrase, scope=corpus.scope, text_contains=phrase, k=5)["hits"], "REST search"
+    rest_hits = admin.search(phrase, scope=corpus.scope, k=20)["hits"]
+    assert doc_id not in {h["doc_id"] for h in rest_hits}, "REST search without a text filter"
     assert not admin.find_all(phrase, scope=corpus.scope, text_contains=phrase)["results"], "REST Find All"
     assert not admin.list_documents(doc_ids=doc_id, limit=5)["items"], "document list"
-    assert not tool_json(session.call_tool("kb_search", {"query": phrase, "k": 5}))["hits"], "kb_search"
+    mcp_hits = tool_json(session.call_tool("kb_search", {"query": phrase, "k": 20}))["hits"]
+    assert doc_id not in {h["doc_id"] for h in mcp_hits}, "kb_search still returns the deleted document"
     passages = session.call_tool("kb_read_passages", {"chunk_ids": [chunk_id]})
     err = tool_error(passages)
     assert err or not tool_json(passages)["passages"], "kb_read_passages still returned the deleted chunk"

@@ -348,3 +348,41 @@ def test_wait_for_document_ready_detects_the_error_status_immediately() -> None:
 
     with Client("http://localhost:1") as client, pytest.raises(RuntimeError, match="boom"):
         client.wait_for_document_ready("d1", timeout_s=2, poll_s=0.1)
+
+
+def test_stream_ask_enforces_a_total_budget_not_a_per_event_gap() -> None:
+    """A tool-calling answer streams an event every second or so and could
+    otherwise run for as long as the model likes; the budget is for the
+    whole answer."""
+    import time as _time
+
+    def slow_events():
+        for i in range(50):
+            _time.sleep(0.05)
+            yield f'data: {{"type": "tool_call", "n": {i}}}\n\n'.encode()
+
+    class SlowStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield from slow_events()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=SlowStream())
+        return httpx.Response(200, json={})
+
+    with HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client:
+        started = _time.monotonic()
+        with pytest.raises(TimeoutError, match="exceeded 0s|exceeded"):
+            client.stream_ask("c1", "q", timeout_s=0.3)
+        assert _time.monotonic() - started < 2.0, "the budget must cut the stream short"
+
+
+def test_stream_ask_returns_events_through_done() -> None:
+    body = b'data: {"type": "text", "content": "hi"}\n\ndata: {"type": "done", "rag_context": {"citations": []}}\n\ndata: {"type": "after"}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+    with HarborClerk("http://test", transport=httpx.MockTransport(handler)) as client:
+        events = client.stream_ask("c1", "q", timeout_s=5)
+    assert [e["type"] for e in events] == ["text", "done"], "reading stops at done"

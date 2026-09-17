@@ -293,18 +293,28 @@ class HarborClerk:
 
     def stream_ask(self, conv_id: str, content: str, *, timeout_s: float) -> list[dict[str, Any]]:
         """Send one message and drain the SSE stream; returns every event, the
-        last of which is `done` with `rag_context.citations` when there were any."""
+        last of which is `done` with `rag_context.citations` when there were any.
+
+        `timeout_s` is the whole answer's budget, not the gap between events: an
+        agentic answer that keeps calling tools streams steadily and would
+        otherwise run for as long as the model cares to (one did, for 19 min).
+        Leaving the `with` block closes the connection, which is the only
+        cancellation the endpoint offers."""
         events: list[dict[str, Any]] = []
+        deadline = time.monotonic() + timeout_s
         with self._http.stream(
             "POST",
             f"/api/chat/conversations/{conv_id}/messages",
             json={"content": content},
-            timeout=httpx.Timeout(connect=10, read=timeout_s, write=10, pool=10),
+            timeout=httpx.Timeout(connect=10, read=min(timeout_s, 120), write=10, pool=10),
         ) as r:
             if r.status_code >= 400:
                 r.read()
                 raise httpx.HTTPStatusError(f"ask -> {r.status_code}: {r.text[:300]}", request=r.request, response=r)
             for line in r.iter_lines():
+                if time.monotonic() > deadline:
+                    kinds = [e.get("type") for e in events[-5:]]
+                    raise TimeoutError(f"ask exceeded {timeout_s:.0f}s after {len(events)} events; last: {kinds}")
                 if not line.startswith("data: ") or not line[6:].strip():
                     continue
                 event = json.loads(line[6:])
