@@ -64,3 +64,12 @@ class ModelOut(BaseModel):
     downloading: bool = False
     yarn_available: bool = False
     yarn_extended_context: int | None = None
+    # Memory budget (#556): what llama-server needs at the model's context, the
+    # smallest Mac that runs it with the rest of the app resident, and what
+    # this machine can do: the largest context that fits here (0 = the weights
+    # alone do not fit) and this machine's physical memory.
+    memory_bytes: int = 0
+    min_ram_gb: int = 0
+    max_context_here: int = 0
+    fits_here: bool = True
+    system_ram_gb: float = 0.0

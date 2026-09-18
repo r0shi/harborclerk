@@ -19,6 +19,14 @@ interface ModelInfo {
   downloading: boolean
   yarn_available: boolean
   yarn_extended_context: number | null
+  // Memory budget (#556): what the model needs, the smallest Mac that runs
+  // it, and what this Mac can do (max_context_here is 0 when the weights
+  // alone do not fit).
+  memory_bytes: number
+  min_ram_gb: number
+  max_context_here: number
+  fits_here: boolean
+  system_ram_gb: number
 }
 
 interface OrphanInfo {
@@ -36,6 +44,9 @@ export default function ModelsPage() {
   const { token } = useAuth()
   const { markTransitioning } = useLLMStatusContext()
   const [models, setModels] = useState<ModelInfo[]>([])
+  // Two-click confirmation for activating a model this Mac cannot hold: a
+  // native confirm() silently returns false inside the WKWebView.
+  const [confirmingActivate, setConfirmingActivate] = useState<string | null>(null)
   const [orphans, setOrphans] = useState<OrphanInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -212,10 +223,11 @@ export default function ModelsPage() {
     }
   }
 
-  async function handleActivate(modelId: string) {
+  async function handleActivate(modelId: string, force = false) {
     setError('')
+    setConfirmingActivate(null)
     try {
-      await put(`/api/chat/models/${modelId}/activate`)
+      await put(`/api/chat/models/${modelId}/activate${force ? '?force=true' : ''}`)
       // Tell the LLM-status banner to expect a transition. The
       // backend just wrote config; the Swift host will pick it up
       // within a few seconds and restart llama-server, which then
@@ -323,20 +335,12 @@ export default function ModelsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-(--color-border)">
-            {(
-              [
-                { label: '16 GB RAM', min: 0, max: 4_000_000_000 },
-                { label: '32 GB RAM', min: 4_000_000_000, max: 12_000_000_000 },
-                { label: '48+ GB RAM', min: 12_000_000_000, max: Infinity },
-              ] as const
-            )
-              .map((tier) => ({
-                ...tier,
-                items: models
-                  .filter((m) => m.size_bytes >= tier.min && m.size_bytes < tier.max)
-                  .sort((a, b) => a.size_bytes - b.size_bytes),
+            {Array.from(new Set(models.map((m) => m.min_ram_gb)))
+              .sort((a, b) => a - b)
+              .map((gb) => ({
+                label: `Needs a ${gb} GB Mac`,
+                items: models.filter((m) => m.min_ram_gb === gb).sort((a, b) => a.memory_bytes - b.memory_bytes),
               }))
-              .filter((tier) => tier.items.length > 0)
               .map((tier) => (
                 <Fragment key={tier.label}>
                   <tr>
@@ -367,7 +371,25 @@ export default function ModelsPage() {
                             </div>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{formatSize(model.size_bytes)}</td>
+                        <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
+                          <div>{formatSize(model.size_bytes)}</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            {formatSize(model.memory_bytes)} to run
+                          </div>
+                          {!model.fits_here && model.max_context_here > 0 && (
+                            <div className="mt-1 max-w-[14rem] text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                              Fits this Mac ({model.system_ram_gb} GB) at up to{' '}
+                              {model.max_context_here.toLocaleString()} tokens of context; the full window needs about{' '}
+                              {model.min_ram_gb} GB.
+                            </div>
+                          )}
+                          {model.max_context_here === 0 && (
+                            <div className="mt-1 max-w-[14rem] text-[11px] font-medium leading-snug text-red-700 dark:text-red-400">
+                              Does not fit this Mac ({model.system_ram_gb} GB): needs about {model.min_ram_gb} GB. It
+                              may fail to load or make the machine unresponsive.
+                            </div>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
                           <span>{model.context_window.toLocaleString()}</span>
                           {model.yarn_available && model.yarn_extended_context && (
@@ -446,12 +468,28 @@ export default function ModelsPage() {
                             )}
                             {model.downloaded && !model.active && (
                               <>
-                                <button
-                                  onClick={() => handleActivate(model.id)}
-                                  className="rounded-lg border border-blue-600 px-3 py-1 text-xs font-medium text-blue-600 shadow-xs hover:bg-blue-50 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/20"
-                                >
-                                  Activate
-                                </button>
+                                {model.max_context_here === 0 ? (
+                                  <button
+                                    onClick={() =>
+                                      confirmingActivate === model.id
+                                        ? handleActivate(model.id, true)
+                                        : setConfirmingActivate(model.id)
+                                    }
+                                    className="rounded-lg border border-red-600 px-3 py-1 text-xs font-medium text-red-700 shadow-xs hover:bg-red-50 dark:text-red-400 dark:border-red-400 dark:hover:bg-red-900/20"
+                                    title={`Needs about ${model.min_ram_gb} GB; this Mac has ${model.system_ram_gb} GB`}
+                                  >
+                                    {confirmingActivate === model.id
+                                      ? 'Click again to activate anyway'
+                                      : 'Activate anyway'}
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleActivate(model.id)}
+                                    className="rounded-lg border border-blue-600 px-3 py-1 text-xs font-medium text-blue-600 shadow-xs hover:bg-blue-50 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/20"
+                                  >
+                                    Activate
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => handleDelete(model.id)}
                                   className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-red-700"

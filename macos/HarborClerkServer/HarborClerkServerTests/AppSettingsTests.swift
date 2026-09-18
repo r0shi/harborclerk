@@ -173,6 +173,50 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.activeModelPath, "")
     }
 
+    // MARK: - Memory budget (#556)
+
+    /// Mirror of `tests/test_llm_models.py`: the constants and the rounding
+    /// must agree with `src/harbor_clerk/llm/models.py`, or the launcher clamps
+    /// to a different context than the API advertises.
+    func testMemoryBudgetConstantsMatchPythonRegistry() {
+        XCTAssertEqual(MemoryBudget.runtimeOverheadBytes, 1_000_000_000)
+        XCTAssertEqual(MemoryBudget.hostHeadroomBytes, 6_000_000_000)
+        let expected: [String: (perToken: Int, fixed: Int, context: Int)] = [
+            "qwen3-8b": (147_456, 0, 32768),
+            "qwen3-4b": (147_456, 0, 32768),
+            "gpt-oss-20b": (24_576, 3_145_728, 128000),
+            "qwen36-35b-a3b": (20_480, 300_000_000, 262144),
+            "gemma4-26b-a4b": (20_480, 209_715_200, 262144),  // #548
+        ]
+        let settings = AppSettings(configURL: configURL)
+        for (modelId, e) in expected {
+            settings.llmModelId = modelId
+            XCTAssertEqual(settings.activeModelKvBytesPerToken, e.perToken, modelId)
+            XCTAssertEqual(settings.activeModelKvFixedBytes, e.fixed, modelId)
+            XCTAssertEqual(settings.activeModelContextWindow, e.context, modelId)
+        }
+        XCTAssertEqual(Set(expected.keys), Self.knownModelIds, "memory table out of sync with the model set")
+        settings.llmModelId = "a-model-swift-does-not-know"
+        XCTAssertEqual(settings.activeModelKvBytesPerToken, 147_456, "unknown ids get the largest cost, so the clamp errs small")
+    }
+
+    /// Same cases as `test_max_context_is_what_fits...` in Python.
+    func testMaxContextIsWhatFitsAndZeroWhenTheWeightsAloneDoNot() {
+        let m = (bytes: 5_000_000_000, perToken: 147_456, fixed: 0, requested: 32768)
+        func fit(_ ram: Int, _ model: (bytes: Int, perToken: Int, fixed: Int, requested: Int) = m) -> Int {
+            MemoryBudget.maxContext(modelBytes: model.bytes, kvBytesPerToken: model.perToken, kvFixedBytes: model.fixed, requested: model.requested, ramBytes: ram)
+        }
+        XCTAssertEqual(fit(64 * 1024 * 1024 * 1024), 32768)
+        XCTAssertEqual(fit(16_000_000_000), 26624, "4 GB spare is 27126 tokens, floored to 1024s")
+        XCTAssertEqual(fit(12_500_000_000), 0, "3389 tokens is not worth running")
+        XCTAssertEqual(fit(11_000_000_000), 0)
+        XCTAssertEqual(fit(16_000_000_000, (5_000_000_000, 0, 0, 32768)), 32768, "no per-token cost: the model's own window")
+        XCTAssertEqual(fit(11_000_000_000, (5_000_000_000, 0, 0, 32768)), 0)
+        XCTAssertEqual(fit(16_000_000_000, (5_000_000_000, 20_480, 209_715_200, 262144)), (16_000_000_000 - 12_209_715_200) / 20_480 / 1024 * 1024)
+        // The mini's own case: the 35B-A3B at full context does not fit 32 GiB but 239616 tokens do.
+        XCTAssertEqual(fit(34_359_738_368, (22_134_528_992, 20_480, 300_000_000, 262144)), 239_616)
+    }
+
     // MARK: - Per-model parallel_slots (llama-server -np)
 
     /// All model IDs Swift knows about. Source of truth for the completeness
