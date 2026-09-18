@@ -17,6 +17,16 @@ const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
     label: 'Strong tables and comparisons',
     note: 'Good fit for structured answers, comparisons, and table-heavy work.',
   },
+  'qwen35-9b': {
+    label: 'Newer lightweight, long context',
+    note: 'The successor to Qwen3 8B with a 262K native window. Evaluation on this product is pending.',
+    warning: 'Not yet evaluated here: verify cited answers carefully.',
+  },
+  'qwen35-4b': {
+    label: 'Newer smallest, long context',
+    note: 'The successor to Qwen3 4B with a 262K native window. Evaluation on this product is pending.',
+    warning: 'Not yet evaluated here: verify cited answers carefully.',
+  },
   'qwen3-8b': {
     label: 'Lightweight lookup',
     note: 'Good starting point for quick cited answers and everyday document lookup.',

@@ -125,6 +125,37 @@ MODELS: dict[str, ModelInfo] = {
             parallel_slots=1,
         ),
         ModelInfo(
+            id="qwen35-9b",
+            name="Qwen3.5 9B",
+            huggingface_repo="unsloth/Qwen3.5-9B-GGUF",
+            filename="Qwen3.5-9B-Q4_K_M.gguf",
+            size_bytes=5_680_522_464,
+            # The GGUF's native window; no YaRN needed. Hybrid: one layer in four keeps a KV cache
+            # (full_attention_interval = 4, so 8 of 32) at 4 KV heads x (256 + 256) x 2 bytes: 32 KB per token,
+            # 8.6 GB at 262K, which is more than the weights. The launcher clamps -c to what the Mac fits
+            # (about 130K tokens on 16 GB). The 24 linear-attention layers carry a fixed recurrent state of
+            # about 2 MB per layer per slot; 100 MB covers both slots with room.
+            context_window=262144,
+            supports_tools=True,
+            kv_bytes_per_token=32_768,
+            kv_fixed_bytes=100_000_000,
+            parallel_slots=2,  # 131K per slot at full window
+        ),
+        ModelInfo(
+            id="qwen35-4b",
+            name="Qwen3.5 4B",
+            huggingface_repo="unsloth/Qwen3.5-4B-GGUF",
+            filename="Qwen3.5-4B-Q4_K_M.gguf",
+            size_bytes=2_740_937_888,
+            context_window=262144,
+            supports_tools=True,
+            kv_bytes_per_token=32_768,  # same attention geometry as the 9B: 8 of 32 layers, 4 KV heads x 512
+            kv_fixed_bytes=100_000_000,
+            # Two slots, not the 4 the small tier once used: qwen3-4b's exception was a 32K window split four
+            # ways; here two slots still leave 131K each.
+            parallel_slots=2,
+        ),
+        ModelInfo(
             id="gemma4-26b-a4b",
             name="Gemma 4 26B-A4B",
             huggingface_repo="bartowski/google_gemma-4-26B-A4B-it-GGUF",

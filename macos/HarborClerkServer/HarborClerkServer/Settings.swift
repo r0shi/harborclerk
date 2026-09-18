@@ -182,6 +182,8 @@ final class AppSettings: @unchecked Sendable {
         let filenames: [String: String] = [
             "qwen3-8b": "Qwen3-8B-Q4_K_M.gguf",
             "qwen3-4b": "Qwen3-4B-Q4_K_M.gguf",
+            "qwen35-9b": "Qwen3.5-9B-Q4_K_M.gguf",
+            "qwen35-4b": "Qwen3.5-4B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
             "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
@@ -196,6 +198,8 @@ final class AppSettings: @unchecked Sendable {
         let contextWindows: [String: Int] = [
             "qwen3-8b": 32768,
             "qwen3-4b": 32768,
+            "qwen35-9b": 262144,
+            "qwen35-4b": 262144,
             "gpt-oss-20b": 128000,
             "qwen36-35b-a3b": 262144,
             "gemma4-26b-a4b": 262144,  // the GGUF's; 128K is the E2B/E4B figure (#548)
@@ -223,6 +227,8 @@ final class AppSettings: @unchecked Sendable {
     static let kvBytesPerToken: [String: Int] = [
         "qwen3-8b": 147_456,
         "qwen3-4b": 147_456,
+        "qwen35-9b": 32_768,
+        "qwen35-4b": 32_768,
         "gpt-oss-20b": 24_576,
         "qwen36-35b-a3b": 20_480,
         "gemma4-26b-a4b": 20_480,
@@ -231,6 +237,8 @@ final class AppSettings: @unchecked Sendable {
     static let kvFixedBytes: [String: Int] = [
         "qwen3-8b": 0,
         "qwen3-4b": 0,
+        "qwen35-9b": 100_000_000,
+        "qwen35-4b": 100_000_000,
         "gpt-oss-20b": 3_145_728,
         "qwen36-35b-a3b": 300_000_000,
         "gemma4-26b-a4b": 209_715_200,
@@ -264,6 +272,8 @@ final class AppSettings: @unchecked Sendable {
         let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
         let slots: [String: Int] = [
             "qwen3-8b": 2,             // mid (32K context)
+            "qwen35-9b": 2,            // 262K window: 131K per slot
+            "qwen35-4b": 2,            // 262K window: 131K per slot
             "qwen3-4b": 1,             // small but -np 1 — 8K/slot under -np 4 too tight for tools schema + ambiguous results (v3 sweep, models.py)
             "gpt-oss-20b": 1,          // heavy — MoE active params are small but 128K context → KV too big for 2 slots
             "gemma4-26b-a4b": 1,       // heavy

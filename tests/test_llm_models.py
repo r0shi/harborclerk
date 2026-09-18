@@ -72,6 +72,9 @@ def test_curated_models_parallel_slots_tiered_by_size():
         "qwen3-4b": 1,
         # Mid (≤32K native context)
         "qwen3-8b": 2,
+        # 262K native window: two slots still leave 131K each
+        "qwen35-9b": 2,
+        "qwen35-4b": 2,
         # Heavy
         "gpt-oss-20b": 1,  # 128K context → KV cache too big for 2 slots on 18 GB
         "gemma4-26b-a4b": 1,
@@ -222,6 +225,8 @@ GEOMETRY = {
     "gemma4-26b-a4b": ("gemma4", "global"),  # sliding_window_pattern: 1 = windowed, 0 = global
     "gpt-oss-20b": ("gpt-oss", "half"),  # llama.cpp alternates window and full layers for this architecture
     "qwen36-35b-a3b": ("qwen35moe", "interval"),  # full_attention_interval
+    "qwen35-9b": ("qwen35", "interval"),
+    "qwen35-4b": ("qwen35", "interval"),
 }
 
 
