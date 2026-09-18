@@ -17,7 +17,8 @@ if [ -d "$SRC/.git" ]; then
     origin="$(git -C "$SRC" config --get remote.origin.url || true)"
     want="$(git -C "$SRC" rev-parse -q --verify "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
     have="$(git -C "$SRC" rev-parse -q --verify HEAD 2>/dev/null || true)"
-    dirty="$(git -C "$SRC" status --porcelain --untracked-files=no)"
+    # Untracked files count: un-added work is still work. The build tree does not, because upstream ignores build*/.
+    dirty="$(git -C "$SRC" status --porcelain)"
     if [ "$origin" = "$REPO" ] && [ -n "$want" ] && [ "$want" = "$have" ] && [ -z "$dirty" ]; then
         echo "    (using existing clone at $TAG)"
         exit 0
@@ -44,6 +45,7 @@ fi
 
 git clone --depth 1 --branch "$TAG" "$REPO" "$SRC"
 if ! git -C "$SRC" rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+    rm -rf "$SRC"  # this script's own clone of a moment ago; left behind, the next run would refuse it as someone's
     echo "error: '$TAG' is a branch, not a tag; the pin must be a release tag" >&2
     exit 1
 fi

@@ -65,6 +65,8 @@ def upstream(tmp_path: Path) -> str:
     src = tmp_path / "upstream"
     src.mkdir()
     _git(src, "init", "-q", "-b", "master")
+    (src / ".gitignore").write_text("/build*\n")  # as upstream's .gitignore does
+    _git(src, "add", ".gitignore")
     for tag in ("v0.4.0", "v0.4.1"):
         (src / "VERSION").write_text(tag)
         _git(src, "add", "VERSION")
@@ -168,6 +170,16 @@ def test_the_helper_removes_nothing_it_did_not_clone(tmp_path: Path, upstream: s
 
     branch = _ensure(tmp_path / "from-branch", "master", upstream)
     assert branch.returncode == 1 and "is a branch, not a tag" in branch.stderr
+    assert not (tmp_path / "from-branch").exists(), (
+        "its own clone of a moment ago; left behind, the next run refuses it"
+    )
+
+    # Un-added work in a clone that otherwise looks like the helper's own is still work.
+    stash = tmp_path / "stash"
+    assert _ensure(stash, "v0.4.0", upstream).returncode == 0
+    (stash / "experiment.patch").write_text("not yet added")
+    refused = _ensure(stash, "v0.4.1", upstream)
+    assert refused.returncode == 1 and (stash / "experiment.patch").exists()
 
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -207,7 +219,8 @@ def test_the_build_fails_on_the_wrong_commit_and_on_a_library_the_bundle_does_no
     _stub(
         stubs,
         "cmake",
-        'if [ "$1" = "--build" ]; then mkdir -p build/bin; touch build/bin/libllama.dylib\n'
+        'if [ "$1" = "--build" ]; then mkdir -p build/bin; touch build/bin/libllama.0.4.1.dylib\n'
+        "ln -sf libllama.0.4.1.dylib build/bin/libllama.0.dylib; ln -sf libllama.0.dylib build/bin/libllama.dylib\n"
         'printf \'#!/usr/bin/env bash\\necho "version: 1 (%s)"\\n\' "$FAKE_COMMIT" > build/bin/llama-server\n'
         "chmod +x build/bin/llama-server; fi\n",
     )
@@ -244,7 +257,9 @@ def test_the_build_fails_on_the_wrong_commit_and_on_a_library_the_bundle_does_no
         assert r.returncode == 0, r.stderr
         assert f"llama-server built at v0.4.1 ({commit})" in r.stdout
         assert not (dest / "libllama.0.0.1.dylib").exists(), "a stale dylib would have shipped in the bundle"
-        assert (dest / "libllama.dylib").exists()
+        assert (dest / "libllama.dylib").is_symlink() and (
+            dest / "libllama.dylib"
+        ).resolve().name == "libllama.0.4.1.dylib"
     else:
         assert r.returncode == 1 and failure in r.stderr, r.stderr
         if "would not load" in failure:
