@@ -153,12 +153,16 @@ final class AppSettingsTests: XCTestCase {
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
             "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+            "qwen35-9b": "Qwen3.5-9B-Q4_K_M.gguf",
+            "qwen35-4b": "Qwen3.5-4B-Q4_K_M.gguf",
         ]
         for (modelId, filename) in expected {
             settings.llmModelId = modelId
             XCTAssertTrue(settings.activeModelPath.hasSuffix(filename),
                 "Expected path for \(modelId) to end with \(filename), got \(settings.activeModelPath)")
         }
+        // A model added to the other tables but not to the filename map launches as "Model file not found".
+        XCTAssertEqual(Set(expected.keys), Self.knownModelIds, "filename map out of sync with the model set")
     }
 
     func testActiveModelPathUnknownModel() {
@@ -184,8 +188,8 @@ final class AppSettingsTests: XCTestCase {
         let expected: [String: (perToken: Int, fixed: Int, context: Int)] = [
             "qwen3-8b": (147_456, 0, 32768),
             "qwen3-4b": (147_456, 0, 32768),
-            "qwen35-9b": (32_768, 100_000_000, 262144),
-            "qwen35-4b": (32_768, 100_000_000, 262144),
+            "qwen35-9b": (32_768, 105_381_888, 262144),
+            "qwen35-4b": (32_768, 105_381_888, 262144),
             "gpt-oss-20b": (24_576, 3_145_728, 128000),
             "qwen36-35b-a3b": (20_480, 300_000_000, 262144),
             "gemma4-26b-a4b": (20_480, 209_715_200, 262144),  // #548
@@ -263,7 +267,7 @@ final class AppSettingsTests: XCTestCase {
         let expected: [String: Int] = [
             // Small — but exception: qwen3-4b is -np 1, see models.py
             "qwen3-4b": 1,
-            // Mid (5-12 GB, ≤32K context) → 2 slots
+            // Two slots where the window is large enough to halve (a slot divides -c, it does not add memory)
             "qwen3-8b": 2,
             "qwen35-9b": 2,
             "qwen35-4b": 2,

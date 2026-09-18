@@ -237,8 +237,8 @@ final class AppSettings: @unchecked Sendable {
     static let kvFixedBytes: [String: Int] = [
         "qwen3-8b": 0,
         "qwen3-4b": 0,
-        "qwen35-9b": 100_000_000,
-        "qwen35-4b": 100_000_000,
+        "qwen35-9b": 105_381_888,
+        "qwen35-4b": 105_381_888,
         "gpt-oss-20b": 3_145_728,
         "qwen36-35b-a3b": 300_000_000,
         "gemma4-26b-a4b": 209_715_200,
