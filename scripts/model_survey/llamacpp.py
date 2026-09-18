@@ -10,7 +10,7 @@ import httpx
 
 REPO = Path(__file__).resolve().parents[2]
 BUILD_SCRIPT = REPO / "macos" / "scripts" / "build-llama.sh"
-MIN_ARCHITECTURES = 50  # b9018 has 126
+MIN_ARCHITECTURES = 50  # v0.4.1 has 151
 RAW = "https://raw.githubusercontent.com/ggml-org/llama.cpp/{ref}/src/llama-arch.cpp"
 
 

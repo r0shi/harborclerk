@@ -154,6 +154,26 @@ preset. These are defined in `ServiceManager.workerCounts`.
 even when the Python source had changed, producing a stale venv inside a
 freshly-built app.
 
+## The llama.cpp pin lives in two places
+
+`scripts/build-llama.sh` (`LLAMA_CPP_TAG`) and the image in `docker-compose.yml`;
+`tests/test_llama_cpp_pin.py` holds them together and to a stable release. Bump
+both in one PR, on its own, and re-baseline every model after it. The build
+replaces a clone an older pin left behind, fails unless the binary's `--version`
+names the pinned commit, and fails on any link outside the bundle and the OS
+(Homebrew's OpenSSL shipped that way for months: both build machines have it).
+
+## A model server does not run out of memory. The Mac does.
+
+Unified memory lets `llama-server` allocate more than the machine has; the host
+swaps until the kernel watchdog panics. The mini (32 GB) did so on 2026-09-17
+when a hand-launched smoke test passed the YaRN-extended context (`-c 131072
+-np 2`: ~19 GB of KV cache for Qwen3-8B at ~144 KB per token) beside the app's
+own server holding `gpt-oss-20b`. Before launching any `llama-server` by hand,
+add the model file to the KV cache, subtract what is already resident (the
+app's server, anything else on the host that loads models), and stay well
+inside what is free. YaRN is off by default; use the app's defaults.
+
 ## `cc` can pick up the Command Line Tools SDK, not Xcode's
 
 `make apps` compiles PostgreSQL and pgvector from source. On a machine whose
