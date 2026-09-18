@@ -18,13 +18,13 @@ const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
     note: 'Good fit for structured answers, comparisons, and table-heavy work.',
   },
   'qwen35-9b': {
-    label: 'Newer lightweight, long context',
-    note: 'The successor to Qwen3 8B with a 262K native window. Evaluation on this product is pending.',
+    label: 'Newer lightweight',
+    note: 'The successor to Qwen3 8B. Its window is far longer than this Mac may have memory for: the figure above is what fits here. Evaluation on this product is pending.',
     warning: 'Not yet evaluated here: verify cited answers carefully.',
   },
   'qwen35-4b': {
-    label: 'Newer smallest, long context',
-    note: 'The successor to Qwen3 4B with a 262K native window. Evaluation on this product is pending.',
+    label: 'Newer smallest',
+    note: 'The successor to Qwen3 4B. Its window is far longer than this Mac may have memory for: the figure above is what fits here. Evaluation on this product is pending.',
     warning: 'Not yet evaluated here: verify cited answers carefully.',
   },
   'qwen3-8b': {

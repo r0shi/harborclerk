@@ -237,8 +237,8 @@ final class AppSettings: @unchecked Sendable {
     static let kvFixedBytes: [String: Int] = [
         "qwen3-8b": 0,
         "qwen3-4b": 0,
-        "qwen35-9b": 105_381_888,
-        "qwen35-4b": 105_381_888,
+        "qwen35-9b": 1_738_801_152,
+        "qwen35-4b": 1_738_801_152,
         "gpt-oss-20b": 3_145_728,
         "qwen36-35b-a3b": 300_000_000,
         "gemma4-26b-a4b": 209_715_200,
@@ -271,11 +271,11 @@ final class AppSettings: @unchecked Sendable {
     var activeModelParallelSlots: Int {
         let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
         let slots: [String: Int] = [
-            "qwen3-8b": 2,             // mid (32K context)
-            "qwen35-9b": 2,            // 262K window: 131K per slot
-            "qwen35-4b": 2,            // 262K window: 131K per slot
+            "qwen3-8b": 1,
+            "qwen35-9b": 1,
+            "qwen35-4b": 1,
             "qwen3-4b": 1,             // small but -np 1 — 8K/slot under -np 4 too tight for tools schema + ambiguous results (v3 sweep, models.py)
-            "gpt-oss-20b": 1,          // heavy — MoE active params are small but 128K context → KV too big for 2 slots
+            "gpt-oss-20b": 1,          // one slot: a request gets the whole window
             "gemma4-26b-a4b": 1,       // heavy
             "qwen36-35b-a3b": 1,       // heavy
         ]
@@ -365,8 +365,9 @@ enum MemoryBudget {
     /// `ropeScale` to reach `extendedContext`, at a quality cost that keeps it
     /// off by default. Once the memory clamp has brought the context down to
     /// the native window or below, the stretch buys nothing and is not applied.
-    static func yarnArguments(contextWindow: Int, yarn: AppSettings.YarnConfig?) -> [String] {
-        guard let yarn, contextWindow > yarn.originalContext else { return [] }
+    /// A request sees `contextWindow / slots`, so that is what is compared.
+    static func yarnArguments(contextWindow: Int, slots: Int, yarn: AppSettings.YarnConfig?) -> [String] {
+        guard let yarn, contextWindow / max(1, slots) > yarn.originalContext else { return [] }
         var args = ["--rope-scaling", "yarn", "--rope-scale", String(yarn.ropeScale), "--yarn-orig-ctx", String(yarn.originalContext)]
         if let attn = yarn.attnFactor {
             args += ["--yarn-attn-factor", String(attn)]

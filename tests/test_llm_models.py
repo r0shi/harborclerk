@@ -53,49 +53,13 @@ def test_modelinfo_parallel_slots_defaults_to_one():
     assert info.parallel_slots == 1
 
 
-def test_curated_models_parallel_slots_tiered_by_size():
-    """Per-model `-np` values follow the size-based tier table:
-
-    A slot divides -c; it does not add memory. Each request can use only
-    context / slots tokens, so:
-
-    - Heavy models: 1 slot, so a request gets the whole window
-    - Models whose window is large enough to halve (qwen3-8b at 32K, the
-      Qwen3.5 pair at 262K): 2 slots
-
-    Context window matters as much as parameter count because llama-server
-    allocates KV cache for all slots upfront. GPT-OSS 20B has small MoE
-    active params but a 128K context window, so 2 slots' KV would risk
-    OOM on 18 GB unified memory — it lives in the heavy tier with the
-    big dense models.
-    """
-    expected = {
-        # Small — but exception: qwen3-4b is -np 1 (not 4) because the
-        # 8K per-slot budget under -np 4 was too tight for the chat tools
-        # schema plus an ambiguous search result. See models.py.
-        "qwen3-4b": 1,
-        # Mid (≤32K native context)
-        "qwen3-8b": 2,
-        # 262K native window: two slots still leave 131K each
-        "qwen35-9b": 2,
-        "qwen35-4b": 2,
-        # Heavy
-        "gpt-oss-20b": 1,  # 128K context → KV cache too big for 2 slots on 18 GB
-        "gemma4-26b-a4b": 1,
-        "qwen36-35b-a3b": 1,
-    }
-    for model_id, slots in expected.items():
-        m = MODELS[model_id]
-        assert m.parallel_slots == slots, (
-            f"{model_id}: expected parallel_slots={slots} (size={m.size_bytes / 1e9:.1f} GB), got {m.parallel_slots}"
-        )
-    # Belt-and-suspenders: every curated model must have an explicit
-    # parallel_slots entry above (no silent default-to-1).
-    assert set(expected.keys()) == set(MODELS.keys()), (
-        f"parallel_slots tier table out of sync with MODELS registry: "
-        f"missing={set(MODELS.keys()) - set(expected.keys())}, "
-        f"extra={set(expected.keys()) - set(MODELS.keys())}"
-    )
+def test_every_curated_model_runs_one_slot():
+    """A slot divides -c; it does not add memory. Two slots halved every
+    request's context (Qwen3-8B budgeted 32K prompts for a 16K slot) for
+    concurrency the product barely uses, so every model runs one. Raising a
+    model's slots is a decision about its per-request context: change it here
+    on purpose."""
+    assert {m.id: m.parallel_slots for m in MODELS.values()} == dict.fromkeys(MODELS, 1)
 
 
 # --- memory budget (#556) ---------------------------------------------------------------------------------------
@@ -198,6 +162,7 @@ class _HubFile:
 
         self._http, self._url, self._buf, self._pos = httpx, url, b"", 0
         head = httpx.head(url, follow_redirects=True, timeout=60)
+        head.raise_for_status()
         self.size = int(head.headers.get("x-linked-size") or head.headers["content-length"])
 
     def read(self, n: int) -> bytes:
@@ -210,6 +175,7 @@ class _HubFile:
                 timeout=120,
             )
             r.raise_for_status()
+            assert r.status_code == 206, "the server ignored Range; refusing to read a whole model into memory"
             self._buf += r.content
         out = self._buf[self._pos : self._pos + n]
         self._pos += n
@@ -265,6 +231,18 @@ GEOMETRY = {
 }
 
 
+# Models whose fixed cost is derived from the header rather than estimated. qwen36-35b-a3b joins with #657.
+RECURRENT_STATE_DERIVED = {"qwen35-9b", "qwen35-4b"}
+LLAMA_CTX_CHECKPOINTS = 32  # llama-server's default at the pin; the launcher does not pass --ctx-checkpoints
+
+
+def test_the_launcher_still_leaves_checkpoints_at_the_default_the_budget_assumes():
+    launcher = _swift("Services/LlamaService.swift")
+    assert "--ctx-checkpoints" not in launcher and "--cache-ram" not in launcher, (
+        "the launcher now bounds them: bring LLAMA_CTX_CHECKPOINTS and the kv_fixed_bytes that use it down to match"
+    )
+
+
 @pytest.mark.parametrize("model_id", sorted(GEOMETRY))
 def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
     """The constants were read from these headers; if a file changes under
@@ -272,12 +250,12 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
     m = MODELS[model_id]
     path = MODELS_DIR / m.filename
     prefix, growing = GEOMETRY[model_id]
+    if not path.is_file() and os.environ.get("HC_GGUF_LIVE") != "1":
+        pytest.skip(f"{m.filename} is not downloaded here; HC_GGUF_LIVE=1 reads its header from the Hub")
     if path.is_file():
         h, actual_size = _gguf_header(path, prefix), path.stat().st_size
-    elif os.environ.get("HC_GGUF_LIVE") == "1":
-        h, actual_size = _gguf_header_from_hub(m.huggingface_repo, m.filename, prefix)
     else:
-        pytest.skip(f"{m.filename} is not downloaded here; HC_GGUF_LIVE=1 reads its header from the Hub")
+        h, actual_size = _gguf_header_from_hub(m.huggingface_repo, m.filename, prefix)
     layers = h["block_count"]
     heads = h["attention.head_count_kv"]
     k, v = h["attention.key_length"], h.get("attention.value_length", h["attention.key_length"])
@@ -291,6 +269,14 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
         pattern = h["attention.sliding_window_pattern"]
         per_token = sum(hd * (k + v) * 2 for hd, windowed in zip(heads, pattern, strict=True) if not windowed)
     assert m.kv_bytes_per_token == per_token, f"{model_id}: header says {per_token} bytes per token"
+    if model_id in RECURRENT_STATE_DERIVED:
+        recurrent_layers = layers - layers // h["full_attention_interval"]
+        conv_channels = h["ssm.inner_size"] + 2 * h["ssm.group_count"] * h["ssm.state_size"]
+        per_layer = (h["ssm.state_size"] * h["ssm.inner_size"] + (h["ssm.conv_kernel"] - 1) * conv_channels) * 4
+        per_slot = recurrent_layers * per_layer
+        assert m.kv_fixed_bytes == m.parallel_slots * (1 + LLAMA_CTX_CHECKPOINTS) * per_slot, (
+            f"{model_id}: header says {per_slot} bytes of recurrent state per slot; the constant follows the slots"
+        )
     assert m.size_bytes == actual_size, (
         f"{model_id}: registry size {m.size_bytes} but the file is {actual_size}; the launcher measures the file"
     )
@@ -313,10 +299,9 @@ def test_prompt_budgets_come_from_one_function_that_follows_the_launcher(monkeyp
     # llama-server splits -c across slots: `-c 32768 -np 2` reports 16384 per slot. A budget of the whole
     # window let a 20K-token conversation through to a 16K slot untrimmed.
     assert context_budget(_info(parallel_slots=2), False) == 26624 // 2
-    # The shipped case: Qwen3-8B serves 32K over two slots, so a request gets 16K.
-    assert MODELS["qwen3-8b"].parallel_slots == 2
+    # The shipped case: one slot, so Qwen3-8B's requests get the whole 32K.
     monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 64 * 1024**3)
-    assert context_budget(MODELS["qwen3-8b"], False) == 32768 // 2
+    assert context_budget(MODELS["qwen3-8b"], False) == 32768
     monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 16_000_000_000)
     assert context_budget(_info(), False) == max_context(_info(), 16_000_000_000) == 26624, (
         "clamped, as the launcher clamps"
@@ -331,14 +316,25 @@ def test_prompt_budgets_come_from_one_function_that_follows_the_launcher(monkeyp
         )
 
 
+def _swift(rel: str) -> str:
+    """A Swift source with its comments removed: a commented-out entry must not satisfy a guard."""
+    text = (Path(__file__).resolve().parents[1] / "macos/HarborClerkServer/HarborClerkServer" / rel).read_text()
+    return re.sub(r"(?m)(^|\s)//.*$", "", text)
+
+
+def test_the_preferences_picker_lists_the_registrys_models_and_their_sizes():
+    block = re.search(r"let modelOptions: [^=]*= \[(.*?)\n\]", _swift("PreferencesWindow.swift"), re.DOTALL)
+    assert block
+    listed = dict(re.findall(r'\("([a-z0-9.-]+)",\s*"[^"]*\(([\d.]+) GB\)"\)', block.group(1)))
+    assert listed == {m.id: f"{m.size_bytes / 1e9:.1f}" for m in MODELS.values()}
+
+
 def test_swift_mirrors_the_registrys_memory_tables():
     """Two hand-kept copies: the Swift launcher clamps by its own table and the
     API by the registry. `AppSettingsTests` pins Swift to hardcoded values;
     this pins those values to the registry, so a change on one side alone
     fails here."""
-    swift = (
-        Path(__file__).resolve().parents[1] / "macos/HarborClerkServer/HarborClerkServer/Settings.swift"
-    ).read_text()
+    swift = _swift("Settings.swift")
 
     def table(name: str) -> dict[str, int]:
         block = re.search(name + r"[^\[]*\[String: Int\] = \[(.*?)\n\s*\]", swift, re.DOTALL)

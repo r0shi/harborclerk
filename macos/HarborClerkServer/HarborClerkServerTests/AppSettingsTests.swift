@@ -188,8 +188,8 @@ final class AppSettingsTests: XCTestCase {
         let expected: [String: (perToken: Int, fixed: Int, context: Int)] = [
             "qwen3-8b": (147_456, 0, 32768),
             "qwen3-4b": (147_456, 0, 32768),
-            "qwen35-9b": (32_768, 105_381_888, 262144),
-            "qwen35-4b": (32_768, 105_381_888, 262144),
+            "qwen35-9b": (32_768, 1_738_801_152, 262144),
+            "qwen35-4b": (32_768, 1_738_801_152, 262144),
             "gpt-oss-20b": (24_576, 3_145_728, 128000),
             "qwen36-35b-a3b": (20_480, 300_000_000, 262144),
             "gemma4-26b-a4b": (20_480, 209_715_200, 262144),  // #548
@@ -210,13 +210,20 @@ final class AppSettingsTests: XCTestCase {
     /// native window or below, it would cost quality for no context.
     func testYarnArgumentsAreDroppedWhenTheClampLeavesNothingToStretchInto() {
         let yarn = AppSettings.YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: nil)
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 131072, yarn: yarn), ["--rope-scaling", "yarn", "--rope-scale", "4.0", "--yarn-orig-ctx", "32768"])
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 34816, yarn: yarn).count, 6, "2K over native is still over native")
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 32768, yarn: yarn), [], "exactly native: nothing to stretch into")
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 26624, yarn: yarn), [], "below native on a 12 GB Mac")
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 131072, yarn: nil), [], "YaRN off, or a model without it")
+        func args(_ context: Int, _ slots: Int = 1, _ y: AppSettings.YarnConfig? = yarn) -> [String] {
+            MemoryBudget.yarnArguments(contextWindow: context, slots: slots, yarn: y)
+        }
+        XCTAssertEqual(args(131072), ["--rope-scaling", "yarn", "--rope-scale", "4.0", "--yarn-orig-ctx", "32768"])
+        XCTAssertEqual(args(34816).count, 6, "2K over native is still over native")
+        XCTAssertEqual(args(32768), [], "exactly native: nothing to stretch into")
+        XCTAssertEqual(args(26624), [], "below native on a 12 GB Mac")
+        XCTAssertEqual(args(131072, 1, nil), [], "YaRN off, or a model without it")
+        // A request sees -c / -np. Qwen3-8B with two slots, clamped to 60K, gives each request 30K: native.
+        XCTAssertEqual(args(131072, 2).count, 6, "65K per request")
+        XCTAssertEqual(args(61440, 2), [], "30K per request is inside the native window")
+        XCTAssertEqual(args(65536, 2), [], "exactly native per request")
         let scaled = AppSettings.YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: 1.2)
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 65536, yarn: scaled).suffix(2), ["--yarn-attn-factor", "1.2"])
+        XCTAssertEqual(args(65536, 1, scaled).suffix(2), ["--yarn-attn-factor", "1.2"])
     }
 
     /// Same cases as `test_max_context_is_what_fits...` in Python.
@@ -267,12 +274,12 @@ final class AppSettingsTests: XCTestCase {
         let expected: [String: Int] = [
             // Small — but exception: qwen3-4b is -np 1, see models.py
             "qwen3-4b": 1,
-            // Two slots where the window is large enough to halve (a slot divides -c, it does not add memory)
-            "qwen3-8b": 2,
-            "qwen35-9b": 2,
-            "qwen35-4b": 2,
-            // Heavy (>15 GB OR 128K+ context) → 1 slot
-            "gpt-oss-20b": 1,  // 128K context → KV cache too big for 2 slots on 18 GB
+            // One slot everywhere: a slot divides -c, and a request is worth the whole window
+            "qwen3-8b": 1,
+            "qwen35-9b": 1,
+            "qwen35-4b": 1,
+            // One slot: a request gets the whole window
+            "gpt-oss-20b": 1,
             "gemma4-26b-a4b": 1,
             "qwen36-35b-a3b": 1,
         ]
