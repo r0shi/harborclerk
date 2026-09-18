@@ -96,16 +96,8 @@ final class LlamaService: ManagedService {
             "-c", String(contextWindow),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
-        if useYarn, let yarn = yarnConfig {
-            args += [
-                "--rope-scaling", "yarn",
-                "--rope-scale", String(yarn.ropeScale),
-                "--yarn-orig-ctx", String(yarn.originalContext),
-            ]
-            if let attn = yarn.attnFactor {
-                args += ["--yarn-attn-factor", String(attn)]
-            }
-        }
+        // No RoPE stretch when the clamp left no context to stretch into.
+        args += MemoryBudget.yarnArguments(contextWindow: contextWindow, yarn: useYarn ? yarnConfig : nil)
         proc.arguments = args
 
         let pipe = Log.createPipe(

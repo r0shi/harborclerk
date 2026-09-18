@@ -381,14 +381,15 @@ async def activate_model(
     # applies the same arithmetic and would refuse to start it anyway. One
     # that fits at a smaller context than its own is allowed; the launcher
     # clamps the context. When memory cannot be read, nothing is refused.
+    settings = get_settings()
     model = get_model(model_id)
     ram = system_ram_bytes()
     if model is not None and ram > 0 and max_context(model, ram) == 0:
+        wanted = requested_context(model, settings.llm_yarn_enabled)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"{model.name} needs about {min_ram_gb(model)} GB of memory; this Mac has {ram / GIB:.0f} GB.",
+            detail=f"{model.name} needs about {min_ram_gb(model, wanted)} GB of memory; this Mac has {ram / GIB:.1f} GB.",
         )
-    settings = get_settings()
     previous = settings.llm_model_id or ""
     settings.llm_model_id = model_id
     sync_native_config("llm_model_id", model_id)

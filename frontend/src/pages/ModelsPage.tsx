@@ -384,14 +384,18 @@ export default function ModelsPage() {
                       </td>
                       <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
                         <span>{model.context_window.toLocaleString()}</span>
-                        {model.max_context_here > 0 && model.max_context_here < model.context_window && (
-                          <span
-                            className="ml-1 text-xs text-amber-700 dark:text-amber-400"
-                            title="Clamped to what this Mac's memory fits"
-                          >
-                            ({model.max_context_here.toLocaleString()} here)
-                          </span>
-                        )}
+                        {model.max_context_here > 0 &&
+                          model.max_context_here <
+                            (yarnEnabled && model.yarn_extended_context
+                              ? model.yarn_extended_context
+                              : model.context_window) && (
+                            <span
+                              className="ml-1 text-xs text-amber-700 dark:text-amber-400"
+                              title="Clamped to what this Mac's memory fits"
+                            >
+                              ({model.max_context_here.toLocaleString()} here)
+                            </span>
+                          )}
                         {model.yarn_available && model.yarn_extended_context && (
                           <span className="ml-1 text-xs text-gray-400 dark:text-gray-500">
                             ({yarnEnabled ? '' : '→ '}

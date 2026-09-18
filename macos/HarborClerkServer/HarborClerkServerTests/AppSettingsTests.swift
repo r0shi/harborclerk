@@ -200,6 +200,19 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(settings.activeModelKvBytesPerToken, 147_456, "unknown ids get the largest cost, so the clamp errs small")
     }
 
+    /// YaRN is a RoPE stretch to reach the extended window. Clamped to the
+    /// native window or below, it would cost quality for no context.
+    func testYarnArgumentsAreDroppedWhenTheClampLeavesNothingToStretchInto() {
+        let yarn = AppSettings.YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: nil)
+        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 131072, yarn: yarn), ["--rope-scaling", "yarn", "--rope-scale", "4.0", "--yarn-orig-ctx", "32768"])
+        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 34816, yarn: yarn).count, 6, "2K over native is still over native")
+        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 32768, yarn: yarn), [], "exactly native: nothing to stretch into")
+        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 26624, yarn: yarn), [], "below native on a 12 GB Mac")
+        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 131072, yarn: nil), [], "YaRN off, or a model without it")
+        let scaled = AppSettings.YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: 1.2)
+        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 65536, yarn: scaled).suffix(2), ["--yarn-attn-factor", "1.2"])
+    }
+
     /// Same cases as `test_max_context_is_what_fits...` in Python.
     func testMaxContextIsWhatFitsAndZeroWhenTheWeightsAloneDoNot() {
         let m = (bytes: 5_000_000_000, perToken: 147_456, fixed: 0, requested: 32768)

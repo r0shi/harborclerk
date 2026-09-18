@@ -351,6 +351,19 @@ enum MemoryBudget {
     /// of physical memory; 0 when the weights alone do not fit. A multiple of
     /// 1024, and never below 4096 unless 0: a smaller context is not worth
     /// running.
+    /// The RoPE arguments for a YaRN launch, or none: YaRN stretches RoPE by
+    /// `ropeScale` to reach `extendedContext`, at a quality cost that keeps it
+    /// off by default. Once the memory clamp has brought the context down to
+    /// the native window or below, the stretch buys nothing and is not applied.
+    static func yarnArguments(contextWindow: Int, yarn: AppSettings.YarnConfig?) -> [String] {
+        guard let yarn, contextWindow > yarn.originalContext else { return [] }
+        var args = ["--rope-scaling", "yarn", "--rope-scale", String(yarn.ropeScale), "--yarn-orig-ctx", String(yarn.originalContext)]
+        if let attn = yarn.attnFactor {
+            args += ["--yarn-attn-factor", String(attn)]
+        }
+        return args
+    }
+
     static func maxContext(modelBytes: Int, kvBytesPerToken: Int, kvFixedBytes: Int, requested: Int, ramBytes: Int) -> Int {
         let spare = ramBytes - hostHeadroomBytes - runtimeOverheadBytes - modelBytes - kvFixedBytes
         if spare <= 0 { return 0 }

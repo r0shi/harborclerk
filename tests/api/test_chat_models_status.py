@@ -240,7 +240,7 @@ async def test_activating_a_model_this_mac_cannot_hold_is_refused_with_no_overri
     refuse to start it, so an override here would activate a model that never runs."""
     refused = await client.put("/api/chat/models/qwen36-35b-a3b/activate", headers=auth_header(admin_token))
     assert refused.status_code == 409
-    assert "needs about 36 GB" in refused.json()["detail"] and "this Mac has 7 GB" in refused.json()["detail"]
+    assert "needs about 36 GB" in refused.json()["detail"] and "this Mac has 7.5 GB" in refused.json()["detail"]
     forced = await client.put("/api/chat/models/qwen36-35b-a3b/activate?force=true", headers=auth_header(admin_token))
     assert forced.status_code == 409, "an unknown query parameter changes nothing"
 
