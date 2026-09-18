@@ -32,6 +32,13 @@ cmake -B build \
 
 cmake --build build --target llama-server -j "$(sysctl -n hw.ncpu)"
 
+# DEST_DIR persists between builds (the Makefile's macos/build/llama), and a new
+# llama.cpp names its dylibs by its own version, so nothing from the previous
+# version is overwritten. Left there, an old Homebrew-linked dylib fails the
+# portability check below, and old dylibs that pass it ship in the bundle.
+echo "==> Clearing the previous build's outputs from $DEST_DIR"
+rm -f "$DEST_DIR/llama-server" "$DEST_DIR"/*.dylib "$DEST_DIR/default.metallib"
+
 echo "==> Copying llama-server binary"
 cp build/bin/llama-server "$DEST_DIR/llama-server"
 chmod +x "$DEST_DIR/llama-server"

@@ -159,6 +159,16 @@ def test_the_helper_removes_nothing_it_did_not_clone(tmp_path: Path, upstream: s
     refused = _ensure(foreign, "v0.4.1", upstream)
     assert refused.returncode == 1 and "not touching it" in refused.stderr and (foreign / "precious").read_text() == "y"
 
+    # The helper's own output, plus a local branch someone made in it: detached HEAD, so only the branch rule says no.
+    own = tmp_path / "own"
+    assert _ensure(own, "v0.4.0", upstream).returncode == 0
+    _git(own, "branch", "my-wip")
+    refused = _ensure(own, "v0.4.1", upstream)
+    assert refused.returncode == 1 and "my-wip" in refused.stderr and (own / "VERSION").read_text() == "v0.4.0"
+
+    branch = _ensure(tmp_path / "from-branch", "master", upstream)
+    assert branch.returncode == 1 and "is a branch, not a tag" in branch.stderr
+
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "precious").write_text("x")
@@ -226,10 +236,15 @@ def test_the_build_fails_on_the_wrong_commit_and_on_a_library_the_bundle_does_no
         "FAKE_COMMIT": commit if reported == "real" else reported,
         "FAKE_LINKS": links,
     }
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "libllama.0.0.1.dylib").write_text("left by the previous version, which named its dylibs differently")
     r = subprocess.run(["bash", str(BUILD)], env=env, capture_output=True, text=True)
     if failure is None:
         assert r.returncode == 0, r.stderr
         assert f"llama-server built at v0.4.1 ({commit})" in r.stdout
+        assert not (dest / "libllama.0.0.1.dylib").exists(), "a stale dylib would have shipped in the bundle"
+        assert (dest / "libllama.dylib").exists()
     else:
         assert r.returncode == 1 and failure in r.stderr, r.stderr
         if "would not load" in failure:

@@ -43,3 +43,7 @@ elif [ -e "$SRC" ]; then
 fi
 
 git clone --depth 1 --branch "$TAG" "$REPO" "$SRC"
+if ! git -C "$SRC" rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+    echo "error: '$TAG' is a branch, not a tag; the pin must be a release tag" >&2
+    exit 1
+fi
