@@ -229,18 +229,20 @@ async def test_model_list_says_what_fits_this_mac(client, admin_token, _small_ma
     small, heavy = by_id["qwen3-4b"], by_id["qwen36-35b-a3b"]
     assert small["min_ram_gb"] == 16 and small["max_context_here"] == 0 and small["fits_here"] is False
     assert heavy["min_ram_gb"] == 36 and heavy["max_context_here"] == 0
-    assert heavy["memory_bytes"] > 28_000_000_000 and heavy["system_ram_gb"] == 8.0
+    assert heavy["memory_bytes"] > 28_000_000_000 and heavy["system_ram_gb"] == 7.5, "8e9 bytes is 7.5 GiB"
     plenty = {m["id"] for m in resp.json() if m["fits_here"]}
     assert plenty == set(), "nothing fits an 8 GB Mac with the rest of the app resident"
 
 
 @pytest.mark.asyncio
-async def test_activating_a_model_this_mac_cannot_hold_is_refused_unless_forced(client, admin_token, _small_mac):
+async def test_activating_a_model_this_mac_cannot_hold_is_refused_with_no_override(client, admin_token, _small_mac):
+    """No force flag: the macOS launcher applies the same arithmetic and would
+    refuse to start it, so an override here would activate a model that never runs."""
     refused = await client.put("/api/chat/models/qwen36-35b-a3b/activate", headers=auth_header(admin_token))
     assert refused.status_code == 409
-    assert "needs about 36 GB" in refused.json()["detail"] and "this Mac has 8 GB" in refused.json()["detail"]
+    assert "needs about 36 GB" in refused.json()["detail"] and "this Mac has 7 GB" in refused.json()["detail"]
     forced = await client.put("/api/chat/models/qwen36-35b-a3b/activate?force=true", headers=auth_header(admin_token))
-    assert forced.status_code == 200 and forced.json() == {"status": "activated"}
+    assert forced.status_code == 409, "an unknown query parameter changes nothing"
 
 
 @pytest.mark.asyncio
@@ -248,6 +250,23 @@ async def test_activating_a_model_that_fits_at_a_smaller_context_is_allowed(
     client, admin_token, _small_mac, monkeypatch
 ):
     """The launcher clamps the context; the API does not stand in the way."""
-    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 16_000_000_000)
+    from harbor_clerk.llm.models import MODELS, max_context
+
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 12_000_000_000)
+    assert 0 < max_context(MODELS["qwen3-4b"], 12_000_000_000) < MODELS["qwen3-4b"].context_window
     resp = await client.put("/api/chat/models/qwen3-4b/activate", headers=auth_header(admin_token))
     assert resp.status_code == 200
+    listed = await client.get("/api/chat/models", headers=auth_header(admin_token))
+    small = next(m for m in listed.json() if m["id"] == "qwen3-4b")
+    assert small["fits_here"] is False and 0 < small["max_context_here"] < 32768
+
+
+@pytest.mark.asyncio
+async def test_unknown_memory_refuses_nothing_and_claims_nothing(client, admin_token, _small_mac, monkeypatch):
+    """Off macOS the page size or page count may not be readable. A gate on a 0 GB Mac would refuse every model."""
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 0)
+    resp = await client.put("/api/chat/models/qwen36-35b-a3b/activate", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    listed = await client.get("/api/chat/models", headers=auth_header(admin_token))
+    heavy = next(m for m in listed.json() if m["id"] == "qwen36-35b-a3b")
+    assert heavy["fits_here"] is True and heavy["max_context_here"] == 262144 and heavy["system_ram_gb"] == 0.0

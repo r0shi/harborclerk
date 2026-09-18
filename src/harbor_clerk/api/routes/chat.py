@@ -34,7 +34,7 @@ from harbor_clerk.llm.download import (
     list_downloaded,
     list_orphaned,
 )
-from harbor_clerk.llm.models import get_model, list_models, max_context, memory_bytes, min_ram_gb, system_ram_bytes
+from harbor_clerk.llm.models import GIB, get_model, list_models, max_context, memory_bytes, min_ram_gb, system_ram_bytes
 from harbor_clerk.llm.tools import summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
@@ -309,9 +309,9 @@ async def list_available_models(
         ModelOut(
             memory_bytes=memory_bytes(m),
             min_ram_gb=min_ram_gb(m),
-            max_context_here=max_context(m, ram),
-            fits_here=max_context(m, ram) >= m.context_window,
-            system_ram_gb=round(ram / 1e9, 1),
+            max_context_here=max_context(m, ram) if ram > 0 else m.context_window,
+            fits_here=ram <= 0 or max_context(m, ram) >= m.context_window,
+            system_ram_gb=round(ram / GIB, 1),
             id=m.id,
             name=m.name,
             size_bytes=m.size_bytes,
@@ -360,21 +360,22 @@ async def start_model_download(
 @router.put("/chat/models/{model_id}/activate", status_code=200)
 async def activate_model(
     model_id: str,
-    force: bool = False,
     principal: Principal = Depends(require_admin),
 ):
     if get_model_path(model_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Model not downloaded")
-    # A model whose weights alone do not fit this Mac is refused unless forced:
-    # unified memory would let llama-server allocate it, and the machine, not
-    # the server, is what fails. One that fits at a smaller context than its
-    # own is allowed; the launcher clamps the context to what fits.
+    # A model whose weights alone do not fit this Mac is refused: unified
+    # memory would let llama-server allocate it, and the machine, not the
+    # server, is what fails. There is no override, because the macOS launcher
+    # applies the same arithmetic and would refuse to start it anyway. One
+    # that fits at a smaller context than its own is allowed; the launcher
+    # clamps the context. When memory cannot be read, nothing is refused.
     model = get_model(model_id)
-    if model is not None and not force and max_context(model, system_ram_bytes()) == 0:
+    ram = system_ram_bytes()
+    if model is not None and ram > 0 and max_context(model, ram) == 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"{model.name} needs about {min_ram_gb(model)} GB of memory; this Mac has "
-            f"{system_ram_bytes() / 1e9:.0f} GB. Pass force=true to activate it anyway.",
+            detail=f"{model.name} needs about {min_ram_gb(model)} GB of memory; this Mac has {ram / GIB:.0f} GB.",
         )
     settings = get_settings()
     previous = settings.llm_model_id or ""

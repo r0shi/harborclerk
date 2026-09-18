@@ -21,7 +21,7 @@ from harbor_clerk.api.scope import UserScope, apply_folder_scope, build_user_sco
 from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.health import report_llm_error, report_llm_success
-from harbor_clerk.llm.models import get_model
+from harbor_clerk.llm.models import context_budget, get_model
 from harbor_clerk.llm.research_prompts import (
     REVISION_SYSTEM,
     VERIFIER_SYSTEM,
@@ -201,12 +201,11 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _get_context_budget() -> int:
-    """Get the model's context window in tokens."""
+    """The context llama-server is running with on this machine (clamped to
+    what fits, #556), which is what prompts are budgeted against."""
     settings = get_settings()
     model = get_model(settings.llm_model_id) if settings.llm_model_id else None
-    if model and settings.llm_yarn_enabled and model.yarn:
-        return model.yarn.extended_context
-    return model.context_window if model else 32768
+    return context_budget(model, settings.llm_yarn_enabled)
 
 
 async def _llm_complete(

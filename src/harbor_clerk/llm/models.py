@@ -28,8 +28,10 @@ RUNTIME_OVERHEAD_BYTES = 1_000_000_000
 # embedder and reranker, Postgres, the Tika JVM and the API. Six GB is the
 # floor observed on the mini with the whole app up and nothing else.
 HOST_HEADROOM_BYTES = 6_000_000_000
-# Physical memory Apple sells Macs with, for rounding a requirement up.
+# Physical memory Apple sells Macs with, for rounding a requirement up. A
+# "16 GB" Mac has 16 GiB, so requirements are compared in GiB.
 MAC_RAM_TIERS_GB = (8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
+GIB = 1024**3
 
 
 @dataclass(frozen=True)
@@ -150,12 +152,10 @@ MODELS: dict[str, ModelInfo] = {
             # 3.1 GB at 128K; the 12 window layers hold 3 MB between them.
             kv_bytes_per_token=24_576,
             kv_fixed_bytes=3_145_728,
-            # Heavy tier despite MoE active-params being smaller, because the
-            # native context window is 128K and llama-server allocates KV cache
-            # for all slots upfront. ~7 GB weights + 2 × 128K KV would push
-            # past the ~11 GB free after weights on 18 GB unified memory. If
-            # post-deploy memory headroom proves comfortable on YaRN-disabled
-            # 24/36 GB Macs, this can be re-evaluated to 2.
+            # Heavy tier by the 2026-05 tuning: with 128K of context, splitting
+            # the KV cache across two slots leaves each too little, and the
+            # extra slot was not worth it on 18 GB Macs. (-c is the total
+            # across slots, so slots do not add memory; they divide context.)
             parallel_slots=1,
         ),
         ModelInfo(
@@ -206,25 +206,48 @@ def ram_required_bytes(model: ModelInfo, context: int | None = None) -> int:
 
 def min_ram_gb(model: ModelInfo, context: int | None = None) -> int:
     """`ram_required_bytes` rounded up to a memory size Macs come with."""
-    need = ram_required_bytes(model, context) / 1e9
+    need = ram_required_bytes(model, context) / GIB
     return next((tier for tier in MAC_RAM_TIERS_GB if tier >= need), math.ceil(need))
 
 
-def max_context(model: ModelInfo, ram_bytes: int) -> int:
-    """The largest context, up to the model's own, that fits a Mac with
-    `ram_bytes` of physical memory; 0 when the weights alone do not fit.
-    Rounded down to a multiple of 1024, and never below 4096 unless 0: a
-    smaller context is not worth running."""
+def requested_context(model: ModelInfo, yarn_enabled: bool) -> int:
+    """The context the app asks llama-server for: the YaRN-extended window when
+    YaRN is on and the model has one, else the model's own."""
+    return model.yarn.extended_context if yarn_enabled and model.yarn else model.context_window
+
+
+def max_context(model: ModelInfo, ram_bytes: int, requested: int | None = None) -> int:
+    """The largest context, up to `requested` (the model's own by default),
+    that fits a Mac with `ram_bytes` of physical memory; 0 when the weights
+    alone do not fit. Rounded down to a multiple of 1024, and never below
+    4096 unless 0: a smaller context is not worth running."""
+    requested = model.context_window if requested is None else requested
     spare = ram_bytes - HOST_HEADROOM_BYTES - RUNTIME_OVERHEAD_BYTES - model.size_bytes - model.kv_fixed_bytes
     if spare <= 0:
         return 0
-    tokens = (
-        model.context_window
-        if model.kv_bytes_per_token == 0
-        else min(model.context_window, spare // model.kv_bytes_per_token)
-    )
+    tokens = requested if model.kv_bytes_per_token == 0 else min(requested, spare // model.kv_bytes_per_token)
     tokens -= tokens % 1024
     return int(tokens) if tokens >= 4096 else 0
+
+
+def effective_context(model: ModelInfo, yarn_enabled: bool, ram_bytes: int | None = None) -> int:
+    """The context llama-server is actually running with on this machine,
+    which is what prompts must be budgeted against: the requested window,
+    clamped by the macOS launcher to what fits physical memory with the same
+    arithmetic (`MemoryBudget` in Settings.swift). When memory cannot be read,
+    or the model does not fit at all (the launcher then refuses to start it),
+    the requested window is returned: there is nothing better to budget by."""
+    requested = requested_context(model, yarn_enabled)
+    ram = system_ram_bytes() if ram_bytes is None else ram_bytes
+    fit = max_context(model, ram, requested)  # 0 when memory is unknown, or the model does not fit at all
+    return fit if fit > 0 else requested
+
+
+def context_budget(model: ModelInfo | None, yarn_enabled: bool) -> int:
+    """What chat, research and summarize budget prompts against: the effective
+    context of the active model, or 32768 when no model is active. One
+    function, so the three cannot drift from each other or from the launcher."""
+    return effective_context(model, yarn_enabled) if model else 32768
 
 
 def system_ram_bytes() -> int:

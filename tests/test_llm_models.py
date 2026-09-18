@@ -8,6 +8,7 @@ from harbor_clerk.llm.models import (
     MODELS,
     RUNTIME_OVERHEAD_BYTES,
     ModelInfo,
+    YarnConfig,
     kv_bytes,
     max_context,
     memory_bytes,
@@ -130,11 +131,12 @@ def test_memory_arithmetic_is_weights_plus_kv_plus_overhead():
 
 
 def test_min_ram_rounds_up_to_a_size_macs_come_with():
-    assert min_ram_gb(_info()) == 18  # 5 + 4.8 + 1 + 6 = 16.8 GB
+    assert min_ram_gb(_info()) == 16  # 5 + 4.8 + 1 + 6 = 16.8e9 bytes = 15.7 GiB: a "16 GB" Mac has 16 GiB
     assert min_ram_gb(_info(size_bytes=2_500_000_000)) == 16
+    assert min_ram_gb(_info(size_bytes=6_000_000_000)) == 18, "17.8e9 bytes is 16.6 GiB: past a 16 GB Mac"
     assert min_ram_gb(MODELS["qwen36-35b-a3b"]) == 36, "the 35B-A3B at full context is a 36 GB model, not a 32 GB one"
     assert min_ram_gb(MODELS["gemma4-26b-a4b"]) == 32, "#548 does not move Gemma out of the 32 GB tier"
-    assert min_ram_gb(_info(size_bytes=600_000_000_000)) == 612, "past the largest Mac, the exact number"
+    assert min_ram_gb(_info(size_bytes=600_000_000_000)) == 570, "past the largest Mac, the exact number of GiB"
 
 
 def test_max_context_is_what_fits_never_more_than_the_model_offers_and_zero_when_the_weights_alone_do_not():
@@ -153,14 +155,34 @@ def test_max_context_is_what_fits_never_more_than_the_model_offers_and_zero_when
     assert max_context(fixed, 16_000_000_000) == (16_000_000_000 - 12_209_715_200) // 20_480 // 1024 * 1024
 
 
+def test_effective_context_is_the_requested_window_clamped_to_what_fits():
+    from harbor_clerk.llm.models import effective_context, requested_context
+
+    m = _info(yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768))
+    assert requested_context(m, False) == 32768 and requested_context(m, True) == 131072
+    assert requested_context(_info(), True) == 32768, "YaRN on, but the model has none"
+    plenty = 64 * 1024**3
+    assert effective_context(m, True, plenty) == 131072
+    assert effective_context(m, True, 16_000_000_000) == 26624, "the YaRN window, clamped to what 16 GB fits"
+    assert effective_context(m, False, 16_000_000_000) == 26624
+    assert effective_context(m, False, 0) == 32768, "memory unknown: the requested window"
+    assert effective_context(m, True, 11_000_000_000) == 131072, (
+        "does not fit at all: the launcher refuses; nothing to budget by"
+    )
+    assert max_context(m, plenty, requested=131072) == 131072 and max_context(m, plenty) == 32768
+
+
 def test_this_machines_ram_is_readable():
     assert system_ram_bytes() > 4 * 1024**3
 
 
 def _gguf_header(path: Path, prefix: str) -> dict:
     """The architecture keys of a GGUF header. Only the header is read."""
-    f = path.open("rb")
+    with path.open("rb") as f:
+        return _read_header(f, prefix)
 
+
+def _read_header(f, prefix: str) -> dict:
     def u32():
         return struct.unpack("<I", f.read(4))[0]
 
@@ -228,3 +250,27 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
     assert m.context_window <= h["context_length"] or m.yarn is not None, (
         f"{model_id}: registry context exceeds the GGUF's"
     )
+
+
+def test_prompt_budgets_come_from_one_function_that_follows_the_launcher(monkeypatch):
+    """chat, research and summarize used to read the registry window each on
+    their own; after the launcher started clamping -c, prompts were budgeted
+    against a context llama-server was not running with."""
+    import re
+
+    from harbor_clerk.llm import chat, research, summarize
+    from harbor_clerk.llm.models import context_budget
+
+    monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 16_000_000_000)
+    assert context_budget(None, False) == 32768
+    assert context_budget(_info(), False) == max_context(_info(), 16_000_000_000) == 26624, (
+        "clamped, as the launcher clamps"
+    )
+    for module in (chat, research, summarize):
+        code = "\n".join(
+            line for line in Path(module.__file__).read_text().splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "context_budget(" in code, module.__name__
+        assert not re.search(r"\.context_window\b|\.extended_context\b", code), (
+            f"{module.__name__} reads the registry window directly"
+        )
