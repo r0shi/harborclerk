@@ -218,7 +218,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(args(32768), [], "exactly native: nothing to stretch into")
         XCTAssertEqual(args(26624), [], "below native on a 12 GB Mac")
         XCTAssertEqual(args(131072, 1, nil), [], "YaRN off, or a model without it")
-        // A request sees -c / -np. Qwen3-8B with two slots, clamped to 60K, gives each request 30K: native.
+        // A request sees -c / -np. A model given two slots and clamped to 60K has 30K per request: native.
         XCTAssertEqual(args(131072, 2).count, 6, "65K per request")
         XCTAssertEqual(args(61440, 2), [], "30K per request is inside the native window")
         XCTAssertEqual(args(65536, 2), [], "exactly native per request")
@@ -262,23 +262,19 @@ final class AppSettingsTests: XCTestCase {
         "gemma4-26b-a4b",
     ]
 
-    /// Mirror of `tests/test_llm_models.py::test_curated_models_parallel_slots_tiered_by_size`.
-    /// If this test diverges from the Python registry, llama-server will
-    /// launch with the wrong -np value, either OOMing on a heavy model
-    /// (slots too high) or wasting capacity on a small model (slots too
-    /// low). The python-side test enforces the source-of-truth values;
-    /// this one enforces the Swift mirror agrees AND that every known
-    /// model has an explicit tier entry.
+    /// Mirror of `tests/test_llm_models.py::test_every_curated_model_runs_one_slot`.
+    /// A slot divides -c: if Swift launches with more slots than the
+    /// registry states, every prompt is budgeted for more context than its
+    /// request has. The Python side holds the values and compares this
+    /// table with them; this holds that every known model has an entry.
     func testActiveModelParallelSlotsMatchesPythonRegistry() {
         let settings = AppSettings(configURL: configURL)
         let expected: [String: Int] = [
-            // Small — but exception: qwen3-4b is -np 1, see models.py
-            "qwen3-4b": 1,
             // One slot everywhere: a slot divides -c, and a request is worth the whole window
+            "qwen3-4b": 1,
             "qwen3-8b": 1,
             "qwen35-9b": 1,
             "qwen35-4b": 1,
-            // One slot: a request gets the whole window
             "gpt-oss-20b": 1,
             "gemma4-26b-a4b": 1,
             "qwen36-35b-a3b": 1,
@@ -295,8 +291,7 @@ final class AppSettingsTests: XCTestCase {
         // every model the Swift mirror knows about must have an explicit tier
         // entry. Without this, a future model added to Settings.activeModelPath
         // but missed in activeModelParallelSlots' slots dict would silently
-        // fall back to `-np 1`, leaving the small/mid throughput gain on the
-        // floor with no test failure.
+        // fall back to `-np 1` whatever the registry says.
         XCTAssertEqual(
             Set(expected.keys),
             Self.knownModelIds,

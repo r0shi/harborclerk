@@ -19,12 +19,12 @@ const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
   },
   'qwen35-9b': {
     label: 'Newer lightweight',
-    note: 'The successor to Qwen3 8B. Its window is far longer than this Mac may have memory for: the figure above is what fits here. Evaluation on this product is pending.',
+    note: 'The successor to Qwen3 8B. Its native window is longer than most Macs have memory for, so the app runs it with as much as fits. Evaluation on this product is pending.',
     warning: 'Not yet evaluated here: verify cited answers carefully.',
   },
   'qwen35-4b': {
     label: 'Newer smallest',
-    note: 'The successor to Qwen3 4B. Its window is far longer than this Mac may have memory for: the figure above is what fits here. Evaluation on this product is pending.',
+    note: 'The successor to Qwen3 4B. Its native window is longer than most Macs have memory for, so the app runs it with as much as fits. Evaluation on this product is pending.',
     warning: 'Not yet evaluated here: verify cited answers carefully.',
   },
   'qwen3-8b': {

@@ -270,14 +270,15 @@ final class AppSettings: @unchecked Sendable {
     /// fallback since `-np 1` always fits.
     var activeModelParallelSlots: Int {
         let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
+        // One slot for every model: a slot divides -c, and a request is worth the whole window (models.py).
         let slots: [String: Int] = [
             "qwen3-8b": 1,
             "qwen35-9b": 1,
             "qwen35-4b": 1,
-            "qwen3-4b": 1,             // small but -np 1 — 8K/slot under -np 4 too tight for tools schema + ambiguous results (v3 sweep, models.py)
-            "gpt-oss-20b": 1,          // one slot: a request gets the whole window
-            "gemma4-26b-a4b": 1,       // heavy
-            "qwen36-35b-a3b": 1,       // heavy
+            "qwen3-4b": 1,
+            "gpt-oss-20b": 1,
+            "gemma4-26b-a4b": 1,
+            "qwen36-35b-a3b": 1,
         ]
         return slots[modelId] ?? 1
     }

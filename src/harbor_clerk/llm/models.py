@@ -111,14 +111,11 @@ MODELS: dict[str, ModelInfo] = {
             supports_tools=True,
             kv_bytes_per_token=147_456,  # same attention geometry as the 8B: 36 layers × 8 KV heads × 128
             yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768),
-            # Exception to the small-tier "-np 4" rule: at -np 4 the per-slot
-            # context is 32K/4 = 8K, which the 2026-05-31 v3 sweep showed is
+            # The evidence behind one slot everywhere: at -np 4 this model had
+            # 32K/4 = 8K per request, which the 2026-05-31 v3 sweep showed is
             # too tight for the chat tools schema (~2K tokens) + an ambiguous
-            # search result on the synthetic corpus, causing the model to
-            # emit empty answers when the prompt overflows. -np 1 restores
-            # the full 32K per request and lets qwen3-4b handle ambiguous
-            # queries that 3.5× its slot budget at -np 4. Throughput cost:
-            # summarize + chat serialize for this model only.
+            # search result, and the model emitted empty answers when the
+            # prompt overflowed.
             parallel_slots=1,
         ),
         ModelInfo(
@@ -152,8 +149,6 @@ MODELS: dict[str, ModelInfo] = {
             supports_tools=True,
             kv_bytes_per_token=32_768,  # same attention geometry as the 9B: 8 of 32 layers, 4 KV heads x 512
             kv_fixed_bytes=1_738_801_152,
-            # Two slots, not the 4 the small tier once used: qwen3-4b's exception was a 32K window split four
-            # ways; here two slots still leave 131K each.
             parallel_slots=1,
         ),
         ModelInfo(

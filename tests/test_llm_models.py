@@ -58,7 +58,8 @@ def test_every_curated_model_runs_one_slot():
     request's context (Qwen3-8B budgeted 32K prompts for a 16K slot) for
     concurrency the product barely uses, so every model runs one. Raising a
     model's slots is a decision about its per-request context: change it here
-    on purpose."""
+    on purpose, and divide what the models API reports (`max_context_here` is
+    the total -c) the way `context_budget()` already does."""
     assert {m.id: m.parallel_slots for m in MODELS.values()} == dict.fromkeys(MODELS, 1)
 
 
@@ -237,10 +238,29 @@ LLAMA_CTX_CHECKPOINTS = 32  # llama-server's default at the pin; the launcher do
 
 
 def test_the_launcher_still_leaves_checkpoints_at_the_default_the_budget_assumes():
-    launcher = _swift("Services/LlamaService.swift")
-    assert "--ctx-checkpoints" not in launcher and "--cache-ram" not in launcher, (
-        "the launcher now bounds them: bring LLAMA_CTX_CHECKPOINTS and the kv_fixed_bytes that use it down to match"
-    )
+    """As a flag or as llama.cpp's environment form, from anywhere in the app: the shared environment is
+    built in ServiceManager, not in the launcher."""
+    for path in sorted(SWIFT_APP.rglob("*.swift")):
+        source = _swift(str(path.relative_to(SWIFT_APP)))
+        for name in (
+            "--ctx-checkpoints",
+            "--swa-checkpoints",
+            "--cache-ram",
+            "LLAMA_ARG_CTX_CHECKPOINTS",
+            "LLAMA_ARG_CACHE_RAM",
+        ):
+            assert name not in source, (
+                f"{path.name} now sets {name}: bring LLAMA_CTX_CHECKPOINTS and the kv_fixed_bytes that use it down to match"
+            )
+
+
+def test_what_the_qwen35_pair_gets_on_the_macs_people_have():
+    """The figures the PR and the models page state. One slot, so all of it goes to each request."""
+    gib = 1024**3
+    nine, four = MODELS["qwen35-9b"], MODELS["qwen35-4b"]
+    assert [max_context(nine, g * gib) for g in (8, 16, 18, 24)] == [0, 83_968, 149_504, 262_144]
+    assert [max_context(four, g * gib) for g in (8, 16, 18, 24)] == [0, 173_056, 238_592, 262_144]
+    assert min_ram_gb(nine) == min_ram_gb(four) == 24, "at the full window; the launcher clamps below that"
 
 
 @pytest.mark.parametrize("model_id", sorted(GEOMETRY))
@@ -316,10 +336,13 @@ def test_prompt_budgets_come_from_one_function_that_follows_the_launcher(monkeyp
         )
 
 
+SWIFT_APP = Path(__file__).resolve().parents[1] / "macos/HarborClerkServer/HarborClerkServer"
+
+
 def _swift(rel: str) -> str:
     """A Swift source with its comments removed: a commented-out entry must not satisfy a guard."""
-    text = (Path(__file__).resolve().parents[1] / "macos/HarborClerkServer/HarborClerkServer" / rel).read_text()
-    return re.sub(r"(?m)(^|\s)//.*$", "", text)
+    text = (SWIFT_APP / rel).read_text()
+    return re.sub(r"(?m)(^|\s)//.*$", "", re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL))
 
 
 def test_the_preferences_picker_lists_the_registrys_models_and_their_sizes():
