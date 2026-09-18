@@ -111,9 +111,11 @@ per model by sweeps, and a new model arrives with none of that tuning.
 - `src/harbor_clerk/llm/models.py`: repo, filename, `size_bytes` from the Hub
   (the report has them), `context_window` from the GGUF metadata, `parallel_slots`
   by the size tiers in `tests/test_llm_models.py`, which must be updated with it.
-- A llama.cpp upgrade (`macos/scripts/build-llama.sh`) is its own PR, lands
-  first, and re-baselines every model: it changes tool-call grammar behaviour
-  for all of them (#549, #551).
+- A llama.cpp upgrade is its own PR, lands first, and re-baselines every
+  model: it changes tool-call grammar behaviour for all of them (#549, #551).
+  The pin is in two places, `macos/scripts/build-llama.sh` and the image in
+  `docker-compose.yml`; `tests/test_llama_cpp_pin.py` holds them together. Pin
+  a stable release the survey's header names, not a rolling `b` build.
 - Regenerate docs (`uv run python -m scripts.gen_docs`); the curated list feeds them.
 - Mechanical fixes (a wrong context window, a repointed publisher) and
   evaluation-gated changes (a new model, a retirement) go in separate PRs.

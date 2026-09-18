@@ -377,7 +377,7 @@ Queue subscriptions:
 | `app` | built from `docker/app.Dockerfile` | — |
 | `embedder` | built from `docker/embedder.Dockerfile` | — |
 | `gateway` | `caddy:2-alpine` | — |
-| `llama-server` | `ghcr.io/ggml-org/llama.cpp:server` | — |
+| `llama-server` | `ghcr.io/ggml-org/llama.cpp:server-v0.4.1` | — |
 | `minio` | `minio/minio:latest` | `server` |
 | `postgres` | `pgvector/pgvector:pg18` | — |
 | `reranker` | built from `docker/reranker.Dockerfile` | — |

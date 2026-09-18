@@ -222,7 +222,9 @@ services:
       - harbor-clerk
 
   llama-server:
-    image: ghcr.io/ggml-org/llama.cpp:server
+    # The release macos/scripts/build-llama.sh builds. A floating `:server` tag
+    # changed under us without a commit and ran a different llama.cpp than macOS.
+    image: ghcr.io/ggml-org/llama.cpp:server-v0.4.1
     restart: unless-stopped
     volumes:
       - llama_models:/models
