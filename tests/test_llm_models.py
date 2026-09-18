@@ -1,3 +1,4 @@
+import re
 import struct
 from pathlib import Path
 
@@ -247,6 +248,9 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
         pattern = h["attention.sliding_window_pattern"]
         per_token = sum(hd * (k + v) * 2 for hd, windowed in zip(heads, pattern, strict=True) if not windowed)
     assert m.kv_bytes_per_token == per_token, f"{model_id}: header says {per_token} bytes per token"
+    assert m.size_bytes == path.stat().st_size, (
+        f"{model_id}: registry size {m.size_bytes} but the file is {path.stat().st_size}; the launcher measures the file"
+    )
     assert m.context_window <= h["context_length"] or m.yarn is not None, (
         f"{model_id}: registry context exceeds the GGUF's"
     )
@@ -274,3 +278,25 @@ def test_prompt_budgets_come_from_one_function_that_follows_the_launcher(monkeyp
         assert not re.search(r"\.context_window\b|\.extended_context\b", code), (
             f"{module.__name__} reads the registry window directly"
         )
+
+
+def test_swift_mirrors_the_registrys_memory_tables():
+    """Two hand-kept copies: the Swift launcher clamps by its own table and the
+    API by the registry. `AppSettingsTests` pins Swift to hardcoded values;
+    this pins those values to the registry, so a change on one side alone
+    fails here."""
+    swift = (
+        Path(__file__).resolve().parents[1] / "macos/HarborClerkServer/HarborClerkServer/Settings.swift"
+    ).read_text()
+
+    def table(name: str) -> dict[str, int]:
+        block = re.search(name + r"[^\[]*\[String: Int\] = \[(.*?)\n\s*\]", swift, re.DOTALL)
+        assert block, name
+        return {k: int(n.replace("_", "")) for k, n in re.findall(r'"([a-z0-9.-]+)":\s*([\d_]+)', block.group(1))}
+
+    per_token, fixed, windows = table("kvBytesPerToken"), table("kvFixedBytes"), table("contextWindows")
+    assert per_token == {m.id: m.kv_bytes_per_token for m in MODELS.values()}
+    assert fixed == {m.id: m.kv_fixed_bytes for m in MODELS.values()}
+    assert windows == {m.id: m.context_window for m in MODELS.values()}
+    for name, value in (("runtimeOverheadBytes", RUNTIME_OVERHEAD_BYTES), ("hostHeadroomBytes", HOST_HEADROOM_BYTES)):
+        assert re.search(rf"static let {name} = {value:_}\b", swift), name

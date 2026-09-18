@@ -96,7 +96,7 @@ MODELS: dict[str, ModelInfo] = {
             name="Qwen3 8B",
             huggingface_repo="Qwen/Qwen3-8B-GGUF",
             filename="Qwen3-8B-Q4_K_M.gguf",
-            size_bytes=5_030_000_000,
+            size_bytes=5_027_783_488,  # the file's exact size: the launcher measures the file, so Python must match
             context_window=32768,
             supports_tools=True,
             # 36 layers × 8 KV heads × (128 + 128) × 2 bytes: 144 KB per token, 4.7 GB at 32K, 18.9 GB with YaRN at 131K.
@@ -109,7 +109,7 @@ MODELS: dict[str, ModelInfo] = {
             name="Qwen3 4B",
             huggingface_repo="Qwen/Qwen3-4B-GGUF",
             filename="Qwen3-4B-Q4_K_M.gguf",
-            size_bytes=2_500_000_000,
+            size_bytes=2_497_280_256,
             context_window=32768,
             supports_tools=True,
             kv_bytes_per_token=147_456,  # same attention geometry as the 8B: 36 layers × 8 KV heads × 128
@@ -129,7 +129,7 @@ MODELS: dict[str, ModelInfo] = {
             name="Gemma 4 26B-A4B",
             huggingface_repo="bartowski/google_gemma-4-26B-A4B-it-GGUF",
             filename="google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
-            size_bytes=17_000_000_000,
+            size_bytes=17_035_038_112,
             # 262144 is what the GGUF and Google's card give for 26B-A4B (#548); 128K is the E2B/E4B figure.
             context_window=262144,
             supports_tools=True,
@@ -144,7 +144,7 @@ MODELS: dict[str, ModelInfo] = {
             name="GPT-OSS 20B",
             huggingface_repo="unsloth/gpt-oss-20b-GGUF",
             filename="gpt-oss-20b-Q4_K_M.gguf",
-            size_bytes=11_600_000_000,
+            size_bytes=11_624_759_488,
             context_window=128000,
             supports_tools=True,
             # Layers alternate full attention and a 128-token sliding window (llama.cpp's gpt-oss pattern; the
@@ -231,12 +231,14 @@ def max_context(model: ModelInfo, ram_bytes: int, requested: int | None = None) 
 
 
 def effective_context(model: ModelInfo, yarn_enabled: bool, ram_bytes: int | None = None) -> int:
-    """The context llama-server is actually running with on this machine,
+    """The context llama-server is running with on a Mac running the app,
     which is what prompts must be budgeted against: the requested window,
     clamped by the macOS launcher to what fits physical memory with the same
     arithmetic (`MemoryBudget` in Settings.swift). When memory cannot be read,
     or the model does not fit at all (the launcher then refuses to start it),
-    the requested window is returned: there is nothing better to budget by."""
+    the requested window is returned: there is nothing better to budget by.
+    Under Compose nothing clamps: llama-server runs at the fixed `-c` in
+    docker-compose.yml, and this is an upper bound on what it accepts (#654)."""
     requested = requested_context(model, yarn_enabled)
     ram = system_ram_bytes() if ram_bytes is None else ram_bytes
     fit = max_context(model, ram, requested)  # 0 when memory is unknown, or the model does not fit at all

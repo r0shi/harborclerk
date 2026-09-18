@@ -375,8 +375,10 @@ export default function ModelsPage() {
                         )}
                         {model.max_context_here === 0 && (
                           <div className="mt-1 max-w-[14rem] text-[11px] font-medium leading-snug text-red-700 dark:text-red-400">
-                            Does not fit this Mac ({model.system_ram_gb} GB): needs about {model.min_ram_gb} GB. It
-                            cannot be activated here.
+                            Does not fit this Mac ({model.system_ram_gb} GB): needs about {model.min_ram_gb} GB.{' '}
+                            {model.active
+                              ? 'It is selected, but the LLM server will not start it here. Choose another model.'
+                              : 'It cannot be activated here.'}
                           </div>
                         )}
                       </td>

@@ -65,8 +65,8 @@ Every `ModelInfo` in `llm/models.py` carries `kv_bytes_per_token` (and
 GGUF header and checked against the file by `tests/test_llm_models.py` when it
 is downloaded. `memory_bytes`, `min_ram_gb` and `max_context` derive from them;
 the API reports them, activation refuses a model whose weights alone do not fit
-(unless forced), and the macOS launcher clamps `-c` to what fits or refuses to
-launch. `context_window` is what the app passes as `-c`, so raising it is a
+(no override: the launcher would refuse it too), and the macOS launcher clamps
+`-c` to what fits or refuses to launch. `context_window` is what the app passes as `-c`, so raising it is a
 memory change, not a documentation fix. The Swift mirror (`Settings.swift`:
 `kvBytesPerToken`, `kvFixedBytes`, `MemoryBudget`) and `AppSettingsTests` must
 change with the registry; a new model needs all of them.

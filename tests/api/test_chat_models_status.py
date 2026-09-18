@@ -270,3 +270,28 @@ async def test_unknown_memory_refuses_nothing_and_claims_nothing(client, admin_t
     listed = await client.get("/api/chat/models", headers=auth_header(admin_token))
     heavy = next(m for m in listed.json() if m["id"] == "qwen36-35b-a3b")
     assert heavy["fits_here"] is True and heavy["max_context_here"] == 262144 and heavy["system_ram_gb"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_the_list_reports_the_context_the_launcher_will_ask_for_when_yarn_is_on(
+    client, admin_token, _small_mac, monkeypatch, _set_llm_model_id
+):
+    """The launcher requests and clamps the YaRN window; the page said the plain window fit with no clamp."""
+    from harbor_clerk.config import get_settings
+
+    _set_llm_model_id("")
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 16 * 1024**3)
+    monkeypatch.setattr(get_settings(), "llm_yarn_enabled", True)
+    resp = await client.get("/api/chat/models", headers=auth_header(admin_token))
+    q8 = next(m for m in resp.json() if m["id"] == "qwen3-8b")
+    assert q8["max_context_here"] == 34816 and q8["fits_here"] is False, (
+        "the 131072 YaRN window, clamped as the launcher clamps it"
+    )
+    assert q8["min_ram_gb"] == 32, "at 131072 tokens it is a 32 GB-tier model, not 16"
+    monkeypatch.setattr(get_settings(), "llm_yarn_enabled", False)
+    plain = next(
+        m
+        for m in (await client.get("/api/chat/models", headers=auth_header(admin_token))).json()
+        if m["id"] == "qwen3-8b"
+    )
+    assert plain["max_context_here"] == 32768 and plain["fits_here"] is True and plain["min_ram_gb"] == 16

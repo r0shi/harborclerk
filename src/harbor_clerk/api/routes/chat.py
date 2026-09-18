@@ -34,7 +34,16 @@ from harbor_clerk.llm.download import (
     list_downloaded,
     list_orphaned,
 )
-from harbor_clerk.llm.models import GIB, get_model, list_models, max_context, memory_bytes, min_ram_gb, system_ram_bytes
+from harbor_clerk.llm.models import (
+    GIB,
+    get_model,
+    list_models,
+    max_context,
+    memory_bytes,
+    min_ram_gb,
+    requested_context,
+    system_ram_bytes,
+)
 from harbor_clerk.llm.tools import summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
@@ -305,12 +314,14 @@ async def list_available_models(
     settings = get_settings()
     downloaded = set(list_downloaded())
     ram = system_ram_bytes()
+    yarn = settings.llm_yarn_enabled
+    # At the context the launcher will ask for: the YaRN-extended window when YaRN is on.
     return [
         ModelOut(
-            memory_bytes=memory_bytes(m),
-            min_ram_gb=min_ram_gb(m),
-            max_context_here=max_context(m, ram) if ram > 0 else m.context_window,
-            fits_here=ram <= 0 or max_context(m, ram) >= m.context_window,
+            memory_bytes=memory_bytes(m, requested_context(m, yarn)),
+            min_ram_gb=min_ram_gb(m, requested_context(m, yarn)),
+            max_context_here=max_context(m, ram, requested_context(m, yarn)) if ram > 0 else requested_context(m, yarn),
+            fits_here=ram <= 0 or max_context(m, ram, requested_context(m, yarn)) >= requested_context(m, yarn),
             system_ram_gb=round(ram / GIB, 1),
             id=m.id,
             name=m.name,
