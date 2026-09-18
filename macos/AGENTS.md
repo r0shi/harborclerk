@@ -156,36 +156,23 @@ freshly-built app.
 
 ## The llama.cpp pin lives in two places
 
-`scripts/build-llama.sh` pins the tag macOS builds (`LLAMA_CPP_TAG`), and
-`docker-compose.yml` pins the image of the same release
-(`ghcr.io/ggml-org/llama.cpp:server-<tag>`). `tests/test_llama_cpp_pin.py`
-fails when they differ, and when the pin is a rolling `b` build instead of a
-stable release. Bump both in one PR, on its own, and re-baseline every model
-after it: a new llama.cpp changes tool-call grammar for all of them.
-
-`scripts/ensure-llama-source.sh` replaces a clone that an older pin left in
-`build/llama-build/`. It used to be reused as-is, so a bumped pin rebuilt the
-old version without a word. The build also fails unless the binary's
-`--version` names the pinned tag's commit. Before trusting an installed app,
-check the same way:
-
-```bash
-"/Applications/HarborClerkServer.app/Contents/Resources/llama/llama-server" --version
-```
+`scripts/build-llama.sh` (`LLAMA_CPP_TAG`) and the image in `docker-compose.yml`;
+`tests/test_llama_cpp_pin.py` holds them together and to a stable release. Bump
+both in one PR, on its own, and re-baseline every model after it. The build
+replaces a clone an older pin left behind, fails unless the binary's `--version`
+names the pinned commit, and fails on any link outside the bundle and the OS
+(Homebrew's OpenSSL shipped that way for months: both build machines have it).
 
 ## A model server does not run out of memory. The Mac does.
 
-Unified memory lets `llama-server` allocate more than the machine has; the
-system then swaps until the kernel watchdog starves and the host panics. The
-mini (32 GB) did exactly that on 2026-09-17 when a hand-launched smoke test
-passed the YaRN-extended context (`-c 131072 -np 2`, about 19 GB of KV cache
-for Qwen3-8B) while the app's own server held `gpt-oss-20b`. Before launching
-any `llama-server` by hand: add the model file to the KV cache (bytes per
-token × context × slots; Qwen3-8B is about 144 KB per token, so `-c` is the
-budget), subtract what is already resident (the app's server, and anything
-else on the host that loads models), and stay well inside what is free. Use
-the app's defaults: YaRN is off by default. Nothing on the machine is
-protected from what you launch.
+Unified memory lets `llama-server` allocate more than the machine has; the host
+swaps until the kernel watchdog panics. The mini (32 GB) did so on 2026-09-17
+when a hand-launched smoke test passed the YaRN-extended context (`-c 131072
+-np 2`: ~19 GB of KV cache for Qwen3-8B at ~144 KB per token) beside the app's
+own server holding `gpt-oss-20b`. Before launching any `llama-server` by hand,
+add the model file to the KV cache, subtract what is already resident (the
+app's server, anything else on the host that loads models), and stay well
+inside what is free. YaRN is off by default; use the app's defaults.
 
 ## `cc` can pick up the Command Line Tools SDK, not Xcode's
 
