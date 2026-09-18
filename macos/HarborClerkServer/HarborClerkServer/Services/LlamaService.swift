@@ -48,7 +48,34 @@ final class LlamaService: ManagedService {
         let yarnEnabled = settings.llmYarnEnabled
         let yarnConfig = settings.activeModelYarn
         let useYarn = yarnEnabled && yarnConfig != nil
-        let contextWindow = useYarn ? yarnConfig!.extendedContext : settings.activeModelContextWindow
+        let requestedContext = useYarn ? yarnConfig!.extendedContext : settings.activeModelContextWindow
+
+        // What fits this Mac decides the context, not the registry. The
+        // weights are measured from the file; the KV cost per token comes
+        // from the registry mirror. A model whose weights alone do not fit
+        // is not launched: llama-server would allocate it anyway and the
+        // host, not the server, would fail.
+        let modelBytes = (try? FileManager.default.attributesOfItem(atPath: modelPath)[.size] as? Int) ?? 0
+        let ramBytes = Int(ProcessInfo.processInfo.physicalMemory)
+        let contextWindow = MemoryBudget.maxContext(
+            modelBytes: modelBytes,
+            kvBytesPerToken: settings.activeModelKvBytesPerToken,
+            kvFixedBytes: settings.activeModelKvFixedBytes,
+            requested: requestedContext,
+            ramBytes: ramBytes
+        )
+        if contextWindow == 0 {
+            Log.logger("llm").error(
+                "Not launching: \(modelPath, privacy: .public) needs more memory than this Mac has (weights \(modelBytes / 1_000_000_000) GB, \(ramBytes / 1_000_000_000) GB installed)"
+            )
+            state = .errored
+            return
+        }
+        if contextWindow < requestedContext {
+            Log.logger("llm").warning(
+                "Context clamped from \(requestedContext) to \(contextWindow) tokens to fit \(ramBytes / 1_000_000_000) GB of memory"
+            )
+        }
 
         let proc = Process()
         proc.executableURL = llamaBin
@@ -69,16 +96,8 @@ final class LlamaService: ManagedService {
             "-c", String(contextWindow),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
-        if useYarn, let yarn = yarnConfig {
-            args += [
-                "--rope-scaling", "yarn",
-                "--rope-scale", String(yarn.ropeScale),
-                "--yarn-orig-ctx", String(yarn.originalContext),
-            ]
-            if let attn = yarn.attnFactor {
-                args += ["--yarn-attn-factor", String(attn)]
-            }
-        }
+        // No RoPE stretch when the clamp left no context to stretch into.
+        args += MemoryBudget.yarnArguments(contextWindow: contextWindow, yarn: useYarn ? yarnConfig : nil)
         proc.arguments = args
 
         let pipe = Log.createPipe(

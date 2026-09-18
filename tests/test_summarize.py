@@ -336,6 +336,22 @@ class TestCallLlmDeactivatedFailFast:
 # --- generate_summary tests ---
 
 
+def _fake_model():
+    """A real ModelInfo, not a MagicMock: the prompt budget now does memory
+    arithmetic on the model (#556), which a mock cannot be compared in."""
+    from harbor_clerk.llm.models import ModelInfo
+
+    return ModelInfo(
+        id="test-model",
+        name="Test model",
+        huggingface_repo="test/model",
+        filename="test.gguf",
+        size_bytes=1,
+        context_window=32768,
+        supports_tools=True,
+    )
+
+
 def _mock_settings(llm_model_id="test-model", summary_force_apple_intelligence=False):
     s = MagicMock()
     s.llm_model_id = llm_model_id
@@ -419,7 +435,7 @@ class TestGenerateSummary:
     def test_short_tier_single_call(self):
         with (
             patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
-            patch("harbor_clerk.llm.summarize.get_model", return_value=MagicMock(context_window=32768)),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=_fake_model()),
             patch("harbor_clerk.llm.summarize._call_llm", return_value="A great summary.") as mock_call,
         ):
             chunks = [f"chunk_{i}" for i in range(5)]
@@ -431,7 +447,7 @@ class TestGenerateSummary:
     def test_medium_tier_single_call(self):
         with (
             patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
-            patch("harbor_clerk.llm.summarize.get_model", return_value=MagicMock(context_window=32768)),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=_fake_model()),
             patch("harbor_clerk.llm.summarize._call_llm", return_value="Medium summary.") as mock_call,
         ):
             chunks = [f"chunk_{i}" for i in range(50)]
@@ -443,7 +459,7 @@ class TestGenerateSummary:
     def test_long_tier_map_reduce(self):
         with (
             patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
-            patch("harbor_clerk.llm.summarize.get_model", return_value=MagicMock(context_window=32768)),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=_fake_model()),
             patch(
                 "harbor_clerk.llm.summarize._call_llm",
                 side_effect=lambda prompt, text, **kw: (
@@ -462,7 +478,7 @@ class TestGenerateSummary:
     def test_llm_failure_falls_back_to_extractive(self):
         with (
             patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
-            patch("harbor_clerk.llm.summarize.get_model", return_value=MagicMock(context_window=32768)),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=_fake_model()),
             patch("harbor_clerk.llm.summarize._call_llm", return_value=None),
         ):
             chunks = ["A" * 100]
@@ -473,7 +489,7 @@ class TestGenerateSummary:
     def test_respects_max_chars(self):
         with (
             patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
-            patch("harbor_clerk.llm.summarize.get_model", return_value=MagicMock(context_window=32768)),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=_fake_model()),
             patch("harbor_clerk.llm.summarize._call_llm", return_value="X" * 1000),
         ):
             chunks = ["Some text"]
@@ -486,7 +502,7 @@ class TestGenerateSummary:
         the current model" — should fall through to extractive instead."""
         with (
             patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
-            patch("harbor_clerk.llm.summarize.get_model", return_value=MagicMock(context_window=32768)),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=_fake_model()),
             # Simulate LLM returning a single zero-width space as the summary value.
             patch("harbor_clerk.llm.summarize._call_llm", return_value="​"),
         ):
@@ -500,7 +516,7 @@ class TestGenerateSummary:
         """Regression: a model returning whitespace-only summary must fall back."""
         with (
             patch("harbor_clerk.llm.summarize.get_settings", return_value=_mock_settings()),
-            patch("harbor_clerk.llm.summarize.get_model", return_value=MagicMock(context_window=32768)),
+            patch("harbor_clerk.llm.summarize.get_model", return_value=_fake_model()),
             patch("harbor_clerk.llm.summarize._call_llm", return_value="   \n\t"),
         ):
             chunks = ["A" * 100]

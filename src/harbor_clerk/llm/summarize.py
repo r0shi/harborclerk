@@ -23,7 +23,7 @@ from enum import Enum
 import httpx
 
 from harbor_clerk.config import get_settings, refresh_llm_settings
-from harbor_clerk.llm.models import get_model
+from harbor_clerk.llm.models import context_budget, get_model
 
 logger = logging.getLogger(__name__)
 
@@ -973,7 +973,7 @@ def generate_summary(
     # Try LLM if a model is active
     if settings.llm_model_id:
         model = get_model(settings.llm_model_id)
-        context_window = model.context_window if model else None
+        context_window = context_budget(model, settings.llm_yarn_enabled) if model else None
         max_input_chars = _compute_max_input_chars(context_window)
 
         tier = _select_tier(len(chunks))

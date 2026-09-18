@@ -6,6 +6,7 @@ import { PageHeader } from '../components/PageHeader'
 import { Card } from '../components/Card'
 import { StatusPill } from '../components/StatusPill'
 import { modelGuidance } from '../utils/modelGuidance'
+import { groupModelsByRam } from '../utils/memoryTiers'
 
 interface ModelInfo {
   id: string
@@ -19,6 +20,14 @@ interface ModelInfo {
   downloading: boolean
   yarn_available: boolean
   yarn_extended_context: number | null
+  // Memory budget (#556): what the model needs, the smallest Mac that runs
+  // it, and what this Mac can do (max_context_here is 0 when the weights
+  // alone do not fit).
+  memory_bytes: number
+  min_ram_gb: number
+  max_context_here: number
+  fits_here: boolean
+  system_ram_gb: number
 }
 
 interface OrphanInfo {
@@ -323,150 +332,169 @@ export default function ModelsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-(--color-border)">
-            {(
-              [
-                { label: '16 GB RAM', min: 0, max: 4_000_000_000 },
-                { label: '32 GB RAM', min: 4_000_000_000, max: 12_000_000_000 },
-                { label: '48+ GB RAM', min: 12_000_000_000, max: Infinity },
-              ] as const
-            )
-              .map((tier) => ({
-                ...tier,
-                items: models
-                  .filter((m) => m.size_bytes >= tier.min && m.size_bytes < tier.max)
-                  .sort((a, b) => a.size_bytes - b.size_bytes),
-              }))
-              .filter((tier) => tier.items.length > 0)
-              .map((tier) => (
-                <Fragment key={tier.label}>
-                  <tr>
-                    <td
-                      colSpan={7}
-                      className="bg-(--color-bg-secondary) px-4 py-2 text-left text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
-                    >
-                      {tier.label}
-                    </td>
-                  </tr>
-                  {tier.items.map((model) => {
-                    const progress = downloadProgress.get(model.id)
-                    const guidance = modelGuidance(model)
-                    return (
-                      <tr key={model.id} className="bg-white dark:bg-[#2c2c2e]">
-                        <td className="px-4 py-3">
-                          <div className="font-medium text-gray-900 dark:text-gray-100">{model.name}</div>
-                          <div className="text-xs text-gray-500 dark:text-gray-400">{model.id}</div>
-                          <div className="mt-1.5 inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/25 dark:text-blue-300">
-                            {guidance.label}
+            {groupModelsByRam(models).map((tier) => (
+              <Fragment key={tier.label}>
+                <tr>
+                  <td
+                    colSpan={7}
+                    className="bg-(--color-bg-secondary) px-4 py-2 text-left text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400"
+                  >
+                    {tier.label}
+                  </td>
+                </tr>
+                {tier.items.map((model) => {
+                  const progress = downloadProgress.get(model.id)
+                  const guidance = modelGuidance(model)
+                  return (
+                    <tr key={model.id} className="bg-white dark:bg-[#2c2c2e]">
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-gray-900 dark:text-gray-100">{model.name}</div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400">{model.id}</div>
+                        <div className="mt-1.5 inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/25 dark:text-blue-300">
+                          {guidance.label}
+                        </div>
+                        <div className="mt-1 max-w-xs text-xs leading-snug text-gray-500 dark:text-gray-400">
+                          {guidance.note}
+                        </div>
+                        {guidance.warning && (
+                          <div className="mt-1 max-w-xs text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                            {guidance.warning}
                           </div>
-                          <div className="mt-1 max-w-xs text-xs leading-snug text-gray-500 dark:text-gray-400">
-                            {guidance.note}
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
+                        <div>{formatSize(model.size_bytes)}</div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                          {formatSize(model.memory_bytes)} to run
+                        </div>
+                        {!model.fits_here && model.max_context_here > 0 && (
+                          <div className="mt-1 max-w-[14rem] text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                            Fits this Mac ({model.system_ram_gb} GB) at up to {model.max_context_here.toLocaleString()}{' '}
+                            tokens of context; the full window needs about {model.min_ram_gb} GB.
                           </div>
-                          {guidance.warning && (
-                            <div className="mt-1 max-w-xs text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-                              {guidance.warning}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-gray-700 dark:text-gray-300">{formatSize(model.size_bytes)}</td>
-                        <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
-                          <span>{model.context_window.toLocaleString()}</span>
-                          {model.yarn_available && model.yarn_extended_context && (
-                            <span className="ml-1 text-xs text-gray-400 dark:text-gray-500">
-                              ({yarnEnabled ? '' : '→ '}
-                              {model.yarn_extended_context.toLocaleString()}
-                              {yarnEnabled ? ' via YaRN' : ' w/ YaRN'})
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {model.supports_tools ? (
-                            <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
-                              Yes
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-[11px] text-gray-500 dark:text-gray-400">
-                              No
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {model.supports_research ? (
-                            <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
-                              Yes
-                            </span>
-                          ) : (
+                        )}
+                        {model.max_context_here === 0 && (
+                          <div className="mt-1 max-w-[14rem] text-[11px] font-medium leading-snug text-red-700 dark:text-red-400">
+                            Does not fit this Mac ({model.system_ram_gb} GB): needs about {model.min_ram_gb} GB.{' '}
+                            {model.active
+                              ? 'It is selected, but the LLM server will not start it here. Choose another model.'
+                              : 'It cannot be activated here.'}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
+                        <span>{model.context_window.toLocaleString()}</span>
+                        {model.max_context_here > 0 &&
+                          model.max_context_here <
+                            (yarnEnabled && model.yarn_extended_context
+                              ? model.yarn_extended_context
+                              : model.context_window) && (
                             <span
-                              className="inline-flex items-center rounded-md bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
-                              title="Not recommended for Research mode — chat works fine"
+                              className="ml-1 text-xs text-amber-700 dark:text-amber-400"
+                              title="Clamped to what this Mac's memory fits"
                             >
-                              Chat only
+                              ({model.max_context_here.toLocaleString()} here)
                             </span>
                           )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {model.active ? (
-                            <StatusPill state="active" label="Active" />
-                          ) : model.downloaded ? (
-                            <StatusPill state="idle" label="Ready" />
-                          ) : downloading.has(model.id) ? (
-                            <div className="flex items-center gap-2">
-                              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-                                <div
-                                  className="h-full rounded-full bg-amber-500 transition-all duration-300"
-                                  style={{
-                                    width: `${Math.min(progress ?? 0, 100)}%`,
-                                  }}
-                                />
-                              </div>
-                              <span className="text-xs tabular-nums text-amber-600 dark:text-amber-400">
-                                {Math.round(progress ?? 0)}%
-                              </span>
+                        {model.yarn_available && model.yarn_extended_context && (
+                          <span className="ml-1 text-xs text-gray-400 dark:text-gray-500">
+                            ({yarnEnabled ? '' : '→ '}
+                            {model.yarn_extended_context.toLocaleString()}
+                            {yarnEnabled ? ' via YaRN' : ' w/ YaRN'})
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {model.supports_tools ? (
+                          <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
+                            Yes
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                            No
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {model.supports_research ? (
+                          <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
+                            Yes
+                          </span>
+                        ) : (
+                          <span
+                            className="inline-flex items-center rounded-md bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                            title="Not recommended for Research mode — chat works fine"
+                          >
+                            Chat only
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {model.active ? (
+                          <StatusPill state="active" label="Active" />
+                        ) : model.downloaded ? (
+                          <StatusPill state="idle" label="Ready" />
+                        ) : downloading.has(model.id) ? (
+                          <div className="flex items-center gap-2">
+                            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                              <div
+                                className="h-full rounded-full bg-amber-500 transition-all duration-300"
+                                style={{
+                                  width: `${Math.min(progress ?? 0, 100)}%`,
+                                }}
+                              />
                             </div>
-                          ) : (
-                            <StatusPill state="idle" label="Not downloaded" />
+                            <span className="text-xs tabular-nums text-amber-600 dark:text-amber-400">
+                              {Math.round(progress ?? 0)}%
+                            </span>
+                          </div>
+                        ) : (
+                          <StatusPill state="idle" label="Not downloaded" />
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          {model.active && (
+                            <button
+                              onClick={() => handleDeactivate()}
+                              className="rounded-lg border border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 shadow-xs hover:bg-gray-50 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-700/50"
+                            >
+                              Deactivate
+                            </button>
                           )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <div className="flex items-center justify-end gap-2">
-                            {model.active && (
-                              <button
-                                onClick={() => handleDeactivate()}
-                                className="rounded-lg border border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 shadow-xs hover:bg-gray-50 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-700/50"
-                              >
-                                Deactivate
-                              </button>
-                            )}
-                            {!model.downloaded && !downloading.has(model.id) && (
-                              <button
-                                onClick={() => handleDownload(model.id)}
-                                className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-blue-700"
-                              >
-                                Download
-                              </button>
-                            )}
-                            {model.downloaded && !model.active && (
-                              <>
+                          {!model.downloaded && !downloading.has(model.id) && (
+                            <button
+                              onClick={() => handleDownload(model.id)}
+                              className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-blue-700"
+                            >
+                              Download
+                            </button>
+                          )}
+                          {model.downloaded && !model.active && (
+                            <>
+                              {model.max_context_here > 0 && (
                                 <button
                                   onClick={() => handleActivate(model.id)}
                                   className="rounded-lg border border-blue-600 px-3 py-1 text-xs font-medium text-blue-600 shadow-xs hover:bg-blue-50 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/20"
                                 >
                                   Activate
                                 </button>
-                                <button
-                                  onClick={() => handleDelete(model.id)}
-                                  className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-red-700"
-                                >
-                                  Delete
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </Fragment>
-              ))}
+                              )}
+                              <button
+                                onClick={() => handleDelete(model.id)}
+                                className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-red-700"
+                              >
+                                Delete
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </Fragment>
+            ))}
           </tbody>
         </table>
       </Card>

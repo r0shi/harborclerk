@@ -700,6 +700,15 @@ class ServiceManager: ObservableObject {
                 notifyStateChanged()
                 return
             }
+            // Service refused to start and said why (LLM: model file missing,
+            // or the model does not fit this Mac's memory). Without this the
+            // health loop below waits its full timeout, the menubar shows
+            // "starting" for two minutes, and the log says "Health check
+            // timeout" instead of the real reason.
+            if service.state == .errored {
+                notifyStateChanged()
+                return
+            }
 
             // Wait for health check with timeout
             let timeout: TimeInterval = (service is EmbedderService || service is RerankerService || service is LlamaService) ? 120 : (service is TikaService) ? 60 : 30

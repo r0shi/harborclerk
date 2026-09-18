@@ -58,6 +58,21 @@ fetched and stored, because there is no file on disk to reference.
   the model requires a migration, not just a config edit.
 - No `tenant_id`. Anywhere.
 
+## The model registry states memory, and Swift mirrors it
+
+Every `ModelInfo` in `llm/models.py` carries `kv_bytes_per_token` (and
+`kv_fixed_bytes` for sliding-window or linear-attention layers), read from the
+GGUF header and checked against the file by `tests/test_llm_models.py` when it
+is downloaded. `memory_bytes`, `min_ram_gb` and `max_context` derive from them;
+the API reports them, activation refuses a model whose weights alone do not fit
+(no override: the launcher would refuse it too), and the macOS launcher clamps
+`-c` to what fits or refuses to launch. `context_window` is what the app passes
+as `-c`, so raising it is a memory change, not a documentation fix. Chat,
+research and summarize budget prompts through `context_budget()`, never the
+registry window. The Swift mirror (`Settings.swift`: `kvBytesPerToken`,
+`kvFixedBytes`, `MemoryBudget`) is held to the registry by a test; a new model
+needs all of them.
+
 ## Async gotchas
 
 - `enqueue_stage()` uses a **sync** session. Calling it in a loop from an async

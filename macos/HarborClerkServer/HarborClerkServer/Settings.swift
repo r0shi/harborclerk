@@ -198,10 +198,43 @@ final class AppSettings: @unchecked Sendable {
             "qwen3-4b": 32768,
             "gpt-oss-20b": 128000,
             "qwen36-35b-a3b": 262144,
-            "gemma4-26b-a4b": 128000,
+            "gemma4-26b-a4b": 262144,  // the GGUF's; 128K is the E2B/E4B figure (#548)
         ]
         return contextWindows[modelId] ?? 32768
     }
+
+    /// KV cache the active model needs per token of context (bytes, f16, the
+    /// layers whose cache grows with context) and the part that does not grow
+    /// (sliding windows, linear-attention state). Mirrors
+    /// `ModelInfo.kv_bytes_per_token` / `kv_fixed_bytes` in
+    /// `src/harbor_clerk/llm/models.py`, where each value's derivation from the
+    /// GGUF header is recorded. An unknown id gets the largest per-token cost
+    /// in the table, so the clamp errs towards a smaller context.
+    var activeModelKvBytesPerToken: Int {
+        let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
+        return Self.kvBytesPerToken[modelId] ?? Self.kvBytesPerToken.values.max() ?? 0
+    }
+
+    var activeModelKvFixedBytes: Int {
+        let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
+        return Self.kvFixedBytes[modelId] ?? 0
+    }
+
+    static let kvBytesPerToken: [String: Int] = [
+        "qwen3-8b": 147_456,
+        "qwen3-4b": 147_456,
+        "gpt-oss-20b": 24_576,
+        "qwen36-35b-a3b": 20_480,
+        "gemma4-26b-a4b": 20_480,
+    ]
+
+    static let kvFixedBytes: [String: Int] = [
+        "qwen3-8b": 0,
+        "qwen3-4b": 0,
+        "gpt-oss-20b": 3_145_728,
+        "qwen36-35b-a3b": 300_000_000,
+        "gemma4-26b-a4b": 209_715_200,
+    ]
 
     /// YaRN configuration for models that support context extension.
     struct YarnConfig {
@@ -299,5 +332,43 @@ final class AppSettings: @unchecked Sendable {
         var bytes = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         return bytes.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+/// The memory a model needs against the memory a Mac has. Mirrors
+/// `memory_bytes` / `max_context` in `src/harbor_clerk/llm/models.py`;
+/// `AppSettingsTests` holds the constants and the rounding to the Python
+/// values. This is the check that protects the host: unified memory lets
+/// llama-server allocate more than the machine has, and the machine then
+/// swaps until the kernel watchdog panics (the mini did, 2026-09-17).
+enum MemoryBudget {
+    /// Compute buffers, Metal scratch, the process itself.
+    static let runtimeOverheadBytes = 1_000_000_000
+    /// The OS, the embedder and reranker, Postgres, the Tika JVM and the API.
+    static let hostHeadroomBytes = 6_000_000_000
+
+    /// The largest context, up to `requested`, that fits a Mac with `ramBytes`
+    /// of physical memory; 0 when the weights alone do not fit. A multiple of
+    /// 1024, and never below 4096 unless 0: a smaller context is not worth
+    /// running.
+    /// The RoPE arguments for a YaRN launch, or none: YaRN stretches RoPE by
+    /// `ropeScale` to reach `extendedContext`, at a quality cost that keeps it
+    /// off by default. Once the memory clamp has brought the context down to
+    /// the native window or below, the stretch buys nothing and is not applied.
+    static func yarnArguments(contextWindow: Int, yarn: AppSettings.YarnConfig?) -> [String] {
+        guard let yarn, contextWindow > yarn.originalContext else { return [] }
+        var args = ["--rope-scaling", "yarn", "--rope-scale", String(yarn.ropeScale), "--yarn-orig-ctx", String(yarn.originalContext)]
+        if let attn = yarn.attnFactor {
+            args += ["--yarn-attn-factor", String(attn)]
+        }
+        return args
+    }
+
+    static func maxContext(modelBytes: Int, kvBytesPerToken: Int, kvFixedBytes: Int, requested: Int, ramBytes: Int) -> Int {
+        let spare = ramBytes - hostHeadroomBytes - runtimeOverheadBytes - modelBytes - kvFixedBytes
+        if spare <= 0 { return 0 }
+        var tokens = kvBytesPerToken == 0 ? requested : min(requested, spare / kvBytesPerToken)
+        tokens -= tokens % 1024
+        return tokens >= 4096 ? tokens : 0
     }
 }

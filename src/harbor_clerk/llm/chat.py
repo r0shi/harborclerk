@@ -15,7 +15,7 @@ from harbor_clerk.config import get_settings, refresh_llm_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.llm.citations import dedupe_citations, extract_citations_from_tool_result
 from harbor_clerk.llm.health import report_llm_error, report_llm_success
-from harbor_clerk.llm.models import get_model
+from harbor_clerk.llm.models import context_budget, get_model
 from harbor_clerk.llm.tools import execute_tool, get_chat_tools, summarize_tool_result
 from harbor_clerk.models.chat_message import ChatMessage
 from harbor_clerk.models.conversation import Conversation
@@ -217,11 +217,10 @@ async def chat_stream(
     # Compute per-tool-result truncation limit from model context window.
     # Reserve ~25% of context for tool results (rest: system prompt, tools, history, response).
     # ~3.5 chars per token as a conservative estimate.
+    # The context llama-server is running with, not the registry's: the
+    # macOS launcher clamps -c to what fits this Mac (#556).
     model = get_model(settings.llm_model_id) if settings.llm_model_id else None
-    if model and settings.llm_yarn_enabled and model.yarn:
-        context_tokens = model.yarn.extended_context
-    else:
-        context_tokens = model.context_window if model else 32768
+    context_tokens = context_budget(model, settings.llm_yarn_enabled)
     tool_result_max_chars = min(int(context_tokens * 0.25 * 3.5), 80_000)
 
     async with async_session_factory() as session:
