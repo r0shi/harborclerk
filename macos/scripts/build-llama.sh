@@ -83,9 +83,11 @@ if [ -f build/bin/default.metallib ]; then
     cp build/bin/default.metallib "$DEST_DIR/default.metallib"
 fi
 
-# The binary names the commit it was built from. It must be the pinned tag's:
-# a stale build tree is the other way to ship the wrong version.
-WANT_COMMIT="$(git rev-parse --short=7 HEAD)"
+# The binary names the commit it was built from. It must be the pinned tag's,
+# read from the tag itself rather than from HEAD, so this check does not depend
+# on the helper having put HEAD in the right place. A stale build tree is the
+# other way to ship the wrong version.
+WANT_COMMIT="$(git rev-parse --short=7 "refs/tags/$LLAMA_CPP_TAG^{commit}")"
 BUILT="$("$DEST_DIR/llama-server" --version 2>&1 || true)"
 if ! grep -q "$WANT_COMMIT" <<<"$BUILT"; then
     echo "error: the built llama-server does not report commit $WANT_COMMIT ($LLAMA_CPP_TAG):" >&2

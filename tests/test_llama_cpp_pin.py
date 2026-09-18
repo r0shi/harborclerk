@@ -100,17 +100,64 @@ def test_a_clone_left_by_an_older_pin_is_replaced_and_a_current_one_is_kept(tmp_
     assert (clone / "build" / "cache").read_text() == "this version's build tree", "an incremental build must survive"
 
     (clone / "VERSION").write_text("patched by hand")
-    assert _ensure(clone, "v0.4.1", upstream).returncode == 0
-    assert (clone / "VERSION").read_text() == "v0.4.1", "a modified checkout is not the pinned release"
+    refused = _ensure(clone, "v0.4.1", upstream)
+    assert refused.returncode == 1 and "modified files: yes" in refused.stderr
+    assert (clone / "VERSION").read_text() == "patched by hand", "a modified checkout may be someone's work"
+
+
+def test_a_full_clone_at_the_older_tag_is_replaced_even_though_it_knows_the_newer_one(
+    tmp_path: Path, upstream: str
+) -> None:
+    """A shallow clone of v0.4.0 has no v0.4.1 ref, so the tag check alone
+    decides it. A full clone has both tags and only the commit comparison
+    tells them apart; a mutation that dropped it passed every test."""
+    clone = tmp_path / "llama.cpp"
+    subprocess.run(
+        ["git", "clone", "-q", "--branch", "v0.4.0", upstream, str(clone)], env={**os.environ, **GIT_ENV}, check=True
+    )
+    assert _git(clone, "rev-parse", "-q", "--verify", "refs/tags/v0.4.1^{commit}")
+    bumped = _ensure(clone, "v0.4.1", upstream)
+    assert bumped.returncode == 0, bumped.stderr
+    assert "existing clone is at v0.4.0" in bumped.stdout and (clone / "VERSION").read_text() == "v0.4.1"
 
 
 def test_the_helper_removes_nothing_it_did_not_clone(tmp_path: Path, upstream: str) -> None:
+    """The old script never deleted anything. This one deletes only what it
+    made: a person's clone of llama.cpp, with a branch and unpushed work, sat
+    where BUILD_DIR pointed and would have been removed on an origin-URL check."""
+    mine = tmp_path / "mine"
+    subprocess.run(["git", "clone", "-q", upstream, str(mine)], env={**os.environ, **GIT_ENV}, check=True)
+    _git(mine, "checkout", "-q", "-b", "my-patch")
+    (mine / "patch.c").write_text("unpushed work")
+    _git(mine, "add", "patch.c")
+    _git(mine, "commit", "-q", "-m", "wip")
+    refused = _ensure(mine, "v0.4.1", upstream)
+    assert refused.returncode == 1 and "my-patch" in refused.stderr and "rm -rf" in refused.stderr
+    assert (mine / "patch.c").exists() and _git(mine, "rev-parse", "--abbrev-ref", "HEAD") == "my-patch"
+
     other = tmp_path / "other"
     other.mkdir()
     _git(other, "init", "-q")
     (other / "precious").write_text("x")
     refused = _ensure(other, "v0.4.1", upstream)
     assert refused.returncode == 1 and "not touching it" in refused.stderr and (other / "precious").exists()
+
+    # A clean, detached clone at a tag looks exactly like this script's own output, except it is of another repository.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _git(elsewhere, "init", "-q", "-b", "master")
+    (elsewhere / "precious").write_text("y")
+    _git(elsewhere, "add", "precious")
+    _git(elsewhere, "commit", "-q", "-m", "v0.4.1")
+    _git(elsewhere, "tag", "v0.4.1")
+    foreign = tmp_path / "foreign"
+    subprocess.run(
+        ["git", "clone", "-q", "--branch", "v0.4.1", f"file://{elsewhere}", str(foreign)],
+        env={**os.environ, **GIT_ENV},
+        check=True,
+    )
+    refused = _ensure(foreign, "v0.4.1", upstream)
+    assert refused.returncode == 1 and "not touching it" in refused.stderr and (foreign / "precious").read_text() == "y"
 
     plain = tmp_path / "plain"
     plain.mkdir()
