@@ -41,9 +41,9 @@ class OpenAIJudgeProvider:
     """OpenAI-backed judge using gpt-* chat completions."""
 
     def __init__(self, *, model: str = "gpt-4o", client: Any | None = None):
-        import openai
+        from scripts.test_corpora.runner import spend
 
-        self._client = client or openai.OpenAI()
+        self._client = client or spend.openai_client("cross_judge")
         self._model = model
 
     def judge(self, prompt: str) -> str:

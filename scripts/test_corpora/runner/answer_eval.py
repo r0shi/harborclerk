@@ -29,7 +29,8 @@ from pathlib import Path
 
 import yaml
 
-from scripts.test_corpora.runner.answer_judge import AnswerJudge, AnswerVerdict
+from scripts.test_corpora.runner import spend
+from scripts.test_corpora.runner.answer_judge import JUDGE_MODEL, AnswerJudge, AnswerVerdict
 
 log = logging.getLogger("answer_eval")
 
@@ -163,6 +164,20 @@ def run(
     cap_dir.mkdir(parents=True, exist_ok=True)
     ver_dir.mkdir(parents=True, exist_ok=True)
 
+    # Refuse before spending anything if what is left to capture and judge is estimated over the cap.
+    from scripts.test_corpora.runner.providers.factory import model_is_cloud
+
+    to_capture = sum(1 for i in items if refresh or not (cap_dir / f"{i.id}.json").exists())
+    to_judge = sum(1 for i in items if refresh or rejudge or not (ver_dir / f"{i.id}.json").exists())
+    meter = spend.get_meter()
+    estimate = meter.require_within_cap(
+        [
+            ("baseline_question", model, to_capture if model_is_cloud(model) else 0),
+            ("answer_judge", JUDGE_MODEL, to_judge),
+        ]
+    )
+    log.info("cloud spend estimate: USD %.2f of %.2f", estimate, meter.cap_usd)
+
     rows: list[tuple[str, str, AnswerVerdict]] = []
     for item in items:
         cap_path = cap_dir / f"{item.id}.json"
@@ -211,6 +226,9 @@ def run(
         rows.append((item.id, item.type, verdict))
 
     summary = aggregate(rows)
+    # Judge and spend travel with the scores: a report quotes them from here (ADR 0001, decision 6).
+    summary["judge_model"] = JUDGE_MODEL
+    summary["spend"] = meter.snapshot()
     report_dir = workdir / "answer-eval" / "reports" / label
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / "summary.json").write_text(json.dumps(summary, indent=2))

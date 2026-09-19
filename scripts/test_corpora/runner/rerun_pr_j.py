@@ -184,6 +184,10 @@ def main(argv: list[str] | None = None) -> int:
     workdir = args.workdir or _default_workdir()
     captures_root = workdir / "answer-eval" / "captures"
 
+    from scripts.test_corpora.runner import spend
+
+    spend.configure(ledger_path=workdir / "answer-eval" / f"spend-rerun-{args.label}.json")
+
     # Lazy imports kept here so the test suite can mock provider_factory.
     from scripts.test_corpora.runner.providers import make_provider
 

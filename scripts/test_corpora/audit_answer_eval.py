@@ -175,6 +175,12 @@ def main(argv: list[str] | None = None) -> int:
 
     # Cross-judge re-score (optional)
     if args.cross_judge:
+        from scripts.test_corpora.runner import spend
+
+        report_dir = args.output_dir or (workdir / "answer-eval" / "reports" / args.label)
+        meter = spend.configure(ledger_path=report_dir / "spend-cross-judge.json")
+        n = len(captures) if args.rejudge_sample is None else min(args.rejudge_sample, len(captures))
+        meter.require_within_cap([("cross_judge", args.cross_judge, n)])
         try:
             judge_provider = _build_judge_provider(args.cross_judge)
         except SystemExit as exc:

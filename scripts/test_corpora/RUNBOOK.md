@@ -301,6 +301,9 @@ The full per-question detail lives in:
 | Phase 6 | $0 in API; 3-5 GPU-hours |
 | **Total Anthropic spend** | **~$5-10** |
 
+These are estimates from before spend was metered. A run is now capped at USD 25 in code and records what it
+actually spent in `<run_dir>/spend.json`; see "Cloud spend is capped" in the README.
+
 ---
 
 ## What to do if it ALL goes wrong

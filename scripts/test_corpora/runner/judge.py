@@ -14,6 +14,8 @@ import re
 
 import anthropic
 
+from scripts.test_corpora.runner import spend
+
 JUDGE_PROMPT = """You are evaluating whether a local LLM's answer reaches the same factual
 ground as a Claude baseline answer to the same question.
 
@@ -76,7 +78,7 @@ def _extract_json(text: str) -> dict:
 
 class JudgeClient:
     def __init__(self, client: anthropic.Anthropic | None = None, model: str = "claude-sonnet-4-6"):
-        self._client = client or anthropic.Anthropic()
+        self._client = client or spend.anthropic_client("judge")
         self._model = model
 
     def judge(self, question: str, baseline: str, model_answer: str) -> JudgeVerdict:

@@ -23,6 +23,7 @@ from typing import Any
 
 import openai
 
+from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.providers.base import (
     DEFAULT_SYSTEM_PROMPT,
     BaselineResult,
@@ -64,7 +65,7 @@ class OpenAIProvider:
     @property
     def _client(self) -> openai.OpenAI:
         if self._explicit_client is None:
-            self._explicit_client = openai.OpenAI()
+            self._explicit_client = spend.openai_client("baseline_question")
         return self._explicit_client
 
     def _list_tools(self) -> list[dict]:

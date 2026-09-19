@@ -14,6 +14,8 @@ import re
 
 import anthropic
 
+from scripts.test_corpora.runner import spend
+
 log = logging.getLogger("answer_judge")
 
 JUDGE_MODEL = "claude-sonnet-4-6"
@@ -147,7 +149,7 @@ def _extract_json(text: str) -> dict:
 
 class AnswerJudge:
     def __init__(self, client: anthropic.Anthropic | None = None, model: str = JUDGE_MODEL):
-        self._client = client or anthropic.Anthropic()
+        self._client = client or spend.anthropic_client("answer_judge")
         self._model = model
 
     def judge_answer(

@@ -5,6 +5,17 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _fresh_spend_meter(monkeypatch):
+    """The spend meter is process-wide. No test inherits another's total, cap or ledger path."""
+    from scripts.test_corpora.runner import spend
+
+    monkeypatch.delenv(spend.CAP_ENV, raising=False)
+    spend.reset_for_tests()
+    yield
+    spend.reset_for_tests()
+
+
 @pytest.fixture
 def tmp_results(tmp_path: Path) -> Path:
     """Disposable results directory for a single test."""

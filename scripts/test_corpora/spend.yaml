@@ -1,0 +1,44 @@
+# Cloud spend policy for the eval harness. ADR 0001, decision 6: spend is capped per benchmark run,
+# enforced in code, with prices held in configuration. `runner/spend.py` reads this file; nothing else
+# in the harness may construct a cloud client (tests/test_spend.py holds that).
+#
+# The cap can be lowered for one run (--spend-cap-usd, HC_EVAL_SPEND_CAP_USD). Raising it means editing
+# this file, which means a PR.
+cap_usd: 25.00
+
+# USD per million tokens, list price, first-party API, global routing. A model that is not listed here
+# cannot be called: a call that cannot be priced cannot be capped. Add the model, its price and the date
+# you read it; do not guess.
+prices:
+  verified: "2026-09-18"
+  sources:
+    - https://platform.claude.com/docs/en/about-claude/pricing
+    - https://developers.openai.com/api/docs/pricing
+  models:
+    # No long-context premium for Claude 4.6 and later. cache_write is the 1-hour rate, the dearer of the
+    # two, because the usage block does not say which was used.
+    claude-sonnet-4-6: {input: 3.00, output: 15.00, cache_write: 6.00, cache_read: 0.30}
+    # Not used by default. Listed so that moving the judge is a one-line change. Claude 4.7 and later
+    # tokenize the same text into about 30% more tokens, so a newer judge costs more per call than the
+    # price ratio suggests, and its scores are not comparable with a Sonnet 4.6 judge's.
+    claude-sonnet-5: {input: 2.00, output: 10.00, cache_write: 4.00, cache_read: 0.20}
+    claude-opus-5: {input: 5.00, output: 25.00, cache_write: 10.00, cache_read: 0.50}
+    claude-haiku-4-5: {input: 1.00, output: 5.00, cache_write: 2.00, cache_read: 0.10}
+    # Cached input is billed at 1.25; the meter charges every prompt token at the full rate.
+    gpt-4o: {input: 2.50, output: 10.00}
+
+# Before a call the meter reserves its worst case: the request's size in characters divided by this, at
+# the input price, plus max_tokens at the output price. English runs near 4 characters per token; 2.5
+# over-reserves on purpose, since the reservation is what stops a run before the cap, not after it.
+chars_per_token: 2.5
+
+# Tokens per call kind, for the pre-run estimate that refuses to start a run over the cap. PROVISIONAL:
+# derived from RUNBOOK.md's cost table (a full run was about USD 5 to 10), not from metered runs, because
+# nothing was metered before this file existed. spend.json reports the actual mean per kind after every
+# run; correct these from it.
+estimates:
+  synthetic_doc: {input_tokens: 600, output_tokens: 1500}
+  baseline_question: {input_tokens: 40000, output_tokens: 3000}
+  judge: {input_tokens: 4000, output_tokens: 800}
+  answer_judge: {input_tokens: 3000, output_tokens: 400}
+  cross_judge: {input_tokens: 3000, output_tokens: 400}

@@ -16,6 +16,7 @@ from typing import Any
 
 import anthropic
 
+from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.providers.base import (
     DEFAULT_SYSTEM_PROMPT,
     BaselineResult,
@@ -54,7 +55,7 @@ class AnthropicProvider:
     @property
     def _client(self) -> anthropic.Anthropic:
         if self._explicit_client is None:
-            self._explicit_client = anthropic.Anthropic()
+            self._explicit_client = spend.anthropic_client("baseline_question")
         return self._explicit_client
 
     def _list_tools(self) -> list[dict]:

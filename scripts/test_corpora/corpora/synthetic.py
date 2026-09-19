@@ -107,8 +107,19 @@ PROMPT_TEMPLATES = {
 }
 
 
-def _make_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic()
+def _make_client():
+    from scripts.test_corpora.runner import spend
+
+    return spend.anthropic_client("synthetic_doc")
+
+
+def planned_generation_count(workdir: Path, doc_counts: dict[str, int] | None = None) -> int:
+    """How many documents `acquire` would generate, for the pre-run spend estimate: none once the corpus
+    is acquired, otherwise every one."""
+    ingest_dir = Path(workdir) / "ingest"
+    if (ingest_dir / ".acquired").exists() and any(d.suffix in {".txt", ".pdf"} for d in ingest_dir.glob("*")):
+        return 0
+    return sum((doc_counts or DOC_COUNTS_DEFAULT).values())
 
 
 def _generate_one(

@@ -37,6 +37,7 @@ from anthropic._exceptions import OverloadedError, RateLimitError
 from scripts.test_corpora import conftest as cfg
 from scripts.test_corpora.corpora import cuad, enron, synthetic
 from scripts.test_corpora.corpora.manifest import CorpusManifest
+from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.circuit_breaker import CircuitBreaker, is_operational_failure
 from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
 from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
@@ -452,6 +453,23 @@ def make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--judge-model",
+        default=cfg.JUDGE_MODEL,
+        help=(
+            "the LLM-as-judge model. Scores from different judges are not comparable, so change it on "
+            "purpose and for a whole comparison; it is recorded in spend.json. Must be priced in spend.yaml."
+        ),
+    )
+    p.add_argument(
+        "--spend-cap-usd",
+        type=float,
+        default=None,
+        help=(
+            "lower this run's cloud spend cap below spend.yaml's cap_usd (also HC_EVAL_SPEND_CAP_USD). "
+            "It cannot be raised here: that is an edit to spend.yaml, in a PR."
+        ),
+    )
+    p.add_argument(
         "--skip-canary",
         action="store_true",
         help=(
@@ -632,6 +650,21 @@ def _plan_units(
 
 
 # ── phase handlers ──
+
+
+def _spend_plan(units, *, workdir: Path, judge_model: str, no_judge: bool) -> list[tuple[str, str, int]]:
+    """The cloud calls the pending units imply, as (kind, model, calls), for the pre-run estimate. Every
+    pending phase-4/5 unit counts as one judge call: some will degrade and never be judged, and an
+    estimate that refuses a run should err high."""
+    pending = [u for u in units if u.status == Status.PENDING]
+    synthetic_docs = 0
+    if any(u.phase == 0 and u.corpus == "synthetic" for u in pending):
+        synthetic_docs = synthetic.planned_generation_count(workdir / "synthetic")
+    return [
+        ("synthetic_doc", cfg.BASELINE_MODEL, synthetic_docs),
+        ("baseline_question", cfg.BASELINE_MODEL, sum(1 for u in pending if u.phase == 1)),
+        ("judge", judge_model, 0 if no_judge else sum(1 for u in pending if u.phase in (4, 5))),
+    ]
 
 
 def _phase0_acquire(corpus_id: str, workdir: Path) -> CorpusManifest:
@@ -863,6 +896,19 @@ def main(argv: list[str] | None = None) -> int:
         ],
     )
 
+    # One meter per run, before anything can make a cloud call. A resumed run reads what it already spent.
+    meter = spend.configure(
+        ledger_path=run_dir / spend.LEDGER_NAME,
+        cap_usd=args.spend_cap_usd,
+        run_info={"run_id": args.run_id, "judge_model": args.judge_model, "baseline_model": cfg.BASELINE_MODEL},
+    )
+    log.info(
+        "cloud spend: cap USD %.2f, already spent %.4f (%s)",
+        meter.cap_usd,
+        meter.total_usd,
+        run_dir / spend.LEDGER_NAME,
+    )
+
     # --mode retrieval-eval is a separate fast path: no state.json, no per-phase
     # planning, no model switching, no LLM. Dispatch and return before the
     # main sweep loop spins up clients or touches state.
@@ -993,8 +1039,14 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 log.warning("no HC_USERNAME / HC_PASSWORD set — auth-required calls will fail")
 
-        anthro = anthropic.Anthropic()
-        judge = JudgeClient(client=anthro, model=cfg.JUDGE_MODEL)
+        # Refuse a run that is estimated over the cap before it has spent anything (ADR 0001, decision 6).
+        plan = _spend_plan(sf.units(), workdir=workdir, judge_model=args.judge_model, no_judge=args.no_judge)
+        if not args.dry_run:
+            estimate = meter.require_within_cap(plan)
+            log.info("cloud spend estimate for the pending units: USD %.2f of %.2f", estimate, meter.cap_usd)
+
+        anthro = spend.anthropic_client("baseline_question")
+        judge = JudgeClient(model=args.judge_model)
 
         # Per-model circuit breaker. Caps the damage from a dead-LLM cascade
         # by sleeping after N consecutive operational failures, and skips
@@ -1721,7 +1773,18 @@ def main(argv: list[str] | None = None) -> int:
         if not args.no_hc_logs:
             _capture_hc_logs(run_dir, log)
         log.info("sweep complete after %.1fs", time.time() - sweep_started)
+        log.info(
+            "cloud spend: USD %.4f of %.2f over %d calls", meter.total_usd, meter.cap_usd, meter.snapshot()["calls"]
+        )
         return 0
+    except spend.SpendCapExceeded as exc:
+        # Not an Exception, so none of the keep-going handlers above can have swallowed it. Units already
+        # done are saved; --resume continues the same run against the same ledger.
+        log.error("stopped by the spend cap: %s", exc)
+        return 3
+    except spend.SpendError as exc:
+        log.error("stopped: a cloud call that cannot be metered cannot be capped: %s", exc)
+        return 3
     finally:
         sf.release_lock()
 

@@ -65,6 +65,29 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.swee
 `--phases` filters to a subset of phases (range or comma list): `--phases 0`,
 `--phases 0-2`, `--phases 1,4,5`.
 
+## Cloud spend is capped
+
+Every cloud call the harness makes (baselines, judges, the cross-judge, synthetic-corpus generation) goes
+through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend.yaml`](spend.yaml): USD 25
+(ADR 0001, decision 6).
+
+- **Before the run**, the pending units are priced from the per-kind token estimates in `spend.yaml`. A run
+  estimated over the cap does not start (exit code 3); narrow it with `--phases`, `--corpora`, `--models` or
+  `--no-judge`.
+- **Before each call**, its worst case (request size plus `max_tokens`) is reserved against the running
+  total. A call that could cross the cap is not made, and the run stops with exit code 3. Finished units are
+  saved; `--resume` continues the same run against the same ledger.
+- **After each call**, `<run_dir>/spend.json` is rewritten with the total, the calls, and tokens and dollars
+  per model and per call kind. A dated report quotes its spend and its judge from there.
+- `--spend-cap-usd N` (or `HC_EVAL_SPEND_CAP_USD`) lowers the cap for one run. Raising it is an edit to
+  `spend.yaml`, in a PR.
+- A model with no price in `spend.yaml` cannot be called. Add the list price and the date you read it.
+- `--judge-model` changes the judge. Scores from different judges are not comparable: change it for a whole
+  comparison, never halfway through one.
+
+The estimates in `spend.yaml` are provisional until a metered run is on record; correct them from the
+`by_kind` means in `spend.json`.
+
 ## Resume after interrupt
 
 ```bash
@@ -86,6 +109,7 @@ uv run python -m scripts.test_corpora.runner.sweep \
 | Path                                                     | What                                                          |
 | -------------------------------------------------------- | ------------------------------------------------------------- |
 | `state.json`                                             | resumable state — every (phase, corpus, model, q, depth) cell |
+| `spend.json`                                             | cloud spend so far: cap, total, calls, tokens and USD per model and per call kind, judge and baseline model |
 | `baselines/<corpus>/<question_id>.json`                  | Claude Sonnet 4.6 baseline output                             |
 | `responses/<corpus>/<model>/<question_id>__<depth>.json` | local-model response                                          |
 | `judge/<corpus>/<model>/<question_id>__<depth>.json`     | Phase-5 judge verdict                                         |
