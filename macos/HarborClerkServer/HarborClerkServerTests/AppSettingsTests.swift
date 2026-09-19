@@ -243,6 +243,28 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(fit(34_359_738_368, (22_134_528_992, 20_480, 300_000_000, 262144)), 239_616)
     }
 
+    /// Same cases as `test_the_prompt_cache_gets_what_the_context_leaves` in Python.
+    func testThePromptCacheGetsWhatTheContextLeaves() {
+        let gib = 1_073_741_824
+        func cache(_ ram: Int, _ m: (bytes: Int, perToken: Int, fixed: Int), _ context: Int) -> Int {
+            MemoryBudget.promptCacheMiB(modelBytes: m.bytes, kvBytesPerToken: m.perToken, kvFixedBytes: m.fixed, context: context, ramBytes: ram)
+        }
+        let qwen8 = (bytes: 5_027_783_488, perToken: 147_456, fixed: 0)
+        let gptoss = (bytes: 11_624_759_488, perToken: 24_576, fixed: 3_145_728)
+        let qwen35b = (bytes: 22_134_528_992, perToken: 20_480, fixed: 300_000_000)
+        XCTAssertEqual(cache(32 * gib, qwen8, 32768), 2048, "room to spare: the ceiling")
+        XCTAssertEqual(cache(16 * gib, qwen8, 32768), 305, "what 32K of context leaves on a 16 GB Mac")
+        XCTAssertEqual(cache(18 * gib, gptoss, 27648), 0, "the context was clamped to what fits: nothing is left")
+        XCTAssertEqual(cache(32 * gib, qwen35b, 239_616), 0, "the mini's 35B: clamped, so no cache")
+        XCTAssertEqual(cache(36 * gib, qwen35b, 262_144), 2048)
+        // The fixed KV cost counts: without its 1.7 GB of recurrent state and checkpoints this would be 1666.
+        let qwen9 = (bytes: 5_680_522_464, perToken: 32_768, fixed: 1_738_801_152)
+        XCTAssertEqual(cache(18 * gib, qwen9, 149_504), 0)
+        XCTAssertEqual(cache(0, qwen8, 32768), 0, "memory unknown")
+        XCTAssertEqual(MemoryBudget.promptCacheMaxBytes, 2 * gib)
+        XCTAssertEqual(MemoryBudget.promptCacheMinBytes, 256 * 1_048_576)
+    }
+
     // MARK: - Per-model parallel_slots (llama-server -np)
 
     /// All model IDs Swift knows about. Source of truth for the completeness

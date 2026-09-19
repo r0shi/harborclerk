@@ -237,21 +237,74 @@ RECURRENT_STATE_DERIVED = {"qwen35-9b", "qwen35-4b"}
 LLAMA_CTX_CHECKPOINTS = 32  # llama-server's default at the pin; the launcher does not pass --ctx-checkpoints
 
 
-def test_the_launcher_still_leaves_checkpoints_at_the_default_the_budget_assumes():
-    """As a flag or as llama.cpp's environment form, from anywhere in the app: the shared environment is
-    built in ServiceManager, not in the launcher."""
+def test_the_launcher_bounds_the_prompt_cache_and_leaves_checkpoints_at_the_default_the_budget_assumes():
+    """llama-server keeps two things in host RAM that the launcher used to leave at their defaults: a prompt
+    cache (8 GiB) and context checkpoints (32 per slot). The cache is now bounded by the budget (#657). The
+    checkpoints are not, and the Qwen3.5 entries' kv_fixed_bytes assumes the default: whoever bounds them
+    brings LLAMA_CTX_CHECKPOINTS and those figures down in the same change.
+
+    As a flag or as llama.cpp's environment form, from anywhere in the app: the shared environment is built
+    in ServiceManager, not in the launcher."""
+    launcher = _swift("Services/LlamaService.swift")
+    assert re.search(r'"--cache-ram",\s*String\(promptCacheMiB\)', launcher), "the cache is bounded by the budget"
+    assert "MemoryBudget.promptCacheMiB(" in launcher and "context: contextWindow" in launcher, (
+        "from the context the launcher is about to pass, not the one it asked for"
+    )
     for path in sorted(SWIFT_APP.rglob("*.swift")):
         source = _swift(str(path.relative_to(SWIFT_APP)))
-        for name in (
-            "--ctx-checkpoints",
-            "--swa-checkpoints",
-            "--cache-ram",
-            "LLAMA_ARG_CTX_CHECKPOINTS",
-            "LLAMA_ARG_CACHE_RAM",
-        ):
+        assert "LLAMA_ARG_CACHE_RAM" not in source, f"{path.name}: the environment form would bypass the budget"
+        if path.name != "LlamaService.swift":
+            assert "--cache-ram" not in source, f"{path.name}: the cache is bounded in one place"
+        for name in ("--ctx-checkpoints", "--swa-checkpoints", "LLAMA_ARG_CTX_CHECKPOINTS"):
             assert name not in source, (
                 f"{path.name} now sets {name}: bring LLAMA_CTX_CHECKPOINTS and the kv_fixed_bytes that use it down to match"
             )
+
+
+def test_compose_bounds_the_prompt_cache_at_the_same_ceiling():
+    """The sibling site: Compose starts its own llama-server, and cannot know the host's memory."""
+    from harbor_clerk.llm.models import MIB, PROMPT_CACHE_MAX_BYTES
+
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+    code = "\n".join(line.split("#")[0] for line in compose.splitlines())
+    assert re.search(rf'"--cache-ram",\s*"{PROMPT_CACHE_MAX_BYTES // MIB}"', code)
+
+
+def test_the_prompt_cache_gets_what_the_context_leaves():
+    """Context first, cache second. Same cases as `testThePromptCacheGetsWhatTheContextLeaves` in Swift."""
+    from harbor_clerk.llm.models import PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_BYTES, prompt_cache_mib
+
+    gib = 1024**3
+    qwen8, gptoss, big = MODELS["qwen3-8b"], MODELS["gpt-oss-20b"], MODELS["qwen36-35b-a3b"]
+    assert prompt_cache_mib(qwen8, 32 * gib, 32768) == 2048, "room to spare: the ceiling"
+    assert prompt_cache_mib(qwen8, 16 * gib, 32768) == 305, "what 32K of context leaves on a 16 GB Mac"
+    # The reason the cache does not come first: reserving 512 MiB ahead of the context would take this model
+    # from 27K tokens to 6K on an 18 GB Mac.
+    assert max_context(gptoss, 18 * gib) == 27648 and prompt_cache_mib(gptoss, 18 * gib, 27648) == 0
+    assert max_context(big, 32 * gib) == 239_616 and prompt_cache_mib(big, 32 * gib, 239_616) == 0, "the mini's 35B"
+    assert prompt_cache_mib(big, 36 * gib, 262_144) == 2048
+    # The fixed KV cost counts: without its 1.7 GB of recurrent state and checkpoints this would be 1666.
+    nine = MODELS["qwen35-9b"]
+    assert max_context(nine, 18 * gib) == 149_504 and prompt_cache_mib(nine, 18 * gib, 149_504) == 0
+    assert prompt_cache_mib(qwen8, 0, 32768) == 0, "memory unknown"
+    assert (2 * gib, 256 * 1024**2) == (PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_BYTES)
+
+
+def test_the_cache_never_costs_a_model_its_context_or_its_place():
+    """For every curated model on every Mac: the context is what it was before the cache was budgeted, and
+    context plus cache plus everything else fits the machine."""
+    from harbor_clerk.llm.models import PROMPT_CACHE_MAX_BYTES, prompt_cache_mib
+
+    for m in MODELS.values():
+        for tier in (8, 16, 18, 24, 32, 36, 48, 64, 128):
+            ram = tier * 1024**3
+            context = max_context(m, ram)
+            if context == 0:
+                assert prompt_cache_mib(m, ram, m.context_window) == 0
+                continue
+            cache = prompt_cache_mib(m, ram, context) * 1024**2
+            assert 0 <= cache <= PROMPT_CACHE_MAX_BYTES
+            assert memory_bytes(m, context) + cache + HOST_HEADROOM_BYTES <= ram, f"{m.id} on {tier} GB"
 
 
 def test_what_the_qwen35_pair_gets_on_the_macs_people_have():
@@ -373,5 +426,12 @@ def test_swift_mirrors_the_registrys_memory_tables():
     assert per_token == {m.id: m.kv_bytes_per_token for m in MODELS.values()}
     assert fixed == {m.id: m.kv_fixed_bytes for m in MODELS.values()}
     assert windows == {m.id: m.context_window for m in MODELS.values()}
-    for name, value in (("runtimeOverheadBytes", RUNTIME_OVERHEAD_BYTES), ("hostHeadroomBytes", HOST_HEADROOM_BYTES)):
+    from harbor_clerk.llm.models import PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_BYTES
+
+    for name, value in (
+        ("runtimeOverheadBytes", RUNTIME_OVERHEAD_BYTES),
+        ("hostHeadroomBytes", HOST_HEADROOM_BYTES),
+        ("promptCacheMaxBytes", PROMPT_CACHE_MAX_BYTES),
+        ("promptCacheMinBytes", PROMPT_CACHE_MIN_BYTES),
+    ):
         assert re.search(rf"static let {name} = {value:_}\b", swift), name

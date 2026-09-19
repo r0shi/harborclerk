@@ -357,11 +357,14 @@ enum MemoryBudget {
     static let runtimeOverheadBytes = 1_000_000_000
     /// The OS, the embedder and reranker, Postgres, the Tika JVM and the API.
     static let hostHeadroomBytes = 6_000_000_000
+    /// llama-server's prompt cache (host RAM holding the KV state of conversations
+    /// it has put aside) is bounded at what the context leaves, up to this much.
+    /// Its own default is 8 GiB, which nothing budgeted. See PROMPT_CACHE_MAX_BYTES
+    /// in src/harbor_clerk/llm/models.py for the measurement behind the number.
+    static let promptCacheMaxBytes = 2_147_483_648
+    /// Less than this holds no whole conversation: the cache is switched off.
+    static let promptCacheMinBytes = 268_435_456
 
-    /// The largest context, up to `requested`, that fits a Mac with `ramBytes`
-    /// of physical memory; 0 when the weights alone do not fit. A multiple of
-    /// 1024, and never below 4096 unless 0: a smaller context is not worth
-    /// running.
     /// The RoPE arguments for a YaRN launch, or none: YaRN stretches RoPE by
     /// `ropeScale` to reach `extendedContext`, at a quality cost that keeps it
     /// off by default. Once the memory clamp has brought the context down to
@@ -376,11 +379,27 @@ enum MemoryBudget {
         return args
     }
 
+    /// The largest context, up to `requested`, that fits a Mac with `ramBytes`
+    /// of physical memory; 0 when the weights alone do not fit. A multiple of
+    /// 1024, and never below 4096 unless 0: a smaller context is not worth
+    /// running.
     static func maxContext(modelBytes: Int, kvBytesPerToken: Int, kvFixedBytes: Int, requested: Int, ramBytes: Int) -> Int {
         let spare = ramBytes - hostHeadroomBytes - runtimeOverheadBytes - modelBytes - kvFixedBytes
         if spare <= 0 { return 0 }
         var tokens = kvBytesPerToken == 0 ? requested : min(requested, spare / kvBytesPerToken)
         tokens -= tokens % 1024
         return tokens >= 4096 ? tokens : 0
+    }
+
+    /// `--cache-ram` in MiB: what is left once the model, its KV cache at
+    /// `context`, the runtime and the rest of the machine have theirs, up to
+    /// `promptCacheMaxBytes`; 0 (cache off) when less than
+    /// `promptCacheMinBytes` is left. Context first, cache second: a Mac whose
+    /// context is already clamped gets no cache rather than a smaller context.
+    static func promptCacheMiB(modelBytes: Int, kvBytesPerToken: Int, kvFixedBytes: Int, context: Int, ramBytes: Int) -> Int {
+        let used = modelBytes + kvFixedBytes + kvBytesPerToken * context + runtimeOverheadBytes
+        let left = ramBytes - hostHeadroomBytes - used
+        let mib = min(promptCacheMaxBytes, left) / 1_048_576
+        return mib * 1_048_576 >= promptCacheMinBytes ? mib : 0
     }
 }

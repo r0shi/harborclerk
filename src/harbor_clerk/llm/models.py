@@ -32,6 +32,16 @@ HOST_HEADROOM_BYTES = 6_000_000_000
 # "16 GB" Mac has 16 GiB, so requirements are compared in GiB.
 MAC_RAM_TIERS_GB = (8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
 GIB = 1024**3
+MIB = 1024**2
+# llama-server's prompt cache: host RAM where it keeps the KV state of a conversation it has put aside,
+# so that coming back to it restores the prefix instead of reading it again. Its default ceiling is 8 GiB
+# and nothing budgeted it (#657). Measured on the mini, 2026-09-18, Qwen3-8B, three conversations taken in
+# turn: left alone it grew 2.2 GB in nine requests (it keeps a state per version of a conversation) and
+# every return was restored, 30 s instead of 100 to 130; bounded at 1 GiB it thrashed by the third round.
+# So it is worth having, and it is bounded at what the context leaves, up to this much.
+PROMPT_CACHE_MAX_BYTES = 2 * GIB
+# Less than this holds no whole conversation worth restoring: the cache is switched off instead.
+PROMPT_CACHE_MIN_BYTES = 256 * MIB
 
 
 @dataclass(frozen=True)
@@ -255,6 +265,20 @@ def max_context(model: ModelInfo, ram_bytes: int, requested: int | None = None) 
     tokens = requested if model.kv_bytes_per_token == 0 else min(requested, spare // model.kv_bytes_per_token)
     tokens -= tokens % 1024
     return int(tokens) if tokens >= 4096 else 0
+
+
+def prompt_cache_mib(model: ModelInfo, ram_bytes: int, context: int) -> int:
+    """What the launcher passes as `--cache-ram`, in MiB: what is left of this Mac's memory once the model,
+    its KV cache at `context`, the runtime and the rest of the machine have theirs, up to
+    PROMPT_CACHE_MAX_BYTES; 0, which switches the cache off, when less than PROMPT_CACHE_MIN_BYTES is left
+    or memory cannot be read.
+
+    Context first, cache second. The cache is a speed-up and the context is what the model can do:
+    reserving even 512 MiB ahead of the context would cut gpt-oss-20b on an 18 GB Mac from 27K tokens to
+    6K. So a Mac whose context is already clamped to what fits gets no cache, and says so in its log."""
+    left = ram_bytes - HOST_HEADROOM_BYTES - memory_bytes(model, context)
+    mib = min(PROMPT_CACHE_MAX_BYTES, left) // MIB
+    return int(mib) if mib * MIB >= PROMPT_CACHE_MIN_BYTES else 0
 
 
 def effective_context(model: ModelInfo, yarn_enabled: bool, ram_bytes: int | None = None) -> int:

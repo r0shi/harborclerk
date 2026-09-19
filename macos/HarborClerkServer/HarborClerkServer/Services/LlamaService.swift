@@ -77,6 +77,23 @@ final class LlamaService: ManagedService {
             )
         }
 
+        // The prompt cache gets what the context left, and no more: llama-server's own
+        // ceiling is 8 GiB of host RAM that nothing had budgeted (#657).
+        let promptCacheMiB = MemoryBudget.promptCacheMiB(
+            modelBytes: modelBytes,
+            kvBytesPerToken: settings.activeModelKvBytesPerToken,
+            kvFixedBytes: settings.activeModelKvFixedBytes,
+            context: contextWindow,
+            ramBytes: ramBytes
+        )
+        if promptCacheMiB == 0 {
+            Log.logger("llm").warning(
+                "Prompt cache off: the context takes the memory this Mac has for the model, so returning to an earlier conversation re-reads it"
+            )
+        } else {
+            Log.logger("llm").info("Prompt cache bounded at \(promptCacheMiB) MiB")
+        }
+
         let proc = Process()
         proc.executableURL = llamaBin
         var args = [
@@ -93,6 +110,7 @@ final class LlamaService: ManagedService {
             // Settings.activeModelParallelSlots).
             "-np", String(settings.activeModelParallelSlots),
             "-c", String(contextWindow),
+            "--cache-ram", String(promptCacheMiB),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
         // No RoPE stretch when the clamp left no context to stretch into.
