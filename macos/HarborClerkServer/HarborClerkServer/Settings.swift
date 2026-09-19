@@ -239,9 +239,9 @@ final class AppSettings: @unchecked Sendable {
         "qwen3-4b": 0,
         "qwen35-9b": 1_738_801_152,
         "qwen35-4b": 1_738_801_152,
-        "gpt-oss-20b": 3_145_728,
+        "gpt-oss-20b": 18_874_368,
         "qwen36-35b-a3b": 300_000_000,
-        "gemma4-26b-a4b": 209_715_200,
+        "gemma4-26b-a4b": 314_572_800,
     ]
 
     /// YaRN configuration for models that support context extension.

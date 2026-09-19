@@ -16,6 +16,7 @@ from harbor_clerk.llm.models import (
     memory_bytes,
     min_ram_gb,
     ram_required_bytes,
+    swa_cache_cells,
     system_ram_bytes,
 )
 
@@ -422,11 +423,22 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
         per_token = layers * heads * (k + v) * 2
     elif growing == "half":
         per_token = layers // 2 * heads * (k + v) * 2
+        # The other half hold a sliding window, at the same head size, over the cells llama.cpp allocates.
+        assert m.kv_fixed_bytes == layers // 2 * heads * (k + v) * 2 * swa_cache_cells(h["attention.sliding_window"]), (
+            f"{model_id}: the header's window is {h['attention.sliding_window']}"
+        )
     elif growing == "interval":
         per_token = layers // h["full_attention_interval"] * heads * (k + v) * 2
     else:
         pattern = h["attention.sliding_window_pattern"]
         per_token = sum(hd * (k + v) * 2 for hd, windowed in zip(heads, pattern, strict=True) if not windowed)
+        # The windowed layers hold a sliding window of KV, at their own (smaller) head size, over the cells
+        # llama.cpp allocates for it: the window plus a micro-batch, padded, not the window alone.
+        k_swa, v_swa = h["attention.key_length_swa"], h["attention.value_length_swa"]
+        per_cell = sum(hd * (k_swa + v_swa) * 2 for hd, windowed in zip(heads, pattern, strict=True) if windowed)
+        assert m.kv_fixed_bytes == per_cell * swa_cache_cells(h["attention.sliding_window"]), (
+            f"{model_id}: header says {per_cell} bytes per cell over a {h['attention.sliding_window']}-token window"
+        )
     assert m.kv_bytes_per_token == per_token, f"{model_id}: header says {per_token} bytes per token"
     if model_id in RECURRENT_STATE_DERIVED:
         recurrent_layers = layers - layers // h["full_attention_interval"]
@@ -489,6 +501,30 @@ def test_the_preferences_picker_lists_the_registrys_models_and_their_sizes():
     assert block
     listed = dict(re.findall(r'\("([a-z0-9.-]+)",\s*"[^"]*\(([\d.]+) GB\)"\)', block.group(1)))
     assert listed == {m.id: f"{m.size_bytes / 1e9:.1f}" for m in MODELS.values()}
+
+
+def test_a_sliding_window_cache_is_the_window_plus_a_micro_batch_padded():
+    """`llama_kv_cache_iswa` at v0.4.1: GGML_PAD(min(size_base, n_swa + n_ubatch), 256). Found in review of
+    #667: the registry had budgeted the window alone, a third too little for Gemma 4."""
+    assert swa_cache_cells(1024) == 1536 and swa_cache_cells(128) == 768 and swa_cache_cells(4096) == 4608
+    assert swa_cache_cells(1024, ubatch=2048) == 3072
+    assert MODELS["gemma4-26b-a4b"].kv_fixed_bytes == 25 * 8 * (256 + 256) * 2 * 1536
+    assert MODELS["gpt-oss-20b"].kv_fixed_bytes == 12 * 8 * (64 + 64) * 2 * 768
+
+
+def test_nothing_in_the_app_changes_what_the_sliding_window_budget_assumes():
+    """swa_cache_cells() and every sliding-window kv_fixed_bytes assume llama-server's defaults: a micro-batch
+    of 512, one sequence, and a sliding-window cache that is not widened to the full context. As a flag or as
+    llama.cpp's environment form, from anywhere in the app: the shared environment is built in
+    ServiceManager, not in the launcher."""
+    assumed = (
+        '"-ub"', '"--ubatch-size"', '"-b"', '"--batch-size"', "LLAMA_ARG_UBATCH", "LLAMA_ARG_BATCH",
+        '"--swa-full"', "LLAMA_ARG_SWA_FULL", '"--kv-unified"', '"-kvu"', "LLAMA_ARG_KV_UNIFIED",
+    )  # fmt: skip
+    for path in sorted(SWIFT_APP.rglob("*.swift")):
+        source = _swift(str(path.relative_to(SWIFT_APP)))
+        for flag in assumed:
+            assert flag not in source, f"{path.name} sets {flag}: the sliding-window budget assumes the default"
 
 
 def test_swift_mirrors_the_registrys_memory_tables():

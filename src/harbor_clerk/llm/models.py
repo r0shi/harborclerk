@@ -182,9 +182,10 @@ MODELS: dict[str, ModelInfo] = {
             context_window=262144,
             supports_tools=True,
             # 5 of 30 layers attend globally (2 KV heads × (512 + 512) × 2 bytes each): 20 KB per token, 5.2 GB
-            # at 262K. The other 25 use a 1024-token sliding window at 8 KV heads × (256 + 256) × 2 bytes: fixed.
+            # at 262K. The other 25 use a 1024-token sliding window at 8 KV heads × (256 + 256) × 2 bytes per
+            # cell, over swa_cache_cells(1024) = 1536 cells, not 1024: fixed.
             kv_bytes_per_token=20_480,
-            kv_fixed_bytes=209_715_200,
+            kv_fixed_bytes=314_572_800,
             parallel_slots=1,  # heavy tier (>15 GB)
         ),
         ModelInfo(
@@ -197,9 +198,10 @@ MODELS: dict[str, ModelInfo] = {
             supports_tools=True,
             # Layers alternate full attention and a 128-token sliding window (llama.cpp's gpt-oss pattern; the
             # header carries only the window). 12 full layers × 8 KV heads × (64 + 64) × 2 bytes: 24 KB per token,
-            # 3.1 GB at 128K; the 12 window layers hold 3 MB between them.
+            # 3.1 GB at 128K; the 12 window layers hold the same per cell over swa_cache_cells(128) = 768
+            # cells, not 128: 19 MB between them.
             kv_bytes_per_token=24_576,
-            kv_fixed_bytes=3_145_728,
+            kv_fixed_bytes=18_874_368,
             # Heavy tier by the 2026-05 tuning: with 128K of context, splitting
             # the KV cache across two slots leaves each too little, and the
             # extra slot was not worth it on 18 GB Macs. (-c is the total
@@ -227,6 +229,18 @@ MODELS: dict[str, ModelInfo] = {
 
 def get_model(model_id: str) -> ModelInfo | None:
     return MODELS.get(model_id)
+
+
+# llama-server's default physical batch (-ub). The launcher does not pass one.
+LLAMA_UBATCH = 512
+
+
+def swa_cache_cells(window: int, ubatch: int = LLAMA_UBATCH) -> int:
+    """Cells llama.cpp allocates for a sliding-window layer's KV cache: not the window, but the window plus a
+    micro-batch, padded to 256 (`llama_kv_cache_iswa`, v0.4.1: GGML_PAD(min(size_base, n_swa + n_ubatch),
+    256), one sequence). A `kv_fixed_bytes` for a sliding-window model is its bytes per cell times this.
+    The registry had used the window alone, which under-budgeted Gemma 4 by a third."""
+    return -(-(window + ubatch) // 256) * 256
 
 
 def kv_bytes(model: ModelInfo, context: int) -> int:
