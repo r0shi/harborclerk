@@ -14,9 +14,13 @@ import re
 
 import anthropic
 
+from scripts.test_corpora.runner import spend
+
 log = logging.getLogger("answer_judge")
 
 JUDGE_MODEL = "claude-sonnet-4-6"
+# The only judge there was before verdicts recorded theirs.
+LEGACY_JUDGE_MODEL = "claude-sonnet-4-6"
 
 _PROMPT = """You are scoring an answer produced by a document-search assistant.
 
@@ -130,6 +134,10 @@ class AnswerVerdict:
     # show which numbers came from which scorer. Back-compat: legacy verdict
     # JSONs without this key deserialize with source={}.
     source: dict[str, str] = dataclasses.field(default_factory=dict)
+    # Who judged. Scores from different judges are not comparable, and the verdict cache is keyed by corpus
+    # and model only, so the judge has to travel with the verdict. Legacy verdict JSONs have no such key;
+    # every one of them was made by LEGACY_JUDGE_MODEL.
+    judge_model: str = ""
 
 
 def _extract_json(text: str) -> dict:
@@ -147,7 +155,7 @@ def _extract_json(text: str) -> dict:
 
 class AnswerJudge:
     def __init__(self, client: anthropic.Anthropic | None = None, model: str = JUDGE_MODEL):
-        self._client = client or anthropic.Anthropic()
+        self._client = client or spend.anthropic_client("answer_judge")
         self._model = model
 
     def judge_answer(
@@ -165,12 +173,14 @@ class AnswerJudge:
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
+        spend.get_meter().count_unit("answer_judge")
         data = _extract_json(msg.content[0].text)
         return AnswerVerdict(
             correctness=_score(data, "correctness"),
             groundedness=_score(data, "groundedness"),
             completeness=_score(data, "completeness"),
             rationale=str(data.get("rationale", "")),
+            judge_model=self._model,
         )
 
 

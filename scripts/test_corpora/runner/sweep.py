@@ -37,6 +37,7 @@ from anthropic._exceptions import OverloadedError, RateLimitError
 from scripts.test_corpora import conftest as cfg
 from scripts.test_corpora.corpora import cuad, enron, synthetic
 from scripts.test_corpora.corpora.manifest import CorpusManifest
+from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.circuit_breaker import CircuitBreaker, is_operational_failure
 from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
 from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
@@ -452,6 +453,23 @@ def make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--judge-model",
+        default=cfg.JUDGE_MODEL,
+        help=(
+            "the LLM-as-judge model. Scores from different judges are not comparable, so change it on "
+            "purpose and for a whole comparison; it is recorded in spend.json. Must be priced in spend.yaml."
+        ),
+    )
+    p.add_argument(
+        "--spend-cap-usd",
+        type=float,
+        default=None,
+        help=(
+            "lower this run's cloud spend cap below spend.yaml's cap_usd (also HC_EVAL_SPEND_CAP_USD). "
+            "It cannot be raised here: that is an edit to spend.yaml, in a PR."
+        ),
+    )
+    p.add_argument(
         "--skip-canary",
         action="store_true",
         help=(
@@ -632,6 +650,41 @@ def _plan_units(
 
 
 # ── phase handlers ──
+
+
+def _spend_plan(
+    units, *, phases: set[int], workdir: Path, judge_model: str, no_judge: bool
+) -> list[tuple[str, str, int]]:
+    """The cloud calls this invocation will make, as (kind, model, units), for the pre-run estimate: the
+    pending units in the phases asked for. state.json holds every phase ever planned for the run id, and
+    the run loop skips the ones outside --phases; pricing them all refused the runbook's phase-by-phase
+    resume. Every pending phase-4/5 unit counts as one judge call: some will degrade and never be judged,
+    and an estimate that refuses a run should err high."""
+    pending = [u for u in units if u.status == Status.PENDING and u.phase in phases]
+    # Not only phase 0: the run loop acquires a corpus that is missing before any unit that needs it, and
+    # the unified pass needs all of them.
+    synthetic_docs = 0
+    if any(u.corpus in ("synthetic", "unified") for u in pending):
+        synthetic_docs = synthetic.planned_generation_count(workdir / "synthetic")
+    return [
+        ("synthetic_doc", synthetic.GENERATION_MODEL, synthetic_docs),
+        ("baseline_question", cfg.BASELINE_MODEL, sum(1 for u in pending if u.phase == 1)),
+        ("judge", judge_model, 0 if no_judge else sum(1 for u in pending if u.phase in (4, 5))),
+    ]
+
+
+def _run_info(args: argparse.Namespace) -> dict[str, str]:
+    """What the ledger says about the run. A run that judges nothing names no judge, so it neither claims
+    one in a report nor trips the no-second-judge guard."""
+    if args.mode == "answer-eval":
+        model = args.models.split(",")[0].strip() if args.models else "claude-sonnet-4-6"
+        return {"run_id": args.run_id, "mode": "answer-eval", "model": model, "judge_model": args.judge_model}
+    return {
+        "run_id": args.run_id,
+        "mode": "sweep",
+        "baseline_model": cfg.BASELINE_MODEL,
+        "judge_model": "" if args.no_judge else args.judge_model,
+    }
 
 
 def _phase0_acquire(corpus_id: str, workdir: Path) -> CorpusManifest:
@@ -863,6 +916,18 @@ def main(argv: list[str] | None = None) -> int:
         ],
     )
 
+    def _configure_meter() -> spend.SpendMeter:
+        # One meter per run, before anything can make a cloud call. A resumed run reads what it already spent.
+        m = spend.configure(
+            ledger_path=run_dir / spend.LEDGER_NAME,
+            cap_usd=args.spend_cap_usd,
+            run_info=_run_info(args),
+        )
+        log.info(
+            "cloud spend: cap USD %.2f, already spent %.4f (%s)", m.cap_usd, m.total_usd, run_dir / spend.LEDGER_NAME
+        )
+        return m
+
     # --mode retrieval-eval is a separate fast path: no state.json, no per-phase
     # planning, no model switching, no LLM. Dispatch and return before the
     # main sweep loop spins up clients or touches state.
@@ -874,7 +939,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "answer-eval":
         from scripts.test_corpora.runner import answer_eval
 
-        return answer_eval.main_from_args(args)
+        # This mode takes no run lock: two of these on one --run-id would each count from the same ledger.
+        try:
+            _configure_meter()
+            return answer_eval.main_from_args(args)
+        except (spend.SpendError, spend.SpendConfigError) as exc:
+            log.error("stopped by the spend cap: %s", exc)
+            return 3
 
     state_path = run_dir / "state.json"
     sf = StateFile(state_path)
@@ -894,6 +965,10 @@ def main(argv: list[str] | None = None) -> int:
                 "cells run)\n"
                 "  - or pick a fresh --run-id to start a new run"
             )
+
+        # Under the run's lock, so a second process on this --run-id cannot count from the same ledger, and
+        # after the guard above, so an invocation that is refused leaves the ledger as it found it.
+        meter = _configure_meter()
 
         # Recover units left IN_PROGRESS by a previous crashed run.
         # We hold the state lock now, so any unit still IN_PROGRESS is by
@@ -982,6 +1057,15 @@ def main(argv: list[str] | None = None) -> int:
         sf.recover_stale(stale_threshold_seconds=2 * args.time_limit_minutes * 60)
         sf.save()
 
+        # Refuse a run that is estimated over the cap before it has spent anything or touched Harbor Clerk
+        # (ADR 0001, decision 6).
+        plan = _spend_plan(
+            sf.units(), phases=phases, workdir=workdir, judge_model=args.judge_model, no_judge=args.no_judge
+        )
+        if not args.dry_run:
+            estimate = meter.require_within_cap(plan)
+            log.info("cloud spend estimate for the pending units: USD %.2f of %.2f", estimate, meter.cap_usd)
+
         # Build clients
         hc = HarborClerkClient(args.api_base, verify=not args.insecure)
         if not args.dry_run:
@@ -993,8 +1077,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 log.warning("no HC_USERNAME / HC_PASSWORD set — auth-required calls will fail")
 
-        anthro = anthropic.Anthropic()
-        judge = JudgeClient(client=anthro, model=cfg.JUDGE_MODEL)
+        anthro = spend.anthropic_client("baseline_question")
+        judge = JudgeClient(model=args.judge_model)
 
         # Per-model circuit breaker. Caps the damage from a dead-LLM cascade
         # by sleeping after N consecutive operational failures, and skips
@@ -1582,6 +1666,7 @@ def main(argv: list[str] | None = None) -> int:
                 co = ce = eo = 0.0
                 judge_verdict = ""
                 judge_completeness = 0
+                spend_stop: spend.SpendError | None = None
                 verifier_counts = _verifier_counts(out.get("result", {}) or {})
                 if phase in (4, 5):
                     baseline_path = run_dir / "baselines" / u.corpus / f"{u.question_id}.json"
@@ -1641,6 +1726,11 @@ def main(argv: list[str] | None = None) -> int:
                                         baseline=baseline.get("answer", ""),
                                         model_answer=model_answer,
                                     )
+                                except spend.SpendError as exc:
+                                    # The run stops here, but not before this unit's row is written: it is
+                                    # already DONE in state.json, --resume will skip it, and metrics.csv is
+                                    # append-only. Minutes to hours of local compute are in that row.
+                                    spend_stop = exc
                                 except Exception:
                                     # Judge failures must not poison the sweep — log
                                     # and carry on with empty verdict columns.
@@ -1702,6 +1792,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 metrics_writer.writerow(metrics_row)
                 metrics_f.flush()
+                if spend_stop is not None:
+                    raise spend_stop
 
                 # Closing marker for this unit — pairs with the "Starting"
                 # line above so each unit is a clearly delimited block in
@@ -1721,7 +1813,22 @@ def main(argv: list[str] | None = None) -> int:
         if not args.no_hc_logs:
             _capture_hc_logs(run_dir, log)
         log.info("sweep complete after %.1fs", time.time() - sweep_started)
+        log.info(
+            "cloud spend: USD %.4f of %.2f over %d calls", meter.total_usd, meter.cap_usd, meter.snapshot()["calls"]
+        )
         return 0
+    except spend.SpendCapExceeded as exc:
+        # Not an Exception, so none of the keep-going handlers above can have swallowed it. Units already
+        # done are saved with their rows; the unit that was about to be judged when the cap hit has its row
+        # with empty verdict columns. --resume continues the same run against the same ledger.
+        log.error("stopped by the spend cap: %s", exc)
+        return 3
+    except spend.SpendError as exc:
+        log.error("stopped by the spend cap: a cloud call that cannot be metered cannot be capped: %s", exc)
+        return 3
+    except spend.SpendConfigError as exc:
+        log.error("stopped by the spend cap: %s", exc)
+        return 3
     finally:
         sf.release_lock()
 

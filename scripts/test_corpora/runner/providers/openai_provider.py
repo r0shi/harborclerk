@@ -23,6 +23,7 @@ from typing import Any
 
 import openai
 
+from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.providers.base import (
     DEFAULT_SYSTEM_PROMPT,
     BaselineResult,
@@ -64,7 +65,7 @@ class OpenAIProvider:
     @property
     def _client(self) -> openai.OpenAI:
         if self._explicit_client is None:
-            self._explicit_client = openai.OpenAI()
+            self._explicit_client = spend.openai_client("baseline_question")
         return self._explicit_client
 
     def _list_tools(self) -> list[dict]:
@@ -123,7 +124,7 @@ class OpenAIProvider:
         (often "28ms" for TPM limits even though the window is actually 60s).
         The SDK exhausts its short retry budget and propagates the 429
         before the TPM window clears. We absorb that by retrying with a
-        30s/60s/120s/240s schedule on top of the SDK's own retries.
+        30s/60s/120s/240s schedule on top of the metered client's own retries (runner/spend.py; the SDK is built with max_retries=0).
 
         Looks up ``time.sleep`` at call time (not via default-arg binding)
         so tests can patch ``time.sleep`` without monkey-patching the
@@ -218,6 +219,7 @@ class OpenAIProvider:
             final_text = msg.content or ""
             break
 
+        spend.get_meter().count_unit("baseline_question")
         return BaselineResult(
             question_id=question_id,
             question=question,

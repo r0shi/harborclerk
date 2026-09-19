@@ -29,7 +29,8 @@ from pathlib import Path
 
 import yaml
 
-from scripts.test_corpora.runner.answer_judge import AnswerJudge, AnswerVerdict
+from scripts.test_corpora.runner import spend
+from scripts.test_corpora.runner.answer_judge import JUDGE_MODEL, LEGACY_JUDGE_MODEL, AnswerJudge, AnswerVerdict
 
 log = logging.getLogger("answer_eval")
 
@@ -127,6 +128,23 @@ def compute_coverage(cited: list[str], truth_all: list[str]) -> int:
     return round(overlap / len(truth_all) * 5)
 
 
+def _cached_verdict(path: Path, judge_model: str) -> AnswerVerdict | None:
+    """The stored verdict, if this judge made it. The cache is keyed by corpus and model, not by judge: a
+    verdict from another judge, reused, would be reported under this one's name."""
+    if not path.exists():
+        return None
+    try:
+        verdict = AnswerVerdict(**json.loads(path.read_text()))
+    except (json.JSONDecodeError, TypeError) as e:
+        log.warning("  unreadable verdict %s (%s) — re-judging", path, e)
+        return None
+    made_by = verdict.judge_model or LEGACY_JUDGE_MODEL
+    if made_by != judge_model:
+        log.info("  %s was judged by %s, not %s — re-judging", path.name, made_by, judge_model)
+        return None
+    return verdict
+
+
 def run(
     *,
     workdir: Path,
@@ -140,6 +158,7 @@ def run(
     groundtruth_path: Path | None = None,
     capture_fn: Callable[[GTItem], dict] | None = None,
     judge: AnswerJudge | None = None,
+    judge_model: str = JUDGE_MODEL,
 ) -> int:
     """Returns an exit code (0 = success). `capture_fn` and `judge` are
     injectable for tests; in production they default to a live model+MCP run
@@ -151,15 +170,32 @@ def run(
     items = load_groundtruth(gt_path)
     log.info("loaded %d ground-truth items from %s", len(items), gt_path)
 
+    # Refuse before spending anything, and before the Harbor Clerk login, if what is left to capture and
+    # judge is estimated over the cap.
+    cap_dir = workdir / "answer-eval" / "captures" / corpus / model
+    ver_dir = workdir / "answer-eval" / "verdicts" / corpus / model
+    from scripts.test_corpora.runner.providers.factory import model_is_cloud
+
+    to_capture = sum(1 for i in items if refresh or not (cap_dir / f"{i.id}.json").exists())
+    to_judge = sum(
+        1 for i in items if refresh or rejudge or _cached_verdict(ver_dir / f"{i.id}.json", judge_model) is None
+    )
+    meter = spend.get_meter()
+    estimate = meter.require_within_cap(
+        [
+            ("baseline_question", model, to_capture if model_is_cloud(model) else 0),
+            ("answer_judge", judge_model, to_judge),
+        ]
+    )
+    log.info("cloud spend estimate: USD %.2f of %.2f", estimate, meter.cap_usd)
+
     # Build the model/judge clients before creating any output directories, so
     # a missing credential fails fast without leaving empty dirs behind.
     if capture_fn is None:
         capture_fn = _live_capture_fn(api_base=api_base, corpus=corpus, model=model, insecure=insecure)
     if judge is None:
-        judge = AnswerJudge()
+        judge = AnswerJudge(model=judge_model)
 
-    cap_dir = workdir / "answer-eval" / "captures" / corpus / model
-    ver_dir = workdir / "answer-eval" / "verdicts" / corpus / model
     cap_dir.mkdir(parents=True, exist_ok=True)
     ver_dir.mkdir(parents=True, exist_ok=True)
 
@@ -179,11 +215,8 @@ def run(
 
         ver_path = ver_dir / f"{item.id}.json"
         verdict: AnswerVerdict | None = None
-        if ver_path.exists() and not rejudge and not refresh:
-            try:
-                verdict = AnswerVerdict(**json.loads(ver_path.read_text()))
-            except (json.JSONDecodeError, TypeError) as e:
-                log.warning("  %s: unreadable verdict %s (%s) — re-judging", item.id, ver_path, e)
+        if not rejudge and not refresh:
+            verdict = _cached_verdict(ver_path, judge_model)
         if verdict is None:
             verdict = judge.judge_answer(
                 question=item.question,
@@ -192,6 +225,8 @@ def run(
                 answer_key=item.answer_key,
                 qtype=item.type,
             )
+            if not verdict.judge_model:
+                verdict = dataclasses.replace(verdict, judge_model=judge_model)
             if item.type == "find":
                 truth_all = item.answer_key.get("all", []) if isinstance(item.answer_key, dict) else []
                 coverage = compute_coverage(capture.get("cited_doc_titles", []) or [], truth_all)
@@ -211,6 +246,9 @@ def run(
         rows.append((item.id, item.type, verdict))
 
     summary = aggregate(rows)
+    # Judge and spend travel with the scores: a report quotes them from here (ADR 0001, decision 6).
+    summary["judge_model"] = judge_model
+    summary["spend"] = meter.snapshot()
     report_dir = workdir / "answer-eval" / "reports" / label
     report_dir.mkdir(parents=True, exist_ok=True)
     (report_dir / "summary.json").write_text(json.dumps(summary, indent=2))
@@ -320,4 +358,5 @@ def main_from_args(args: argparse.Namespace) -> int:
         refresh=args.refresh,
         rejudge=args.rejudge,
         insecure=args.insecure,
+        judge_model=getattr(args, "judge_model", JUDGE_MODEL),
     )
