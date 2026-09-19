@@ -309,6 +309,14 @@ class HarborClerkClient:
         r = self._client.put("/api/chat/models/deactivate")
         r.raise_for_status()
 
+    def mail_accounts(self) -> list[dict[str, Any]]:
+        """GET /api/mail/accounts — the connected mailboxes. A build from before mail ingest has no such route."""
+        r = self._client.get("/api/mail/accounts")
+        if r.status_code == 404:
+            return []
+        r.raise_for_status()
+        return r.json()
+
     def list_models(self) -> list[dict[str, Any]]:
         """GET /api/chat/models — every curated model with `downloaded`, `fits_here` and `max_context_here`."""
         r = self._client.get("/api/chat/models")

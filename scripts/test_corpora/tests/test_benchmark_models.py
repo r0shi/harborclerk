@@ -96,7 +96,7 @@ def test_models_the_instance_cannot_run_are_skipped_with_a_reason(tmp_path, capl
     assert status[(0, "-", "q1")] == status[(1, "claude-baseline", "q1")] == Status.PENDING
     skipped = sf.get(4, "cuad", "qwen35-9b", "q1", "standard")
     assert skipped.error == "skipped before the run: not downloaded on this instance"
-    assert "--rerun 'model=qwen35-9b,status=skipped'" in caplog.text
+    assert "skipping qwen35-9b: not downloaded on this instance. Its units are reconsidered" in caplog.text
     # Saved: a crash after this point must not bring the units back as pending.
     reloaded = StateFile(tmp_path / "state.json")
     reloaded.load()
@@ -119,13 +119,34 @@ def test_a_model_the_app_loads_with_a_clamped_context_is_not_skipped(tmp_path):
     assert {u.status for u in sf.units()} == {Status.PENDING}
 
 
-def test_the_logged_way_back_revives_the_skipped_units_and_only_those(tmp_path):
-    sf = _state(tmp_path, [_unit(4, "qwen35-9b"), _unit(4, "qwen35-9b", Status.DONE, qid="q2")])
-    none = _Instance([_listed("qwen35-9b", downloaded=False, max_context_here=83968, ram_gb=16.0)])
-    sweep._skip_what_this_instance_cannot_run(none, sf, {4})
-    assert sf.rerun(sweep._parse_selectors("model=qwen35-9b,status=skipped")) == 1
+def test_what_an_earlier_start_skipped_is_decided_again_at_the_next(tmp_path):
+    """Found in review. A sweep pointed at the wrong instance skipped models that instance had not
+    downloaded; resumed against the right one, they stayed skipped, and the report stated the stale reason
+    as fact. The same goes for a model downloaded since."""
+    units = [
+        _unit(4, "qwen35-9b"),
+        _unit(4, "qwen35-9b", Status.DONE, qid="q2"),
+        _unit(4, "qwen3-8b", Status.SKIPPED, qid="q3"),
+    ]
+    sf = _state(tmp_path, units)
+    absent = _Instance([_listed("qwen35-9b", downloaded=False, max_context_here=83968, ram_gb=16.0)])
+    assert sweep._skip_what_this_instance_cannot_run(absent, sf, {4}) == {
+        "qwen35-9b": "not downloaded on this instance"
+    }
+    present = _Instance(
+        [
+            _listed("qwen35-9b", downloaded=True, max_context_here=83968, ram_gb=16.0),
+            _listed("qwen3-8b", downloaded=True, max_context_here=32768, ram_gb=16.0),
+        ]
+    )
+    assert sweep._skip_what_this_instance_cannot_run(present, sf, {4}) == {}
     assert sf.get(4, "cuad", "qwen35-9b", "q1", "standard").status == Status.PENDING
+    assert sf.get(4, "cuad", "qwen35-9b", "q1", "standard").error is None
     assert sf.get(4, "cuad", "qwen35-9b", "q2", "standard").status == Status.DONE
+    assert sf.get(4, "cuad", "qwen3-8b", "q3", "standard").status == Status.SKIPPED, "the operator's own --skip stays"
+    reloaded = StateFile(tmp_path / "state.json")
+    reloaded.load()
+    assert reloaded.get(4, "cuad", "qwen35-9b", "q1", "standard").status == Status.PENDING, "the revival is saved"
 
 
 def test_an_instance_that_cannot_list_its_models_skips_nothing(tmp_path, caplog):
@@ -148,11 +169,19 @@ def test_an_older_instance_without_the_fit_field_is_taken_at_its_word(tmp_path):
 
 
 class _Folders:
-    def __init__(self, folders):
-        self._folders = folders
+    """The read-only calls the guard makes."""
+
+    def __init__(self, folders, *, documents=0, mailboxes=()):
+        self._folders, self._documents, self._mailboxes = folders, documents, list(mailboxes)
 
     def watch_folder_list(self):
         return self._folders
+
+    def document_count(self):
+        return self._documents
+
+    def mail_accounts(self):
+        return self._mailboxes
 
 
 WORKDIR = Path("/work/test-corpora")
@@ -182,8 +211,8 @@ OURS = [_folder(WORKDIR / "cuad" / "ingest")]
 THEIRS = [*OURS, _folder("/Users/someone/Documents/clients")]
 
 
-def _guard(folders, api_base="http://localhost:8100", workdir=WORKDIR):
-    return sweep._refuse_to_wipe_a_real_instance(_Folders(folders), api_base, workdir)
+def _guard(folders, api_base="http://localhost:8100", workdir=WORKDIR, **holding):
+    return sweep._refuse_to_wipe_a_real_instance(_Folders(folders, **holding), api_base, workdir)
 
 
 def test_an_instance_nobody_called_disposable_is_never_wiped(monkeypatch):
@@ -243,6 +272,23 @@ def test_a_watched_folder_that_is_not_the_harnesss_means_a_real_corpus(monkeypat
         _guard([{**_folder("/x"), "path": None}])
 
 
+def test_the_wipe_takes_uploads_and_mail_too_so_the_guard_looks_for_them(monkeypatch):
+    """Found in review. delete-all-documents truncates documents, uploads and fetched mail alike, and the
+    guard looked only at watched folders: an instance with no folders and a mailbox passed as fresh. Mail is
+    the one source Harbor Clerk copies rather than reads in place, so it cannot be re-read."""
+    import pytest
+
+    monkeypatch.setenv(sweep.DISPOSABLE_ENV, "1")
+    with pytest.raises(sweep.NotDisposable, match="1 connected mailbox"):
+        _guard([], mailboxes=[{"account_id": "a1", "email": "someone@example.test"}])
+    with pytest.raises(sweep.NotDisposable, match="1 connected mailbox"):
+        _guard(OURS, documents=510, mailboxes=[{"account_id": "a1"}])
+    with pytest.raises(sweep.NotDisposable, match="holds 42 document.s. and no folder"):
+        _guard([], documents=42)
+    _guard(OURS, documents=510)  # the harness's own corpus, from the last run
+    _guard([], documents=0)  # a fresh instance
+
+
 def test_the_deletion_itself_is_behind_the_guard(monkeypatch):
     """Not only the check before the first unit: the function that deletes checks again, first."""
     import pytest
@@ -295,27 +341,85 @@ def test_a_second_corpus_is_ingested_over_the_firsts_folder(monkeypatch, tmp_pat
     assert done == [("folder", "3f0e7c0a-0000-4000-8000-000000000001"), ("documents", True)]
 
 
-def test_the_sweep_does_not_start_against_an_instance_it_may_not_wipe(tmp_path, monkeypatch, caplog):
+def _stub_instance(monkeypatch, *, folders, models=(), documents=0, mailboxes=()):
+    monkeypatch.setattr(sweep.HarborClerkClient, "watch_folder_list", lambda self: folders)
+    monkeypatch.setattr(sweep.HarborClerkClient, "document_count", lambda self: documents)
+    monkeypatch.setattr(sweep.HarborClerkClient, "mail_accounts", lambda self: list(mailboxes))
+    monkeypatch.setattr(sweep.HarborClerkClient, "list_models", lambda self: list(models))
+
+
+def test_a_refused_start_leaves_nothing_behind_so_the_same_command_works_next_time(tmp_path, monkeypatch, caplog):
+    """Found in review. The refusal came after state.json and spend.json were written, so the identical
+    command, re-run with the flag set, died on the run-id guard ("already has units, use --resume")."""
     base = ["--run-id", "r1", "--workdir", str(tmp_path), "--phases", "1", "--corpora", "cuad"]
-    monkeypatch.setattr(sweep.HarborClerkClient, "watch_folder_list", lambda self: THEIRS)
-    monkeypatch.setattr(sweep.HarborClerkClient, "list_models", lambda self: [])
+    run_dir = tmp_path / "results" / "r1"
     made = []
     monkeypatch.setattr(sweep.spend, "anthropic_client", lambda kind: made.append(kind))
+    _stub_instance(monkeypatch, folders=THEIRS)
 
     monkeypatch.delenv(sweep.DISPOSABLE_ENV, raising=False)
     with caplog.at_level("ERROR"):
         assert sweep.main(base) == 4
-    assert "HC_EVAL_DISPOSABLE=1 is not set" in caplog.text and made == []
+    assert "HC_EVAL_DISPOSABLE=1 is not set" in caplog.text
+    assert not (run_dir / "state.json").exists() and not (run_dir / "spend.json").exists()
 
     monkeypatch.setenv(sweep.DISPOSABLE_ENV, "1")
     with caplog.at_level("ERROR"):
-        assert sweep.main([*base, "--resume"]) == 4
-    assert "/Users/someone/Documents/clients" in caplog.text and made == []
+        assert sweep.main(base) == 4  # the same command: no --resume needed
+    assert "/Users/someone/Documents/clients" in caplog.text
+    assert not (run_dir / "state.json").exists() and not (run_dir / "spend.json").exists()
 
     def unreachable(self):
         raise ConnectionError("refused")
 
     monkeypatch.setattr(sweep.HarborClerkClient, "watch_folder_list", unreachable)
     with caplog.at_level("ERROR"):
-        assert sweep.main([*base, "--resume"]) == 4
-    assert "could not check" in caplog.text and made == []
+        assert sweep.main(base) == 4
+    assert "could not check that it may be wiped" in caplog.text and made == []
+
+
+def test_a_sweep_pointed_at_the_wrong_instance_leaves_no_judgements_in_a_run_that_existed(tmp_path, monkeypatch):
+    """The ordering bug itself: skip first, refuse second, and the wrong instance's "not downloaded" was
+    saved into the run before the guard spoke."""
+    monkeypatch.setenv(sweep.DISPOSABLE_ENV, "1")
+    base = ["--run-id", "r1", "--workdir", str(tmp_path), "--phases", "4", "--corpora", "cuad", "--models", "qwen3-8b"]
+    _stub_instance(monkeypatch, folders=[])
+    assert sweep.main([*base, "--spend-cap-usd", "0.01"]) == 3  # the run exists now: state.json, spend.json
+    state = tmp_path / "results" / "r1" / "state.json"
+    before = state.read_text()
+
+    wrong = [_listed("qwen3-8b", downloaded=False, max_context_here=32768, ram_gb=32.0)]
+    _stub_instance(monkeypatch, folders=THEIRS, models=wrong)
+    assert sweep.main([*base, "--resume", "--no-judge"]) == 4
+    assert state.exists(), "a run that was there before is not taken back"
+    assert '"skipped"' not in state.read_text() and state.read_text().count('"pending"') == before.count('"pending"')
+
+
+def test_a_run_that_wipes_nothing_needs_no_flag(tmp_path, monkeypatch):
+    monkeypatch.delenv(sweep.DISPOSABLE_ENV, raising=False)
+    base = [
+        "--run-id",
+        "r1",
+        "--workdir",
+        str(tmp_path),
+        "--phases",
+        "1",
+        "--corpora",
+        "cuad",
+        "--spend-cap-usd",
+        "0.01",
+    ]
+    assert sweep.main([*base, "--no-ingest"]) == 3, "stopped by the spend estimate, not by the wipe guard"
+    assert {1, 4, 5, 6} == sweep.INGESTING_PHASES
+
+
+def test_a_refusal_beside_the_deletion_ends_the_run_with_the_same_code():
+    """After the run has started, the instance can change under it. Both _ingest_corpus call sites are
+    outside the per-unit handlers, so NotDisposable reaches main. Checked on the parsed source."""
+    import ast
+
+    tree = ast.parse(Path(sweep.__file__).read_text())
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    outer = [t for t in main.body if isinstance(t, ast.Try)][-1]
+    handler = next(h for h in outer.handlers if ast.unparse(h.type) == "NotDisposable")
+    assert ast.unparse(handler.body[-1]) == "return 4"

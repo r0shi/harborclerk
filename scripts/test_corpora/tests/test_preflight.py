@@ -211,3 +211,37 @@ def test_the_record_carries_the_verdict_host_pin_and_every_check(tmp_path, monke
     assert "FAIL     thermal pressure: Heavy" in capsys.readouterr().out
     monkeypatch.setattr(pf, "preflight", lambda **kw: [pf.Check("GPU at idle", pf.WARN, "45% busy")])
     assert pf.main([]) == 0, "a warning travels with the report; it does not stop the run"
+
+
+def test_a_model_the_operator_did_not_name_only_warns_because_the_sweep_skips_it(tmp_path):
+    """With no --models the whole registry is checked. A 16 GB machine cannot load the 35B, and that is
+    news, not a reason to refuse to measure the models it can."""
+    small = _machine({"sysctl -n hw.memsize": f"{16 * pf.GIB}\n"})
+    binary = tmp_path / "llama-server"
+    binary.write_text("")
+    common = dict(api_base=None, llama_server=binary, run=small, fetch=lambda url: None, system="Darwin")
+    unnamed = pf.preflight(models=["qwen3-8b", "qwen36-35b-a3b"], models_named=False, **common)
+    big = _check(unnamed, "fits: qwen36-35b-a3b")
+    assert big.status == pf.WARN and "the sweep will skip it" in big.detail and pf.verdict(unnamed) == pf.WARN
+    named = pf.preflight(models=["qwen36-35b-a3b"], models_named=True, **common)
+    assert _check(named, "fits: qwen36-35b-a3b").status == pf.FAIL
+
+
+def test_the_instance_checked_is_the_one_the_sweep_will_measure(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pf, "preflight", lambda **kw: seen.update(kw) or [])
+    monkeypatch.setenv("HC_API_BASE", "https://localhost")
+    pf.main([])
+    assert seen["api_base"] == "https://localhost" and seen["models_named"] is False
+    pf.main(["--api-base", "", "--models", "qwen3-8b"])
+    assert seen["api_base"] is None and seen["models_named"] is True and seen["models"] == ["qwen3-8b"]
+
+
+def test_a_kv_figure_written_as_an_expression_is_an_error_not_a_zero(tmp_path, monkeypatch):
+    """Read as absent it became 0, and with no KV cost every model "fits"."""
+    fake = tmp_path / "src/harbor_clerk/llm"
+    fake.mkdir(parents=True)
+    (fake / "models.py").write_text('K = 1024\nM = [ModelInfo(id="big", size_bytes=5, kv_bytes_per_token=144 * K)]\n')
+    monkeypatch.setattr(pf, "REPO", tmp_path)
+    with pytest.raises(ValueError, match="kv_bytes_per_token"):
+        pf.registry()

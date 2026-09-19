@@ -33,6 +33,7 @@ LEDGER = {
         "judge_model": "claude-sonnet-4-6",
         "suite_commit": "abc1234",
         "started_at": "2026-09-18T20:00:00Z",
+        "host": "ix",
     },
     "cap_usd": 25.0,
     "total_usd": 3.5,
@@ -61,7 +62,8 @@ FIT = {"verdict": "pass", "checked_at": "2026-09-19T01:00:00Z", "pinned_llama_cp
 
 
 def _render(run: Path, preflight=FIT, commit="abc1234") -> str:
-    return report.render(run, preflight=preflight, today="2026-09-19", host="ix", commit=commit)
+    # Rendered on another machine, a day later: the run's own host and commit are what the report cites.
+    return report.render(run, preflight=preflight, today="2026-09-19", host="laptop", commit=commit)
 
 
 def test_the_header_names_run_commit_corpora_judge_spend_and_the_preflight(tmp_path):
@@ -93,20 +95,67 @@ def test_the_commit_is_the_one_that_ran_the_sweep_not_the_one_the_report_was_ren
 
 def test_each_model_gets_a_row_of_what_was_measured(tmp_path):
     text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER))
-    assert "| `qwen3-8b` | 3 | 2 | 1 | 0 | 0.60 | 0.50 | 100 | 2 | 1 | 0 | 1 | 3.00 |" in text
+    assert "| cuad | `qwen3-8b` | n/a | 3 | 2 | 1 | 0 | 0.60 | 0.50 | 100 | 2 | 1 | 0 | 1 | 3.00 |" in text
     # Finished and never judged: absent from the judged columns, not scored zero.
-    assert "| `qwen35-9b` | 1 | 1 | 0 | 0 | 0.90 | 0.80 | 60 | 0 | 0 | 0 | 0 | n/a |" in text
-    assert "| `qwen36-35b-a3b` | 1 | 0 | 0 | 1 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a |" in text
+    assert "| cuad | `qwen35-9b` | n/a | 1 | 1 | 0 | 0 | 0.90 | 0.80 | 60 | 0 | 0 | 0 | 0 | n/a |" in text
+    assert "| enron | `qwen36-35b-a3b` | n/a | 1 | 0 | 0 | 1 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a |" in text
     assert "## Phase 4: every model, every question" in text and "## Phase 5: the two largest, judged" in text
     assert "1 finished unit(s) in the judged phases have no verdict (an unusable baseline, a judge failure" in text
     assert "The overlap means include units whose baseline was unusable" in text
+
+
+def _planned(model: str, corpus: str, n: int, *, phase: int = 4, status: str = "pending", error=None) -> list[dict]:
+    return [
+        {"phase": phase, "corpus": corpus, "model": model, "question_id": f"q{i}", "status": status, "error": error}
+        for i in range(n)
+    ]
+
+
+def test_units_that_never_ran_are_not_hidden_behind_the_ones_that_did(tmp_path):
+    """Found in review. The report read state.json only for skipped models, so a model with 3 of 16 units
+    run (the spend cap, the circuit breaker) showed `units 3 | done 2` and nothing else. This is the
+    document a model gets retired on."""
+    state = {
+        "units": [
+            *_planned("qwen3-8b", "cuad", 16),
+            *_planned("qwen35-9b", "cuad", 16),
+            *_planned("qwen3-4b", "cuad", 16),  # planned, and not one unit ran
+            *_planned("qwen36-35b-a3b", "enron", 4, phase=5),
+            *_planned("gemma4-26b-a4b", "cuad", 16, status="skipped", error="skipped before the run: not downloaded"),
+        ]
+    }
+    text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER, state=state))
+    assert "| cuad | `qwen3-8b` | 16 | 3 | 2 | 1 | 0 |" in text
+    assert "| cuad | `qwen3-4b` | 16 | 0 | 0 | 0 | 0 | n/a | n/a | n/a | 0 |" in text
+    assert "| enron | `qwen36-35b-a3b` | 4 | 1 | 0 | 0 | 1 |" in text
+    assert "gemma4-26b-a4b` |" not in text.split("## Models this machine did not run")[0], "it has its own section"
+    assert "**47 planned unit(s) never ran**" in text  # 52 planned, 5 ran
+
+
+def test_corpora_are_not_pooled_into_one_row(tmp_path):
+    rows = [
+        [4, "cuad", "qwen3-8b", "q1", "standard", "done", "1.000", 0, "1.000", "10.0", "pass", 5],
+        [4, "enron", "qwen3-8b", "q1", "standard", "done", "0.000", 0, "0.000", "300.0", "fail", 0],
+    ]
+    text = _render(_run_dir(tmp_path, rows, ledger=LEDGER))
+    assert "| cuad | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 1.00 | 1.00 | 10 | 1 | 1 | 0 | 0 | 5.00 |" in text
+    assert "| enron | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 0.00 | 0.00 | 300 | 1 | 0 | 0 | 1 | 0.00 |" in text
+
+
+def test_the_host_is_the_machine_that_ran_the_sweep(tmp_path):
+    text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER))
+    assert text.startswith("# Benchmark run `bench-01` on ix, 2026-09-19\n")
+    no_host = {**LEDGER, "run": {k: v for k, v in LEDGER["run"].items() if k != "host"}}
+    from_preflight = _render(_run_dir(tmp_path / "p", ROWS, ledger=no_host), preflight={**FIT, "host": "Mini.local"})
+    assert from_preflight.startswith("# Benchmark run `bench-01` on mini, ")
+    assert _render(_run_dir(tmp_path / "n", ROWS, ledger=no_host)).startswith("# Benchmark run `bench-01` on laptop, ")
 
 
 def test_a_rerun_unit_counts_once_by_its_last_row(tmp_path):
     """metrics.csv is append-only; --rerun appends a second row for the same unit."""
     again = [*ROWS, [4, "cuad", "qwen3-8b", "q3", "standard", "done", "0.600", 0, "0.500", "90.0", "pass", 5]]
     text = _render(_run_dir(tmp_path, again, ledger=LEDGER))
-    assert "| `qwen3-8b` | 3 | 3 | 0 | 0 | 0.60 | 0.50 | 90 | 3 | 2 | 0 | 1 | 3.67 |" in text
+    assert "| cuad | `qwen3-8b` | n/a | 3 | 3 | 0 | 0 | 0.60 | 0.50 | 90 | 3 | 2 | 0 | 1 | 3.67 |" in text
 
 
 def test_a_failed_or_missing_preflight_says_the_timings_are_not_a_baseline(tmp_path):
@@ -139,12 +188,14 @@ def test_models_the_machine_did_not_run_are_listed_with_the_reason(tmp_path):
     state = {
         "units": [
             {
+                "phase": 4,
+                "corpus": "cuad",
                 "model": "qwen35-9b",
                 "status": "skipped",
                 "error": "skipped before the run: not downloaded on this instance",
             },
-            {"model": "qwen3-4b", "status": "skipped", "error": None},
-            {"model": "qwen3-8b", "status": "done", "error": None},
+            {"phase": 4, "corpus": "cuad", "model": "qwen3-4b", "status": "skipped", "error": None},
+            {"phase": 4, "corpus": "cuad", "model": "qwen3-8b", "status": "done", "error": None},
         ]
     }
     text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER, state=state))
@@ -161,7 +212,7 @@ def test_spend_is_broken_down_by_call_kind_and_the_reading_is_left_to_the_runner
 def test_one_file_per_run_never_overwritten(tmp_path, monkeypatch):
     run = _run_dir(tmp_path, ROWS, ledger=LEDGER)
     (run / "preflight.json").write_text(json.dumps(FIT))
-    monkeypatch.setattr(report.platform, "node", lambda: "Ix.local")
+    monkeypatch.setattr(report.platform, "node", lambda: "Laptop.local")  # not where it ran: the ledger says ix
     monkeypatch.setattr(report.time, "strftime", lambda fmt: "2026-09-19")
     monkeypatch.setattr(report, "suite_commit", lambda: "abc1234")
     out = tmp_path / "reports"

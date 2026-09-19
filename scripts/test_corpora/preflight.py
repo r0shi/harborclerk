@@ -22,6 +22,7 @@ import ast
 import dataclasses
 import ipaddress
 import json
+import os
 import platform
 import re
 import subprocess
@@ -74,7 +75,10 @@ def registry() -> dict[str, dict[str, int]]:
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "ModelInfo"]
     for node in sorted(calls, key=lambda n: n.lineno):  # the registry's own order
         kw = {k.arg: k.value.value for k in node.keywords if isinstance(k.value, ast.Constant)}
-        missing = {"id", "size_bytes"} - set(kw)
+        written = {k.arg for k in node.keywords}
+        # Required, or written but not as a literal: read as absent, a KV figure would become 0 and every
+        # model would "fit".
+        missing = ({"id", "size_bytes"} - set(kw)) | ((written & {"kv_bytes_per_token", "kv_fixed_bytes"}) - set(kw))
         if missing:
             # The harness imports this at collection. Say what is wrong rather than die on a KeyError.
             raise ValueError(
@@ -226,28 +230,39 @@ def check_llama_server(run: Run, binary: Path) -> Check:
     )
 
 
-def check_models_fit(models: list[str], ram_bytes: int | None) -> list[Check]:
+def fits(figures: dict[str, int], ram_bytes: int, *, overhead: int, headroom: int) -> bool:
+    """Whether the app would load the model at any context: `max_context(model, ram) > 0` in the registry's
+    terms (src/harbor_clerk/llm/models.py). A copy of that arithmetic, because the harness does not import
+    the app; tests/test_eval_preflight_parity.py holds the two together."""
+    spare = ram_bytes - headroom - overhead - figures["size_bytes"] - figures["kv_fixed_bytes"]
+    if spare <= 0:
+        return False
+    per_token = figures["kv_bytes_per_token"]
+    return per_token == 0 or spare // per_token // 1024 * 1024 >= 4096
+
+
+def check_models_fit(models: list[str], ram_bytes: int | None, *, named: bool = True) -> list[Check]:
+    """`named`: the operator asked for these models, so one that cannot load fails the preflight. Checking
+    the whole registry by default, a model this machine cannot load is only news: the sweep skips it."""
     known = registry()
     overhead, headroom = _constant("RUNTIME_OVERHEAD_BYTES"), _constant("HOST_HEADROOM_BYTES")
     checks = []
     for model in models:
         if model not in known:
             checks.append(Check(f"fits: {model}", FAIL, "not in the registry (src/harbor_clerk/llm/models.py)"))
-            continue
-        if not ram_bytes:
+        elif not ram_bytes:
             checks.append(Check(f"fits: {model}", SKIPPED, "physical memory unknown"))
-            continue
-        m = known[model]
-        spare = ram_bytes - headroom - overhead - m["size_bytes"] - m["kv_fixed_bytes"]
-        tokens = spare // m["kv_bytes_per_token"] if m["kv_bytes_per_token"] and spare > 0 else (1 if spare > 0 else 0)
-        if spare <= 0 or (m["kv_bytes_per_token"] and tokens < 4096):
+        elif fits(known[model], ram_bytes, overhead=overhead, headroom=headroom):
+            checks.append(Check(f"fits: {model}", PASS, f"fits in {ram_bytes / GIB:.0f} GiB"))
+        else:
             checks.append(
                 Check(
-                    f"fits: {model}", FAIL, f"does not fit in {ram_bytes / GIB:.0f} GiB; the app will refuse to load it"
+                    f"fits: {model}",
+                    FAIL if named else WARN,
+                    f"does not fit in {ram_bytes / GIB:.0f} GiB; the app will refuse to load it"
+                    + ("" if named else " and the sweep will skip it"),
                 )
             )
-        else:
-            checks.append(Check(f"fits: {model}", PASS, f"fits in {ram_bytes / GIB:.0f} GiB"))
     return checks
 
 
@@ -284,6 +299,7 @@ def preflight(
     models: list[str],
     api_base: str | None,
     llama_server: Path = APP_LLAMA_SERVER,
+    models_named: bool = True,
     run: Run = run_command,
     fetch: Callable[[str], dict | None] = fetch_json,
     system: str | None = None,
@@ -301,7 +317,7 @@ def preflight(
         checks.append(Check("machine state", SKIPPED, "thermal, power, GPU and memory checks are written for macOS"))
         ram_bytes = None
     checks += check_foreign_servers(run, fetch)
-    checks += check_models_fit(models, ram_bytes)
+    checks += check_models_fit(models, ram_bytes, named=models_named)
     if api_base:
         checks.append(check_instance(fetch, api_base))
     return checks
@@ -326,13 +342,22 @@ def as_record(checks: list[Check]) -> dict:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--models", default="", help="comma-separated model ids the run will use; default: all curated")
-    p.add_argument("--api-base", default="http://localhost:8100", help="'' to skip the instance check")
+    p.add_argument(
+        "--api-base",
+        default=os.environ.get("HC_API_BASE", "http://localhost:8100"),
+        help="the instance the sweep will measure (default: HC_API_BASE, as the sweep reads it); '' to skip",
+    )
     p.add_argument("--llama-server", type=Path, default=APP_LLAMA_SERVER)
     p.add_argument("--json", type=Path, default=None, help="write the record here; the report reads it")
     args = p.parse_args(argv)
 
-    models = [m.strip() for m in args.models.split(",") if m.strip()] or sorted(registry())
-    checks = preflight(models=models, api_base=args.api_base or None, llama_server=args.llama_server)
+    named = [m.strip() for m in args.models.split(",") if m.strip()]
+    checks = preflight(
+        models=named or list(registry()),
+        api_base=args.api_base or None,
+        llama_server=args.llama_server,
+        models_named=bool(named),
+    )
     for c in checks:
         print(f"  {c.status.upper():8s} {c.name}: {c.detail}")
     record = as_record(checks)

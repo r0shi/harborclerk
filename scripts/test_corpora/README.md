@@ -69,8 +69,8 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.swee
 ## The instance is wiped
 
 Before each corpus the sweep deletes **every watched folder and every document** on the instance, so that
-each corpus is measured alone. Pointed at the wrong instance, that destroys a working index. It refuses to
-start (exit code 4) unless all three hold:
+each corpus is measured alone (the delete takes uploads and fetched mail with it). Pointed at the wrong
+instance, that destroys a working index. It refuses to start (exit code 4) unless all of these hold:
 
 - `HC_EVAL_DISPOSABLE=1` is set. Set it only for an instance whose documents you can lose.
 - `--api-base` is loopback. Nothing remote is ever wiped.
@@ -78,15 +78,25 @@ start (exit code 4) unless all three hold:
   (`<workdir>/<corpus>/ingest`). A folder of your own is the sign of a real corpus, whatever the environment
   says.
 
-`--no-ingest` wipes nothing and measures what is loaded.
+- It has no connected mailbox. Fetched mail is stored, not read in place, and cannot be re-read.
+- If it holds documents, one of the harness's folders is there to account for them. Documents with no
+  harness folder are someone's uploads. (What this cannot see: uploads made to an instance that also holds a
+  harness corpus.)
+
+The flag and the address are checked before anything is written, and a run that this refusal created is
+taken back, so the same command works once the instance is right: no `--resume`. A run that already
+existed keeps its state. If the instance changes under a running sweep, the check beside the deletion ends
+the run with the same code. `--no-ingest`, `--dry-run` and phases that ingest nothing (0, 2, 3) wipe nothing
+and need no flag.
 
 ## Which models run
 
 Every model in the registry (`src/harbor_clerk/llm/models.py`, read directly: there is no second list to
 update), or the ones named with `--models`. Models the instance has not downloaded, or cannot fit in memory,
-are skipped with a reason before the run; `--resume --rerun 'model=<id>,status=skipped'` brings them back
-(without `status=skipped`, `--rerun` also redoes that model's finished units). "Cannot fit" means the app
-would refuse to load it at any context; a model whose full window does not fit still runs, clamped.
+are skipped with a reason before the run, and every start reconsiders what an earlier one skipped: download
+the model, `--resume`, and its units run. "Cannot fit" means the app would refuse to load it at any context;
+a model whose full window does not fit still runs, clamped. The spend estimate is made before this (it
+needs no login), so it prices the skipped models too: it errs high.
 
 ## Is the machine fit to measure on?
 
@@ -96,7 +106,9 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.preflight -
 ```
 
 Thermal pressure, power, free memory, a busy GPU at idle, other model servers, the installed `llama-server`
-against the pin, whether each model fits this machine, and the instance's health. It changes nothing. Exit 1
+against the pin, whether each model fits this machine (a named model that cannot load fails; with no
+`--models`, it only warns, since the sweep skips it), and the health of the instance `HC_API_BASE` names. It
+changes nothing. Exit 1
 means a number taken now is not a baseline; the report carries the verdict either way. It exists because a
 Mac mini sat at thermal pressure "Sleeping", its GPU held at the lowest clock step, through weeks of
 measurements, and `pmset -g therm` recorded nothing (#652).
@@ -108,9 +120,10 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.report \
     --run-dir "$WORKDIR/results/$RUN" --out docs/reports/
 ```
 
-One dated file per run, never overwritten: run, suite commit, corpora, judge, spend, the preflight verdict,
-a row per model, the models this machine did not run and why, spend by call kind, and a Reading left for
-whoever ran it. The `benchmark` skill (`.claude/skills/benchmark/SKILL.md`) is the whole loop.
+One dated file per run, never overwritten: the run, the commit and machine that ran it (recorded when it
+started, not when the report is rendered), corpora, judge, spend, the preflight verdict, a row per corpus and
+model with what was planned beside what ran, the models this machine did not run and why, spend by call
+kind, and a Reading left for whoever ran it. The `benchmark` skill (`.claude/skills/benchmark/SKILL.md`) is the whole loop.
 
 ## Cloud spend is capped
 

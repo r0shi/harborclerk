@@ -25,6 +25,7 @@ import dataclasses
 import json
 import logging
 import os
+import platform
 import sys
 import time
 from pathlib import Path
@@ -686,6 +687,8 @@ def _run_info(args: argparse.Namespace) -> dict[str, str]:
         "mode": "sweep",
         # The commit that RAN the sweep. A run takes a day; the report may be rendered after a pull.
         "suite_commit": suite_commit(),
+        # The machine that ran it, which need not be the one that renders the report.
+        "host": platform.node().split(".")[0] or "unknown",
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "baseline_model": cfg.BASELINE_MODEL,
         "judge_model": "" if args.no_judge else args.judge_model,
@@ -836,6 +839,9 @@ def _can_skip_ingest(
 
 
 DISPOSABLE_ENV = "HC_EVAL_DISPOSABLE"
+# Phases whose units ingest a corpus that is not loaded (1, 4, 5), and the unified pass (6).
+INGESTING_PHASES = frozenset({1, 4, 5, 6})
+SKIPPED_BEFORE_THE_RUN = "skipped before the run: "
 # The corpora the harness ingests, each from <workdir>/<corpus>/ingest.
 HARNESS_CORPORA = ("cuad", "enron", "synthetic", "unified")
 
@@ -844,19 +850,8 @@ class NotDisposable(RuntimeError):
     """The sweep was about to wipe an instance nobody said it may wipe."""
 
 
-def _refuse_to_wipe_a_real_instance(hc: HarborClerkClient, api_base: str, workdir: Path) -> None:
-    """Ingesting a corpus deletes every watched folder and every document on the instance first. That is
-    the design: each corpus is measured alone. It is also how a benchmark pointed at the wrong instance
-    destroys a working index that took days to build. Three conditions, all of them, every time:
-
-    - the operator declared the instance disposable (HC_EVAL_DISPOSABLE=1);
-    - it is on this machine (a loopback API base): nothing remote is ever wiped;
-    - every watched folder it has is one of this harness's own ingest directories. A folder of the
-      owner's is the sign of a real corpus, whatever the environment says.
-
-    The harness's folders are known by their path. `GET /api/watch/folders` returns no name the harness
-    chose: `display_name` is the path's last segment, which for every corpus is "ingest".
-    """
+def _refuse_unless_declared_disposable(api_base: str) -> None:
+    """The two conditions that need no network, so they can be checked before the run has written anything."""
     import ipaddress
     from urllib.parse import urlsplit
 
@@ -872,10 +867,31 @@ def _refuse_to_wipe_a_real_instance(hc: HarborClerkClient, api_base: str, workdi
         loopback = False
     if not loopback:
         raise NotDisposable(f"refusing to wipe {api_base}: only an instance on this machine (loopback) is ever wiped")
+
+
+def _refuse_to_wipe_a_real_instance(hc: HarborClerkClient, api_base: str, workdir: Path) -> None:
+    """Ingesting a corpus deletes every watched folder and every document on the instance first
+    (`delete-all-documents` truncates documents, uploads and fetched mail alike). That is the design: each
+    corpus is measured alone. It is also how a benchmark pointed at the wrong instance destroys a working
+    index that took days to build. All of these, every time:
+
+    - the operator declared the instance disposable (HC_EVAL_DISPOSABLE=1);
+    - it is on this machine (a loopback API base): nothing remote is ever wiped;
+    - every watched folder it has is one of this harness's own ingest directories;
+    - it has no connected mailbox: fetched mail is stored, not read in place, and cannot be re-read;
+    - if it holds documents, a harness folder is there to account for them. Documents with no harness
+      folder are someone's uploads.
+
+    The harness's folders are known by their path. `GET /api/watch/folders` returns no name the harness
+    chose: `display_name` is the path's last segment, which for every corpus is "ingest". What this cannot
+    see: uploads made to an instance that also holds a harness corpus.
+    """
+    _refuse_unless_declared_disposable(api_base)
     ours = {(Path(workdir).expanduser() / corpus / "ingest").resolve() for corpus in HARNESS_CORPORA}
+    folders = hc.watch_folder_list()
     foreign = [
         str(f.get("path"))
-        for f in hc.watch_folder_list()
+        for f in folders
         if not f.get("path") or Path(str(f["path"])).expanduser().resolve() not in ours
     ]
     if foreign:
@@ -883,6 +899,18 @@ def _refuse_to_wipe_a_real_instance(hc: HarborClerkClient, api_base: str, workdi
             f"refusing to wipe {api_base}: it has watched folders that are not this harness's ingest directories "
             f"under {workdir}, which means a real corpus: {foreign}. Remove them yourself if this instance really "
             "is disposable."
+        )
+    mailboxes = hc.mail_accounts()
+    if mailboxes:
+        raise NotDisposable(
+            f"refusing to wipe {api_base}: it has {len(mailboxes)} connected mailbox(es). Fetched mail is stored, "
+            "not read in place; wiping it loses it."
+        )
+    documents = hc.document_count()
+    if documents and not folders:
+        raise NotDisposable(
+            f"refusing to wipe {api_base}: it holds {documents} document(s) and no folder of this harness's to "
+            "account for them, so they are someone's uploads."
         )
 
 
@@ -950,8 +978,7 @@ def _skip_what_this_instance_cannot_run(hc: HarborClerkClient, sf: StateFile, ph
     The model list now comes from the registry, so a sweep on a small machine plans models it will never
     load. Left pending, each of their units fails at activation (the app answers 409 when not even the
     smallest context fits), and the circuit breaker spends its trips on a foregone conclusion. Only PENDING
-    units in the phases being run are touched; `--rerun 'model=<id>,status=skipped'` brings them back once
-    the model is there (without `status=skipped` it would also redo that model's finished units)."""
+    units in the phases being run are touched, and every start reconsiders what an earlier one skipped."""
     try:
         listed = {m["id"]: m for m in hc.list_models()}
     except Exception as exc:
@@ -960,6 +987,13 @@ def _skip_what_this_instance_cannot_run(hc: HarborClerkClient, sf: StateFile, ph
     if not listed:
         log.warning("the instance listed no models at all; not skipping any")
         return {}
+    # What an earlier start decided is decided again: the model may have been downloaded since, or that
+    # start may have been looking at another instance.
+    revived = 0
+    for u in sf.units():
+        if u.status == Status.SKIPPED and u.phase in phases and (u.error or "").startswith(SKIPPED_BEFORE_THE_RUN):
+            u.status, u.error = Status.PENDING, None
+            revived += 1
     reasons: dict[str, str] = {}
     for u in sf.units():
         if u.status != Status.PENDING or u.phase not in phases or u.phase < 2:
@@ -977,13 +1011,11 @@ def _skip_what_this_instance_cannot_run(hc: HarborClerkClient, sf: StateFile, ph
         else:
             continue
         u.status = Status.SKIPPED
-        u.error = f"skipped before the run: {reason}"
+        u.error = SKIPPED_BEFORE_THE_RUN + reason
         reasons[u.model] = reason
     for model, reason in sorted(reasons.items()):
-        log.warning(
-            "skipping %s: %s. `--resume --rerun 'model=%s,status=skipped'` brings its units back.", model, reason, model
-        )
-    if reasons:
+        log.warning("skipping %s: %s. Its units are reconsidered at the next start of this run.", model, reason)
+    if reasons or revived:
         sf.save()
     return reasons
 
@@ -1048,7 +1080,18 @@ def main(argv: list[str] | None = None) -> int:
             log.error("stopped by the spend cap: %s", exc)
             return 3
 
+    # Before anything is registered or written: the two conditions that need no network. A refused start
+    # leaves nothing behind, so the same command works once the flag is set.
+    may_ingest = not args.no_ingest and not args.dry_run and bool(_phase_range(args.phases) & INGESTING_PHASES)
+    if may_ingest:
+        try:
+            _refuse_unless_declared_disposable(args.api_base)
+        except NotDisposable as exc:
+            log.error("not starting: %s", exc)
+            return 4
+
     state_path = run_dir / "state.json"
+    fresh_run = not state_path.exists()
     sf = StateFile(state_path)
     sf.acquire_lock()
     try:
@@ -1177,22 +1220,27 @@ def main(argv: list[str] | None = None) -> int:
                 hc.login(email, password)
             else:
                 log.warning("no HC_USERNAME / HC_PASSWORD set — auth-required calls will fail")
-            _skip_what_this_instance_cannot_run(hc, sf, phases)
-            # Before the first unit, not at the first ingest: a refusal there is caught per unit by the
-            # keep-going handlers and the run grinds on, erroring. Here it ends the run (exit code 4).
+            # The instance checks, before the first unit and before anything else is decided about this
+            # instance: a sweep pointed at the wrong one must not leave its judgements in state.json. (The
+            # check beside the deletion itself still stands; refused there, it also ends the run with 4.)
             will_ingest = not args.no_ingest and any(
-                u.status == Status.PENDING and u.phase in phases and u.phase >= 1 for u in sf.units()
+                u.status == Status.PENDING and u.phase in phases and u.phase in INGESTING_PHASES for u in sf.units()
             )
             if will_ingest:
                 try:
                     _refuse_to_wipe_a_real_instance(hc, args.api_base, workdir)
-                except NotDisposable as exc:
-                    log.error("not starting: %s", exc)
-                    return 4
                 except Exception as exc:
-                    # Could not look (not logged in, instance down). Unverified is not disposable.
-                    log.error("not starting: could not check that %s may be wiped: %s", args.api_base, exc)
+                    # NotDisposable, or could not look (not logged in, instance down): unverified is not
+                    # disposable either.
+                    why = exc if isinstance(exc, NotDisposable) else f"could not check that it may be wiped: {exc}"
+                    log.error("not starting against %s: %s", args.api_base, why)
+                    if fresh_run:
+                        # This invocation made the run; take it back, so the same command works once the
+                        # instance is right. A resumed run keeps its state: it was there before.
+                        for left in (state_path, run_dir / spend.LEDGER_NAME):
+                            left.unlink(missing_ok=True)
                     return 4
+            _skip_what_this_instance_cannot_run(hc, sf, phases)
 
         anthro = spend.anthropic_client("baseline_question")
         judge = JudgeClient(model=args.judge_model)
@@ -1946,6 +1994,10 @@ def main(argv: list[str] | None = None) -> int:
     except spend.SpendConfigError as exc:
         log.error("stopped by the spend cap: %s", exc)
         return 3
+    except NotDisposable as exc:
+        # Refused beside the deletion itself, after the run had started: the instance changed under it.
+        log.error("stopped before a wipe: %s", exc)
+        return 4
     finally:
         sf.release_lock()
 

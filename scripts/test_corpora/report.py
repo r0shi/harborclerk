@@ -32,9 +32,11 @@ JUDGED_PHASES = {"4", "5"}
 
 def suite_commit() -> str:
     def git(*args: str) -> str:
-        return subprocess.run(
-            ["git", "-C", str(REPO), *args], capture_output=True, text=True, check=False
-        ).stdout.strip()
+        try:
+            done = subprocess.run(["git", "-C", str(REPO), *args], capture_output=True, text=True, check=False)
+        except OSError:  # no git on this machine: the sweep starts anyway
+            return ""
+        return done.stdout.strip()
 
     commit = git("rev-parse", "--short=7", "HEAD") or "unknown"
     return commit + ("-dirty" if git("status", "--porcelain") else "")
@@ -64,28 +66,38 @@ def _mean(values: list[float]) -> str:
     return f"{statistics.fmean(values):.2f}" if values else "n/a"
 
 
-def model_table(rows: list[dict[str, str]], phase: str) -> list[str]:
-    by_model: dict[str, list[dict[str, str]]] = defaultdict(list)
+RAN = ("done", "degraded", "error", "failed")
+
+
+def model_table(rows: list[dict[str, str]], phase: str, planned: Counter) -> list[str]:
+    """One row per corpus and model. Corpora are not pooled: an overlap mean across contracts, mail and
+    synthetic memos describes none of them."""
+    by_key: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
     for row in rows:
         if row["phase"] == phase:
-            by_model[row["model"]].append(row)
-    if not by_model:
+            by_key[(row["corpus"], row["model"])].append(row)
+    keys = sorted(set(by_key) | {(c, m) for (ph, c, m) in planned if ph == phase})
+    if not keys:
         return []
     columns = [
-        "model", "units", "done", "degraded", "error", "citation overlap", "entity overlap", "median latency (s)",
-        "judged", "pass", "marginal", "fail", "completeness (0-5)",
+        "corpus", "model", "planned", "ran", "done", "degraded", "error", "citation overlap", "entity overlap",
+        "median latency (s)", "judged", "pass", "marginal", "fail", "completeness (0-5)",
     ]  # fmt: skip
     out = ["| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
-    for model in sorted(by_model):
-        units = by_model[model]
+    for corpus, model in keys:
+        units = by_key.get((corpus, model), [])
         status = Counter(u["status"] for u in units)
         done = [u for u in units if u["status"] == "done"]
         judged = [u for u in done if u.get("judge_verdict")]
         verdicts = Counter(u["judge_verdict"] for u in judged)
         latency = [float(u["latency_seconds"]) for u in done if u.get("latency_seconds")]
+        ran = sum(status[s] for s in RAN)
         cells = [
+            corpus,
             f"`{model}`",
-            len(units),
+            # state.json is the plan. A run with no state file can only say what it ran.
+            planned.get((phase, corpus, model), "n/a") if planned else "n/a",
+            ran,
             status["done"],
             status["degraded"],
             status["error"] + status["failed"],
@@ -102,6 +114,17 @@ def model_table(rows: list[dict[str, str]], phase: str) -> list[str]:
     return out
 
 
+def planned_units(state: dict | None) -> Counter:
+    """(phase, corpus, model) -> units the run planned, skipped-before-the-run ones aside (they have their own
+    section)."""
+    planned: Counter = Counter()
+    for unit in (state or {}).get("units", []):
+        if (unit.get("error") or "").startswith("skipped before the run"):
+            continue
+        planned[(str(unit.get("phase")), unit.get("corpus"), unit.get("model"))] += 1
+    return planned
+
+
 def skipped_models(state: dict | None) -> dict[str, str]:
     reasons: dict[str, str] = {}
     for unit in (state or {}).get("units", []):
@@ -110,13 +133,19 @@ def skipped_models(state: dict | None) -> dict[str, str]:
     return reasons
 
 
+def run_host(run_dir: Path, preflight: dict | None, rendering_host: str) -> str:
+    """The machine that ran the sweep: what the ledger says, else the preflight, else this machine."""
+    recorded = (_load(run_dir / spend.LEDGER_NAME) or {}).get("run", {}).get("host") or (preflight or {}).get("host")
+    return re.sub(r"[^a-z0-9]+", "-", str(recorded or rendering_host).split(".")[0].lower()).strip("-") or "host"
+
+
 def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, commit: str) -> str:
     ledger = _load(run_dir / spend.LEDGER_NAME)
     state = _load(run_dir / "state.json")
     rows = _rows(run_dir)
     run_id = (ledger or {}).get("run", {}).get("run_id") or run_dir.name
     corpora = sorted({r["corpus"] for r in rows})
-    lines = [f"# Benchmark run `{run_id}` on {host}, {today}", ""]
+    lines = [f"# Benchmark run `{run_id}` on {run_host(run_dir, preflight, host)}, {today}", ""]
 
     run = (ledger or {}).get("run", {})
     ran_at = run.get("suite_commit")
@@ -155,10 +184,21 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
         lines += [f"  - {c['status']}: {c['name']}: {c['detail']}" for c in problems]
     lines.append("")
 
+    planned = planned_units(state)
     for phase, title in (("4", "Phase 4: every model, every question"), ("5", "Phase 5: the two largest, judged")):
-        table = model_table(rows, phase)
+        table = model_table(rows, phase, planned)
         if table:
             lines += [f"## {title}", "", *table, ""]
+    never_ran = sum(n for (ph, _, _), n in planned.items() if ph in JUDGED_PHASES) - sum(
+        1 for r in rows if r["phase"] in JUDGED_PHASES and r["status"] in RAN
+    )
+    if planned and never_ran > 0:
+        lines += [
+            f"**{never_ran} planned unit(s) never ran** (pending when the run stopped, or passed over by the circuit "
+            "breaker). `planned` against `ran` shows where. A mean over the units that ran says nothing about the "
+            "ones that did not.",
+            "",
+        ]
     if not rows:
         lines += ["## Results", "", "No metrics.csv rows: the run produced no model results.", ""]
 
@@ -205,9 +245,9 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
 
 
 def write(run_dir: Path, out_dir: Path, *, preflight_path: Path | None) -> Path:
-    host = re.sub(r"[^a-z0-9]+", "-", platform.node().split(".")[0].lower()).strip("-") or "host"
     today = time.strftime("%Y-%m-%d")
     preflight = _load(preflight_path) if preflight_path else _load(run_dir / "preflight.json")
+    host = run_host(run_dir, preflight, platform.node())
     text = render(run_dir, preflight=preflight, today=today, host=host, commit=suite_commit())
     out_dir.mkdir(parents=True, exist_ok=True)
     run_slug = re.sub(r"[^a-z0-9]+", "-", run_dir.name.lower()).strip("-")

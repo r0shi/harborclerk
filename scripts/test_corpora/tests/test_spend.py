@@ -32,6 +32,13 @@ def _harness_sources() -> list[Path]:
     return sorted(found)
 
 
+@pytest.fixture(autouse=True)
+def _a_disposable_instance(monkeypatch):
+    """These tests drive sweep.main to its spend refusals. The wipe guard comes first and has its own tests
+    (test_benchmark_models.py); here the instance is declared disposable, as the mini's is."""
+    monkeypatch.setenv("HC_EVAL_DISPOSABLE", "1")
+
+
 def _config(cap: float = 1.00) -> SpendConfig:
     return SpendConfig(
         cap_usd=cap,
@@ -417,6 +424,8 @@ def test_a_phase_by_phase_resume_is_priced_for_the_phase_it_runs(tmp_path, monke
     # Past the estimate comes the wipe guard; this instance is the harness's own.
     monkeypatch.setenv(sweep.DISPOSABLE_ENV, "1")
     monkeypatch.setattr(sweep.HarborClerkClient, "watch_folder_list", lambda self: [])
+    monkeypatch.setattr(sweep.HarborClerkClient, "document_count", lambda self: 0)
+    monkeypatch.setattr(sweep.HarborClerkClient, "mail_accounts", lambda self: [])
     monkeypatch.setattr(sweep.HarborClerkClient, "list_models", lambda self: [])
     meter = spend.SpendMeter(spend.load_config())
     phase1 = meter.estimate([("baseline_question", "claude-sonnet-4-6", 16)])
@@ -474,7 +483,9 @@ def test_a_run_that_judges_nothing_names_no_judge(tmp_path):
         "baseline_model": "claude-sonnet-4-6",
         "judge_model": "",
     }
-    assert re.fullmatch(r"[0-9a-f]{7}(-dirty)?|unknown", recorded["suite_commit"]) and recorded["started_at"]
+    # git lengthens --short=7 when seven characters are ambiguous.
+    assert re.fullmatch(r"[0-9a-f]{7,40}(-dirty)?|unknown", recorded["suite_commit"]) and recorded["started_at"]
+    assert recorded["host"]
     assert "judge none" in spend.header_line(json.loads(ledger.read_text()))
     # Having judged nothing, it may take up any judge later.
     assert sweep.main([*base, "--resume", "--judge-model", "claude-sonnet-5"]) == 3

@@ -42,9 +42,11 @@ model fits this machine, and that the instance is healthy. It changes nothing.
 ## 2. The instance will be wiped
 
 Before each corpus the sweep deletes **every watched folder and every
-document** on the instance. It refuses unless `HC_EVAL_DISPOSABLE=1`, the API
-base is loopback, and every watched folder is one of the harness's own ingest
-directories (`$WORKDIR/<corpus>/ingest`). Set `HC_EVAL_DISPOSABLE=1` **only on the mini**, and only
+document** on the instance (uploads and fetched mail included). It refuses
+unless `HC_EVAL_DISPOSABLE=1`, the API base is loopback, every watched folder is
+one of the harness's own ingest directories (`$WORKDIR/<corpus>/ingest`), there
+is no connected mailbox, and any documents it holds are accounted for by a
+harness folder. Set `HC_EVAL_DISPOSABLE=1` **only on the mini**, and only
 after looking:
 
 ```bash
@@ -95,10 +97,10 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.swee
 Run it in the background and watch `results/$RUN/log.txt`; do not poll faster
 than the work moves. Exit codes: **0** complete; **3** stopped by the spend cap
 or a refused spend setting (finished units are saved; `--resume` continues the
-same run and the same ledger); **4** refused to start because the instance is
-not disposable. Models the instance has not downloaded, or cannot load at any
-context, are skipped with a reason and listed in the report: downloading a model is the
-owner's decision.
+same run and the same ledger); **4** the instance may not be wiped (a refused
+first start leaves nothing behind: fix the cause and run the same command). Models the instance has not downloaded, or cannot load at any
+context, are skipped with a reason, listed in the report, and reconsidered at every start:
+downloading a model is the owner's decision.
 
 A failure is information. Read `log.txt` before re-running anything, and never
 `--rerun` to make a number look better.
@@ -115,7 +117,8 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.report \
 
 It prints the path (one file per run, never overwritten). The header names run,
 commit, corpora, judge, spend and the preflight verdict; the tables are what was
-measured. **Write the Reading yourself**, in the file: what the numbers support,
+measured, per corpus, with what was planned beside what ran. **Write the
+Reading yourself**, in the file: what the numbers support,
 what they do not (sample size, one corpus, one judge), every `warn`, every
 skipped model, and what was not verified. No model is promoted or retired on a
 report whose preflight failed or is missing.
