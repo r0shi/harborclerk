@@ -9,6 +9,11 @@ const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
     label: 'Best local research',
     note: 'Strongest choice for longer synthesis, timelines, and multi-document questions.',
   },
+  'gemma4-12b': {
+    label: 'Newer mid-size',
+    note: 'A dense 12B that sits between the lightweight and the large models, for Macs with 16 to 24 GB. Evaluation on this product is pending.',
+    warning: 'Not yet evaluated here: verify cited answers carefully.',
+  },
   'gemma4-26b-a4b': {
     label: 'Balanced local research',
     note: 'A steady larger model for cited answers and research when memory allows.',
