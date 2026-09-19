@@ -186,6 +186,7 @@ final class AppSettings: @unchecked Sendable {
             "qwen35-4b": "Qwen3.5-4B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
             "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+            "gemma4-12b": "gemma-4-12b-it-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
         ]
         guard let filename = filenames[modelId] else { return "" }
@@ -202,6 +203,7 @@ final class AppSettings: @unchecked Sendable {
             "qwen35-4b": 262144,
             "gpt-oss-20b": 128000,
             "qwen36-35b-a3b": 262144,
+            "gemma4-12b": 262144,
             "gemma4-26b-a4b": 262144,  // the GGUF's; 128K is the E2B/E4B figure (#548)
         ]
         return contextWindows[modelId] ?? 32768
@@ -231,6 +233,7 @@ final class AppSettings: @unchecked Sendable {
         "qwen35-4b": 32_768,
         "gpt-oss-20b": 24_576,
         "qwen36-35b-a3b": 20_480,
+        "gemma4-12b": 16_384,
         "gemma4-26b-a4b": 20_480,
     ]
 
@@ -241,6 +244,7 @@ final class AppSettings: @unchecked Sendable {
         "qwen35-4b": 1_738_801_152,
         "gpt-oss-20b": 3_145_728,
         "qwen36-35b-a3b": 300_000_000,
+        "gemma4-12b": 335_544_320,
         "gemma4-26b-a4b": 209_715_200,
     ]
 
@@ -277,6 +281,7 @@ final class AppSettings: @unchecked Sendable {
             "qwen35-4b": 1,
             "qwen3-4b": 1,
             "gpt-oss-20b": 1,
+            "gemma4-12b": 1,
             "gemma4-26b-a4b": 1,
             "qwen36-35b-a3b": 1,
         ]

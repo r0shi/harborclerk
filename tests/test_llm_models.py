@@ -224,6 +224,7 @@ def _read_header(f, prefix: str) -> dict:
 GEOMETRY = {
     "qwen3-8b": ("qwen3", "all"),
     "qwen3-4b": ("qwen3", "all"),
+    "gemma4-12b": ("gemma4", "global"),
     "gemma4-26b-a4b": ("gemma4", "global"),  # sliding_window_pattern: 1 = windowed, 0 = global
     "gpt-oss-20b": ("gpt-oss", "half"),  # llama.cpp alternates window and full layers for this architecture
     "qwen36-35b-a3b": ("qwen35moe", "interval"),  # full_attention_interval
@@ -288,6 +289,12 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
     else:
         pattern = h["attention.sliding_window_pattern"]
         per_token = sum(hd * (k + v) * 2 for hd, windowed in zip(heads, pattern, strict=True) if not windowed)
+        # The windowed layers hold a fixed sliding window of KV, at their own (smaller) head size.
+        k_swa, v_swa = h["attention.key_length_swa"], h["attention.value_length_swa"]
+        windowed_bytes = sum(hd * (k_swa + v_swa) * 2 for hd, windowed in zip(heads, pattern, strict=True) if windowed)
+        assert m.kv_fixed_bytes == windowed_bytes * h["attention.sliding_window"], (
+            f"{model_id}: header says {windowed_bytes * h['attention.sliding_window']} bytes of sliding-window KV"
+        )
     assert m.kv_bytes_per_token == per_token, f"{model_id}: header says {per_token} bytes per token"
     if model_id in RECURRENT_STATE_DERIVED:
         recurrent_layers = layers - layers // h["full_attention_interval"]
