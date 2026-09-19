@@ -223,3 +223,49 @@ def test_one_file_per_run_never_overwritten(tmp_path, monkeypatch):
     )
     assert "**pass**" in first.read_text(), "the run directory's own preflight.json is picked up"
     assert report.main(["--run-dir", str(tmp_path / "absent"), "--out", str(out)]) == 2
+
+
+def test_a_check_that_could_not_look_is_in_the_report(tmp_path):
+    blind = {
+        **FIT,
+        "verdict": "warn",
+        "checks": [{"name": "thermal pressure", "status": "skipped", "detail": "could not read the level"}],
+    }
+    text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER), preflight=blind)
+    assert "**warn**" in text and "  - skipped: thermal pressure: could not read the level\n" in text
+
+
+def test_every_phase_that_runs_a_model_is_in_the_report_and_in_the_count(tmp_path):
+    """Found in review. The default --phases includes 6. Its rows got no table, its planned units were left
+    out of "never ran", and `unified` appeared under Corpora with nothing shown for it."""
+    rows = [*ROWS, [6, "unified", "qwen36-35b-a3b", "q1", "standard", "done", "0.400", 0, "0.300", "500.0", "", 0]]
+    state = {
+        "units": [
+            *_planned("qwen36-35b-a3b", "unified", 9, phase=6),
+            *_planned("qwen36-35b-a3b", "cuad", 1, phase=2),
+            *_planned("qwen3-8b", "synthetic", 16, phase=4),  # planned, and the run stopped before it
+            *_planned("-", "cuad", 1, phase=0),
+        ]
+    }
+    text = _render(_run_dir(tmp_path, rows, ledger=LEDGER, state=state))
+    assert "## Phase 6: the unified corpus" in text
+    assert "| unified | `qwen36-35b-a3b` | 9 | 1 | 1 | 0 | 0 | 0.40 | 0.30 | 500 |" in text
+    assert "## Phase 2: smoke" in text and "| cuad | `qwen36-35b-a3b` | 1 | 0 |" in text
+    assert "- Corpora: cuad, enron, synthetic, unified\n" in text, "synthetic was planned and produced nothing"
+    assert "| synthetic | `qwen3-8b` | 16 | 0 |" in text
+    assert "`-`" not in text, "phase 0 acquires a corpus; it runs no model"
+
+
+def test_an_untracked_file_does_not_make_the_suite_dirty(monkeypatch):
+    """An earlier render leaves a report untracked in docs/reports/. That is not a change to the suite."""
+    asked = []
+
+    def run(argv, **kw):
+        asked.append(argv)
+        return type("Done", (), {"stdout": "abc1234\n" if "rev-parse" in argv else ""})()
+
+    monkeypatch.setattr(report.subprocess, "run", run)
+    assert report.suite_commit() == "abc1234"
+    assert "--untracked-files=no" in asked[1]
+    monkeypatch.setattr(report.subprocess, "run", lambda argv, **kw: (_ for _ in ()).throw(FileNotFoundError("git")))
+    assert report.suite_commit() == "unknown"

@@ -80,12 +80,16 @@ instance, that destroys a working index. It refuses to start (exit code 4) unles
 
 - It has no connected mailbox. Fetched mail is stored, not read in place, and cannot be re-read.
 - If it holds documents, one of the harness's folders is there to account for them. Documents with no
-  harness folder are someone's uploads. (What this cannot see: uploads made to an instance that also holds a
-  harness corpus.)
+  harness folder are someone's uploads.
+
+What the guard cannot see, so look yourself before you set the flag: uploads made to an instance that also
+holds a harness corpus; mail documents whose account has since been removed (the documents stay, the
+mailbox check sees no account); and a loopback address that is an SSH forward to a machine somewhere else.
 
 The flag and the address are checked before anything is written, and a run that this refusal created is
-taken back, so the same command works once the instance is right: no `--resume`. A run that already
-existed keeps its state. If the instance changes under a running sweep, the check beside the deletion ends
+taken back, so the same command works once the instance is right: no `--resume`. Only what that invocation
+made is removed: a run that already existed stays (with any `--rerun`/`--skip` flips you passed, which are
+saved before the instance is looked at), and so does a ledger that was already there. If the instance changes under a running sweep, the check beside the deletion ends
 the run with the same code. `--no-ingest`, `--dry-run` and phases that ingest nothing (0, 2, 3) wipe nothing
 and need no flag.
 
@@ -107,8 +111,8 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.preflight -
 
 Thermal pressure, power, free memory, a busy GPU at idle, other model servers, the installed `llama-server`
 against the pin, whether each model fits this machine (a named model that cannot load fails; with no
-`--models`, it only warns, since the sweep skips it), and the health of the instance `HC_API_BASE` names. It
-changes nothing. Exit 1
+`--models`, it only warns, since the sweep skips it), and the health of the instance `HC_API_BASE` names. A check that
+could not look (no app bundle, not a Mac) makes the verdict `warn`, never `pass`. It changes nothing. Exit 1
 means a number taken now is not a baseline; the report carries the verdict either way. It exists because a
 Mac mini sat at thermal pressure "Sleeping", its GPU held at the lowest clock step, through weeks of
 measurements, and `pmset -g therm` recorded nothing (#652).

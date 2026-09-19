@@ -434,3 +434,40 @@ def test_a_refusal_beside_the_deletion_ends_the_run_with_the_same_code():
     outer = [t for t in main.body if isinstance(t, ast.Try)][-1]
     handler = next(h for h in outer.handlers if ast.unparse(h.type) == "NotDisposable")
     assert ast.unparse(handler.body[-1]) == "return 4"
+
+
+# ── third review ──
+
+
+def test_a_refused_start_takes_back_only_what_it_made_never_a_ledger_with_money_in_it(tmp_path, monkeypatch):
+    """Found in review. answer-eval writes spend.json to the same run directory and no state.json, so "no
+    state.json" did not mean "nothing here". The refused sweep deleted a ledger recording real dollars, and
+    the cap's accounting for that run id started again from zero."""
+    import json
+
+    monkeypatch.setenv(sweep.DISPOSABLE_ENV, "1")
+    run_dir = tmp_path / "results" / "r1"
+    run_dir.mkdir(parents=True)
+    ledger = run_dir / "spend.json"
+    ledger.write_text(json.dumps({"run": {"mode": "answer-eval"}, "total_usd": 7.25, "calls": 300}))
+    _stub_instance(monkeypatch, folders=THEIRS)
+    base = ["--run-id", "r1", "--workdir", str(tmp_path), "--phases", "1", "--corpora", "cuad"]
+    assert sweep.main(base) == 4
+    assert json.loads(ledger.read_text())["total_usd"] == 7.25, "the money is still on record"
+    assert not (run_dir / "state.json").exists(), "the state this invocation made is taken back"
+
+
+def test_a_refusal_to_wipe_cannot_be_caught_as_one_bad_unit():
+    """Both ingest calls sit outside the run loop's per-unit handlers today. This holds if one is moved."""
+    assert not issubclass(sweep.NotDisposable, Exception)
+
+
+def test_a_unit_the_operator_skips_stays_skipped_even_if_the_sweep_had_skipped_it_first(tmp_path):
+    sf = _state(tmp_path, [_unit(4, "qwen35-9b")])
+    absent = _Instance([_listed("qwen35-9b", downloaded=False, max_context_here=83968, ram_gb=16.0)])
+    sweep._skip_what_this_instance_cannot_run(absent, sf, {4})
+    assert sf.skip(sweep._parse_selectors("model=qwen35-9b")) == 1  # the operator's own --skip
+    present = _Instance([_listed("qwen35-9b", downloaded=True, max_context_here=83968, ram_gb=16.0)])
+    sweep._skip_what_this_instance_cannot_run(present, sf, {4})
+    unit = sf.get(4, "cuad", "qwen35-9b", "q1", "standard")
+    assert unit.status == Status.SKIPPED and unit.error == "skipped by the operator"

@@ -846,8 +846,10 @@ SKIPPED_BEFORE_THE_RUN = "skipped before the run: "
 HARNESS_CORPORA = ("cuad", "enron", "synthetic", "unified")
 
 
-class NotDisposable(RuntimeError):
-    """The sweep was about to wipe an instance nobody said it may wipe."""
+class NotDisposable(BaseException):
+    """The sweep was about to wipe an instance nobody said it may wipe. Not an Exception, for the reason the
+    spend errors are not (runner/spend.py): the run loop's keep-going handlers catch Exception, and this is
+    not one bad unit. Both ingest calls sit outside those handlers today; this holds if one is ever moved."""
 
 
 def _refuse_unless_declared_disposable(api_base: str) -> None:
@@ -1091,7 +1093,9 @@ def main(argv: list[str] | None = None) -> int:
             return 4
 
     state_path = run_dir / "state.json"
-    fresh_run = not state_path.exists()
+    # What was here before this invocation. A refused start takes back what it made, and only that: the
+    # ledger may be older than the state (answer-eval writes one to this directory and no state.json).
+    made_here = [p for p in (state_path, run_dir / spend.LEDGER_NAME) if not p.exists()]
     sf = StateFile(state_path)
     sf.acquire_lock()
     try:
@@ -1229,16 +1233,15 @@ def main(argv: list[str] | None = None) -> int:
             if will_ingest:
                 try:
                     _refuse_to_wipe_a_real_instance(hc, args.api_base, workdir)
-                except Exception as exc:
+                except (NotDisposable, Exception) as exc:
                     # NotDisposable, or could not look (not logged in, instance down): unverified is not
                     # disposable either.
                     why = exc if isinstance(exc, NotDisposable) else f"could not check that it may be wiped: {exc}"
                     log.error("not starting against %s: %s", args.api_base, why)
-                    if fresh_run:
-                        # This invocation made the run; take it back, so the same command works once the
-                        # instance is right. A resumed run keeps its state: it was there before.
-                        for left in (state_path, run_dir / spend.LEDGER_NAME):
-                            left.unlink(missing_ok=True)
+                    # Take back what this invocation made, so the same command works once the instance is
+                    # right. What was there before stays: a run that existed, a ledger with money in it.
+                    for left in made_here:
+                        left.unlink(missing_ok=True)
                     return 4
             _skip_what_this_instance_cannot_run(hc, sf, phases)
 

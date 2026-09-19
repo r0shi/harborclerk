@@ -28,6 +28,14 @@ from scripts.test_corpora.runner import spend
 
 REPO = Path(__file__).resolve().parents[2]
 JUDGED_PHASES = {"4", "5"}
+# The phases that run a local model, in the order the sweep runs them.
+MODEL_PHASES = {
+    "2": "Phase 2: smoke",
+    "3": "Phase 3: one model at each depth",
+    "4": "Phase 4: every model, every question",
+    "5": "Phase 5: the two largest, judged",
+    "6": "Phase 6: the unified corpus",
+}
 
 
 def suite_commit() -> str:
@@ -39,7 +47,9 @@ def suite_commit() -> str:
         return done.stdout.strip()
 
     commit = git("rev-parse", "--short=7", "HEAD") or "unknown"
-    return commit + ("-dirty" if git("status", "--porcelain") else "")
+    # Tracked files only: an untracked report left in docs/reports/ by an earlier render is not a change
+    # to the suite.
+    return commit + ("-dirty" if git("status", "--porcelain", "--untracked-files=no") else "")
 
 
 def _load(path: Path) -> dict | None:
@@ -144,7 +154,9 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
     state = _load(run_dir / "state.json")
     rows = _rows(run_dir)
     run_id = (ledger or {}).get("run", {}).get("run_id") or run_dir.name
-    corpora = sorted({r["corpus"] for r in rows})
+    # From the plan as well as the rows: a corpus that was planned and produced nothing is still named.
+    in_plan = {u.get("corpus") for u in (state or {}).get("units", []) if str(u.get("phase")) in MODEL_PHASES}
+    corpora = sorted({r["corpus"] for r in rows} | {c for c in in_plan if c})
     lines = [f"# Benchmark run `{run_id}` on {run_host(run_dir, preflight, host)}, {today}", ""]
 
     run = (ledger or {}).get("run", {})
@@ -175,7 +187,7 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
             "timings below are not a baseline."
         )
     else:
-        problems = [c for c in preflight.get("checks", []) if c["status"] in ("fail", "warn")]
+        problems = [c for c in preflight.get("checks", []) if c["status"] in ("fail", "warn", "skipped")]
         lines.append(
             f"- Machine preflight: **{preflight.get('verdict')}** at {preflight.get('checked_at')}, llama.cpp pin "
             f"{preflight.get('pinned_llama_cpp')}."
@@ -185,12 +197,12 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
     lines.append("")
 
     planned = planned_units(state)
-    for phase, title in (("4", "Phase 4: every model, every question"), ("5", "Phase 5: the two largest, judged")):
+    for phase, title in MODEL_PHASES.items():
         table = model_table(rows, phase, planned)
         if table:
             lines += [f"## {title}", "", *table, ""]
-    never_ran = sum(n for (ph, _, _), n in planned.items() if ph in JUDGED_PHASES) - sum(
-        1 for r in rows if r["phase"] in JUDGED_PHASES and r["status"] in RAN
+    never_ran = sum(n for (ph, _, _), n in planned.items() if ph in MODEL_PHASES) - sum(
+        1 for r in rows if r["phase"] in MODEL_PHASES and r["status"] in RAN
     )
     if planned and never_ran > 0:
         lines += [
@@ -203,11 +215,11 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
         lines += ["## Results", "", "No metrics.csv rows: the run produced no model results.", ""]
 
     if rows:
-        lines += [
+        note = (
             "The overlap means include units whose baseline was unusable: the sweep records those as 0.000, and "
-            "metrics.csv does not tell them from a true zero. `log.txt` names each one.",
-            "",
-        ]
+            "metrics.csv does not tell them from a true zero. `log.txt` names each one."
+        )
+        lines += [note, ""]
     unjudged = sum(
         1 for r in rows if r["phase"] in JUDGED_PHASES and r["status"] == "done" and not r.get("judge_verdict")
     )

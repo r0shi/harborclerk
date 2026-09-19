@@ -31,8 +31,10 @@ model fits this machine, and that the instance is healthy. It changes nothing.
   theirs (moving the machine, `make apps`, `launchctl bootout` for a launch
   agent). The mini sat at thermal pressure "Sleeping" for weeks before this
   check existed (#652).
-- `warn` travels with the report. Say it in the Reading.
-- If the app has a model loaded, deactivate it first (Models page, or
+- `warn` travels with the report. Say it in the Reading. A check that could not
+  look is a `warn`, never a `pass`.
+- If the app has a model loaded, **note which** (`GET /api/chat/models/status`;
+  "Afterwards" restores it), then deactivate it (Models page, or
   `PUT /api/chat/models/deactivate`): a resident 22 GB model fails the free-memory
   check, and the sweep activates what it needs.
 - Never launch a `llama-server` by hand for this. The sweep drives the app's
@@ -53,7 +55,11 @@ after looking:
 curl -s http://localhost:8100/api/system/health | jq '{status, build}'
 ```
 
-If the instance holds anything the owner would miss, stop and ask. Do not
+Health says it is up, not what it holds. Open `http://localhost:8100/folders`
+and the document list, or ask the owner. The guard cannot see uploads mixed in
+with a harness corpus, mail whose account was removed, or a loopback address
+that is an SSH forward. If the instance holds anything the owner would miss,
+stop and ask. Do not
 remove their folders to get past the guard. `--no-ingest` measures whatever is
 loaded and wipes nothing.
 

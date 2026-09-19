@@ -245,3 +245,13 @@ def test_a_kv_figure_written_as_an_expression_is_an_error_not_a_zero(tmp_path, m
     monkeypatch.setattr(pf, "REPO", tmp_path)
     with pytest.raises(ValueError, match="kv_bytes_per_token"):
         pf.registry()
+
+
+def test_a_preflight_that_could_not_look_does_not_say_pass(tmp_path):
+    """Found in review. A missing app bundle, an unreadable thermal level, or a host that is not a Mac left
+    every other check green, the verdict read `pass`, and the report printed that and nothing else."""
+    blind = _run(tmp_path, _machine({"notifyutil": None}))
+    assert _check(blind, "thermal pressure").status == pf.SKIPPED and pf.verdict(blind) == pf.WARN
+    elsewhere = pf.preflight(models=["qwen3-8b"], api_base=None, run=_machine(), fetch=lambda url: None, system="Linux")
+    assert pf.verdict(elsewhere) == pf.WARN
+    assert pf.verdict(_run(tmp_path, _machine())) == pf.PASS, "every check looked, and liked what it saw"

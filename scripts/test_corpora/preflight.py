@@ -324,9 +324,11 @@ def preflight(
 
 
 def verdict(checks: list[Check]) -> str:
+    """`pass` means every check looked and liked what it saw. A check that could not look (no such command,
+    no app bundle, not macOS) is a warning: the report must not say more than was checked."""
     if any(c.status == FAIL for c in checks):
         return FAIL
-    return WARN if any(c.status == WARN for c in checks) else PASS
+    return WARN if any(c.status in (WARN, SKIPPED) for c in checks) else PASS
 
 
 def as_record(checks: list[Check]) -> dict:

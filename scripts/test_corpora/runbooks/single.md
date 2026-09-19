@@ -46,6 +46,9 @@ Before starting, complete the [universal pre-flight](../RUNBOOK.md#pre-flight-do
 
 ## The fast path: one command, all phases
 
+> The sweep **wipes the instance** before each corpus and will not start without `HC_EVAL_DISPOSABLE=1`
+> (README, "The instance is wiped"). It is in RUNBOOK.md's environment block; the commands below assume it.
+
 If you trust the harness and just want to start, this single invocation runs everything in order:
 
 ```bash
