@@ -44,6 +44,10 @@ PROMPT_CACHE_MAX_BYTES = 8 * GIB
 # The limit is also a limit on each state: at the pin, a state larger than --cache-ram is not cached at all
 # ("exceeds cache size limit, skipping", server_prompt_cache::alloc). A bound that cannot hold a
 # conversation of this many tokens for the active model is a cache in name only, and is switched off.
+# Conservative for the hybrid models: their kv_fixed_bytes is the ceiling of 33 copies of the recurrent
+# state, which a conversation takes some sixteen turns to reach, so a cache that is off there could have
+# held a few early states. A saved state also carries the slot's context checkpoints, so for
+# sliding-window and hybrid models a long conversation can outgrow a bound that held its first turns.
 PROMPT_CACHE_MIN_TOKENS = 4096
 # The llama.cpp release whose prompt-cache behaviour the two lines above were read from. The May build
 # (b9018) kept one state whatever the limit, which would make a small bound unsafe. A pin bump re-reads

@@ -248,24 +248,30 @@ def test_the_launcher_bounds_the_prompt_cache_and_leaves_checkpoints_at_the_defa
     launcher = _swift("Services/LlamaService.swift")
     assert re.search(r'"--cache-ram",\s*String\(promptCacheMiB\)', launcher), "the cache is bounded by the budget"
     assert launcher.count('"--cache-ram"') == 1, "once: llama-server takes the last value it is given"
+    assert '"--no-cache-idle-slots"' in launcher, (
+        "with the cache off, llama-server is told so rather than left to complain"
+    )
     assert "MemoryBudget.promptCacheMiB(" in launcher and "context: contextWindow" in launcher, (
         "from the context the launcher is about to pass, not the one it asked for"
     )
     for path in sorted(SWIFT_APP.rglob("*.swift")):
         source = _swift(str(path.relative_to(SWIFT_APP)))
         assert "LLAMA_ARG_CACHE_RAM" not in source, f"{path.name}: the environment form would bypass the budget"
+        assert '"-cram"' not in source, f"{path.name}: the short form of --cache-ram would bypass the budget"
         if path.name != "LlamaService.swift":
             assert "--cache-ram" not in source, f"{path.name}: the cache is bounded in one place"
-        for name in ("--ctx-checkpoints", "--swa-checkpoints", "LLAMA_ARG_CTX_CHECKPOINTS"):
+        for name in ("--ctx-checkpoints", "--swa-checkpoints", '"-ctxcp"', "LLAMA_ARG_CTX_CHECKPOINTS"):
             assert name not in source, (
                 f"{path.name} now sets {name}: bring LLAMA_CTX_CHECKPOINTS and the kv_fixed_bytes that use it down to match"
             )
 
 
-def test_compose_bounds_the_prompt_cache_at_something_that_holds_a_conversation():
+def test_compose_bounds_the_prompt_cache_at_something_that_holds_a_full_contexts_kv():
     """The sibling site: Compose starts its own llama-server and cannot know the host's memory. At the pin a
-    state larger than the limit is not cached at all, so the fixed bound has to hold the largest state any
-    curated model can save at Compose's context."""
+    state larger than the limit is not cached at all, so the fixed bound has to hold at least the KV of a
+    full conversation at Compose's context, for every curated model. It checks no more than that: a saved
+    state also carries the slot's context checkpoints, which for sliding-window and hybrid models can
+    outgrow any fixed bound (#657)."""
     from harbor_clerk.llm.models import MIB, PROMPT_CACHE_MAX_BYTES
 
     compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
@@ -295,8 +301,9 @@ def test_the_prompt_cache_gets_what_the_context_leaves():
     # state and checkpoints, 18 GB would leave 1666 MiB.
     assert max_context(nine, 18 * gib) == 149_504 and prompt_cache_mib(nine, 18 * gib, 149_504) == 0
     assert prompt_cache_mib(nine, 24 * gib, 262_144) == 2632
-    # And in what a state needs: with 23 GiB, 1608 MiB is left, but a 4096-token state of this model is
-    # 1786 MiB, nearly all of it the fixed cost. Forgetting that would switch on a cache that holds nothing.
+    # And in what a state needs: with 23 GiB, 1608 MiB is left, and a 4096-token state of this model is
+    # budgeted at 1786 MiB, nearly all of it the fixed cost (its ceiling: 33 copies of the recurrent state).
+    # Conservative, and the same number the rest of the budget uses for this model.
     assert prompt_cache_mib(nine, 23 * gib, 262_144) == 0
     assert prompt_cache_mib(qwen8, 0, 32768) == 0, "memory unknown"
     assert (8 * gib, 4096) == (PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_TOKENS)
@@ -305,13 +312,55 @@ def test_the_prompt_cache_gets_what_the_context_leaves():
 # (context, --cache-ram in MiB) for every curated model on the Macs people have. The contexts are what they
 # were before the cache was budgeted: that is the claim, and this is where it is held.
 WHAT_EACH_MAC_GETS = {
-    "qwen3-8b": {16: (32768, 0), 18: (32768, 2353), 24: (32768, 8192), 32: (32768, 8192), 36: (32768, 8192)},
-    "qwen3-4b": {16: (32768, 2718), 18: (32768, 4766), 24: (32768, 8192), 32: (32768, 8192), 36: (32768, 8192)},
-    "qwen35-9b": {16: (83968, 0), 18: (149504, 0), 24: (262144, 2632), 32: (262144, 8192), 36: (262144, 8192)},
-    "qwen35-4b": {16: (173056, 0), 18: (238592, 0), 24: (262144, 5436), 32: (262144, 8192), 36: (262144, 8192)},
-    "gemma4-26b-a4b": {16: (0, 0), 18: (0, 0), 24: (73728, 0), 32: (262144, 4526), 36: (262144, 8192)},
-    "gpt-oss-20b": {16: (0, 0), 18: (27648, 0), 24: (128000, 3811), 32: (128000, 8192), 36: (128000, 8192)},
-    "qwen36-35b-a3b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (239616, 0), 36: (262144, 3673)},
+    "qwen3-8b": {
+        16: (32768, 0),
+        18: (32768, 2353),
+        24: (32768, 8192),
+        32: (32768, 8192),
+        36: (32768, 8192),
+        64: (32768, 8192),
+    },
+    "qwen3-4b": {
+        16: (32768, 2718),
+        18: (32768, 4766),
+        24: (32768, 8192),
+        32: (32768, 8192),
+        36: (32768, 8192),
+        64: (32768, 8192),
+    },
+    "qwen35-9b": {
+        16: (83968, 0),
+        18: (149504, 0),
+        24: (262144, 2632),
+        32: (262144, 8192),
+        36: (262144, 8192),
+        64: (262144, 8192),
+    },
+    "qwen35-4b": {
+        16: (173056, 0),
+        18: (238592, 0),
+        24: (262144, 5436),
+        32: (262144, 8192),
+        36: (262144, 8192),
+        64: (262144, 8192),
+    },
+    "gemma4-26b-a4b": {
+        16: (0, 0),
+        18: (0, 0),
+        24: (73728, 0),
+        32: (262144, 4526),
+        36: (262144, 8192),
+        64: (262144, 8192),
+    },
+    "gpt-oss-20b": {
+        16: (0, 0),
+        18: (27648, 0),
+        24: (128000, 3811),
+        32: (128000, 8192),
+        36: (128000, 8192),
+        64: (128000, 8192),
+    },
+    "qwen36-35b-a3b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (239616, 0), 36: (262144, 3673), 64: (262144, 8192)},
 }
 
 

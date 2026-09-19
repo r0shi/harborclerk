@@ -114,6 +114,11 @@ final class LlamaService: ManagedService {
             "--cache-ram", String(promptCacheMiB),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
+        if promptCacheMiB == 0 {
+            // With no cache there is nothing to park an idle slot in. Said here, so llama-server does not
+            // say "--cache-idle-slots requires --cache-ram, disabling" on every start.
+            args.append("--no-cache-idle-slots")
+        }
         // No RoPE stretch when the clamp left no context to stretch into.
         args += MemoryBudget.yarnArguments(contextWindow: contextWindow, slots: settings.activeModelParallelSlots, yarn: useYarn ? yarnConfig : nil)
         proc.arguments = args
