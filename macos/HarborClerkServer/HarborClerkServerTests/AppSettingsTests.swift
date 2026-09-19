@@ -206,6 +206,11 @@ final class AppSettingsTests: XCTestCase {
             XCTAssertEqual(settings.activeModelContextWindow, e.context, modelId)
         }
         XCTAssertEqual(Set(expected.keys), Self.knownModelIds, "memory table out of sync with the model set")
+        // Checkpoints are kept per slot. Every model runs one today, so nothing above would notice the slots
+        // being ignored: a second slot holds a second set.
+        XCTAssertEqual(AppSettings.fixedBytes(modelId: "gemma4-26b-a4b", slots: 2), 314_572_800 + 2 * 3 * 314_572_800)
+        XCTAssertEqual(AppSettings.fixedBytes(modelId: "qwen3-8b", slots: 2), 0)
+        XCTAssertEqual(AppSettings.fixedBytes(modelId: "a-model-swift-does-not-know", slots: 1), 0)
         settings.llmModelId = "a-model-swift-does-not-know"
         XCTAssertEqual(settings.activeModelKvBytesPerToken, 147_456, "unknown ids get the largest cost, so the clamp errs small")
     }
