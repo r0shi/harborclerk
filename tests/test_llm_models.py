@@ -233,7 +233,7 @@ GEOMETRY = {
 }
 
 
-# Models whose fixed cost is derived from the header rather than estimated. qwen36-35b-a3b joins with #657.
+# Hybrid models: the recurrent state per slot, and so one context checkpoint, is derived from the header.
 RECURRENT_STATE_DERIVED = {"qwen35-9b", "qwen35-4b", "qwen36-35b-a3b"}
 
 
@@ -256,7 +256,7 @@ def test_the_launcher_bounds_what_llama_server_keeps_in_host_ram_and_the_budget_
     assert re.search(r'"--ctx-checkpoints",\s*String\(MemoryBudget\.ctxCheckpoints\)', launcher)
     assert launcher.count('"--ctx-checkpoints"') == 1
     # The context and the cache are both sized from the fixed cost WITH the checkpoints in it.
-    assert launcher.count("kvFixedBytes: settings.activeModelFixedBytes") == 2
+    assert launcher.count("fixedBytes: settings.activeModelFixedBytes") == 2
     assert "activeModelKvFixedBytes" not in launcher, "that is the fixed KV alone: the checkpoints would be unbudgeted"
     for path in sorted(SWIFT_APP.rglob("*.swift")):
         source = _swift(str(path.relative_to(SWIFT_APP)))
@@ -390,8 +390,8 @@ WHAT_EACH_MAC_GETS = {
 
 
 def test_the_cache_never_costs_a_model_its_context_or_its_place():
-    """For every curated model on every Mac: the context is what it was before the cache was budgeted, the
-    whole of it fits the machine, and a cache that is on can hold a conversation."""
+    """For every curated model on every Mac: the context and the cache are the pinned ones, the whole of it
+    fits the machine, and a cache that is on can hold a conversation."""
     from harbor_clerk.llm.models import MIB, PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_TOKENS, prompt_cache_mib
 
     assert set(WHAT_EACH_MAC_GETS) == set(MODELS)

@@ -60,7 +60,7 @@ final class LlamaService: ManagedService {
         let contextWindow = MemoryBudget.maxContext(
             modelBytes: modelBytes,
             kvBytesPerToken: settings.activeModelKvBytesPerToken,
-            kvFixedBytes: settings.activeModelFixedBytes,
+            fixedBytes: settings.activeModelFixedBytes,
             requested: requestedContext,
             ramBytes: ramBytes
         )
@@ -82,7 +82,7 @@ final class LlamaService: ManagedService {
         let promptCacheMiB = MemoryBudget.promptCacheMiB(
             modelBytes: modelBytes,
             kvBytesPerToken: settings.activeModelKvBytesPerToken,
-            kvFixedBytes: settings.activeModelFixedBytes,
+            fixedBytes: settings.activeModelFixedBytes,
             context: contextWindow,
             ramBytes: ramBytes
         )

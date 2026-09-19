@@ -45,8 +45,9 @@ PROMPT_CACHE_MAX_BYTES = 8 * GIB
 # ("exceeds cache size limit, skipping", server_prompt_cache::alloc). A bound that cannot hold a
 # conversation of this many tokens for the active model is a cache in name only, and is switched off.
 # A saved state carries the slot's context checkpoints with it, which is why the threshold is measured with
-# `kv_bytes` (fixed cost and checkpoints included). The launcher keeps LLAMA_CTX_CHECKPOINTS of them, so a
-# state can no longer outgrow a bound that held its first turns, as it could with llama-server's 32.
+# `kv_bytes` (fixed cost and checkpoints included). The launcher keeps LLAMA_CTX_CHECKPOINTS of them, so the
+# checkpoints no longer make a state outgrow a bound that held its first turns, as 32 of them could. Its
+# per-token KV still grows with the conversation: under a small bound, a long one is still not restored.
 PROMPT_CACHE_MIN_TOKENS = 4096
 # The llama.cpp release whose prompt-cache behaviour the two lines above were read from. The May build
 # (b9018) kept one state whatever the limit, which would make a small bound unsafe. A pin bump re-reads

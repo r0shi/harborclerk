@@ -411,8 +411,8 @@ enum MemoryBudget {
     /// of physical memory; 0 when the weights alone do not fit. A multiple of
     /// 1024, and never below 4096 unless 0: a smaller context is not worth
     /// running.
-    static func maxContext(modelBytes: Int, kvBytesPerToken: Int, kvFixedBytes: Int, requested: Int, ramBytes: Int) -> Int {
-        let spare = ramBytes - hostHeadroomBytes - runtimeOverheadBytes - modelBytes - kvFixedBytes
+    static func maxContext(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, requested: Int, ramBytes: Int) -> Int {
+        let spare = ramBytes - hostHeadroomBytes - runtimeOverheadBytes - modelBytes - fixedBytes
         if spare <= 0 { return 0 }
         var tokens = kvBytesPerToken == 0 ? requested : min(requested, spare / kvBytesPerToken)
         tokens -= tokens % 1024
@@ -425,11 +425,11 @@ enum MemoryBudget {
     /// `promptCacheMinTokens`-token state of this model. Context first, cache
     /// second: a Mac whose context is already clamped gets no cache rather than
     /// a smaller context.
-    static func promptCacheMiB(modelBytes: Int, kvBytesPerToken: Int, kvFixedBytes: Int, context: Int, ramBytes: Int) -> Int {
-        let used = modelBytes + kvFixedBytes + kvBytesPerToken * context + runtimeOverheadBytes
+    static func promptCacheMiB(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, context: Int, ramBytes: Int) -> Int {
+        let used = modelBytes + fixedBytes + kvBytesPerToken * context + runtimeOverheadBytes
         let left = ramBytes - hostHeadroomBytes - used
         let mib = min(promptCacheMaxBytes, left) / 1_048_576
-        let smallestUsefulState = kvFixedBytes + kvBytesPerToken * promptCacheMinTokens
+        let smallestUsefulState = fixedBytes + kvBytesPerToken * promptCacheMinTokens
         return mib * 1_048_576 >= smallestUsefulState ? mib : 0
     }
 }

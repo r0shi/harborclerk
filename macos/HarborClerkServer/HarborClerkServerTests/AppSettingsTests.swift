@@ -239,7 +239,7 @@ final class AppSettingsTests: XCTestCase {
     func testMaxContextIsWhatFitsAndZeroWhenTheWeightsAloneDoNot() {
         let m = (bytes: 5_000_000_000, perToken: 147_456, fixed: 0, requested: 32768)
         func fit(_ ram: Int, _ model: (bytes: Int, perToken: Int, fixed: Int, requested: Int) = m) -> Int {
-            MemoryBudget.maxContext(modelBytes: model.bytes, kvBytesPerToken: model.perToken, kvFixedBytes: model.fixed, requested: model.requested, ramBytes: ram)
+            MemoryBudget.maxContext(modelBytes: model.bytes, kvBytesPerToken: model.perToken, fixedBytes: model.fixed, requested: model.requested, ramBytes: ram)
         }
         XCTAssertEqual(fit(64 * 1024 * 1024 * 1024), 32768)
         XCTAssertEqual(fit(16_000_000_000), 26624, "4 GB spare is 27126 tokens, floored to 1024s")
@@ -248,7 +248,7 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(fit(16_000_000_000, (5_000_000_000, 0, 0, 32768)), 32768, "no per-token cost: the model's own window")
         XCTAssertEqual(fit(11_000_000_000, (5_000_000_000, 0, 0, 32768)), 0)
         XCTAssertEqual(fit(16_000_000_000, (5_000_000_000, 20_480, 209_715_200, 262144)), (16_000_000_000 - 12_209_715_200) / 20_480 / 1024 * 1024)
-        // The mini's own case: the 35B-A3B at full context does not fit 32 GiB but 239616 tokens do.
+        // The mini's own case: the 35B-A3B at full context does not fit 32 GiB but 241664 tokens do.
         XCTAssertEqual(fit(34_359_738_368, (22_134_528_992, 20_480, 263_454_720, 262144)), 241_664)
     }
 
@@ -256,7 +256,7 @@ final class AppSettingsTests: XCTestCase {
     func testThePromptCacheGetsWhatTheContextLeaves() {
         let gib = 1_073_741_824
         func cache(_ ram: Int, _ m: (bytes: Int, perToken: Int, fixed: Int), _ context: Int) -> Int {
-            MemoryBudget.promptCacheMiB(modelBytes: m.bytes, kvBytesPerToken: m.perToken, kvFixedBytes: m.fixed, context: context, ramBytes: ram)
+            MemoryBudget.promptCacheMiB(modelBytes: m.bytes, kvBytesPerToken: m.perToken, fixedBytes: m.fixed, context: context, ramBytes: ram)
         }
         let qwen8 = (bytes: 5_027_783_488, perToken: 147_456, fixed: 0)
         // fixed: what `activeModelFixedBytes` gives, the three context checkpoints included.
