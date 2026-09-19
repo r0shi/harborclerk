@@ -185,23 +185,32 @@ final class AppSettingsTests: XCTestCase {
     func testMemoryBudgetConstantsMatchPythonRegistry() {
         XCTAssertEqual(MemoryBudget.runtimeOverheadBytes, 1_000_000_000)
         XCTAssertEqual(MemoryBudget.hostHeadroomBytes, 6_000_000_000)
-        let expected: [String: (perToken: Int, fixed: Int, context: Int)] = [
-            "qwen3-8b": (147_456, 0, 32768),
-            "qwen3-4b": (147_456, 0, 32768),
-            "qwen35-9b": (32_768, 1_738_801_152, 262144),
-            "qwen35-4b": (32_768, 1_738_801_152, 262144),
-            "gpt-oss-20b": (24_576, 18_874_368, 128000),
-            "qwen36-35b-a3b": (20_480, 300_000_000, 262144),
-            "gemma4-26b-a4b": (20_480, 314_572_800, 262144),  // #548
+        XCTAssertEqual(MemoryBudget.ctxCheckpoints, 3)
+        // fixed: the model's fixed KV alone. held: that plus the three context checkpoints the launcher
+        // lets llama-server keep of it, which is what the context and the cache are sized from.
+        let expected: [String: (perToken: Int, fixed: Int, held: Int, context: Int)] = [
+            "qwen3-8b": (147_456, 0, 0, 32768),
+            "qwen3-4b": (147_456, 0, 0, 32768),
+            "qwen35-9b": (32_768, 52_690_944, 210_763_776, 262144),
+            "qwen35-4b": (32_768, 52_690_944, 210_763_776, 262144),
+            "gpt-oss-20b": (24_576, 18_874_368, 75_497_472, 128000),
+            "qwen36-35b-a3b": (20_480, 65_863_680, 263_454_720, 262144),
+            "gemma4-26b-a4b": (20_480, 314_572_800, 1_258_291_200, 262144),  // #548
         ]
         let settings = AppSettings(configURL: configURL)
         for (modelId, e) in expected {
             settings.llmModelId = modelId
             XCTAssertEqual(settings.activeModelKvBytesPerToken, e.perToken, modelId)
             XCTAssertEqual(settings.activeModelKvFixedBytes, e.fixed, modelId)
+            XCTAssertEqual(settings.activeModelFixedBytes, e.held, modelId)
             XCTAssertEqual(settings.activeModelContextWindow, e.context, modelId)
         }
         XCTAssertEqual(Set(expected.keys), Self.knownModelIds, "memory table out of sync with the model set")
+        // Checkpoints are kept per slot. Every model runs one today, so nothing above would notice the slots
+        // being ignored: a second slot holds a second set.
+        XCTAssertEqual(AppSettings.fixedBytes(modelId: "gemma4-26b-a4b", slots: 2), 314_572_800 + 2 * 3 * 314_572_800)
+        XCTAssertEqual(AppSettings.fixedBytes(modelId: "qwen3-8b", slots: 2), 0)
+        XCTAssertEqual(AppSettings.fixedBytes(modelId: "a-model-swift-does-not-know", slots: 1), 0)
         settings.llmModelId = "a-model-swift-does-not-know"
         XCTAssertEqual(settings.activeModelKvBytesPerToken, 147_456, "unknown ids get the largest cost, so the clamp errs small")
     }
@@ -230,7 +239,7 @@ final class AppSettingsTests: XCTestCase {
     func testMaxContextIsWhatFitsAndZeroWhenTheWeightsAloneDoNot() {
         let m = (bytes: 5_000_000_000, perToken: 147_456, fixed: 0, requested: 32768)
         func fit(_ ram: Int, _ model: (bytes: Int, perToken: Int, fixed: Int, requested: Int) = m) -> Int {
-            MemoryBudget.maxContext(modelBytes: model.bytes, kvBytesPerToken: model.perToken, kvFixedBytes: model.fixed, requested: model.requested, ramBytes: ram)
+            MemoryBudget.maxContext(modelBytes: model.bytes, kvBytesPerToken: model.perToken, fixedBytes: model.fixed, requested: model.requested, ramBytes: ram)
         }
         XCTAssertEqual(fit(64 * 1024 * 1024 * 1024), 32768)
         XCTAssertEqual(fit(16_000_000_000), 26624, "4 GB spare is 27126 tokens, floored to 1024s")
@@ -239,30 +248,34 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(fit(16_000_000_000, (5_000_000_000, 0, 0, 32768)), 32768, "no per-token cost: the model's own window")
         XCTAssertEqual(fit(11_000_000_000, (5_000_000_000, 0, 0, 32768)), 0)
         XCTAssertEqual(fit(16_000_000_000, (5_000_000_000, 20_480, 209_715_200, 262144)), (16_000_000_000 - 12_209_715_200) / 20_480 / 1024 * 1024)
-        // The mini's own case: the 35B-A3B at full context does not fit 32 GiB but 239616 tokens do.
-        XCTAssertEqual(fit(34_359_738_368, (22_134_528_992, 20_480, 300_000_000, 262144)), 239_616)
+        // The mini's own case: the 35B-A3B at full context does not fit 32 GiB but 241664 tokens do.
+        XCTAssertEqual(fit(34_359_738_368, (22_134_528_992, 20_480, 263_454_720, 262144)), 241_664)
     }
 
     /// Same cases as `test_the_prompt_cache_gets_what_the_context_leaves` in Python.
     func testThePromptCacheGetsWhatTheContextLeaves() {
         let gib = 1_073_741_824
         func cache(_ ram: Int, _ m: (bytes: Int, perToken: Int, fixed: Int), _ context: Int) -> Int {
-            MemoryBudget.promptCacheMiB(modelBytes: m.bytes, kvBytesPerToken: m.perToken, kvFixedBytes: m.fixed, context: context, ramBytes: ram)
+            MemoryBudget.promptCacheMiB(modelBytes: m.bytes, kvBytesPerToken: m.perToken, fixedBytes: m.fixed, context: context, ramBytes: ram)
         }
         let qwen8 = (bytes: 5_027_783_488, perToken: 147_456, fixed: 0)
-        let gptoss = (bytes: 11_624_759_488, perToken: 24_576, fixed: 3_145_728)
-        let qwen35b = (bytes: 22_134_528_992, perToken: 20_480, fixed: 300_000_000)
-        let qwen9 = (bytes: 5_680_522_464, perToken: 32_768, fixed: 1_738_801_152)
+        // fixed: what `activeModelFixedBytes` gives, the three context checkpoints included.
+        let gptoss = (bytes: 11_624_759_488, perToken: 24_576, fixed: 75_497_472)
+        let qwen35b = (bytes: 22_134_528_992, perToken: 20_480, fixed: 263_454_720)
+        let qwen9 = (bytes: 5_680_522_464, perToken: 32_768, fixed: 210_763_776)
         XCTAssertEqual(cache(32 * gib, qwen8, 32768), 8192, "room to spare: llama-server's own default, as before")
         XCTAssertEqual(cache(18 * gib, qwen8, 32768), 2353, "what 32K of context leaves on an 18 GB Mac")
         XCTAssertEqual(cache(16 * gib, qwen8, 32768), 0, "305 MiB left cannot hold a 4096-token state (576 MiB): off")
-        XCTAssertEqual(cache(18 * gib, gptoss, 27648), 0, "the context was clamped to what fits: nothing is left")
-        XCTAssertEqual(cache(32 * gib, qwen35b, 239_616), 0, "the mini's 35B: clamped, so no cache")
-        XCTAssertEqual(cache(36 * gib, qwen35b, 262_144), 3673)
-        // The fixed KV cost counts: without its 1.7 GB of recurrent state and checkpoints this would be 1666.
-        XCTAssertEqual(cache(18 * gib, qwen9, 149_504), 0)
-        XCTAssertEqual(cache(24 * gib, qwen9, 262_144), 2632)
-        XCTAssertEqual(cache(23 * gib, qwen9, 262_144), 0, "1608 MiB left, and a 4096-token state of this model needs 1786: its fixed cost")
+        XCTAssertEqual(cache(18 * gib, gptoss, 24576), 0, "the context was clamped to what fits: nothing is left")
+        XCTAssertEqual(cache(32 * gib, qwen35b, 241_664), 0, "the mini's 35B: clamped, so no cache")
+        XCTAssertEqual(cache(36 * gib, qwen35b, 262_144), 3707)
+        // The fixed cost counts (recurrent state and the three checkpoints kept of it): without its 211 MB, 24 GB would leave 4290.
+        XCTAssertEqual(cache(18 * gib, qwen9, 195_584), 0)
+        XCTAssertEqual(cache(24 * gib, qwen9, 262_144), 4089)
+        // With exactly 250 MiB left: a 4096-token state of this model is 329 MiB, 201 of it fixed, so off.
+        let full = 21_481_220_832
+        XCTAssertEqual(cache(full + 250 * 1_048_576, qwen9, 262_144), 0)
+        XCTAssertEqual(cache(full + 400 * 1_048_576, qwen9, 262_144), 400)
         XCTAssertEqual(cache(0, qwen8, 32768), 0, "memory unknown")
         XCTAssertEqual(MemoryBudget.promptCacheMaxBytes, 8 * gib)
         XCTAssertEqual(MemoryBudget.promptCacheMinTokens, 4096)

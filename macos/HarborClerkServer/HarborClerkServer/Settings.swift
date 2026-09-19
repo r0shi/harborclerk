@@ -224,6 +224,18 @@ final class AppSettings: @unchecked Sendable {
         return Self.kvFixedBytes[modelId] ?? 0
     }
 
+    /// What the model holds whatever the context: its fixed KV and the context
+    /// checkpoints the launcher lets llama-server keep of it, per slot.
+    /// `fixed_bytes()` in src/harbor_clerk/llm/models.py.
+    var activeModelFixedBytes: Int {
+        let modelId: String = lock.withLock { data["llm_model_id"] as? String ?? "" }
+        return Self.fixedBytes(modelId: modelId, slots: activeModelParallelSlots)
+    }
+
+    static func fixedBytes(modelId: String, slots: Int) -> Int {
+        (kvFixedBytes[modelId] ?? 0) + max(1, slots) * MemoryBudget.ctxCheckpoints * (checkpointBytes[modelId] ?? 0)
+    }
+
     static let kvBytesPerToken: [String: Int] = [
         "qwen3-8b": 147_456,
         "qwen3-4b": 147_456,
@@ -237,10 +249,22 @@ final class AppSettings: @unchecked Sendable {
     static let kvFixedBytes: [String: Int] = [
         "qwen3-8b": 0,
         "qwen3-4b": 0,
-        "qwen35-9b": 1_738_801_152,
-        "qwen35-4b": 1_738_801_152,
+        "qwen35-9b": 52_690_944,
+        "qwen35-4b": 52_690_944,
         "gpt-oss-20b": 18_874_368,
-        "qwen36-35b-a3b": 300_000_000,
+        "qwen36-35b-a3b": 65_863_680,
+        "gemma4-26b-a4b": 314_572_800,
+    ]
+
+    /// One context checkpoint: a copy of the memory llama-server cannot roll back
+    /// (sliding-window cache, recurrent state). 0 for plain attention, which makes none.
+    static let checkpointBytes: [String: Int] = [
+        "qwen3-8b": 0,
+        "qwen3-4b": 0,
+        "qwen35-9b": 52_690_944,
+        "qwen35-4b": 52_690_944,
+        "gpt-oss-20b": 18_874_368,
+        "qwen36-35b-a3b": 65_863_680,
         "gemma4-26b-a4b": 314_572_800,
     ]
 
@@ -357,6 +381,10 @@ enum MemoryBudget {
     static let runtimeOverheadBytes = 1_000_000_000
     /// The OS, the embedder and reranker, Postgres, the Tika JVM and the API.
     static let hostHeadroomBytes = 6_000_000_000
+    /// Context checkpoints per slot (--ctx-checkpoints). llama-server's default is
+    /// 32, in host RAM; three is one request's worth, which is what the next turn
+    /// restores from. See LLAMA_CTX_CHECKPOINTS in src/harbor_clerk/llm/models.py.
+    static let ctxCheckpoints = 3
     /// llama-server's prompt cache (host RAM holding the KV state of conversations
     /// it has put aside) gets what the context leaves, never more than its own
     /// default of 8 GiB. See PROMPT_CACHE_MAX_BYTES in src/harbor_clerk/llm/models.py.
@@ -383,8 +411,8 @@ enum MemoryBudget {
     /// of physical memory; 0 when the weights alone do not fit. A multiple of
     /// 1024, and never below 4096 unless 0: a smaller context is not worth
     /// running.
-    static func maxContext(modelBytes: Int, kvBytesPerToken: Int, kvFixedBytes: Int, requested: Int, ramBytes: Int) -> Int {
-        let spare = ramBytes - hostHeadroomBytes - runtimeOverheadBytes - modelBytes - kvFixedBytes
+    static func maxContext(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, requested: Int, ramBytes: Int) -> Int {
+        let spare = ramBytes - hostHeadroomBytes - runtimeOverheadBytes - modelBytes - fixedBytes
         if spare <= 0 { return 0 }
         var tokens = kvBytesPerToken == 0 ? requested : min(requested, spare / kvBytesPerToken)
         tokens -= tokens % 1024
@@ -397,11 +425,11 @@ enum MemoryBudget {
     /// `promptCacheMinTokens`-token state of this model. Context first, cache
     /// second: a Mac whose context is already clamped gets no cache rather than
     /// a smaller context.
-    static func promptCacheMiB(modelBytes: Int, kvBytesPerToken: Int, kvFixedBytes: Int, context: Int, ramBytes: Int) -> Int {
-        let used = modelBytes + kvFixedBytes + kvBytesPerToken * context + runtimeOverheadBytes
+    static func promptCacheMiB(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, context: Int, ramBytes: Int) -> Int {
+        let used = modelBytes + fixedBytes + kvBytesPerToken * context + runtimeOverheadBytes
         let left = ramBytes - hostHeadroomBytes - used
         let mib = min(promptCacheMaxBytes, left) / 1_048_576
-        let smallestUsefulState = kvFixedBytes + kvBytesPerToken * promptCacheMinTokens
+        let smallestUsefulState = fixedBytes + kvBytesPerToken * promptCacheMinTokens
         return mib * 1_048_576 >= smallestUsefulState ? mib : 0
     }
 }

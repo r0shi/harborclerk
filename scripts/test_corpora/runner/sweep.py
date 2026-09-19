@@ -1007,7 +1007,7 @@ def _skip_what_this_instance_cannot_run(hc: HarborClerkClient, sf: StateFile, ph
             reason = "not downloaded on this instance"
         elif info.get("max_context_here") == 0:
             # Not `fits_here`: that is false whenever the FULL window does not fit, and the app still loads the
-            # model with its context clamped (the 35B on a 32 GB Mac runs at 239,616 of 262,144 tokens).
+            # model with its context clamped (the 35B on a 32 GB Mac runs at about 240K of 262,144 tokens).
             # Activation is refused only when nothing fits, which is what 0 means.
             reason = f"does not fit in this machine's {info.get('system_ram_gb', 0):.0f} GB at any context"
         else:

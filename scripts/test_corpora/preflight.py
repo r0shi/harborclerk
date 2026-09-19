@@ -78,7 +78,8 @@ def registry() -> dict[str, dict[str, int]]:
         written = {k.arg for k in node.keywords}
         # Required, or written but not as a literal: read as absent, a KV figure would become 0 and every
         # model would "fit".
-        missing = ({"id", "size_bytes"} - set(kw)) | ((written & {"kv_bytes_per_token", "kv_fixed_bytes"}) - set(kw))
+        figures = {"kv_bytes_per_token", "kv_fixed_bytes", "checkpoint_bytes", "parallel_slots"}
+        missing = ({"id", "size_bytes"} - set(kw)) | ((written & figures) - set(kw))
         if missing:
             # The harness imports this at collection. Say what is wrong rather than die on a KeyError.
             raise ValueError(
@@ -88,7 +89,9 @@ def registry() -> dict[str, dict[str, int]]:
         models[kw["id"]] = {
             "size_bytes": kw["size_bytes"],
             "kv_bytes_per_token": kw.get("kv_bytes_per_token", 0),
-            "kv_fixed_bytes": kw.get("kv_fixed_bytes", 0),
+            # As the registry's fixed_bytes(): the fixed KV and the context checkpoints the launcher keeps.
+            "kv_fixed_bytes": kw.get("kv_fixed_bytes", 0)
+            + kw.get("parallel_slots", 1) * _constant("LLAMA_CTX_CHECKPOINTS") * kw.get("checkpoint_bytes", 0),
         }
     return models
 
