@@ -199,7 +199,15 @@ class SpendMeter:
                     f"this run was judged by {was}; resuming it with {now} would mix two judges' scores in one "
                     "set of results. Start a new --run-id for a different judge."
                 )
-            self._run_info = {**prior.get("run", {}), **self._run_info}
+            before = prior.get("run", {})
+            self._run_info = {**before, **self._run_info}
+            for kept in ("suite_commit", "started_at"):
+                if before.get(kept):
+                    self._run_info[kept] = before[kept]
+            resumed_at = run_info.get("suite_commit") if run_info else None
+            if resumed_at and before.get("suite_commit") and resumed_at != before["suite_commit"]:
+                also = [*before.get("resumed_at_commits", []), resumed_at]
+                self._run_info["resumed_at_commits"] = sorted(set(also))
             if was and not now:
                 # A --no-judge resume judges nothing. It does not un-judge what the run already judged: the
                 # record stays, and so does the guard against a second judge.

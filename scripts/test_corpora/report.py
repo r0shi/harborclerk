@@ -71,11 +71,11 @@ def model_table(rows: list[dict[str, str]], phase: str) -> list[str]:
             by_model[row["model"]].append(row)
     if not by_model:
         return []
-    out = [
-        "| model | units | done | degraded | error | citation overlap | entity overlap | median latency (s) "
-        "| judged | pass | marginal | fail | completeness (0-5) |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
-    ]
+    columns = [
+        "model", "units", "done", "degraded", "error", "citation overlap", "entity overlap", "median latency (s)",
+        "judged", "pass", "marginal", "fail", "completeness (0-5)",
+    ]  # fmt: skip
+    out = ["| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
     for model in sorted(by_model):
         units = by_model[model]
         status = Counter(u["status"] for u in units)
@@ -118,9 +118,20 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
     corpora = sorted({r["corpus"] for r in rows})
     lines = [f"# Benchmark run `{run_id}` on {host}, {today}", ""]
 
+    run = (ledger or {}).get("run", {})
+    ran_at = run.get("suite_commit")
+    commit_line = f"- Suite commit: `{ran_at or commit}`"
+    if not ran_at:
+        commit_line += " (the checkout this report was rendered from; the run did not record its own)"
+    elif ran_at != commit:
+        commit_line += f" (the commit that ran the sweep; this report was rendered at `{commit}`)"
+    if (ran_at or commit).endswith("-dirty"):
+        commit_line += " (**uncommitted changes**: not reproducible from the commit)"
+    if run.get("resumed_at_commits"):
+        commit_line += f". **Resumed at other commits: {', '.join(run['resumed_at_commits'])}**"
     lines += [
-        f"- Suite commit: `{commit}`"
-        + (" (**uncommitted changes**: not reproducible from the commit)" if commit.endswith("-dirty") else ""),
+        commit_line,
+        f"- Run started: {run.get('started_at', 'not recorded')}",
         f"- Corpora: {', '.join(corpora) or 'none recorded'}",
         "- "
         + (
@@ -151,12 +162,18 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
     if not rows:
         lines += ["## Results", "", "No metrics.csv rows: the run produced no model results.", ""]
 
+    if rows:
+        lines += [
+            "The overlap means include units whose baseline was unusable: the sweep records those as 0.000, and "
+            "metrics.csv does not tell them from a true zero. `log.txt` names each one.",
+            "",
+        ]
     unjudged = sum(
         1 for r in rows if r["phase"] in JUDGED_PHASES and r["status"] == "done" and not r.get("judge_verdict")
     )
     if unjudged:
         lines += [
-            f"{unjudged} finished unit(s) in the judged phases have no verdict (a judge failure, `--no-judge`, or the "
+            f"{unjudged} finished unit(s) in the judged phases have no verdict (an unusable baseline, a judge failure, `--no-judge`, or the "
             "spend cap). Their scores are absent from the judged columns, not zero.",
             "",
         ]

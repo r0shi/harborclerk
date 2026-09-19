@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import ast
 import dataclasses
+import ipaddress
 import json
 import platform
 import re
@@ -28,6 +29,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO = Path(__file__).resolve().parents[2]
 PASS, WARN, FAIL, SKIPPED = "pass", "warn", "fail", "skipped"
@@ -72,6 +74,13 @@ def registry() -> dict[str, dict[str, int]]:
     calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "ModelInfo"]
     for node in sorted(calls, key=lambda n: n.lineno):  # the registry's own order
         kw = {k.arg: k.value.value for k in node.keywords if isinstance(k.value, ast.Constant)}
+        missing = {"id", "size_bytes"} - set(kw)
+        if missing:
+            # The harness imports this at collection. Say what is wrong rather than die on a KeyError.
+            raise ValueError(
+                f"models.py line {node.lineno}: ModelInfo's {sorted(missing)} must be a literal (not an "
+                "expression) for the eval harness to read the registry without importing the app"
+            )
         models[kw["id"]] = {
             "size_bytes": kw["size_bytes"],
             "kv_bytes_per_token": kw.get("kv_bytes_per_token", 0),
@@ -127,18 +136,27 @@ def check_memory(run: Run) -> list[Check]:
     checks = []
     if level and level.strip().isdigit():
         free = int(level.strip())
-        checks.append(
-            Check(
-                "memory free",
-                PASS if free >= MIN_FREE_PERCENT else FAIL,
-                f"{free}%"
-                + ("" if free >= MIN_FREE_PERCENT else f" (under {MIN_FREE_PERCENT}%: something is resident)"),
-            )
-        )
+        detail = f"{free}%"
+        if free < MIN_FREE_PERCENT:
+            detail += f" (under {MIN_FREE_PERCENT}%). Largest resident: {_largest_resident(run)}. If that is Harbor "
+            detail += "Clerk's own llama-server, deactivate the model first; the sweep activates what it needs."
+        checks.append(Check("memory free", PASS if free >= MIN_FREE_PERCENT else FAIL, detail))
     if swap:
         used = float(swap.group(1))
         checks.append(Check("swap in use", PASS if used < 2048 else WARN, f"{used:.0f} MB"))
     return checks or [Check("memory", SKIPPED, "sysctl not available")]
+
+
+def _largest_resident(run: Run) -> str:
+    rows = []
+    for line in (run(["ps", "-axo", "pid=,rss=,command="]) or "").splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[1].isdigit():
+            rows.append((int(parts[1]), parts[0], parts[2]))
+    top = sorted(rows, reverse=True)[:3]
+    return (
+        "; ".join(f"{rss / 1048576:.1f} GB pid {pid} {Path(cmd.split()[0]).name}" for rss, pid, cmd in top) or "unknown"
+    )
 
 
 def check_foreign_servers(run: Run, fetch: Callable[[str], dict | None]) -> list[Check]:
@@ -196,7 +214,9 @@ def check_llama_server(run: Run, binary: Path) -> Check:
         return Check("llama-server at the pin", SKIPPED, f"{binary} not found (pass --llama-server)")
     out = run([str(binary), "--version"]) or ""
     version = next((line.strip() for line in out.splitlines() if line.lower().startswith("version")), "")
-    if tag.lstrip("v") in version:
+    # A build of the pin prints `version: 0.4.1-dev (build 1, commit b29c606)`; the May build printed
+    # `version: 1 (c84e6d6)` (both observed on the mini, 2026-09-18). The whole number: 0.4.1 is not 0.4.10.
+    if re.search(rf"(?<![\d.]){re.escape(tag.lstrip('v'))}(?![\d.]*\d)", version):
         return Check("llama-server at the pin", PASS, f"{version} matches {tag}")
     return Check(
         "llama-server at the pin",
@@ -246,8 +266,14 @@ def check_instance(fetch: Callable[[str], dict | None], api_base: str) -> Check:
 def fetch_json(url: str) -> dict | None:
     import httpx
 
+    # Compose serves a self-signed certificate on loopback. Anywhere else, the certificate is checked.
+    host = urlsplit(url).hostname or ""
     try:
-        r = httpx.get(url, timeout=5, verify=False)  # noqa: S501 - loopback; Compose serves a self-signed certificate
+        return_unverified = host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return_unverified = False
+    try:
+        r = httpx.get(url, timeout=5, verify=not return_unverified)
         return r.json() if r.status_code == 200 else None
     except (httpx.HTTPError, ValueError):
         return None

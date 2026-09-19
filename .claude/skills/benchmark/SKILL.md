@@ -32,6 +32,9 @@ model fits this machine, and that the instance is healthy. It changes nothing.
   agent). The mini sat at thermal pressure "Sleeping" for weeks before this
   check existed (#652).
 - `warn` travels with the report. Say it in the Reading.
+- If the app has a model loaded, deactivate it first (Models page, or
+  `PUT /api/chat/models/deactivate`): a resident 22 GB model fails the free-memory
+  check, and the sweep activates what it needs.
 - Never launch a `llama-server` by hand for this. The sweep drives the app's
   own server through the API, and the app clamps context to what fits
   (`macos/AGENTS.md`, "A model server does not run out of memory").
@@ -40,8 +43,8 @@ model fits this machine, and that the instance is healthy. It changes nothing.
 
 Before each corpus the sweep deletes **every watched folder and every
 document** on the instance. It refuses unless `HC_EVAL_DISPOSABLE=1`, the API
-base is loopback, and every watched folder is one the harness made
-(`test-corpora-*`). Set `HC_EVAL_DISPOSABLE=1` **only on the mini**, and only
+base is loopback, and every watched folder is one of the harness's own ingest
+directories (`$WORKDIR/<corpus>/ingest`). Set `HC_EVAL_DISPOSABLE=1` **only on the mini**, and only
 after looking:
 
 ```bash
@@ -93,8 +96,8 @@ Run it in the background and watch `results/$RUN/log.txt`; do not poll faster
 than the work moves. Exit codes: **0** complete; **3** stopped by the spend cap
 or a refused spend setting (finished units are saved; `--resume` continues the
 same run and the same ledger); **4** refused to start because the instance is
-not disposable. Models the instance has not downloaded, or cannot fit, are
-skipped with a reason and listed in the report: downloading a model is the
+not disposable. Models the instance has not downloaded, or cannot load at any
+context, are skipped with a reason and listed in the report: downloading a model is the
 owner's decision.
 
 A failure is information. Read `log.txt` before re-running anything, and never

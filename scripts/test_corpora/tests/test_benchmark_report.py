@@ -28,7 +28,12 @@ def _run_dir(tmp_path: Path, rows: list[list], *, ledger: dict | None = None, st
 
 
 LEDGER = {
-    "run": {"run_id": "bench-01", "judge_model": "claude-sonnet-4-6"},
+    "run": {
+        "run_id": "bench-01",
+        "judge_model": "claude-sonnet-4-6",
+        "suite_commit": "abc1234",
+        "started_at": "2026-09-18T20:00:00Z",
+    },
     "cap_usd": 25.0,
     "total_usd": 3.5,
     "calls": 120,
@@ -62,13 +67,28 @@ def _render(run: Path, preflight=FIT, commit="abc1234") -> str:
 def test_the_header_names_run_commit_corpora_judge_spend_and_the_preflight(tmp_path):
     text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER))
     assert text.startswith("# Benchmark run `bench-01` on ix, 2026-09-19\n")
-    assert "- Suite commit: `abc1234`\n" in text
+    assert "- Suite commit: `abc1234`\n- Run started: 2026-09-18T20:00:00Z\n" in text
     assert "- Corpora: cuad, enron\n" in text
     assert (
         "Cloud spend: USD 3.50 of a 25.00 cap over 120 calls; judge claude-sonnet-4-6; prices as of 2026-09-18." in text
     )
     assert "- Machine preflight: **pass** at 2026-09-19T01:00:00Z, llama.cpp pin v0.4.1.\n" in text
     assert "not a baseline" not in text
+
+
+def test_the_commit_is_the_one_that_ran_the_sweep_not_the_one_the_report_was_rendered_at(tmp_path):
+    """Found in review. A run takes a day. A pull in between, and the report cited the wrong code."""
+    run = _run_dir(tmp_path, ROWS, ledger=LEDGER)
+    later = _render(run, commit="fff9999")
+    assert "- Suite commit: `abc1234` (the commit that ran the sweep; this report was rendered at `fff9999`)\n" in later
+    resumed = {**LEDGER, "run": {**LEDGER["run"], "resumed_at_commits": ["bbb2222"]}}
+    assert "**Resumed at other commits: bbb2222**" in _render(_run_dir(tmp_path / "r", ROWS, ledger=resumed))
+    dirty = {**LEDGER, "run": {**LEDGER["run"], "suite_commit": "abc1234-dirty"}}
+    assert "**uncommitted changes**" in _render(_run_dir(tmp_path / "d", ROWS, ledger=dirty))
+    unrecorded = {**LEDGER, "run": {"run_id": "bench-01"}}
+    text = _render(_run_dir(tmp_path / "u", ROWS, ledger=unrecorded), commit="fff9999")
+    assert "`fff9999` (the checkout this report was rendered from; the run did not record its own)" in text
+    assert "- Run started: not recorded\n" in text
 
 
 def test_each_model_gets_a_row_of_what_was_measured(tmp_path):
@@ -78,7 +98,8 @@ def test_each_model_gets_a_row_of_what_was_measured(tmp_path):
     assert "| `qwen35-9b` | 1 | 1 | 0 | 0 | 0.90 | 0.80 | 60 | 0 | 0 | 0 | 0 | n/a |" in text
     assert "| `qwen36-35b-a3b` | 1 | 0 | 0 | 1 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a |" in text
     assert "## Phase 4: every model, every question" in text and "## Phase 5: the two largest, judged" in text
-    assert "1 finished unit(s) in the judged phases have no verdict" in text
+    assert "1 finished unit(s) in the judged phases have no verdict (an unusable baseline, a judge failure" in text
+    assert "The overlap means include units whose baseline was unusable" in text
 
 
 def test_a_rerun_unit_counts_once_by_its_last_row(tmp_path):
@@ -111,6 +132,7 @@ def test_what_is_missing_is_said_not_left_blank(tmp_path):
     bare = _render(_run_dir(tmp_path, []))
     assert "**no spend.json in the run directory**" in bare and "No metrics.csv rows" in bare
     assert "**uncommitted changes**" in _render(_run_dir(tmp_path / "b", ROWS), commit="abc1234-dirty")
+    assert "The overlap means" not in bare
 
 
 def test_models_the_machine_did_not_run_are_listed_with_the_reason(tmp_path):

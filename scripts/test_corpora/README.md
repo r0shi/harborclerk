@@ -74,8 +74,9 @@ start (exit code 4) unless all three hold:
 
 - `HC_EVAL_DISPOSABLE=1` is set. Set it only for an instance whose documents you can lose.
 - `--api-base` is loopback. Nothing remote is ever wiped.
-- Every watched folder on the instance is one this harness made (`test-corpora-<corpus>`). A folder of your
-  own is the sign of a real corpus, whatever the environment says.
+- Every watched folder on the instance is one of this harness's ingest directories
+  (`<workdir>/<corpus>/ingest`). A folder of your own is the sign of a real corpus, whatever the environment
+  says.
 
 `--no-ingest` wipes nothing and measures what is loaded.
 
@@ -83,7 +84,9 @@ start (exit code 4) unless all three hold:
 
 Every model in the registry (`src/harbor_clerk/llm/models.py`, read directly: there is no second list to
 update), or the ones named with `--models`. Models the instance has not downloaded, or cannot fit in memory,
-are skipped with a reason before the run; `--resume --rerun 'model=<id>'` brings them back.
+are skipped with a reason before the run; `--resume --rerun 'model=<id>,status=skipped'` brings them back
+(without `status=skipped`, `--rerun` also redoes that model's finished units). "Cannot fit" means the app
+would refuse to load it at any context; a model whose full window does not fit still runs, clamped.
 
 ## Is the machine fit to measure on?
 

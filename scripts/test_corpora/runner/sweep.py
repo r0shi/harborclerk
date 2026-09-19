@@ -679,9 +679,14 @@ def _run_info(args: argparse.Namespace) -> dict[str, str]:
     if args.mode == "answer-eval":
         model = args.models.split(",")[0].strip() if args.models else "claude-sonnet-4-6"
         return {"run_id": args.run_id, "mode": "answer-eval", "model": model, "judge_model": args.judge_model}
+    from scripts.test_corpora.report import suite_commit
+
     return {
         "run_id": args.run_id,
         "mode": "sweep",
+        # The commit that RAN the sweep. A run takes a day; the report may be rendered after a pull.
+        "suite_commit": suite_commit(),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "baseline_model": cfg.BASELINE_MODEL,
         "judge_model": "" if args.no_judge else args.judge_model,
     }
@@ -831,22 +836,26 @@ def _can_skip_ingest(
 
 
 DISPOSABLE_ENV = "HC_EVAL_DISPOSABLE"
-HARNESS_FOLDER_PREFIX = "test-corpora-"
+# The corpora the harness ingests, each from <workdir>/<corpus>/ingest.
+HARNESS_CORPORA = ("cuad", "enron", "synthetic", "unified")
 
 
 class NotDisposable(RuntimeError):
     """The sweep was about to wipe an instance nobody said it may wipe."""
 
 
-def _refuse_to_wipe_a_real_instance(hc: HarborClerkClient, api_base: str) -> None:
+def _refuse_to_wipe_a_real_instance(hc: HarborClerkClient, api_base: str, workdir: Path) -> None:
     """Ingesting a corpus deletes every watched folder and every document on the instance first. That is
     the design: each corpus is measured alone. It is also how a benchmark pointed at the wrong instance
     destroys a working index that took days to build. Three conditions, all of them, every time:
 
     - the operator declared the instance disposable (HC_EVAL_DISPOSABLE=1);
     - it is on this machine (a loopback API base): nothing remote is ever wiped;
-    - every watched folder it has is one this harness made (`test-corpora-<corpus>`). A folder of the
+    - every watched folder it has is one of this harness's own ingest directories. A folder of the
       owner's is the sign of a real corpus, whatever the environment says.
+
+    The harness's folders are known by their path. `GET /api/watch/folders` returns no name the harness
+    chose: `display_name` is the path's last segment, which for every corpus is "ingest".
     """
     import ipaddress
     from urllib.parse import urlsplit
@@ -863,19 +872,21 @@ def _refuse_to_wipe_a_real_instance(hc: HarborClerkClient, api_base: str) -> Non
         loopback = False
     if not loopback:
         raise NotDisposable(f"refusing to wipe {api_base}: only an instance on this machine (loopback) is ever wiped")
+    ours = {(Path(workdir).expanduser() / corpus / "ingest").resolve() for corpus in HARNESS_CORPORA}
     foreign = [
-        f"{f.get('name') or '(unnamed)'} -> {f.get('path')}"
+        str(f.get("path"))
         for f in hc.watch_folder_list()
-        if not str(f.get("name") or "").startswith(HARNESS_FOLDER_PREFIX)
+        if not f.get("path") or Path(str(f["path"])).expanduser().resolve() not in ours
     ]
     if foreign:
         raise NotDisposable(
-            f"refusing to wipe {api_base}: it has watched folders this harness did not make, which means a real "
-            f"corpus: {foreign}. Remove them yourself if this instance really is disposable."
+            f"refusing to wipe {api_base}: it has watched folders that are not this harness's ingest directories "
+            f"under {workdir}, which means a real corpus: {foreign}. Remove them yourself if this instance really "
+            "is disposable."
         )
 
 
-def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest, api_base: str) -> None:
+def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest, api_base: str, workdir: Path) -> None:
     """Wipe the DB, register the corpus's ingest dir, wait for ingestion to
     fully complete before returning.
 
@@ -884,7 +895,7 @@ def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest, api_base: st
     watcher actually scanning the folder. Without this, the harness would
     declare the corpus ingested and start research against zero documents.
     """
-    _refuse_to_wipe_a_real_instance(hc, api_base)  # again, here, beside the deletion itself
+    _refuse_to_wipe_a_real_instance(hc, api_base, workdir)  # again, here, beside the deletion itself
     log.info("clearing existing watch folders before ingesting %s", manifest.corpus_id)
     for folder in hc.watch_folder_list():
         hc.watch_folder_delete(folder["folder_id"])
@@ -936,10 +947,11 @@ def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest, api_base: st
 def _skip_what_this_instance_cannot_run(hc: HarborClerkClient, sf: StateFile, phases: set[int]) -> dict[str, str]:
     """Skip the pending units of local models this instance has not downloaded or cannot fit, and say why.
 
-    The model list now comes from the registry, so a sweep on a 32 GB machine plans models it will never
-    load. Left pending, each of their units fails at activation (the app answers 409 for a model that does
-    not fit), and the circuit breaker spends its trips on a foregone conclusion. Only PENDING units in the
-    phases being run are touched; `--rerun 'model=<id>'` brings them back once the model is there."""
+    The model list now comes from the registry, so a sweep on a small machine plans models it will never
+    load. Left pending, each of their units fails at activation (the app answers 409 when not even the
+    smallest context fits), and the circuit breaker spends its trips on a foregone conclusion. Only PENDING
+    units in the phases being run are touched; `--rerun 'model=<id>,status=skipped'` brings them back once
+    the model is there (without `status=skipped` it would also redo that model's finished units)."""
     try:
         listed = {m["id"]: m for m in hc.list_models()}
     except Exception as exc:
@@ -957,15 +969,20 @@ def _skip_what_this_instance_cannot_run(hc: HarborClerkClient, sf: StateFile, ph
             reason = "this instance's registry does not have it (an older build?)"
         elif not info.get("downloaded"):
             reason = "not downloaded on this instance"
-        elif info.get("fits_here") is False:
-            reason = f"does not fit in this machine's {info.get('system_ram_gb', 0):.0f} GB"
+        elif info.get("max_context_here") == 0:
+            # Not `fits_here`: that is false whenever the FULL window does not fit, and the app still loads the
+            # model with its context clamped (the 35B on a 32 GB Mac runs at 239,616 of 262,144 tokens).
+            # Activation is refused only when nothing fits, which is what 0 means.
+            reason = f"does not fit in this machine's {info.get('system_ram_gb', 0):.0f} GB at any context"
         else:
             continue
         u.status = Status.SKIPPED
         u.error = f"skipped before the run: {reason}"
         reasons[u.model] = reason
     for model, reason in sorted(reasons.items()):
-        log.warning("skipping %s: %s. `--resume --rerun 'model=%s'` brings its units back.", model, reason, model)
+        log.warning(
+            "skipping %s: %s. `--resume --rerun 'model=%s,status=skipped'` brings its units back.", model, reason, model
+        )
     if reasons:
         sf.save()
     return reasons
@@ -1094,7 +1111,7 @@ def main(argv: list[str] | None = None) -> int:
             log.info("--corpora filter: %s", sorted(questions_by_corpus))
 
         # Apply --models filter: scope phase 2-6 model loops to listed models. Used for
-        # splitting Phase 4 across machines (32 GB Mac mini for the 6 smaller models, a
+        # splitting Phase 4 across machines (32 GB Mac mini for the smaller models, a
         # bigger machine for Gemma 26B + Qwen3.6 35B).
         models_filter: set[str] | None = None
         if args.models:
@@ -1168,7 +1185,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if will_ingest:
                 try:
-                    _refuse_to_wipe_a_real_instance(hc, args.api_base)
+                    _refuse_to_wipe_a_real_instance(hc, args.api_base, workdir)
                 except NotDisposable as exc:
                     log.error("not starting: %s", exc)
                     return 4
@@ -1328,7 +1345,7 @@ def main(argv: list[str] | None = None) -> int:
                     log.info("HC already has unified corpus loaded — skipping re-ingest")
                     current_corpus_in_db = "unified"
                 elif current_corpus_in_db != "unified":
-                    _ingest_corpus(hc, unified_manifest, args.api_base)
+                    _ingest_corpus(hc, unified_manifest, args.api_base, workdir)
                     current_corpus_in_db = "unified"
             elif corpus == "unified" and args.no_ingest:
                 current_corpus_in_db = "unified"
@@ -1390,7 +1407,7 @@ def main(argv: list[str] | None = None) -> int:
                         log.info("HC already has %s loaded — skipping re-ingest", u.corpus)
                         current_corpus_in_db = u.corpus
                     elif u.corpus != current_corpus_in_db:
-                        _ingest_corpus(hc, manifests[u.corpus], args.api_base)
+                        _ingest_corpus(hc, manifests[u.corpus], args.api_base, workdir)
                         current_corpus_in_db = u.corpus
                 elif phase in (1, 4, 5) and u.corpus != current_corpus_in_db and args.no_ingest:
                     current_corpus_in_db = u.corpus

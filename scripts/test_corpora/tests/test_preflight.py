@@ -91,7 +91,10 @@ def test_low_power_mode_and_battery_fail(tmp_path):
 def test_a_machine_with_something_resident_fails_and_heavy_swap_warns(tmp_path):
     busy = {"sysctl -n kern.memorystatus_level": "31\n", "sysctl -n vm.swapusage": "total = 9G  used = 5120.00M  free"}
     checks = _run(tmp_path, _machine(busy))
-    assert _check(checks, "memory free").status == pf.FAIL and "31%" in _check(checks, "memory free").detail
+    memory = _check(checks, "memory free")
+    assert memory.status == pf.FAIL and "31%" in memory.detail
+    # It names what is resident, because the usual answer is Harbor Clerk's own server from the last run.
+    assert "0.2 GB pid 724 WindowServer" in memory.detail and "deactivate the model first" in memory.detail
     assert _check(checks, "swap in use").status == pf.WARN
 
 
@@ -108,6 +111,15 @@ def test_a_llama_server_from_before_the_pin_fails(tmp_path):
     assert server.status == pf.FAIL and "c84e6d6" in server.detail and pf.pinned_tag() in server.detail
     missing = pf.check_llama_server(_machine(), tmp_path / "absent")
     assert missing.status == pf.SKIPPED
+
+
+def test_the_pins_version_is_matched_whole(tmp_path, monkeypatch):
+    """HEALTHY's string is what a build of v0.4.1 printed on the mini on 2026-09-18, and `version: 1
+    (c84e6d6)` is what the May build printed. 0.4.1 is not 0.4.10, and not 10.4.1."""
+    for other in ("version: 0.4.10 (build 1, commit aaaaaaa)\n", "version: 10.4.1\n", "version: 0.4.1.2-dev\n"):
+        assert _check(_run(tmp_path, _machine({"llama-server": other})), "llama-server at the pin").status == pf.FAIL
+    for same in ("version: 0.4.1-dev (build 1, commit b29c606)\n", "version: 0.4.1\n", "version: v0.4.1 (b29c606)\n"):
+        assert _check(_run(tmp_path, _machine({"llama-server": same})), "llama-server at the pin").status == pf.PASS
 
 
 def test_the_pin_is_read_from_the_build_script():
@@ -139,6 +151,41 @@ def test_the_fit_arithmetic_is_the_registrys(tmp_path):
     assert set(from_source) >= {"qwen3-8b", "qwen35-9b", "gemma4-26b-a4b"}
     assert from_source["qwen3-8b"] == {"size_bytes": 5_027_783_488, "kv_bytes_per_token": 147_456, "kv_fixed_bytes": 0}
     assert pf._constant("HOST_HEADROOM_BYTES") == 6_000_000_000
+
+
+def test_a_registry_entry_the_harness_cannot_read_says_which_and_why(tmp_path, monkeypatch):
+    """conftest reads the registry at import. A KeyError there kills collection with no hint."""
+    import pytest
+
+    fake = tmp_path / "src/harbor_clerk/llm"
+    fake.mkdir(parents=True)
+    (fake / "models.py").write_text('GIB = 1024**3\nM = [ModelInfo(id="big", size_bytes=5 * GIB)]\n')
+    monkeypatch.setattr(pf, "REPO", tmp_path)
+    with pytest.raises(ValueError, match=r"line 2: ModelInfo's \['size_bytes'\] must be a literal"):
+        pf.registry()
+
+
+def test_a_certificate_is_only_left_unchecked_on_loopback(monkeypatch):
+    import httpx
+
+    seen = {}
+
+    def get(url, timeout, verify):
+        seen[url] = verify
+        raise httpx.ConnectError("nothing listening")
+
+    monkeypatch.setattr(httpx, "get", get)
+    for url in (
+        "https://localhost/api/system/health",
+        "http://127.0.0.1:11434/api/ps",
+        "https://clerk.example.com/api",
+    ):
+        assert pf.fetch_json(url) is None
+    assert seen == {
+        "https://localhost/api/system/health": False,
+        "http://127.0.0.1:11434/api/ps": False,
+        "https://clerk.example.com/api": True,
+    }
 
 
 def test_the_instance_must_be_healthy_when_one_is_named(tmp_path):

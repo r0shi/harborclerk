@@ -7,6 +7,7 @@ import ast
 import dataclasses
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -237,6 +238,23 @@ def test_an_invocation_the_run_id_guard_refuses_leaves_the_ledger_as_it_found_it
     assert ledger.read_text() == before
 
 
+def test_the_ledger_keeps_the_commit_and_start_of_the_run_and_notes_a_resume_at_another(tmp_path):
+    ledger = tmp_path / "spend.json"
+    SpendMeter(
+        _config(), ledger_path=ledger, run_info={"suite_commit": "abc1234", "started_at": "2026-09-18T20:00:00Z"}
+    )
+    SpendMeter(
+        _config(), ledger_path=ledger, run_info={"suite_commit": "abc1234", "started_at": "2026-09-19T09:00:00Z"}
+    )
+    run = json.loads(ledger.read_text())["run"]
+    assert run == {"suite_commit": "abc1234", "started_at": "2026-09-18T20:00:00Z"}
+    SpendMeter(
+        _config(), ledger_path=ledger, run_info={"suite_commit": "fff9999", "started_at": "2026-09-19T10:00:00Z"}
+    )
+    run = json.loads(ledger.read_text())["run"]
+    assert run["suite_commit"] == "abc1234" and run["resumed_at_commits"] == ["fff9999"]
+
+
 # ── the pre-run estimate ──
 
 
@@ -449,12 +467,14 @@ def test_a_run_that_judges_nothing_names_no_judge(tmp_path):
     ]
     assert sweep.main([*base, "--no-judge"]) == 3
     ledger = tmp_path / "results" / "r1" / "spend.json"
-    assert json.loads(ledger.read_text())["run"] == {
+    recorded = json.loads(ledger.read_text())["run"]
+    assert {k: recorded[k] for k in ("run_id", "mode", "baseline_model", "judge_model")} == {
         "run_id": "r1",
         "mode": "sweep",
         "baseline_model": "claude-sonnet-4-6",
         "judge_model": "",
     }
+    assert re.fullmatch(r"[0-9a-f]{7}(-dirty)?|unknown", recorded["suite_commit"]) and recorded["started_at"]
     assert "judge none" in spend.header_line(json.loads(ledger.read_text()))
     # Having judged nothing, it may take up any judge later.
     assert sweep.main([*base, "--resume", "--judge-model", "claude-sonnet-5"]) == 3
