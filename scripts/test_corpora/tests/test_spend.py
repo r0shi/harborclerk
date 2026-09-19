@@ -254,6 +254,8 @@ class _FakeAnthropic:
     def __init__(self, usage=None, fail=None):
         self.calls = []
         self.messages = SimpleNamespace(create=self._create, stream=lambda **k: "unmetered")
+        # Real SDK clients have these. A passthrough would reach them, so the fake has them too.
+        self.beta = self.completions = self.batches = "unmetered"
         self._usage, self._fail = usage, fail
 
     def _create(self, **kwargs):
@@ -316,11 +318,12 @@ def test_the_metered_client_can_do_nothing_but_create():
     with pytest.raises(spend.UnmeterableCall):
         client.messages.create(model="m", max_tokens=10, messages=[], stream=True)
     for reach in (lambda: client.beta, lambda: client.messages.stream, lambda: client.completions):
-        with pytest.raises((spend.UnmeterableCall, AttributeError)):
+        with pytest.raises(spend.UnmeterableCall):
             reach()
-    oai = spend.MeteredOpenAI("cross_judge", object())
+    inner = SimpleNamespace(responses="unmetered", beta="unmetered", chat=SimpleNamespace(completions="unmetered"))
+    oai = spend.MeteredOpenAI("cross_judge", inner)
     for reach in (lambda: oai.responses, lambda: oai.chat.completions.stream, lambda: oai.beta):
-        with pytest.raises((spend.UnmeterableCall, AttributeError)):
+        with pytest.raises(spend.UnmeterableCall):
             reach()
 
 

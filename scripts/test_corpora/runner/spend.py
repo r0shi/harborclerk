@@ -356,6 +356,9 @@ class _MeteredCreate:
         self._output_limit_keys = output_limit_keys
         self._read_usage = read_usage
 
+    def __getattr__(self, name: str) -> Any:
+        raise UnmeterableCall(f"only create is metered; {name!r} would spend without being seen")
+
     def create(self, **kwargs: Any) -> Any:
         if kwargs.get("stream"):
             raise UnmeterableCall("a streamed response has no usage block to meter; call without stream=True")
