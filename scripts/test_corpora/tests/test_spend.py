@@ -582,6 +582,24 @@ def test_a_cached_verdict_belongs_to_the_judge_that_made_it(tmp_path):
     assert answer_eval._cached_verdict(tmp_path / "absent.json", "claude-sonnet-5") is None
 
 
+def test_the_judge_signs_its_own_verdicts():
+    """answer_eval.run stamps an unsigned verdict too, which is why removing this alone used to pass. Other
+    callers of AnswerJudge (the audit, a notebook) get the judge's name only from here."""
+    from unittest.mock import MagicMock
+
+    from scripts.test_corpora.runner.answer_judge import AnswerJudge
+
+    _use()
+    client = MagicMock()
+    client.messages.create.return_value = MagicMock(
+        content=[MagicMock(text='{"correctness": 5, "groundedness": 5, "completeness": 5, "rationale": "r"}')]
+    )
+    verdict = AnswerJudge(client=client, model="claude-sonnet-5").judge_answer(
+        question="q", model_answer="a", cited="", answer_key="k", qtype="lookup"
+    )
+    assert verdict.judge_model == "claude-sonnet-5"
+
+
 def test_answer_eval_rejudges_another_judges_verdicts_instead_of_relabelling_them(tmp_path, monkeypatch):
     """Found in review: a second run with --judge-model made no judge calls, reused the first judge's cached
     verdicts, and wrote summary.json naming the second judge."""
