@@ -180,19 +180,25 @@ def main(argv: list[str] | None = None) -> int:
         report_dir = args.output_dir or (workdir / "answer-eval" / "reports" / args.label)
         meter = spend.configure(ledger_path=report_dir / "spend-cross-judge.json")
         n = len(captures) if args.rejudge_sample is None else min(args.rejudge_sample, len(captures))
-        meter.require_within_cap([("cross_judge", args.cross_judge, n)])
         try:
             judge_provider = _build_judge_provider(args.cross_judge)
         except SystemExit as exc:
             return int(exc.code or 1)
         from scripts.test_corpora.runner.cross_judge import compare_judges, rejudge_with
 
-        rejudge_results = rejudge_with(
-            captures,
-            judge_provider,
-            judge_model=args.cross_judge,
-            items=args.rejudge_sample,
-        )
+        try:
+            meter.require_within_cap([("cross_judge", args.cross_judge, n)])
+            rejudge_results = rejudge_with(
+                captures,
+                judge_provider,
+                judge_model=args.cross_judge,
+                items=args.rejudge_sample,
+            )
+        except spend.SpendError as exc:
+            # The static sections cost nothing and are already computed: write them, then report the stop.
+            sys.stderr.write(f"audit: cross-judge stopped by the spend cap: {exc}\n")
+            _write_audit(audit, args.output_dir or (workdir / "answer-eval" / "reports" / args.label))
+            return 3
         # Reshape verdicts (from detail.json or per-item files) to the
         # compare_judges input shape: needs {"qid", correctness, groundedness,
         # completeness, rationale}.
@@ -208,13 +214,16 @@ def main(argv: list[str] | None = None) -> int:
         ]
         audit["cross_judge"] = compare_judges(verdicts_a, rejudge_results, judges=(model, args.cross_judge))
 
-    output_dir = args.output_dir or (workdir / "answer-eval" / "reports" / args.label)
+    _write_audit(audit, args.output_dir or (workdir / "answer-eval" / "reports" / args.label))
+    return 0
+
+
+def _write_audit(audit: dict, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "audit.json").write_text(json.dumps(audit, indent=2, default=str))
     log.info("wrote %s", output_dir / "audit.json")
     (output_dir / "audit.md").write_text(render_markdown(audit))
     log.info("wrote %s", output_dir / "audit.md")
-    return 0
 
 
 def render_markdown(audit: dict) -> str:

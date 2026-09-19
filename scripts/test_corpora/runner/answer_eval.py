@@ -141,6 +141,7 @@ def run(
     groundtruth_path: Path | None = None,
     capture_fn: Callable[[GTItem], dict] | None = None,
     judge: AnswerJudge | None = None,
+    judge_model: str = JUDGE_MODEL,
 ) -> int:
     """Returns an exit code (0 = success). `capture_fn` and `judge` are
     injectable for tests; in production they default to a live model+MCP run
@@ -157,7 +158,7 @@ def run(
     if capture_fn is None:
         capture_fn = _live_capture_fn(api_base=api_base, corpus=corpus, model=model, insecure=insecure)
     if judge is None:
-        judge = AnswerJudge()
+        judge = AnswerJudge(model=judge_model)
 
     cap_dir = workdir / "answer-eval" / "captures" / corpus / model
     ver_dir = workdir / "answer-eval" / "verdicts" / corpus / model
@@ -173,7 +174,7 @@ def run(
     estimate = meter.require_within_cap(
         [
             ("baseline_question", model, to_capture if model_is_cloud(model) else 0),
-            ("answer_judge", JUDGE_MODEL, to_judge),
+            ("answer_judge", judge_model, to_judge),
         ]
     )
     log.info("cloud spend estimate: USD %.2f of %.2f", estimate, meter.cap_usd)
@@ -227,7 +228,7 @@ def run(
 
     summary = aggregate(rows)
     # Judge and spend travel with the scores: a report quotes them from here (ADR 0001, decision 6).
-    summary["judge_model"] = JUDGE_MODEL
+    summary["judge_model"] = judge_model
     summary["spend"] = meter.snapshot()
     report_dir = workdir / "answer-eval" / "reports" / label
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -338,4 +339,5 @@ def main_from_args(args: argparse.Namespace) -> int:
         refresh=args.refresh,
         rejudge=args.rejudge,
         insecure=args.insecure,
+        judge_model=getattr(args, "judge_model", JUDGE_MODEL),
     )

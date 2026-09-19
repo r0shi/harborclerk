@@ -24,6 +24,9 @@ import anthropic
 
 from .manifest import CorpusManifest
 
+# The spend estimate prices generation by this name, so it is stated once.
+GENERATION_MODEL = "claude-sonnet-4-6"
+
 DOC_COUNTS_DEFAULT = {
     "invoice": 60,
     "onboarding_letter": 40,
@@ -137,10 +140,13 @@ def _generate_one(
         q=rng.randint(1, 4),
     )
     msg = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=GENERATION_MODEL,
         max_tokens=4000,
         messages=[{"role": "user", "content": prompt}],
     )
+    from scripts.test_corpora.runner import spend
+
+    spend.get_meter().count_unit("synthetic_doc")
     text = msg.content[0].text
     # Extract the first JSON object
     start = text.find("{")

@@ -21,6 +21,7 @@ import math
 import random
 from typing import Any, Protocol, runtime_checkable
 
+from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.answer_judge import (
     _extract_json,
     _score,
@@ -41,8 +42,6 @@ class OpenAIJudgeProvider:
     """OpenAI-backed judge using gpt-* chat completions."""
 
     def __init__(self, *, model: str = "gpt-4o", client: Any | None = None):
-        from scripts.test_corpora.runner import spend
-
         self._client = client or spend.openai_client("cross_judge")
         self._model = model
 
@@ -52,6 +51,7 @@ class OpenAIJudgeProvider:
             messages=[{"role": "user", "content": prompt}],
             max_completion_tokens=600,
         )
+        spend.get_meter().count_unit("cross_judge")
         return resp.choices[0].message.content or ""
 
 

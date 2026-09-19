@@ -305,6 +305,21 @@ def test_main_cross_judge_invokes_rejudge_and_compare(tmp_path):
     assert "## Cross-judge" in md
 
 
+def test_main_cross_judge_over_the_cap_returns_3_and_still_writes_the_static_audit(tmp_path, monkeypatch):
+    from scripts.test_corpora.runner import spend
+
+    cap_dir = tmp_path / "answer-eval" / "captures" / "synthetic" / "claude-sonnet-4-6"
+    for i in range(30):
+        _write_capture(cap_dir, f"q{i}", ["kb_search"])
+    monkeypatch.setenv(spend.CAP_ENV, "0.05")
+    with patch("scripts.test_corpora.audit_answer_eval._build_judge_provider") as mb:
+        mb.return_value = _FixedJudge()
+        rc = main(["--workdir", str(tmp_path), "--label", "smoke", "--cross-judge", "gpt-4o"])
+    assert rc == 3
+    audit = json.loads((tmp_path / "answer-eval" / "reports" / "smoke" / "audit.json").read_text())
+    assert audit["cross_judge"] is None and audit["tool_use"] is not None
+
+
 def test_main_skip_static_only_runs_cross_judge(tmp_path):
     cap_dir = tmp_path / "answer-eval" / "captures" / "synthetic" / "claude-sonnet-4-6"
     _write_capture(cap_dir, "q1", ["kb_search"])

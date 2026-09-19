@@ -661,7 +661,7 @@ def _spend_plan(units, *, workdir: Path, judge_model: str, no_judge: bool) -> li
     if any(u.phase == 0 and u.corpus == "synthetic" for u in pending):
         synthetic_docs = synthetic.planned_generation_count(workdir / "synthetic")
     return [
-        ("synthetic_doc", cfg.BASELINE_MODEL, synthetic_docs),
+        ("synthetic_doc", synthetic.GENERATION_MODEL, synthetic_docs),
         ("baseline_question", cfg.BASELINE_MODEL, sum(1 for u in pending if u.phase == 1)),
         ("judge", judge_model, 0 if no_judge else sum(1 for u in pending if u.phase in (4, 5))),
     ]
@@ -896,18 +896,17 @@ def main(argv: list[str] | None = None) -> int:
         ],
     )
 
-    # One meter per run, before anything can make a cloud call. A resumed run reads what it already spent.
-    meter = spend.configure(
-        ledger_path=run_dir / spend.LEDGER_NAME,
-        cap_usd=args.spend_cap_usd,
-        run_info={"run_id": args.run_id, "judge_model": args.judge_model, "baseline_model": cfg.BASELINE_MODEL},
-    )
-    log.info(
-        "cloud spend: cap USD %.2f, already spent %.4f (%s)",
-        meter.cap_usd,
-        meter.total_usd,
-        run_dir / spend.LEDGER_NAME,
-    )
+    def _configure_meter() -> spend.SpendMeter:
+        # One meter per run, before anything can make a cloud call. A resumed run reads what it already spent.
+        m = spend.configure(
+            ledger_path=run_dir / spend.LEDGER_NAME,
+            cap_usd=args.spend_cap_usd,
+            run_info={"run_id": args.run_id, "judge_model": args.judge_model, "baseline_model": cfg.BASELINE_MODEL},
+        )
+        log.info(
+            "cloud spend: cap USD %.2f, already spent %.4f (%s)", m.cap_usd, m.total_usd, run_dir / spend.LEDGER_NAME
+        )
+        return m
 
     # --mode retrieval-eval is a separate fast path: no state.json, no per-phase
     # planning, no model switching, no LLM. Dispatch and return before the
@@ -920,12 +919,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "answer-eval":
         from scripts.test_corpora.runner import answer_eval
 
-        return answer_eval.main_from_args(args)
+        # This mode takes no run lock: two of these on one --run-id would each count from the same ledger.
+        _configure_meter()
+        try:
+            return answer_eval.main_from_args(args)
+        except spend.SpendError as exc:
+            log.error("stopped by the spend cap: %s", exc)
+            return 3
 
     state_path = run_dir / "state.json"
     sf = StateFile(state_path)
     sf.acquire_lock()
     try:
+        # Under the run's lock, so a second process on this --run-id cannot count from the same ledger.
+        meter = _configure_meter()
         sf.load()
 
         # Guard against accidentally re-using a --run-id from a prior run.
@@ -1028,6 +1035,13 @@ def main(argv: list[str] | None = None) -> int:
         sf.recover_stale(stale_threshold_seconds=2 * args.time_limit_minutes * 60)
         sf.save()
 
+        # Refuse a run that is estimated over the cap before it has spent anything or touched Harbor Clerk
+        # (ADR 0001, decision 6).
+        plan = _spend_plan(sf.units(), workdir=workdir, judge_model=args.judge_model, no_judge=args.no_judge)
+        if not args.dry_run:
+            estimate = meter.require_within_cap(plan)
+            log.info("cloud spend estimate for the pending units: USD %.2f of %.2f", estimate, meter.cap_usd)
+
         # Build clients
         hc = HarborClerkClient(args.api_base, verify=not args.insecure)
         if not args.dry_run:
@@ -1038,12 +1052,6 @@ def main(argv: list[str] | None = None) -> int:
                 hc.login(email, password)
             else:
                 log.warning("no HC_USERNAME / HC_PASSWORD set — auth-required calls will fail")
-
-        # Refuse a run that is estimated over the cap before it has spent anything (ADR 0001, decision 6).
-        plan = _spend_plan(sf.units(), workdir=workdir, judge_model=args.judge_model, no_judge=args.no_judge)
-        if not args.dry_run:
-            estimate = meter.require_within_cap(plan)
-            log.info("cloud spend estimate for the pending units: USD %.2f of %.2f", estimate, meter.cap_usd)
 
         anthro = spend.anthropic_client("baseline_question")
         judge = JudgeClient(model=args.judge_model)
@@ -1634,6 +1642,7 @@ def main(argv: list[str] | None = None) -> int:
                 co = ce = eo = 0.0
                 judge_verdict = ""
                 judge_completeness = 0
+                spend_stop: spend.SpendError | None = None
                 verifier_counts = _verifier_counts(out.get("result", {}) or {})
                 if phase in (4, 5):
                     baseline_path = run_dir / "baselines" / u.corpus / f"{u.question_id}.json"
@@ -1693,6 +1702,11 @@ def main(argv: list[str] | None = None) -> int:
                                         baseline=baseline.get("answer", ""),
                                         model_answer=model_answer,
                                     )
+                                except spend.SpendError as exc:
+                                    # The run stops here, but not before this unit's row is written: it is
+                                    # already DONE in state.json, --resume will skip it, and metrics.csv is
+                                    # append-only. Minutes to hours of local compute are in that row.
+                                    spend_stop = exc
                                 except Exception:
                                     # Judge failures must not poison the sweep — log
                                     # and carry on with empty verdict columns.
@@ -1754,6 +1768,8 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 metrics_writer.writerow(metrics_row)
                 metrics_f.flush()
+                if spend_stop is not None:
+                    raise spend_stop
 
                 # Closing marker for this unit — pairs with the "Starting"
                 # line above so each unit is a clearly delimited block in
@@ -1779,7 +1795,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except spend.SpendCapExceeded as exc:
         # Not an Exception, so none of the keep-going handlers above can have swallowed it. Units already
-        # done are saved; --resume continues the same run against the same ledger.
+        # done are saved with their rows; the unit that was judged when the cap hit has its row with empty
+        # verdict columns (re-judge it with --rerun). --resume continues the same run against the same ledger.
         log.error("stopped by the spend cap: %s", exc)
         return 3
     except spend.SpendError as exc:

@@ -59,7 +59,13 @@ class UnpricedModel(SpendError):
 
 
 class UnmeterableCall(SpendError):
-    """A request shape whose cost the meter cannot see (streaming, or an API other than create)."""
+    """A request whose cost the meter cannot see (a streamed create)."""
+
+
+class UnmeteredAttribute(AttributeError):
+    """Anything on a metered client other than create. An AttributeError, because that is what attribute
+    access raises: `hasattr`, `getattr(x, name, default)`, `copy` and mock autospec all depend on it. Nothing
+    is spent on this path, so nothing is lost if a keep-going handler catches it."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -125,6 +131,20 @@ def load_config(path: Path | None = None) -> SpendConfig:
         raise ValueError("chars_per_token must be positive")
     estimates = {k: Usage(int(v["input_tokens"]), int(v["output_tokens"])) for k, v in raw["estimates"].items()}
     return SpendConfig(cap, prices, str(raw["prices"]["verified"]), chars, estimates)
+
+
+_EMPTY_ROW = {"calls": 0, "units": 0, "input_tokens": 0, "cache_tokens": 0, "output_tokens": 0, "usd": 0.0}
+
+
+def header_line(snapshot: dict[str, Any]) -> str:
+    """The line a dated report leads with (ADR 0001, decision 6: spend in the report header)."""
+    run = snapshot.get("run", {})
+    estimated = snapshot.get("estimated_calls", 0)
+    return (
+        f"Cloud spend: USD {snapshot['total_usd']:.2f} of a {snapshot['cap_usd']:.2f} cap over {snapshot['calls']} calls"
+        + (f" ({estimated} charged at their worst case)" if estimated else "")
+        + f"; judge {run.get('judge_model', 'not recorded')}; prices as of {snapshot['prices_verified']}."
+    )
 
 
 class SpendMeter:
@@ -213,14 +233,26 @@ class SpendMeter:
             if usage is None:
                 self._estimated_calls += 1
             for table, key in ((self._by_model, model), (self._by_kind, kind)):
-                row = table.setdefault(key, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "usd": 0.0})
+                row = table.setdefault(key, dict(_EMPTY_ROW))
                 row["calls"] += 1
                 if usage is not None:
-                    row["input_tokens"] += usage.input_tokens + usage.cache_write_tokens + usage.cache_read_tokens
+                    row["input_tokens"] += usage.input_tokens
+                    row["cache_tokens"] = (
+                        row.get("cache_tokens", 0) + usage.cache_write_tokens + usage.cache_read_tokens
+                    )
                     row["output_tokens"] += usage.output_tokens
                 row["usd"] = round(row["usd"] + actual, 6)
             self._persist_locked()
         return actual
+
+    def count_unit(self, kind: str) -> None:
+        """One unit of work of this kind is finished. The estimates in spend.yaml are per unit, and a unit is
+        not always a call: a baseline question is a tool loop of several. Tokens per unit, not per call, is
+        what corrects an estimate."""
+        with self._lock:
+            row = self._by_kind.setdefault(kind, dict(_EMPTY_ROW))
+            row["units"] = row.get("units", 0) + 1
+            self._persist_locked()
 
     def estimate(self, plan: list[tuple[str, str, int]]) -> float:
         """USD for a plan of (kind, model, calls), from the per-kind token estimates in spend.yaml."""
@@ -357,7 +389,7 @@ class _MeteredCreate:
         self._read_usage = read_usage
 
     def __getattr__(self, name: str) -> Any:
-        raise UnmeterableCall(f"only create is metered; {name!r} would spend without being seen")
+        raise UnmeteredAttribute(f"only create is metered; {name!r} would spend without being seen")
 
     def create(self, **kwargs: Any) -> Any:
         if kwargs.get("stream"):
@@ -369,8 +401,13 @@ class _MeteredCreate:
         reserved = meter.reserve(model, _estimate_tokens(request, meter.config.chars_per_token), int(limit))
         try:
             resp = self._owner._create(**kwargs)
-        except BaseException:
-            meter.release(reserved)
+        except BaseException as exc:
+            if self._owner._was_refused(exc):
+                meter.release(reserved)
+            else:
+                # A timeout, a dropped connection, Ctrl-C mid-generation: the request may have been served
+                # and billed with nobody left to read the usage. Charge the worst case.
+                meter.settle(model, self._owner.kind, reserved, None)
             raise
         meter.settle(model, self._owner.kind, reserved, self._read_usage(resp))
         return resp
@@ -385,6 +422,13 @@ class _MeteredClient:
         self._factory = factory
         self._inner = inner
 
+    def _was_refused(self, exc: BaseException) -> bool:
+        """True when the API answered with an error status, which is not billed. The SDKs' own retries of a
+        timed-out attempt stay invisible: a failing call can cost up to their retry count times its
+        reservation more than the ledger says (two retries by default)."""
+        status_error = getattr(self._sdk(), "APIStatusError", None)
+        return status_error is not None and isinstance(exc, status_error)
+
     def _client(self) -> Any:
         # Built on first use: openai.OpenAI() demands its key at construction, and the harness builds
         # providers it may never call.
@@ -393,7 +437,7 @@ class _MeteredClient:
         return self._inner
 
     def __getattr__(self, name: str) -> Any:
-        raise UnmeterableCall(
+        raise UnmeteredAttribute(
             f"the metered client does not expose {name!r}: only the create call is metered, and an unmetered "
             "call is an uncapped one. Add it to runner/spend.py with its metering."
         )
@@ -403,6 +447,7 @@ class MeteredAnthropic(_MeteredClient):
     def __init__(self, kind: str, inner: Any | None = None):
         import anthropic
 
+        self._sdk = lambda: anthropic
         super().__init__(kind, anthropic.Anthropic, inner)
         self.messages = _MeteredCreate(self, ("max_tokens",), _anthropic_usage)
 
@@ -419,6 +464,7 @@ class MeteredOpenAI(_MeteredClient):
     def __init__(self, kind: str, inner: Any | None = None):
         import openai
 
+        self._sdk = lambda: openai
         super().__init__(kind, openai.OpenAI, inner)
         self.chat = _Completions(_MeteredCreate(self, ("max_completion_tokens", "max_tokens"), _openai_usage))
 

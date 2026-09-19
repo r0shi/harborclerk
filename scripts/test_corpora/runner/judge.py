@@ -88,6 +88,7 @@ class JudgeClient:
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
+        spend.get_meter().count_unit("judge")
         text = msg.content[0].text
         data = _extract_json(text)
         return JudgeVerdict(

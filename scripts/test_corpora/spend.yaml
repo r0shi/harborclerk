@@ -34,8 +34,9 @@ chars_per_token: 2.5
 
 # Tokens per call kind, for the pre-run estimate that refuses to start a run over the cap. PROVISIONAL:
 # derived from RUNBOOK.md's cost table (a full run was about USD 5 to 10), not from metered runs, because
-# nothing was metered before this file existed. spend.json reports the actual mean per kind after every
-# run; correct these from it.
+# nothing was metered before this file existed. Correct these from spend.json's by_kind: tokens divided by
+# `units`, never by `calls`. An estimate is per unit of work, and a baseline question is a tool loop of
+# several calls.
 estimates:
   synthetic_doc: {input_tokens: 600, output_tokens: 1500}
   baseline_question: {input_tokens: 40000, output_tokens: 3000}

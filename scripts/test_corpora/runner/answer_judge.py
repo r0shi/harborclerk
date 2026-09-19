@@ -167,6 +167,7 @@ class AnswerJudge:
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}],
         )
+        spend.get_meter().count_unit("answer_judge")
         data = _extract_json(msg.content[0].text)
         return AnswerVerdict(
             correctness=_score(data, "correctness"),

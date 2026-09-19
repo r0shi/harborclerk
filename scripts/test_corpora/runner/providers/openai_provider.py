@@ -219,6 +219,7 @@ class OpenAIProvider:
             final_text = msg.content or ""
             break
 
+        spend.get_meter().count_unit("baseline_question")
         return BaselineResult(
             question_id=question_id,
             question=question,

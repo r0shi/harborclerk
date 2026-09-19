@@ -186,7 +186,16 @@ def main(argv: list[str] | None = None) -> int:
 
     from scripts.test_corpora.runner import spend
 
-    spend.configure(ledger_path=workdir / "answer-eval" / f"spend-rerun-{args.label}.json")
+    meter = spend.configure(ledger_path=workdir / "answer-eval" / f"spend-rerun-{args.label}.json")
+    populations = json.loads(Path(args.populations).read_text())
+    n_items = len(populations.get("negatives_hedged") or []) + len(populations.get("finds_short") or [])
+    from scripts.test_corpora.runner.providers.factory import model_is_cloud
+
+    try:
+        meter.require_within_cap([("baseline_question", args.model, n_items if model_is_cloud(args.model) else 0)])
+    except spend.SpendError as exc:
+        log.error("stopped by the spend cap: %s", exc)
+        return 3
 
     # Lazy imports kept here so the test suite can mock provider_factory.
     from scripts.test_corpora.runner.providers import make_provider
@@ -207,15 +216,19 @@ def main(argv: list[str] | None = None) -> int:
         provider.run_question = _run
         return provider
 
-    rerun_populations(
-        populations_path=args.populations,
-        groundtruth_root=args.groundtruth_root,
-        captures_root=captures_root,
-        label=args.label,
-        model=args.model,
-        provider_factory=_factory,
-        mcp_session=mcp_session,
-    )
+    try:
+        rerun_populations(
+            populations_path=args.populations,
+            groundtruth_root=args.groundtruth_root,
+            captures_root=captures_root,
+            label=args.label,
+            model=args.model,
+            provider_factory=_factory,
+            mcp_session=mcp_session,
+        )
+    except spend.SpendError as exc:
+        log.error("stopped by the spend cap: %s", exc)
+        return 3
     return 0
 
 

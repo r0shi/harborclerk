@@ -75,8 +75,14 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
   estimated over the cap does not start (exit code 3); narrow it with `--phases`, `--corpora`, `--models` or
   `--no-judge`.
 - **Before each call**, its worst case (request size plus `max_tokens`) is reserved against the running
-  total. A call that could cross the cap is not made, and the run stops with exit code 3. Finished units are
-  saved; `--resume` continues the same run against the same ledger.
+  total. A call that could cross the cap is not made, and the run stops with exit code 3 (the sweep,
+  `--mode answer-eval`, the audit's `--cross-judge` and `rerun_pr_j` alike). Finished units are saved, and
+  `--resume` continues the same run against the same ledger. The unit that was about to be judged when the
+  cap hit keeps its metrics row with empty verdict columns; `--rerun` it to judge it.
+- **A call that fails** costs nothing only when the API answered with an error status. A timeout, a dropped
+  connection or an interrupt may still have been served and billed, so it is charged its worst case and
+  counted under `estimated_calls`. The SDKs' own retries of a timed-out attempt are not visible to the
+  meter: a failing call can cost up to two more reservations than the ledger says.
 - **After each call**, `<run_dir>/spend.json` is rewritten with the total, the calls, and tokens and dollars
   per model and per call kind. A dated report quotes its spend and its judge from there.
 - `--spend-cap-usd N` (or `HC_EVAL_SPEND_CAP_USD`) lowers the cap for one run. Raising it is an edit to
@@ -85,8 +91,14 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
 - `--judge-model` changes the judge. Scores from different judges are not comparable: change it for a whole
   comparison, never halfway through one.
 
-The estimates in `spend.yaml` are provisional until a metered run is on record; correct them from the
-`by_kind` means in `spend.json`.
+**One cap per process and ledger.** The sweep reads its ledger under the run's lock. The modes that take no
+lock, and a run split across two machines (RUNBOOK: phase 4), each count from their own ledger, so a split
+run's cap is per machine: lower each with `--spend-cap-usd`.
+
+The estimates in `spend.yaml` are provisional until a metered run is on record. Correct them from
+`spend.json`'s `by_kind`: tokens divided by **`units`**, not by `calls`. The estimates are per unit of work,
+and a baseline question is a tool loop of several calls; dividing by calls would shrink that estimate by
+the loop's length and weaken the refusal.
 
 ## Resume after interrupt
 
