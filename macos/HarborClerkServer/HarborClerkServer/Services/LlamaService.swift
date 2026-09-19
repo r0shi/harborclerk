@@ -77,6 +77,24 @@ final class LlamaService: ManagedService {
             )
         }
 
+        // The prompt cache gets what the context left, and no more, up to llama-server's
+        // own 8 GiB default, which nothing had budgeted (#657).
+        let promptCacheMiB = MemoryBudget.promptCacheMiB(
+            modelBytes: modelBytes,
+            kvBytesPerToken: settings.activeModelKvBytesPerToken,
+            kvFixedBytes: settings.activeModelKvFixedBytes,
+            context: contextWindow,
+            ramBytes: ramBytes
+        )
+        if promptCacheMiB == 0 {
+            // The designed steady state on a Mac whose context is clamped, so not a warning.
+            Log.logger("llm").info(
+                "Prompt cache off: after the model and its context this Mac has less left than a \(MemoryBudget.promptCacheMinTokens)-token state of this model, so returning to an earlier conversation re-reads it"
+            )
+        } else {
+            Log.logger("llm").info("Prompt cache bounded at \(promptCacheMiB) MiB")
+        }
+
         let proc = Process()
         proc.executableURL = llamaBin
         var args = [
@@ -93,8 +111,14 @@ final class LlamaService: ManagedService {
             // Settings.activeModelParallelSlots).
             "-np", String(settings.activeModelParallelSlots),
             "-c", String(contextWindow),
+            "--cache-ram", String(promptCacheMiB),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
+        if promptCacheMiB == 0 {
+            // With no cache there is nothing to park an idle slot in. Said here, so llama-server does not
+            // say "--cache-idle-slots requires --cache-ram, disabling" on every start.
+            args.append("--no-cache-idle-slots")
+        }
         // No RoPE stretch when the clamp left no context to stretch into.
         args += MemoryBudget.yarnArguments(contextWindow: contextWindow, slots: settings.activeModelParallelSlots, yarn: useYarn ? yarnConfig : nil)
         proc.arguments = args

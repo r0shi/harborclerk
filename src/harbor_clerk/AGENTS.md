@@ -70,7 +70,14 @@ the API reports them, activation refuses a model whose weights alone do not fit
 as `-c`, so raising it is a memory change, not a documentation fix. Chat,
 research and summarize budget prompts through `context_budget()`, never the
 registry window: it is per request, `-c` divided by `-np`, because a slot
-divides the context rather than adding memory (every model runs one slot). The Swift mirror
+divides the context rather than adding memory (every model runs one slot).
+The launcher also gives llama-server's prompt cache (`--cache-ram`) what the
+context leaves, never more than its 8 GiB default: context first, cache second
+(`prompt_cache_mib`, mirrored as `MemoryBudget.promptCacheMiB`). That bound is
+safe only because the pin skips a state larger than the limit; a pin bump
+re-reads `server_prompt_cache::alloc` (`PROMPT_CACHE_SEMANTICS_READ_AT`). Context
+checkpoints are still at llama-server's default, which the Qwen3.5 entries'
+`kv_fixed_bytes` assumes (#657). The Swift mirror
 (`Settings.swift`: filenames, slots, windows, `kvBytesPerToken`,
 `kvFixedBytes`, `MemoryBudget`) is held to the registry by a test; a new model
 needs all of them. `HC_GGUF_LIVE=1` checks headers from the Hub for models not
