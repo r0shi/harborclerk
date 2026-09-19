@@ -373,10 +373,19 @@ def test_a_sliding_window_cache_is_the_window_plus_a_micro_batch_padded():
     assert MODELS["gpt-oss-20b"].kv_fixed_bytes == 12 * 8 * (64 + 64) * 2 * 768
 
 
-def test_the_launcher_leaves_the_micro_batch_at_the_default_the_budget_assumes():
-    launcher = _swift("Services/LlamaService.swift")
-    for flag in ('"-ub"', '"--ubatch-size"', '"-b"', '"--batch-size"', "LLAMA_ARG_UBATCH", "LLAMA_ARG_BATCH"):
-        assert flag not in launcher, f"{flag}: swa_cache_cells() and every sliding-window kv_fixed_bytes assume 512"
+def test_nothing_in_the_app_changes_what_the_sliding_window_budget_assumes():
+    """swa_cache_cells() and every sliding-window kv_fixed_bytes assume llama-server's defaults: a micro-batch
+    of 512, one sequence, and a sliding-window cache that is not widened to the full context. As a flag or as
+    llama.cpp's environment form, from anywhere in the app: the shared environment is built in
+    ServiceManager, not in the launcher."""
+    assumed = (
+        '"-ub"', '"--ubatch-size"', '"-b"', '"--batch-size"', "LLAMA_ARG_UBATCH", "LLAMA_ARG_BATCH",
+        '"--swa-full"', "LLAMA_ARG_SWA_FULL", '"--kv-unified"', '"-kvu"', "LLAMA_ARG_KV_UNIFIED",
+    )  # fmt: skip
+    for path in sorted(SWIFT_APP.rglob("*.swift")):
+        source = _swift(str(path.relative_to(SWIFT_APP)))
+        for flag in assumed:
+            assert flag not in source, f"{path.name} sets {flag}: the sliding-window budget assumes the default"
 
 
 def test_swift_mirrors_the_registrys_memory_tables():
