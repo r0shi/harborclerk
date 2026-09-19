@@ -32,6 +32,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export HC_USERNAME="admin@example.com"
 export HC_PASSWORD="..."
 export HC_API_BASE="http://localhost:8100"   # or "https://localhost" for Docker
+export HC_EVAL_DISPOSABLE=1                  # this run WIPES the instance; see "The instance is wiped" below
 cd /path/to/mcp-gateway
 uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
     --run-id 2026-05-05-full \
@@ -64,6 +65,49 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.swee
 
 `--phases` filters to a subset of phases (range or comma list): `--phases 0`,
 `--phases 0-2`, `--phases 1,4,5`.
+
+## The instance is wiped
+
+Before each corpus the sweep deletes **every watched folder and every document** on the instance, so that
+each corpus is measured alone. Pointed at the wrong instance, that destroys a working index. It refuses to
+start (exit code 4) unless all three hold:
+
+- `HC_EVAL_DISPOSABLE=1` is set. Set it only for an instance whose documents you can lose.
+- `--api-base` is loopback. Nothing remote is ever wiped.
+- Every watched folder on the instance is one this harness made (`test-corpora-<corpus>`). A folder of your
+  own is the sign of a real corpus, whatever the environment says.
+
+`--no-ingest` wipes nothing and measures what is loaded.
+
+## Which models run
+
+Every model in the registry (`src/harbor_clerk/llm/models.py`, read directly: there is no second list to
+update), or the ones named with `--models`. Models the instance has not downloaded, or cannot fit in memory,
+are skipped with a reason before the run; `--resume --rerun 'model=<id>'` brings them back.
+
+## Is the machine fit to measure on?
+
+```bash
+uv --project scripts/test_corpora run python -m scripts.test_corpora.preflight --models qwen3-8b,qwen35-9b \
+    --json "$WORKDIR/results/$RUN/preflight.json"
+```
+
+Thermal pressure, power, free memory, a busy GPU at idle, other model servers, the installed `llama-server`
+against the pin, whether each model fits this machine, and the instance's health. It changes nothing. Exit 1
+means a number taken now is not a baseline; the report carries the verdict either way. It exists because a
+Mac mini sat at thermal pressure "Sleeping", its GPU held at the lowest clock step, through weeks of
+measurements, and `pmset -g therm` recorded nothing (#652).
+
+## The report
+
+```bash
+uv --project scripts/test_corpora run python -m scripts.test_corpora.report \
+    --run-dir "$WORKDIR/results/$RUN" --out docs/reports/
+```
+
+One dated file per run, never overwritten: run, suite commit, corpora, judge, spend, the preflight verdict,
+a row per model, the models this machine did not run and why, spend by call kind, and a Reading left for
+whoever ran it. The `benchmark` skill (`.claude/skills/benchmark/SKILL.md`) is the whole loop.
 
 ## Cloud spend is capped
 

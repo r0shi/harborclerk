@@ -57,7 +57,7 @@ tmux new -d -s sweep "uv --project scripts/test_corpora run python -m \
     2>&1 | tee ~/sweep-logs/full.log"
 ```
 
-Default `--phases` is 0,1,4,5,6 (everything). Default `--models` is all eight from the registry. The corpus-outer iteration order means each corpus is ingested exactly once (cuad → enron → synthetic → unified) and all relevant phases run for that corpus before the next ingest.
+Default `--phases` is 0,1,4,5,6 (everything). Default `--models` is every model in the registry (README, "Which models run"). The corpus-outer iteration order means each corpus is ingested exactly once (cuad → enron → synthetic → unified) and all relevant phases run for that corpus before the next ingest.
 
 Then start the supervisor in a second terminal:
 

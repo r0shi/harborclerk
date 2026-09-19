@@ -117,6 +117,7 @@ export HC_API_BASE="http://localhost:8100"
 export ANTHROPIC_API_KEY="sk-ant-..."
 export HC_USERNAME="admin@example.com"          # must be admin role
 export HC_PASSWORD="..."
+export HC_EVAL_DISPOSABLE=1                     # the sweep WIPES this instance before each corpus (README)
 ```
 
 Verify Harbor Clerk is up and admin login works:

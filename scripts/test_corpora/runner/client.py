@@ -309,6 +309,12 @@ class HarborClerkClient:
         r = self._client.put("/api/chat/models/deactivate")
         r.raise_for_status()
 
+    def list_models(self) -> list[dict[str, Any]]:
+        """GET /api/chat/models — every curated model with `downloaded`, `fits_here` and `max_context_here`."""
+        r = self._client.get("/api/chat/models")
+        r.raise_for_status()
+        return r.json()
+
     def model_status(self) -> dict[str, Any]:
         """GET /api/chat/models/status — returns {state, model_id}."""
         r = self._client.get("/api/chat/models/status")

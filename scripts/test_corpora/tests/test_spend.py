@@ -396,9 +396,13 @@ def test_a_phase_by_phase_resume_is_priced_for_the_phase_it_runs(tmp_path, monke
         raise PastTheEstimate
 
     monkeypatch.setattr(spend, "anthropic_client", reached)
+    # Past the estimate comes the wipe guard; this instance is the harness's own.
+    monkeypatch.setenv(sweep.DISPOSABLE_ENV, "1")
+    monkeypatch.setattr(sweep.HarborClerkClient, "watch_folder_list", lambda self: [])
+    monkeypatch.setattr(sweep.HarborClerkClient, "list_models", lambda self: [])
     meter = spend.SpendMeter(spend.load_config())
     phase1 = meter.estimate([("baseline_question", "claude-sonnet-4-6", 16)])
-    both = phase1 + meter.estimate([("judge", "claude-sonnet-4-6", 80)])
+    both = phase1 + meter.estimate([("judge", "claude-sonnet-4-6", 16 * len(cfg.ALL_MODELS))])
     between = f"{(phase1 + both) / 2:.2f}"
     with pytest.raises(PastTheEstimate):
         sweep.main([*base, "--resume", "--phases", "1", "--spend-cap-usd", between])
