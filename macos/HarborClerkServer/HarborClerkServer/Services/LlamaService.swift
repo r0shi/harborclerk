@@ -60,7 +60,7 @@ final class LlamaService: ManagedService {
         let contextWindow = MemoryBudget.maxContext(
             modelBytes: modelBytes,
             kvBytesPerToken: settings.activeModelKvBytesPerToken,
-            kvFixedBytes: settings.activeModelKvFixedBytes,
+            kvFixedBytes: settings.activeModelFixedBytes,
             requested: requestedContext,
             ramBytes: ramBytes
         )
@@ -82,7 +82,7 @@ final class LlamaService: ManagedService {
         let promptCacheMiB = MemoryBudget.promptCacheMiB(
             modelBytes: modelBytes,
             kvBytesPerToken: settings.activeModelKvBytesPerToken,
-            kvFixedBytes: settings.activeModelKvFixedBytes,
+            kvFixedBytes: settings.activeModelFixedBytes,
             context: contextWindow,
             ramBytes: ramBytes
         )
@@ -112,6 +112,8 @@ final class LlamaService: ManagedService {
             "-np", String(settings.activeModelParallelSlots),
             "-c", String(contextWindow),
             "--cache-ram", String(promptCacheMiB),
+            // Bounded, and in the budget (activeModelFixedBytes): the default is 32 per slot in host RAM.
+            "--ctx-checkpoints", String(MemoryBudget.ctxCheckpoints),
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
         if promptCacheMiB == 0 {

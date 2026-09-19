@@ -235,10 +235,12 @@ services:
       "-c", "8192",
       # llama-server's prompt cache defaults to 8 GiB of host RAM. The macOS launcher bounds it by what
       # the Mac has left (prompt_cache_mib in src/harbor_clerk/llm/models.py); a container cannot know
-      # that. 2 GiB holds the KV state of a full -c 8192 conversation of any curated model. It is not a
-      # promise for sliding-window and hybrid models: a saved state carries the slot's context checkpoints
-      # too, and a long conversation can outgrow it and go unrestored (the checkpoint half of #657).
+      # that. 2 GiB holds the whole saved state of a full -c 8192 conversation of any curated model: its KV
+      # and the context checkpoints saved with it, now that those are bounded below.
       "--cache-ram", "2048",
+      # Context checkpoints: 32 per slot by default, each a copy of a sliding-window or recurrent model's
+      # unrollable memory, in host RAM. The macOS launcher keeps LLAMA_CTX_CHECKPOINTS; so does this.
+      "--ctx-checkpoints", "3",
     ]
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]

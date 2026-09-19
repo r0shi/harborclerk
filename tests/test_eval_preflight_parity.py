@@ -3,7 +3,14 @@ of the registry's fit arithmetic (Swift carries another). This holds the copy to
 
 import pytest
 
-from harbor_clerk.llm.models import HOST_HEADROOM_BYTES, MODELS, RUNTIME_OVERHEAD_BYTES, ModelInfo, max_context
+from harbor_clerk.llm.models import (
+    HOST_HEADROOM_BYTES,
+    MODELS,
+    RUNTIME_OVERHEAD_BYTES,
+    ModelInfo,
+    fixed_bytes,
+    max_context,
+)
 from scripts.test_corpora import preflight
 
 GIB = 1024**3
@@ -16,7 +23,7 @@ def test_the_harness_reads_every_model_and_its_memory_figures_from_the_registry(
         assert read[model_id] == {
             "size_bytes": m.size_bytes,
             "kv_bytes_per_token": m.kv_bytes_per_token,
-            "kv_fixed_bytes": m.kv_fixed_bytes,
+            "kv_fixed_bytes": fixed_bytes(m),  # the checkpoints the launcher keeps are part of it
         }
     assert preflight._constant("RUNTIME_OVERHEAD_BYTES") == RUNTIME_OVERHEAD_BYTES
     assert preflight._constant("HOST_HEADROOM_BYTES") == HOST_HEADROOM_BYTES
