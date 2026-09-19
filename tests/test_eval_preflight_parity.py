@@ -3,7 +3,7 @@ of the registry's fit arithmetic (Swift carries another). This holds the copy to
 
 import pytest
 
-from harbor_clerk.llm.models import HOST_HEADROOM_BYTES, MODELS, RUNTIME_OVERHEAD_BYTES, max_context
+from harbor_clerk.llm.models import HOST_HEADROOM_BYTES, MODELS, RUNTIME_OVERHEAD_BYTES, ModelInfo, max_context
 from scripts.test_corpora import preflight
 
 GIB = 1024**3
@@ -30,3 +30,27 @@ def test_the_preflight_says_a_model_fits_exactly_when_the_app_would_load_it(ram_
             read[model_id], ram_gib * GIB, overhead=RUNTIME_OVERHEAD_BYTES, headroom=HOST_HEADROOM_BYTES
         )
         assert ours == (max_context(m, ram_gib * GIB) > 0), f"{model_id} at {ram_gib} GiB"
+
+
+def test_the_two_agree_at_the_edge_where_a_few_thousand_tokens_is_not_worth_running():
+    """No curated model at a real memory size lands between 1 and 4095 tokens of room, so the models above
+    cannot see the 4096-token floor or the round-down to 1024. A made-up model, walked across the edge in
+    10 MB steps, can."""
+    figures = {"size_bytes": 5_000_000_000, "kv_bytes_per_token": 147_456, "kv_fixed_bytes": 250_000_000}
+    model = ModelInfo(
+        id="edge",
+        name="Edge",
+        huggingface_repo="r",
+        filename="f.gguf",
+        size_bytes=figures["size_bytes"],
+        context_window=32768,
+        supports_tools=True,
+        kv_bytes_per_token=figures["kv_bytes_per_token"],
+        kv_fixed_bytes=figures["kv_fixed_bytes"],
+    )
+    verdicts = set()
+    for ram in range(12_000_000_000, 13_200_000_000, 10_000_000):
+        ours = preflight.fits(figures, ram, overhead=RUNTIME_OVERHEAD_BYTES, headroom=HOST_HEADROOM_BYTES)
+        assert ours == (max_context(model, ram) > 0), f"{ram} bytes"
+        verdicts.add(ours)
+    assert verdicts == {True, False}, "the walk crosses the edge"

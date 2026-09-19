@@ -357,11 +357,22 @@ def test_a_refused_start_leaves_nothing_behind_so_the_same_command_works_next_ti
     monkeypatch.setattr(sweep.spend, "anthropic_client", lambda kind: made.append(kind))
     _stub_instance(monkeypatch, folders=THEIRS)
 
+    # Without the flag the run is refused before it has touched the disk or the network. (The later check
+    # would refuse too, and tidy up; by then it has written a run and logged in to an instance nobody
+    # vouched for.)
+    monkeypatch.setenv("HC_USERNAME", "someone@example.test")
+    monkeypatch.setenv("HC_PASSWORD", "not-a-real-password")
+    touched = []
+    monkeypatch.setattr(sweep.HarborClerkClient, "login", lambda self, *a: touched.append("login"))
+    monkeypatch.setattr(sweep.spend, "configure", lambda **kw: touched.append("ledger"))
     monkeypatch.delenv(sweep.DISPOSABLE_ENV, raising=False)
     with caplog.at_level("ERROR"):
         assert sweep.main(base) == 4
-    assert "HC_EVAL_DISPOSABLE=1 is not set" in caplog.text
+    assert "HC_EVAL_DISPOSABLE=1 is not set" in caplog.text and touched == []
     assert not (run_dir / "state.json").exists() and not (run_dir / "spend.json").exists()
+    monkeypatch.undo()
+    monkeypatch.setattr(sweep.spend, "anthropic_client", lambda kind: made.append(kind))
+    _stub_instance(monkeypatch, folders=THEIRS)
 
     monkeypatch.setenv(sweep.DISPOSABLE_ENV, "1")
     with caplog.at_level("ERROR"):
