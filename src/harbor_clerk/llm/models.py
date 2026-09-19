@@ -44,10 +44,10 @@ PROMPT_CACHE_MAX_BYTES = 8 * GIB
 # The limit is also a limit on each state: at the pin, a state larger than --cache-ram is not cached at all
 # ("exceeds cache size limit, skipping", server_prompt_cache::alloc). A bound that cannot hold a
 # conversation of this many tokens for the active model is a cache in name only, and is switched off.
-# Conservative for the hybrid models: their kv_fixed_bytes is the ceiling of 33 copies of the recurrent
-# state, which a conversation takes some sixteen turns to reach, so a cache that is off there could have
-# held a few early states. A saved state also carries the slot's context checkpoints, so for
-# sliding-window and hybrid models a long conversation can outgrow a bound that held its first turns.
+# A saved state carries the slot's context checkpoints with it, which is why the threshold is measured with
+# `kv_bytes` (fixed cost and checkpoints included). The launcher keeps LLAMA_CTX_CHECKPOINTS of them, so the
+# checkpoints no longer make a state outgrow a bound that held its first turns, as 32 of them could. Its
+# per-token KV still grows with the conversation: under a small bound, a long one is still not restored.
 PROMPT_CACHE_MIN_TOKENS = 4096
 # The llama.cpp release whose prompt-cache behaviour the two lines above were read from. The May build
 # (b9018) kept one state whatever the limit, which would make a small bound unsafe. A pin bump re-reads
@@ -84,6 +84,10 @@ class ModelInfo:
     # slots, so slots do not multiply this.
     kv_bytes_per_token: int = 0
     kv_fixed_bytes: int = 0
+    # Bytes of one context checkpoint: a copy of the part of the model's memory llama-server cannot roll
+    # back (the sliding-window cache, or the recurrent state). 0 for plain attention, which makes none.
+    # The launcher keeps LLAMA_CTX_CHECKPOINTS of them per slot; `fixed_bytes()` is what the budget uses.
+    checkpoint_bytes: int = 0
     yarn: YarnConfig | None = None  # None = YaRN not applicable
     # Whether this model is recommended for Research mode. Set False for
     # models that have demonstrated unreliable behaviour in research (e.g.
@@ -150,14 +154,12 @@ MODELS: dict[str, ModelInfo] = {
             # 8.6 GB at 262K, which is more than the weights. The launcher clamps -c to what the Mac fits
             # (see below). The 24 linear-attention layers carry a fixed recurrent state per
             # slot: (state 128 x inner 4096 + conv 3 x (4096 + 2 x 16 groups x 128)) x 4 bytes = 2,195,456 bytes
-            # per layer, 52,690,944 per slot. llama-server also keeps up to 32 checkpoints of that state per
-            # slot in host RAM (--ctx-checkpoints, its default; the launcher does not pass it), one per
-            # completion, so a long conversation reaches the ceiling: (1 + 32) x 52,690,944 = 1.7 GB with
-            # the one slot, and it is why a 16 GB Mac gets about 84K tokens from the 9B rather than 134K. #657 is where the launcher bounds it and this number comes down with it.
+            # per layer, 52,690,944 for the slot, and as much again for each context checkpoint (a copy of it).
             context_window=262144,
             supports_tools=True,
             kv_bytes_per_token=32_768,
-            kv_fixed_bytes=1_738_801_152,
+            kv_fixed_bytes=52_690_944,
+            checkpoint_bytes=52_690_944,
             parallel_slots=1,
         ),
         ModelInfo(
@@ -169,7 +171,8 @@ MODELS: dict[str, ModelInfo] = {
             context_window=262144,
             supports_tools=True,
             kv_bytes_per_token=32_768,  # same attention geometry as the 9B: 8 of 32 layers, 4 KV heads x 512
-            kv_fixed_bytes=1_738_801_152,
+            kv_fixed_bytes=52_690_944,
+            checkpoint_bytes=52_690_944,
             parallel_slots=1,
         ),
         ModelInfo(
@@ -186,6 +189,7 @@ MODELS: dict[str, ModelInfo] = {
             # cell, over swa_cache_cells(1024) = 1536 cells, not 1024: fixed.
             kv_bytes_per_token=20_480,
             kv_fixed_bytes=314_572_800,
+            checkpoint_bytes=314_572_800,  # a checkpoint copies the sliding-window cache: at most all of it
             parallel_slots=1,  # heavy tier (>15 GB)
         ),
         ModelInfo(
@@ -202,6 +206,7 @@ MODELS: dict[str, ModelInfo] = {
             # cells, not 128: 19 MB between them.
             kv_bytes_per_token=24_576,
             kv_fixed_bytes=18_874_368,
+            checkpoint_bytes=18_874_368,
             # Heavy tier by the 2026-05 tuning: with 128K of context, splitting
             # the KV cache across two slots leaves each too little, and the
             # extra slot was not worth it on 18 GB Macs. (-c is the total
@@ -218,9 +223,12 @@ MODELS: dict[str, ModelInfo] = {
             supports_tools=True,
             # Hybrid: one layer in four keeps a KV cache (full_attention_interval = 4, so 10 of 40), at 2 KV heads
             # × (256 + 256) × 2 bytes: 20 KB per token, 5.2 GB at 262K. The 30 linear-attention layers carry a
-            # fixed recurrent state (ssm inner 4096 × state 128, plus a conv window), about 300 MB.
+            # fixed recurrent state: (state 128 × inner 4096 + conv 3 × (4096 + 2 × 16 groups × 128)) × 4 bytes =
+            # 2,195,456 per layer, 65,863,680 for the slot, and as much again for each context checkpoint.
+            # (It was "about 300 MB", an estimate; this is from the header.)
             kv_bytes_per_token=20_480,
-            kv_fixed_bytes=300_000_000,
+            kv_fixed_bytes=65_863_680,
+            checkpoint_bytes=65_863_680,
             parallel_slots=1,  # heavy tier (>15 GB)
         ),
     ]
@@ -230,6 +238,17 @@ MODELS: dict[str, ModelInfo] = {
 def get_model(model_id: str) -> ModelInfo | None:
     return MODELS.get(model_id)
 
+
+# Context checkpoints the launcher lets llama-server keep per slot (--ctx-checkpoints). Its default is 32,
+# in host RAM, and nothing bounded or budgeted them (#657): for the 26B that is up to 10 GB.
+#
+# A model whose memory cannot be rolled back (sliding window, recurrent) can only reuse a prefix from a
+# checkpoint at or before the point where the new prompt departs from the old one. At the pin
+# (tools/server/server-context.cpp, v0.4.1) a request leaves up to three that matter: one at the last user
+# message, and two just before the end of the prompt (4 + n_ubatch and 4 tokens before it). The next turn
+# departs where the previous reply was re-rendered, so it restores from the newest of those; the oldest are
+# evicted first, which never takes that one. Three is one request's worth. Read from source, not measured.
+LLAMA_CTX_CHECKPOINTS = 3
 
 # llama-server's default physical batch (-ub). The launcher does not pass one.
 LLAMA_UBATCH = 512
@@ -243,8 +262,14 @@ def swa_cache_cells(window: int, ubatch: int = LLAMA_UBATCH) -> int:
     return -(-(window + ubatch) // 256) * 256
 
 
+def fixed_bytes(model: ModelInfo) -> int:
+    """What the model holds whatever the context: its fixed KV (sliding-window cache, recurrent state) and
+    the context checkpoints the launcher lets llama-server keep of it, per slot."""
+    return model.kv_fixed_bytes + model.parallel_slots * LLAMA_CTX_CHECKPOINTS * model.checkpoint_bytes
+
+
 def kv_bytes(model: ModelInfo, context: int) -> int:
-    return model.kv_fixed_bytes + model.kv_bytes_per_token * context
+    return fixed_bytes(model) + model.kv_bytes_per_token * context
 
 
 def memory_bytes(model: ModelInfo, context: int | None = None) -> int:
@@ -284,7 +309,7 @@ def max_context(model: ModelInfo, ram_bytes: int, requested: int | None = None) 
     alone do not fit. Rounded down to a multiple of 1024, and never below
     4096 unless 0: a smaller context is not worth running."""
     requested = model.context_window if requested is None else requested
-    spare = ram_bytes - HOST_HEADROOM_BYTES - RUNTIME_OVERHEAD_BYTES - model.size_bytes - model.kv_fixed_bytes
+    spare = ram_bytes - HOST_HEADROOM_BYTES - RUNTIME_OVERHEAD_BYTES - model.size_bytes - fixed_bytes(model)
     if spare <= 0:
         return 0
     tokens = requested if model.kv_bytes_per_token == 0 else min(requested, spare // model.kv_bytes_per_token)

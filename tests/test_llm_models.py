@@ -233,19 +233,17 @@ GEOMETRY = {
 }
 
 
-# Models whose fixed cost is derived from the header rather than estimated. qwen36-35b-a3b joins with #657.
-RECURRENT_STATE_DERIVED = {"qwen35-9b", "qwen35-4b"}
-LLAMA_CTX_CHECKPOINTS = 32  # llama-server's default at the pin; the launcher does not pass --ctx-checkpoints
+# Hybrid models: the recurrent state per slot, and so one context checkpoint, is derived from the header.
+RECURRENT_STATE_DERIVED = {"qwen35-9b", "qwen35-4b", "qwen36-35b-a3b"}
 
 
-def test_the_launcher_bounds_the_prompt_cache_and_leaves_checkpoints_at_the_default_the_budget_assumes():
+def test_the_launcher_bounds_what_llama_server_keeps_in_host_ram_and_the_budget_knows_both():
     """llama-server keeps two things in host RAM that the launcher used to leave at their defaults: a prompt
-    cache (8 GiB) and context checkpoints (32 per slot). The cache is now bounded by the budget (#657). The
-    checkpoints are not, and the Qwen3.5 entries' kv_fixed_bytes assumes the default: whoever bounds them
-    brings LLAMA_CTX_CHECKPOINTS and those figures down in the same change.
+    cache (8 GiB) and context checkpoints (32 per slot, each a copy of a sliding-window cache or a recurrent
+    state: up to 10 GB for the 26B). Both are now bounded, by numbers the budget uses (#657).
 
-    As a flag or as llama.cpp's environment form, from anywhere in the app: the shared environment is built
-    in ServiceManager, not in the launcher."""
+    As a flag, a short flag, or llama.cpp's environment form, from anywhere in the app: the shared
+    environment is built in ServiceManager, not in the launcher."""
     launcher = _swift("Services/LlamaService.swift")
     assert re.search(r'"--cache-ram",\s*String\(promptCacheMiB\)', launcher), "the cache is bounded by the budget"
     assert launcher.count('"--cache-ram"') == 1, "once: llama-server takes the last value it is given"
@@ -255,28 +253,52 @@ def test_the_launcher_bounds_the_prompt_cache_and_leaves_checkpoints_at_the_defa
     assert "MemoryBudget.promptCacheMiB(" in launcher and "context: contextWindow" in launcher, (
         "from the context the launcher is about to pass, not the one it asked for"
     )
+    assert re.search(r'"--ctx-checkpoints",\s*String\(MemoryBudget\.ctxCheckpoints\)', launcher)
+    assert launcher.count('"--ctx-checkpoints"') == 1
+    # The context and the cache are both sized from the fixed cost WITH the checkpoints in it.
+    assert launcher.count("fixedBytes: settings.activeModelFixedBytes") == 2
+    assert "activeModelKvFixedBytes" not in launcher, "that is the fixed KV alone: the checkpoints would be unbudgeted"
     for path in sorted(SWIFT_APP.rglob("*.swift")):
         source = _swift(str(path.relative_to(SWIFT_APP)))
-        assert "LLAMA_ARG_CACHE_RAM" not in source, f"{path.name}: the environment form would bypass the budget"
-        assert '"-cram"' not in source, f"{path.name}: the short form of --cache-ram would bypass the budget"
+        for name in ("LLAMA_ARG_CACHE_RAM", '"-cram"', "LLAMA_ARG_CTX_CHECKPOINTS", '"-ctxcp"', '"--swa-checkpoints"'):
+            assert name not in source, f"{path.name}: {name} would bypass the budget"
         if path.name != "LlamaService.swift":
-            assert "--cache-ram" not in source, f"{path.name}: the cache is bounded in one place"
-        for name in ("--ctx-checkpoints", "--swa-checkpoints", '"-ctxcp"', "LLAMA_ARG_CTX_CHECKPOINTS"):
-            assert name not in source, (
-                f"{path.name} now sets {name}: bring LLAMA_CTX_CHECKPOINTS and the kv_fixed_bytes that use it down to match"
+            assert "--cache-ram" not in source and "--ctx-checkpoints" not in source, (
+                f"{path.name}: bounded in one place"
             )
 
 
-def test_compose_bounds_the_prompt_cache_at_something_that_holds_a_full_contexts_kv():
+def test_the_checkpoints_the_launcher_keeps_are_in_every_memory_figure():
+    from harbor_clerk.llm.models import LLAMA_CTX_CHECKPOINTS, fixed_bytes
+
+    assert LLAMA_CTX_CHECKPOINTS == 3, (
+        "one request's worth at the pin: the last user message and two near the prompt's end"
+    )
+    gemma, qwen8 = MODELS["gemma4-26b-a4b"], MODELS["qwen3-8b"]
+    assert fixed_bytes(gemma) == 314_572_800 + 3 * 314_572_800
+    assert fixed_bytes(_info(kv_fixed_bytes=10, checkpoint_bytes=7, parallel_slots=2)) == 10 + 2 * 3 * 7
+    assert fixed_bytes(qwen8) == 0 and qwen8.checkpoint_bytes == 0, "plain attention can roll back: it makes none"
+    assert kv_bytes(gemma, 1000) == fixed_bytes(gemma) + 20_480_000
+    assert memory_bytes(gemma, 0) == gemma.size_bytes + fixed_bytes(gemma) + RUNTIME_OVERHEAD_BYTES
+    for m in MODELS.values():
+        # A model with memory that cannot be rolled back makes checkpoints of it, and the others make none.
+        assert (m.checkpoint_bytes > 0) == (m.kv_fixed_bytes > 0), m.id
+
+
+def test_compose_bounds_what_llama_server_keeps_and_the_cache_holds_a_whole_saved_state():
     """The sibling site: Compose starts its own llama-server and cannot know the host's memory. At the pin a
-    state larger than the limit is not cached at all, so the fixed bound has to hold at least the KV of a
-    full conversation at Compose's context, for every curated model. It checks no more than that: a saved
-    state also carries the slot's context checkpoints, which for sliding-window and hybrid models can
-    outgrow any fixed bound (#657)."""
+    state larger than the cache limit is not cached at all, and a saved state is the KV plus the context
+    checkpoints saved with it. With those bounded, `kv_bytes` is the whole of it, for every curated model
+    at Compose's context."""
     from harbor_clerk.llm.models import MIB, PROMPT_CACHE_MAX_BYTES
 
     compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
     code = "\n".join(line.split("#")[0] for line in compose.splitlines())
+    from harbor_clerk.llm.models import LLAMA_CTX_CHECKPOINTS
+
+    assert re.search(rf'"--ctx-checkpoints",\s*"{LLAMA_CTX_CHECKPOINTS}"', code), (
+        "the same bound the macOS launcher passes"
+    )
     bound = int(re.search(r'"--cache-ram",\s*"(\d+)"', code).group(1)) * MIB
     context = int(re.search(r'"-c",\s*"(\d+)"', code).group(1))
     assert max(kv_bytes(m, context) for m in MODELS.values()) <= bound < PROMPT_CACHE_MAX_BYTES
@@ -295,23 +317,25 @@ def test_the_prompt_cache_gets_what_the_context_leaves():
     assert prompt_cache_mib(qwen8, 16 * gib, 32768) == 0
     # The reason the cache does not come first: reserving 512 MiB ahead of the context would take this model
     # from 27K tokens to 6K on an 18 GB Mac.
-    assert max_context(gptoss, 18 * gib) == 27648 and prompt_cache_mib(gptoss, 18 * gib, 27648) == 0
-    assert max_context(big, 32 * gib) == 239_616 and prompt_cache_mib(big, 32 * gib, 239_616) == 0, "the mini's 35B"
-    assert prompt_cache_mib(big, 36 * gib, 262_144) == 3673
-    # The fixed KV cost counts, in what is left and in what a state needs: without its 1.7 GB of recurrent
-    # state and checkpoints, 18 GB would leave 1666 MiB.
-    assert max_context(nine, 18 * gib) == 149_504 and prompt_cache_mib(nine, 18 * gib, 149_504) == 0
-    assert prompt_cache_mib(nine, 24 * gib, 262_144) == 2632
-    # And in what a state needs: with 23 GiB, 1608 MiB is left, and a 4096-token state of this model is
-    # budgeted at 1786 MiB, nearly all of it the fixed cost (its ceiling: 33 copies of the recurrent state).
-    # Conservative, and the same number the rest of the budget uses for this model.
-    assert prompt_cache_mib(nine, 23 * gib, 262_144) == 0
+    assert max_context(gptoss, 18 * gib) == 24576 and prompt_cache_mib(gptoss, 18 * gib, 24576) == 0
+    assert max_context(big, 32 * gib) == 241_664 and prompt_cache_mib(big, 32 * gib, 241_664) == 0, "the mini's 35B"
+    assert prompt_cache_mib(big, 36 * gib, 262_144) == 3707
+    # The fixed cost (recurrent state and the checkpoints kept of it) counts in what is left: without its
+    # 211 MB, 24 GB would leave 4290 MiB.
+    assert max_context(nine, 18 * gib) == 195_584 and prompt_cache_mib(nine, 18 * gib, 195_584) == 0
+    assert prompt_cache_mib(nine, 24 * gib, 262_144) == 4089
+    # And in what a state needs. With exactly 250 MiB left: a 4096-token state of this model is 329 MiB, 201 of
+    # it fixed, so the cache is off. Forgetting the fixed part would switch on a cache that holds nothing.
+    full = memory_bytes(nine, 262_144) + HOST_HEADROOM_BYTES
+    assert full == 21_481_220_832
+    assert prompt_cache_mib(nine, full + 250 * 1024**2, 262_144) == 0
+    assert prompt_cache_mib(nine, full + 400 * 1024**2, 262_144) == 400
     assert prompt_cache_mib(qwen8, 0, 32768) == 0, "memory unknown"
     assert (8 * gib, 4096) == (PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_TOKENS)
 
 
-# (context, --cache-ram in MiB) for every curated model on the Macs people have. The contexts are what they
-# were before the cache was budgeted: that is the claim, and this is where it is held.
+# (context, --cache-ram in MiB) for every curated model on the Macs people have, with three context
+# checkpoints budgeted for the models that make them. A change to any memory figure shows up here.
 WHAT_EACH_MAC_GETS = {
     "qwen3-8b": {
         16: (32768, 0),
@@ -330,17 +354,17 @@ WHAT_EACH_MAC_GETS = {
         64: (32768, 8192),
     },
     "qwen35-9b": {
-        16: (83968, 0),
-        18: (149504, 0),
-        24: (262144, 2632),
+        16: (130048, 0),
+        18: (195584, 0),
+        24: (262144, 4089),
         32: (262144, 8192),
         36: (262144, 8192),
         64: (262144, 8192),
     },
     "qwen35-4b": {
-        16: (173056, 0),
-        18: (238592, 0),
-        24: (262144, 5436),
+        16: (220160, 0),
+        18: (262144, 749),
+        24: (262144, 6893),
         32: (262144, 8192),
         36: (262144, 8192),
         64: (262144, 8192),
@@ -348,26 +372,26 @@ WHAT_EACH_MAC_GETS = {
     "gemma4-26b-a4b": {
         16: (0, 0),
         18: (0, 0),
-        24: (73728, 0),
-        32: (262144, 4526),
-        36: (262144, 8192),
+        24: (22528, 0),
+        32: (262144, 3526),
+        36: (262144, 7622),
         64: (262144, 8192),
     },
     "gpt-oss-20b": {
         16: (0, 0),
-        18: (27648, 0),
-        24: (128000, 3811),
+        18: (24576, 0),
+        24: (128000, 3742),
         32: (128000, 8192),
         36: (128000, 8192),
         64: (128000, 8192),
     },
-    "qwen36-35b-a3b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (239616, 0), 36: (262144, 3673), 64: (262144, 8192)},
+    "qwen36-35b-a3b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (241664, 0), 36: (262144, 3707), 64: (262144, 8192)},
 }
 
 
 def test_the_cache_never_costs_a_model_its_context_or_its_place():
-    """For every curated model on every Mac: the context is what it was before the cache was budgeted, the
-    whole of it fits the machine, and a cache that is on can hold a conversation."""
+    """For every curated model on every Mac: the context and the cache are the pinned ones, the whole of it
+    fits the machine, and a cache that is on can hold a conversation."""
     from harbor_clerk.llm.models import MIB, PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_TOKENS, prompt_cache_mib
 
     assert set(WHAT_EACH_MAC_GETS) == set(MODELS)
@@ -398,9 +422,11 @@ def test_what_the_qwen35_pair_gets_on_the_macs_people_have():
     """The figures the PR and the models page state. One slot, so all of it goes to each request."""
     gib = 1024**3
     nine, four = MODELS["qwen35-9b"], MODELS["qwen35-4b"]
-    assert [max_context(nine, g * gib) for g in (8, 16, 18, 24)] == [0, 83_968, 149_504, 262_144]
-    assert [max_context(four, g * gib) for g in (8, 16, 18, 24)] == [0, 173_056, 238_592, 262_144]
-    assert min_ram_gb(nine) == min_ram_gb(four) == 24, "at the full window; the launcher clamps below that"
+    # With 33 copies of the recurrent state budgeted (llama-server's default of 32 checkpoints) these were
+    # 83,968 and 173,056 on a 16 GB Mac. The launcher now keeps 3.
+    assert [max_context(nine, g * gib) for g in (8, 16, 18, 24)] == [0, 130_048, 195_584, 262_144]
+    assert [max_context(four, g * gib) for g in (8, 16, 18, 24)] == [0, 220_160, 262_144, 262_144]
+    assert (min_ram_gb(nine), min_ram_gb(four)) == (24, 18), "at the full window; the launcher clamps below that"
 
 
 @pytest.mark.parametrize("model_id", sorted(GEOMETRY))
@@ -424,6 +450,7 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
     elif growing == "half":
         per_token = layers // 2 * heads * (k + v) * 2
         # The other half hold a sliding window, at the same head size, over the cells llama.cpp allocates.
+        assert m.checkpoint_bytes == m.kv_fixed_bytes, f"{model_id}: a checkpoint copies the sliding-window cache"
         assert m.kv_fixed_bytes == layers // 2 * heads * (k + v) * 2 * swa_cache_cells(h["attention.sliding_window"]), (
             f"{model_id}: the header's window is {h['attention.sliding_window']}"
         )
@@ -436,6 +463,7 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
         # llama.cpp allocates for it: the window plus a micro-batch, padded, not the window alone.
         k_swa, v_swa = h["attention.key_length_swa"], h["attention.value_length_swa"]
         per_cell = sum(hd * (k_swa + v_swa) * 2 for hd, windowed in zip(heads, pattern, strict=True) if windowed)
+        assert m.checkpoint_bytes == m.kv_fixed_bytes, f"{model_id}: a checkpoint copies the sliding-window cache"
         assert m.kv_fixed_bytes == per_cell * swa_cache_cells(h["attention.sliding_window"]), (
             f"{model_id}: header says {per_cell} bytes per cell over a {h['attention.sliding_window']}-token window"
         )
@@ -445,9 +473,10 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
         conv_channels = h["ssm.inner_size"] + 2 * h["ssm.group_count"] * h["ssm.state_size"]
         per_layer = (h["ssm.state_size"] * h["ssm.inner_size"] + (h["ssm.conv_kernel"] - 1) * conv_channels) * 4
         per_slot = recurrent_layers * per_layer
-        assert m.kv_fixed_bytes == m.parallel_slots * (1 + LLAMA_CTX_CHECKPOINTS) * per_slot, (
+        assert m.kv_fixed_bytes == m.parallel_slots * per_slot, (
             f"{model_id}: header says {per_slot} bytes of recurrent state per slot; the constant follows the slots"
         )
+        assert m.checkpoint_bytes == per_slot, f"{model_id}: a context checkpoint is a copy of one slot's state"
     assert m.size_bytes == actual_size, (
         f"{model_id}: registry size {m.size_bytes} but the file is {actual_size}; the launcher measures the file"
     )
@@ -544,6 +573,10 @@ def test_swift_mirrors_the_registrys_memory_tables():
         m.id: m.filename for m in MODELS.values()
     }, "a model missing here launches as 'Model file not found'"
     assert table("let slots") == {m.id: m.parallel_slots for m in MODELS.values()}
+    from harbor_clerk.llm.models import LLAMA_CTX_CHECKPOINTS
+
+    assert table("checkpointBytes") == {m.id: m.checkpoint_bytes for m in MODELS.values()}
+    assert re.search(rf"static let ctxCheckpoints = {LLAMA_CTX_CHECKPOINTS}\b", swift)
     per_token, fixed, windows = table("kvBytesPerToken"), table("kvFixedBytes"), table("contextWindows")
     assert per_token == {m.id: m.kv_bytes_per_token for m in MODELS.values()}
     assert fixed == {m.id: m.kv_fixed_bytes for m in MODELS.values()}

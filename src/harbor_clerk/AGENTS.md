@@ -76,8 +76,10 @@ context leaves, never more than its 8 GiB default: context first, cache second
 (`prompt_cache_mib`, mirrored as `MemoryBudget.promptCacheMiB`). That bound is
 safe only because the pin skips a state larger than the limit; a pin bump
 re-reads `server_prompt_cache::alloc` (`PROMPT_CACHE_SEMANTICS_READ_AT`). Context
-checkpoints are still at llama-server's default, which the Qwen3.5 entries'
-`kv_fixed_bytes` assumes (#657). The Swift mirror
+checkpoints (copies of a sliding-window cache or recurrent state, 32 per slot
+by default) are bounded at `LLAMA_CTX_CHECKPOINTS` and budgeted:
+`fixed_bytes(model)` is what every memory figure uses, never `kv_fixed_bytes`
+alone. A new model states its `checkpoint_bytes`, in the registry and in Swift. The Swift mirror
 (`Settings.swift`: filenames, slots, windows, `kvBytesPerToken`,
 `kvFixedBytes`, `MemoryBudget`) is held to the registry by a test; a new model
 needs all of them. `HC_GGUF_LIVE=1` checks headers from the Hub for models not

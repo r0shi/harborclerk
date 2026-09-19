@@ -3,7 +3,14 @@ of the registry's fit arithmetic (Swift carries another). This holds the copy to
 
 import pytest
 
-from harbor_clerk.llm.models import HOST_HEADROOM_BYTES, MODELS, RUNTIME_OVERHEAD_BYTES, ModelInfo, max_context
+from harbor_clerk.llm.models import (
+    HOST_HEADROOM_BYTES,
+    MODELS,
+    RUNTIME_OVERHEAD_BYTES,
+    ModelInfo,
+    fixed_bytes,
+    max_context,
+)
 from scripts.test_corpora import preflight
 
 GIB = 1024**3
@@ -16,7 +23,7 @@ def test_the_harness_reads_every_model_and_its_memory_figures_from_the_registry(
         assert read[model_id] == {
             "size_bytes": m.size_bytes,
             "kv_bytes_per_token": m.kv_bytes_per_token,
-            "kv_fixed_bytes": m.kv_fixed_bytes,
+            "kv_fixed_bytes": fixed_bytes(m),  # the checkpoints the launcher keeps are part of it
         }
     assert preflight._constant("RUNTIME_OVERHEAD_BYTES") == RUNTIME_OVERHEAD_BYTES
     assert preflight._constant("HOST_HEADROOM_BYTES") == HOST_HEADROOM_BYTES
@@ -54,3 +61,30 @@ def test_the_two_agree_at_the_edge_where_a_few_thousand_tokens_is_not_worth_runn
         assert ours == (max_context(model, ram) > 0), f"{ram} bytes"
         verdicts.add(ours)
     assert verdicts == {True, False}, "the walk crosses the edge"
+
+
+def test_the_harness_counts_the_checkpoints_of_every_slot(tmp_path, monkeypatch):
+    """Every curated model runs one slot, so the real registry cannot show the harness's copy ignoring the
+    slot count (the same blind spot the Swift mirror had). A made-up registry with a two-slot model can."""
+    source = tmp_path / "src/harbor_clerk/llm"
+    source.mkdir(parents=True)
+    (source / "models.py").write_text(
+        "LLAMA_CTX_CHECKPOINTS = 3\n"
+        'M = [ModelInfo(id="two", size_bytes=5, kv_bytes_per_token=1, kv_fixed_bytes=10, checkpoint_bytes=7, '
+        "parallel_slots=2)]\n"
+    )
+    monkeypatch.setattr(preflight, "REPO", tmp_path)
+    two = ModelInfo(
+        id="two",
+        name="Two",
+        huggingface_repo="r",
+        filename="f.gguf",
+        size_bytes=5,
+        context_window=4096,
+        supports_tools=True,
+        kv_bytes_per_token=1,
+        kv_fixed_bytes=10,
+        checkpoint_bytes=7,
+        parallel_slots=2,
+    )
+    assert preflight.registry()["two"]["kv_fixed_bytes"] == fixed_bytes(two) == 10 + 2 * 3 * 7
