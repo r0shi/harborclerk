@@ -42,6 +42,16 @@ def test_classify_completion():
     assert kind == "completion"
 
 
+def test_a_spend_cap_stop_is_the_run_ending_not_the_model_failing():
+    """It is logged at ERROR. Classified as an error it counted toward the active local model's streak, fed
+    the skip recommendation, and the supervisor reported the run as stuck half an hour later."""
+    for line in (
+        "2026-09-18 12:00:00 ERROR sweep stopped by the spend cap: spent USD 24.9100 of 25.00; the next call ...",
+        "2026-09-18 12:00:00 ERROR sweep stopped by the spend cap: a cloud call that cannot be metered cannot be capped",
+    ):
+        assert classify(line)[0] == "blocked"
+
+
 def test_classify_error_traceback():
     line = "Traceback (most recent call last):"
     kind, _ = classify(line)

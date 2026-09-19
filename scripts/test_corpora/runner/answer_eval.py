@@ -153,19 +153,10 @@ def run(
     items = load_groundtruth(gt_path)
     log.info("loaded %d ground-truth items from %s", len(items), gt_path)
 
-    # Build the model/judge clients before creating any output directories, so
-    # a missing credential fails fast without leaving empty dirs behind.
-    if capture_fn is None:
-        capture_fn = _live_capture_fn(api_base=api_base, corpus=corpus, model=model, insecure=insecure)
-    if judge is None:
-        judge = AnswerJudge(model=judge_model)
-
+    # Refuse before spending anything, and before the Harbor Clerk login, if what is left to capture and
+    # judge is estimated over the cap.
     cap_dir = workdir / "answer-eval" / "captures" / corpus / model
     ver_dir = workdir / "answer-eval" / "verdicts" / corpus / model
-    cap_dir.mkdir(parents=True, exist_ok=True)
-    ver_dir.mkdir(parents=True, exist_ok=True)
-
-    # Refuse before spending anything if what is left to capture and judge is estimated over the cap.
     from scripts.test_corpora.runner.providers.factory import model_is_cloud
 
     to_capture = sum(1 for i in items if refresh or not (cap_dir / f"{i.id}.json").exists())
@@ -178,6 +169,16 @@ def run(
         ]
     )
     log.info("cloud spend estimate: USD %.2f of %.2f", estimate, meter.cap_usd)
+
+    # Build the model/judge clients before creating any output directories, so
+    # a missing credential fails fast without leaving empty dirs behind.
+    if capture_fn is None:
+        capture_fn = _live_capture_fn(api_base=api_base, corpus=corpus, model=model, insecure=insecure)
+    if judge is None:
+        judge = AnswerJudge(model=judge_model)
+
+    cap_dir.mkdir(parents=True, exist_ok=True)
+    ver_dir.mkdir(parents=True, exist_ok=True)
 
     rows: list[tuple[str, str, AnswerVerdict]] = []
     for item in items:

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import anthropic
+import httpx
 import pytest
 
 from scripts.test_corpora import conftest as cfg
@@ -311,17 +312,22 @@ def test_the_sweeps_plan_counts_pending_cloud_work(tmp_path):
         return SimpleNamespace(phase=phase, status=status, corpus=corpus)
 
     units = [unit(0, corpus="synthetic"), unit(1), unit(1), unit(1, Status.DONE), unit(4), unit(5), unit(6), unit(2)]
-    plan = dict((k, n) for k, _, n in sweep._spend_plan(units, workdir=tmp_path, judge_model="j", no_judge=False))
-    assert plan == {"synthetic_doc": 280, "baseline_question": 2, "judge": 2}
-    assert [m for _, m, _ in sweep._spend_plan(units, workdir=tmp_path, judge_model="j", no_judge=False)][2] == "j"
-    quiet = dict((k, n) for k, _, n in sweep._spend_plan(units, workdir=tmp_path, judge_model="j", no_judge=True))
-    assert quiet["judge"] == 0
+
+    def plan(phases=frozenset(range(7)), no_judge=False):
+        return sweep._spend_plan(units, phases=set(phases), workdir=tmp_path, judge_model="j", no_judge=no_judge)
+
+    assert dict((k, n) for k, _, n in plan()) == {"synthetic_doc": 280, "baseline_question": 2, "judge": 2}
+    assert plan()[2][1] == "j" and plan()[0][1] == "claude-sonnet-4-6"
+    assert plan(no_judge=True)[2][2] == 0
+    # state.json keeps every phase ever planned for the run id; only the phases asked for will run.
+    assert dict((k, n) for k, _, n in plan({1})) == {"synthetic_doc": 0, "baseline_question": 2, "judge": 0}
+    assert dict((k, n) for k, _, n in plan({4})) == {"synthetic_doc": 0, "baseline_question": 0, "judge": 1}
     # An acquired synthetic corpus generates nothing.
     ingest = tmp_path / "synthetic" / "ingest"
     ingest.mkdir(parents=True)
     (ingest / ".acquired").write_text("")
     (ingest / "0001_invoice.txt").write_text("x")
-    assert sweep._spend_plan(units, workdir=tmp_path, judge_model="j", no_judge=False)[0][2] == 0
+    assert plan()[0][2] == 0
 
 
 def test_the_sweep_refuses_a_run_estimated_over_the_cap_and_makes_no_client(tmp_path, monkeypatch, caplog):
@@ -339,6 +345,108 @@ def test_the_sweep_refuses_a_run_estimated_over_the_cap_and_makes_no_client(tmp_
         code = sweep.main([*args, "--spend-cap-usd", "0.01"])
     assert code == 3 and made == [] and logins == []
     assert "stopped by the spend cap" in caplog.text and "baseline_question" in caplog.text
+
+
+def test_a_phase_by_phase_resume_is_priced_for_the_phase_it_runs(tmp_path, monkeypatch, caplog):
+    """The runbook's workflow. Phases 1 and 4 are planned, then phase 1 alone is resumed under a cap that
+    covers it and not the phase-4 judging. Pricing every pending unit refused this."""
+    from scripts.test_corpora.runner import sweep
+
+    base = ["--run-id", "r1", "--workdir", str(tmp_path), "--corpora", "cuad"]
+    assert sweep.main([*base, "--phases", "1,4", "--spend-cap-usd", "0.01"]) == 3
+
+    class PastTheEstimate(RuntimeError):
+        pass
+
+    def reached(kind):
+        raise PastTheEstimate
+
+    monkeypatch.setattr(spend, "anthropic_client", reached)
+    meter = spend.SpendMeter(spend.load_config())
+    phase1 = meter.estimate([("baseline_question", "claude-sonnet-4-6", 16)])
+    both = phase1 + meter.estimate([("judge", "claude-sonnet-4-6", 80)])
+    between = f"{(phase1 + both) / 2:.2f}"
+    with pytest.raises(PastTheEstimate):
+        sweep.main([*base, "--resume", "--phases", "1", "--spend-cap-usd", between])
+    with caplog.at_level("ERROR"):
+        assert sweep.main([*base, "--resume", "--phases", "1,4", "--spend-cap-usd", between]) == 3
+    assert "with --resume if this run id already has units" in caplog.text
+
+
+@pytest.mark.parametrize("flags", [["--spend-cap-usd", "30"], ["--spend-cap-usd", "0"]])
+def test_a_refused_spend_setting_is_exit_code_3_not_a_traceback(tmp_path, flags, caplog):
+    from scripts.test_corpora.runner import sweep
+
+    base = ["--run-id", "r1", "--workdir", str(tmp_path), "--phases", "1", "--corpora", "cuad"]
+    with caplog.at_level("ERROR"):
+        assert sweep.main([*base, *flags]) == 3
+        assert sweep.main([*base, "--mode", "answer-eval", "--label", "x", *flags]) == 3
+    assert caplog.text.count("stopped by the spend cap") == 2
+
+
+def test_a_cap_that_is_not_a_number_and_a_second_judge_are_refused_the_same_way(tmp_path, monkeypatch):
+    from scripts.test_corpora.runner import sweep
+
+    base = ["--run-id", "r1", "--workdir", str(tmp_path), "--phases", "1", "--corpora", "cuad"]
+    assert sweep.main([*base, "--spend-cap-usd", "0.01"]) == 3  # writes the ledger, naming the default judge
+    assert sweep.main([*base, "--resume", "--judge-model", "claude-sonnet-5"]) == 3
+    monkeypatch.setenv(spend.CAP_ENV, "lots")
+    assert sweep.main([*base, "--resume"]) == 3
+
+
+def test_a_run_that_judges_nothing_names_no_judge(tmp_path):
+    from scripts.test_corpora.runner import sweep
+
+    base = [
+        "--run-id",
+        "r1",
+        "--workdir",
+        str(tmp_path),
+        "--phases",
+        "1",
+        "--corpora",
+        "cuad",
+        "--spend-cap-usd",
+        "0.01",
+    ]
+    assert sweep.main([*base, "--no-judge"]) == 3
+    ledger = tmp_path / "results" / "r1" / "spend.json"
+    assert json.loads(ledger.read_text())["run"] == {
+        "run_id": "r1",
+        "mode": "sweep",
+        "baseline_model": "claude-sonnet-4-6",
+        "judge_model": "",
+    }
+    assert "judge none" in spend.header_line(json.loads(ledger.read_text()))
+    # Having judged nothing, it may take up any judge later.
+    assert sweep.main([*base, "--resume", "--judge-model", "claude-sonnet-5"]) == 3
+    assert json.loads(ledger.read_text())["run"]["judge_model"] == "claude-sonnet-5"
+
+
+def test_answer_eval_refuses_before_it_logs_in_to_harbor_clerk(tmp_path, monkeypatch):
+    from scripts.test_corpora.runner import answer_eval
+
+    spend._meter = SpendMeter(spend.load_config(), cap_usd=0.001)
+    items = [
+        answer_eval.GTItem(id=f"q{i}", question="q", clause_category="c", gold_doc="d", answer_key="k", type="lookup")
+        for i in range(5)
+    ]
+    monkeypatch.setattr(answer_eval, "load_groundtruth", lambda path: items)
+    monkeypatch.setattr(answer_eval, "_live_capture_fn", lambda **kw: pytest.fail("logged in before the refusal"))
+    monkeypatch.setattr(answer_eval, "AnswerJudge", lambda model: pytest.fail("built a judge before the refusal"))
+    with pytest.raises(SpendCapExceeded):
+        answer_eval.run(
+            workdir=tmp_path,
+            corpus="cuad",
+            model="qwen3-8b",
+            label="x",
+            api_base="http://localhost:1",
+            refresh=False,
+            rejudge=False,
+            insecure=False,
+            groundtruth_path=Path(__file__),
+        )
+    assert not (tmp_path / "answer-eval").exists(), "and before it creates anything"
 
 
 def test_a_cap_stop_at_the_judge_does_not_cost_the_unit_its_row():
@@ -369,7 +477,12 @@ def test_a_cap_stop_at_the_judge_does_not_cost_the_unit_its_row():
     raised = [
         r.lineno for r in ast.walk(main) if isinstance(r, ast.Raise) and r.exc and ast.unparse(r.exc) == "spend_stop"
     ]
-    assert len(raised) == 1 and raised[0] > row_written > inner.lineno
+    flushed = [
+        c.lineno
+        for c in ast.walk(main)
+        if isinstance(c, ast.Call) and ast.unparse(c) == "metrics_f.flush()" and c.lineno > row_written
+    ]
+    assert len(raised) == 1 and raised[0] > min(flushed) > row_written > inner.lineno
 
 
 def test_answer_eval_mode_returns_3_when_the_cap_stops_it(tmp_path, monkeypatch, caplog):
@@ -479,8 +592,28 @@ def test_the_reservation_uses_the_requests_size_and_its_output_limit():
 class _Refused(anthropic.APIStatusError):
     """The API answered with an error status. Built without a real HTTP response."""
 
-    def __init__(self):
-        Exception.__init__(self, "529 overloaded")
+    def __init__(self, status_code: int = 400):
+        Exception.__init__(self, f"{status_code}")
+        self.status_code = status_code
+
+
+def _never_connected() -> anthropic.APIConnectionError:
+    exc = anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.invalid/v1/messages"))
+    exc.__cause__ = httpx.ConnectError("connection refused")
+    return exc
+
+
+def _timed_out() -> anthropic.APITimeoutError:
+    exc = anthropic.APITimeoutError(request=httpx.Request("POST", "https://api.invalid/v1/messages"))
+    exc.__cause__ = httpx.ReadTimeout("read timed out")
+    return exc
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    slept = []
+    monkeypatch.setattr(spend, "_sleep", slept.append)
+    return slept
 
 
 def test_a_call_the_api_refused_costs_nothing_and_an_unpriced_model_is_never_called():
@@ -489,37 +622,118 @@ def test_a_call_the_api_refused_costs_nothing_and_an_unpriced_model_is_never_cal
     client = spend.MeteredAnthropic("judge", inner)
     with pytest.raises(anthropic.APIStatusError):
         client.messages.create(model="m", max_tokens=5000, messages=[])
-    assert meter.total_usd == 0 and meter.remaining_usd == pytest.approx(1.00)
+    assert meter.total_usd == 0 and meter.remaining_usd == pytest.approx(1.00) and len(inner.calls) == 1
     with pytest.raises(spend.UnpricedModel):
         client.messages.create(model="gpt-99", max_tokens=10, messages=[])
     assert len(inner.calls) == 1
 
 
-@pytest.mark.parametrize("failure", [TimeoutError("read timed out"), ConnectionError("reset"), KeyboardInterrupt()])
-def test_a_call_that_may_have_been_served_is_charged_its_worst_case(failure):
-    """A timeout, a dropped connection or Ctrl-C mid-generation can still be billed, with nobody left to
-    read the usage. Recording it as free would let the real total pass the cap unseen."""
+@pytest.mark.parametrize(
+    "failure",
+    [
+        _never_connected,
+        lambda: TypeError("Could not resolve authentication method"),
+        lambda: ValueError("bad argument"),
+    ],
+)
+def test_a_request_that_was_never_sent_costs_nothing(failure, no_backoff):
+    """Connection refused, no credentials: nothing reached the API. Charged at the worst case, an outage
+    added phantom dollars once per unit to a ledger that a resumed run inherits, until the run id was dead."""
     meter = _use()
-    client = spend.MeteredAnthropic("judge", _FakeAnthropic(fail=failure))
-    with pytest.raises(type(failure)):
-        client.messages.create(model="m", max_tokens=5000, messages=[])
-    assert meter.total_usd == pytest.approx(0.50, abs=0.001) and meter.remaining_usd == pytest.approx(0.50, abs=0.001)
-    assert meter.snapshot()["estimated_calls"] == 1
+    inner = _FakeAnthropic(fail=failure())
+    with pytest.raises(Exception):  # noqa: B017 - the three failures share no narrower type
+        spend.MeteredAnthropic("judge", inner).messages.create(model="m", max_tokens=5000, messages=[])
+    assert meter.total_usd == 0 and meter.remaining_usd == pytest.approx(1.00) and meter.snapshot()["calls"] == 0
 
 
-def test_openai_refusals_are_told_from_openai_failures():
+def test_a_client_that_cannot_be_built_costs_nothing():
+    meter = _use()
+
+    def no_key():
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
+    client = spend.MeteredOpenAI("cross_judge")
+    client._factory = no_key
+    with pytest.raises(RuntimeError, match="not set"):
+        client.chat.completions.create(model="m", max_completion_tokens=600, messages=[])
+    assert meter.total_usd == 0 and meter.remaining_usd == pytest.approx(1.00)
+
+
+@pytest.mark.parametrize("failure", [_timed_out, lambda: ConnectionError("reset by peer"), KeyboardInterrupt])
+def test_a_call_that_may_have_been_served_is_charged_its_worst_case(failure, no_backoff):
+    """A read timeout, a connection dropped after the request went out, Ctrl-C mid-generation: it can still
+    be billed, with nobody left to read the usage. Recording it as free would let the real total pass the
+    cap unseen."""
+    meter = _use(cap=10.00)
+    inner = _FakeAnthropic(fail=failure())
+    with pytest.raises(BaseException):  # noqa: B017 - KeyboardInterrupt is one of them
+        spend.MeteredAnthropic("judge", inner).messages.create(model="m", max_tokens=5000, messages=[])
+    attempts = len(inner.calls)
+    assert (
+        meter.total_usd == pytest.approx(0.50 * attempts, abs=0.001) and meter.snapshot()["estimated_calls"] == attempts
+    )
+
+
+def test_every_retry_is_an_attempt_the_ledger_sees(no_backoff):
+    """The SDK clients are built with max_retries=0 and the retries happen in the meter. Inside the SDK, a
+    timed-out attempt that was billed and then retried successfully would record one call, not two."""
+    meter = _use(cap=10.00)
+
+    class Flaky(_FakeAnthropic):
+        def _create(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise _timed_out()
+            if len(self.calls) == 2:
+                raise _Refused(529)
+            return SimpleNamespace(content=[], usage=SimpleNamespace(input_tokens=1000, output_tokens=100))
+
+    inner = Flaky()
+    spend.MeteredAnthropic("judge", inner).messages.create(model="m", max_tokens=5000, messages=[])
+    assert len(inner.calls) == 3 and no_backoff == [0.5, 1.0]
+    # The timeout at its worst case, the 529 free, the success at its usage.
+    assert meter.total_usd == pytest.approx(0.50 + 0 + 0.02, abs=0.001)
+    assert (meter.snapshot()["calls"], meter.snapshot()["estimated_calls"]) == (2, 1)
+
+    always = _FakeAnthropic(fail=_Refused(503))
+    with pytest.raises(anthropic.APIStatusError):
+        spend.MeteredAnthropic("judge", always).messages.create(model="m", max_tokens=10, messages=[])
+    assert len(always.calls) == 1 + spend.MAX_RETRIES
+    once = _FakeAnthropic(fail=_Refused(400))
+    with pytest.raises(anthropic.APIStatusError):
+        spend.MeteredAnthropic("judge", once).messages.create(model="m", max_tokens=10, messages=[])
+    assert len(once.calls) == 1, "a 400 is not retried"
+
+
+def test_a_retry_that_could_cross_the_cap_is_not_made(no_backoff):
+    _use(cap=0.75)
+    inner = _FakeAnthropic(fail=_timed_out())
+    with pytest.raises(SpendCapExceeded):
+        spend.MeteredAnthropic("judge", inner).messages.create(model="m", max_tokens=5000, messages=[])
+    assert len(inner.calls) == 1, "the first attempt was charged 0.50; a second could reach 1.00"
+
+
+def test_the_sdk_clients_are_built_without_their_own_retries(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "not-a-real-key")
+    assert spend.anthropic_client("judge")._client().max_retries == 0
+    assert spend.openai_client("cross_judge")._client().max_retries == 0
+
+
+def test_openai_refusals_are_told_from_openai_failures(no_backoff):
     import openai
 
     class Refused(openai.APIStatusError):
         def __init__(self):
-            Exception.__init__(self, "429")
+            Exception.__init__(self, "400")
+            self.status_code = 400
 
     meter = _use()
 
-    def create(**kwargs):
+    def refuse(**kwargs):
         raise Refused()
 
-    inner = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    inner = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=refuse)))
     with pytest.raises(openai.APIStatusError):
         spend.MeteredOpenAI("cross_judge", inner).chat.completions.create(model="m", max_completion_tokens=600)
     assert meter.total_usd == 0
@@ -606,6 +820,48 @@ def test_the_synthetic_corpus_stops_at_the_cap_instead_of_filling_with_placehold
     assert not (tmp_path / "ingest" / ".acquired").exists()
 
 
+def test_a_stopped_generation_resumes_without_buying_the_same_documents_again(tmp_path, monkeypatch):
+    from scripts.test_corpora.corpora import synthetic
+
+    counts = {"invoice": 3, "internal_memo": 2}
+
+    class Generator(_FakeAnthropic):
+        def __init__(self, stop_after=None):
+            super().__init__()
+            self.stop_after = stop_after
+
+        def _create(self, **kwargs):
+            if self.stop_after is not None and len(self.calls) == self.stop_after:
+                raise SpendCapExceeded("cap")
+            self.calls.append(kwargs)
+            return SimpleNamespace(
+                content=[SimpleNamespace(text=json.dumps({"text": f"doc {len(self.calls)}", "facts": {}}))]
+            )
+
+    _use(cap=100.0)
+    whole = Generator()
+    monkeypatch.setattr(synthetic, "_make_client", lambda: whole)
+    synthetic.acquire(tmp_path / "whole", doc_counts=counts, ocr_subset_count=0)
+    prompts = [c["messages"][0]["content"] for c in whole.calls]
+    assert len(prompts) == 5
+
+    first = Generator(stop_after=2)
+    monkeypatch.setattr(synthetic, "_make_client", lambda: first)
+    with pytest.raises(SpendCapExceeded):
+        synthetic.acquire(tmp_path / "split", doc_counts=counts, ocr_subset_count=0)
+    assert synthetic.planned_generation_count(tmp_path / "split", counts) == 3
+    assert synthetic.planned_generation_count(tmp_path / "nothing-yet", counts) == 5
+
+    second = Generator()
+    monkeypatch.setattr(synthetic, "_make_client", lambda: second)
+    manifest = synthetic.acquire(tmp_path / "split", doc_counts=counts, ocr_subset_count=0)
+    assert manifest.doc_count == 5 and len(second.calls) == 3, "the two already bought are kept"
+    # The later documents are asked for exactly as an uninterrupted run would have asked.
+    assert [c["messages"][0]["content"] for c in second.calls] == prompts[2:]
+    assert (tmp_path / "split" / "ingest" / "0001_invoice.txt").read_text() == "doc 1"
+    assert synthetic.planned_generation_count(tmp_path / "split", counts) == 0
+
+
 def test_an_unpriced_model_stops_the_synthetic_corpus_too(tmp_path, monkeypatch):
     """Found by this suite: as an ordinary exception it was swallowed per document, and the corpus was
     written as placeholders and marked acquired."""
@@ -645,8 +901,9 @@ def _is_client_class(name: str) -> bool:
 
 class _ClientReferences(ast.NodeVisitor):
     """Every reference to a cloud SDK client class outside a type annotation: constructed, aliased
-    (`factory = anthropic.Anthropic`), or imported by name. Parsed, not searched: the docstrings and
-    comments in this harness mention `anthropic.Anthropic()` a dozen times.
+    (`factory = anthropic.Anthropic`), reached through an aliased module (`import anthropic as a`) or a
+    submodule (`anthropic._client.Anthropic`), or imported by name. Parsed, not searched: the docstrings
+    and comments in this harness mention `anthropic.Anthropic()` a dozen times.
 
     What this cannot see: a class reached through getattr or importlib, and a raw client handed to
     `JudgeClient(client=...)` by a caller. The first is deliberate evasion; the second is how the tests
@@ -654,9 +911,18 @@ class _ClientReferences(ast.NodeVisitor):
 
     def __init__(self):
         self.hits: list[int] = []
+        self.modules = set(_SDKS)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.name.split(".")[0] in _SDKS:
+                self.modules.add(alias.asname or alias.name.split(".")[0])
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        if isinstance(node.value, ast.Name) and node.value.id in _SDKS and _is_client_class(node.attr):
+        root = node.value
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if isinstance(root, ast.Name) and root.id in self.modules and _is_client_class(node.attr):
             self.hits.append(node.lineno)
         self.generic_visit(node)
 
@@ -694,11 +960,15 @@ def test_the_guard_sees_a_use_and_not_a_mention_or_an_annotation():
     assert _client_references("from openai import OpenAI\nc = OpenAI(api_key='k')\n") == [1]
     assert _client_references("from anthropic import AsyncAnthropicBedrock as B\n") == [1]
     assert _client_references("import openai\ndef f(c=openai.OpenAI()): ...\n") == [2]
+    assert _client_references("import anthropic as a\nc = a.Anthropic()\n") == [2]
+    assert _client_references("import anthropic\nc = anthropic._client.Anthropic()\n") == [2]
+    assert _client_references("def f():\n    import openai as o\n    return o.AzureOpenAI()\n") == [3]
     quiet = (
         '"""uses anthropic.Anthropic()"""\n# openai.OpenAI()\nimport anthropic, openai\n'
         "def f(client: anthropic.Anthropic | None = None) -> openai.OpenAI: ...\n"
         "x: anthropic.Anthropic\n"
         "try: ...\nexcept (anthropic.RateLimitError, openai.APIStatusError): ...\n"
+        "import openai as _openai_for_isinstance\nisinstance(1, _openai_for_isinstance.RateLimitError)\n"
     )
     assert _client_references(quiet) == []
 

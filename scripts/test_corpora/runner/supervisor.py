@@ -49,7 +49,9 @@ PATTERNS: dict[str, re.Pattern] = {
     "completion": re.compile(r"sweep complete after"),
     "phase_boundary": re.compile(r"=== Phase (?P<phase>\d+) complete ==="),
     "sample_card": re.compile(r"^\[Phase (?P<phase>\d+) · (?P<model>[\w.\-]+) · (?P<corpus>\w+) · (?P<qid>[\w-]+)\]"),
-    "blocked": re.compile(r"sweep stops|^blocked\b", re.IGNORECASE),
+    # A spend-cap stop is logged at ERROR. It is the run ending on purpose, not the active model failing:
+    # matched here, before "error", so it is not counted toward that model's error streak.
+    "blocked": re.compile(r"sweep stops|^blocked\b|stopped by the spend cap", re.IGNORECASE),
     "error": re.compile(r"\b(ERROR|Traceback|OOM|Killed|Connection refused|HTTPStatusError|ReadTimeout)\b"),
     # Match real rate-limit signals only:
     #   - HTTP 429 status codes

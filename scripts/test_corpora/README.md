@@ -78,11 +78,17 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
   total. A call that could cross the cap is not made, and the run stops with exit code 3 (the sweep,
   `--mode answer-eval`, the audit's `--cross-judge` and `rerun_pr_j` alike). Finished units are saved, and
   `--resume` continues the same run against the same ledger. The unit that was about to be judged when the
-  cap hit keeps its metrics row with empty verdict columns; `--rerun` it to judge it.
-- **A call that fails** costs nothing only when the API answered with an error status. A timeout, a dropped
-  connection or an interrupt may still have been served and billed, so it is charged its worst case and
-  counted under `estimated_calls`. The SDKs' own retries of a timed-out attempt are not visible to the
-  meter: a failing call can cost up to two more reservations than the ledger says.
+  cap hit keeps its metrics row with empty verdict columns. There is no judge-only pass yet (#663): `--rerun`
+  would judge it, but only by redoing its local compute. A run that has reached its cap can be resumed with
+  `--no-judge`; judging the rest is a new `--run-id`, with its own cap.
+- **A refused setting is exit code 3 too**: a cap above `spend.yaml`'s, a cap that is not a number, a second
+  judge on a resumed run.
+- **A call that fails** costs nothing where the request is known not to have been served: the API answered
+  with an error status, the connection was never made, or the SDK rejected the request before sending it (no
+  credentials). A read timeout, a connection dropped mid-request or an interrupt may have been served and
+  billed, so it is charged its worst case and counted under `estimated_calls`.
+- **Retries are metered.** The SDK clients are built with `max_retries=0` and the meter retries what they
+  would have (connection errors, 408, 409, 429, 5xx; two more attempts), so every attempt is in the ledger.
 - **After each call**, `<run_dir>/spend.json` is rewritten with the total, the calls, and tokens and dollars
   per model and per call kind. A dated report quotes its spend and its judge from there.
 - `--spend-cap-usd N` (or `HC_EVAL_SPEND_CAP_USD`) lowers the cap for one run. Raising it is an edit to

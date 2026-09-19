@@ -41,6 +41,9 @@ log = logging.getLogger(__name__)
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "spend.yaml"
 CAP_ENV = "HC_EVAL_SPEND_CAP_USD"
 LEDGER_NAME = "spend.json"
+# Attempts after the first, for what the SDKs would have retried themselves. Each one is metered.
+MAX_RETRIES = 2
+_sleep = time.sleep
 # Reserved for the reply when a request names no output limit.
 DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
@@ -60,6 +63,11 @@ class UnpricedModel(SpendError):
 
 class UnmeterableCall(SpendError):
     """A request whose cost the meter cannot see (a streamed create)."""
+
+
+class SpendConfigError(ValueError):
+    """The run asked for something the spend policy does not allow (a higher cap, a second judge on a resumed
+    run). Entry points turn it into exit code 3, like a cap refusal."""
 
 
 class UnmeteredAttribute(AttributeError):
@@ -143,7 +151,7 @@ def header_line(snapshot: dict[str, Any]) -> str:
     return (
         f"Cloud spend: USD {snapshot['total_usd']:.2f} of a {snapshot['cap_usd']:.2f} cap over {snapshot['calls']} calls"
         + (f" ({estimated} charged at their worst case)" if estimated else "")
-        + f"; judge {run.get('judge_model', 'not recorded')}; prices as of {snapshot['prices_verified']}."
+        + f"; judge {run.get('judge_model') or 'none'}; prices as of {snapshot['prices_verified']}."
     )
 
 
@@ -159,12 +167,12 @@ class SpendMeter:
         run_info: dict[str, str] | None = None,
     ):
         if cap_usd is not None and cap_usd > config.cap_usd:
-            raise ValueError(
+            raise SpendConfigError(
                 f"a run may lower the cap, not raise it: asked for {cap_usd:.2f}, {CONFIG_PATH.name} says "
                 f"{config.cap_usd:.2f}. Raising it is an edit to that file, in a PR."
             )
         if cap_usd is not None and not cap_usd > 0:
-            raise ValueError("the cap must be positive")
+            raise SpendConfigError("the cap must be positive")
         self.config = config
         self.cap_usd = config.cap_usd if cap_usd is None else float(cap_usd)
         self._ledger_path = ledger_path
@@ -187,7 +195,7 @@ class SpendMeter:
             self._by_kind = prior.get("by_kind", {})
             was, now = prior.get("run", {}).get("judge_model"), self._run_info.get("judge_model")
             if was and now and was != now:
-                raise ValueError(
+                raise SpendConfigError(
                     f"this run was judged by {was}; resuming it with {now} would mix two judges' scores in one "
                     "set of results. Start a new --run-id for a different judge."
                 )
@@ -274,7 +282,8 @@ class SpendMeter:
             lines = ", ".join(f"{count} x {kind} on {model}" for kind, model, count in plan if count > 0)
             raise SpendCapExceeded(
                 f"this run is estimated at USD {estimate:.2f} ({lines}) on top of {spent:.2f} already spent, over "
-                f"the cap of {self.cap_usd:.2f}. Narrow it (--phases, --corpora, --models, --no-judge) and start again."
+                f"the cap of {self.cap_usd:.2f}. Narrow it (--phases, or --no-judge) and run it again, with --resume if "
+                "this run id already has units."
             )
         return estimate
 
@@ -313,7 +322,12 @@ _meter_lock = threading.Lock()
 
 def _cap_from_env() -> float | None:
     raw = os.environ.get(CAP_ENV)
-    return float(raw) if raw else None
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        raise SpendConfigError(f"{CAP_ENV}={raw!r} is not a number") from None
 
 
 def configure(
@@ -397,20 +411,30 @@ class _MeteredCreate:
         model = kwargs["model"]
         limit = next((kwargs[k] for k in self._output_limit_keys if kwargs.get(k)), DEFAULT_MAX_OUTPUT_TOKENS)
         meter = get_meter()
+        meter.config.price(model)  # an unpriced model is refused before anything is built or reserved
+        self._owner._client()  # a client that cannot be built (no key) has spent nothing: fail before reserving
         request = {k: v for k, v in kwargs.items() if k not in ("model", *self._output_limit_keys)}
-        reserved = meter.reserve(model, _estimate_tokens(request, meter.config.chars_per_token), int(limit))
-        try:
-            resp = self._owner._create(**kwargs)
-        except BaseException as exc:
-            if self._owner._was_refused(exc):
-                meter.release(reserved)
-            else:
-                # A timeout, a dropped connection, Ctrl-C mid-generation: the request may have been served
-                # and billed with nobody left to read the usage. Charge the worst case.
-                meter.settle(model, self._owner.kind, reserved, None)
-            raise
-        meter.settle(model, self._owner.kind, reserved, self._read_usage(resp))
-        return resp
+        estimate = _estimate_tokens(request, meter.config.chars_per_token)
+        # The SDK clients are built with max_retries=0 and the retries happen here, so that every attempt
+        # is reserved and settled. A retry inside the SDK would be an attempt the ledger never saw.
+        for attempt in range(1 + MAX_RETRIES):
+            reserved = meter.reserve(model, estimate, int(limit))
+            try:
+                resp = self._owner._create(**kwargs)
+            except BaseException as exc:
+                if self._owner._known_unbilled(exc):
+                    meter.release(reserved)
+                else:
+                    # A read timeout, a connection dropped after the request went out, Ctrl-C mid-generation:
+                    # it may have been served and billed with nobody left to read the usage.
+                    meter.settle(model, self._owner.kind, reserved, None)
+                if attempt < MAX_RETRIES and self._owner._retryable(exc):
+                    _sleep(min(8.0, 0.5 * 2**attempt))
+                    continue
+                raise
+            meter.settle(model, self._owner.kind, reserved, self._read_usage(resp))
+            return resp
+        raise AssertionError("unreachable")  # pragma: no cover
 
 
 class _MeteredClient:
@@ -422,12 +446,31 @@ class _MeteredClient:
         self._factory = factory
         self._inner = inner
 
-    def _was_refused(self, exc: BaseException) -> bool:
-        """True when the API answered with an error status, which is not billed. The SDKs' own retries of a
-        timed-out attempt stay invisible: a failing call can cost up to their retry count times its
-        reservation more than the ledger says (two retries by default)."""
-        status_error = getattr(self._sdk(), "APIStatusError", None)
-        return status_error is not None and isinstance(exc, status_error)
+    def _known_unbilled(self, exc: BaseException) -> bool:
+        """True only where the request is known not to have been served: the API answered with an error
+        status, the connection was never made, or the SDK rejected the request while building it (no
+        credentials, a malformed argument). Anything else is charged: phantom dollars during an outage
+        would fill a ledger that a resumed run inherits, but so would silence about a served call."""
+        import httpx
+
+        sdk = self._sdk()
+        if isinstance(exc, getattr(sdk, "APIStatusError", ())):
+            return True
+        if isinstance(exc, getattr(sdk, "APIConnectionError", ())):
+            return isinstance(exc.__cause__, (httpx.ConnectError, httpx.ConnectTimeout))
+        return isinstance(exc, (TypeError, ValueError))
+
+    def _retryable(self, exc: BaseException) -> bool:
+        """What the SDKs themselves retry: connection errors, and 408, 409, 429 and 5xx."""
+        sdk = self._sdk()
+        if isinstance(exc, getattr(sdk, "APIConnectionError", ())):
+            return True
+        status = getattr(exc, "status_code", None)
+        return (
+            isinstance(exc, getattr(sdk, "APIStatusError", ()))
+            and isinstance(status, int)
+            and (status in (408, 409, 429) or status >= 500)
+        )
 
     def _client(self) -> Any:
         # Built on first use: openai.OpenAI() demands its key at construction, and the harness builds
@@ -448,7 +491,7 @@ class MeteredAnthropic(_MeteredClient):
         import anthropic
 
         self._sdk = lambda: anthropic
-        super().__init__(kind, anthropic.Anthropic, inner)
+        super().__init__(kind, lambda: anthropic.Anthropic(max_retries=0), inner)
         self.messages = _MeteredCreate(self, ("max_tokens",), _anthropic_usage)
 
     def _create(self, **kwargs: Any) -> Any:
@@ -465,7 +508,7 @@ class MeteredOpenAI(_MeteredClient):
         import openai
 
         self._sdk = lambda: openai
-        super().__init__(kind, openai.OpenAI, inner)
+        super().__init__(kind, lambda: openai.OpenAI(max_retries=0), inner)
         self.chat = _Completions(_MeteredCreate(self, ("max_completion_tokens", "max_tokens"), _openai_usage))
 
     def _create(self, **kwargs: Any) -> Any:

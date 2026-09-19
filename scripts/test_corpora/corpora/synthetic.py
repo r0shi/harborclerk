@@ -116,13 +116,44 @@ def _make_client():
     return spend.anthropic_client("synthetic_doc")
 
 
+def _doc_names(doc_counts: dict[str, int] | None = None) -> list[tuple[str, str]]:
+    """(doc_type, file stem) for every document of the corpus, in generation order."""
+    names, seq = [], 0
+    for doc_type, n in (doc_counts or DOC_COUNTS_DEFAULT).items():
+        for _ in range(n):
+            seq += 1
+            names.append((doc_type, f"{seq:04d}_{doc_type}"))
+    return names
+
+
+def _is_generated(ingest_dir: Path, base: str) -> bool:
+    # The facts file is written last, so it marks a finished document. The .txt may since have become a .pdf.
+    return (ingest_dir / f"{base}.json").exists() and any(
+        (ingest_dir / f"{base}{s}").exists() for s in (".txt", ".pdf")
+    )
+
+
 def planned_generation_count(workdir: Path, doc_counts: dict[str, int] | None = None) -> int:
-    """How many documents `acquire` would generate, for the pre-run spend estimate: none once the corpus
-    is acquired, otherwise every one."""
+    """How many documents `acquire` would generate, for the pre-run spend estimate: none once the corpus is
+    acquired, otherwise the ones a stopped generation has not written yet."""
     ingest_dir = Path(workdir) / "ingest"
     if (ingest_dir / ".acquired").exists() and any(d.suffix in {".txt", ".pdf"} for d in ingest_dir.glob("*")):
         return 0
-    return sum((doc_counts or DOC_COUNTS_DEFAULT).values())
+    return sum(1 for _, base in _doc_names(doc_counts) if not _is_generated(ingest_dir, base))
+
+
+def _draw_prompt(doc_type: str, rng: random.Random) -> str:
+    """The prompt for the next document. Apart from `_generate_one` so that a resumed generation can draw
+    (and discard) the prompts of documents it already has, and leave the later ones as they would have been."""
+    template = PROMPT_TEMPLATES[doc_type]
+    # Pick a deterministic-ish date in 2025
+    date = f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}"
+    return template.format(
+        company_name=COMPANY["name"],
+        date=date,
+        year=2025,
+        q=rng.randint(1, 4),
+    )
 
 
 def _generate_one(
@@ -130,15 +161,7 @@ def _generate_one(
     doc_type: str,
     rng: random.Random,
 ) -> dict:
-    template = PROMPT_TEMPLATES[doc_type]
-    # Pick a deterministic-ish date in 2025
-    date = f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}"
-    prompt = template.format(
-        company_name=COMPANY["name"],
-        date=date,
-        year=2025,
-        q=rng.randint(1, 4),
-    )
+    prompt = _draw_prompt(doc_type, rng)
     msg = client.messages.create(
         model=GENERATION_MODEL,
         max_tokens=4000,
@@ -210,19 +233,24 @@ def acquire(
     client = _make_client()
 
     all_docs: list[tuple[str, dict]] = []  # (type, generated dict)
-    seq = 0
-    for doc_type, n in counts.items():
-        for _ in range(n):
-            seq += 1
-            try:
-                gen = _generate_one(client, doc_type, rng)
-            except Exception as exc:
-                # Skip individual failures rather than abort the whole sweep
-                gen = {"text": f"[generation failed: {exc}]", "facts": {"_error": str(exc)}}
-            base = f"{seq:04d}_{doc_type}"
-            (ingest_dir / f"{base}.txt").write_text(gen["text"])
-            (ingest_dir / f"{base}.json").write_text(json.dumps(gen.get("facts", {}), indent=2))
+    for doc_type, base in _doc_names(counts):
+        if _is_generated(ingest_dir, base) and (ingest_dir / f"{base}.txt").exists():
+            # Bought by an earlier, stopped generation (the spend cap, Ctrl-C). Not bought again.
+            _draw_prompt(doc_type, rng)
+            gen = {
+                "text": (ingest_dir / f"{base}.txt").read_text(),
+                "facts": json.loads((ingest_dir / f"{base}.json").read_text()),
+            }
             all_docs.append((doc_type, gen))
+            continue
+        try:
+            gen = _generate_one(client, doc_type, rng)
+        except Exception as exc:
+            # Skip individual failures rather than abort the whole sweep
+            gen = {"text": f"[generation failed: {exc}]", "facts": {"_error": str(exc)}}
+        (ingest_dir / f"{base}.txt").write_text(gen["text"])
+        (ingest_dir / f"{base}.json").write_text(json.dumps(gen.get("facts", {}), indent=2))
+        all_docs.append((doc_type, gen))
 
     # OCR subset: pick N docs randomly, render to PDF, replace .txt
     if ocr_subset_count > 0 and all_docs:

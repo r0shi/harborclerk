@@ -123,6 +123,10 @@ def rejudge_with(
                     "judge_model": judge_model,
                 }
             )
+        except spend.SpendError as exc:
+            # The verdicts so far were paid for. They travel with the stop.
+            exc.partial_results = results
+            raise
         except Exception as exc:
             log.warning("rejudge failed for %s: %s", qid, exc)
             results.append(

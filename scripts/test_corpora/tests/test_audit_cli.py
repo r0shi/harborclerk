@@ -320,6 +320,34 @@ def test_main_cross_judge_over_the_cap_returns_3_and_still_writes_the_static_aud
     assert audit["cross_judge"] is None and audit["tool_use"] is not None
 
 
+def test_a_cap_stop_partway_through_the_cross_judge_keeps_the_verdicts_already_paid_for(tmp_path):
+    from scripts.test_corpora.runner import spend
+
+    cap_dir = tmp_path / "answer-eval" / "captures" / "synthetic" / "claude-sonnet-4-6"
+    v_dir = tmp_path / "answer-eval" / "verdicts" / "synthetic" / "claude-sonnet-4-6"
+    for i in range(4):
+        _write_capture(cap_dir, f"q{i}", ["kb_search"])
+        _write_verdict(v_dir, f"q{i}", correctness=5)
+
+    class RunsOut(_FixedJudge):
+        calls = 0
+
+        def judge(self, prompt: str) -> str:
+            RunsOut.calls += 1
+            if RunsOut.calls == 3:
+                raise spend.SpendCapExceeded("the third call could cross the cap")
+            return super().judge(prompt)
+
+    with patch("scripts.test_corpora.audit_answer_eval._build_judge_provider") as mb:
+        mb.return_value = RunsOut()
+        rc = main(["--workdir", str(tmp_path), "--label", "smoke", "--cross-judge", "gpt-4o"])
+    assert rc == 3
+    audit = json.loads((tmp_path / "answer-eval" / "reports" / "smoke" / "audit.json").read_text())
+    assert audit["cross_judge"]["n"] == 2 and "third call" in audit["cross_judge"]["stopped_by_spend_cap"]
+    ledger = json.loads((tmp_path / "answer-eval" / "reports" / "smoke" / "spend-cross-judge.json").read_text())
+    assert ledger["run"] == {"mode": "cross-judge", "label": "smoke", "judge_model": "gpt-4o"}
+
+
 def test_main_skip_static_only_runs_cross_judge(tmp_path):
     cap_dir = tmp_path / "answer-eval" / "captures" / "synthetic" / "claude-sonnet-4-6"
     _write_capture(cap_dir, "q1", ["kb_search"])

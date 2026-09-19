@@ -186,7 +186,14 @@ def main(argv: list[str] | None = None) -> int:
 
     from scripts.test_corpora.runner import spend
 
-    meter = spend.configure(ledger_path=workdir / "answer-eval" / f"spend-rerun-{args.label}.json")
+    try:
+        meter = spend.configure(
+            ledger_path=workdir / "answer-eval" / f"spend-rerun-{args.label}.json",
+            run_info={"mode": "rerun-pr-j", "label": args.label, "model": args.model},
+        )
+    except spend.SpendConfigError as exc:
+        log.error("stopped by the spend cap: %s", exc)
+        return 3
     populations = json.loads(Path(args.populations).read_text())
     n_items = len(populations.get("negatives_hedged") or []) + len(populations.get("finds_short") or [])
     from scripts.test_corpora.runner.providers.factory import model_is_cloud

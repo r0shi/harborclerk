@@ -174,19 +174,23 @@ def main(argv: list[str] | None = None) -> int:
         audit["citation_hygiene"] = citation_hygiene(captures)
 
     # Cross-judge re-score (optional)
+    stopped = None
     if args.cross_judge:
         from scripts.test_corpora.runner import spend
-
-        report_dir = args.output_dir or (workdir / "answer-eval" / "reports" / args.label)
-        meter = spend.configure(ledger_path=report_dir / "spend-cross-judge.json")
-        n = len(captures) if args.rejudge_sample is None else min(args.rejudge_sample, len(captures))
-        try:
-            judge_provider = _build_judge_provider(args.cross_judge)
-        except SystemExit as exc:
-            return int(exc.code or 1)
         from scripts.test_corpora.runner.cross_judge import compare_judges, rejudge_with
 
+        report_dir = args.output_dir or (workdir / "answer-eval" / "reports" / args.label)
+        n = len(captures) if args.rejudge_sample is None else min(args.rejudge_sample, len(captures))
+        rejudge_results: list[dict] = []
         try:
+            meter = spend.configure(
+                ledger_path=report_dir / "spend-cross-judge.json",
+                run_info={"mode": "cross-judge", "label": args.label, "judge_model": args.cross_judge},
+            )
+            try:
+                judge_provider = _build_judge_provider(args.cross_judge)
+            except SystemExit as exc:
+                return int(exc.code or 1)
             meter.require_within_cap([("cross_judge", args.cross_judge, n)])
             rejudge_results = rejudge_with(
                 captures,
@@ -194,28 +198,31 @@ def main(argv: list[str] | None = None) -> int:
                 judge_model=args.cross_judge,
                 items=args.rejudge_sample,
             )
-        except spend.SpendError as exc:
-            # The static sections cost nothing and are already computed: write them, then report the stop.
+        except (spend.SpendError, spend.SpendConfigError) as exc:
+            # The static sections cost nothing, and any verdicts so far were paid for: both are written.
             sys.stderr.write(f"audit: cross-judge stopped by the spend cap: {exc}\n")
-            _write_audit(audit, args.output_dir or (workdir / "answer-eval" / "reports" / args.label))
-            return 3
-        # Reshape verdicts (from detail.json or per-item files) to the
-        # compare_judges input shape: needs {"qid", correctness, groundedness,
-        # completeness, rationale}.
-        verdicts_a = [
-            {
-                "qid": v.get("id"),
-                "correctness": v.get("correctness", 0),
-                "groundedness": v.get("groundedness", 0),
-                "completeness": v.get("completeness", 0),
-                "rationale": v.get("rationale", ""),
-            }
-            for v in verdicts
-        ]
-        audit["cross_judge"] = compare_judges(verdicts_a, rejudge_results, judges=(model, args.cross_judge))
+            stopped = str(exc)
+            rejudge_results = getattr(exc, "partial_results", [])
+        if rejudge_results:
+            # Reshape verdicts (from detail.json or per-item files) to the
+            # compare_judges input shape: needs {"qid", correctness, groundedness,
+            # completeness, rationale}.
+            verdicts_a = [
+                {
+                    "qid": v.get("id"),
+                    "correctness": v.get("correctness", 0),
+                    "groundedness": v.get("groundedness", 0),
+                    "completeness": v.get("completeness", 0),
+                    "rationale": v.get("rationale", ""),
+                }
+                for v in verdicts
+            ]
+            audit["cross_judge"] = compare_judges(verdicts_a, rejudge_results, judges=(model, args.cross_judge))
+            if stopped:
+                audit["cross_judge"]["stopped_by_spend_cap"] = stopped
 
     _write_audit(audit, args.output_dir or (workdir / "answer-eval" / "reports" / args.label))
-    return 0
+    return 3 if stopped else 0
 
 
 def _write_audit(audit: dict, output_dir: Path) -> None:

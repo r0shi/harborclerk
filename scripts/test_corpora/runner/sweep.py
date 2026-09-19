@@ -652,11 +652,15 @@ def _plan_units(
 # ── phase handlers ──
 
 
-def _spend_plan(units, *, workdir: Path, judge_model: str, no_judge: bool) -> list[tuple[str, str, int]]:
-    """The cloud calls the pending units imply, as (kind, model, calls), for the pre-run estimate. Every
-    pending phase-4/5 unit counts as one judge call: some will degrade and never be judged, and an
-    estimate that refuses a run should err high."""
-    pending = [u for u in units if u.status == Status.PENDING]
+def _spend_plan(
+    units, *, phases: set[int], workdir: Path, judge_model: str, no_judge: bool
+) -> list[tuple[str, str, int]]:
+    """The cloud calls this invocation will make, as (kind, model, units), for the pre-run estimate: the
+    pending units in the phases asked for. state.json holds every phase ever planned for the run id, and
+    the run loop skips the ones outside --phases; pricing them all refused the runbook's phase-by-phase
+    resume. Every pending phase-4/5 unit counts as one judge call: some will degrade and never be judged,
+    and an estimate that refuses a run should err high."""
+    pending = [u for u in units if u.status == Status.PENDING and u.phase in phases]
     synthetic_docs = 0
     if any(u.phase == 0 and u.corpus == "synthetic" for u in pending):
         synthetic_docs = synthetic.planned_generation_count(workdir / "synthetic")
@@ -665,6 +669,20 @@ def _spend_plan(units, *, workdir: Path, judge_model: str, no_judge: bool) -> li
         ("baseline_question", cfg.BASELINE_MODEL, sum(1 for u in pending if u.phase == 1)),
         ("judge", judge_model, 0 if no_judge else sum(1 for u in pending if u.phase in (4, 5))),
     ]
+
+
+def _run_info(args: argparse.Namespace) -> dict[str, str]:
+    """What the ledger says about the run. A run that judges nothing names no judge, so it neither claims
+    one in a report nor trips the no-second-judge guard."""
+    if args.mode == "answer-eval":
+        model = args.models.split(",")[0].strip() if args.models else "claude-sonnet-4-6"
+        return {"run_id": args.run_id, "mode": "answer-eval", "model": model, "judge_model": args.judge_model}
+    return {
+        "run_id": args.run_id,
+        "mode": "sweep",
+        "baseline_model": cfg.BASELINE_MODEL,
+        "judge_model": "" if args.no_judge else args.judge_model,
+    }
 
 
 def _phase0_acquire(corpus_id: str, workdir: Path) -> CorpusManifest:
@@ -901,7 +919,7 @@ def main(argv: list[str] | None = None) -> int:
         m = spend.configure(
             ledger_path=run_dir / spend.LEDGER_NAME,
             cap_usd=args.spend_cap_usd,
-            run_info={"run_id": args.run_id, "judge_model": args.judge_model, "baseline_model": cfg.BASELINE_MODEL},
+            run_info=_run_info(args),
         )
         log.info(
             "cloud spend: cap USD %.2f, already spent %.4f (%s)", m.cap_usd, m.total_usd, run_dir / spend.LEDGER_NAME
@@ -920,10 +938,10 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.test_corpora.runner import answer_eval
 
         # This mode takes no run lock: two of these on one --run-id would each count from the same ledger.
-        _configure_meter()
         try:
+            _configure_meter()
             return answer_eval.main_from_args(args)
-        except spend.SpendError as exc:
+        except (spend.SpendError, spend.SpendConfigError) as exc:
             log.error("stopped by the spend cap: %s", exc)
             return 3
 
@@ -1037,7 +1055,9 @@ def main(argv: list[str] | None = None) -> int:
 
         # Refuse a run that is estimated over the cap before it has spent anything or touched Harbor Clerk
         # (ADR 0001, decision 6).
-        plan = _spend_plan(sf.units(), workdir=workdir, judge_model=args.judge_model, no_judge=args.no_judge)
+        plan = _spend_plan(
+            sf.units(), phases=phases, workdir=workdir, judge_model=args.judge_model, no_judge=args.no_judge
+        )
         if not args.dry_run:
             estimate = meter.require_within_cap(plan)
             log.info("cloud spend estimate for the pending units: USD %.2f of %.2f", estimate, meter.cap_usd)
@@ -1795,12 +1815,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except spend.SpendCapExceeded as exc:
         # Not an Exception, so none of the keep-going handlers above can have swallowed it. Units already
-        # done are saved with their rows; the unit that was judged when the cap hit has its row with empty
-        # verdict columns (re-judge it with --rerun). --resume continues the same run against the same ledger.
+        # done are saved with their rows; the unit that was about to be judged when the cap hit has its row
+        # with empty verdict columns. --resume continues the same run against the same ledger.
         log.error("stopped by the spend cap: %s", exc)
         return 3
     except spend.SpendError as exc:
-        log.error("stopped: a cloud call that cannot be metered cannot be capped: %s", exc)
+        log.error("stopped by the spend cap: a cloud call that cannot be metered cannot be capped: %s", exc)
+        return 3
+    except spend.SpendConfigError as exc:
+        log.error("stopped by the spend cap: %s", exc)
         return 3
     finally:
         sf.release_lock()
