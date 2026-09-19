@@ -176,6 +176,29 @@ MODELS: dict[str, ModelInfo] = {
             parallel_slots=1,
         ),
         ModelInfo(
+            # Added for evaluation (#551): the only curated model between 5.7 and 11.6 GB, where a 16 GB Mac
+            # has room for a larger model than Qwen3.5-9B and none existed. Not yet evaluated on this product.
+            id="gemma4-12b",
+            name="Gemma 4 12B",
+            # unsloth, not bartowski (where the 26B comes from): bartowski's 12B GGUF carries
+            # context_length 131072, and Google's config.json says 262144, as unsloth's header does.
+            # llama-server trusts the header. Read 2026-09-19.
+            huggingface_repo="unsloth/gemma-4-12b-it-GGUF",
+            filename="gemma-4-12b-it-Q4_K_M.gguf",
+            size_bytes=7_121_861_440,
+            context_window=262144,
+            supports_tools=True,
+            # Dense, 48 layers. 8 attend globally (1 KV head × (512 + 512) × 2 bytes each): 16 KB per token,
+            # 4.3 GB at 262K. The other 40 use a 1024-token sliding window at 8 KV heads × (256 + 256) × 2
+            # bytes per cell, over swa_cache_cells(1024) = 1536 cells: 503 MB, fixed, and as much again for
+            # each context checkpoint. That is what decides this model on a small Mac: with three kept, a
+            # 16 GB Mac has room for 63K tokens of it, not the 156K the KV alone would suggest.
+            kv_bytes_per_token=16_384,
+            kv_fixed_bytes=503_316_480,
+            checkpoint_bytes=503_316_480,
+            parallel_slots=1,
+        ),
+        ModelInfo(
             id="gemma4-26b-a4b",
             name="Gemma 4 26B-A4B",
             huggingface_repo="bartowski/google_gemma-4-26B-A4B-it-GGUF",

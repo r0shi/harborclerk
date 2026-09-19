@@ -225,6 +225,7 @@ def _read_header(f, prefix: str) -> dict:
 GEOMETRY = {
     "qwen3-8b": ("qwen3", "all"),
     "qwen3-4b": ("qwen3", "all"),
+    "gemma4-12b": ("gemma4", "global"),
     "gemma4-26b-a4b": ("gemma4", "global"),  # sliding_window_pattern: 1 = windowed, 0 = global
     "gpt-oss-20b": ("gpt-oss", "half"),  # llama.cpp alternates window and full layers for this architecture
     "qwen36-35b-a3b": ("qwen35moe", "interval"),  # full_attention_interval
@@ -365,6 +366,14 @@ WHAT_EACH_MAC_GETS = {
         16: (220160, 0),
         18: (262144, 749),
         24: (262144, 6893),
+        32: (262144, 8192),
+        36: (262144, 8192),
+        64: (262144, 8192),
+    },
+    "gemma4-12b": {
+        16: (63488, 0),
+        18: (194560, 0),
+        24: (262144, 5092),
         32: (262144, 8192),
         36: (262144, 8192),
         64: (262144, 8192),

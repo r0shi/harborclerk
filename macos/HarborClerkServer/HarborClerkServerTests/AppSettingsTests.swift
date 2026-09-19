@@ -152,6 +152,7 @@ final class AppSettingsTests: XCTestCase {
             "qwen3-4b": "Qwen3-4B-Q4_K_M.gguf",
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
             "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+            "gemma4-12b": "gemma-4-12b-it-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
             "qwen35-9b": "Qwen3.5-9B-Q4_K_M.gguf",
             "qwen35-4b": "Qwen3.5-4B-Q4_K_M.gguf",
@@ -195,6 +196,7 @@ final class AppSettingsTests: XCTestCase {
             "qwen35-4b": (32_768, 52_690_944, 210_763_776, 262144),
             "gpt-oss-20b": (24_576, 18_874_368, 75_497_472, 128000),
             "qwen36-35b-a3b": (20_480, 65_863_680, 263_454_720, 262144),
+            "gemma4-12b": (16_384, 503_316_480, 2_013_265_920, 262144),
             "gemma4-26b-a4b": (20_480, 314_572_800, 1_258_291_200, 262144),  // #548
         ]
         let settings = AppSettings(configURL: configURL)
@@ -297,6 +299,7 @@ final class AppSettingsTests: XCTestCase {
         "qwen35-4b",
         "gpt-oss-20b",
         "qwen36-35b-a3b",
+        "gemma4-12b",
         "gemma4-26b-a4b",
     ]
 
@@ -314,6 +317,7 @@ final class AppSettingsTests: XCTestCase {
             "qwen35-9b": 1,
             "qwen35-4b": 1,
             "gpt-oss-20b": 1,
+            "gemma4-12b": 1,
             "gemma4-26b-a4b": 1,
             "qwen36-35b-a3b": 1,
         ]
