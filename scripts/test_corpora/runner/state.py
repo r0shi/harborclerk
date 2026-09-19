@@ -275,6 +275,10 @@ class StateFile:
         for u in self._units.values():
             if self._unit_matches_selectors(u, norm):
                 u.status = Status.SKIPPED
+                # The sweep skips units itself ("skipped before the run: ...") and revives those at every
+                # start. One the operator skips is the operator's: it loses that mark and stays skipped.
+                if (u.error or "").startswith("skipped before the run"):
+                    u.error = "skipped by the operator"
                 n += 1
         return n
 

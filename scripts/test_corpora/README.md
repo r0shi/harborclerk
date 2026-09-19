@@ -32,6 +32,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export HC_USERNAME="admin@example.com"
 export HC_PASSWORD="..."
 export HC_API_BASE="http://localhost:8100"   # or "https://localhost" for Docker
+export HC_EVAL_DISPOSABLE=1                  # this run WIPES the instance; see "The instance is wiped" below
 cd /path/to/mcp-gateway
 uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
     --run-id 2026-05-05-full \
@@ -64,6 +65,69 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.swee
 
 `--phases` filters to a subset of phases (range or comma list): `--phases 0`,
 `--phases 0-2`, `--phases 1,4,5`.
+
+## The instance is wiped
+
+Before each corpus the sweep deletes **every watched folder and every document** on the instance, so that
+each corpus is measured alone (the delete takes uploads and fetched mail with it). Pointed at the wrong
+instance, that destroys a working index. It refuses to start (exit code 4) unless all of these hold:
+
+- `HC_EVAL_DISPOSABLE=1` is set. Set it only for an instance whose documents you can lose.
+- `--api-base` is loopback. Nothing remote is ever wiped.
+- Every watched folder on the instance is one of this harness's ingest directories
+  (`<workdir>/<corpus>/ingest`). A folder of your own is the sign of a real corpus, whatever the environment
+  says.
+
+- It has no connected mailbox. Fetched mail is stored, not read in place, and cannot be re-read.
+- If it holds documents, one of the harness's folders is there to account for them. Documents with no
+  harness folder are someone's uploads.
+
+What the guard cannot see, so look yourself before you set the flag: uploads made to an instance that also
+holds a harness corpus; mail documents whose account has since been removed (the documents stay, the
+mailbox check sees no account); and a loopback address that is an SSH forward to a machine somewhere else.
+
+The flag and the address are checked before anything is written, and a run that this refusal created is
+taken back, so the same command works once the instance is right: no `--resume`. Only what that invocation
+made is removed: a run that already existed stays (with any `--rerun`/`--skip` flips you passed, which are
+saved before the instance is looked at), and so does a ledger that was already there. If the instance changes under a running sweep, the check beside the deletion ends
+the run with the same code. `--no-ingest`, `--dry-run` and phases that ingest nothing (0, 2, 3) wipe nothing
+and need no flag.
+
+## Which models run
+
+Every model in the registry (`src/harbor_clerk/llm/models.py`, read directly: there is no second list to
+update), or the ones named with `--models`. Models the instance has not downloaded, or cannot fit in memory,
+are skipped with a reason before the run, and every start reconsiders what an earlier one skipped: download
+the model, `--resume`, and its units run. "Cannot fit" means the app would refuse to load it at any context;
+a model whose full window does not fit still runs, clamped. The spend estimate is made before this (it
+needs no login), so it prices the skipped models too: it errs high.
+
+## Is the machine fit to measure on?
+
+```bash
+uv --project scripts/test_corpora run python -m scripts.test_corpora.preflight --models qwen3-8b,qwen35-9b \
+    --json "$WORKDIR/results/$RUN/preflight.json"
+```
+
+Thermal pressure, power, free memory, a busy GPU at idle, other model servers, the installed `llama-server`
+against the pin, whether each model fits this machine (a named model that cannot load fails; with no
+`--models`, it only warns, since the sweep skips it), and the health of the instance `HC_API_BASE` names. A check that
+could not look (no app bundle, not a Mac) makes the verdict `warn`, never `pass`. It changes nothing. Exit 1
+means a number taken now is not a baseline; the report carries the verdict either way. It exists because a
+Mac mini sat at thermal pressure "Sleeping", its GPU held at the lowest clock step, through weeks of
+measurements, and `pmset -g therm` recorded nothing (#652).
+
+## The report
+
+```bash
+uv --project scripts/test_corpora run python -m scripts.test_corpora.report \
+    --run-dir "$WORKDIR/results/$RUN" --out docs/reports/
+```
+
+One dated file per run, never overwritten: the run, the commit and machine that ran it (recorded when it
+started, not when the report is rendered), corpora, judge, spend, the preflight verdict, a row per corpus and
+model with what was planned beside what ran, the models this machine did not run and why, spend by call
+kind, and a Reading left for whoever ran it. The `benchmark` skill (`.claude/skills/benchmark/SKILL.md`) is the whole loop.
 
 ## Cloud spend is capped
 

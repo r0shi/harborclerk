@@ -17,19 +17,14 @@ from pathlib import Path
 API_BASE = os.environ.get("HC_API_BASE", "http://localhost:8100")
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
 
-# The curated downloaded models, by Harbor Clerk model_id. These MUST match
-# the canonical ids in src/harbor_clerk/llm/models.py — anything else 404s on
-# PUT /api/chat/models/<id>/activate. Phase 4 sweeps over this list. Phase 5
-# uses TOP_MODELS only. The list shrank from 8 to 6 in PR #434 when phi4-mini
-# and smollm3-3b were dropped after the 2026-05-29 sweep showed both well
-# below the quality threshold.
-ALL_MODELS = [
-    "qwen3-8b",
-    "qwen3-4b",
-    "gemma4-26b-a4b",
-    "gpt-oss-20b",
-    "qwen36-35b-a3b",
-]
+# The curated models, by Harbor Clerk model_id, read from the registry itself
+# (src/harbor_clerk/llm/models.py) in its own order. This was a hand-kept copy: a model added to the
+# registry was invisible to the sweep until someone remembered this file, and `--models` rejected it as
+# unknown. Phase 4 sweeps over this list; the sweep skips, with a reason, the ones the instance has not
+# downloaded or cannot fit. Phase 5 uses TOP_MODELS only.
+from scripts.test_corpora.preflight import registry as _registry  # noqa: E402
+
+ALL_MODELS = list(_registry())
 
 # Two largest by parameter count. Used for Phases 5 and 6 parity comparison.
 TOP_MODELS = ["qwen36-35b-a3b", "gemma4-26b-a4b"]

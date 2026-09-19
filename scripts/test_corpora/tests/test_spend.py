@@ -7,6 +7,7 @@ import ast
 import dataclasses
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,13 @@ def _harness_sources() -> list[Path]:
         dirs[:] = [d for d in dirs if not d.startswith(".") and d not in {"tests", "__pycache__"}]
         found += [Path(root) / f for f in files if f.endswith(".py")]
     return sorted(found)
+
+
+@pytest.fixture(autouse=True)
+def _a_disposable_instance(monkeypatch):
+    """These tests drive sweep.main to its spend refusals. The wipe guard comes first and has its own tests
+    (test_benchmark_models.py); here the instance is declared disposable, as the mini's is."""
+    monkeypatch.setenv("HC_EVAL_DISPOSABLE", "1")
 
 
 def _config(cap: float = 1.00) -> SpendConfig:
@@ -237,6 +245,23 @@ def test_an_invocation_the_run_id_guard_refuses_leaves_the_ledger_as_it_found_it
     assert ledger.read_text() == before
 
 
+def test_the_ledger_keeps_the_commit_and_start_of_the_run_and_notes_a_resume_at_another(tmp_path):
+    ledger = tmp_path / "spend.json"
+    SpendMeter(
+        _config(), ledger_path=ledger, run_info={"suite_commit": "abc1234", "started_at": "2026-09-18T20:00:00Z"}
+    )
+    SpendMeter(
+        _config(), ledger_path=ledger, run_info={"suite_commit": "abc1234", "started_at": "2026-09-19T09:00:00Z"}
+    )
+    run = json.loads(ledger.read_text())["run"]
+    assert run == {"suite_commit": "abc1234", "started_at": "2026-09-18T20:00:00Z"}
+    SpendMeter(
+        _config(), ledger_path=ledger, run_info={"suite_commit": "fff9999", "started_at": "2026-09-19T10:00:00Z"}
+    )
+    run = json.loads(ledger.read_text())["run"]
+    assert run["suite_commit"] == "abc1234" and run["resumed_at_commits"] == ["fff9999"]
+
+
 # ── the pre-run estimate ──
 
 
@@ -396,9 +421,15 @@ def test_a_phase_by_phase_resume_is_priced_for_the_phase_it_runs(tmp_path, monke
         raise PastTheEstimate
 
     monkeypatch.setattr(spend, "anthropic_client", reached)
+    # Past the estimate comes the wipe guard; this instance is the harness's own.
+    monkeypatch.setenv(sweep.DISPOSABLE_ENV, "1")
+    monkeypatch.setattr(sweep.HarborClerkClient, "watch_folder_list", lambda self: [])
+    monkeypatch.setattr(sweep.HarborClerkClient, "document_count", lambda self: 0)
+    monkeypatch.setattr(sweep.HarborClerkClient, "mail_accounts", lambda self: [])
+    monkeypatch.setattr(sweep.HarborClerkClient, "list_models", lambda self: [])
     meter = spend.SpendMeter(spend.load_config())
     phase1 = meter.estimate([("baseline_question", "claude-sonnet-4-6", 16)])
-    both = phase1 + meter.estimate([("judge", "claude-sonnet-4-6", 80)])
+    both = phase1 + meter.estimate([("judge", "claude-sonnet-4-6", 16 * len(cfg.ALL_MODELS))])
     between = f"{(phase1 + both) / 2:.2f}"
     with pytest.raises(PastTheEstimate):
         sweep.main([*base, "--resume", "--phases", "1", "--spend-cap-usd", between])
@@ -445,12 +476,16 @@ def test_a_run_that_judges_nothing_names_no_judge(tmp_path):
     ]
     assert sweep.main([*base, "--no-judge"]) == 3
     ledger = tmp_path / "results" / "r1" / "spend.json"
-    assert json.loads(ledger.read_text())["run"] == {
+    recorded = json.loads(ledger.read_text())["run"]
+    assert {k: recorded[k] for k in ("run_id", "mode", "baseline_model", "judge_model")} == {
         "run_id": "r1",
         "mode": "sweep",
         "baseline_model": "claude-sonnet-4-6",
         "judge_model": "",
     }
+    # git lengthens --short=7 when seven characters are ambiguous.
+    assert re.fullmatch(r"[0-9a-f]{7,40}(-dirty)?|unknown", recorded["suite_commit"]) and recorded["started_at"]
+    assert recorded["host"]
     assert "judge none" in spend.header_line(json.loads(ledger.read_text()))
     # Having judged nothing, it may take up any judge later.
     assert sweep.main([*base, "--resume", "--judge-model", "claude-sonnet-5"]) == 3

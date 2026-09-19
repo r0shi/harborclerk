@@ -1,8 +1,11 @@
 # Parallel-Twins Runbook
 
-> **Topology:** two similar Macs, Phase 4 split 4-and-4 across them.
+> **Topology:** two similar Macs, Phase 4's models split between them.
 
-Pick this if you have two roughly comparable machines (both ≥ 32 GB unified memory, similar M-series generation) and want to roughly halve the wall-clock of Phases 4 and 5. Phase 0/1/6 stay on one designated **coordinator** machine; Phase 4 splits the eight models four-and-four; Phase 5's top-2 parity step splits one model per machine. Both machines need enough memory headroom to run a ~35B-class model (Qwen 3.6 35B-A3B on the coordinator, Gemma 4 26B-A4B on the other) — if one machine can't, run the [single-machine topology](single.md) instead.
+> The sweep **wipes the instance** before each corpus and will not start without `HC_EVAL_DISPOSABLE=1` on
+> **both** machines (README, "The instance is wiped"). The commands below assume it.
+
+Pick this if you have two roughly comparable machines (both ≥ 32 GB unified memory, similar M-series generation) and want to roughly halve the wall-clock of Phases 4 and 5. Phase 0/1/6 stay on one designated **coordinator** machine; Phase 4 splits the models between the two machines; Phase 5's top-2 parity step splits one model per machine. Both machines need enough memory headroom to run a ~35B-class model (Qwen 3.6 35B-A3B on the coordinator, Gemma 4 26B-A4B on the other) — if one machine can't, run the [single-machine topology](single.md) instead.
 
 Wall-clock estimate: **35-45 hours** end-to-end for the full sweep, vs. 60-80 hours on a single machine.
 
@@ -121,7 +124,7 @@ tmux new -d -s sweep-A "uv --project scripts/test_corpora run python -m \
     scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir \"$WORKDIR\" \
     --phases 4 \
-    --models qwen36-35b-a3b,gpt-oss-20b,qwen3-8b,smollm3-3b \
+    --models qwen36-35b-a3b,gpt-oss-20b,qwen3-8b,qwen35-4b \
     2>&1 | tee ~/sweep-logs/phase4-A.log"
 
 uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \
@@ -140,7 +143,7 @@ tmux new -d -s sweep-B "uv --project scripts/test_corpora run python -m \
     scripts.test_corpora.runner.sweep \
     --run-id $RUN --workdir \"$WORKDIR\" \
     --phases 4 \
-    --models gemma4-26b-a4b,deepseek-r1-0528-8b,qwen3-4b,phi4-mini \
+    --models gemma4-26b-a4b,qwen35-9b,qwen3-4b \
     2>&1 | tee ~/sweep-logs/phase4-B.log"
 
 uv --project /path/to/mcp-gateway/scripts/test_corpora run python -m \

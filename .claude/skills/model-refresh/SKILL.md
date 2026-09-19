@@ -122,7 +122,7 @@ per model by sweeps, and a new model arrives with none of that tuning.
 
 ## Stage 3: evaluate (only when stage 2 has landed)
 
-The benchmark loop, on the mini, within the USD cap of ADR 0001. The eval must
+The `benchmark` skill, on the mini, within the USD cap of ADR 0001. The eval must
 know what the machine can run: the mini has 32 GB. Nothing is promoted to the
 README's qualitative tiers, and nothing is retired, without a dated report in
 `docs/reports/` that names corpus, commit, model, judge and spend.
