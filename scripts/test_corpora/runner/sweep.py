@@ -661,8 +661,10 @@ def _spend_plan(
     resume. Every pending phase-4/5 unit counts as one judge call: some will degrade and never be judged,
     and an estimate that refuses a run should err high."""
     pending = [u for u in units if u.status == Status.PENDING and u.phase in phases]
+    # Not only phase 0: the run loop acquires a corpus that is missing before any unit that needs it, and
+    # the unified pass needs all of them.
     synthetic_docs = 0
-    if any(u.phase == 0 and u.corpus == "synthetic" for u in pending):
+    if any(u.corpus in ("synthetic", "unified") for u in pending):
         synthetic_docs = synthetic.planned_generation_count(workdir / "synthetic")
     return [
         ("synthetic_doc", synthetic.GENERATION_MODEL, synthetic_docs),
@@ -949,8 +951,6 @@ def main(argv: list[str] | None = None) -> int:
     sf = StateFile(state_path)
     sf.acquire_lock()
     try:
-        # Under the run's lock, so a second process on this --run-id cannot count from the same ledger.
-        meter = _configure_meter()
         sf.load()
 
         # Guard against accidentally re-using a --run-id from a prior run.
@@ -965,6 +965,10 @@ def main(argv: list[str] | None = None) -> int:
                 "cells run)\n"
                 "  - or pick a fresh --run-id to start a new run"
             )
+
+        # Under the run's lock, so a second process on this --run-id cannot count from the same ledger, and
+        # after the guard above, so an invocation that is refused leaves the ledger as it found it.
+        meter = _configure_meter()
 
         # Recover units left IN_PROGRESS by a previous crashed run.
         # We hold the state lock now, so any unit still IN_PROGRESS is by

@@ -4,6 +4,7 @@ to start over the cap, a hard stop on the running total, and actual spend on rec
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -210,6 +211,32 @@ def test_the_ledger_names_the_judge_exists_before_any_call_and_refuses_a_second_
     assert SpendMeter(_config(), ledger_path=ledger).snapshot()["run"]["judge_model"] == "claude-sonnet-4-6"
 
 
+def test_a_no_judge_resume_neither_erases_the_judge_nor_opens_the_door_to_a_second(tmp_path):
+    """The README recommends resuming a capped run with --no-judge. That resume recorded an empty judge over
+    the real one, the header read 'judge none' beside a judge's spend, and the next resume could name any
+    judge at all."""
+    ledger = tmp_path / "spend.json"
+    first = SpendMeter(_config(), ledger_path=ledger, run_info={"judge_model": "claude-sonnet-4-6"})
+    first.settle("m", "judge", first.reserve("m", 1000, 100), Usage(1000, 100))
+    quiet = SpendMeter(_config(), ledger_path=ledger, run_info={"judge_model": ""})
+    assert quiet.snapshot()["run"]["judge_model"] == "claude-sonnet-4-6"
+    assert "judge claude-sonnet-4-6" in spend.header_line(json.loads(ledger.read_text()))
+    with pytest.raises(spend.SpendConfigError, match="mix two judges"):
+        SpendMeter(_config(), ledger_path=ledger, run_info={"judge_model": "claude-sonnet-5"})
+
+
+def test_an_invocation_the_run_id_guard_refuses_leaves_the_ledger_as_it_found_it(tmp_path):
+    from scripts.test_corpora.runner import sweep
+
+    base = ["--run-id", "r1", "--workdir", str(tmp_path), "--phases", "1", "--corpora", "cuad"]
+    assert sweep.main([*base, "--spend-cap-usd", "0.01"]) == 3  # registers units, writes the ledger
+    ledger = tmp_path / "results" / "r1" / "spend.json"
+    before = ledger.read_text()
+    with pytest.raises(SystemExit, match="already has"):
+        sweep.main([*base, "--no-judge"])  # forgot --resume
+    assert ledger.read_text() == before
+
+
 # ── the pre-run estimate ──
 
 
@@ -322,6 +349,13 @@ def test_the_sweeps_plan_counts_pending_cloud_work(tmp_path):
     # state.json keeps every phase ever planned for the run id; only the phases asked for will run.
     assert dict((k, n) for k, _, n in plan({1})) == {"synthetic_doc": 0, "baseline_question": 2, "judge": 0}
     assert dict((k, n) for k, _, n in plan({4})) == {"synthetic_doc": 0, "baseline_question": 0, "judge": 1}
+    # The run loop acquires a missing corpus before any unit that needs it, not only in phase 0, and the
+    # unified pass needs them all.
+    units.append(unit(1, corpus="synthetic"))
+    assert dict((k, n) for k, _, n in plan({1}))["synthetic_doc"] == 280
+    assert dict((k, n) for k, _, n in plan({6}))["synthetic_doc"] == 0
+    units.append(unit(6, corpus="unified"))
+    assert dict((k, n) for k, _, n in plan({6}))["synthetic_doc"] == 280
     # An acquired synthetic corpus generates nothing.
     ingest = tmp_path / "synthetic" / "ingest"
     ingest.mkdir(parents=True)
@@ -533,6 +567,68 @@ def test_answer_eval_judges_with_the_judge_the_ledger_names(tmp_path, monkeypatc
     )
 
 
+def test_a_cached_verdict_belongs_to_the_judge_that_made_it(tmp_path):
+    from scripts.test_corpora.runner import answer_eval
+    from scripts.test_corpora.runner.answer_judge import AnswerVerdict
+
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps({"correctness": 5, "groundedness": 5, "completeness": 5, "rationale": "r"}))
+    assert answer_eval._cached_verdict(legacy, "claude-sonnet-4-6").correctness == 5, "every legacy verdict was its"
+    assert answer_eval._cached_verdict(legacy, "claude-sonnet-5") is None
+    newer = tmp_path / "newer.json"
+    newer.write_text(json.dumps(dataclasses.asdict(AnswerVerdict(4, 4, 4, "r", judge_model="claude-sonnet-5"))))
+    assert answer_eval._cached_verdict(newer, "claude-sonnet-5").correctness == 4
+    assert answer_eval._cached_verdict(newer, "claude-sonnet-4-6") is None
+    assert answer_eval._cached_verdict(tmp_path / "absent.json", "claude-sonnet-5") is None
+
+
+def test_answer_eval_rejudges_another_judges_verdicts_instead_of_relabelling_them(tmp_path, monkeypatch):
+    """Found in review: a second run with --judge-model made no judge calls, reused the first judge's cached
+    verdicts, and wrote summary.json naming the second judge."""
+    from scripts.test_corpora.runner import answer_eval
+    from scripts.test_corpora.runner.answer_judge import AnswerVerdict
+
+    spend._meter = SpendMeter(spend.load_config())
+    items = [
+        answer_eval.GTItem(id=f"q{i}", question="q", clause_category="c", gold_doc="d", answer_key="k", type="lookup")
+        for i in range(3)
+    ]
+    monkeypatch.setattr(answer_eval, "load_groundtruth", lambda path: items)
+
+    class Judge:
+        def __init__(self, score):
+            self.score, self.calls = score, 0
+
+        def judge_answer(self, **kw):
+            self.calls += 1
+            return AnswerVerdict(self.score, self.score, self.score, "r")
+
+    def run(judge, judge_model, label):
+        return answer_eval.run(
+            workdir=tmp_path,
+            corpus="cuad",
+            model="qwen3-8b",
+            label=label,
+            api_base="http://localhost:1",
+            refresh=False,
+            rejudge=False,
+            insecure=False,
+            groundtruth_path=Path(__file__),
+            capture_fn=lambda item: {"answer": "a", "cited_doc_titles": []},
+            judge=judge,
+            judge_model=judge_model,
+        )
+
+    first, second, again = Judge(5), Judge(2), Judge(0)
+    assert run(first, "claude-sonnet-4-6", "one") == 0 and first.calls == 3
+    assert run(second, "claude-sonnet-5", "two") == 0 and second.calls == 3, "not reused under the new judge's name"
+    summary = json.loads((tmp_path / "answer-eval" / "reports" / "two" / "summary.json").read_text())
+    assert summary["judge_model"] == "claude-sonnet-5" and summary["overall"]["correctness"] == 2
+    stored = json.loads((tmp_path / "answer-eval" / "verdicts" / "cuad" / "qwen3-8b" / "q0.json").read_text())
+    assert stored["judge_model"] == "claude-sonnet-5"
+    assert run(again, "claude-sonnet-5", "three") == 0 and again.calls == 0, "its own verdicts are reused"
+
+
 def test_the_rerun_tool_returns_3_when_its_estimate_is_over_the_cap(tmp_path, monkeypatch):
     from scripts.test_corpora.runner import rerun_pr_j
 
@@ -644,6 +740,53 @@ def test_a_request_that_was_never_sent_costs_nothing(failure, no_backoff):
     with pytest.raises(Exception):  # noqa: B017 - the three failures share no narrower type
         spend.MeteredAnthropic("judge", inner).messages.create(model="m", max_tokens=5000, messages=[])
     assert meter.total_usd == 0 and meter.remaining_usd == pytest.approx(1.00) and meter.snapshot()["calls"] == 0
+
+
+def test_an_error_raised_after_a_response_was_served_is_not_mistaken_for_a_rejected_request(no_backoff):
+    """json.JSONDecodeError is a ValueError. So is pydantic's ValidationError. Both come after the bill."""
+    meter = _use()
+    served_then_unreadable = json.JSONDecodeError("Expecting value", "<html>", 0)
+    inner = _FakeAnthropic(fail=served_then_unreadable)
+    with pytest.raises(json.JSONDecodeError):
+        spend.MeteredAnthropic("judge", inner).messages.create(model="m", max_tokens=5000, messages=[])
+    assert meter.total_usd == pytest.approx(0.50, abs=0.001)
+
+
+def _with_headers(exc: BaseException, **headers: str) -> BaseException:
+    exc.response = SimpleNamespace(headers={k.replace("_", "-"): v for k, v in headers.items()})
+    return exc
+
+
+@pytest.mark.parametrize(
+    ("headers", "waits"),
+    [
+        ({"retry_after": "10"}, [10.0, 10.0]),
+        ({"retry_after_ms": "250"}, [0.25, 0.25]),
+        ({"retry_after": "120"}, [0.5, 1.0]),  # over a minute: the SDKs fall back to their own backoff too
+        ({"retry_after": "soon"}, [0.5, 1.0]),
+        ({}, [0.5, 1.0]),
+    ],
+)
+def test_a_retry_waits_as_long_as_the_server_asks(headers, waits, no_backoff):
+    """Half a second after a 429 that asked for ten fails the call, and a failed judge call in the sweep is a
+    DONE unit with empty verdict columns."""
+    _use()
+    inner = _FakeAnthropic(fail=_with_headers(_Refused(429), **headers))
+    with pytest.raises(anthropic.APIStatusError):
+        spend.MeteredAnthropic("judge", inner).messages.create(model="m", max_tokens=10, messages=[])
+    assert no_backoff == waits and len(inner.calls) == 3
+
+
+def test_the_servers_word_on_whether_to_retry_is_obeyed(no_backoff):
+    _use()
+    told_not_to = _FakeAnthropic(fail=_with_headers(_Refused(529), x_should_retry="false"))
+    with pytest.raises(anthropic.APIStatusError):
+        spend.MeteredAnthropic("judge", told_not_to).messages.create(model="m", max_tokens=10, messages=[])
+    assert len(told_not_to.calls) == 1
+    told_to = _FakeAnthropic(fail=_with_headers(_Refused(400), x_should_retry="true"))
+    with pytest.raises(anthropic.APIStatusError):
+        spend.MeteredAnthropic("judge", told_to).messages.create(model="m", max_tokens=10, messages=[])
+    assert len(told_to.calls) == 3
 
 
 def test_a_client_that_cannot_be_built_costs_nothing():
@@ -860,6 +1003,29 @@ def test_a_stopped_generation_resumes_without_buying_the_same_documents_again(tm
     assert [c["messages"][0]["content"] for c in second.calls] == prompts[2:]
     assert (tmp_path / "split" / "ingest" / "0001_invoice.txt").read_text() == "doc 1"
     assert synthetic.planned_generation_count(tmp_path / "split", counts) == 0
+
+
+def test_a_document_the_ocr_step_already_turned_into_a_pdf_is_not_bought_again(tmp_path, monkeypatch):
+    from scripts.test_corpora.corpora import synthetic
+
+    _use(cap=100.0)
+    ingest = tmp_path / "ingest"
+    ingest.mkdir()
+    (ingest / "0001_invoice.json").write_text("{}")
+    (ingest / "0001_invoice.pdf").write_bytes(b"%PDF-1.4 rendered by the generation this one resumes")
+    rendered = []
+    monkeypatch.setattr(synthetic, "_render_to_pdf_with_noise", lambda text, path, rng: rendered.append(path.name))
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(content=[SimpleNamespace(text='{"text": "second", "facts": {}}')])
+
+    monkeypatch.setattr(synthetic, "_make_client", lambda: SimpleNamespace(messages=SimpleNamespace(create=create)))
+    assert synthetic.planned_generation_count(tmp_path, {"invoice": 2}) == 1
+    synthetic.acquire(tmp_path, doc_counts={"invoice": 2}, ocr_subset_count=2)
+    assert len(calls) == 1 and rendered == ["0002_invoice.pdf"]
+    assert (ingest / "0001_invoice.pdf").read_bytes().startswith(b"%PDF-1.4 rendered")
 
 
 def test_an_unpriced_model_stops_the_synthetic_corpus_too(tmp_path, monkeypatch):

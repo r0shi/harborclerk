@@ -124,7 +124,7 @@ class OpenAIProvider:
         (often "28ms" for TPM limits even though the window is actually 60s).
         The SDK exhausts its short retry budget and propagates the 429
         before the TPM window clears. We absorb that by retrying with a
-        30s/60s/120s/240s schedule on top of the SDK's own retries.
+        30s/60s/120s/240s schedule on top of the metered client's own retries (runner/spend.py; the SDK is built with max_retries=0).
 
         Looks up ``time.sleep`` at call time (not via default-arg binding)
         so tests can patch ``time.sleep`` without monkey-patching the

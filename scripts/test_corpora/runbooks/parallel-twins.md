@@ -96,6 +96,15 @@ rsync -av --progress \
 
 TWIN-B now has the corpora pre-acquired (Phase 0 short-circuits via `.acquired` markers) and the baselines (so Phase 5's TWIN-B side can run too).
 
+**Spend.** That rsync also copied TWIN-A's `spend.json`, so TWIN-B would start from TWIN-A's total and then
+diverge from it. Give TWIN-B a ledger of its own, and split the cap so the two sum to `spend.yaml`'s:
+
+```bash
+# on TWIN-B, before starting it
+rm "$WORKDIR/results/$RUN/spend.json"
+# then start both machines' sweeps with e.g. --spend-cap-usd 12
+```
+
 ---
 
 ## Phase 4: split sweep across both twins
@@ -155,6 +164,9 @@ rsync -av --progress \
 # also pull TWIN-B's metrics.csv rows
 ssh twin "tail -n +2 \"$WORKDIR/results/$RUN/metrics.csv\"" \
     >> "$WORKDIR/results/$RUN/metrics.csv"
+
+# and TWIN-B's spend ledger: the run's spend is this file's total plus spend.json's
+scp "twin:$WORKDIR/results/$RUN/spend.json" "$WORKDIR/results/$RUN/spend-twin-b.json"
 ```
 
 ---

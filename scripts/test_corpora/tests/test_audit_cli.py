@@ -391,6 +391,7 @@ def test_main_cross_judge_requires_openai_api_key(tmp_path, monkeypatch):
         ]
     )
     assert rc == 1
+    assert not list(tmp_path.rglob("spend-cross-judge.json")), "no key, no ledger left behind"
 
 
 def test_render_markdown_cross_judge_zero_n_does_not_crash():

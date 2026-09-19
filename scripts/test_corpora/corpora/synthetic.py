@@ -234,11 +234,13 @@ def acquire(
 
     all_docs: list[tuple[str, dict]] = []  # (type, generated dict)
     for doc_type, base in _doc_names(counts):
-        if _is_generated(ingest_dir, base) and (ingest_dir / f"{base}.txt").exists():
-            # Bought by an earlier, stopped generation (the spend cap, Ctrl-C). Not bought again.
+        if _is_generated(ingest_dir, base):
+            # Bought by an earlier, stopped generation (the spend cap, Ctrl-C). Not bought again. One the OCR
+            # step already turned into a PDF has no text left to read, and needs none: that step skips it.
             _draw_prompt(doc_type, rng)
+            txt = ingest_dir / f"{base}.txt"
             gen = {
-                "text": (ingest_dir / f"{base}.txt").read_text(),
+                "text": txt.read_text() if txt.exists() else None,
                 "facts": json.loads((ingest_dir / f"{base}.json").read_text()),
             }
             all_docs.append((doc_type, gen))
@@ -261,6 +263,8 @@ def acquire(
             base = f"{seq_num:04d}_{doc_type}"
             txt_path = ingest_dir / f"{base}.txt"
             pdf_path = ingest_dir / f"{base}.pdf"
+            if gen["text"] is None:
+                continue  # rendered by the generation this one resumes
             _render_to_pdf_with_noise(gen["text"], pdf_path, rng)
             txt_path.unlink(missing_ok=True)
 

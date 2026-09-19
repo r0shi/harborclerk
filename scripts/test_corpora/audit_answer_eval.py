@@ -183,14 +183,14 @@ def main(argv: list[str] | None = None) -> int:
         n = len(captures) if args.rejudge_sample is None else min(args.rejudge_sample, len(captures))
         rejudge_results: list[dict] = []
         try:
+            judge_provider = _build_judge_provider(args.cross_judge)  # before the ledger: no key, no files
+        except SystemExit as exc:
+            return int(exc.code or 1)
+        try:
             meter = spend.configure(
                 ledger_path=report_dir / "spend-cross-judge.json",
                 run_info={"mode": "cross-judge", "label": args.label, "judge_model": args.cross_judge},
             )
-            try:
-                judge_provider = _build_judge_provider(args.cross_judge)
-            except SystemExit as exc:
-                return int(exc.code or 1)
             meter.require_within_cap([("cross_judge", args.cross_judge, n)])
             rejudge_results = rejudge_with(
                 captures,

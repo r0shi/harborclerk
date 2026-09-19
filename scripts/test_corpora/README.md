@@ -80,7 +80,8 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
   `--resume` continues the same run against the same ledger. The unit that was about to be judged when the
   cap hit keeps its metrics row with empty verdict columns. There is no judge-only pass yet (#663): `--rerun`
   would judge it, but only by redoing its local compute. A run that has reached its cap can be resumed with
-  `--no-judge`; judging the rest is a new `--run-id`, with its own cap.
+  `--no-judge` (the ledger keeps the judge it already used); judging the rest is a new `--run-id`, with its
+  own cap.
 - **A refused setting is exit code 3 too**: a cap above `spend.yaml`'s, a cap that is not a number, a second
   judge on a resumed run.
 - **A call that fails** costs nothing where the request is known not to have been served: the API answered
@@ -88,7 +89,12 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
   credentials). A read timeout, a connection dropped mid-request or an interrupt may have been served and
   billed, so it is charged its worst case and counted under `estimated_calls`.
 - **Retries are metered.** The SDK clients are built with `max_retries=0` and the meter retries what they
-  would have (connection errors, 408, 409, 429, 5xx; two more attempts), so every attempt is in the ledger.
+  would have (connection errors, 408, 409, 429, 5xx, and whatever `x-should-retry` says; two more attempts,
+  waiting the server's `Retry-After` when it is a minute or less), so every attempt is in the ledger.
+- In `--mode retrieval-eval`, exit code 3 already means "prior label not found". That mode makes no cloud
+  calls, so the two meanings never meet.
+- **answer-eval's verdict cache** is keyed by corpus and model, not by judge, so each verdict records the judge
+  that made it. A verdict from another judge is re-judged, never reused under this one's name.
 - **After each call**, `<run_dir>/spend.json` is rewritten with the total, the calls, and tokens and dollars
   per model and per call kind. A dated report quotes its spend and its judge from there.
 - `--spend-cap-usd N` (or `HC_EVAL_SPEND_CAP_USD`) lowers the cap for one run. Raising it is an edit to
@@ -99,7 +105,8 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
 
 **One cap per process and ledger.** The sweep reads its ledger under the run's lock. The modes that take no
 lock, and a run split across two machines (RUNBOOK: phase 4), each count from their own ledger, so a split
-run's cap is per machine: lower each with `--spend-cap-usd`.
+run's cap is per machine: lower each with `--spend-cap-usd`, and see `runbooks/parallel-twins.md` for bringing
+the second machine's ledger back, without which the run's recorded spend under-reports.
 
 The estimates in `spend.yaml` are provisional until a metered run is on record. Correct them from
 `spend.json`'s `by_kind`: tokens divided by **`units`**, not by `calls`. The estimates are per unit of work,

@@ -30,7 +30,7 @@ from pathlib import Path
 import yaml
 
 from scripts.test_corpora.runner import spend
-from scripts.test_corpora.runner.answer_judge import JUDGE_MODEL, AnswerJudge, AnswerVerdict
+from scripts.test_corpora.runner.answer_judge import JUDGE_MODEL, LEGACY_JUDGE_MODEL, AnswerJudge, AnswerVerdict
 
 log = logging.getLogger("answer_eval")
 
@@ -128,6 +128,23 @@ def compute_coverage(cited: list[str], truth_all: list[str]) -> int:
     return round(overlap / len(truth_all) * 5)
 
 
+def _cached_verdict(path: Path, judge_model: str) -> AnswerVerdict | None:
+    """The stored verdict, if this judge made it. The cache is keyed by corpus and model, not by judge: a
+    verdict from another judge, reused, would be reported under this one's name."""
+    if not path.exists():
+        return None
+    try:
+        verdict = AnswerVerdict(**json.loads(path.read_text()))
+    except (json.JSONDecodeError, TypeError) as e:
+        log.warning("  unreadable verdict %s (%s) — re-judging", path, e)
+        return None
+    made_by = verdict.judge_model or LEGACY_JUDGE_MODEL
+    if made_by != judge_model:
+        log.info("  %s was judged by %s, not %s — re-judging", path.name, made_by, judge_model)
+        return None
+    return verdict
+
+
 def run(
     *,
     workdir: Path,
@@ -160,7 +177,9 @@ def run(
     from scripts.test_corpora.runner.providers.factory import model_is_cloud
 
     to_capture = sum(1 for i in items if refresh or not (cap_dir / f"{i.id}.json").exists())
-    to_judge = sum(1 for i in items if refresh or rejudge or not (ver_dir / f"{i.id}.json").exists())
+    to_judge = sum(
+        1 for i in items if refresh or rejudge or _cached_verdict(ver_dir / f"{i.id}.json", judge_model) is None
+    )
     meter = spend.get_meter()
     estimate = meter.require_within_cap(
         [
@@ -196,11 +215,8 @@ def run(
 
         ver_path = ver_dir / f"{item.id}.json"
         verdict: AnswerVerdict | None = None
-        if ver_path.exists() and not rejudge and not refresh:
-            try:
-                verdict = AnswerVerdict(**json.loads(ver_path.read_text()))
-            except (json.JSONDecodeError, TypeError) as e:
-                log.warning("  %s: unreadable verdict %s (%s) — re-judging", item.id, ver_path, e)
+        if not rejudge and not refresh:
+            verdict = _cached_verdict(ver_path, judge_model)
         if verdict is None:
             verdict = judge.judge_answer(
                 question=item.question,
@@ -209,6 +225,8 @@ def run(
                 answer_key=item.answer_key,
                 qtype=item.type,
             )
+            if not verdict.judge_model:
+                verdict = dataclasses.replace(verdict, judge_model=judge_model)
             if item.type == "find":
                 truth_all = item.answer_key.get("all", []) if isinstance(item.answer_key, dict) else []
                 coverage = compute_coverage(capture.get("cited_doc_titles", []) or [], truth_all)

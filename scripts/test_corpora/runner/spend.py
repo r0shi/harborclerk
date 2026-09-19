@@ -200,6 +200,10 @@ class SpendMeter:
                     "set of results. Start a new --run-id for a different judge."
                 )
             self._run_info = {**prior.get("run", {}), **self._run_info}
+            if was and not now:
+                # A --no-judge resume judges nothing. It does not un-judge what the run already judged: the
+                # record stays, and so does the guard against a second judge.
+                self._run_info["judge_model"] = was
         with self._lock:
             # Written at the start, so a run that spends nothing still has its manifest.
             self._persist_locked()
@@ -396,6 +400,29 @@ def _openai_usage(resp: Any) -> Usage | None:
     return None if i is None or o is None else Usage(i, o)
 
 
+def _response_headers(exc: BaseException) -> dict[str, str]:
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    try:
+        return {str(k).lower(): str(v) for k, v in dict(headers or {}).items()}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _retry_delay(exc: BaseException, attempt: int) -> float:
+    """How long to wait before the next attempt: the server's Retry-After when it gives one of a minute or
+    less (what the SDKs' own retries do), otherwise a short exponential backoff. Retrying a 429 after half
+    a second, with the server asking for ten, fails the call, and a failed judge call is an empty verdict."""
+    headers = _response_headers(exc)
+    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
+        try:
+            asked = float(headers[name]) * scale
+        except (KeyError, ValueError):
+            continue
+        if 0 < asked <= 60:
+            return asked
+    return min(8.0, 0.5 * 2**attempt)
+
+
 class _MeteredCreate:
     def __init__(self, owner: _MeteredClient, output_limit_keys: tuple[str, ...], read_usage):
         self._owner = owner
@@ -429,7 +456,7 @@ class _MeteredCreate:
                     # it may have been served and billed with nobody left to read the usage.
                     meter.settle(model, self._owner.kind, reserved, None)
                 if attempt < MAX_RETRIES and self._owner._retryable(exc):
-                    _sleep(min(8.0, 0.5 * 2**attempt))
+                    _sleep(_retry_delay(exc, attempt))
                     continue
                 raise
             meter.settle(model, self._owner.kind, reserved, self._read_usage(resp))
@@ -449,7 +476,7 @@ class _MeteredClient:
     def _known_unbilled(self, exc: BaseException) -> bool:
         """True only where the request is known not to have been served: the API answered with an error
         status, the connection was never made, or the SDK rejected the request while building it (no
-        credentials, a malformed argument). Anything else is charged: phantom dollars during an outage
+        credentials, a malformed argument: a plain TypeError or ValueError). Anything else is charged: phantom dollars during an outage
         would fill a ledger that a resumed run inherits, but so would silence about a served call."""
         import httpx
 
@@ -458,11 +485,16 @@ class _MeteredClient:
             return True
         if isinstance(exc, getattr(sdk, "APIConnectionError", ())):
             return isinstance(exc.__cause__, (httpx.ConnectError, httpx.ConnectTimeout))
-        return isinstance(exc, (TypeError, ValueError))
+        # Exactly these types: json.JSONDecodeError and pydantic's ValidationError are ValueErrors too, and
+        # those are raised after a response has been served.
+        return type(exc) in (TypeError, ValueError)
 
     def _retryable(self, exc: BaseException) -> bool:
         """What the SDKs themselves retry: connection errors, and 408, 409, 429 and 5xx."""
         sdk = self._sdk()
+        should = _response_headers(exc).get("x-should-retry")
+        if should in ("true", "false") and isinstance(exc, getattr(sdk, "APIStatusError", ())):
+            return should == "true"  # the server's own word, which the SDKs obey
         if isinstance(exc, getattr(sdk, "APIConnectionError", ())):
             return True
         status = getattr(exc, "status_code", None)
