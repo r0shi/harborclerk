@@ -262,6 +262,7 @@ final class AppSettingsTests: XCTestCase {
         // The fixed KV cost counts: without its 1.7 GB of recurrent state and checkpoints this would be 1666.
         XCTAssertEqual(cache(18 * gib, qwen9, 149_504), 0)
         XCTAssertEqual(cache(24 * gib, qwen9, 262_144), 2632)
+        XCTAssertEqual(cache(23 * gib, qwen9, 262_144), 0, "1608 MiB left, and a 4096-token state of this model needs 1786: its fixed cost")
         XCTAssertEqual(cache(0, qwen8, 32768), 0, "memory unknown")
         XCTAssertEqual(MemoryBudget.promptCacheMaxBytes, 8 * gib)
         XCTAssertEqual(MemoryBudget.promptCacheMinTokens, 4096)

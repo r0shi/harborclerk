@@ -295,6 +295,9 @@ def test_the_prompt_cache_gets_what_the_context_leaves():
     # state and checkpoints, 18 GB would leave 1666 MiB.
     assert max_context(nine, 18 * gib) == 149_504 and prompt_cache_mib(nine, 18 * gib, 149_504) == 0
     assert prompt_cache_mib(nine, 24 * gib, 262_144) == 2632
+    # And in what a state needs: with 23 GiB, 1608 MiB is left, but a 4096-token state of this model is
+    # 1786 MiB, nearly all of it the fixed cost. Forgetting that would switch on a cache that holds nothing.
+    assert prompt_cache_mib(nine, 23 * gib, 262_144) == 0
     assert prompt_cache_mib(qwen8, 0, 32768) == 0, "memory unknown"
     assert (8 * gib, 4096) == (PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_TOKENS)
 
