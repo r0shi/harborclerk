@@ -358,12 +358,12 @@ enum MemoryBudget {
     /// The OS, the embedder and reranker, Postgres, the Tika JVM and the API.
     static let hostHeadroomBytes = 6_000_000_000
     /// llama-server's prompt cache (host RAM holding the KV state of conversations
-    /// it has put aside) is bounded at what the context leaves, up to this much.
-    /// Its own default is 8 GiB, which nothing budgeted. See PROMPT_CACHE_MAX_BYTES
-    /// in src/harbor_clerk/llm/models.py for the measurement behind the number.
-    static let promptCacheMaxBytes = 2_147_483_648
-    /// Less than this holds no whole conversation: the cache is switched off.
-    static let promptCacheMinBytes = 268_435_456
+    /// it has put aside) gets what the context leaves, never more than its own
+    /// default of 8 GiB. See PROMPT_CACHE_MAX_BYTES in src/harbor_clerk/llm/models.py.
+    static let promptCacheMaxBytes = 8_589_934_592
+    /// At the pin a state larger than --cache-ram is not cached at all, so a bound
+    /// that cannot hold a conversation of this many tokens is switched off.
+    static let promptCacheMinTokens = 4_096
 
     /// The RoPE arguments for a YaRN launch, or none: YaRN stretches RoPE by
     /// `ropeScale` to reach `extendedContext`, at a quality cost that keeps it
@@ -393,13 +393,15 @@ enum MemoryBudget {
 
     /// `--cache-ram` in MiB: what is left once the model, its KV cache at
     /// `context`, the runtime and the rest of the machine have theirs, up to
-    /// `promptCacheMaxBytes`; 0 (cache off) when less than
-    /// `promptCacheMinBytes` is left. Context first, cache second: a Mac whose
-    /// context is already clamped gets no cache rather than a smaller context.
+    /// `promptCacheMaxBytes`; 0 (cache off) when that could not hold a
+    /// `promptCacheMinTokens`-token state of this model. Context first, cache
+    /// second: a Mac whose context is already clamped gets no cache rather than
+    /// a smaller context.
     static func promptCacheMiB(modelBytes: Int, kvBytesPerToken: Int, kvFixedBytes: Int, context: Int, ramBytes: Int) -> Int {
         let used = modelBytes + kvFixedBytes + kvBytesPerToken * context + runtimeOverheadBytes
         let left = ramBytes - hostHeadroomBytes - used
         let mib = min(promptCacheMaxBytes, left) / 1_048_576
-        return mib * 1_048_576 >= promptCacheMinBytes ? mib : 0
+        let smallestUsefulState = kvFixedBytes + kvBytesPerToken * promptCacheMinTokens
+        return mib * 1_048_576 >= smallestUsefulState ? mib : 0
     }
 }

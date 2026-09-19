@@ -34,14 +34,21 @@ MAC_RAM_TIERS_GB = (8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
 GIB = 1024**3
 MIB = 1024**2
 # llama-server's prompt cache: host RAM where it keeps the KV state of a conversation it has put aside,
-# so that coming back to it restores the prefix instead of reading it again. Its default ceiling is 8 GiB
+# so that coming back to it restores the prefix instead of reading it again. Its default limit is 8 GiB
 # and nothing budgeted it (#657). Measured on the mini, 2026-09-18, Qwen3-8B, three conversations taken in
 # turn: left alone it grew 2.2 GB in nine requests (it keeps a state per version of a conversation) and
-# every return was restored, 30 s instead of 100 to 130; bounded at 1 GiB it thrashed by the third round.
-# So it is worth having, and it is bounded at what the context leaves, up to this much.
-PROMPT_CACHE_MAX_BYTES = 2 * GIB
-# Less than this holds no whole conversation worth restoring: the cache is switched off instead.
-PROMPT_CACHE_MIN_BYTES = 256 * MIB
+# every return was restored, 30 s instead of 100 to 130. So it is worth having, and the launcher now
+# gives it what the context leaves, never more than llama-server's own default: a Mac with room behaves as
+# it did, and a tight one is bounded by what it has.
+PROMPT_CACHE_MAX_BYTES = 8 * GIB
+# The limit is also a limit on each state: at the pin, a state larger than --cache-ram is not cached at all
+# ("exceeds cache size limit, skipping", server_prompt_cache::alloc). A bound that cannot hold a
+# conversation of this many tokens for the active model is a cache in name only, and is switched off.
+PROMPT_CACHE_MIN_TOKENS = 4096
+# The llama.cpp release whose prompt-cache behaviour the two lines above were read from. The May build
+# (b9018) kept one state whatever the limit, which would make a small bound unsafe. A pin bump re-reads
+# server_prompt_cache::alloc and moves this with it; tests/test_llm_models.py holds the two together.
+PROMPT_CACHE_SEMANTICS_READ_AT = "v0.4.1"
 
 
 @dataclass(frozen=True)
@@ -269,16 +276,19 @@ def max_context(model: ModelInfo, ram_bytes: int, requested: int | None = None) 
 
 def prompt_cache_mib(model: ModelInfo, ram_bytes: int, context: int) -> int:
     """What the launcher passes as `--cache-ram`, in MiB: what is left of this Mac's memory once the model,
-    its KV cache at `context`, the runtime and the rest of the machine have theirs, up to
-    PROMPT_CACHE_MAX_BYTES; 0, which switches the cache off, when less than PROMPT_CACHE_MIN_BYTES is left
-    or memory cannot be read.
+    its KV cache at `context`, the runtime and the rest of the machine have theirs, up to llama-server's own
+    default (PROMPT_CACHE_MAX_BYTES). 0, which switches the cache off, when what is left could not hold a
+    PROMPT_CACHE_MIN_TOKENS-token state of this model, or memory cannot be read.
 
     Context first, cache second. The cache is a speed-up and the context is what the model can do:
     reserving even 512 MiB ahead of the context would cut gpt-oss-20b on an 18 GB Mac from 27K tokens to
-    6K. So a Mac whose context is already clamped to what fits gets no cache, and says so in its log."""
+    6K. So a Mac whose context is already clamped to what fits gets no cache, and says so in its log.
+
+    Nothing in the Python app calls this: only the Swift launcher starts llama-server. It is the reference
+    that `MemoryBudget.promptCacheMiB` is tested against, case for case."""
     left = ram_bytes - HOST_HEADROOM_BYTES - memory_bytes(model, context)
     mib = min(PROMPT_CACHE_MAX_BYTES, left) // MIB
-    return int(mib) if mib * MIB >= PROMPT_CACHE_MIN_BYTES else 0
+    return int(mib) if mib * MIB >= kv_bytes(model, PROMPT_CACHE_MIN_TOKENS) else 0
 
 
 def effective_context(model: ModelInfo, yarn_enabled: bool, ram_bytes: int | None = None) -> int:

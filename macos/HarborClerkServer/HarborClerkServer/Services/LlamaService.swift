@@ -77,8 +77,8 @@ final class LlamaService: ManagedService {
             )
         }
 
-        // The prompt cache gets what the context left, and no more: llama-server's own
-        // ceiling is 8 GiB of host RAM that nothing had budgeted (#657).
+        // The prompt cache gets what the context left, and no more, up to llama-server's
+        // own 8 GiB default, which nothing had budgeted (#657).
         let promptCacheMiB = MemoryBudget.promptCacheMiB(
             modelBytes: modelBytes,
             kvBytesPerToken: settings.activeModelKvBytesPerToken,
@@ -87,8 +87,9 @@ final class LlamaService: ManagedService {
             ramBytes: ramBytes
         )
         if promptCacheMiB == 0 {
-            Log.logger("llm").warning(
-                "Prompt cache off: the context takes the memory this Mac has for the model, so returning to an earlier conversation re-reads it"
+            // The designed steady state on a Mac whose context is clamped, so not a warning.
+            Log.logger("llm").info(
+                "Prompt cache off: after the model and its context this Mac has less left than a \(MemoryBudget.promptCacheMinTokens)-token state of this model, so returning to an earlier conversation re-reads it"
             )
         } else {
             Log.logger("llm").info("Prompt cache bounded at \(promptCacheMiB) MiB")

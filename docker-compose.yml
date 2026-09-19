@@ -234,8 +234,8 @@ services:
       "-ngl", "99",
       "-c", "8192",
       # llama-server's prompt cache defaults to 8 GiB of host RAM. The macOS launcher bounds it by what
-      # the Mac has left (PROMPT_CACHE_MAX_BYTES in src/harbor_clerk/llm/models.py); a container cannot
-      # know that, so it gets the same ceiling, fixed.
+      # the Mac has left (prompt_cache_mib in src/harbor_clerk/llm/models.py); a container cannot know
+      # that. At -c 8192 the largest state any curated model can save is under 2 GiB, so this holds one.
       "--cache-ram", "2048",
     ]
     healthcheck:

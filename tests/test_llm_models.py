@@ -247,6 +247,7 @@ def test_the_launcher_bounds_the_prompt_cache_and_leaves_checkpoints_at_the_defa
     in ServiceManager, not in the launcher."""
     launcher = _swift("Services/LlamaService.swift")
     assert re.search(r'"--cache-ram",\s*String\(promptCacheMiB\)', launcher), "the cache is bounded by the budget"
+    assert launcher.count('"--cache-ram"') == 1, "once: llama-server takes the last value it is given"
     assert "MemoryBudget.promptCacheMiB(" in launcher and "context: contextWindow" in launcher, (
         "from the context the launcher is about to pass, not the one it asked for"
     )
@@ -261,50 +262,83 @@ def test_the_launcher_bounds_the_prompt_cache_and_leaves_checkpoints_at_the_defa
             )
 
 
-def test_compose_bounds_the_prompt_cache_at_the_same_ceiling():
-    """The sibling site: Compose starts its own llama-server, and cannot know the host's memory."""
+def test_compose_bounds_the_prompt_cache_at_something_that_holds_a_conversation():
+    """The sibling site: Compose starts its own llama-server and cannot know the host's memory. At the pin a
+    state larger than the limit is not cached at all, so the fixed bound has to hold the largest state any
+    curated model can save at Compose's context."""
     from harbor_clerk.llm.models import MIB, PROMPT_CACHE_MAX_BYTES
 
     compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
     code = "\n".join(line.split("#")[0] for line in compose.splitlines())
-    assert re.search(rf'"--cache-ram",\s*"{PROMPT_CACHE_MAX_BYTES // MIB}"', code)
+    bound = int(re.search(r'"--cache-ram",\s*"(\d+)"', code).group(1)) * MIB
+    context = int(re.search(r'"-c",\s*"(\d+)"', code).group(1))
+    assert max(kv_bytes(m, context) for m in MODELS.values()) <= bound < PROMPT_CACHE_MAX_BYTES
 
 
 def test_the_prompt_cache_gets_what_the_context_leaves():
     """Context first, cache second. Same cases as `testThePromptCacheGetsWhatTheContextLeaves` in Swift."""
-    from harbor_clerk.llm.models import PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_BYTES, prompt_cache_mib
+    from harbor_clerk.llm.models import PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_TOKENS, prompt_cache_mib
 
     gib = 1024**3
-    qwen8, gptoss, big = MODELS["qwen3-8b"], MODELS["gpt-oss-20b"], MODELS["qwen36-35b-a3b"]
-    assert prompt_cache_mib(qwen8, 32 * gib, 32768) == 2048, "room to spare: the ceiling"
-    assert prompt_cache_mib(qwen8, 16 * gib, 32768) == 305, "what 32K of context leaves on a 16 GB Mac"
+    qwen8, gptoss, big, nine = MODELS["qwen3-8b"], MODELS["gpt-oss-20b"], MODELS["qwen36-35b-a3b"], MODELS["qwen35-9b"]
+    assert prompt_cache_mib(qwen8, 32 * gib, 32768) == 8192, "room to spare: llama-server's own default, as before"
+    assert prompt_cache_mib(qwen8, 18 * gib, 32768) == 2353, "what 32K of context leaves on an 18 GB Mac"
+    # 305 MiB is left on a 16 GB Mac. At the pin a state larger than the limit is not cached at all, and a
+    # 4096-token state of this model is 576 MiB: a cache in name only, so it is off.
+    assert prompt_cache_mib(qwen8, 16 * gib, 32768) == 0
     # The reason the cache does not come first: reserving 512 MiB ahead of the context would take this model
     # from 27K tokens to 6K on an 18 GB Mac.
     assert max_context(gptoss, 18 * gib) == 27648 and prompt_cache_mib(gptoss, 18 * gib, 27648) == 0
     assert max_context(big, 32 * gib) == 239_616 and prompt_cache_mib(big, 32 * gib, 239_616) == 0, "the mini's 35B"
-    assert prompt_cache_mib(big, 36 * gib, 262_144) == 2048
-    # The fixed KV cost counts: without its 1.7 GB of recurrent state and checkpoints this would be 1666.
-    nine = MODELS["qwen35-9b"]
+    assert prompt_cache_mib(big, 36 * gib, 262_144) == 3673
+    # The fixed KV cost counts, in what is left and in what a state needs: without its 1.7 GB of recurrent
+    # state and checkpoints, 18 GB would leave 1666 MiB.
     assert max_context(nine, 18 * gib) == 149_504 and prompt_cache_mib(nine, 18 * gib, 149_504) == 0
+    assert prompt_cache_mib(nine, 24 * gib, 262_144) == 2632
     assert prompt_cache_mib(qwen8, 0, 32768) == 0, "memory unknown"
-    assert (2 * gib, 256 * 1024**2) == (PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_BYTES)
+    assert (8 * gib, 4096) == (PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_TOKENS)
+
+
+# (context, --cache-ram in MiB) for every curated model on the Macs people have. The contexts are what they
+# were before the cache was budgeted: that is the claim, and this is where it is held.
+WHAT_EACH_MAC_GETS = {
+    "qwen3-8b": {16: (32768, 0), 18: (32768, 2353), 24: (32768, 8192), 32: (32768, 8192), 36: (32768, 8192)},
+    "qwen3-4b": {16: (32768, 2718), 18: (32768, 4766), 24: (32768, 8192), 32: (32768, 8192), 36: (32768, 8192)},
+    "qwen35-9b": {16: (83968, 0), 18: (149504, 0), 24: (262144, 2632), 32: (262144, 8192), 36: (262144, 8192)},
+    "qwen35-4b": {16: (173056, 0), 18: (238592, 0), 24: (262144, 5436), 32: (262144, 8192), 36: (262144, 8192)},
+    "gemma4-26b-a4b": {16: (0, 0), 18: (0, 0), 24: (73728, 0), 32: (262144, 4526), 36: (262144, 8192)},
+    "gpt-oss-20b": {16: (0, 0), 18: (27648, 0), 24: (128000, 3811), 32: (128000, 8192), 36: (128000, 8192)},
+    "qwen36-35b-a3b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (239616, 0), 36: (262144, 3673)},
+}
 
 
 def test_the_cache_never_costs_a_model_its_context_or_its_place():
-    """For every curated model on every Mac: the context is what it was before the cache was budgeted, and
-    context plus cache plus everything else fits the machine."""
-    from harbor_clerk.llm.models import PROMPT_CACHE_MAX_BYTES, prompt_cache_mib
+    """For every curated model on every Mac: the context is what it was before the cache was budgeted, the
+    whole of it fits the machine, and a cache that is on can hold a conversation."""
+    from harbor_clerk.llm.models import MIB, PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_TOKENS, prompt_cache_mib
 
+    assert set(WHAT_EACH_MAC_GETS) == set(MODELS)
     for m in MODELS.values():
-        for tier in (8, 16, 18, 24, 32, 36, 48, 64, 128):
+        for tier, (context, cache_mib) in WHAT_EACH_MAC_GETS[m.id].items():
             ram = tier * 1024**3
-            context = max_context(m, ram)
-            if context == 0:
-                assert prompt_cache_mib(m, ram, m.context_window) == 0
-                continue
-            cache = prompt_cache_mib(m, ram, context) * 1024**2
-            assert 0 <= cache <= PROMPT_CACHE_MAX_BYTES
-            assert memory_bytes(m, context) + cache + HOST_HEADROOM_BYTES <= ram, f"{m.id} on {tier} GB"
+            assert max_context(m, ram) == context, f"{m.id} on {tier} GB"
+            got = prompt_cache_mib(m, ram, context) if context else 0
+            assert got == cache_mib, f"{m.id} on {tier} GB"
+            if context:
+                assert memory_bytes(m, context) + got * MIB + HOST_HEADROOM_BYTES <= ram
+            if got:
+                assert kv_bytes(m, PROMPT_CACHE_MIN_TOKENS) <= got * MIB <= PROMPT_CACHE_MAX_BYTES
+
+
+def test_the_budget_relies_on_how_the_pinned_llama_server_treats_a_state_over_the_limit():
+    """At v0.4.1 `server_prompt_cache::alloc` skips a state larger than --cache-ram. The May build kept one
+    state whatever the limit, and under that behaviour a small bound bounds nothing. Whoever moves the pin
+    re-reads that function and moves PROMPT_CACHE_SEMANTICS_READ_AT with it."""
+    from harbor_clerk.llm.models import PROMPT_CACHE_SEMANTICS_READ_AT
+
+    script = (Path(__file__).resolve().parents[1] / "macos/scripts/build-llama.sh").read_text()
+    pinned = re.search(r'LLAMA_CPP_TAG="\$\{LLAMA_CPP_TAG:-(v[\d.]+)\}"', script).group(1)
+    assert pinned == PROMPT_CACHE_SEMANTICS_READ_AT
 
 
 def test_what_the_qwen35_pair_gets_on_the_macs_people_have():
@@ -426,12 +460,12 @@ def test_swift_mirrors_the_registrys_memory_tables():
     assert per_token == {m.id: m.kv_bytes_per_token for m in MODELS.values()}
     assert fixed == {m.id: m.kv_fixed_bytes for m in MODELS.values()}
     assert windows == {m.id: m.context_window for m in MODELS.values()}
-    from harbor_clerk.llm.models import PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_BYTES
+    from harbor_clerk.llm.models import PROMPT_CACHE_MAX_BYTES, PROMPT_CACHE_MIN_TOKENS
 
     for name, value in (
         ("runtimeOverheadBytes", RUNTIME_OVERHEAD_BYTES),
         ("hostHeadroomBytes", HOST_HEADROOM_BYTES),
         ("promptCacheMaxBytes", PROMPT_CACHE_MAX_BYTES),
-        ("promptCacheMinBytes", PROMPT_CACHE_MIN_BYTES),
+        ("promptCacheMinTokens", PROMPT_CACHE_MIN_TOKENS),
     ):
         assert re.search(rf"static let {name} = {value:_}\b", swift), name
