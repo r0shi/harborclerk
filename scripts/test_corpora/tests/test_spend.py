@@ -244,6 +244,55 @@ def test_each_call_kind_counts_its_units_where_the_work_finishes():
     assert counted == set(spend.load_config().estimates)
 
 
+def _units(kind: str) -> int:
+    return spend.get_meter().snapshot()["by_kind"].get(kind, {}).get("units", 0)
+
+
+def test_each_finished_piece_of_work_counts_one_unit_whoever_did_it(tmp_path, monkeypatch):
+    """The source check above is satisfied if either provider counts `baseline_question`. Each is driven here:
+    removing the count from one alone used to pass."""
+    from unittest.mock import MagicMock
+
+    from scripts.test_corpora.corpora import synthetic
+    from scripts.test_corpora.runner.answer_judge import AnswerJudge
+    from scripts.test_corpora.runner.cross_judge import OpenAIJudgeProvider
+    from scripts.test_corpora.runner.judge import JudgeClient
+    from scripts.test_corpora.runner.providers.anthropic_provider import AnthropicProvider
+    from scripts.test_corpora.runner.providers.openai_provider import OpenAIProvider
+
+    _use()
+    claude = MagicMock()
+    claude.messages.create.return_value = MagicMock(content=[MagicMock(text="An answer.")], stop_reason="end_turn")
+    AnthropicProvider(mcp_session=None, client=claude).run_question(question="q", question_id="q1", corpus="cuad")
+    assert _units("baseline_question") == 1
+
+    gpt = MagicMock()
+    message = SimpleNamespace(content="An answer.", tool_calls=None)
+    gpt.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(finish_reason="stop", message=message)]
+    )
+    OpenAIProvider(mcp_session=None, model="gpt-4o", client=gpt).run_question(
+        question="q", question_id="q1", corpus="cuad"
+    )
+    assert _units("baseline_question") == 2
+    assert OpenAIJudgeProvider(client=gpt).judge("prompt") == "An answer." and _units("cross_judge") == 1
+
+    verdict = (
+        '{"claim_recall": 5, "claim_precision": 5, "entity_recall": 5, "completeness": 5, "verdict": "pass", '
+        '"correctness": 5, "groundedness": 5, "rationale": "r"}'
+    )
+    claude.messages.create.return_value = MagicMock(content=[MagicMock(text=verdict)])
+    JudgeClient(client=claude).judge(question="q", baseline="b", model_answer="a")
+    assert _units("judge") == 1
+    AnswerJudge(client=claude).judge_answer(question="q", model_answer="a", cited="", answer_key="k", qtype="lookup")
+    assert _units("answer_judge") == 1
+
+    claude.messages.create.return_value = MagicMock(content=[MagicMock(text='{"text": "t", "facts": {}}')])
+    monkeypatch.setattr(synthetic, "_make_client", lambda: claude)
+    synthetic.acquire(tmp_path, doc_counts={"invoice": 2}, ocr_subset_count=0)
+    assert _units("synthetic_doc") == 2
+
+
 def test_the_report_header_line_names_spend_cap_judge_and_price_date():
     m = SpendMeter(_config(), run_info={"judge_model": "claude-sonnet-4-6"})
     m.settle("m", "judge", m.reserve("m", 1000, 100), Usage(1000, 100))
