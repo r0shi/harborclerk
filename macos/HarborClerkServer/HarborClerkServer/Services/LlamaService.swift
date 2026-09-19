@@ -84,11 +84,10 @@ final class LlamaService: ManagedService {
             "--host", "127.0.0.1",
             "--port", String(port),
             "-ngl", "99",
-            // Per-model parallel slot count. Heavy models (Gemma 26B, Qwen
-            // 35B) stay at 1 — each slot costs ~3-5 GB of KV cache and
-            // doesn't fit on 18 GB unified memory. Small models (SmolLM3
-            // 3B, Qwen 4B, Phi-4 Mini) get 4 so chat / research / worker
-            // requests don't queue behind each other on the LLM lock.
+            // Per-model parallel slot count. -c is the total: a slot does
+            // not add KV memory, it divides the context, so a request sees
+            // -c / -np. Every curated model runs one slot: the whole window
+            // for each job is worth more here than parallel requests.
             // Source of truth: ModelInfo.parallel_slots in
             // src/harbor_clerk/llm/models.py (mirrored above in
             // Settings.activeModelParallelSlots).
@@ -97,7 +96,7 @@ final class LlamaService: ManagedService {
             "--threads", String(max(1, ProcessInfo.processInfo.processorCount / 2)),
         ]
         // No RoPE stretch when the clamp left no context to stretch into.
-        args += MemoryBudget.yarnArguments(contextWindow: contextWindow, yarn: useYarn ? yarnConfig : nil)
+        args += MemoryBudget.yarnArguments(contextWindow: contextWindow, slots: settings.activeModelParallelSlots, yarn: useYarn ? yarnConfig : nil)
         proc.arguments = args
 
         let pipe = Log.createPipe(

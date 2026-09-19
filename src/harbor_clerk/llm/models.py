@@ -76,15 +76,12 @@ class ModelInfo:
     # experimentation surface — small local models may want 30, larger
     # ones 150. All 8 curated models start at None.
     find_all_default_max_results: int | None = None
-    # llama-server `-np` value. Heavy models (>15 GB GGUF) can't afford
-    # more than 1 KV cache slot on consumer Macs (each slot adds ~3-5 GB of
-    # KV memory). Mid models (5-12 GB) tolerate 2 slots. Small models
-    # (≤4 GB) handle 4 slots comfortably even on 18 GB unified memory.
-    # Per-model so we don't bottleneck small models on a global -np 1, and
-    # don't OOM heavy ones on a global -np 4. With 1 LLM worker today, the
-    # batch-summarize gain requires also scaling worker count (deferred);
-    # the immediate benefit is the chat-while-summarize case, where chat
-    # gets its own slot instead of queueing behind the worker's request.
+    # llama-server `-np` value. `-c` is the total across slots, so a slot does
+    # not add KV memory: it divides the context, and a request can use only
+    # context / slots tokens (`context_budget` accounts for that). Every
+    # curated model runs one slot (owner's decision, 2026-09-18): the product
+    # barely issues parallel requests, and on a Mac the whole window for each
+    # job is worth more than chat not queueing behind a summary.
     parallel_slots: int = 1
 
 
@@ -102,7 +99,7 @@ MODELS: dict[str, ModelInfo] = {
             # 36 layers × 8 KV heads × (128 + 128) × 2 bytes: 144 KB per token, 4.7 GB at 32K, 18.9 GB with YaRN at 131K.
             kv_bytes_per_token=147_456,
             yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768),
-            parallel_slots=2,  # mid tier (5-12 GB)
+            parallel_slots=1,
         ),
         ModelInfo(
             id="qwen3-4b",
@@ -114,14 +111,44 @@ MODELS: dict[str, ModelInfo] = {
             supports_tools=True,
             kv_bytes_per_token=147_456,  # same attention geometry as the 8B: 36 layers × 8 KV heads × 128
             yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768),
-            # Exception to the small-tier "-np 4" rule: at -np 4 the per-slot
-            # context is 32K/4 = 8K, which the 2026-05-31 v3 sweep showed is
+            # The evidence behind one slot everywhere: at -np 4 this model had
+            # 32K/4 = 8K per request, which the 2026-05-31 v3 sweep showed is
             # too tight for the chat tools schema (~2K tokens) + an ambiguous
-            # search result on the synthetic corpus, causing the model to
-            # emit empty answers when the prompt overflows. -np 1 restores
-            # the full 32K per request and lets qwen3-4b handle ambiguous
-            # queries that 3.5× its slot budget at -np 4. Throughput cost:
-            # summarize + chat serialize for this model only.
+            # search result, and the model emitted empty answers when the
+            # prompt overflowed.
+            parallel_slots=1,
+        ),
+        ModelInfo(
+            id="qwen35-9b",
+            name="Qwen3.5 9B",
+            huggingface_repo="unsloth/Qwen3.5-9B-GGUF",
+            filename="Qwen3.5-9B-Q4_K_M.gguf",
+            size_bytes=5_680_522_464,
+            # The GGUF's native window; no YaRN needed. Hybrid: one layer in four keeps a KV cache
+            # (full_attention_interval = 4, so 8 of 32) at 4 KV heads x (256 + 256) x 2 bytes: 32 KB per token,
+            # 8.6 GB at 262K, which is more than the weights. The launcher clamps -c to what the Mac fits
+            # (see below). The 24 linear-attention layers carry a fixed recurrent state per
+            # slot: (state 128 x inner 4096 + conv 3 x (4096 + 2 x 16 groups x 128)) x 4 bytes = 2,195,456 bytes
+            # per layer, 52,690,944 per slot. llama-server also keeps up to 32 checkpoints of that state per
+            # slot in host RAM (--ctx-checkpoints, its default; the launcher does not pass it), one per
+            # completion, so a long conversation reaches the ceiling: (1 + 32) x 52,690,944 = 1.7 GB with
+            # the one slot, and it is why a 16 GB Mac gets about 84K tokens from the 9B rather than 134K. #657 is where the launcher bounds it and this number comes down with it.
+            context_window=262144,
+            supports_tools=True,
+            kv_bytes_per_token=32_768,
+            kv_fixed_bytes=1_738_801_152,
+            parallel_slots=1,
+        ),
+        ModelInfo(
+            id="qwen35-4b",
+            name="Qwen3.5 4B",
+            huggingface_repo="unsloth/Qwen3.5-4B-GGUF",
+            filename="Qwen3.5-4B-Q4_K_M.gguf",
+            size_bytes=2_740_937_888,
+            context_window=262144,
+            supports_tools=True,
+            kv_bytes_per_token=32_768,  # same attention geometry as the 9B: 8 of 32 layers, 4 KV heads x 512
+            kv_fixed_bytes=1_738_801_152,
             parallel_slots=1,
         ),
         ModelInfo(
@@ -246,10 +273,14 @@ def effective_context(model: ModelInfo, yarn_enabled: bool, ram_bytes: int | Non
 
 
 def context_budget(model: ModelInfo | None, yarn_enabled: bool) -> int:
-    """What chat, research and summarize budget prompts against: the effective
-    context of the active model, or 32768 when no model is active. One
-    function, so the three cannot drift from each other or from the launcher."""
-    return effective_context(model, yarn_enabled) if model else 32768
+    """What chat, research and summarize budget prompts against: what ONE
+    request can use, which is the effective context divided by the slots
+    (llama-server splits -c across -np slots; `-c 32768 -np 2` reports 16384
+    per slot). 32768 when no model is active. One function, so the three
+    cannot drift from each other or from the launcher."""
+    if not model:
+        return 32768
+    return effective_context(model, yarn_enabled) // max(1, model.parallel_slots)
 
 
 def system_ram_bytes() -> int:

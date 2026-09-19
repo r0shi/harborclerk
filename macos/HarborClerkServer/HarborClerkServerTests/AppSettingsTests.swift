@@ -153,12 +153,16 @@ final class AppSettingsTests: XCTestCase {
             "gpt-oss-20b": "gpt-oss-20b-Q4_K_M.gguf",
             "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+            "qwen35-9b": "Qwen3.5-9B-Q4_K_M.gguf",
+            "qwen35-4b": "Qwen3.5-4B-Q4_K_M.gguf",
         ]
         for (modelId, filename) in expected {
             settings.llmModelId = modelId
             XCTAssertTrue(settings.activeModelPath.hasSuffix(filename),
                 "Expected path for \(modelId) to end with \(filename), got \(settings.activeModelPath)")
         }
+        // A model added to the other tables but not to the filename map launches as "Model file not found".
+        XCTAssertEqual(Set(expected.keys), Self.knownModelIds, "filename map out of sync with the model set")
     }
 
     func testActiveModelPathUnknownModel() {
@@ -184,6 +188,8 @@ final class AppSettingsTests: XCTestCase {
         let expected: [String: (perToken: Int, fixed: Int, context: Int)] = [
             "qwen3-8b": (147_456, 0, 32768),
             "qwen3-4b": (147_456, 0, 32768),
+            "qwen35-9b": (32_768, 1_738_801_152, 262144),
+            "qwen35-4b": (32_768, 1_738_801_152, 262144),
             "gpt-oss-20b": (24_576, 3_145_728, 128000),
             "qwen36-35b-a3b": (20_480, 300_000_000, 262144),
             "gemma4-26b-a4b": (20_480, 209_715_200, 262144),  // #548
@@ -204,13 +210,20 @@ final class AppSettingsTests: XCTestCase {
     /// native window or below, it would cost quality for no context.
     func testYarnArgumentsAreDroppedWhenTheClampLeavesNothingToStretchInto() {
         let yarn = AppSettings.YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: nil)
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 131072, yarn: yarn), ["--rope-scaling", "yarn", "--rope-scale", "4.0", "--yarn-orig-ctx", "32768"])
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 34816, yarn: yarn).count, 6, "2K over native is still over native")
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 32768, yarn: yarn), [], "exactly native: nothing to stretch into")
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 26624, yarn: yarn), [], "below native on a 12 GB Mac")
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 131072, yarn: nil), [], "YaRN off, or a model without it")
+        func args(_ context: Int, _ slots: Int = 1, _ y: AppSettings.YarnConfig? = yarn) -> [String] {
+            MemoryBudget.yarnArguments(contextWindow: context, slots: slots, yarn: y)
+        }
+        XCTAssertEqual(args(131072), ["--rope-scaling", "yarn", "--rope-scale", "4.0", "--yarn-orig-ctx", "32768"])
+        XCTAssertEqual(args(34816).count, 6, "2K over native is still over native")
+        XCTAssertEqual(args(32768), [], "exactly native: nothing to stretch into")
+        XCTAssertEqual(args(26624), [], "below native on a 12 GB Mac")
+        XCTAssertEqual(args(131072, 1, nil), [], "YaRN off, or a model without it")
+        // A request sees -c / -np. A model given two slots and clamped to 60K has 30K per request: native.
+        XCTAssertEqual(args(131072, 2).count, 6, "65K per request")
+        XCTAssertEqual(args(61440, 2), [], "30K per request is inside the native window")
+        XCTAssertEqual(args(65536, 2), [], "exactly native per request")
         let scaled = AppSettings.YarnConfig(extendedContext: 131072, ropeScale: 4.0, originalContext: 32768, attnFactor: 1.2)
-        XCTAssertEqual(MemoryBudget.yarnArguments(contextWindow: 65536, yarn: scaled).suffix(2), ["--yarn-attn-factor", "1.2"])
+        XCTAssertEqual(args(65536, 1, scaled).suffix(2), ["--yarn-attn-factor", "1.2"])
     }
 
     /// Same cases as `test_max_context_is_what_fits...` in Python.
@@ -242,27 +255,27 @@ final class AppSettingsTests: XCTestCase {
     private static let knownModelIds: Set<String> = [
         "qwen3-8b",
         "qwen3-4b",
+        "qwen35-9b",
+        "qwen35-4b",
         "gpt-oss-20b",
         "qwen36-35b-a3b",
         "gemma4-26b-a4b",
     ]
 
-    /// Mirror of `tests/test_llm_models.py::test_curated_models_parallel_slots_tiered_by_size`.
-    /// If this test diverges from the Python registry, llama-server will
-    /// launch with the wrong -np value, either OOMing on a heavy model
-    /// (slots too high) or wasting capacity on a small model (slots too
-    /// low). The python-side test enforces the source-of-truth values;
-    /// this one enforces the Swift mirror agrees AND that every known
-    /// model has an explicit tier entry.
+    /// Mirror of `tests/test_llm_models.py::test_every_curated_model_runs_one_slot`.
+    /// A slot divides -c: if Swift launches with more slots than the
+    /// registry states, every prompt is budgeted for more context than its
+    /// request has. The Python side holds the values and compares this
+    /// table with them; this holds that every known model has an entry.
     func testActiveModelParallelSlotsMatchesPythonRegistry() {
         let settings = AppSettings(configURL: configURL)
         let expected: [String: Int] = [
-            // Small — but exception: qwen3-4b is -np 1, see models.py
+            // One slot everywhere: a slot divides -c, and a request is worth the whole window
             "qwen3-4b": 1,
-            // Mid (5-12 GB, ≤32K context) → 2 slots
-            "qwen3-8b": 2,
-            // Heavy (>15 GB OR 128K+ context) → 1 slot
-            "gpt-oss-20b": 1,  // 128K context → KV cache too big for 2 slots on 18 GB
+            "qwen3-8b": 1,
+            "qwen35-9b": 1,
+            "qwen35-4b": 1,
+            "gpt-oss-20b": 1,
             "gemma4-26b-a4b": 1,
             "qwen36-35b-a3b": 1,
         ]
@@ -278,8 +291,7 @@ final class AppSettingsTests: XCTestCase {
         // every model the Swift mirror knows about must have an explicit tier
         // entry. Without this, a future model added to Settings.activeModelPath
         // but missed in activeModelParallelSlots' slots dict would silently
-        // fall back to `-np 1`, leaving the small/mid throughput gain on the
-        // floor with no test failure.
+        // fall back to `-np 1` whatever the registry says.
         XCTAssertEqual(
             Set(expected.keys),
             Self.knownModelIds,

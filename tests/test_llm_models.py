@@ -1,3 +1,4 @@
+import os
 import re
 import struct
 from pathlib import Path
@@ -52,43 +53,14 @@ def test_modelinfo_parallel_slots_defaults_to_one():
     assert info.parallel_slots == 1
 
 
-def test_curated_models_parallel_slots_tiered_by_size():
-    """Per-model `-np` values follow the size-based tier table:
-
-    - Small (≤4 GB GGUF): 4 slots
-    - Mid (5-12 GB, ≤32K context): 2 slots
-    - Heavy (>15 GB OR 128K+ context): 1 slot
-
-    Context window matters as much as parameter count because llama-server
-    allocates KV cache for all slots upfront. GPT-OSS 20B has small MoE
-    active params but a 128K context window, so 2 slots' KV would risk
-    OOM on 18 GB unified memory — it lives in the heavy tier with the
-    big dense models.
-    """
-    expected = {
-        # Small — but exception: qwen3-4b is -np 1 (not 4) because the
-        # 8K per-slot budget under -np 4 was too tight for the chat tools
-        # schema plus an ambiguous search result. See models.py.
-        "qwen3-4b": 1,
-        # Mid (≤32K native context)
-        "qwen3-8b": 2,
-        # Heavy
-        "gpt-oss-20b": 1,  # 128K context → KV cache too big for 2 slots on 18 GB
-        "gemma4-26b-a4b": 1,
-        "qwen36-35b-a3b": 1,
-    }
-    for model_id, slots in expected.items():
-        m = MODELS[model_id]
-        assert m.parallel_slots == slots, (
-            f"{model_id}: expected parallel_slots={slots} (size={m.size_bytes / 1e9:.1f} GB), got {m.parallel_slots}"
-        )
-    # Belt-and-suspenders: every curated model must have an explicit
-    # parallel_slots entry above (no silent default-to-1).
-    assert set(expected.keys()) == set(MODELS.keys()), (
-        f"parallel_slots tier table out of sync with MODELS registry: "
-        f"missing={set(MODELS.keys()) - set(expected.keys())}, "
-        f"extra={set(expected.keys()) - set(MODELS.keys())}"
-    )
+def test_every_curated_model_runs_one_slot():
+    """A slot divides -c; it does not add memory. Two slots halved every
+    request's context (Qwen3-8B budgeted 32K prompts for a 16K slot) for
+    concurrency the product barely uses, so every model runs one. Raising a
+    model's slots is a decision about its per-request context: change it here
+    on purpose, and divide what the models API reports (`max_context_here` is
+    the total -c) the way `context_budget()` already does."""
+    assert {m.id: m.parallel_slots for m in MODELS.values()} == dict.fromkeys(MODELS, 1)
 
 
 # --- memory budget (#556) ---------------------------------------------------------------------------------------
@@ -183,6 +155,39 @@ def _gguf_header(path: Path, prefix: str) -> dict:
         return _read_header(f, prefix)
 
 
+class _HubFile:
+    """Just enough of a file for `_read_header`, over HTTP range requests."""
+
+    def __init__(self, url: str):
+        import httpx
+
+        self._http, self._url, self._buf, self._pos = httpx, url, b"", 0
+        head = httpx.head(url, follow_redirects=True, timeout=60)
+        head.raise_for_status()
+        self.size = int(head.headers.get("x-linked-size") or head.headers["content-length"])
+
+    def read(self, n: int) -> bytes:
+        while len(self._buf) - self._pos < n:
+            start = len(self._buf)
+            r = self._http.get(
+                self._url,
+                headers={"Range": f"bytes={start}-{start + max(n, 4 << 20) - 1}"},
+                follow_redirects=True,
+                timeout=120,
+            )
+            r.raise_for_status()
+            assert r.status_code == 206, "the server ignored Range; refusing to read a whole model into memory"
+            self._buf += r.content
+        out = self._buf[self._pos : self._pos + n]
+        self._pos += n
+        return out
+
+
+def _gguf_header_from_hub(repo: str, filename: str, prefix: str) -> tuple[dict, int]:
+    f = _HubFile(f"https://huggingface.co/{repo}/resolve/main/{filename}")
+    return _read_header(f, prefix), f.size
+
+
 def _read_header(f, prefix: str) -> dict:
     def u32():
         return struct.unpack("<I", f.read(4))[0]
@@ -222,7 +227,40 @@ GEOMETRY = {
     "gemma4-26b-a4b": ("gemma4", "global"),  # sliding_window_pattern: 1 = windowed, 0 = global
     "gpt-oss-20b": ("gpt-oss", "half"),  # llama.cpp alternates window and full layers for this architecture
     "qwen36-35b-a3b": ("qwen35moe", "interval"),  # full_attention_interval
+    "qwen35-9b": ("qwen35", "interval"),
+    "qwen35-4b": ("qwen35", "interval"),
 }
+
+
+# Models whose fixed cost is derived from the header rather than estimated. qwen36-35b-a3b joins with #657.
+RECURRENT_STATE_DERIVED = {"qwen35-9b", "qwen35-4b"}
+LLAMA_CTX_CHECKPOINTS = 32  # llama-server's default at the pin; the launcher does not pass --ctx-checkpoints
+
+
+def test_the_launcher_still_leaves_checkpoints_at_the_default_the_budget_assumes():
+    """As a flag or as llama.cpp's environment form, from anywhere in the app: the shared environment is
+    built in ServiceManager, not in the launcher."""
+    for path in sorted(SWIFT_APP.rglob("*.swift")):
+        source = _swift(str(path.relative_to(SWIFT_APP)))
+        for name in (
+            "--ctx-checkpoints",
+            "--swa-checkpoints",
+            "--cache-ram",
+            "LLAMA_ARG_CTX_CHECKPOINTS",
+            "LLAMA_ARG_CACHE_RAM",
+        ):
+            assert name not in source, (
+                f"{path.name} now sets {name}: bring LLAMA_CTX_CHECKPOINTS and the kv_fixed_bytes that use it down to match"
+            )
+
+
+def test_what_the_qwen35_pair_gets_on_the_macs_people_have():
+    """The figures the PR and the models page state. One slot, so all of it goes to each request."""
+    gib = 1024**3
+    nine, four = MODELS["qwen35-9b"], MODELS["qwen35-4b"]
+    assert [max_context(nine, g * gib) for g in (8, 16, 18, 24)] == [0, 83_968, 149_504, 262_144]
+    assert [max_context(four, g * gib) for g in (8, 16, 18, 24)] == [0, 173_056, 238_592, 262_144]
+    assert min_ram_gb(nine) == min_ram_gb(four) == 24, "at the full window; the launcher clamps below that"
 
 
 @pytest.mark.parametrize("model_id", sorted(GEOMETRY))
@@ -231,10 +269,13 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
     the same name, this notices. Skipped where the model is not downloaded."""
     m = MODELS[model_id]
     path = MODELS_DIR / m.filename
-    if not path.is_file():
-        pytest.skip(f"{m.filename} is not downloaded here")
     prefix, growing = GEOMETRY[model_id]
-    h = _gguf_header(path, prefix)
+    if not path.is_file() and os.environ.get("HC_GGUF_LIVE") != "1":
+        pytest.skip(f"{m.filename} is not downloaded here; HC_GGUF_LIVE=1 reads its header from the Hub")
+    if path.is_file():
+        h, actual_size = _gguf_header(path, prefix), path.stat().st_size
+    else:
+        h, actual_size = _gguf_header_from_hub(m.huggingface_repo, m.filename, prefix)
     layers = h["block_count"]
     heads = h["attention.head_count_kv"]
     k, v = h["attention.key_length"], h.get("attention.value_length", h["attention.key_length"])
@@ -248,8 +289,16 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
         pattern = h["attention.sliding_window_pattern"]
         per_token = sum(hd * (k + v) * 2 for hd, windowed in zip(heads, pattern, strict=True) if not windowed)
     assert m.kv_bytes_per_token == per_token, f"{model_id}: header says {per_token} bytes per token"
-    assert m.size_bytes == path.stat().st_size, (
-        f"{model_id}: registry size {m.size_bytes} but the file is {path.stat().st_size}; the launcher measures the file"
+    if model_id in RECURRENT_STATE_DERIVED:
+        recurrent_layers = layers - layers // h["full_attention_interval"]
+        conv_channels = h["ssm.inner_size"] + 2 * h["ssm.group_count"] * h["ssm.state_size"]
+        per_layer = (h["ssm.state_size"] * h["ssm.inner_size"] + (h["ssm.conv_kernel"] - 1) * conv_channels) * 4
+        per_slot = recurrent_layers * per_layer
+        assert m.kv_fixed_bytes == m.parallel_slots * (1 + LLAMA_CTX_CHECKPOINTS) * per_slot, (
+            f"{model_id}: header says {per_slot} bytes of recurrent state per slot; the constant follows the slots"
+        )
+    assert m.size_bytes == actual_size, (
+        f"{model_id}: registry size {m.size_bytes} but the file is {actual_size}; the launcher measures the file"
     )
     assert m.context_window <= h["context_length"] or m.yarn is not None, (
         f"{model_id}: registry context exceeds the GGUF's"
@@ -267,6 +316,13 @@ def test_prompt_budgets_come_from_one_function_that_follows_the_launcher(monkeyp
 
     monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 16_000_000_000)
     assert context_budget(None, False) == 32768
+    # llama-server splits -c across slots: `-c 32768 -np 2` reports 16384 per slot. A budget of the whole
+    # window let a 20K-token conversation through to a 16K slot untrimmed.
+    assert context_budget(_info(parallel_slots=2), False) == 26624 // 2
+    # The shipped case: one slot, so Qwen3-8B's requests get the whole 32K.
+    monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 64 * 1024**3)
+    assert context_budget(MODELS["qwen3-8b"], False) == 32768
+    monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 16_000_000_000)
     assert context_budget(_info(), False) == max_context(_info(), 16_000_000_000) == 26624, (
         "clamped, as the launcher clamps"
     )
@@ -280,20 +336,39 @@ def test_prompt_budgets_come_from_one_function_that_follows_the_launcher(monkeyp
         )
 
 
+SWIFT_APP = Path(__file__).resolve().parents[1] / "macos/HarborClerkServer/HarborClerkServer"
+
+
+def _swift(rel: str) -> str:
+    """A Swift source with its comments removed: a commented-out entry must not satisfy a guard."""
+    text = (SWIFT_APP / rel).read_text()
+    return re.sub(r"(?m)(^|\s)//.*$", "", re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL))
+
+
+def test_the_preferences_picker_lists_the_registrys_models_and_their_sizes():
+    block = re.search(r"let modelOptions: [^=]*= \[(.*?)\n\]", _swift("PreferencesWindow.swift"), re.DOTALL)
+    assert block
+    listed = dict(re.findall(r'\("([a-z0-9.-]+)",\s*"[^"]*\(([\d.]+) GB\)"\)', block.group(1)))
+    assert listed == {m.id: f"{m.size_bytes / 1e9:.1f}" for m in MODELS.values()}
+
+
 def test_swift_mirrors_the_registrys_memory_tables():
     """Two hand-kept copies: the Swift launcher clamps by its own table and the
     API by the registry. `AppSettingsTests` pins Swift to hardcoded values;
     this pins those values to the registry, so a change on one side alone
     fails here."""
-    swift = (
-        Path(__file__).resolve().parents[1] / "macos/HarborClerkServer/HarborClerkServer/Settings.swift"
-    ).read_text()
+    swift = _swift("Settings.swift")
 
     def table(name: str) -> dict[str, int]:
         block = re.search(name + r"[^\[]*\[String: Int\] = \[(.*?)\n\s*\]", swift, re.DOTALL)
         assert block, name
         return {k: int(n.replace("_", "")) for k, n in re.findall(r'"([a-z0-9.-]+)":\s*([\d_]+)', block.group(1))}
 
+    names = re.search(r"let filenames: \[String: String\] = \[(.*?)\n\s*\]", swift, re.DOTALL)
+    assert names and dict(re.findall(r'"([a-z0-9.-]+)":\s*"([^"]+)"', names.group(1))) == {
+        m.id: m.filename for m in MODELS.values()
+    }, "a model missing here launches as 'Model file not found'"
+    assert table("let slots") == {m.id: m.parallel_slots for m in MODELS.values()}
     per_token, fixed, windows = table("kvBytesPerToken"), table("kvFixedBytes"), table("contextWindows")
     assert per_token == {m.id: m.kv_bytes_per_token for m in MODELS.values()}
     assert fixed == {m.id: m.kv_fixed_bytes for m in MODELS.values()}
