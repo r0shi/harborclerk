@@ -62,11 +62,9 @@ newer SDK is what *flips the stricter rules on* — ATS, TCC/file access,
 hardened-runtime and JIT policy can all change behavior with no source change at
 all. So an SDK bump is a behavioral change, not housekeeping.
 
-**The bump has already happened.** This section used to say the build "links the
-macOS 15.x SDK" and is "grandfathered into the older, looser behavior". That is
-no longer true, and nothing recorded the change: the deployment target is still
-15.0, but the SDK follows whatever Xcode is on the build machine, so installing
-Xcode 26 silently moved it. Measured on the shipped bundles:
+**The bump has already happened**, and nothing recorded it: the deployment
+target is still 15.0, but the SDK follows whatever Xcode is on the build machine,
+so installing Xcode 26 silently moved it. Measured on the shipped bundles:
 
 ```
 $ vtool -show-build /Applications/HarborClerkServer.app/Contents/MacOS/HarborClerkServer
@@ -76,23 +74,19 @@ $ vtool -show-build /Applications/HarborClerkServer.app/Contents/MacOS/HarborCle
 ```
 
 So the stricter rules are **already live in every build since that Xcode
-upgrade**, and have been through a full field test — an 11,436-document corpus,
-IMAP sync, search and Research — with no observed breakage. The `#561` ATS gap
-(no ATS keys declared, loopback cleartext relying on WebKit's implicit localhost
-allowance) is therefore running *under* the stricter regime today, not waiting
-for it.
+upgrade**, and have been through a full field test (an 11,436-document corpus,
+IMAP sync, search and Research) with no observed breakage. The `#561` ATS gap
+is therefore running *under* the stricter regime today, not waiting for it.
 
-Two consequences worth keeping in mind:
+Two consequences:
 
-- **The risk is inverted from how it reads.** Building on a machine with an older
-  Xcode now *loosens* the shipped binary rather than being the safe default. The
-  CI `macos` job runs on `macos-15`, whose SDK is older than the release
-  machine's, so CI validates a **more permissive** configuration than ships — it
-  cannot catch a regression that only the stricter SDK triggers.
-- **"Do not bump without re-testing" needs a way to notice a bump.** It was
-  bypassed here not by anyone deciding to bump, but by a routine Xcode upgrade.
-  `vtool -show-build` on the built binary is the check; pinning Xcode in the job
-  and at release time is the fix, and is not yet done.
+- **The risk is inverted.** Building with an older Xcode now *loosens* the
+  shipped binary. The CI `macos` job runs on `macos-15`, whose SDK is older than
+  the release machine's, so CI validates a **more permissive** configuration
+  than ships and cannot catch a regression only the stricter SDK triggers.
+- **Nobody decided to bump; a routine Xcode upgrade did.** `vtool -show-build`
+  on the built binary is the check; pinning Xcode in CI and at release time is
+  the fix, and is not yet done.
 
 When bumping, re-test on the target OS: the WKWebView loopback load, watched-
 folder access from the background watcher, and every spawned helper (Postgres,
@@ -176,11 +170,10 @@ inside what is free. YaRN is off by default; use the app's defaults.
 
 ## `cc` can pick up the Command Line Tools SDK, not Xcode's
 
-`make apps` compiles PostgreSQL and pgvector from source. On a machine whose
-Command Line Tools were updated by a macOS beta, the bare `cc` that
-`configure` runs resolves the **CLT** SDK (`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`)
-even though `xcode-select -p` points at Xcode.app. When that SDK is newer than
-Xcode's linker — CLT 27.0 against Xcode 26.5 here — every link fails with
+`make apps` compiles PostgreSQL and pgvector from source. Where a macOS beta
+updated the Command Line Tools, the bare `cc` that `configure` runs resolves the
+**CLT** SDK (`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`) even though `xcode-select -p` points at Xcode.app. When that SDK is
+newer than Xcode's linker (CLT 27.0 against Xcode 26.5 here) every link fails with
 
 ```
 ld: tapi error: malformed file
@@ -188,13 +181,20 @@ ld: tapi error: malformed file
 ```
 
 and the build stops at `configure: error: C compiler cannot create executables`.
-Nothing in the repo changed; the OS update did it. Pin the SDK to Xcode's for
-the build:
+Nothing in the repo changed; the OS update did it. Pin the SDK to Xcode's:
 
 ```bash
 SDKROOT=$(xcrun --sdk macosx --show-sdk-path) make apps
 ```
 
-`xcrun --show-sdk-path` *without* `--sdk macosx` returns the CLT path on such
-a machine, so use the explicit form. `make sign` does not compile anything and
-needs no override.
+`xcrun --show-sdk-path` *without* `--sdk macosx` returns the CLT path there, so
+use the explicit form. `make sign` compiles nothing and needs no override.
+
+## `make sign` over SSH: `errSecInternalComponent`
+
+`codesign` finds the Developer ID identity and then fails on the first thing it
+signs (a dylib inside `tika-server.jar`), because an SSH session has the login
+keychain locked and cannot show the key-access prompt. A reboot clears any
+earlier unlock. It is not the jar: the owner runs `security unlock-keychain
+~/Library/Keychains/login.keychain-db` in that session, then `make sign`. The
+commit `notarize.sh` prints is the checkout's, not the bundle's: rebuild first.
