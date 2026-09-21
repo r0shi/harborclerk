@@ -186,6 +186,8 @@ final class AppSettingsTests: XCTestCase {
     func testMemoryBudgetConstantsMatchPythonRegistry() {
         XCTAssertEqual(MemoryBudget.runtimeOverheadBytes, 1_000_000_000)
         XCTAssertEqual(MemoryBudget.hostHeadroomBytes, 6_000_000_000)
+        XCTAssertEqual(MemoryBudget.freeMemoryDivisor, 10)
+        XCTAssertEqual(MemoryBudget.tightFitContext, 16_384)
         XCTAssertEqual(MemoryBudget.ctxCheckpoints, 3)
         // fixed: the model's fixed KV alone. held: that plus the three context checkpoints the launcher
         // lets llama-server keep of it, which is what the context and the cache are sized from.
@@ -244,14 +246,21 @@ final class AppSettingsTests: XCTestCase {
             MemoryBudget.maxContext(modelBytes: model.bytes, kvBytesPerToken: model.perToken, fixedBytes: model.fixed, requested: model.requested, ramBytes: ram)
         }
         XCTAssertEqual(fit(64 * 1024 * 1024 * 1024), 32768)
-        XCTAssertEqual(fit(16_000_000_000), 26624, "4 GB spare is 27126 tokens, floored to 1024s")
+        // A tenth of the Mac stays free where the model allows it (#684). Same cases as Python.
+        XCTAssertEqual(fit(20_000_000_000), 32768, "8 GB spare less 2 GB free is 40690 tokens: past the model's window")
+        XCTAssertEqual(fit(17_000_000_000), 21504, "5 GB spare less 1.7 GB free is 22379 tokens: the margin holds")
+        XCTAssertEqual(fit(16_000_000_000), 16384, "fits 26624 but only 15360 with the margin: the working context")
+        XCTAssertEqual(fit(14_000_000_000), 13312, "what fits, since that is under the working context")
         XCTAssertEqual(fit(12_500_000_000), 0, "3389 tokens is not worth running")
         XCTAssertEqual(fit(11_000_000_000), 0)
         XCTAssertEqual(fit(16_000_000_000, (5_000_000_000, 0, 0, 32768)), 32768, "no per-token cost: the model's own window")
         XCTAssertEqual(fit(11_000_000_000, (5_000_000_000, 0, 0, 32768)), 0)
-        XCTAssertEqual(fit(16_000_000_000, (5_000_000_000, 20_480, 209_715_200, 262144)), (16_000_000_000 - 12_209_715_200) / 20_480 / 1024 * 1024)
-        // The mini's own case: the 35B-A3B at full context does not fit 32 GiB but 241664 tokens do.
-        XCTAssertEqual(fit(34_359_738_368, (22_134_528_992, 20_480, 263_454_720, 262144)), 241_664)
+        XCTAssertEqual(fit(13_000_000_000, (5_000_000_000, 0, 0, 32768)), 16384, "no per-token cost, nothing left once the margin is kept")
+        XCTAssertEqual(fit(16_000_000_000, (5_000_000_000, 20_480, 209_715_200, 262144)), (16_000_000_000 - 12_209_715_200 - 1_600_000_000) / 20_480 / 1024 * 1024)
+        XCTAssertEqual(MemoryBudget.freeMarginBytes(16_000_000_000), 1_600_000_000)
+        // The mini's own case. Sized to fill 32 GiB the 35B-A3B was given 241664 tokens and Metal refused
+        // its first prompt; 98304 was measured working with 11% of the machine free.
+        XCTAssertEqual(fit(34_359_738_368, (22_134_528_992, 20_480, 263_454_720, 262144)), 73_728)
     }
 
     /// Same cases as `test_the_prompt_cache_gets_what_the_context_leaves` in Python.
@@ -266,18 +275,25 @@ final class AppSettingsTests: XCTestCase {
         let qwen35b = (bytes: 22_134_528_992, perToken: 20_480, fixed: 263_454_720)
         let qwen9 = (bytes: 5_680_522_464, perToken: 32_768, fixed: 210_763_776)
         XCTAssertEqual(cache(32 * gib, qwen8, 32768), 8192, "room to spare: llama-server's own default, as before")
-        XCTAssertEqual(cache(18 * gib, qwen8, 32768), 2353, "what 32K of context leaves on an 18 GB Mac")
-        XCTAssertEqual(cache(16 * gib, qwen8, 32768), 0, "305 MiB left cannot hold a 4096-token state (576 MiB): off")
-        XCTAssertEqual(cache(18 * gib, gptoss, 24576), 0, "the context was clamped to what fits: nothing is left")
-        XCTAssertEqual(cache(32 * gib, qwen35b, 241_664), 0, "the mini's 35B: clamped, so no cache")
-        XCTAssertEqual(cache(36 * gib, qwen35b, 262_144), 3707)
-        // The fixed cost counts (recurrent state and the three checkpoints kept of it): without its 211 MB, 24 GB would leave 4290.
-        XCTAssertEqual(cache(18 * gib, qwen9, 195_584), 0)
-        XCTAssertEqual(cache(24 * gib, qwen9, 262_144), 4089)
-        // With exactly 250 MiB left: a 4096-token state of this model is 329 MiB, 201 of it fixed, so off.
+        // The free margin is not the cache's to spend. Before it an 18 GB Mac had 2353 MiB of cache here.
+        XCTAssertEqual(cache(18 * gib, qwen8, 32768), 0, "510 MiB left cannot hold a 4096-token state (576 MiB): off")
+        XCTAssertEqual(cache(24 * gib, qwen8, 32768), 6039, "what 32K of context and the margin leave on 24 GB")
+        XCTAssertEqual(cache(16 * gib, qwen8, 22528), 0)
+        XCTAssertEqual(cache(18 * gib, gptoss, 16384), 0, "a tight fit: nothing is left")
+        XCTAssertEqual(cache(32 * gib, qwen35b, 73_728), 0, "the mini's 35B: clamped, so no cache")
+        XCTAssertEqual(cache(36 * gib, qwen35b, 262_144), 0, "21 MiB left once the margin is kept")
+        // The fixed cost counts (recurrent state and the three checkpoints kept of it).
+        XCTAssertEqual(cache(18 * gib, qwen9, 137_216), 0)
+        XCTAssertEqual(cache(24 * gib, qwen9, 262_144), 1632)
+        // With 250 MiB left: a 4096-token state of this model is 329 MiB, 201 of it fixed, so off.
         let full = 21_481_220_832
-        XCTAssertEqual(cache(full + 250 * 1_048_576, qwen9, 262_144), 0)
-        XCTAssertEqual(cache(full + 400 * 1_048_576, qwen9, 262_144), 400)
+        func ramLeaving(_ spare: Int) -> Int {
+            var ram = (full + spare) * 10 / 9
+            while ram - MemoryBudget.freeMarginBytes(ram) - full < spare { ram += 1 }
+            return ram
+        }
+        XCTAssertEqual(cache(ramLeaving(250 * 1_048_576), qwen9, 262_144), 0)
+        XCTAssertEqual(cache(ramLeaving(400 * 1_048_576), qwen9, 262_144), 400)
         XCTAssertEqual(cache(0, qwen8, 32768), 0, "memory unknown")
         XCTAssertEqual(MemoryBudget.promptCacheMaxBytes, 8 * gib)
         XCTAssertEqual(MemoryBudget.promptCacheMinTokens, 4096)

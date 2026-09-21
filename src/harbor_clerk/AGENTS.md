@@ -71,9 +71,12 @@ as `-c`, so raising it is a memory change, not a documentation fix. Chat,
 research and summarize budget prompts through `context_budget()`, never the
 registry window: it is per request, `-c` divided by `-np`, because a slot
 divides the context rather than adding memory (every model runs one slot).
-The launcher also gives llama-server's prompt cache (`--cache-ram`) what the
-context leaves, never more than its 8 GiB default: context first, cache second
-(`prompt_cache_mib`, mirrored as `MemoryBudget.promptCacheMiB`). That bound is
+A context is sized to leave a tenth of the Mac free (`FREE_MEMORY_DIVISOR`): the
+headroom is what the host *uses*, and filling the rest gave the mini's 35B a
+context Metal refused (#684). The margin never refuses a model; a tight fit runs
+at `TIGHT_FIT_CONTEXT`. **A pinned context is a claim until the model has been
+loaded at it.** The prompt cache (`--cache-ram`) gets what is left, up to 8 GiB:
+margin, then context, then cache (`prompt_cache_mib`, `MemoryBudget.promptCacheMiB`). That bound is
 safe only because the pin skips a state larger than the limit; a pin bump
 re-reads `server_prompt_cache::alloc` (`PROMPT_CACHE_SEMANTICS_READ_AT`). Context
 checkpoints (copies of a sliding-window cache or recurrent state, 32 per slot

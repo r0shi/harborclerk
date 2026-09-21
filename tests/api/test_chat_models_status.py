@@ -284,14 +284,22 @@ async def test_the_list_reports_the_context_the_launcher_will_ask_for_when_yarn_
     monkeypatch.setattr(get_settings(), "llm_yarn_enabled", True)
     resp = await client.get("/api/chat/models", headers=auth_header(admin_token))
     q8 = next(m for m in resp.json() if m["id"] == "qwen3-8b")
-    assert q8["max_context_here"] == 34816 and q8["fits_here"] is False, (
-        "the 131072 YaRN window, clamped as the launcher clamps it"
+    assert q8["max_context_here"] == 22528 and q8["fits_here"] is False, (
+        "the 131072 YaRN window, clamped as the launcher clamps it: a tenth of the Mac stays free (#684)"
     )
-    assert q8["min_ram_gb"] == 32, "at 131072 tokens it is a 32 GB-tier model, not 16"
+    assert q8["min_ram_gb"] == 36, "at 131072 tokens it is a 36 GB-tier model, not 16"
     monkeypatch.setattr(get_settings(), "llm_yarn_enabled", False)
     plain = next(
         m
         for m in (await client.get("/api/chat/models", headers=auth_header(admin_token))).json()
         if m["id"] == "qwen3-8b"
     )
-    assert plain["max_context_here"] == 32768 and plain["fits_here"] is True and plain["min_ram_gb"] == 16
+    # YaRN off, the clamp is the same one: this Mac was never short of the plain window by much, and is now.
+    assert plain["max_context_here"] == 22528 and plain["fits_here"] is False and plain["min_ram_gb"] == 18
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 18 * 1024**3)
+    roomy = next(
+        m
+        for m in (await client.get("/api/chat/models", headers=auth_header(admin_token))).json()
+        if m["id"] == "qwen3-8b"
+    )
+    assert roomy["max_context_here"] == 32768 and roomy["fits_here"] is True

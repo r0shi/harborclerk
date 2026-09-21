@@ -28,6 +28,29 @@ RUNTIME_OVERHEAD_BYTES = 1_000_000_000
 # embedder and reranker, Postgres, the Tika JVM and the API. Six GB is the
 # floor observed on the mini with the whole app up and nothing else.
 HOST_HEADROOM_BYTES = 6_000_000_000
+# What is kept free on top of that when a context is sized: a tenth of the Mac's memory. The headroom above is
+# what the rest of the machine *uses* (measured again 2026-09-21: about 5.6 GB beside a resident 21.6 GB model),
+# so a context sized to fill everything else left the machine with nothing free. Measured on the mini (32 GB),
+# Qwen3.6-35B-A3B, the app's own flags, one 2,784-token prompt per load (#684):
+#
+#     -c 32,768 .. 98,304     works, lowest free memory 15% .. 11%
+#     -c 131,072              works, 8% free
+#     -c 196,608              4% free and swapping while still loading; killed by the test's watchdog
+#     -c 241,664 (the budget) Metal "Insufficient Memory" on the prompt
+#
+# It decides how much context a model gets, never whether it may load: what loads without it still loads, at
+# TIGHT_FIT_CONTEXT or what fits, whichever is less. That keeps three pairings the arithmetic does not like,
+# with this much of the Mac predicted free (the margin is 10%, and on the mini 4% was already swapping):
+#
+#     gemma4-26b-a4b on 24 GB   0.14 GB   0.5%        gpt-oss-20b on 18 GB   0.22 GB   1.2%
+#     gemma4-12b on 16 GB       0.78 GB   4.5%
+#
+# They are no worse than before the margin (which left them nothing), none has been measured, and what else is
+# resident differs from Mac to Mac, so they are kept and named here. TIGHT_FIT_CONTEXT = 0 refuses them instead
+# (here and in Swift): the owner's decision, one constant, and test_refusing_tight_fits_is_one_constant shows
+# exactly what it takes away.
+FREE_MEMORY_DIVISOR = 10
+TIGHT_FIT_CONTEXT = 16_384
 # Physical memory Apple sells Macs with, for rounding a requirement up. A
 # "16 GB" Mac has 16 GiB, so requirements are compared in GiB.
 MAC_RAM_TIERS_GB = (8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512)
@@ -192,7 +215,8 @@ MODELS: dict[str, ModelInfo] = {
             # 4.3 GB at 262K. The other 40 use a 1024-token sliding window at 8 KV heads × (256 + 256) × 2
             # bytes per cell, over swa_cache_cells(1024) = 1536 cells: 503 MB, fixed, and as much again for
             # each context checkpoint. That is what decides this model on a small Mac: with three kept, a
-            # 16 GB Mac has room for 63K tokens of it, not the 156K the KV alone would suggest.
+            # 16 GB Mac fits it only inside the free margin and runs it at the 16K working context (18 GB: 76K),
+            # not the 156K the KV alone would suggest. Never loaded on a 16 GB Mac: nothing here is measured.
             kv_bytes_per_token=16_384,
             kv_fixed_bytes=503_316_480,
             checkpoint_bytes=503_316_480,
@@ -310,8 +334,11 @@ def memory_bytes(model: ModelInfo, context: int | None = None) -> int:
 
 def ram_required_bytes(model: ModelInfo, context: int | None = None) -> int:
     """Physical memory a Mac needs to run `model` at `context` with the rest
-    of the app and the OS still resident."""
-    return memory_bytes(model, context) + HOST_HEADROOM_BYTES
+    of the app and the OS still resident and a tenth of the machine free: the
+    Mac on which `max_context` gives `context` in full. A smaller Mac may
+    still load the model, at less."""
+    need = memory_bytes(model, context) + HOST_HEADROOM_BYTES
+    return -(-need * FREE_MEMORY_DIVISOR // (FREE_MEMORY_DIVISOR - 1))
 
 
 def min_ram_gb(model: ModelInfo, context: int | None = None) -> int:
@@ -330,14 +357,31 @@ def max_context(model: ModelInfo, ram_bytes: int, requested: int | None = None) 
     """The largest context, up to `requested` (the model's own by default),
     that fits a Mac with `ram_bytes` of physical memory; 0 when the weights
     alone do not fit. Rounded down to a multiple of 1024, and never below
-    4096 unless 0: a smaller context is not worth running."""
+    4096 unless 0: a smaller context is not worth running. Sized to leave
+    `free_margin_bytes` of the machine free where the model allows it."""
     requested = model.context_window if requested is None else requested
     spare = ram_bytes - HOST_HEADROOM_BYTES - RUNTIME_OVERHEAD_BYTES - model.size_bytes - fixed_bytes(model)
-    if spare <= 0:
+    fits = _context_in(model, spare, requested)
+    if fits < 4096:
         return 0
-    tokens = requested if model.kv_bytes_per_token == 0 else min(requested, spare // model.kv_bytes_per_token)
-    tokens -= tokens % 1024
-    return int(tokens) if tokens >= 4096 else 0
+    # With a tenth of the machine left free (FREE_MEMORY_DIVISOR). A model that only fits by eating into that
+    # still runs, at a working context and no more.
+    roomy = _context_in(model, spare - free_margin_bytes(ram_bytes), requested)
+    tokens = max(roomy, min(fits, TIGHT_FIT_CONTEXT))
+    return tokens if tokens >= 4096 else 0
+
+
+def free_margin_bytes(ram_bytes: int) -> int:
+    """What sizing a context leaves free on a Mac with `ram_bytes`. Integer, so Swift computes the same."""
+    return ram_bytes // FREE_MEMORY_DIVISOR
+
+
+def _context_in(model: ModelInfo, spare_bytes: int, requested: int) -> int:
+    """Tokens of `model`'s KV cache that `spare_bytes` holds, up to `requested`, in multiples of 1024."""
+    if spare_bytes <= 0:
+        return 0
+    tokens = requested if model.kv_bytes_per_token == 0 else min(requested, spare_bytes // model.kv_bytes_per_token)
+    return int(tokens - tokens % 1024)
 
 
 def prompt_cache_mib(model: ModelInfo, ram_bytes: int, context: int) -> int:
@@ -346,13 +390,15 @@ def prompt_cache_mib(model: ModelInfo, ram_bytes: int, context: int) -> int:
     default (PROMPT_CACHE_MAX_BYTES). 0, which switches the cache off, when what is left could not hold a
     PROMPT_CACHE_MIN_TOKENS-token state of this model, or memory cannot be read.
 
-    Context first, cache second. The cache is a speed-up and the context is what the model can do:
-    reserving even 512 MiB ahead of the context would cut gpt-oss-20b on an 18 GB Mac from 27K tokens to
-    6K. So a Mac whose context is already clamped to what fits gets no cache, and says so in its log.
+    The free margin first, then the context, then the cache. The cache is a speed-up and the context is what
+    the model can do: reserving even 512 MiB ahead of the context costs a clamped model tokens it can use (it
+    would have cut gpt-oss-20b on an 18 GB Mac from 27K to 6K when that Mac's context was sized to fill it).
+    So a Mac whose context is already clamped to what fits gets no cache, and says so in its log.
 
     Nothing in the Python app calls this: only the Swift launcher starts llama-server. It is the reference
     that `MemoryBudget.promptCacheMiB` is tested against, case for case."""
-    left = ram_bytes - HOST_HEADROOM_BYTES - memory_bytes(model, context)
+    # The free margin is not the cache's to spend: it would take back exactly what max_context left.
+    left = ram_bytes - HOST_HEADROOM_BYTES - free_margin_bytes(ram_bytes) - memory_bytes(model, context)
     mib = min(PROMPT_CACHE_MAX_BYTES, left) // MIB
     return int(mib) if mib * MIB >= kv_bytes(model, PROMPT_CACHE_MIN_TOKENS) else 0
 
