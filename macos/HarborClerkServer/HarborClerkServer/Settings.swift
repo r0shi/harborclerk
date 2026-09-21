@@ -387,6 +387,15 @@ enum MemoryBudget {
     static let runtimeOverheadBytes = 1_000_000_000
     /// The OS, the embedder and reranker, Postgres, the Tika JVM and the API.
     static let hostHeadroomBytes = 6_000_000_000
+    /// Kept free on top of that when a context is sized: a tenth of the Mac. The
+    /// headroom is what the rest of the machine uses, so a context sized to fill
+    /// everything else left nothing free: the mini's 35B-A3B was given 241,664
+    /// tokens and Metal refused its first prompt (#684). It decides how much
+    /// context a model gets, never whether it loads: what fits only by eating
+    /// into it runs at `tightFitContext`. See FREE_MEMORY_DIVISOR in
+    /// src/harbor_clerk/llm/models.py for the measurements.
+    static let freeMemoryDivisor = 10
+    static let tightFitContext = 16_384
     /// Context checkpoints per slot (--ctx-checkpoints). llama-server's default is
     /// 32, in host RAM; three is one request's worth, which is what the next turn
     /// restores from. See LLAMA_CTX_CHECKPOINTS in src/harbor_clerk/llm/models.py.
@@ -416,13 +425,24 @@ enum MemoryBudget {
     /// The largest context, up to `requested`, that fits a Mac with `ramBytes`
     /// of physical memory; 0 when the weights alone do not fit. A multiple of
     /// 1024, and never below 4096 unless 0: a smaller context is not worth
-    /// running.
+    /// running. Sized to leave `freeMarginBytes` of the machine free where the
+    /// model allows it.
     static func maxContext(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, requested: Int, ramBytes: Int) -> Int {
         let spare = ramBytes - hostHeadroomBytes - runtimeOverheadBytes - modelBytes - fixedBytes
-        if spare <= 0 { return 0 }
-        var tokens = kvBytesPerToken == 0 ? requested : min(requested, spare / kvBytesPerToken)
-        tokens -= tokens % 1024
-        return tokens >= 4096 ? tokens : 0
+        let fits = contextIn(spare, kvBytesPerToken: kvBytesPerToken, requested: requested)
+        if fits < 4096 { return 0 }
+        let roomy = contextIn(spare - freeMarginBytes(ramBytes), kvBytesPerToken: kvBytesPerToken, requested: requested)
+        return max(roomy, min(fits, tightFitContext))
+    }
+
+    /// What sizing a context leaves free on a Mac with `ramBytes`.
+    static func freeMarginBytes(_ ramBytes: Int) -> Int { ramBytes / freeMemoryDivisor }
+
+    /// Tokens of KV cache that `spareBytes` holds, up to `requested`, in multiples of 1024.
+    private static func contextIn(_ spareBytes: Int, kvBytesPerToken: Int, requested: Int) -> Int {
+        if spareBytes <= 0 { return 0 }
+        let tokens = kvBytesPerToken == 0 ? requested : min(requested, spareBytes / kvBytesPerToken)
+        return tokens - tokens % 1024
     }
 
     /// `--cache-ram` in MiB: what is left once the model, its KV cache at
@@ -433,7 +453,8 @@ enum MemoryBudget {
     /// a smaller context.
     static func promptCacheMiB(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, context: Int, ramBytes: Int) -> Int {
         let used = modelBytes + fixedBytes + kvBytesPerToken * context + runtimeOverheadBytes
-        let left = ramBytes - hostHeadroomBytes - used
+        // The free margin is not the cache's to spend: it would take back what maxContext left.
+        let left = ramBytes - hostHeadroomBytes - freeMarginBytes(ramBytes) - used
         let mib = min(promptCacheMaxBytes, left) / 1_048_576
         let smallestUsefulState = fixedBytes + kvBytesPerToken * promptCacheMinTokens
         return mib * 1_048_576 >= smallestUsefulState ? mib : 0
