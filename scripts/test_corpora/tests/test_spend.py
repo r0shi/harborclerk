@@ -104,6 +104,34 @@ def test_every_call_kind_the_harness_uses_has_an_estimate():
     assert kinds == set(spend.load_config().estimates), "a call kind without an estimate cannot be planned for"
 
 
+def test_answer_eval_and_rerun_plan_and_book_a_candidate_answer_not_a_sweep_baseline():
+    """The sweep's baseline estimate is CUAD's measured one. Shared with these two it refused answer-eval on the
+    synthetic corpus outright, 29 one-hop lookups at USD 34.54 (review of #693). What a command plans for and
+    what its provider books must be one kind, or the ledger cannot correct the estimate."""
+    runner = Path(spend.__file__).parent
+
+    def planned_and_booked(name: str) -> tuple[set, set]:
+        planned, booked = set(), set()
+        for node in ast.walk(ast.parse((runner / name).read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            if getattr(node.func, "attr", "") == "require_within_cap":
+                planned |= {t.elts[0].value for t in ast.walk(node) if isinstance(t, ast.Tuple)}
+            if getattr(node.func, "id", "") == "make_provider" and any(k.arg == "mcp_session" for k in node.keywords):
+                booked |= {k.value.value for k in node.keywords if k.arg == "spend_kind"} or {"baseline_question"}
+        return planned, booked
+
+    assert planned_and_booked("answer_eval.py") == ({"candidate_answer", "answer_judge"}, {"candidate_answer"})
+    assert planned_and_booked("rerun_pr_j.py") == ({"candidate_answer"}, {"candidate_answer"})
+    cfg = spend.load_config()
+    synthetic = SpendMeter(cfg).estimate(
+        [("candidate_answer", "claude-sonnet-4-6", 29), ("answer_judge", "claude-sonnet-4-6", 29)]
+    )
+    assert synthetic < cfg.cap_usd, (
+        "answer-eval has no flag that narrows it: an estimate over the cap is a dead command"
+    )
+
+
 def test_an_unpriced_model_is_refused_with_the_way_to_fix_it():
     with pytest.raises(spend.UnpricedModel, match="spend.yaml"):
         _config().price("gpt-99")
