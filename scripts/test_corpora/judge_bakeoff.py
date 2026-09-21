@@ -1,0 +1,180 @@
+"""Re-judge a finished run's answers with other judge models, without re-running anything local (#661, #663).
+
+A sweep's judge is one model with one rubric, and changing either makes every earlier score incomparable. This
+reads what a run left on disk (the baseline answers and each model's answers), sends the same triples to each
+candidate judge, and writes one verdict file per (rubric, judge, repetition, answer). It spends only judge money,
+through the same meter and cap as everything else, and it resumes: a verdict already on disk is not bought again.
+
+    uv --project scripts/test_corpora run python -m scripts.test_corpora.judge_bakeoff \\
+        --run-dir "$WORKDIR/results/$RUN" --out-dir "$WORKDIR/results/$RUN/bakeoff" \\
+        --judges claude-sonnet-5,gpt-5.6-terra --reps 2 --rubric reference --spend-cap-usd 3
+
+It compares judges with each other. Whether any of them is right is a separate question, answered by scoring the
+same answers against ground truth the corpus already carries (CUAD's human annotations) and setting the two side
+by side: that analysis is not in this file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+import time
+from pathlib import Path
+
+from scripts.test_corpora.runner import spend
+from scripts.test_corpora.runner.judge import JUDGE_PROMPT, _extract_json
+from scripts.test_corpora.runner.providers.factory import _ANTHROPIC_PREFIXES, _OPENAI_PREFIXES
+
+log = logging.getLogger("judge_bakeoff")
+
+# The sweep's rubric grades coverage of the baseline, so a correct, short answer scores "marginal" beside a
+# reference that said more than the question asked (bench-20260921-0041: both parties named, full citation
+# overlap, 3 of 5). This one asks the two questions apart, and takes its verdict from the first.
+SPLIT_PROMPT = """You are grading an answer to a question about a collection of documents. A reference answer,
+written by a stronger system that searched the same collection, is provided. The reference may say more than the
+question asked for, and it may itself be incomplete.
+
+Question: {question}
+
+Reference answer:
+{baseline}
+
+Answer to grade:
+{model_answer}
+
+Judge two things separately (0-5 each):
+- answers_question: does the answer correctly answer what the question asked? Do not penalise brevity, or the
+  absence of detail the question did not ask for. Penalise wrong facts, contradictions of the reference, and not
+  answering (including saying nothing was found when the reference found it).
+- coverage: how much of the reference's relevant content does the answer cover?
+
+Return JSON only (no prose, no markdown fences):
+{{
+  "answers_question": int,
+  "coverage": int,
+  "wrong_facts": ["..."],
+  "verdict": "pass" | "marginal" | "fail"
+}}
+The verdict follows answers_question alone: 4-5 pass, 2-3 marginal, 0-1 fail.
+"""
+
+RUBRICS = {"reference": JUDGE_PROMPT, "split": SPLIT_PROMPT}
+
+
+def load_items(run_dir: Path) -> list[dict]:
+    """Every (corpus, model, question) the run has both a baseline and a non-empty answer for."""
+    items = []
+    for path in sorted((run_dir / "responses").glob("*/*/*.json")):
+        record = json.loads(path.read_text())
+        result = record.get("result") or {}
+        answer = (result.get("answer") or result.get("report") or "").strip()
+        baseline_path = run_dir / "baselines" / record["corpus"] / f"{record['question_id']}.json"
+        if not answer or not baseline_path.exists():
+            continue
+        baseline = json.loads(baseline_path.read_text())
+        items.append(
+            {
+                "key": f"{record['corpus']}__{record['model']}__{record['question_id']}",
+                "model": record["model"],
+                "question_id": record["question_id"],
+                "question": baseline["question"],
+                "baseline": baseline.get("answer") or "",
+                "answer": answer,
+            }
+        )
+    return items
+
+
+def ask(judge: str, prompt: str) -> tuple[str, str]:
+    """(text, stop reason) from `judge`. Each vendor's metered client, so every call is reserved and booked."""
+    if judge.startswith(_ANTHROPIC_PREFIXES):
+        client = spend.anthropic_client("judge")
+        # Thinking is off for the models that would otherwise turn it on by themselves (Sonnet 5 runs adaptive
+        # when the field is omitted; Sonnet 4.6 and Haiku 4.5 do not): one deployment to compare, and the older
+        # two are what it is compared with. A judge that thinks is a different candidate, not measured here.
+        extra = {"thinking": {"type": "disabled"}} if judge.startswith("claude-sonnet-5") else {}
+        msg = client.messages.create(
+            model=judge, max_tokens=2000, messages=[{"role": "user", "content": prompt}], **extra
+        )
+        spend.get_meter().count_unit("judge")
+        text = next((b.text for b in msg.content if getattr(b, "type", "") == "text"), "")
+        return text, str(msg.stop_reason)
+    if judge.startswith(_OPENAI_PREFIXES):
+        client = spend.openai_client("cross_judge")
+        resp = client.chat.completions.create(
+            model=judge, max_completion_tokens=6000, messages=[{"role": "user", "content": prompt}]
+        )
+        spend.get_meter().count_unit("cross_judge")
+        choice = resp.choices[0]
+        return choice.message.content or "", str(choice.finish_reason)
+    raise ValueError(f"{judge!r} is neither a Claude nor an OpenAI model")
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--run-dir", required=True, type=Path)
+    p.add_argument("--out-dir", required=True, type=Path)
+    p.add_argument("--judges", required=True, help="comma-separated model ids")
+    p.add_argument("--reps", type=int, default=1, help="repetitions per judge (self-consistency)")
+    p.add_argument("--first-rep", type=int, default=0, help="number the repetitions from here")
+    p.add_argument("--rubric", choices=sorted(RUBRICS), default="reference")
+    p.add_argument("--keys-file", type=Path, help="JSON list of item keys to judge; default every item")
+    p.add_argument("--spend-cap-usd", type=float, default=None)
+    args = p.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    items = load_items(args.run_dir)
+    if args.keys_file:
+        wanted = set(json.loads(args.keys_file.read_text()))
+        items = [i for i in items if i["key"] in wanted]
+    judges = [j.strip() for j in args.judges.split(",") if j.strip()]
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    meter = spend.configure(
+        ledger_path=args.out_dir / spend.LEDGER_NAME,
+        cap_usd=args.spend_cap_usd,
+        run_info={"mode": "judge-bakeoff", "source_run": args.run_dir.name},
+    )
+    for judge in judges:
+        meter.config.price(judge)  # an unpriced judge is refused before anything is bought
+    log.info(
+        "%d answers, judges %s, rubric %s, reps %d; %s",
+        len(items),
+        judges,
+        args.rubric,
+        args.reps,
+        spend.header_line(meter.snapshot()),
+    )
+
+    try:
+        for judge in judges:
+            for rep in range(args.first_rep, args.first_rep + args.reps):
+                folder = args.out_dir / args.rubric / judge / f"rep{rep}"
+                folder.mkdir(parents=True, exist_ok=True)
+                for item in items:
+                    out = folder / f"{item['key']}.json"
+                    if out.exists():
+                        continue
+                    prompt = RUBRICS[args.rubric].format(
+                        question=item["question"], baseline=item["baseline"], model_answer=item["answer"]
+                    )
+                    started = time.time()
+                    text, stop = ask(judge, prompt)
+                    record = {"judge": judge, "rep": rep, "rubric": args.rubric, "key": item["key"], "stop": stop}
+                    try:
+                        record["verdict"] = _extract_json(text)
+                    except ValueError as exc:  # json.JSONDecodeError is one: an unparseable judge is a result
+                        record["parse_error"] = f"{exc}"[:200]
+                        record["raw"] = text[:2000]
+                    record["seconds"] = round(time.time() - started, 1)
+                    out.write_text(json.dumps(record, indent=1))
+                log.info("%s rep%d done; %s", judge, rep, spend.header_line(meter.snapshot()))
+    except spend.SpendError as exc:
+        log.error("stopped by the spend cap: %s", exc)
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
