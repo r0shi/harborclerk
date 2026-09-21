@@ -57,6 +57,7 @@ def make_provider(
     mcp_session: Any = None,
     hc_client: Any = None,
     doc_ids_seen: list[str] | None = None,
+    spend_kind: str = "baseline_question",
 ) -> Provider:
     """Construct a Provider for `model`.
 
@@ -68,9 +69,9 @@ def make_provider(
     that want to anchor citations to a known starting set).
     """
     if model.startswith(_ANTHROPIC_PREFIXES):
-        return AnthropicProvider(mcp_session=mcp_session, model=model, doc_ids_seen=doc_ids_seen)
+        return AnthropicProvider(mcp_session=mcp_session, model=model, doc_ids_seen=doc_ids_seen, spend_kind=spend_kind)
     if model.startswith(_OPENAI_PREFIXES) and not model.startswith(_LOCAL_OVERRIDES):
-        return OpenAIProvider(mcp_session=mcp_session, model=model, doc_ids_seen=doc_ids_seen)
+        return OpenAIProvider(mcp_session=mcp_session, model=model, doc_ids_seen=doc_ids_seen, spend_kind=spend_kind)
     if hc_client is None:
         raise ValueError(f"model {model!r} is not a cloud model; LocalProvider needs hc_client=")
     return LocalProvider(

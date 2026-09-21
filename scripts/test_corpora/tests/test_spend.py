@@ -88,10 +88,19 @@ def test_every_call_kind_the_harness_uses_has_an_estimate():
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr in ("anthropic_client", "openai_client")
             ):
-                assert node.args and isinstance(node.args[0], ast.Constant), (
+                arg = node.args[0] if node.args else None
+                if isinstance(arg, ast.Attribute) and arg.attr == "_spend_kind":
+                    # The providers are booked under the kind their caller names, and refuse any that is not
+                    # in SPEND_KINDS (checked_spend_kind), so that tuple is what they can use.
+                    from scripts.test_corpora.runner.providers.base import SPEND_KINDS
+
+                    assert "self._spend_kind = checked_spend_kind(spend_kind)" in path.read_text(), path.name
+                    kinds.update(SPEND_KINDS)
+                    continue
+                assert isinstance(arg, ast.Constant), (
                     f"{path.name}:{node.lineno}: the call kind must be a string literal, so it can be checked here"
                 )
-                kinds.add(node.args[0].value)
+                kinds.add(arg.value)
     assert kinds == set(spend.load_config().estimates), "a call kind without an estimate cannot be planned for"
 
 
@@ -191,6 +200,8 @@ def test_the_ledger_is_rewritten_after_every_call_and_a_resumed_run_inherits_it(
         "units": 0,
         "input_tokens": 1000,
         "cache_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
         "output_tokens": 100,
         "usd": 0.02,
     }
@@ -285,6 +296,7 @@ def test_units_are_counted_apart_from_calls_because_a_question_is_a_tool_loop():
     m.count_unit("baseline_question")
     row = m.snapshot()["by_kind"]["baseline_question"]
     assert (row["calls"], row["units"], row["input_tokens"], row["cache_tokens"]) == (3, 1, 3000, 1500)
+    assert (row["cache_write_tokens"], row["cache_read_tokens"]) == (0, 1500), "and apart: they differ 20x in price"
 
 
 def test_each_call_kind_counts_its_units_where_the_work_finishes():
@@ -293,7 +305,14 @@ def test_each_call_kind_counts_its_units_where_the_work_finishes():
     for path in _harness_sources():
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "count_unit" and node.args:
-                counted.add(node.args[0].value)
+                arg = node.args[0]
+                if isinstance(arg, ast.Attribute) and arg.attr == "_spend_kind":
+                    from scripts.test_corpora.runner.providers.base import SPEND_KINDS
+
+                    counted.update(SPEND_KINDS)  # the providers count under the kind their caller named
+                    continue
+                assert isinstance(arg, ast.Constant), f"{path.name}:{node.lineno}: a literal kind, or _spend_kind"
+                counted.add(arg.value)
     assert counted == set(spend.load_config().estimates)
 
 

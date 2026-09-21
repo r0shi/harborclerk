@@ -19,9 +19,11 @@ import anthropic
 
 from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.providers.base import (
+    ANSWER_NOW,
     DEFAULT_SYSTEM_PROMPT,
     MAX_MODEL_CALLS,
     BaselineResult,
+    checked_spend_kind,
 )
 
 log = logging.getLogger(__name__)
@@ -63,6 +65,7 @@ class AnthropicProvider:
         model: str = "claude-sonnet-4-6",
         client: anthropic.Anthropic | None = None,
         doc_ids_seen: list[str] | None = None,
+        spend_kind: str = "baseline_question",
     ):
         # Lazy client construction (symmetric with OpenAIProvider). Defer
         # anthropic.Anthropic() until first API call so factory dispatch
@@ -70,6 +73,9 @@ class AnthropicProvider:
         self._explicit_client = client
         self._mcp = mcp_session
         self._model = model
+        # What this provider's calls and units are booked as. A sweep baseline is a `baseline_question`;
+        # answer-eval and rerun_pr_j answer other questions and must not be priced as one (spend.yaml).
+        self._spend_kind = checked_spend_kind(spend_kind)
         # Ordered map doc_id -> doc_title, in first-seen order. dict preserves
         # insertion order (3.7+), so cited_doc_ids and cited_doc_titles stay
         # parallel. For tests: pre-seed via doc_ids_seen (titles default to "").
@@ -78,7 +84,7 @@ class AnthropicProvider:
     @property
     def _client(self) -> anthropic.Anthropic:
         if self._explicit_client is None:
-            self._explicit_client = spend.anthropic_client("baseline_question")
+            self._explicit_client = spend.anthropic_client(self._spend_kind)
         return self._explicit_client
 
     def _list_tools(self) -> list[dict]:
@@ -132,7 +138,7 @@ class AnthropicProvider:
         tool_transcript: list[dict] = []
         resp = None
 
-        stopped_by = "end_turn"
+        stopped_by = "unrecorded"
         # The system prompt and the tool definitions are the same on every call of every question: cached once.
         system = [{"type": "text", "text": DEFAULT_SYSTEM_PROMPT, "cache_control": _EPHEMERAL}]
         if tools:
@@ -140,13 +146,18 @@ class AnthropicProvider:
 
         for call in range(1, MAX_MODEL_CALLS + 1):
             last = call == MAX_MODEL_CALLS
+            if last:
+                # The last call may not ask for another tool, and is told so. It carries no breakpoint of its
+                # own: nothing will read what it would write, and a write costs more than plain input.
+                content = messages[-1]["content"]
+                blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+                messages[-1] = {**messages[-1], "content": [*blocks, {"type": "text", "text": ANSWER_NOW}]}
             resp = self._client.messages.create(
                 model=self._model,
                 max_tokens=8000,
                 system=system,
                 tools=tools,
-                messages=_cached_up_to_the_last_block(messages),
-                # The last call may not ask for another tool: it answers from what it has.
+                messages=list(messages) if last else _cached_up_to_the_last_block(messages),
                 **({"tool_choice": {"type": "none"}} if last and tools else {}),
             )
             messages.append({"role": "assistant", "content": resp.content})
@@ -157,7 +168,9 @@ class AnthropicProvider:
                 log.warning("baseline %s/%s stopped at %d model calls", corpus, question_id, MAX_MODEL_CALLS)
                 break
             if resp.stop_reason != "tool_use":
-                break  # "end_turn", or anything else: there is nothing to run
+                # "end_turn", or a truncation or a refusal, which is not the model finishing: say which.
+                stopped_by = str(resp.stop_reason)
+                break
 
             # Execute each tool_use block, send results back as user message
             tool_results: list[dict] = []
@@ -190,7 +203,7 @@ class AnthropicProvider:
                     final = block.text
                     break
 
-        spend.get_meter().count_unit("baseline_question")
+        spend.get_meter().count_unit(self._spend_kind)
         return BaselineResult(
             question_id=question_id,
             question=question,

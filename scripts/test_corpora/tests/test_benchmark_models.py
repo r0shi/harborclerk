@@ -449,11 +449,15 @@ def test_a_refused_start_takes_back_only_what_it_made_never_a_ledger_with_money_
     run_dir = tmp_path / "results" / "r1"
     run_dir.mkdir(parents=True)
     ledger = run_dir / "spend.json"
-    ledger.write_text(json.dumps({"run": {"mode": "answer-eval"}, "total_usd": 1.25, "calls": 300}))
+    ledger.write_text(json.dumps({"run": {"mode": "answer-eval"}, "total_usd": 7.25, "calls": 300}))
     _stub_instance(monkeypatch, folders=THEIRS)
+    # This is about the wipe guard (exit 4), which comes after the spend plan. 16 baselines at the shipped
+    # estimate on top of 7.25 would be refused for money first (exit 3), and would be again at the next
+    # correction of spend.yaml: the plan's price is not this test's business.
+    monkeypatch.setattr(sweep.spend.SpendMeter, "estimate", lambda self, plan: 0.0)
     base = ["--run-id", "r1", "--workdir", str(tmp_path), "--phases", "1", "--corpora", "cuad"]
     assert sweep.main(base) == 4
-    assert json.loads(ledger.read_text())["total_usd"] == 1.25, "the money is still on record"
+    assert json.loads(ledger.read_text())["total_usd"] == 7.25, "the money is still on record"
     assert not (run_dir / "state.json").exists(), "the state this invocation made is taken back"
 
 

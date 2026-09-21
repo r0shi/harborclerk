@@ -266,6 +266,11 @@ class SpendMeter:
                     row["cache_tokens"] = (
                         row.get("cache_tokens", 0) + usage.cache_write_tokens + usage.cache_read_tokens
                     )
+                    # Apart as well as together: a write and a read differ twentyfold in price, and with
+                    # breakpoints on, `input_tokens` is only what came after the last one. `.get`: a ledger
+                    # from before these columns is resumed into.
+                    row["cache_write_tokens"] = row.get("cache_write_tokens", 0) + usage.cache_write_tokens
+                    row["cache_read_tokens"] = row.get("cache_read_tokens", 0) + usage.cache_read_tokens
                     row["output_tokens"] += usage.output_tokens
                 row["usd"] = round(row["usd"] + actual, 6)
             self._persist_locked()

@@ -183,7 +183,7 @@ def run(
     meter = spend.get_meter()
     estimate = meter.require_within_cap(
         [
-            ("baseline_question", model, to_capture if model_is_cloud(model) else 0),
+            ("candidate_answer", model, to_capture if model_is_cloud(model) else 0),
             ("answer_judge", judge_model, to_judge),
         ]
     )
@@ -303,7 +303,7 @@ def _live_capture_fn(*, api_base: str, corpus: str, model: str, insecure: bool) 
 
         mcp_url = os.environ.get("HC_MCP_URL") or f"{api_base}/mcp/mcp"
         mcp = SyncMcpSession(url=mcp_url, headers={"Authorization": f"Bearer {token}"})
-        provider = make_provider(model, mcp_session=mcp)
+        provider = make_provider(model, mcp_session=mcp, spend_kind="candidate_answer")
     else:
         # Local-model path — needs admin auth for PUT /chat/models/{id}/activate.
         user, password = os.environ.get("HC_USERNAME"), os.environ.get("HC_PASSWORD")

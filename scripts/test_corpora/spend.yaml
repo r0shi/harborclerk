@@ -45,14 +45,27 @@ chars_per_token: 2.5
 #     USD 5.98. The loop is now bounded at 12 calls (MAX_MODEL_CALLS).
 #   - It was measured WITHOUT prompt caching, which landed with that bound. Cached, most of those tokens are
 #     read at a tenth of the price, so this overstates, and the estimate prices every token as plain input.
-#     Correct it from the first cached run. Until then it is an upper bound, which is the safe side: at this
-#     figure one corpus of 16 questions is about USD 19 and a four-corpus sweep is refused before it starts.
-#     CUAD's passages are long contracts; the other corpora have not been measured.
+#     Until a cached run corrects it, it is an upper bound, which is the safe side: at this figure one corpus
+#     of 16 questions is about USD 19 and a four-corpus sweep is refused before it starts. CUAD's passages are
+#     long contracts; the other corpora have not been measured.
+#   - HOW TO CORRECT IT FROM A CACHED RUN. Not "input_tokens divided by units" any more: with breakpoints on,
+#     the API's input_tokens is only what came after the last breakpoint, close to nothing, and that rule
+#     would put a few hundred tokens here and rebuild the underestimate this replaced. An estimate holds input
+#     and output tokens only, priced as plain input, so state the cost in input-token equivalents:
+#         input_tokens = (usd / units - output_tokens / units * output price) / input price, per million
+#     from the kind's row in spend.json. The ledger prices a cache write at the one-hour rate while the code
+#     asks for five-minute breakpoints, so usd overstates, and so will the estimate: the safe side again.
+# candidate_answer is what answer-eval and rerun_pr_j pay a cloud model per item. It was priced as a
+# baseline_question until that became CUAD's measured figure, which refused answer-eval on the synthetic corpus
+# outright (29 one-hop lookups at the price of 29 contract research questions). PROVISIONAL, not metered: the
+# ten CUAD ask-type questions took 6.0 model calls on average against 12.2 for the six research-type ones, and
+# a synthetic lookup should need fewer still. Correct it the same way from the first metered answer-eval.
 # judge is measured too, same run: 57 units, 2,507 in and 405 out each. The figure below stands.
 # The rest are still PROVISIONAL, from RUNBOOK.md's old cost table.
 estimates:
   synthetic_doc: {input_tokens: 600, output_tokens: 1000}
   baseline_question: {input_tokens: 376000, output_tokens: 3200}
+  candidate_answer: {input_tokens: 120000, output_tokens: 1500}
   judge: {input_tokens: 3000, output_tokens: 500}
   answer_judge: {input_tokens: 3000, output_tokens: 400}
   cross_judge: {input_tokens: 3000, output_tokens: 400}
