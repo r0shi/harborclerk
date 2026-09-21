@@ -26,6 +26,7 @@ import openai
 from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.providers.base import (
     DEFAULT_SYSTEM_PROMPT,
+    MAX_MODEL_CALLS,
     BaselineResult,
 )
 
@@ -154,8 +155,12 @@ class OpenAIProvider:
         tool_call_count = 0
         tool_transcript: list[dict] = []
         final_text = ""
+        stopped_by = "end_turn"
 
-        while True:
+        # Bounded, like the Anthropic loop (MAX_MODEL_CALLS): the last call is made with tools off. OpenAI caches
+        # a repeated prefix on its own, so there are no breakpoints to place here.
+        for call in range(1, MAX_MODEL_CALLS + 1):
+            last = call == MAX_MODEL_CALLS
             kwargs: dict[str, Any] = {
                 "model": self._model,
                 # max_completion_tokens replaced max_tokens in OpenAI's API
@@ -167,7 +172,7 @@ class OpenAIProvider:
             }
             if tools:
                 kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
+                kwargs["tool_choice"] = "none" if last else "auto"
             resp = self._create_with_rate_limit_retry(kwargs)
             choice = resp.choices[0]
             msg = choice.message
@@ -189,7 +194,10 @@ class OpenAIProvider:
                 ]
             messages.append(assistant_msg)
 
-            if finish == "tool_calls" and msg.tool_calls:
+            if last:
+                stopped_by = "model_call_limit"
+                log.warning("baseline %s/%s stopped at %d model calls", corpus, question_id, MAX_MODEL_CALLS)
+            if finish == "tool_calls" and msg.tool_calls and not last:
                 for tc in msg.tool_calls:
                     tool_call_count += 1
                     try:
@@ -231,4 +239,5 @@ class OpenAIProvider:
             elapsed_seconds=time.time() - started,
             model=self._model,
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            stopped_by=stopped_by,
         )

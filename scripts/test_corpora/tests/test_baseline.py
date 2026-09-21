@@ -101,3 +101,76 @@ def test_run_question_extracts_last_text_block_not_first():
     res = gen.run_question(question="q", question_id="q1", corpus="cuad")
 
     assert res.answer == "the real answer"
+
+
+def _asks_for_a_tool_forever():
+    """A Claude that never stops searching, which is what `cuad-research-6` did for 24 calls (#682)."""
+    from unittest.mock import MagicMock
+
+    def respond(**kwargs):
+        if kwargs.get("tool_choice") == {"type": "none"}:
+            return MagicMock(content=[MagicMock(text="what I have so far", type="text")], stop_reason="end_turn")
+        block = MagicMock(type="tool_use", id=f"t{respond.calls}", input={"query": "x"})
+        block.name = "kb_search"
+        respond.calls += 1
+        return MagicMock(content=[block], stop_reason="tool_use")
+
+    respond.calls = 0
+    fake = MagicMock()
+    fake.messages.create.side_effect = respond
+    mcp = MagicMock()
+    mcp.list_tools.return_value = [MagicMock(description="search", inputSchema={"type": "object"})]
+    mcp.list_tools.return_value[0].name = "kb_search"
+    mcp.call_tool.return_value = MagicMock(content=[MagicMock(text='{"doc_id": "d1"}')])
+    return fake, mcp
+
+
+def test_a_question_makes_a_bounded_number_of_model_calls_and_the_last_has_no_tools():
+    from scripts.test_corpora.runner.providers.base import MAX_MODEL_CALLS
+
+    fake, mcp = _asks_for_a_tool_forever()
+    res = BaselineGenerator(client=fake, mcp_session=mcp).run_question(question="q", question_id="q1", corpus="cuad")
+
+    calls = fake.messages.create.call_args_list
+    assert len(calls) == MAX_MODEL_CALLS == 12
+    assert [c.kwargs.get("tool_choice") for c in calls] == [None] * 11 + [{"type": "none"}]
+    assert calls[-1].kwargs["tools"], "the transcript holds tool_use blocks: the definitions must still be sent"
+    assert res.tool_call_count == 11 and len(res.tool_transcript) == 11
+    assert res.answer == "what I have so far"
+    assert res.stopped_by == "model_call_limit", "a reference cut short must say so"
+
+
+def test_a_question_that_finishes_on_its_own_says_so():
+    from unittest.mock import MagicMock
+
+    fake = MagicMock()
+    fake.messages.create.return_value = MagicMock(content=[MagicMock(text="done", type="text")], stop_reason="end_turn")
+    res = BaselineGenerator(client=fake, mcp_session=None).run_question(question="q", question_id="q1", corpus="cuad")
+    assert fake.messages.create.call_count == 1 and res.stopped_by == "end_turn"
+    assert "tool_choice" not in fake.messages.create.call_args.kwargs
+
+
+def test_every_call_reads_the_previous_calls_prefix_from_the_prompt_cache():
+    """Without breakpoints the 16 CUAD baselines sent 6.0 M input tokens at full price (#682). Each call carries
+    three: the system prompt, the last tool definition, and the last block of the last message."""
+    fake, mcp = _asks_for_a_tool_forever()
+    BaselineGenerator(client=fake, mcp_session=mcp).run_question(question="the question", question_id="q1", corpus="c")
+
+    ephemeral = {"type": "ephemeral"}
+    for n, call in enumerate(fake.messages.create.call_args_list):
+        kw = call.kwargs
+        assert [b.get("cache_control") for b in kw["system"]] == [ephemeral]
+        assert [t.get("cache_control") for t in kw["tools"]] == [ephemeral]
+        marked = [
+            (i, j)
+            for i, m in enumerate(kw["messages"])
+            if isinstance(m["content"], list)
+            for j, b in enumerate(m["content"])
+            if isinstance(b, dict) and "cache_control" in b
+        ]
+        last = len(kw["messages"]) - 1
+        assert marked == [(last, len(kw["messages"][last]["content"]) - 1)], f"call {n}: one moving breakpoint"
+        assert kw["messages"][last]["role"] == "user"
+        assert len(kw["messages"]) == 1 + 2 * n, "and the whole transcript so far rides with it"
+    first = fake.messages.create.call_args_list[0].kwargs["messages"][0]["content"]
+    assert first == [{"type": "text", "text": "the question", "cache_control": ephemeral}]

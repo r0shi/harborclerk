@@ -32,15 +32,27 @@ prices:
 # over-reserves on purpose, since the reservation is what stops a run before the cap, not after it.
 chars_per_token: 2.5
 
-# Tokens per call kind, for the pre-run estimate that refuses to start a run over the cap. PROVISIONAL:
-# derived from RUNBOOK.md's cost table (a full run was about USD 5 to 10), not from metered runs, because
-# nothing was metered before this file existed. They put a full default sweep (eight models) near USD 17: above that
-# history, well under the cap. The estimate only has to stop a run that is plainly too big; the per-call hard
-# stop is the guard. Correct these from spend.json's by_kind: tokens divided by `units`, never by `calls`. An
-# estimate is per unit of work, and a baseline question is a tool loop of several calls.
+# Tokens per unit of work, for the pre-run estimate that refuses to start a run over the cap. The estimate has
+# to stop a run that is plainly too big; the per-call hard stop is the guard. Correct these from spend.json's
+# by_kind: tokens divided by `units`, never by `calls`. An estimate is per unit of work, and a baseline question
+# is a tool loop of several calls.
+#
+# baseline_question is MEASURED: bench-20260921-0041 on ix, CUAD, claude-sonnet-4-6, 16 questions, 133 calls,
+# 6,013,751 input tokens and 50,742 out, USD 18.80 (docs/reports/2026-09-21-benchmark-ix-bench-20260921-0041.md).
+# That is 375,859 in and 3,171 out per question, against the 20,000 and 1,500 guessed here before anything was
+# metered, which told the owner USD 2.64 for a run that cost 19.58 (#682). Two things about it:
+#   - It is a mean with a long tail: 15 questions averaged 7 calls and USD 0.83, the 16th took 24 calls and
+#     USD 5.98. The loop is now bounded at 12 calls (MAX_MODEL_CALLS).
+#   - It was measured WITHOUT prompt caching, which landed with that bound. Cached, most of those tokens are
+#     read at a tenth of the price, so this overstates, and the estimate prices every token as plain input.
+#     Correct it from the first cached run. Until then it is an upper bound, which is the safe side: at this
+#     figure one corpus of 16 questions is about USD 19 and a four-corpus sweep is refused before it starts.
+#     CUAD's passages are long contracts; the other corpora have not been measured.
+# judge is measured too, same run: 57 units, 2,507 in and 405 out each. The figure below stands.
+# The rest are still PROVISIONAL, from RUNBOOK.md's old cost table.
 estimates:
   synthetic_doc: {input_tokens: 600, output_tokens: 1000}
-  baseline_question: {input_tokens: 20000, output_tokens: 1500}
+  baseline_question: {input_tokens: 376000, output_tokens: 3200}
   judge: {input_tokens: 3000, output_tokens: 500}
   answer_judge: {input_tokens: 3000, output_tokens: 400}
   cross_judge: {input_tokens: 3000, output_tokens: 400}

@@ -738,6 +738,27 @@ def test_the_reservation_uses_the_requests_size_and_its_output_limit():
     assert len(inner.calls) == 1
 
 
+def test_a_request_with_cache_breakpoints_is_reserved_at_the_cache_write_price():
+    """A cached prompt can be billed as a write from end to end, at twice the input price here. Reserving it as
+    plain input would let a call through that the cap should have stopped (#682 put breakpoints on baselines)."""
+    body = "x" * 20_000  # 10,000 tokens at 2 characters each, give or take the JSON around it
+    plain = [{"role": "user", "content": [{"type": "text", "text": body}]}]
+    marked = [{"role": "user", "content": [{"type": "text", "text": body, "cache_control": {"type": "ephemeral"}}]}]
+    # About 0.10 as input and 0.20 as a cache write, plus 0.01 of output.
+    meter = _use(cap=0.15)
+    inner = _FakeAnthropic(usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+    client = spend.MeteredAnthropic("judge", inner)
+    client.messages.create(model="cached", max_tokens=100, messages=plain)
+    assert len(inner.calls) == 1
+    with pytest.raises(SpendCapExceeded):
+        client.messages.create(model="cached", max_tokens=100, messages=marked)
+    assert len(inner.calls) == 1 and meter.total_usd < 0.01
+    # A model with no cache price in the config is written at the dearest multiplier, 2x.
+    _use(cap=0.15)
+    with pytest.raises(SpendCapExceeded):
+        spend.MeteredAnthropic("judge", inner).messages.create(model="m", max_tokens=100, messages=marked)
+
+
 class _Refused(anthropic.APIStatusError):
     """The API answered with an error status. Built without a real HTTP response."""
 

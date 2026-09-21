@@ -138,7 +138,15 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
 - **Before the run**, the pending units are priced from the per-kind token estimates in `spend.yaml`. A run
   estimated over the cap does not start (exit code 3); narrow it with `--phases`, `--corpora`, `--models` or
   `--no-judge`.
-- **Before each call**, its worst case (request size plus `max_tokens`) is reserved against the running
+- **The baselines are most of the money.** A baseline question is a tool loop that re-sends its whole
+  transcript on every call. Measured on CUAD: 376,000 input tokens and USD 1.18 a question without caching, and
+  one question that took 24 calls cost USD 5.98 (#682). The loop is bounded at `MAX_MODEL_CALLS` (12; the last
+  call is made with tools off, the baseline records `stopped_by: model_call_limit`, and the report names it),
+  and every call carries prompt-cache breakpoints. At the measured figure **one corpus is about USD 19 and a
+  run over more than one corpus is refused before it starts**: run them one at a time until a cached run has
+  corrected the estimate.
+- **Before each call**, its worst case (request size plus `max_tokens`, at the cache-write price when the
+  request carries cache breakpoints) is reserved against the running
   total. A call that could cross the cap is not made, and the run stops with exit code 3 (the sweep,
   `--mode answer-eval`, the audit's `--cross-judge` and `rerun_pr_j` alike). Finished units are saved, and
   `--resume` continues the same run against the same ledger. The unit that was about to be judged when the

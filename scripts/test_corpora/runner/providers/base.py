@@ -51,6 +51,18 @@ class BaselineResult:
     elapsed_seconds: float
     model: str
     timestamp: str
+    # "end_turn" when the model finished on its own; "model_call_limit" when it was still asking for tools at
+    # MAX_MODEL_CALLS and the last call was made with tools off. A baseline cut short is a worse reference, and
+    # everything scored against it should be able to say so. Defaulted: baselines on disk predate it.
+    stopped_by: str = "end_turn"
+
+
+# Model calls one baseline question may make, the last of them with tools switched off so that it answers from
+# what it has. The loop had no bound at all: a question re-sends its whole transcript on every call, so its
+# cost grows with the square of the calls, and the run's spend cap was the only thing that would stop it.
+# Measured on CUAD, 2026-09-21 (#682): 15 questions took 7.2 calls each on average, the 16th took 24 and cost
+# USD 5.98 of a USD 25 run. Twelve is past every question but that one.
+MAX_MODEL_CALLS = 12
 
 
 @runtime_checkable

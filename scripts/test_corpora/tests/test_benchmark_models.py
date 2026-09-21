@@ -449,11 +449,11 @@ def test_a_refused_start_takes_back_only_what_it_made_never_a_ledger_with_money_
     run_dir = tmp_path / "results" / "r1"
     run_dir.mkdir(parents=True)
     ledger = run_dir / "spend.json"
-    ledger.write_text(json.dumps({"run": {"mode": "answer-eval"}, "total_usd": 7.25, "calls": 300}))
+    ledger.write_text(json.dumps({"run": {"mode": "answer-eval"}, "total_usd": 1.25, "calls": 300}))
     _stub_instance(monkeypatch, folders=THEIRS)
     base = ["--run-id", "r1", "--workdir", str(tmp_path), "--phases", "1", "--corpora", "cuad"]
     assert sweep.main(base) == 4
-    assert json.loads(ledger.read_text())["total_usd"] == 7.25, "the money is still on record"
+    assert json.loads(ledger.read_text())["total_usd"] == 1.25, "the money is still on record"
     assert not (run_dir / "state.json").exists(), "the state this invocation made is taken back"
 
 

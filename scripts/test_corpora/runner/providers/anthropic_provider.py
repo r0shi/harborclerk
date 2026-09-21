@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,30 @@ import anthropic
 from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.providers.base import (
     DEFAULT_SYSTEM_PROMPT,
+    MAX_MODEL_CALLS,
     BaselineResult,
 )
+
+log = logging.getLogger(__name__)
+
+# A cache breakpoint. Everything up to and including the block that carries one is written to Anthropic's
+# prompt cache and read back, at a tenth of the input price, by the next call that starts the same way.
+# Without any, the 16 CUAD baselines sent 6.0 M input tokens, nearly all of them a prefix the API had seen on
+# the previous call of the same question, and cost USD 18.80 (#682). Five-minute lifetime: the next call of a
+# question follows in seconds. spend.yaml prices a write at the dearer one-hour rate, so the meter overstates.
+_EPHEMERAL = {"type": "ephemeral"}
+
+
+def _cached_up_to_the_last_block(messages: list[dict]) -> list[dict]:
+    """`messages` with one breakpoint, on the last block of the last message, which at every call is the user's:
+    the question, then each round's tool results. One moving breakpoint, because a request may carry four and
+    the system prompt and the tools have theirs. The stored transcript is left alone, so an older breakpoint
+    never rides along into a later call."""
+    *before, last = messages
+    content = last["content"]
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+    blocks[-1] = {**blocks[-1], "cache_control": _EPHEMERAL}
+    return [*before, {**last, "content": blocks}]
 
 
 class AnthropicProvider:
@@ -109,20 +132,32 @@ class AnthropicProvider:
         tool_transcript: list[dict] = []
         resp = None
 
-        while True:
+        stopped_by = "end_turn"
+        # The system prompt and the tool definitions are the same on every call of every question: cached once.
+        system = [{"type": "text", "text": DEFAULT_SYSTEM_PROMPT, "cache_control": _EPHEMERAL}]
+        if tools:
+            tools = [*tools[:-1], {**tools[-1], "cache_control": _EPHEMERAL}]
+
+        for call in range(1, MAX_MODEL_CALLS + 1):
+            last = call == MAX_MODEL_CALLS
             resp = self._client.messages.create(
                 model=self._model,
                 max_tokens=8000,
-                system=DEFAULT_SYSTEM_PROMPT,
+                system=system,
                 tools=tools,
-                messages=messages,
+                messages=_cached_up_to_the_last_block(messages),
+                # The last call may not ask for another tool: it answers from what it has.
+                **({"tool_choice": {"type": "none"}} if last and tools else {}),
             )
             messages.append({"role": "assistant", "content": resp.content})
 
-            if resp.stop_reason == "end_turn":
+            if last:
+                # Whatever it says now, it said it with tools off: not the answer it was working towards.
+                stopped_by = "model_call_limit"
+                log.warning("baseline %s/%s stopped at %d model calls", corpus, question_id, MAX_MODEL_CALLS)
                 break
             if resp.stop_reason != "tool_use":
-                break  # safety
+                break  # "end_turn", or anything else: there is nothing to run
 
             # Execute each tool_use block, send results back as user message
             tool_results: list[dict] = []
@@ -167,6 +202,7 @@ class AnthropicProvider:
             elapsed_seconds=time.time() - started,
             model=self._model,
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            stopped_by=stopped_by,
         )
 
     @staticmethod
