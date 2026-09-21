@@ -52,8 +52,10 @@ PYTHON_BIN="$PYTHON_DIR/bin/python3"
 # the superset, and already pins torch, transformers and sentence-transformers for the reranker.
 command -v uv >/dev/null || { echo "ERROR: uv is required to export the lock (https://docs.astral.sh/uv/)"; exit 1; }
 REQUIREMENTS="$DEST_DIR/requirements.lock.txt"
-(cd "$PROJECT_ROOT" && uv export --quiet --frozen --no-dev --no-emit-project --format requirements-txt \
-    --output-file "$REQUIREMENTS")
+# --no-header: uv's header records the command line, output path included, so with it the hash below would
+# change with the build directory and the uv version instead of with the lock.
+(cd "$PROJECT_ROOT" && uv export --quiet --frozen --no-dev --no-emit-project --no-header \
+    --format requirements-txt --output-file "$REQUIREMENTS")
 LOCK_SHA="$(shasum -a 256 "$REQUIREMENTS" | cut -d' ' -f1)"
 
 # ── Create venv ──

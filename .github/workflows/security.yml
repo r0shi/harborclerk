@@ -64,6 +64,16 @@ jobs:
         # builds but skipped here to avoid unauthenticated Hugging Face 429s.
         run: docker build -f docker/reranker.Dockerfile --build-arg PRELOAD_MODEL=0 -t harborclerk-reranker:ci .
 
+      - name: The embedder and reranker images run their venv's Python
+        # Building proves the layers and Trivy reads them; neither runs anything, and PRELOAD_MODEL=0 skips the
+        # one build step that did. Both services live in a venv reached only through ENV PATH, so a wrong PATH
+        # would build, scan clean, and fail at `docker compose up` (the reranker moved into a venv in #691).
+        run: |
+          docker run --rm --entrypoint sh harborclerk-embedder:ci -c \
+            'command -v harbor-clerk-embedder && python -c "import embedder.app, httpx, sys; print(sys.prefix)" | grep -x /app/.venv'
+          docker run --rm --entrypoint sh harborclerk-reranker:ci -c \
+            'command -v harbor-clerk-reranker && python -c "import embedder.reranker, httpx, sys; print(sys.prefix)" | grep -x /app/embedder/.venv'
+
       - name: Install Trivy
         run: |
           sudo apt-get update && sudo apt-get install -y wget apt-transport-https gnupg

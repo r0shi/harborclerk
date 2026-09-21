@@ -30,8 +30,25 @@ def _commands(script: Path) -> list[list[str]]:
     return [argv for argv in out if argv]
 
 
+def _is_pip(token: str) -> bool:
+    """`pip`, `pip3`, `$VENV_DIR/bin/pip`, `pip3.12`: a path to pip is pip. Review got `"$VENV_DIR/bin/pip"
+    install striprtf` past a guard that wanted the bare word."""
+    return re.fullmatch(r"pip[\d.]*", token.rsplit("/", 1)[-1]) is not None
+
+
+def _pip(argv: list[str], subcommand: str) -> bool:
+    at = next((i for i, token in enumerate(argv) if _is_pip(token)), None)
+    return at is not None and subcommand in argv[at:]
+
+
 def _pip_installs(script: Path) -> list[list[str]]:
-    return [argv for argv in _commands(script) if "pip" in argv and "install" in argv[argv.index("pip") :]]
+    return [argv for argv in _commands(script) if _pip(argv, "install")]
+
+
+def test_a_path_to_pip_is_pip() -> None:
+    assert all(_is_pip(t) for t in ("pip", "pip3", "pip3.12", "$VENV_DIR/bin/pip", "/usr/bin/pip3"))
+    assert not any(_is_pip(t) for t in ("pipx", "--disable-pip-version-check", "ensurepip", "$PIP_FLAGS"))
+    assert _pip(["$VENV_DIR/bin/pip", "install", "striprtf"], "install")
 
 
 def test_the_lock_is_exported_frozen_and_with_hashes() -> None:
@@ -41,6 +58,11 @@ def test_the_lock_is_exported_frozen_and_with_hashes() -> None:
     assert "--frozen" in export, "without --frozen, uv re-resolves and the app ships a lock nobody reviewed"
     assert "--no-dev" in export and "--no-emit-project" in export
     assert "--no-hashes" not in export
+    assert "--no-header" in export, "the header records the output path: the hash would follow the build directory"
+    # The root lock decides (one venv, and it is the superset), and only what the app runs on is exported: an
+    # extra or a group would ship pytest and ruff inside the app.
+    assert export[: export.index("uv")] == ["(cd", "$PROJECT_ROOT", "&&"], export
+    assert not [a for a in export if a.startswith(("--extra", "--all-extras", "--group", "--all-groups", "--only"))]
 
 
 def test_dependencies_are_installed_from_that_export_and_only_with_hashes() -> None:
@@ -64,12 +86,16 @@ def test_nothing_else_is_installed_with_dependency_resolution() -> None:
 def test_a_venv_from_another_lock_is_rebuilt_and_the_result_is_checked() -> None:
     code = "\n".join(" ".join(argv) for argv in _commands(BUILD_VENV))
     gate = [line for line in code.splitlines() if line.startswith("if ") and ".lock-sha256" in line]
-    assert len(gate) == 1 and "!= $LOCK_SHA" in gate[0], "the stored lock hash must be what decides a rebuild"
+    # Whole, not by substring: `... && false` appended to it got past a substring check in review.
+    assert gate == [
+        "if [ ! -x $VENV_DIR/bin/python3 ] || [ $(cat $VENV_DIR/.lock-sha256 2>/dev/null) != $LOCK_SHA ]; then"
+    ]
     after = code[code.index(gate[0]) :]
     assert after.index("rm -rf $VENV_DIR") < after.index("fi"), "and the rebuild must sit inside that branch"
     assert code.index("echo $LOCK_SHA >") > code.index("pip check"), "a failed install must not be recorded as built"
-    checks = [argv for argv in _commands(BUILD_VENV) if "pip" in argv and "check" in argv[argv.index("pip") :]]
+    checks = [argv for argv in _commands(BUILD_VENV) if _pip(argv, "check")]
     assert len(checks) == 1, "pip check is where a requirement the root lock cannot meet would show"
+    assert not {"||", "|", ";", "&&"} & set(checks[0]), "and its failure must stop the build, not be waved through"
 
 
 def _run_steps(dockerfile: Path) -> list[str]:
@@ -93,3 +119,27 @@ def test_every_image_installs_its_project_from_a_lock() -> None:
                         a for i, a in enumerate(rest) if not a.startswith("-") and rest[i - 1 : i] != ["--python"]
                     ]
                     assert not any(t.startswith(("/", ".")) for t in targets), f"{dockerfile.name}: {command.strip()}"
+
+
+def test_a_service_in_a_venv_is_on_the_path_it_is_started_from() -> None:
+    """The reranker's CMD, its HEALTHCHECK and compose's healthcheck all find Python through this one line."""
+    for dockerfile, venv in (("reranker.Dockerfile", "/app/embedder/.venv"), ("embedder.Dockerfile", "/app/.venv")):
+        text = (REPO / "docker" / dockerfile).read_text(encoding="utf-8")
+        assert re.search(rf'^ENV PATH="{re.escape(venv)}/bin:\$PATH"$', text, re.M), dockerfile
+        assert text.index(f'ENV PATH="{venv}/bin') < text.index("\nCMD "), dockerfile
+
+
+def _locked(lock: Path) -> dict[str, str]:
+    import tomllib
+
+    return {p["name"]: p["version"] for p in tomllib.loads(lock.read_text(encoding="utf-8"))["package"]}
+
+
+def test_both_locks_agree_on_the_libraries_the_embedder_runs_on() -> None:
+    """The Mac app runs the embedder on the ROOT lock (one venv); the embedder's CI job and both images run it on
+    `embedder/uv.lock`. Where they differ, what ships on a Mac is a combination no test has run: the two were a
+    sentence-transformers minor apart (5.6.0 and 5.2.2) when this was written. A bump to one of these in either
+    lock is a bump to both, in one PR."""
+    root, embedder = _locked(REPO / "uv.lock"), _locked(REPO / "embedder" / "uv.lock")
+    for name in ("torch", "transformers", "sentence-transformers", "tokenizers", "numpy"):
+        assert root[name] == embedder[name], f"{name}: root {root[name]}, embedder {embedder[name]}"
