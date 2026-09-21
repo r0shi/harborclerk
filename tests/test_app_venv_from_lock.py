@@ -14,6 +14,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 BUILD_VENV = REPO / "macos" / "scripts" / "build-venv.sh"
+DOCKERFILES = sorted((REPO / "docker").glob("*.Dockerfile"))
 
 
 def _commands(script: Path) -> list[list[str]]:
@@ -62,6 +63,33 @@ def test_nothing_else_is_installed_with_dependency_resolution() -> None:
 
 def test_a_venv_from_another_lock_is_rebuilt_and_the_result_is_checked() -> None:
     code = "\n".join(" ".join(argv) for argv in _commands(BUILD_VENV))
-    assert ".lock-sha256" in code and "rm -rf $VENV_DIR" in code
+    gate = [line for line in code.splitlines() if line.startswith("if ") and ".lock-sha256" in line]
+    assert len(gate) == 1 and "!= $LOCK_SHA" in gate[0], "the stored lock hash must be what decides a rebuild"
+    after = code[code.index(gate[0]) :]
+    assert after.index("rm -rf $VENV_DIR") < after.index("fi"), "and the rebuild must sit inside that branch"
+    assert code.index("echo $LOCK_SHA >") > code.index("pip check"), "a failed install must not be recorded as built"
     checks = [argv for argv in _commands(BUILD_VENV) if "pip" in argv and "check" in argv[argv.index("pip") :]]
     assert len(checks) == 1, "pip check is where a requirement the root lock cannot meet would show"
+
+
+def _run_steps(dockerfile: Path) -> list[str]:
+    text = re.sub(r"\\\n", " ", dockerfile.read_text(encoding="utf-8"))
+    return [line for line in text.splitlines() if line.startswith("RUN ")]
+
+
+def test_every_image_installs_its_project_from_a_lock() -> None:
+    """The reranker image ran `pip install /app/embedder`, which resolves afresh on every build."""
+    assert {d.name for d in DOCKERFILES} >= {"app.Dockerfile", "embedder.Dockerfile", "reranker.Dockerfile"}
+    for dockerfile in DOCKERFILES:
+        steps = _run_steps(dockerfile)
+        assert any("uv sync --locked" in step for step in steps), dockerfile.name
+        for step in steps:
+            for command in re.split(r"&&|;", step.removeprefix("RUN ")):
+                argv = command.split()
+                if "pip" in argv and "install" in argv:
+                    rest = argv[argv.index("install") + 1 :]
+                    # `--python <interpreter>` takes a value, and that value is a path without being a target.
+                    targets = [
+                        a for i, a in enumerate(rest) if not a.startswith("-") and rest[i - 1 : i] != ["--python"]
+                    ]
+                    assert not any(t.startswith(("/", ".")) for t in targets), f"{dockerfile.name}: {command.strip()}"
