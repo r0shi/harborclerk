@@ -437,6 +437,13 @@ def make_parser() -> argparse.ArgumentParser:
         "doesn't silently inherit a prior run's units.",
     )
     p.add_argument("--rerun", default="")
+    p.add_argument(
+        "--questions-dir",
+        type=Path,
+        default=None,
+        help="read <corpus>.yaml from here instead of questions/ (e.g. questions/keyed). A run is its questions: "
+        "use a new --run-id, and do not compare its scores with a run that asked others.",
+    )
     p.add_argument("--skip", default="")
     p.add_argument("--phases", default="0-6")
     p.add_argument("--models", default="")
@@ -1203,8 +1210,14 @@ def main(argv: list[str] | None = None) -> int:
 
         # Load question YAML for each corpus
         questions_by_corpus = {}
+        # --questions-dir: another question set in the same format (questions/keyed/ has CUAD questions with an
+        # answer key). A corpus with no file there keeps the standard questions, so --corpora still decides.
+        standard = Path(__file__).parent.parent / "questions"
         for c in ("cuad", "enron", "synthetic"):
-            q_path = Path(__file__).parent.parent / "questions" / f"{c}.yaml"
+            override = args.questions_dir / f"{c}.yaml" if args.questions_dir else None
+            q_path = override if override is not None and override.exists() else standard / f"{c}.yaml"
+            if q_path is override:
+                log.info("questions for %s from %s", c, q_path)
             questions_by_corpus[c] = yaml.safe_load(q_path.read_text())
 
         # Apply --corpora filter: scope plan_units to listed corpora only.
