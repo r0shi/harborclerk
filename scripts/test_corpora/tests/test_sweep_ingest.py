@@ -291,6 +291,9 @@ def test_no_ingest_flag_never_calls_ingest_corpus(tmp_path: Path) -> None:
         patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=fake_mcp),
         patch("scripts.test_corpora.runner.sweep._phase1_baseline", return_value=fake_baseline_result),
         patch("scripts.test_corpora.runner.sweep._ingest_corpus") as mock_ingest,
+        # Two corpora are 32 baseline questions, which the measured estimate (#682) prices over the cap, so
+        # the sweep would refuse to start. That refusal has its own tests; this one is about ingest.
+        patch("scripts.test_corpora.runner.spend.SpendMeter.estimate", return_value=0.0),
     ):
         rc = main(
             [

@@ -199,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     from scripts.test_corpora.runner.providers.factory import model_is_cloud
 
     try:
-        meter.require_within_cap([("baseline_question", args.model, n_items if model_is_cloud(args.model) else 0)])
+        meter.require_within_cap([("candidate_answer", args.model, n_items if model_is_cloud(args.model) else 0)])
     except spend.SpendError as exc:
         log.error("stopped by the spend cap: %s", exc)
         return 3
@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     # (same pattern as answer_eval._live_capture_fn). Without this, cited_doc_ids
     # accumulate across the batch and contaminate later captures.
     def _factory(model: str, *, mcp_session):
-        provider = make_provider(model, mcp_session=mcp_session)
+        provider = make_provider(model, mcp_session=mcp_session, spend_kind="candidate_answer")
         original_run = provider.run_question
 
         def _run(question: str, question_id: str, corpus: str):

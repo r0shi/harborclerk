@@ -88,11 +88,48 @@ def test_every_call_kind_the_harness_uses_has_an_estimate():
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr in ("anthropic_client", "openai_client")
             ):
-                assert node.args and isinstance(node.args[0], ast.Constant), (
+                arg = node.args[0] if node.args else None
+                if isinstance(arg, ast.Attribute) and arg.attr == "_spend_kind":
+                    # The providers are booked under the kind their caller names, and refuse any that is not
+                    # in SPEND_KINDS (checked_spend_kind), so that tuple is what they can use.
+                    from scripts.test_corpora.runner.providers.base import SPEND_KINDS
+
+                    assert "self._spend_kind = checked_spend_kind(spend_kind)" in path.read_text(), path.name
+                    kinds.update(SPEND_KINDS)
+                    continue
+                assert isinstance(arg, ast.Constant), (
                     f"{path.name}:{node.lineno}: the call kind must be a string literal, so it can be checked here"
                 )
-                kinds.add(node.args[0].value)
+                kinds.add(arg.value)
     assert kinds == set(spend.load_config().estimates), "a call kind without an estimate cannot be planned for"
+
+
+def test_answer_eval_and_rerun_plan_and_book_a_candidate_answer_not_a_sweep_baseline():
+    """The sweep's baseline estimate is CUAD's measured one. Shared with these two it refused answer-eval on the
+    synthetic corpus outright, 29 one-hop lookups at USD 34.54 (review of #693). What a command plans for and
+    what its provider books must be one kind, or the ledger cannot correct the estimate."""
+    runner = Path(spend.__file__).parent
+
+    def planned_and_booked(name: str) -> tuple[set, set]:
+        planned, booked = set(), set()
+        for node in ast.walk(ast.parse((runner / name).read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            if getattr(node.func, "attr", "") == "require_within_cap":
+                planned |= {t.elts[0].value for t in ast.walk(node) if isinstance(t, ast.Tuple)}
+            if getattr(node.func, "id", "") == "make_provider" and any(k.arg == "mcp_session" for k in node.keywords):
+                booked |= {k.value.value for k in node.keywords if k.arg == "spend_kind"} or {"baseline_question"}
+        return planned, booked
+
+    assert planned_and_booked("answer_eval.py") == ({"candidate_answer", "answer_judge"}, {"candidate_answer"})
+    assert planned_and_booked("rerun_pr_j.py") == ({"candidate_answer"}, {"candidate_answer"})
+    cfg = spend.load_config()
+    synthetic = SpendMeter(cfg).estimate(
+        [("candidate_answer", "claude-sonnet-4-6", 29), ("answer_judge", "claude-sonnet-4-6", 29)]
+    )
+    assert synthetic < cfg.cap_usd, (
+        "answer-eval has no flag that narrows it: an estimate over the cap is a dead command"
+    )
 
 
 def test_an_unpriced_model_is_refused_with_the_way_to_fix_it():
@@ -191,6 +228,8 @@ def test_the_ledger_is_rewritten_after_every_call_and_a_resumed_run_inherits_it(
         "units": 0,
         "input_tokens": 1000,
         "cache_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
         "output_tokens": 100,
         "usd": 0.02,
     }
@@ -285,6 +324,7 @@ def test_units_are_counted_apart_from_calls_because_a_question_is_a_tool_loop():
     m.count_unit("baseline_question")
     row = m.snapshot()["by_kind"]["baseline_question"]
     assert (row["calls"], row["units"], row["input_tokens"], row["cache_tokens"]) == (3, 1, 3000, 1500)
+    assert (row["cache_write_tokens"], row["cache_read_tokens"]) == (0, 1500), "and apart: they differ 20x in price"
 
 
 def test_each_call_kind_counts_its_units_where_the_work_finishes():
@@ -293,7 +333,14 @@ def test_each_call_kind_counts_its_units_where_the_work_finishes():
     for path in _harness_sources():
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "count_unit" and node.args:
-                counted.add(node.args[0].value)
+                arg = node.args[0]
+                if isinstance(arg, ast.Attribute) and arg.attr == "_spend_kind":
+                    from scripts.test_corpora.runner.providers.base import SPEND_KINDS
+
+                    counted.update(SPEND_KINDS)  # the providers count under the kind their caller named
+                    continue
+                assert isinstance(arg, ast.Constant), f"{path.name}:{node.lineno}: a literal kind, or _spend_kind"
+                counted.add(arg.value)
     assert counted == set(spend.load_config().estimates)
 
 
@@ -736,6 +783,27 @@ def test_the_reservation_uses_the_requests_size_and_its_output_limit():
     assert inner.calls == [] and meter.total_usd == 0
     client.messages.create(model="m", max_tokens=100, messages=[])
     assert len(inner.calls) == 1
+
+
+def test_a_request_with_cache_breakpoints_is_reserved_at_the_cache_write_price():
+    """A cached prompt can be billed as a write from end to end, at twice the input price here. Reserving it as
+    plain input would let a call through that the cap should have stopped (#682 put breakpoints on baselines)."""
+    body = "x" * 20_000  # 10,000 tokens at 2 characters each, give or take the JSON around it
+    plain = [{"role": "user", "content": [{"type": "text", "text": body}]}]
+    marked = [{"role": "user", "content": [{"type": "text", "text": body, "cache_control": {"type": "ephemeral"}}]}]
+    # About 0.10 as input and 0.20 as a cache write, plus 0.01 of output.
+    meter = _use(cap=0.15)
+    inner = _FakeAnthropic(usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+    client = spend.MeteredAnthropic("judge", inner)
+    client.messages.create(model="cached", max_tokens=100, messages=plain)
+    assert len(inner.calls) == 1
+    with pytest.raises(SpendCapExceeded):
+        client.messages.create(model="cached", max_tokens=100, messages=marked)
+    assert len(inner.calls) == 1 and meter.total_usd < 0.01
+    # A model with no cache price in the config is written at the dearest multiplier, 2x.
+    _use(cap=0.15)
+    with pytest.raises(SpendCapExceeded):
+        spend.MeteredAnthropic("judge", inner).messages.create(model="m", max_tokens=100, messages=marked)
 
 
 class _Refused(anthropic.APIStatusError):

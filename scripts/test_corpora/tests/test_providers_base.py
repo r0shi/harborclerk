@@ -20,6 +20,7 @@ def test_baseline_result_is_a_dataclass_with_expected_fields():
         "answer",
         "cited_doc_ids",
         "cited_doc_titles",
+        "stopped_by",
         "tool_call_count",
         "tool_transcript",
         "elapsed_seconds",

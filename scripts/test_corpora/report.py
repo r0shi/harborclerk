@@ -72,6 +72,16 @@ def _rows(run_dir: Path) -> list[dict[str, str]]:
     return list(latest.values())
 
 
+def baselines_cut_short(run_dir: Path) -> list[str]:
+    """`corpus/question` for every baseline whose tool loop hit MAX_MODEL_CALLS. A baseline from before the field
+    existed finished on its own, or ran until the spend cap: either way it was not cut short by this."""
+    out = []
+    for path in sorted((run_dir / "baselines").glob("*/*.json")):
+        if (_load(path) or {}).get("stopped_by") == "model_call_limit":
+            out.append(f"{path.parent.name}/{path.stem}")
+    return out
+
+
 def _mean(values: list[float]) -> str:
     return f"{statistics.fmean(values):.2f}" if values else "n/a"
 
@@ -220,6 +230,15 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
             "metrics.csv does not tell them from a true zero. `log.txt` names each one."
         )
         lines += [note, ""]
+    cut_short = baselines_cut_short(run_dir)
+    if cut_short:
+        lines += [
+            f"**{len(cut_short)} baseline(s) were stopped at the model-call limit**, so every model's score on those "
+            "questions is against a reference that answered with tools switched off: "
+            + ", ".join(f"`{name}`" for name in cut_short)
+            + ".",
+            "",
+        ]
     unjudged = sum(
         1 for r in rows if r["phase"] in JUDGED_PHASES and r["status"] == "done" and not r.get("judge_verdict")
     )

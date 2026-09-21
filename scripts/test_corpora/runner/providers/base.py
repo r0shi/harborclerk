@@ -51,6 +51,39 @@ class BaselineResult:
     elapsed_seconds: float
     model: str
     timestamp: str
+    # Why the loop ended: the API's own stop reason ("end_turn", or "max_tokens", "refusal", "length", ...), or
+    # "model_call_limit" when the question reached MAX_MODEL_CALLS and the last call was made with tools off. A
+    # reference that was cut short or truncated is a worse one, and what is scored against it should be able to
+    # say so. "unrecorded" is a provider that does not say (the local one) and every baseline from before this.
+    stopped_by: str = "unrecorded"
+
+
+# Model calls one baseline question may make, the last of them with tools switched off so that it answers from
+# what it has. The loop had no bound at all: a question re-sends its whole transcript on every call, so its
+# cost grows with the square of the calls, and the run's spend cap was the only thing that would stop it.
+# Measured on CUAD, 2026-09-21 (#682), counted per question from the run's log: thirteen questions took 3 to
+# 10 calls, then 12, 14, and one that took 24 and cost USD 5.98 of a USD 25 run. Sixteen is past every one but
+# that. (The first version of this said twelve, from the mean; two questions were over it and a third on it.)
+MAX_MODEL_CALLS = 16
+
+# What a cloud provider's calls may be booked as, each with an estimate in spend.yaml (a test holds the two
+# together). A sweep baseline is a `baseline_question`; answer-eval and rerun_pr_j pay for a `candidate_answer`.
+SPEND_KINDS = ("baseline_question", "candidate_answer")
+
+
+def checked_spend_kind(kind: str) -> str:
+    if kind not in SPEND_KINDS:
+        raise ValueError(
+            f"unknown spend kind {kind!r}: a kind without an estimate cannot be planned for. Known: {SPEND_KINDS}"
+        )
+    return kind
+
+
+# Sent with the last call. With tools off and nothing said, a model mid-search may answer "let me look further".
+ANSWER_NOW = (
+    "You have used all the searches available for this question. Do not ask for more. "
+    "Answer it now, as fully as you can, from what you have already found."
+)
 
 
 @runtime_checkable

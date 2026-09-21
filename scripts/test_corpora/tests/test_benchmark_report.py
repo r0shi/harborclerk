@@ -269,3 +269,18 @@ def test_an_untracked_file_does_not_make_the_suite_dirty(monkeypatch):
     assert "--untracked-files=no" in asked[1]
     monkeypatch.setattr(report.subprocess, "run", lambda argv, **kw: (_ for _ in ()).throw(FileNotFoundError("git")))
     assert report.suite_commit() == "unknown"
+
+
+def test_a_baseline_stopped_at_the_call_limit_is_named_in_the_report(tmp_path):
+    """Every model is scored against the baseline. One that was made to answer with its tools off (#682) is a
+    worse reference, and a table cannot show that."""
+    run = _run_dir(tmp_path, ROWS, ledger=LEDGER)
+    assert "model-call limit" not in _render(run)
+    folder = run / "baselines" / "cuad"
+    folder.mkdir(parents=True)
+    (folder / "cuad-research-6.json").write_text(json.dumps({"answer": "a", "stopped_by": "model_call_limit"}))
+    (folder / "cuad-ask-1.json").write_text(json.dumps({"answer": "a", "stopped_by": "end_turn"}))
+    (folder / "cuad-ask-2.json").write_text(json.dumps({"answer": "from before the field existed"}))
+    text = _render(run)
+    assert "**1 baseline(s) were stopped at the model-call limit**" in text and "`cuad/cuad-research-6`" in text
+    assert "cuad-ask-1" not in text.split("model-call limit")[1].split("\n")[0]

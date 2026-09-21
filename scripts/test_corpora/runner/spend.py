@@ -226,9 +226,15 @@ class SpendMeter:
         with self._lock:
             return self.cap_usd - self._total - self._outstanding
 
-    def reserve(self, model: str, input_tokens: int, max_output_tokens: int) -> float:
-        """Set aside one call's worst case, or refuse the call."""
-        worst = self.config.cost(model, Usage(input_tokens, max_output_tokens))
+    def reserve(self, model: str, input_tokens: int, max_output_tokens: int, cache_writes: bool = False) -> float:
+        """Set aside one call's worst case, or refuse the call. A request that carries cache breakpoints can be
+        billed as a cache write from end to end, which costs more than plain input: that is its worst case."""
+        prompt = (
+            Usage(0, max_output_tokens, cache_write_tokens=input_tokens)
+            if cache_writes
+            else Usage(input_tokens, max_output_tokens)
+        )
+        worst = max(self.config.cost(model, prompt), self.config.cost(model, Usage(input_tokens, max_output_tokens)))
         with self._lock:
             if self._total + self._outstanding + worst > self.cap_usd:
                 raise SpendCapExceeded(
@@ -260,6 +266,11 @@ class SpendMeter:
                     row["cache_tokens"] = (
                         row.get("cache_tokens", 0) + usage.cache_write_tokens + usage.cache_read_tokens
                     )
+                    # Apart as well as together: a write and a read differ twentyfold in price, and with
+                    # breakpoints on, `input_tokens` is only what came after the last one. `.get`: a ledger
+                    # from before these columns is resumed into.
+                    row["cache_write_tokens"] = row.get("cache_write_tokens", 0) + usage.cache_write_tokens
+                    row["cache_read_tokens"] = row.get("cache_read_tokens", 0) + usage.cache_read_tokens
                     row["output_tokens"] += usage.output_tokens
                 row["usd"] = round(row["usd"] + actual, 6)
             self._persist_locked()
@@ -450,10 +461,11 @@ class _MeteredCreate:
         self._owner._client()  # a client that cannot be built (no key) has spent nothing: fail before reserving
         request = {k: v for k, v in kwargs.items() if k not in ("model", *self._output_limit_keys)}
         estimate = _estimate_tokens(request, meter.config.chars_per_token)
+        cache_writes = '"cache_control"' in json.dumps(request, default=str)
         # The SDK clients are built with max_retries=0 and the retries happen here, so that every attempt
         # is reserved and settled. A retry inside the SDK would be an attempt the ledger never saw.
         for attempt in range(1 + MAX_RETRIES):
-            reserved = meter.reserve(model, estimate, int(limit))
+            reserved = meter.reserve(model, estimate, int(limit), cache_writes=cache_writes)
             try:
                 resp = self._owner._create(**kwargs)
             except BaseException as exc:

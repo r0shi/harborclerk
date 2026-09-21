@@ -211,3 +211,52 @@ def test_openai_provider_falls_back_when_mcp_returns_empty_content():
     second_call_messages = call_args_list[1].kwargs["messages"]
     tool_msg = next(m for m in second_call_messages if m.get("role") == "tool")
     assert tool_msg["content"] == "(empty)"
+
+
+def test_openai_provider_makes_a_bounded_number_of_model_calls_and_the_last_has_no_tools():
+    """The same bound as the Anthropic loop (#682): a model that never stops searching is stopped."""
+    from scripts.test_corpora.runner.providers.base import MAX_MODEL_CALLS
+
+    mcp = MagicMock()
+    mcp.list_tools.return_value = [SimpleNamespace(name="kb_search", description="s", inputSchema={"type": "object"})]
+    mcp.call_tool.return_value = SimpleNamespace(content=[SimpleNamespace(text='{"doc_id": "d"}')])
+
+    def respond(**kwargs):
+        if kwargs["tool_choice"] == "none":
+            return _mk_resp(finish_reason="stop", text="what I have so far")
+        return _mk_resp(finish_reason="tool_calls", tool_calls=[_mk_tool_call(id="c", name="kb_search", args={})])
+
+    client = MagicMock()
+    client.chat.completions.create.side_effect = respond
+    res = OpenAIProvider(mcp_session=mcp, model="gpt-4o", client=client).run_question(
+        question="q", question_id="q", corpus="cuad"
+    )
+    from scripts.test_corpora.runner.providers.base import ANSWER_NOW
+
+    calls = client.chat.completions.create.call_args_list
+    assert [c.kwargs["tool_choice"] for c in calls] == ["auto"] * (MAX_MODEL_CALLS - 1) + ["none"]
+    # The fake records the message list by reference, and the assistant's reply is appended to it afterwards.
+    assert calls[-1].kwargs["messages"][-2:] == [
+        {"role": "user", "content": ANSWER_NOW},
+        {"role": "assistant", "content": "what I have so far"},
+    ]
+    assert res.tool_call_count == MAX_MODEL_CALLS - 1
+    assert res.answer == "what I have so far" and res.stopped_by == "model_call_limit"
+
+
+def test_openai_provider_says_when_it_finished_on_its_own():
+    client = MagicMock()
+    client.chat.completions.create.return_value = _mk_resp(finish_reason="stop", text="done")
+    res = OpenAIProvider(mcp_session=None, model="gpt-4o", client=client).run_question(
+        question="q", question_id="q", corpus="cuad"
+    )
+    assert res.stopped_by == "end_turn"
+
+
+def test_openai_provider_records_a_truncation_as_a_truncation():
+    client = MagicMock()
+    client.chat.completions.create.return_value = _mk_resp(finish_reason="length", text="half an ans")
+    res = OpenAIProvider(mcp_session=None, model="gpt-4o", client=client).run_question(
+        question="q", question_id="q", corpus="cuad"
+    )
+    assert res.stopped_by == "length"

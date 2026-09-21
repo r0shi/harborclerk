@@ -25,8 +25,11 @@ import openai
 
 from scripts.test_corpora.runner import spend
 from scripts.test_corpora.runner.providers.base import (
+    ANSWER_NOW,
     DEFAULT_SYSTEM_PROMPT,
+    MAX_MODEL_CALLS,
     BaselineResult,
+    checked_spend_kind,
 )
 
 log = logging.getLogger("openai_provider")
@@ -51,6 +54,7 @@ class OpenAIProvider:
         model: str = "gpt-4o",
         client: openai.OpenAI | None = None,
         doc_ids_seen: list[str] | None = None,
+        spend_kind: str = "baseline_question",
     ):
         # Lazy client construction — openai.OpenAI() validates OPENAI_API_KEY at
         # __init__ time (anthropic.Anthropic() doesn't), so eager construction
@@ -60,12 +64,15 @@ class OpenAIProvider:
         self._explicit_client = client
         self._mcp = mcp_session
         self._model = model
+        # What this provider's calls and units are booked as. A sweep baseline is a `baseline_question`;
+        # answer-eval and rerun_pr_j answer other questions and must not be priced as one (spend.yaml).
+        self._spend_kind = checked_spend_kind(spend_kind)
         self._cited: dict[str, str] = {did: "" for did in doc_ids_seen} if doc_ids_seen else {}
 
     @property
     def _client(self) -> openai.OpenAI:
         if self._explicit_client is None:
-            self._explicit_client = spend.openai_client("baseline_question")
+            self._explicit_client = spend.openai_client(self._spend_kind)
         return self._explicit_client
 
     def _list_tools(self) -> list[dict]:
@@ -154,8 +161,14 @@ class OpenAIProvider:
         tool_call_count = 0
         tool_transcript: list[dict] = []
         final_text = ""
+        stopped_by = "unrecorded"
 
-        while True:
+        # Bounded, like the Anthropic loop (MAX_MODEL_CALLS): the last call is made with tools off. OpenAI caches
+        # a repeated prefix on its own, so there are no breakpoints to place here.
+        for call in range(1, MAX_MODEL_CALLS + 1):
+            last = call == MAX_MODEL_CALLS
+            if last:
+                messages.append({"role": "user", "content": ANSWER_NOW})
             kwargs: dict[str, Any] = {
                 "model": self._model,
                 # max_completion_tokens replaced max_tokens in OpenAI's API
@@ -167,7 +180,7 @@ class OpenAIProvider:
             }
             if tools:
                 kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
+                kwargs["tool_choice"] = "none" if last else "auto"
             resp = self._create_with_rate_limit_retry(kwargs)
             choice = resp.choices[0]
             msg = choice.message
@@ -189,7 +202,10 @@ class OpenAIProvider:
                 ]
             messages.append(assistant_msg)
 
-            if finish == "tool_calls" and msg.tool_calls:
+            if last:
+                stopped_by = "model_call_limit"
+                log.warning("baseline %s/%s stopped at %d model calls", corpus, question_id, MAX_MODEL_CALLS)
+            if finish == "tool_calls" and msg.tool_calls and not last:
                 for tc in msg.tool_calls:
                     tool_call_count += 1
                     try:
@@ -217,9 +233,12 @@ class OpenAIProvider:
             if finish == "length":
                 log.warning("openai response truncated (finish_reason=length) — returning partial answer")
             final_text = msg.content or ""
+            if not last:
+                # "stop" is OpenAI's end of turn; "length" and "content_filter" are not the model finishing.
+                stopped_by = "end_turn" if finish == "stop" else str(finish)
             break
 
-        spend.get_meter().count_unit("baseline_question")
+        spend.get_meter().count_unit(self._spend_kind)
         return BaselineResult(
             question_id=question_id,
             question=question,
@@ -231,4 +250,5 @@ class OpenAIProvider:
             elapsed_seconds=time.time() - started,
             model=self._model,
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            stopped_by=stopped_by,
         )
