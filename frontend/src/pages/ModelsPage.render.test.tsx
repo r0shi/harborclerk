@@ -45,8 +45,8 @@ const models = [
     yarn_available: true,
     yarn_extended_context: 131072,
     memory_bytes: 25_350_000_000,
-    min_ram_gb: 32,
-    max_context_here: 34816, // the YaRN window, clamped: more than the plain window, less than YaRN's
+    min_ram_gb: 36,
+    max_context_here: 22528, // what the API gives a 16 GB Mac with YaRN on: clamped under even the plain window
     fits_here: false,
     system_ram_gb: 16,
   },
@@ -118,8 +118,8 @@ describe('ModelsPage memory budget (#556)', () => {
     await renderPage()
     const rows = screen.getAllByRole('row')
     const q8 = rows.find((r) => r.textContent?.includes('Qwen3 8B'))!
-    expect(q8.textContent).toContain('(34,816 here)')
-    expect(q8.textContent).toContain('Fits this Mac (16 GB) at up to 34,816 tokens')
+    expect(q8.textContent).toContain('(22,528 here)')
+    expect(q8.textContent).toContain('Fits this Mac (16 GB) at up to 22,528 tokens')
     const q4 = rows.find((r) => r.textContent?.includes('Qwen3 4B'))!
     expect(q4.textContent).not.toContain('here)')
   })

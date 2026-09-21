@@ -39,8 +39,16 @@ HOST_HEADROOM_BYTES = 6_000_000_000
 #     -c 241,664 (the budget) Metal "Insufficient Memory" on the prompt
 #
 # It decides how much context a model gets, never whether it may load: what loads without it still loads, at
-# TIGHT_FIT_CONTEXT or what fits, whichever is less. Refusing those models (Gemma 4 12B on 16 GB, the 26B-A4B on
-# 24 GB) is a product decision nothing has been measured for.
+# TIGHT_FIT_CONTEXT or what fits, whichever is less. That keeps three pairings the arithmetic does not like,
+# with this much of the Mac predicted free (the margin is 10%, and on the mini 4% was already swapping):
+#
+#     gemma4-26b-a4b on 24 GB   0.14 GB   0.5%        gpt-oss-20b on 18 GB   0.22 GB   1.2%
+#     gemma4-12b on 16 GB       0.78 GB   4.5%
+#
+# They are no worse than before the margin (which left them nothing), none has been measured, and what else is
+# resident differs from Mac to Mac, so they are kept and named here. TIGHT_FIT_CONTEXT = 0 refuses them instead
+# (here and in Swift): the owner's decision, one constant, and test_refusing_tight_fits_is_one_constant shows
+# exactly what it takes away.
 FREE_MEMORY_DIVISOR = 10
 TIGHT_FIT_CONTEXT = 16_384
 # Physical memory Apple sells Macs with, for rounding a requirement up. A
@@ -359,7 +367,8 @@ def max_context(model: ModelInfo, ram_bytes: int, requested: int | None = None) 
     # With a tenth of the machine left free (FREE_MEMORY_DIVISOR). A model that only fits by eating into that
     # still runs, at a working context and no more.
     roomy = _context_in(model, spare - free_margin_bytes(ram_bytes), requested)
-    return max(roomy, min(fits, TIGHT_FIT_CONTEXT))
+    tokens = max(roomy, min(fits, TIGHT_FIT_CONTEXT))
+    return tokens if tokens >= 4096 else 0
 
 
 def free_margin_bytes(ram_bytes: int) -> int:

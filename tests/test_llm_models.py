@@ -459,6 +459,68 @@ def test_the_cache_never_costs_a_model_its_context_or_its_place():
                 assert kv_bytes(m, PROMPT_CACHE_MIN_TOKENS) <= got * MIB <= PROMPT_CACHE_MAX_BYTES
 
 
+def test_the_pairings_kept_only_inside_the_margin_are_the_three_named_and_this_is_how_little_they_leave():
+    """Review of #692 computed what the docstring had not said. If this list changes, models.py's comment does."""
+    from harbor_clerk.llm.models import GIB, MAC_RAM_TIERS_GB
+
+    tight = {}
+    for m in MODELS.values():
+        for tier in MAC_RAM_TIERS_GB:
+            ram = tier * GIB
+            context = max_context(m, ram)
+            free = ram - HOST_HEADROOM_BYTES - memory_bytes(m, context)
+            if context and free < free_margin_bytes(ram):
+                tight[(m.id, tier)] = (context, round(100 * free / ram, 1))
+    assert tight == {
+        ("gemma4-12b", 16): (16384, 4.5),
+        ("gemma4-26b-a4b", 24): (16384, 0.5),
+        ("gpt-oss-20b", 18): (16384, 1.2),
+    }
+
+
+def test_refusing_tight_fits_is_one_constant(monkeypatch):
+    """TIGHT_FIT_CONTEXT = 0 turns the margin from "how much" into "whether": exactly those three go, and no
+    other row of the pinned table moves."""
+    monkeypatch.setattr("harbor_clerk.llm.models.TIGHT_FIT_CONTEXT", 0)
+    gone = {
+        (model_id, tier)
+        for model_id, tiers in WHAT_EACH_MAC_GETS.items()
+        for tier, (context, _) in tiers.items()
+        if max_context(MODELS[model_id], tier * 1024**3) != context
+    }
+    assert gone == {("gemma4-12b", 16), ("gemma4-26b-a4b", 24), ("gpt-oss-20b", 18)}
+    assert all(max_context(MODELS[model_id], tier * 1024**3) == 0 for model_id, tier in gone)
+    # And what the margin leaves must itself be worth running: 14 GB leaves this model 3072 tokens.
+    assert max_context(_info(), 14_000_000_000) == 0
+
+
+# With YaRN on (off by default), for the two models that have it. Review of #692 found these moved with the
+# margin and nothing pinned them: (context, --cache-ram in MiB), and the tier the models page lists them under.
+WHAT_YARN_GETS = {
+    "qwen3-8b": (
+        36,
+        {16: (22528, 0), 18: (35840, 0), 24: (74752, 0), 32: (128000, 0), 36: (131072, 3275), 64: (131072, 8192)},
+    ),
+    "qwen3-4b": (
+        32,
+        {16: (39936, 0), 18: (53248, 0), 24: (92160, 0), 32: (131072, 2001), 36: (131072, 5688), 64: (131072, 8192)},
+    ),
+}
+
+
+def test_what_yarn_gets_on_the_macs_people_have():
+    from harbor_clerk.llm.models import prompt_cache_mib, requested_context
+
+    assert set(WHAT_YARN_GETS) == {m.id for m in MODELS.values() if m.yarn}
+    for model_id, (tier_listed, rows) in WHAT_YARN_GETS.items():
+        m = MODELS[model_id]
+        window = requested_context(m, True)
+        assert min_ram_gb(m, window) == tier_listed, model_id
+        for tier, (context, cache_mib) in rows.items():
+            got = max_context(m, tier * 1024**3, window)
+            assert (got, prompt_cache_mib(m, tier * 1024**3, got)) == (context, cache_mib), f"{model_id} on {tier} GB"
+
+
 def test_the_budget_relies_on_how_the_pinned_llama_server_treats_a_state_over_the_limit():
     """At v0.4.1 `server_prompt_cache::alloc` skips a state larger than --cache-ram. The May build kept one
     state whatever the limit, and under that behaviour a small bound bounds nothing. Whoever moves the pin

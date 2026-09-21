@@ -392,8 +392,9 @@ enum MemoryBudget {
     /// everything else left nothing free: the mini's 35B-A3B was given 241,664
     /// tokens and Metal refused its first prompt (#684). It decides how much
     /// context a model gets, never whether it loads: what fits only by eating
-    /// into it runs at `tightFitContext`. See FREE_MEMORY_DIVISOR in
-    /// src/harbor_clerk/llm/models.py for the measurements.
+    /// into it runs at `tightFitContext` (0 would refuse it instead). See
+    /// FREE_MEMORY_DIVISOR in src/harbor_clerk/llm/models.py for the measurements
+    /// and the three pairings this keeps.
     static let freeMemoryDivisor = 10
     static let tightFitContext = 16_384
     /// Context checkpoints per slot (--ctx-checkpoints). llama-server's default is
@@ -432,7 +433,8 @@ enum MemoryBudget {
         let fits = contextIn(spare, kvBytesPerToken: kvBytesPerToken, requested: requested)
         if fits < 4096 { return 0 }
         let roomy = contextIn(spare - freeMarginBytes(ramBytes), kvBytesPerToken: kvBytesPerToken, requested: requested)
-        return max(roomy, min(fits, tightFitContext))
+        let tokens = max(roomy, min(fits, tightFitContext))
+        return tokens >= 4096 ? tokens : 0
     }
 
     /// What sizing a context leaves free on a Mac with `ramBytes`.
