@@ -66,13 +66,16 @@ loaded and wipes nothing.
 ## 3. Credentials come from Keychain
 
 Never from a prompt, a file, or the conversation. If one is missing, stop and
-say which; the owner adds it (`security add-generic-password -s <service> -a
-<account> -w`, typed by them).
+say which; the owner adds it (`security add-generic-password -U -s <service> -a
+<account> -w`, typed by them: a trailing `-w` prompts, so the key reaches neither
+the shell history nor this conversation). To check one exists without reading
+it, drop the `-w` from `find-generic-password` and look at the exit status.
 
 | what | service | account |
 |---|---|---|
 | admin login | `harbor-clerk-acceptance` | the admin email |
 | Anthropic API key (baselines, judge) | `harbor-clerk-eval` | `anthropic-api-key` |
+| OpenAI API key, as `OPENAI_API_KEY` (**only** when an OpenAI model is named: a `gpt-*`/`o1-*`/`o3-*` baseline in `--models`, or the audit's `--cross-judge`; the default run names none) | `harbor-clerk-eval` | `openai-api-key` |
 | the machine user's GitHub token | `github-token` | `harborclerk-bot` |
 
 ## 4. Plan, and price it
