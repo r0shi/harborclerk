@@ -143,10 +143,10 @@ preset. These are defined in `ServiceManager.workerCounts`.
 
 ## Builds
 
-`build-venv.sh` uses `pip install --upgrade` for the local packages
-(`harbor-clerk`, `embedder`). An older import-guard shortcut skipped reinstalls
-even when the Python source had changed, producing a stale venv inside a
-freshly-built app.
+`build-venv.sh` installs exactly what the root `uv.lock` pins (exported with
+hashes), then the two local packages with `--no-deps --upgrade`, and rebuilds the
+venv when the lock changes. Never add a bare `pip install <name>`: the app once
+shipped torch two minors behind the lock, and it cost 43 GB of GPU memory (#685).
 
 ## The llama.cpp pin lives in two places
 

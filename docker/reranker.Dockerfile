@@ -16,8 +16,14 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# From the lock, like the embedder image. A bare `pip install /app/embedder` resolved afresh on every build, so
+# this image ran versions no lock named and no test had seen (the Mac app did the same, and shipped a torch
+# that cost 43 GB of GPU memory: #685). Guarded by tests/test_app_venv_from_lock.py.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 COPY embedder /app/embedder
-RUN pip install --no-cache-dir /app/embedder
+RUN cd /app/embedder && uv sync --locked --no-editable \
+    && uv cache clean
+ENV PATH="/app/embedder/.venv/bin:$PATH"
 
 # Pre-download the reranker weights at build time. ~1.2 GB.
 COPY docker/download_hf_model.py /tmp/download_hf_model.py

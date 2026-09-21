@@ -40,9 +40,29 @@ fi
 
 PYTHON_BIN="$PYTHON_DIR/bin/python3"
 
+# ── What the lock pins, with hashes ──
+# The app ships exactly what `uv.lock` pins, which is what CI tests and what `dependency-audit` audits. It
+# used to `pip install --upgrade` the two projects, which upgrades the project and leaves every dependency at
+# whatever this long-lived venv first received. The signed build of 2026-09-20 carried torch 2.11.0 against a
+# lock at 2.13.0, and on MPS that torch keeps about 1 GB for every new input shape and never returns it: the
+# embedder reached 43 GB six minutes into an ingest, every later embed failed, and the Mac went 58 GB into swap
+# (#685). The same build carried anyio 4.13.0 after the lock had moved to 4.14.2 for a critical advisory.
+#
+# One venv hosts both projects and their locks disagree on a few shared pins, so the root lock decides: it is
+# the superset, and already pins torch, transformers and sentence-transformers for the reranker.
+command -v uv >/dev/null || { echo "ERROR: uv is required to export the lock (https://docs.astral.sh/uv/)"; exit 1; }
+REQUIREMENTS="$DEST_DIR/requirements.lock.txt"
+# --no-header: uv's header records the command line, output path included, so with it the hash below would
+# change with the build directory and the uv version instead of with the lock.
+(cd "$PROJECT_ROOT" && uv export --quiet --frozen --no-dev --no-emit-project --no-header \
+    --format requirements-txt --output-file "$REQUIREMENTS")
+LOCK_SHA="$(shasum -a 256 "$REQUIREMENTS" | cut -d' ' -f1)"
+
 # ── Create venv ──
-if [ ! -x "$VENV_DIR/bin/python3" ]; then
-    echo "==> Creating virtual environment"
+# A venv built from another lock is not upgraded in place: pip would leave behind whatever the new lock no
+# longer names, and that is how an unpinned package ships. It is rebuilt.
+if [ ! -x "$VENV_DIR/bin/python3" ] || [ "$(cat "$VENV_DIR/.lock-sha256" 2>/dev/null)" != "$LOCK_SHA" ]; then
+    echo "==> Creating virtual environment (lock ${LOCK_SHA:0:12})"
     rm -rf "$VENV_DIR"
     "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
@@ -54,31 +74,26 @@ VENV_PYTHON="$VENV_DIR/bin/python3"
 # Fresh venvs from `python -m venv` ship with pip. But this script strips pip
 # at the end (see "Removing pip from runtime venv" below — the bundled appliance
 # is frozen and doesn't need pip at runtime). Reusing a cached venv from a
-# prior successful build means pip is gone, so the upgrade step below would
+# prior successful build means pip is gone, so the install step below would
 # fail with "No module named pip". `ensurepip --default-pip` is a stdlib no-op
 # when pip is already present and reinstalls from the bundled wheel otherwise.
 echo "==> Ensuring pip is installed"
 "$VENV_PYTHON" -m ensurepip --default-pip
 
-# ── Upgrade pip ──
-# python-build-standalone ships an older pip; upgrade so subsequent installs
-# don't print the "new release available" notice on every invocation.
-echo "==> Upgrading pip"
-"$VENV_PYTHON" -m pip install --no-cache-dir --upgrade --disable-pip-version-check pip
-
 # ── Install packages ──
-echo "==> Installing harbor-clerk"
-"$VENV_PYTHON" -m pip install --no-cache-dir --disable-pip-version-check --upgrade "$PROJECT_ROOT"
+echo "==> Installing the locked dependencies"
+"$VENV_PYTHON" -m pip install --no-cache-dir --disable-pip-version-check --require-hashes -r "$REQUIREMENTS"
 
-echo "==> Installing embedder"
-"$VENV_PYTHON" -m pip install --no-cache-dir --disable-pip-version-check --upgrade "$PROJECT_ROOT/embedder"
+# The local packages, and nothing else: --no-deps, so pip resolves nothing the lock did not. --upgrade because
+# their version does not change when their source does, and a stale copy inside a fresh app has shipped before.
+echo "==> Installing harbor-clerk and embedder"
+"$VENV_PYTHON" -m pip install --no-cache-dir --disable-pip-version-check --no-deps --upgrade \
+    "$PROJECT_ROOT" "$PROJECT_ROOT/embedder"
 
-if ! "$VENV_PYTHON" -c "import striprtf" 2>/dev/null; then
-    echo "==> Installing striprtf"
-    "$VENV_PYTHON" -m pip install --no-cache-dir --disable-pip-version-check striprtf
-else
-    echo "==> striprtf already installed, skipping"
-fi
+# Every requirement of both projects must be met by what the lock installed. This is where an embedder
+# requirement the root lock cannot satisfy would show.
+"$VENV_PYTHON" -m pip check --disable-pip-version-check
+echo "$LOCK_SHA" > "$VENV_DIR/.lock-sha256"
 
 # ── Slim the venv ──
 # Remove plotly: pulled in transitively by bertopic, but bertopic guards with
