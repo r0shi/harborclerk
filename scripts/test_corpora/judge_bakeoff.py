@@ -68,7 +68,61 @@ Return JSON only (no prose, no markdown fences):
 The verdict follows answers_question alone: 4-5 pass, 2-3 marginal, 0-1 fail.
 """
 
-RUBRICS = {"reference": JUDGE_PROMPT, "split": SPLIT_PROMPT}
+
+def _variant(*changes: tuple[str, str]) -> str:
+    """The sweep's prompt with exactly these replacements, each of which must apply once. A rubric test that
+    changes four things at once cannot say which of them mattered: the first bake-off's split rubric did."""
+    prompt = JUDGE_PROMPT
+    for old, new in changes:
+        if prompt.count(old) != 1:
+            raise ValueError(f"the sweep's judge prompt no longer contains exactly one {old!r}")
+        prompt = prompt.replace(old, new)
+    return prompt
+
+
+_NEUTRAL_LABELS = (
+    (
+        "whether a local LLM's answer reaches the same factual\nground as a Claude baseline answer",
+        "whether an answer reaches the same factual\nground as a reference answer",
+    ),
+    ("Claude baseline answer:\n", "Reference answer:\n"),
+    ("Local model answer:\n", "Answer to grade:\n"),
+)
+_FALLIBLE = (
+    "Score these dimensions (0–5 each):",
+    "The baseline may say more than the question asked for, and it may itself be incomplete or wrong.\n\n"
+    "Score these dimensions (0–5 each):",
+)
+_THRESHOLDS = (
+    '  "verdict": "pass" | "marginal" | "fail"\n}}\n',
+    '  "verdict": "pass" | "marginal" | "fail"\n}}\nThe verdict follows completeness: 4-5 pass, 2-3 marginal, 0-1 fail.\n',
+)
+_ANSWERS_QUESTION = (
+    "- completeness: overall coverage of the baseline's territory.\n",
+    "- completeness: overall coverage of the baseline's territory.\n"
+    "- answers_question: does the model answer correctly answer what the question asked? Do not penalise\n"
+    "  brevity, or the absence of detail the question did not ask for. Penalise wrong facts, contradictions of\n"
+    "  the baseline, and not answering (including saying nothing was found when the baseline found it).\n",
+)
+_ANSWERS_QUESTION_JSON = ('  "completeness": int,\n', '  "completeness": int,\n  "answers_question": int,\n')
+_VERDICT_FROM_ANSWER = (
+    '  "verdict": "pass" | "marginal" | "fail"\n}}\n',
+    '  "verdict": "pass" | "marginal" | "fail"\n}}\nThe verdict follows answers_question alone, not completeness.\n',
+)
+
+# One change each from the sweep's rubric ("reference"), then "split", the first bake-off's draft, which makes
+# all of them at once in other words. `score_field` is what a rubric's verdict is meant to follow.
+RUBRICS = {
+    "reference": JUDGE_PROMPT,
+    "neutral-labels": _variant(*_NEUTRAL_LABELS),
+    "fallible-reference": _variant(_FALLIBLE),
+    "thresholds": _variant(_THRESHOLDS),
+    "answers-question": _variant(_ANSWERS_QUESTION, _ANSWERS_QUESTION_JSON, _VERDICT_FROM_ANSWER),
+    "split": SPLIT_PROMPT,
+}
+SCORE_FIELD = {
+    name: "answers_question" if name in ("answers-question", "split") else "completeness" for name in RUBRICS
+}
 
 
 # Claude models that think by themselves when `thinking` is left out. A judge that thinks is another candidate,
