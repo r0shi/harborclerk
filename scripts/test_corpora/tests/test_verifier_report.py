@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 
+import pytest
+
 from scripts.test_corpora.runner.verifier_report import (
     ReportThresholds,
     build_report,
@@ -219,3 +221,14 @@ def test_a_metrics_row_takes_the_shape_of_the_files_own_header():
 
     with pytest.raises(KeyError):
         metrics_row_for(["phase", "renamed_column"], **values)
+
+
+def test_a_metrics_file_with_a_column_this_sweep_cannot_write_is_refused_at_startup():
+    """Review of #695: the row builder would have raised at the first unit's row, after that unit was marked done,
+    losing its row to --resume. The header is read at startup; that is where the refusal belongs."""
+    from scripts.test_corpora.runner.sweep import METRICS_COLUMNS, unknown_metrics_columns
+
+    unknown_metrics_columns(list(METRICS_COLUMNS))
+    unknown_metrics_columns(list(METRICS_COLUMNS[:12]))  # an older file: fine, its columns are all known
+    with pytest.raises(SystemExit, match="answer_key_score"):
+        unknown_metrics_columns([*METRICS_COLUMNS, "answer_key_score"])

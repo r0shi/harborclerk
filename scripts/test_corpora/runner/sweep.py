@@ -867,6 +867,18 @@ METRICS_COLUMNS = (
 )
 
 
+def unknown_metrics_columns(columns: list[str]) -> None:
+    """Refuse a metrics.csv whose header names a column this code cannot fill. `metrics_row_for` would raise on
+    it, but only at the first unit's row, after that unit was marked done: its row would be lost and --resume
+    would skip it. A header from a newer branch, or a twin's file copied in, is refused at startup instead."""
+    unknown = [c for c in columns if c not in METRICS_COLUMNS]
+    if unknown:
+        raise SystemExit(
+            f"metrics.csv has column(s) this version of the sweep cannot write: {unknown}. It was written by a "
+            f"newer sweep or copied from another run; use a fresh --run-id, or run that version."
+        )
+
+
 def metrics_row_for(columns: list[str], **values: object) -> list[object]:
     """The row for `columns`, in their order. A value for a column the file does not have is dropped; a column
     with no value is an error, so a renamed field cannot silently write an empty cell."""
@@ -1297,6 +1309,7 @@ def main(argv: list[str] | None = None) -> int:
         metrics_path = run_dir / "metrics.csv"
         new_csv = not metrics_path.exists() or metrics_path.stat().st_size == 0
         metrics_columns = list(METRICS_COLUMNS) if new_csv else metrics_path.read_text().splitlines()[0].split(",")
+        unknown_metrics_columns(metrics_columns)  # before any unit runs, not after the first is marked done
         for column, why in (
             ("verifier_total", "verifier validation metrics"),
             (
