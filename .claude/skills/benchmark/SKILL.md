@@ -74,8 +74,8 @@ it, drop the `-w` from `find-generic-password` and look at the exit status.
 | what | service | account |
 |---|---|---|
 | admin login | `harbor-clerk-acceptance` | the admin email |
-| Anthropic API key (baselines, judge) | `harbor-clerk-eval` | `anthropic-api-key` |
-| OpenAI API key, as `OPENAI_API_KEY` (**only** when an OpenAI model is named: a `gpt-*`/`o1-*`/`o3-*` baseline in `--models`, or the audit's `--cross-judge`; the default run names none) | `harbor-clerk-eval` | `openai-api-key` |
+| Anthropic API key (baselines) | `harbor-clerk-eval` | `anthropic-api-key` |
+| OpenAI API key, as `OPENAI_API_KEY` (the sweep's judge, `gpt-5.6-luna`, since 2026-09-22; also a `gpt-*` baseline or the audit's `--cross-judge`) | `harbor-clerk-eval` | `openai-api-key` |
 | the machine user's GitHub token | `github-token` | `harborclerk-bot` |
 
 ## 4. Plan, and price it
@@ -100,6 +100,7 @@ ADMIN="$(security find-generic-password -s harbor-clerk-acceptance | sed -n 's/.
 HC_EVAL_DISPOSABLE=1 HC_API_BASE=http://localhost:8100 HC_USERNAME="$ADMIN" \
 HC_PASSWORD="$(security find-generic-password -s harbor-clerk-acceptance -w)" \
 ANTHROPIC_API_KEY="$(security find-generic-password -s harbor-clerk-eval -a anthropic-api-key -w)" \
+OPENAI_API_KEY="$(security find-generic-password -s harbor-clerk-eval -a openai-api-key -w)" \
 uv --project scripts/test_corpora run python -m scripts.test_corpora.runner.sweep \
   --run-id "$RUN" --workdir "$WORKDIR" --phases 0,1,4 --corpora cuad --models "$MODELS" \
   > "$WORKDIR/results/$RUN/console.log" 2>&1; echo "sweep exit: $?"

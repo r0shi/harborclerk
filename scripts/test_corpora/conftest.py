@@ -34,7 +34,11 @@ DEFAULT_DEPTH = "standard"
 DEFAULT_TIME_LIMIT_SECONDS = 30 * 60  # 30 minutes
 SAMPLE_EVERY_N = 5  # in-flight stdout sampling cadence
 
-JUDGE_MODEL = "claude-sonnet-4-6"
+# The sweep's judge. Moved from claude-sonnet-4-6 on 2026-09-22 on price and vendor independence, after two
+# bake-offs found no measurable quality difference between five candidates and this one at a fourteenth of the
+# price of the incumbent (docs/reports/2026-09-21-judge-bakeoff.md, 2026-09-22-rubric-test.md). Scores from
+# different judges are not comparable: change it on purpose, for a whole comparison. Must be priced in spend.yaml.
+JUDGE_MODEL = "gpt-5.6-luna"
 BASELINE_MODEL = "claude-sonnet-4-6"
 
 WORKDIR_DEFAULT = Path("~/Library/Application Support/Harbor Clerk/test-corpora").expanduser()

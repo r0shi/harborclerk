@@ -10,7 +10,7 @@ cap_usd: 25.00
 # cannot be called: a call that cannot be priced cannot be capped. Add the model, its price and the date
 # you read it; do not guess.
 prices:
-  verified: "2026-09-18"
+  verified: "2026-09-21"
   sources:
     - https://platform.claude.com/docs/en/about-claude/pricing
     - https://developers.openai.com/api/docs/pricing
@@ -26,6 +26,12 @@ prices:
     claude-haiku-4-5: {input: 1.00, output: 5.00, cache_write: 2.00, cache_read: 0.10}
     # Cached input is billed at 1.25; the meter charges every prompt token at the full rate.
     gpt-4o: {input: 2.50, output: 10.00}
+    # Read 2026-09-21 for the judge bake-off (#661). gpt-5.6-luna is the sweep's judge since 2026-09-22
+    # (docs/reports/2026-09-22-rubric-test.md); the other two are priced to be callable, not endorsed. OpenAI
+    # bills a cached prefix at a tenth of input on these; the meter charges every prompt token at the full rate.
+    gpt-5.6-sol: {input: 4.00, output: 20.00}
+    gpt-5.6-terra: {input: 2.00, output: 12.00}
+    gpt-5.6-luna: {input: 0.20, output: 1.20}
 
 # Before a call the meter reserves its worst case: the request's size in characters divided by this, at
 # the input price, plus max_tokens at the output price. English runs near 4 characters per token; 2.5

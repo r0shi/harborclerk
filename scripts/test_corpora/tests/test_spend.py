@@ -382,7 +382,7 @@ def test_each_finished_piece_of_work_counts_one_unit_whoever_did_it(tmp_path, mo
         '"correctness": 5, "groundedness": 5, "rationale": "r"}'
     )
     claude.messages.create.return_value = MagicMock(content=[MagicMock(text=verdict)])
-    JudgeClient(client=claude).judge(question="q", baseline="b", model_answer="a")
+    JudgeClient(client=claude, model="claude-sonnet-4-6").judge(question="q", baseline="b", model_answer="a")
     assert _units("judge") == 1
     AnswerJudge(client=claude).judge_answer(question="q", model_answer="a", cited="", answer_key="k", qtype="lookup")
     assert _units("answer_judge") == 1
@@ -476,7 +476,7 @@ def test_a_phase_by_phase_resume_is_priced_for_the_phase_it_runs(tmp_path, monke
     monkeypatch.setattr(sweep.HarborClerkClient, "list_models", lambda self: [])
     meter = spend.SpendMeter(spend.load_config())
     phase1 = meter.estimate([("baseline_question", "claude-sonnet-4-6", 16)])
-    both = phase1 + meter.estimate([("judge", "claude-sonnet-4-6", 16 * len(cfg.ALL_MODELS))])
+    both = phase1 + meter.estimate([("judge", cfg.JUDGE_MODEL, 16 * len(cfg.ALL_MODELS))])
     between = f"{(phase1 + both) / 2:.2f}"
     with pytest.raises(PastTheEstimate):
         sweep.main([*base, "--resume", "--phases", "1", "--spend-cap-usd", between])

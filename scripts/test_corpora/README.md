@@ -174,8 +174,10 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
 - `--spend-cap-usd N` (or `HC_EVAL_SPEND_CAP_USD`) lowers the cap for one run. Raising it is an edit to
   `spend.yaml`, in a PR.
 - A model with no price in `spend.yaml` cannot be called. Add the list price and the date you read it.
-- `--judge-model` changes the judge. Scores from different judges are not comparable: change it for a whole
-  comparison, never halfway through one.
+- `--judge-model` changes the judge. The default is `gpt-5.6-luna` (since 2026-09-22, on price and vendor
+  independence: `docs/reports/2026-09-22-rubric-test.md`), so the default run needs `OPENAI_API_KEY` as well as
+  `ANTHROPIC_API_KEY` for the baselines; a Claude judge works too. Scores from different judges are not
+  comparable: change it for a whole comparison, never halfway through one.
 
 **One cap per process and ledger.** The sweep reads its ledger under the run's lock. The modes that take no
 lock, and a run split across two machines (RUNBOOK: phase 4), each count from their own ledger, so a split

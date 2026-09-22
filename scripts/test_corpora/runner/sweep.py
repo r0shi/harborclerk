@@ -450,7 +450,7 @@ def make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "skip the LLM-as-judge call in phases 4 and 5. Use for cheap local-only "
-            "runs when you don't want to spend Anthropic credits on Sonnet judgments."
+            "runs when you don't want to spend cloud credits on judgments."
         ),
     )
     p.add_argument(
