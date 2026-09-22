@@ -45,7 +45,8 @@ Each topology runbook has its own diagram and phase-by-phase commands, but inher
 | `runner/sweep.py` | every machine | the actual harness — runs the six-phase loop | per phase invocation, hours |
 | `runner/supervisor.py` | every machine | tails the harness log, posts macOS notifications, recommends skips | runs alongside the sweep |
 | `tmux` session | every machine | keeps the harness alive across SSH disconnects + Claude session ends | session lifetime |
-| Anthropic API key | every machine | Sonnet 4.6 baselines (Phase 1) and judge (Phase 5) | the sweep |
+| Anthropic API key | every machine | Sonnet 4.6 baselines (Phase 1) | the sweep |
+| OpenAI API key | every machine | the judge, `gpt-5.6-luna` (Phases 4 and 5); the sweep refuses to start a judged phase without it | the sweep |
 | Harbor Clerk admin login (`HC_USERNAME`/`HC_PASSWORD`) | every machine | required for `delete_all_documents` between corpora | the sweep |
 | Claude subagent (Sonnet) | optional, on any session | reads supervisor stdout, decides what to do for ambiguous events | session lifetime |
 | `results/<run-id>/` directory | rsynced between machines (split topologies only) | shared state — baselines, responses, judge verdicts | through to the final report |
@@ -115,6 +116,7 @@ export HC_API_BASE="http://localhost:8100"
 # export HC_API_BASE="https://localhost"   # then add --insecure to sweep invocations
 
 export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_API_KEY="sk-proj-..."             # the judge
 export HC_USERNAME="admin@example.com"          # must be admin role
 export HC_PASSWORD="..."
 export HC_EVAL_DISPOSABLE=1                     # the sweep WIPES this instance before each corpus (README)

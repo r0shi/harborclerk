@@ -257,9 +257,10 @@ def test_wait_for_hc_reachable_returns_false_on_persistent_outage():
 # ── --no-ingest flag ──
 
 
-def test_no_ingest_flag_never_calls_ingest_corpus(tmp_path: Path) -> None:
+def test_no_ingest_flag_never_calls_ingest_corpus(tmp_path: Path, monkeypatch) -> None:
     """Phase-1 plan spanning cuad + enron: with --no-ingest, _ingest_corpus
     must never be called regardless of how many corpus transitions occur."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")  # phase 1 is planned: the sweep checks for it at startup
 
     # Pre-populate a minimal workdir so main() doesn't need network access
     # for Phase 0 acquisition. The questions YAML files live in the real repo
@@ -350,9 +351,10 @@ def test_mode_answer_eval_is_accepted_and_dispatches(monkeypatch, tmp_path):
     assert called["args"].label == "lbl"
 
 
-def test_a_metrics_file_from_a_newer_sweep_is_refused_before_any_unit_runs(tmp_path: Path) -> None:
+def test_a_metrics_file_from_a_newer_sweep_is_refused_before_any_unit_runs(tmp_path: Path, monkeypatch) -> None:
     """Review of #695: the row builder would have raised at the first unit's row, after that unit was marked done.
     The header is read at startup, and that is where the sweep stops, with nothing spent and nothing marked."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     run_dir = tmp_path / "results" / "newer"
     run_dir.mkdir(parents=True)
     (run_dir / "metrics.csv").write_text("phase,corpus,model,question_id,depth,status,a_column_from_the_future\n")
@@ -386,3 +388,60 @@ def test_a_metrics_file_from_a_newer_sweep_is_refused_before_any_unit_runs(tmp_p
         )
     baseline.assert_not_called()
     assert (run_dir / "metrics.csv").read_text().count("\n") == 1, "nothing was appended to the file"
+
+
+def test_a_run_that_would_call_a_model_without_its_key_stops_before_spending(tmp_path: Path, monkeypatch) -> None:
+    """Review of #696: the judge's client is built lazily, so with the default judge on OpenAI and no OPENAI_API_KEY
+    a run spent its baselines and then wrote every verdict as a warning. The plan knows every model it will call."""
+    from scripts.test_corpora.runner.sweep import missing_keys_for
+
+    plan = [
+        ("baseline_question", "claude-sonnet-4-6", 16),
+        ("judge", "gpt-5.6-luna", 64),
+        ("synthetic_doc", "claude-sonnet-4-6", 0),
+    ]
+    assert missing_keys_for(plan, {}) == ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+    assert missing_keys_for(plan, {"ANTHROPIC_API_KEY": "k", "OPENAI_API_KEY": "  "}) == ["OPENAI_API_KEY"], (
+        "empty is missing"
+    )
+    assert missing_keys_for(plan, {"ANTHROPIC_API_KEY": "k", "OPENAI_API_KEY": "k"}) == []
+    assert missing_keys_for([("judge", "gpt-5.6-luna", 0)], {}) == [], (
+        "--no-judge plans zero judge calls: no key needed"
+    )
+    assert missing_keys_for([("judge", "claude-haiku-4-5", 5)], {"ANTHROPIC_API_KEY": "k"}) == []
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("HC_EVAL_DISPOSABLE", "1")
+    run_dir = tmp_path / "results" / "nokey"
+    run_dir.mkdir(parents=True)
+    fake_hc = MagicMock()
+    fake_hc.get_bearer_token.return_value = "fake-token"
+    fake_hc.watch_folder_list.return_value = []
+    fake_hc.mail_accounts.return_value = []
+    fake_hc.document_count.return_value = 0
+    with (
+        patch("scripts.test_corpora.runner.sweep.HarborClerkClient", return_value=fake_hc),
+        patch("scripts.test_corpora.runner.sweep.anthropic.Anthropic"),
+        patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=MagicMock()),
+        patch("scripts.test_corpora.runner.sweep._phase1_baseline") as baseline,
+        patch("scripts.test_corpora.runner.sweep._ingest_corpus"),
+        patch("scripts.test_corpora.runner.spend.SpendMeter.estimate", return_value=0.0),
+    ):
+        rc = main(
+            [
+                "--run-id",
+                "nokey",
+                "--workdir",
+                str(tmp_path),
+                "--phases",
+                "1,4",
+                "--corpora",
+                "cuad",
+                "--no-ingest",
+                "--no-hc-logs",
+                "--skip-canary",
+            ]
+        )
+    assert rc == 3 and baseline.assert_not_called() is None
+    assert not (run_dir / "metrics.csv").exists() or (run_dir / "metrics.csv").read_text().count("\n") <= 1

@@ -28,7 +28,8 @@ uv picks the harness venv but the cwd stays at the repo root (so the
 `scripts.test_corpora.runner.sweep` module path resolves):
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
+export ANTHROPIC_API_KEY="sk-ant-..."   # the Claude baselines
+export OPENAI_API_KEY="sk-proj-..."     # the judge (gpt-5.6-luna); a run without a judged phase does not need it
 export HC_USERNAME="admin@example.com"
 export HC_PASSWORD="..."
 export HC_API_BASE="http://localhost:8100"   # or "https://localhost" for Docker
@@ -151,7 +152,8 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
   request carries cache breakpoints) is reserved against the running
   total. A call that could cross the cap is not made, and the run stops with exit code 3 (the sweep,
   `--mode answer-eval`, the audit's `--cross-judge` and `rerun_pr_j` alike). Finished units are saved, and
-  `--resume` continues the same run against the same ledger. The unit that was about to be judged when the
+  `--resume` continues the same run against the same ledger (a run whose ledger names another judge is
+  refused unless `--judge-model` names that judge: a resume never mixes two judges' scores). The unit that was about to be judged when the
   cap hit keeps its metrics row with empty verdict columns. There is no judge-only pass yet (#663): `--rerun`
   would judge it, but only by redoing its local compute. A run that has reached its cap can be resumed with
   `--no-judge` (the ledger keeps the judge it already used); judging the rest is a new `--run-id`, with its
@@ -174,8 +176,10 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
 - `--spend-cap-usd N` (or `HC_EVAL_SPEND_CAP_USD`) lowers the cap for one run. Raising it is an edit to
   `spend.yaml`, in a PR.
 - A model with no price in `spend.yaml` cannot be called. Add the list price and the date you read it.
-- `--judge-model` changes the judge. Scores from different judges are not comparable: change it for a whole
-  comparison, never halfway through one.
+- `--judge-model` changes the judge. The default is `gpt-5.6-luna` (since 2026-09-22, on price and vendor
+  independence: `docs/reports/2026-09-22-rubric-test.md`), so the default run needs `OPENAI_API_KEY` as well as
+  `ANTHROPIC_API_KEY` for the baselines; a Claude judge works too. Scores from different judges are not
+  comparable: change it for a whole comparison, never halfway through one.
 
 **One cap per process and ledger.** The sweep reads its ledger under the run's lock. The modes that take no
 lock, and a run split across two machines (RUNBOOK: phase 4), each count from their own ledger, so a split

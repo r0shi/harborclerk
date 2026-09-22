@@ -9,7 +9,7 @@ Phases:
   2. smoke     — one large model × one corpus, iterate on bugs
   3. depth     — same model × all three depths
   4. models    — all 8 × all 3 corpora × standard, completion-only
-  5. parity    — top 2 × all 3, mechanical + Sonnet judge
+  5. parity    — top 2 × all 3, mechanical + judge
   6. unified   — drop DB, ingest all 3 into one DB, top 2 only
 
 The CLI surface mirrors the design doc:
@@ -450,7 +450,7 @@ def make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "skip the LLM-as-judge call in phases 4 and 5. Use for cheap local-only "
-            "runs when you don't want to spend Anthropic credits on Sonnet judgments."
+            "runs when you don't want to spend cloud credits on judgments."
         ),
     )
     p.add_argument(
@@ -651,6 +651,27 @@ def _plan_units(
 
 
 # ── phase handlers ──
+
+
+KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+def missing_keys_for(plan: list[tuple[str, str, int]], env: dict[str, str] | None = None) -> list[str]:
+    """The API keys this plan needs and does not have: for every model it will call, its vendor's variable is set
+    and not empty. The judge's client is built lazily, so a missing key used to surface at the first phase-4
+    verdict, after phase 1 had spent the baseline money, as a warning per unit and a report with no verdicts
+    (review of #696). An empty string is what the skill's Keychain command yields when the item is absent."""
+    from scripts.test_corpora.runner.judge import vendor_of
+
+    env = os.environ if env is None else env
+    missing = []
+    for _kind, model, count in plan:
+        if count <= 0:
+            continue
+        var = KEY_ENV[vendor_of(model)]
+        if not env.get(var, "").strip() and var not in missing:
+            missing.append(var)
+    return missing
 
 
 def _spend_plan(
@@ -1287,6 +1308,11 @@ def main(argv: list[str] | None = None) -> int:
                     return 4
             _skip_what_this_instance_cannot_run(hc, sf, phases)
 
+        # After the instance guards (a wrong instance is the worse mistake, and its exit code is 4) and before
+        # any client is built: every model the plan will call has its vendor's key.
+        if not args.dry_run and (missing := missing_keys_for(plan)):
+            log.error("this run will call a model whose key is not set: %s. Nothing was spent.", ", ".join(missing))
+            return 3
         anthro = spend.anthropic_client("baseline_question")
         judge = JudgeClient(model=args.judge_model)
 
@@ -1881,7 +1907,7 @@ def main(argv: list[str] | None = None) -> int:
                         # answer is noise: the row still gets written so the
                         # operational status is preserved, but the quality
                         # columns stay at their zero defaults and we don't
-                        # spend Sonnet credits judging it.
+                        # spend cloud credits judging it.
                         baseline_problem = baseline_quality_problem(baseline)
                         if baseline_problem:
                             log.warning(
@@ -1902,7 +1928,7 @@ def main(argv: list[str] | None = None) -> int:
                             # earlier phases don't produce a model answer worth
                             # comparing against the baseline. Nested under the
                             # ``baseline_problem is None`` branch so we don't burn
-                            # Sonnet credits judging against a baseline we already
+                            # cloud credits judging against a baseline we already
                             # know is corrupt.
                             if _should_judge(
                                 phase=phase,
