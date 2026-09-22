@@ -6,8 +6,11 @@ instead, for nothing, and recall becomes visible: a baseline that names 23 of 65
 complete to every judge.
 
 The labels are the annotators'. Everything else here is this harness's and is crude on purpose, so that it can be
-read: a fact is present or it is not; a list is the F1 of the contracts an answer names against the contracts
-labelled. What counts as "naming" a contract is the weakest part, and `named_contracts` says exactly what it does.
+read: a fact is present or it is not; a list is the F1 of the contracts an answer names in its text against the
+contracts labelled. What counts as "naming" a contract is the weakest part, and `named_contracts` says exactly what
+it does, and what it deliberately ignores. The fact matcher accepts negation ("New York law, not Delaware" finds
+"Delaware"); a key is one phrase, so this has not mattered yet, and is stated so that a score of 1.0 is read as
+"the phrase is present", nothing more.
 
 Key entries (see `corpora/cuad_key.py`, which writes them):
     {"kind": "fact",  "all_of": [["california"], ["exxonmobil", "exxon mobil"]]}    every group, any spelling in it
@@ -49,14 +52,23 @@ def date_spellings(iso: str) -> set[str]:
 def _has_date(text: str, iso: str) -> bool:
     low = re.sub(r"(?<=\d)(st|nd|rd|th)\b", "", text.lower())
     low = re.sub(r"(?<=\d)\s+(day\s+)?of\s+(?=[a-z])", " ", low)  # "the 15th day of March, 2022"
-    squeezed = normalize(low)
+    # Letters and digits, with one space where anything else was: the forms are matched between boundaries, so
+    # "12 November 2019" is not "2 November 2019" and an ISO date inside a longer digit run is not the date
+    # (review of #697), while "February 4, 2020**【141b..." still is, because the "**【" keeps the 141 apart.
+    words = re.sub(r"[^a-z0-9]+", " ", low)
     for form in date_spellings(iso):
         if "/" in form:
             if re.search(rf"(?<![\d/]){re.escape(form)}(?![\d/])", low):
                 return True
-        elif form in squeezed:
+        elif re.search(rf"(?<![a-z0-9])(?:{_spaced(form)})(?![a-z0-9])", words):
             return True
     return False
+
+
+def _spaced(form: str) -> str:
+    """A squeezed form as a pattern over `words`: optional single spaces between its parts (`march152022` matches
+    "march 15 2022", "march 15, 2022" and "march15 2022")."""
+    return r" ?".join(re.escape(ch) for ch in form)
 
 
 def company(title: str) -> str:
@@ -64,25 +76,29 @@ def company(title: str) -> str:
     return normalize(title.split("_")[0])
 
 
-def named_contracts(text: str, cited_titles: list[str], universe: list[str]) -> set[str]:
-    """Which contracts of `universe` an answer names. A contract is named if the answer cites it, if its whole
-    title appears in the text, or if its filer's name appears and that filer has exactly one contract in the
-    universe and a name of eight characters or more. It misses a contract referred to only by paraphrase ("the
-    Papa John's deal") and cannot tell a contract listed as a match from one listed as a non-match."""
+def named_contracts(text: str, universe: list[str]) -> set[str]:
+    """Which contracts of `universe` an answer names, in its text: a contract is named if its whole title appears,
+    or if its filer's name appears and that filer has exactly one contract in the universe and a name of eight
+    characters or more. It misses a contract referred to only by paraphrase ("the Papa John's deal") and cannot
+    tell a contract listed as a match from one listed as a non-match.
+
+    The answer's `citations` are deliberately not consulted. The app's citations field is every hit any tool
+    call returned (`dedupe_citations(citations_accumulated)` in llm/chat.py: a median of 20 and up to 65 per
+    list answer here), not what the answer refers to. Counting them would score search volume, and an answer
+    saying "none" after one search would score like one that listed the hits (review of #697)."""
     squeezed = normalize(text)
-    cited = {normalize(t) for t in cited_titles if t}
     filers: dict[str, list[str]] = {}
     for title in universe:
         filers.setdefault(company(title), []).append(title)
     found = set()
     for title in universe:
         whole, filer = normalize(title), company(title)
-        if whole in cited or whole in squeezed or len(filer) >= 8 and len(filers[filer]) == 1 and filer in squeezed:
+        if whole in squeezed or len(filer) >= 8 and len(filers[filer]) == 1 and filer in squeezed:
             found.add(title)
     return found
 
 
-def score(entry: dict, answer: str, cited_titles: list[str] | None = None) -> dict:
+def score(entry: dict, answer: str) -> dict:
     """{"score": 0..1, ...detail}. An empty answer scores 0."""
     answer = answer or ""
     kind = entry["kind"]
@@ -94,7 +110,7 @@ def score(entry: dict, answer: str, cited_titles: list[str] | None = None) -> di
         return {"score": 1.0 if _has_date(answer, entry["date"]) else 0.0}
     if kind == "list":
         want = set(entry["positives"])
-        got = named_contracts(answer, cited_titles or [], entry["universe"])
+        got = named_contracts(answer, entry["universe"])
         right = len(want & got)
         precision = right / len(got) if got else 0.0
         recall = right / len(want) if want else 0.0

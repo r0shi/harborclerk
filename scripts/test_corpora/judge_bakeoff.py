@@ -31,11 +31,47 @@ import time
 from pathlib import Path
 
 from scripts.test_corpora.runner import spend
-from scripts.test_corpora.runner.judge import JUDGE_PROMPT, _extract_json
+from scripts.test_corpora.runner.judge import _extract_json
 from scripts.test_corpora.runner.providers.factory import _ANTHROPIC_PREFIXES, _OPENAI_PREFIXES
 from scripts.test_corpora.runner.quality import baseline_quality_problem
 
 log = logging.getLogger("judge_bakeoff")
+
+# The rubric the sweep used until #695, frozen here: the variants below are built from it by exact replacement,
+# and building them from the live prompt would double-apply them once that prompt carries the change (review of
+# #695). "reference" in every report of this tool means this text.
+JUDGE_PROMPT = """You are evaluating whether a local LLM's answer reaches the same factual
+ground as a Claude baseline answer to the same question.
+
+Question: {question}
+
+Claude baseline answer:
+{baseline}
+
+Local model answer:
+{model_answer}
+
+Score these dimensions (0–5 each):
+- claim_recall: how many factual claims from the baseline appear in the
+  model answer (verbatim or paraphrased)?
+- claim_precision: are the claims in the model answer supported by the
+  baseline (or harmless additions), or are they contradictions?
+- entity_recall: does the model answer surface the same named entities
+  (people, places, organizations, dates, dollar amounts)?
+- completeness: overall coverage of the baseline's territory.
+
+Return JSON only (no prose, no markdown fences):
+{{
+  "claim_recall": int,
+  "claim_precision": int,
+  "entity_recall": int,
+  "completeness": int,
+  "missing_facts": ["..."],
+  "extra_facts": ["..."],
+  "contradictions": ["..."],
+  "verdict": "pass" | "marginal" | "fail"
+}}
+"""
 
 # The sweep's rubric grades coverage of the baseline, so a correct, short answer scores "marginal" beside a
 # reference that said more than the question asked (bench-20260921-0041: both parties named, full citation

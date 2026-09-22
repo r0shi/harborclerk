@@ -66,19 +66,7 @@ def truth_scores(run_dir: Path, key: dict) -> dict[str, dict]:
         entry = key.get(item["question_id"])
         if entry is None:
             continue
-        record = json.loads(
-            (
-                run_dir
-                / "responses"
-                / item["key"].split("__")[0]
-                / item["model"]
-                / f"{item['question_id']}__{item['depth']}.json"
-            ).read_text()
-        )
-        cited = [
-            (c.get("source") or {}).get("doc_title", "") for c in (record.get("result") or {}).get("citations") or []
-        ]
-        detail = key_score(entry, item["answer"], cited)
+        detail = key_score(entry, item["answer"])  # the text alone: an answer's citations are its retrieval hits
         out[item["key"]] = {
             "truth": detail["score"],
             "model": item["model"],

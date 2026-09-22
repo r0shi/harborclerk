@@ -41,6 +41,13 @@ def test_each_rubric_variant_changes_one_thing_in_the_sweeps_prompt():
     assert {n for n, f in jb.SCORE_FIELD.items() if f == "answers_question"} == {"answers-question", "split"}
 
 
+def test_the_reference_rubric_is_frozen_not_the_sweeps_live_prompt():
+    """#695 adds answers_question to the sweep's prompt. Built from the live prompt, every variant here would then
+    double-apply and "reference" would mean the new rubric in every report of this tool."""
+    assert "answers_question" not in jb.JUDGE_PROMPT, "the frozen text is the rubric the sweep used until #695"
+    assert jb.JUDGE_PROMPT.count("verdict") == 1, "the frozen text names no rule for the verdict"
+
+
 def test_a_variant_that_no_longer_applies_says_so(monkeypatch):
     """If someone rewords the sweep's prompt, a variant must not silently become the sweep's prompt again."""
     monkeypatch.setattr(jb, "JUDGE_PROMPT", jb.JUDGE_PROMPT.replace("Score these dimensions", "Rate these"))

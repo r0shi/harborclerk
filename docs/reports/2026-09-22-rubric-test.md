@@ -22,18 +22,23 @@ hand. Run `rubric-20260921-1754`, suite `9af53ce` on the app build `08dccbf` (wi
   (`reference`, bought twice per judge), four variants that each change exactly one thing in it, and the first
   bake-off's `split` draft, which changes all of them at once in other words.
 - **Scoring** by `judge_agreement.py`: each answer's truth score from the key (fact present; date present in any
-  American spelling; F1 of contracts named against contracts labelled), set against each verdict. "Right" is a
-  truth score of 0.8 or more, "wrong" 0.2 or less. Intervals resample **questions**, not answers.
+  American spelling; F1 of contracts named **in the answer's text** against contracts labelled), set against each
+  verdict. "Right" is a truth score of 0.8 or more, "wrong" 0.2 or less. Intervals resample **questions**, not
+  answers. *The first version of this report also counted an answer's `citations` as contracts it named; review
+  of #697 pointed out that field is every hit any tool call returned (a median of 20, up to 65, per list answer),
+  not what the answer cites, so it scored search volume. Every table below is recomputed on the text alone. Seven
+  list answers changed band (41 right, 24 wrong, 15 between, from 39 / 19 / 22); no fact or date score moved;
+  every conclusion held and the rubric effect is slightly larger.*
 
 ## The answer key alone
 
 | model | 8 law questions | 6 dates | 6 lists (F1) | mean |
 |---|---|---|---|---|
 | Claude baseline (Sonnet 4.6, tools) | 8 of 8 | 6 of 6 | 0.64 | 0.89 |
-| `gpt-oss-20b` | 8 of 8 | 6 of 6 | 0.52 | 0.86 |
+| `gpt-oss-20b` | 8 of 8 | 6 of 6 | 0.50 | 0.85 |
 | `qwen36-35b-a3b` | 8 of 8 | 6 of 6 | 0.48 | 0.84 |
-| `qwen3-8b` | 3 of 8 | 4 of 6 | 0.51 | 0.50 |
-| `gemma4-26b-a4b` | 0 of 8 | 2 of 6 | 0.41 | 0.22 |
+| `qwen3-8b` | 3 of 8 | 4 of 6 | 0.46 | 0.49 |
+| `gemma4-26b-a4b` | 0 of 8 | 2 of 6 | 0.47 | 0.24 |
 
 Two behaviours the key exposed without any judge. Gemma 4 26B-A4B answers a single-contract question with "I
 cannot find a document titled ..." after one search whenever the exact title is not a hit, which is every time,
@@ -42,51 +47,53 @@ that its search returned ("the governing law of the Cns Pharmaceuticals agreemen
 Pharmaceutics agreement"). Both are product findings about how models use the search tool, and neither is a
 retrieval failure: the other two models found every contract.
 
-## Judges against the key (80 answers: 39 right, 19 wrong, 22 between)
+## Judges against the key (80 answers: 41 right, 24 wrong, 15 between)
 
-| rubric | judge | rho with truth (95%, by question) | right: pass / marginal / fail | wrong: pass / marginal / fail | correct calls of 58 |
+| rubric | judge | rho with truth (95%, by question) | right: pass / marginal / fail | wrong: pass / marginal / fail | correct calls of 65 |
 |---|---|---|---|---|---|
-| sweep's | `claude-haiku-4-5` | 0.89 (0.80 to 0.93) | **17** / 20 / 2 | 0 / 0 / 19 | 36 |
-| sweep's, again | `claude-haiku-4-5` | 0.90 (0.82 to 0.93) | 16 / 21 / 2 | 0 / 0 / 19 | 35 |
-| sweep's | `gpt-5.6-luna` | 0.88 (0.81 to 0.92) | **36** / 2 / 1 | 0 / 0 / 19 | 55 |
-| sweep's, again | `gpt-5.6-luna` | 0.88 (0.82 to 0.93) | 35 / 3 / 1 | 0 / 0 / 19 | 54 |
-| + neutral labels | `claude-haiku-4-5` | 0.89 | 17 / 20 / 2 | 0 / 0 / 19 | 36 |
-| + neutral labels | `gpt-5.6-luna` | 0.89 | 36 / 2 / 1 | 0 / 0 / 19 | 55 |
-| + "the reference may be incomplete" | `claude-haiku-4-5` | 0.89 | 24 / 13 / 2 | 0 / 0 / 19 | 43 |
-| + "the reference may be incomplete" | `gpt-5.6-luna` | 0.86 | 36 / 2 / 1 | 0 / 0 / 19 | 55 |
-| + verdict thresholds on completeness | `claude-haiku-4-5` | 0.88 | 11 / 27 / 1 | 0 / 0 / 19 | 30 |
-| + verdict thresholds on completeness | `gpt-5.6-luna` | 0.87 | 23 / 16 / 0 | 0 / 0 / 19 | 42 |
-| **+ `answers_question`, verdict follows it** | `claude-haiku-4-5` | **0.96 (0.87 to 0.99)** | **36** / 1 / 2 | 0 / 0 / 19 | **55** |
-| **+ `answers_question`, verdict follows it** | `gpt-5.6-luna` | **0.97 (0.92 to 1.00)** | **37** / 1 / 1 | 0 / 0 / 19 | **56** |
-| `split` (all of the above, reworded) | `claude-haiku-4-5` | 0.96 | 37 / 1 / 1 | 0 / 0 / 19 | 56 |
-| `split` (all of the above, reworded) | `gpt-5.6-luna` | 0.97 | 37 / 2 / 0 | 0 / 0 / 19 | 56 |
+| sweep's | `claude-haiku-4-5` | 0.90 (0.86 to 0.93) | **18** / 20 / 3 | 0 / 0 / 24 | 42 |
+| sweep's, again | `claude-haiku-4-5` | 0.92 (0.86 to 0.95) | 17 / 21 / 3 | 0 / 0 / 24 | 41 |
+| sweep's | `gpt-5.6-luna` | 0.90 (0.83 to 0.94) | **37** / 3 / 1 | 0 / 0 / 24 | 61 |
+| sweep's, again | `gpt-5.6-luna` | 0.90 (0.85 to 0.94) | 36 / 4 / 1 | 0 / 0 / 24 | 60 |
+| + neutral labels | `claude-haiku-4-5` | 0.91 | 18 / 20 / 3 | 0 / 0 / 24 | 42 |
+| + neutral labels | `gpt-5.6-luna` | 0.91 | 37 / 3 / 1 | 0 / 0 / 24 | 61 |
+| + "the reference may be incomplete" | `claude-haiku-4-5` | 0.90 | 25 / 13 / 3 | 0 / 0 / 24 | 49 |
+| + "the reference may be incomplete" | `gpt-5.6-luna` | 0.88 | 37 / 3 / 1 | 0 / 0 / 24 | 61 |
+| + verdict thresholds on completeness | `claude-haiku-4-5` | 0.90 | 12 / 28 / 1 | 0 / 0 / 24 | 36 |
+| + verdict thresholds on completeness | `gpt-5.6-luna` | 0.88 | 24 / 17 / 0 | 0 / 0 / 24 | 48 |
+| **+ `answers_question`, verdict follows it** | `claude-haiku-4-5` | **0.97 (0.92 to 0.99)** | **37** / 1 / 3 | 0 / 0 / 24 | **61** |
+| **+ `answers_question`, verdict follows it** | `gpt-5.6-luna` | **0.99 (0.97 to 1.00)** | **38** / 2 / 1 | 0 / 0 / 24 | **62** |
+| `split` (all of the above, reworded) | `claude-haiku-4-5` | 0.98 | 38 / 1 / 2 | 0 / 0 / 24 | 62 |
+| `split` (all of the above, reworded) | `gpt-5.6-luna` | 0.99 | 38 / 3 / 0 | 0 / 2 / 22 | 60 |
 
-All 1,120 verdicts parsed. No judge under any rubric passed a wrong answer. Sonnet 4.6, the sweep's judge, was
+All 1,120 verdicts parsed. No judge under any rubric passed a wrong answer (`split`/luna called two wrong answers
+"marginal"). Sonnet 4.6, the sweep's judge, was
 not bought here; in the first bake-off it behaved like Haiku (one right answer in seven passed).
 
 **1. The defect is the verdict's source, and one change fixes it.** Under the sweep's rubric Haiku calls 20 of
-39 right answers "marginal", and its `completeness` on right fact and date answers is 2 to 4 of 5: a correct
+41 right answers "marginal", and its `completeness` on right fact and date answers is 2 to 4 of 5: a correct
 "Texas." beside a reference that also quotes the clause and cites the page has covered a third of the reference's
 territory, and that is what the rubric asks about. Adding one dimension, `answers_question`, and telling the judge
-the verdict follows it takes Haiku from 36 to 55 correct calls and lifts both judges' correlation with the key
-from about 0.89 to 0.96 and 0.97, with intervals that no longer overlap the sweep's rubric. The other three
+the verdict follows it takes Haiku from 42 to 61 correct calls of 65 and lifts both judges' correlation with the key
+from about 0.90 to 0.97 and 0.99, with intervals that no longer overlap the sweep's rubric. The other three
 changes do little or harm: neutral labels change nothing (so the "same-family preference" the first report hinted
-at is not what was happening); "the reference may be incomplete" helps Haiku part of the way (43); stated
-thresholds on completeness make both judges *stricter* (30 and 42), because they bind the verdict to the wrong
+at is not what was happening); "the reference may be incomplete" helps Haiku part of the way (49); stated
+thresholds on completeness make both judges *stricter* (36 and 48), because they bind the verdict to the wrong
 score. `split` reaches the same place as the one-line change, and no further.
 
-**2. `gpt-5.6-luna` passes right answers under the sweep's rubric; Haiku does not.** 36 of 39 against 17 of 39,
-on identical prompts, stable across the repeat (35 of 39). With neutral labels Haiku is unchanged, so this is
+**2. `gpt-5.6-luna` passes right answers under the sweep's rubric; Haiku does not.** 37 of 41 against 18 of 41,
+on identical prompts, stable across the repeat (36 of 41). With neutral labels Haiku is unchanged, so this is
 not about the word "Claude"; luna reads "completeness" more leniently. Under the fixed rubric the two agree.
 
-**3. Both judges are already strict on wrong answers.** 19 of 19 failed, under every rubric and both judges. The
+**3. Both judges are already strict on wrong answers.** 24 of 24 failed, under every rubric and both judges
+(two "marginal" from `split`/luna). The
 rubric's problem was only ever the right answers.
 
-**4. The two right answers the fixed rubric still fails are the key's limits, not the judge's.** `qwen3-8b` on
+**4. The right answers the fixed rubric still fails are the key's limits, not the judge's.** `qwen3-8b` on
 "Delaware law" names six of the seven labelled contracts (F1 0.86, "right") and also claims 71 contracts are
 governed by Delaware law plus one that is not; luna gives it 2 and fails it, and the contradictions it lists are
-correct. The F1 does not see the "71". On list questions the judges' scores correlate only 0.36 to 0.62 with the
-F1, and the F1 is the weaker instrument there.
+correct. The F1 does not see the "71", and the fact matcher accepts negation. The F1 is the weaker instrument on
+list questions, and the judge the better one there.
 
 **5. Prompt caching (#693) measured.** Twenty baselines, 80 calls: 112 input tokens billed at full price, 758,050
 written to the cache, 2,838,754 read from it. **USD 5.93, 0.30 per question**, against 1.18 uncached on the
@@ -100,7 +107,7 @@ this ledger, the way the file says.
 - **Adopt the one-line change**: add `answers_question` to the sweep's rubric and make the verdict follow it,
   keeping `completeness` as a reported dimension. Do not adopt `split`: it does no better and cannot be read as a
   diff of the current prompt.
-- **Judge**: with the fixed rubric the judges agree (55 and 56 of 58) and `gpt-5.6-luna` costs a third of Haiku
+- **Judge**: with the fixed rubric the judges agree (61 and 62 of 65) and `gpt-5.6-luna` costs a third of Haiku
   per verdict here (0.0008 against 0.0028). Choose it on price; keep Haiku as the second opinion where two are
   wanted. The recommendation to move off Sonnet 4.6 stands, on price alone.
 - **Answer key**: keep it as a metric beside the judge on every CUAD run. It saw two model behaviours no judge

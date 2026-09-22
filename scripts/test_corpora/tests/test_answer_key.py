@@ -64,28 +64,41 @@ def test_another_date_is_not_it(text):
     assert score({"kind": "date", "date": "2022-03-15"}, text)["score"] == 0.0
 
 
-def test_a_contract_is_named_by_citation_by_its_whole_title_or_by_a_filer_with_one_contract():
-    assert named_contracts("nothing here", [EDIETS], UNIVERSE) == {EDIETS}
+@pytest.mark.parametrize(
+    "text", ["dated 12 November 2019", "22 November 2019", "on 12 Nov 2019", "file 120191102", "id 201911021"]
+)
+def test_a_date_inside_another_number_is_not_it(text):
+    """Review of #697: "2 November 2019" matched inside "12 November 2019", and the ISO form inside any digit run."""
+    assert score({"kind": "date", "date": "2019-11-02"}, text)["score"] == 0.0
+    assert score({"kind": "date", "date": "2019-11-02"}, "dated 2 November 2019")["score"] == 1.0
+    # A citation marker whose id starts with a digit is not part of the date (gpt-oss-20b writes exactly this).
+    assert (
+        score({"kind": "date", "date": "2020-02-04"}, "dated **February\u202f4,\u202f2020**【141b4469-c5c0】")["score"]
+        == 1.0
+    )
+
+
+def test_a_contract_is_named_by_its_whole_title_or_by_a_filer_with_one_contract_in_the_text():
+    """In the text, never from the answer's `citations`: those are every hit the tools returned (review of #697)."""
     typographic = EDIETS.replace("-", "‑")  # how a model renders it; the first bake-off met exactly this
-    assert named_contracts(f"| 1 | *{typographic}* | p. 17 |", [], UNIVERSE) == {EDIETS}
-    assert named_contracts("the Staar Surgical Company distributor agreement", [], UNIVERSE) == {STAAR}
+    assert named_contracts(f"| 1 | *{typographic}* | p. 17 |", UNIVERSE) == {EDIETS}
+    assert named_contracts("the Staar Surgical Company distributor agreement", UNIVERSE) == {STAAR}
     # Two contracts from one filer: its name alone says neither.
-    assert named_contracts("Acme Holdings Inc has such a clause", [], UNIVERSE) == set()
-    assert named_contracts("Acme Holdings Inc", [ACME_B], UNIVERSE) == {ACME_B}
+    assert named_contracts("Acme Holdings Inc has such a clause", UNIVERSE) == set()
     # A filer name under eight characters is too likely to be a word.
-    assert named_contracts("the ABC agreement", [], UNIVERSE) == set()
-    assert named_contracts("", [], UNIVERSE) == set() and named_contracts("x", [None, ""], UNIVERSE) == set()
+    assert named_contracts("the ABC agreement", UNIVERSE) == set()
+    assert named_contracts("", UNIVERSE) == set()
 
 
 def test_a_list_is_scored_by_f1_so_that_recall_shows():
     entry = {"kind": "list", "positives": [STAAR, EDIETS, ACME_A, ACME_B], "universe": UNIVERSE}
-    one = score(entry, "Only one: Staar Surgical Company.", [])
+    one = score(entry, "Only one: Staar Surgical Company.")
     assert (one["named"], one["right"], one["precision"], one["recall"]) == (1, 1, 1.0, 0.25)
     assert one["score"] == pytest.approx(0.4), "right as far as it goes, and a quarter of the answer"
-    everything = score(entry, "", UNIVERSE)
+    everything = score(entry, " ".join(UNIVERSE))
     assert (everything["precision"], everything["recall"]) == (0.8, 1.0) and everything["score"] == pytest.approx(8 / 9)
-    assert score(entry, "No contract in the corpus has such a clause.", [])["score"] == 0.0
-    assert score({**entry, "positives": []}, "Staar Surgical Company", [])["score"] == 0.0
+    assert score(entry, "No contract in the corpus has such a clause.")["score"] == 0.0
+    assert score({**entry, "positives": []}, "Staar Surgical Company")["score"] == 0.0
     with pytest.raises(ValueError, match="unknown key entry kind"):
         score({"kind": "essay"}, "x")
 
