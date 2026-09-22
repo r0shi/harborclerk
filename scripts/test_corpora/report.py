@@ -101,7 +101,7 @@ def model_table(rows: list[dict[str, str]], phase: str, planned: Counter) -> lis
         return []
     columns = [
         "corpus", "model", "planned", "ran", "done", "degraded", "error", "citation overlap", "entity overlap",
-        "median latency (s)", "judged", "pass", "marginal", "fail", "completeness (0-5)",
+        "median latency (s)", "judged", "pass", "marginal", "fail", "answers question (0-5)", "completeness (0-5)",
     ]  # fmt: skip
     out = ["| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
     for corpus, model in keys:
@@ -128,6 +128,8 @@ def model_table(rows: list[dict[str, str]], phase: str, planned: Counter) -> lis
             verdicts["pass"],
             verdicts["marginal"],
             verdicts["fail"],
+            # Rows from before the column: not "0", which would read as a score.
+            _mean([float(u["judge_answers_question"]) for u in judged if u.get("judge_answers_question", "") != ""]),
             _mean([float(u["judge_completeness"]) for u in judged]),
         ]
         out.append("| " + " | ".join(str(c) for c in cells) + " |")

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 from scripts.test_corpora.corpora.manifest import CorpusManifest
 from scripts.test_corpora.runner.client import HarborClerkClient
@@ -347,3 +348,41 @@ def test_mode_answer_eval_is_accepted_and_dispatches(monkeypatch, tmp_path):
     assert rc == 0
     assert called["args"].mode == "answer-eval"
     assert called["args"].label == "lbl"
+
+
+def test_a_metrics_file_from_a_newer_sweep_is_refused_before_any_unit_runs(tmp_path: Path) -> None:
+    """Review of #695: the row builder would have raised at the first unit's row, after that unit was marked done.
+    The header is read at startup, and that is where the sweep stops, with nothing spent and nothing marked."""
+    run_dir = tmp_path / "results" / "newer"
+    run_dir.mkdir(parents=True)
+    (run_dir / "metrics.csv").write_text("phase,corpus,model,question_id,depth,status,a_column_from_the_future\n")
+    fake_hc = MagicMock()
+    fake_hc.get_bearer_token.return_value = "fake-token"
+    with (
+        patch("scripts.test_corpora.runner.sweep.HarborClerkClient", return_value=fake_hc),
+        patch("scripts.test_corpora.runner.sweep.anthropic.Anthropic"),
+        patch("scripts.test_corpora.runner.sweep.JudgeClient"),
+        patch("scripts.test_corpora.runner.sweep.SyncMcpSession", return_value=MagicMock()),
+        patch("scripts.test_corpora.runner.sweep._phase1_baseline") as baseline,
+        patch("scripts.test_corpora.runner.sweep._ingest_corpus"),
+        patch("scripts.test_corpora.runner.spend.SpendMeter.estimate", return_value=0.0),
+        pytest.raises(SystemExit, match="a_column_from_the_future"),
+    ):
+        main(
+            [
+                "--run-id",
+                "newer",
+                "--workdir",
+                str(tmp_path),
+                "--phases",
+                "1",
+                "--corpora",
+                "cuad",
+                "--no-ingest",
+                "--no-hc-logs",
+                "--skip-canary",
+                "--no-judge",
+            ]
+        )
+    baseline.assert_not_called()
+    assert (run_dir / "metrics.csv").read_text().count("\n") == 1, "nothing was appended to the file"

@@ -843,6 +843,48 @@ DISPOSABLE_ENV = "HC_EVAL_DISPOSABLE"
 INGESTING_PHASES = frozenset({1, 4, 5, 6})
 SKIPPED_BEFORE_THE_RUN = "skipped before the run: "
 # The corpora the harness ingests, each from <workdir>/<corpus>/ingest.
+# metrics.csv, one row per unit. New columns go at the end: a resumed run writes the columns its file already
+# has (`metrics_row_for`), so an older file keeps its shape and a reader keys by header, never by position.
+METRICS_COLUMNS = (
+    "phase",
+    "corpus",
+    "model",
+    "question_id",
+    "depth",
+    "status",
+    "citation_overlap",
+    "citation_extra",
+    "entity_overlap",
+    "latency_seconds",
+    "judge_verdict",
+    "judge_completeness",
+    "verifier_total",
+    "verifier_supported",
+    "verifier_partial",
+    "verifier_unsupported",
+    "verifier_skipped",
+    "judge_answers_question",
+)
+
+
+def unknown_metrics_columns(columns: list[str]) -> None:
+    """Refuse a metrics.csv whose header names a column this code cannot fill. `metrics_row_for` would raise on
+    it, but only at the first unit's row, after that unit was marked done: its row would be lost and --resume
+    would skip it. A header from a newer branch, or a twin's file copied in, is refused at startup instead."""
+    unknown = [c for c in columns if c not in METRICS_COLUMNS]
+    if unknown:
+        raise SystemExit(
+            f"metrics.csv has column(s) this version of the sweep cannot write: {unknown}. It was written by a "
+            f"newer sweep or copied from another run; use a fresh --run-id, or run that version."
+        )
+
+
+def metrics_row_for(columns: list[str], **values: object) -> list[object]:
+    """The row for `columns`, in their order. A value for a column the file does not have is dropped; a column
+    with no value is an error, so a renamed field cannot silently write an empty cell."""
+    return [values[column] for column in columns]
+
+
 HARNESS_CORPORA = ("cuad", "enron", "synthetic", "unified")
 
 
@@ -1263,41 +1305,26 @@ def main(argv: list[str] | None = None) -> int:
         # whole corpus block is structurally broken.
         canary_results: dict[str, dict[str, object]] = {}
 
-        # CSV metrics
+        # CSV metrics. The file's own header decides the row shape: a resumed run keeps the columns it started with.
         metrics_path = run_dir / "metrics.csv"
-        metrics_header = [
-            "phase",
-            "corpus",
-            "model",
-            "question_id",
-            "depth",
-            "status",
-            "citation_overlap",
-            "citation_extra",
-            "entity_overlap",
-            "latency_seconds",
-            "judge_verdict",
-            "judge_completeness",
-            "verifier_total",
-            "verifier_supported",
-            "verifier_partial",
-            "verifier_unsupported",
-            "verifier_skipped",
-        ]
         new_csv = not metrics_path.exists() or metrics_path.stat().st_size == 0
-        include_verifier_metrics = True
-        if not new_csv:
-            existing_header = metrics_path.read_text().splitlines()[0].split(",")
-            include_verifier_metrics = "verifier_total" in existing_header
-            if not include_verifier_metrics:
+        metrics_columns = list(METRICS_COLUMNS) if new_csv else metrics_path.read_text().splitlines()[0].split(",")
+        unknown_metrics_columns(metrics_columns)  # before any unit runs, not after the first is marked done
+        for column, why in (
+            ("verifier_total", "verifier validation metrics"),
+            (
+                "judge_answers_question",
+                "the judge_answers_question column; the verdicts in it followed completeness and are not comparable with new ones",
+            ),
+        ):
+            if column not in metrics_columns:
                 log.warning(
-                    "metrics.csv lacks verifier columns; preserving legacy row shape for this resumed run. "
-                    "Use a fresh --run-id for verifier validation metrics."
+                    "metrics.csv predates %s; preserving its row shape for this resumed run. Use a fresh --run-id.", why
                 )
         metrics_f = metrics_path.open("a", newline="")
         metrics_writer = csv.writer(metrics_f)
         if new_csv:
-            metrics_writer.writerow(metrics_header)
+            metrics_writer.writerow(metrics_columns)
 
         sampler = Sampler(every_n=cfg.SAMPLE_EVERY_N)
         sweep_started = time.time()
@@ -1834,6 +1861,7 @@ def main(argv: list[str] | None = None) -> int:
                 co = ce = eo = 0.0
                 judge_verdict = ""
                 judge_completeness = 0
+                judge_answers_question = 0
                 spend_stop: spend.SpendError | None = None
                 verifier_counts = _verifier_counts(out.get("result", {}) or {})
                 if phase in (4, 5):
@@ -1916,6 +1944,7 @@ def main(argv: list[str] | None = None) -> int:
                                     ).write_text(json.dumps(dataclasses.asdict(v), indent=2))
                                     judge_verdict = v.verdict
                                     judge_completeness = v.completeness
+                                    judge_answers_question = v.answers_question
 
                         sampler.note(
                             CompletionEvent(
@@ -1934,30 +1963,27 @@ def main(argv: list[str] | None = None) -> int:
                         )
 
                 row_unit = sf.get(u.phase, u.corpus, u.model, u.question_id, u.depth)
-                metrics_row = [
-                    phase,
-                    u.corpus,
-                    u.model,
-                    u.question_id,
-                    u.depth,
-                    row_unit.status.value if row_unit else "unknown",
-                    f"{co:.3f}",
-                    ce,
-                    f"{eo:.3f}",
-                    f"{latency:.1f}",
-                    judge_verdict,
-                    judge_completeness,
-                ]
-                if include_verifier_metrics:
-                    metrics_row.extend(
-                        [
-                            verifier_counts["total"],
-                            verifier_counts["supported"],
-                            verifier_counts["partial"],
-                            verifier_counts["unsupported"],
-                            verifier_counts["skipped"],
-                        ]
-                    )
+                metrics_row = metrics_row_for(
+                    metrics_columns,
+                    phase=phase,
+                    corpus=u.corpus,
+                    model=u.model,
+                    question_id=u.question_id,
+                    depth=u.depth,
+                    status=row_unit.status.value if row_unit else "unknown",
+                    citation_overlap=f"{co:.3f}",
+                    citation_extra=ce,
+                    entity_overlap=f"{eo:.3f}",
+                    latency_seconds=f"{latency:.1f}",
+                    judge_verdict=judge_verdict,
+                    judge_completeness=judge_completeness,
+                    judge_answers_question=judge_answers_question,
+                    verifier_total=verifier_counts["total"],
+                    verifier_supported=verifier_counts["supported"],
+                    verifier_partial=verifier_counts["partial"],
+                    verifier_unsupported=verifier_counts["unsupported"],
+                    verifier_skipped=verifier_counts["skipped"],
+                )
                 metrics_writer.writerow(metrics_row)
                 metrics_f.flush()
                 if spend_stop is not None:
