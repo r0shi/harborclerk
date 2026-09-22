@@ -139,6 +139,9 @@ def test_a_claude_judge_that_thinks_by_default_is_run_with_thinking_off():
 def test_a_judge_from_neither_vendor_is_refused_when_built(monkeypatch):
     with pytest.raises(ValueError, match="neither a Claude nor an OpenAI model"):
         JudgeClient(client=MagicMock(), model="llama-3")
+    # gpt-oss-* is a local llama-server model whose name starts like OpenAI's; it is never sent to OpenAI.
+    with pytest.raises(ValueError, match="neither"):
+        JudgeClient(client=MagicMock(), model="gpt-oss-20b")
 
 
 def test_without_a_client_the_judge_builds_the_metered_client_of_its_vendor(monkeypatch):

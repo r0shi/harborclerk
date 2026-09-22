@@ -458,6 +458,8 @@ def test_a_phase_by_phase_resume_is_priced_for_the_phase_it_runs(tmp_path, monke
     covers it and not the phase-4 judging. Pricing every pending unit refused this."""
     from scripts.test_corpora.runner import sweep
 
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")  # phase 1 is planned: its vendor's key must be set
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")  # and phase 4's judge
     base = ["--run-id", "r1", "--workdir", str(tmp_path), "--corpora", "cuad"]
     assert sweep.main([*base, "--phases", "1,4", "--spend-cap-usd", "0.01"]) == 3
 

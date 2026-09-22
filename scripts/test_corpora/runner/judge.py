@@ -1,4 +1,4 @@
-"""LLM-as-judge client.
+"""LLM-as-judge client, either vendor.
 
 Sends ``(question, baseline_answer, model_answer)`` to the judge model with the rubric below and returns a
 structured verdict. The rubric is intentionally narrow: fact-level coverage and correctness, not prose quality.
@@ -92,6 +92,18 @@ def _extract_json(text: str) -> dict:
 _THINKS_BY_DEFAULT = ("claude-sonnet-5", "claude-opus-5")
 
 
+def vendor_of(model: str) -> str:
+    """ "anthropic" or "openai" by model id, the same prefixes the baseline providers route by. A local model
+    (`gpt-oss-*`) is neither, and neither is anything else: a judge must be a cloud model."""
+    from scripts.test_corpora.runner.providers.factory import _LOCAL_OVERRIDES
+
+    if model.startswith(_ANTHROPIC_PREFIXES):
+        return "anthropic"
+    if model.startswith(_OPENAI_PREFIXES) and not model.startswith(_LOCAL_OVERRIDES):
+        return "openai"
+    raise ValueError(f"{model!r} is neither a Claude nor an OpenAI model")
+
+
 class JudgeClient:
     """One rubric, either vendor. `client` is a metered client of the vendor `model` belongs to; left out, one is
     built for it. Both vendors' calls are booked as `judge`."""
@@ -100,12 +112,7 @@ class JudgeClient:
         from scripts.test_corpora import conftest as cfg
 
         self._model = model or cfg.JUDGE_MODEL
-        if self._model.startswith(_ANTHROPIC_PREFIXES):
-            self._vendor = "anthropic"
-        elif self._model.startswith(_OPENAI_PREFIXES):
-            self._vendor = "openai"
-        else:
-            raise ValueError(f"judge {self._model!r} is neither a Claude nor an OpenAI model")
+        self._vendor = vendor_of(self._model)
         self._client = client or (
             spend.anthropic_client("judge") if self._vendor == "anthropic" else spend.openai_client("judge")
         )
