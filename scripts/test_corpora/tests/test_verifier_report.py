@@ -199,3 +199,23 @@ def test_cli_writes_markdown_and_json_outputs(tmp_path):
     assert "Verifier Validation Report" in report_path.read_text()
     payload = json.loads(json_path.read_text())
     assert payload["hint"] == "candidate"
+
+
+def test_a_metrics_row_takes_the_shape_of_the_files_own_header():
+    """New columns go at the end, and a resumed run keeps writing the columns its file started with."""
+    from scripts.test_corpora.runner.sweep import METRICS_COLUMNS, metrics_row_for
+
+    assert METRICS_COLUMNS[-1] == "judge_answers_question" and METRICS_COLUMNS[:12] == (
+        "phase", "corpus", "model", "question_id", "depth", "status", "citation_overlap", "citation_extra",
+        "entity_overlap", "latency_seconds", "judge_verdict", "judge_completeness",
+    )  # fmt: skip
+    values = {c: f"<{c}>" for c in METRICS_COLUMNS}
+    assert metrics_row_for(list(METRICS_COLUMNS), **values) == [f"<{c}>" for c in METRICS_COLUMNS]
+    older = list(METRICS_COLUMNS[:-1])
+    assert metrics_row_for(older, **values) == [f"<{c}>" for c in older], "an older file: its columns, its order"
+    oldest = list(METRICS_COLUMNS[:12])
+    assert len(metrics_row_for(oldest, **values)) == 12
+    import pytest
+
+    with pytest.raises(KeyError):
+        metrics_row_for(["phase", "renamed_column"], **values)

@@ -1,9 +1,14 @@
-"""Sonnet 4.6 LLM-as-judge client.
+"""LLM-as-judge client.
 
-Sends ``(question, baseline_answer, model_answer)`` to Sonnet 4.6 with
-the rubric defined in the design doc and returns a structured verdict.
-The rubric is intentionally narrow — only fact-level coverage, not prose
-quality.
+Sends ``(question, baseline_answer, model_answer)`` to the judge model with the rubric below and returns a
+structured verdict. The rubric is intentionally narrow: fact-level coverage and correctness, not prose quality.
+
+The verdict follows ``answers_question``, not ``completeness``. It used to follow completeness (implicitly: the
+prompt named no rule), and under that rubric a correct, short answer scored "marginal" beside a reference that also
+quoted the clause and cited the page: 20 of 39 answers CUAD's own annotations marked right, for Haiku 4.5, and one
+right answer in seven for Sonnet 4.6. Adding this one dimension and binding the verdict to it took both judges'
+agreement with the annotations from 0.89 to 0.96 and 0.97 (docs/reports/2026-09-22-rubric-test.md). Three other
+changes tried in the same test did nothing or made the judges stricter. Completeness is still scored and reported.
 """
 
 from __future__ import annotations
@@ -35,6 +40,9 @@ Score these dimensions (0–5 each):
 - entity_recall: does the model answer surface the same named entities
   (people, places, organizations, dates, dollar amounts)?
 - completeness: overall coverage of the baseline's territory.
+- answers_question: does the model answer correctly answer what the question asked? Do not penalise
+  brevity, or the absence of detail the question did not ask for. Penalise wrong facts, contradictions of
+  the baseline, and not answering (including saying nothing was found when the baseline found it).
 
 Return JSON only (no prose, no markdown fences):
 {{
@@ -42,11 +50,13 @@ Return JSON only (no prose, no markdown fences):
   "claim_precision": int,
   "entity_recall": int,
   "completeness": int,
+  "answers_question": int,
   "missing_facts": ["..."],
   "extra_facts": ["..."],
   "contradictions": ["..."],
   "verdict": "pass" | "marginal" | "fail"
 }}
+The verdict follows answers_question alone, not completeness.
 """
 
 
@@ -56,6 +66,7 @@ class JudgeVerdict:
     claim_precision: int
     entity_recall: int
     completeness: int
+    answers_question: int
     missing_facts: list[str]
     extra_facts: list[str]
     contradictions: list[str]
@@ -96,6 +107,7 @@ class JudgeClient:
             claim_precision=int(data["claim_precision"]),
             entity_recall=int(data["entity_recall"]),
             completeness=int(data["completeness"]),
+            answers_question=int(data["answers_question"]),
             missing_facts=data.get("missing_facts", []),
             extra_facts=data.get("extra_facts", []),
             contradictions=data.get("contradictions", []),

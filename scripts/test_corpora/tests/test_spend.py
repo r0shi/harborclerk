@@ -378,7 +378,7 @@ def test_each_finished_piece_of_work_counts_one_unit_whoever_did_it(tmp_path, mo
     assert OpenAIJudgeProvider(client=gpt).judge("prompt") == "An answer." and _units("cross_judge") == 1
 
     verdict = (
-        '{"claim_recall": 5, "claim_precision": 5, "entity_recall": 5, "completeness": 5, "verdict": "pass", '
+        '{"claim_recall": 5, "claim_precision": 5, "entity_recall": 5, "completeness": 5, "answers_question": 5, "verdict": "pass", '
         '"correctness": 5, "groundedness": 5, "rationale": "r"}'
     )
     claude.messages.create.return_value = MagicMock(content=[MagicMock(text=verdict)])

@@ -95,10 +95,10 @@ def test_the_commit_is_the_one_that_ran_the_sweep_not_the_one_the_report_was_ren
 
 def test_each_model_gets_a_row_of_what_was_measured(tmp_path):
     text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER))
-    assert "| cuad | `qwen3-8b` | n/a | 3 | 2 | 1 | 0 | 0.60 | 0.50 | 100 | 2 | 1 | 0 | 1 | 3.00 |" in text
+    assert "| cuad | `qwen3-8b` | n/a | 3 | 2 | 1 | 0 | 0.60 | 0.50 | 100 | 2 | 1 | 0 | 1 | n/a | 3.00 |" in text
     # Finished and never judged: absent from the judged columns, not scored zero.
-    assert "| cuad | `qwen35-9b` | n/a | 1 | 1 | 0 | 0 | 0.90 | 0.80 | 60 | 0 | 0 | 0 | 0 | n/a |" in text
-    assert "| enron | `qwen36-35b-a3b` | n/a | 1 | 0 | 0 | 1 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a |" in text
+    assert "| cuad | `qwen35-9b` | n/a | 1 | 1 | 0 | 0 | 0.90 | 0.80 | 60 | 0 | 0 | 0 | 0 | n/a | n/a |" in text
+    assert "| enron | `qwen36-35b-a3b` | n/a | 1 | 0 | 0 | 1 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a |" in text
     assert "## Phase 4: every model, every question" in text and "## Phase 5: the two largest, judged" in text
     assert "1 finished unit(s) in the judged phases have no verdict (an unusable baseline, a judge failure" in text
     assert "The overlap means include units whose baseline was unusable" in text
@@ -126,7 +126,7 @@ def test_units_that_never_ran_are_not_hidden_behind_the_ones_that_did(tmp_path):
     }
     text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER, state=state))
     assert "| cuad | `qwen3-8b` | 16 | 3 | 2 | 1 | 0 |" in text
-    assert "| cuad | `qwen3-4b` | 16 | 0 | 0 | 0 | 0 | n/a | n/a | n/a | 0 |" in text
+    assert "| cuad | `qwen3-4b` | 16 | 0 | 0 | 0 | 0 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a |" in text
     assert "| enron | `qwen36-35b-a3b` | 4 | 1 | 0 | 0 | 1 |" in text
     assert "gemma4-26b-a4b` |" not in text.split("## Models this machine did not run")[0], "it has its own section"
     assert "**47 planned unit(s) never ran**" in text  # 52 planned, 5 ran
@@ -138,8 +138,8 @@ def test_corpora_are_not_pooled_into_one_row(tmp_path):
         [4, "enron", "qwen3-8b", "q1", "standard", "done", "0.000", 0, "0.000", "300.0", "fail", 0],
     ]
     text = _render(_run_dir(tmp_path, rows, ledger=LEDGER))
-    assert "| cuad | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 1.00 | 1.00 | 10 | 1 | 1 | 0 | 0 | 5.00 |" in text
-    assert "| enron | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 0.00 | 0.00 | 300 | 1 | 0 | 0 | 1 | 0.00 |" in text
+    assert "| cuad | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 1.00 | 1.00 | 10 | 1 | 1 | 0 | 0 | n/a | 5.00 |" in text
+    assert "| enron | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 0.00 | 0.00 | 300 | 1 | 0 | 0 | 1 | n/a | 0.00 |" in text
 
 
 def test_the_host_is_the_machine_that_ran_the_sweep(tmp_path):
@@ -155,7 +155,7 @@ def test_a_rerun_unit_counts_once_by_its_last_row(tmp_path):
     """metrics.csv is append-only; --rerun appends a second row for the same unit."""
     again = [*ROWS, [4, "cuad", "qwen3-8b", "q3", "standard", "done", "0.600", 0, "0.500", "90.0", "pass", 5]]
     text = _render(_run_dir(tmp_path, again, ledger=LEDGER))
-    assert "| cuad | `qwen3-8b` | n/a | 3 | 3 | 0 | 0 | 0.60 | 0.50 | 90 | 3 | 2 | 0 | 1 | 3.67 |" in text
+    assert "| cuad | `qwen3-8b` | n/a | 3 | 3 | 0 | 0 | 0.60 | 0.50 | 90 | 3 | 2 | 0 | 1 | n/a | 3.67 |" in text
 
 
 def test_a_failed_or_missing_preflight_says_the_timings_are_not_a_baseline(tmp_path):
@@ -284,3 +284,20 @@ def test_a_baseline_stopped_at_the_call_limit_is_named_in_the_report(tmp_path):
     text = _render(run)
     assert "**1 baseline(s) were stopped at the model-call limit**" in text and "`cuad/cuad-research-6`" in text
     assert "cuad-ask-1" not in text.split("model-call limit")[1].split("\n")[0]
+
+
+def test_a_run_with_the_answers_question_column_reports_it(tmp_path):
+    """Rows from before the column show n/a there, never a zero that reads as a score (the test above)."""
+    header = [*HEADER, "judge_answers_question"]
+    rows = [[*r, ""] for r in ROWS]
+    for r in rows:
+        if r[HEADER.index("judge_verdict")]:
+            r[-1] = "4"
+    run = tmp_path / "results" / "Bench 02"
+    run.mkdir(parents=True)
+    with (run / "metrics.csv").open("w", newline="") as f:
+        csv.writer(f).writerows([header, *rows])
+    (run / "spend.json").write_text(json.dumps(LEDGER))
+    text = _render(run)
+    assert "| answers question (0-5) | completeness (0-5) |" in text
+    assert "| cuad | `qwen3-8b` | n/a | 3 | 2 | 1 | 0 | 0.60 | 0.50 | 100 | 2 | 1 | 0 | 1 | 4.00 | 3.00 |" in text
