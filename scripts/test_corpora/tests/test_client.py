@@ -1,8 +1,12 @@
 import json
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
 
+from scripts.test_corpora.runner import client as client_mod
 from scripts.test_corpora.runner.client import HarborClerkClient, _evaluate_health, _WatchdogState
 
 
@@ -713,3 +717,142 @@ def test_run_research_returns_interrupted_when_server_interrupts():
     conv_id, result = c.run_research("Q?", depth="standard", time_limit_minutes=1)
     assert result["status"] == "interrupted"
     assert result.get("report") is None
+
+
+def test_run_research_read_timeout_follows_silence_threshold_not_time_limit():
+    """The stream's per-read timeout is derived from the watchdog's silence threshold, not from
+    ``time_limit_minutes`` (#701). At the old ``time_limit_minutes * 60 + 180`` a 30-minute research
+    waited 1,980 s for a read the watchdog had already given up on at 300 s."""
+    seen: dict[str, float] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/research":
+            seen.update(request.extensions["timeout"])
+            return httpx.Response(
+                200,
+                headers={"X-Research-Id": "conv-t", "Content-Type": "text/event-stream"},
+                content='data: {"type":"done","conversation_id":"conv-t"}\n\n',
+            )
+        if request.method == "GET" and request.url.path == "/api/research/conv-t":
+            return httpx.Response(200, json={"status": "completed", "report": "x"})
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    c.run_research("Q?", depth="standard", time_limit_minutes=30)
+
+    expected = client_mod.SSE_EVENT_SILENCE_TIMEOUT_SECONDS + client_mod.WATCHDOG_INTERVAL_SECONDS * 2
+    assert seen["read"] == expected == 360
+    assert seen["read"] != 30 * 60 + 180
+    assert seen["read"] < 30 * 60
+    assert (seen["connect"], seen["write"], seen["pool"]) == (30, 10, 10)
+
+
+class _StalledResearchServer:
+    """A real HTTP server whose research stream sends one event and then goes silent forever.
+
+    ``POST /api/research`` writes the SSE headers and a ``started`` event, then blocks on the socket until
+    the client closes it, which is exactly what a wedged llama-server looks like from the harness. The
+    research GET reports ``running`` while that stream is open and ``interrupted`` once it has been closed,
+    so the watchdog's ``research_failed`` check cannot fire first and mask the read-timeout path. The model
+    status is always ``ready`` for the same reason.
+    """
+
+    def __init__(self) -> None:
+        self.stream_closed = threading.Event()
+        self.stream_started = threading.Event()
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_: object) -> None:  # keep pytest output clean
+                pass
+
+            def _json(self, body: dict) -> None:
+                raw = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self) -> None:
+                if self.path == "/api/chat/models/status":
+                    self._json({"state": "ready", "model_id": "m"})
+                    return
+                if self.path.startswith("/api/research/"):
+                    # Give a just-closed stream a moment to be noticed, so the final poll is deterministic.
+                    closed = outer.stream_closed.wait(0.5)
+                    self._json({"status": "interrupted" if closed else "running", "report": None})
+                    return
+                self.send_error(404)
+
+            def do_POST(self) -> None:
+                if self.path != "/api/research":
+                    self.send_error(404)
+                    return
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("X-Research-Id", "conv-stall")
+                self.end_headers()
+                self.wfile.write(b'data: {"type":"started"}\n\n')
+                self.wfile.flush()
+                outer.stream_started.set()
+                # Hold the connection open, sending nothing, until the client closes it (recv returns b"").
+                # The timeout only bounds this thread's life if the client never closes.
+                self.connection.settimeout(30)
+                try:
+                    while self.connection.recv(1):
+                        pass
+                except OSError:
+                    pass
+                outer.stream_closed.set()
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def __enter__(self) -> "_StalledResearchServer":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def test_run_research_stalled_stream_ends_at_the_read_timeout_as_sse_silent(monkeypatch):
+    """A stream that goes silent must end shortly after the silence threshold, as an ``sse_silent`` abort,
+    not after ``time_limit_minutes`` of read timeout and not as an exception (#701). Run against a real
+    socket because ``httpx.MockTransport`` cannot block a read."""
+    monkeypatch.setattr(client_mod, "SSE_EVENT_SILENCE_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(client_mod, "WATCHDOG_INTERVAL_SECONDS", 0.05)
+    assert client_mod._stream_read_timeout_seconds() < 1
+
+    outcome: dict[str, object] = {}
+
+    def run(base_url: str) -> None:
+        c = HarborClerkClient(base_url=base_url)
+        try:
+            outcome["result"] = c.run_research("Q?", depth="standard", time_limit_minutes=30)
+        except BaseException as exc:  # noqa: BLE001 - the test reports whatever escaped
+            outcome["error"] = exc
+
+    with _StalledResearchServer() as server:
+        t = threading.Thread(target=run, args=(server.base_url,), daemon=True)
+        t0 = time.time()
+        t.start()
+        assert server.stream_started.wait(5), "the client never opened the research stream"
+        t.join(timeout=10)
+        elapsed = time.time() - t0
+        assert not t.is_alive(), (
+            f"run_research still blocked after {elapsed:.1f}s: the read timeout did not end the stall"
+        )
+
+    assert "error" not in outcome, f"run_research raised instead of aborting: {outcome.get('error')!r}"
+    conv_id, result = outcome["result"]
+    assert conv_id == "conv-stall"
+    assert result["harness_aborted"] is True
+    assert result["harness_abort_reason"].startswith("no SSE events for ")
+    assert result["harness_abort_reason"].endswith("(read timeout)")
+    assert result["status"] == "interrupted"
+    assert elapsed < 5, f"took {elapsed:.1f}s; the read timeout should have fired in well under a second"

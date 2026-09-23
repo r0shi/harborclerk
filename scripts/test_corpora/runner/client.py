@@ -32,9 +32,30 @@ WATCHDOG_THRESHOLD = 2
 # Sustained silence — while ``model_status`` keeps reporting ``ready`` —
 # means llama-server's HTTP server is alive but stuck mid-inference (the
 # "zombie llama" failure mode). 5 minutes is long enough to ride out a
-# slow search round on a Mac mini, short enough to bail before a 30-min
-# read timeout on a truly stuck research.
+# slow search round on a Mac mini, short enough to bail on a truly stuck
+# research in minutes.
 SSE_EVENT_SILENCE_TIMEOUT_SECONDS = 5 * 60
+
+
+def _stream_read_timeout_seconds() -> float:
+    """The research stream's per-read timeout, derived from the silence threshold.
+
+    A read that waits longer than ``SSE_EVENT_SILENCE_TIMEOUT_SECONDS`` is, by
+    definition, the stall the watchdog exists to catch, so the read timeout
+    follows that threshold rather than the research's ``time_limit_minutes``.
+    The watchdog fires first because its threshold is lower; the two extra
+    intervals give it a reading past the threshold before the read gives up.
+
+    It matters because closing the response from the watchdog thread does not
+    unblock a read already in progress (#701): the server saw the close and
+    cancelled the task, but ``iter_lines()`` returned only when httpx's read
+    timeout expired — 1,980 s after the last byte at the default 30-minute
+    limit, so every aborted attempt cost 33 minutes for a fault the watchdog
+    knew at 325 s. With the read timeout tied to the silence threshold, the
+    read gives up shortly after the watchdog does. A function rather than a
+    constant so a test can shrink the two tunables it derives from.
+    """
+    return SSE_EVENT_SILENCE_TIMEOUT_SECONDS + WATCHDOG_INTERVAL_SECONDS * 2
 
 
 @dataclass
@@ -425,9 +446,17 @@ class HarborClerkClient:
         A watchdog thread polls model + research status every
         ``WATCHDOG_INTERVAL_SECONDS``. Two consecutive bad readings
         (model not ``ready``, or research already ``interrupted``/``failed``)
-        forces the SSE stream closed so we don't sit on a hung llama-server.
-        When that happens the returned dict carries ``harness_aborted=True``
-        plus ``harness_abort_reason``.
+        or ``SSE_EVENT_SILENCE_TIMEOUT_SECONDS`` without an event forces the
+        SSE stream closed so we don't sit on a hung llama-server. When that
+        happens the returned dict carries ``harness_aborted=True`` plus
+        ``harness_abort_reason``.
+
+        The stream's per-read timeout is :func:`_stream_read_timeout_seconds`,
+        not the research's time limit: closing the response from the watchdog
+        does not unblock a read in progress (#701), so the read timeout is
+        what actually ends the wait. A read timeout with no abort recorded is
+        itself the silence the watchdog watches for, and is reported the same
+        way (``sse_silent``) rather than raised.
 
         This call is NOT retried by ``tenacity`` because partial SSE
         streams can't be safely re-opened against the same conv_id.
@@ -442,10 +471,9 @@ class HarborClerkClient:
         if scope:
             body["scope"] = scope
 
-        # Read timeout must accommodate the full time_limit + slack for
-        # synthesis tail.
-        read_timeout = time_limit_minutes * 60 + 180
-        timeout = httpx.Timeout(connect=30, read=read_timeout, write=10, pool=10)
+        # Per-read, not per-research: the server keeps events flowing for the
+        # whole time limit, so only a stall waits this long. See #701.
+        timeout = httpx.Timeout(connect=30, read=_stream_read_timeout_seconds(), write=10, pool=10)
 
         abort_event = threading.Event()
         abort_reason: dict[str, str] = {}
@@ -521,6 +549,16 @@ class HarborClerkClient:
                         verifier_verdicts.append(event)
                     if etype in ("done", "error"):
                         break
+            except httpx.ReadTimeout:
+                # The read outlived the silence threshold: that is the stall
+                # the watchdog exists to catch, and the watchdog's close does
+                # not unblock a read in progress (#701), so this is how a
+                # stalled stream actually ends. If the watchdog already
+                # recorded why, keep its reason; otherwise this is the reason.
+                if not abort_reason:
+                    silence = time.time() - last_event_at[0]
+                    abort_reason["kind"] = "sse_silent"
+                    abort_reason["detail"] = f"no SSE events for {silence:.0f}s (read timeout)"
             except Exception:
                 # Watchdog forced the stream closed → expected. Anything else
                 # is a real error worth surfacing.
