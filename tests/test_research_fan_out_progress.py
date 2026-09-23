@@ -185,9 +185,10 @@ async def test_research_stream_heartbeats_and_reports_during_the_gap_round_too(
     unscoped_research_state,  # noqa: F811
     mock_research_session_factory,  # noqa: F811
 ):
-    """The gap round is the second call site of the fan-out. With findings in hand and one gap query, its
-    batch_search must see a heartbeat newer than the last phase-2 batch left, and the stream must emit a
-    step-5 searching event that carries the round."""
+    """The gap round is the second call site of the fan-out. With findings in hand and six gap queries (two
+    batches), the second gap batch must see a heartbeat newer than the first gap batch did (only the gap
+    round's own heartbeat can be between them), the stream must emit step-5 searching events that carry the
+    round, and the round must reach its result (the coverage step is consumed, not indexed)."""
     from unittest.mock import AsyncMock
 
     from harbor_clerk.models.research_state import ResearchState
@@ -213,15 +214,19 @@ async def test_research_stream_heartbeats_and_reports_during_the_gap_round_too(
         patch.object(research_module, "execute_tool", side_effect=fake_execute_tool),
         patch.object(research_module, "_extract_notes_with_retry", new=AsyncMock(return_value="Notes.")),
         patch.object(
-            research_module, "_check_gaps", new=AsyncMock(side_effect=[["governing law of the agreement"], []])
+            research_module,
+            "_check_gaps",
+            new=AsyncMock(side_effect=[[f"governing law of agreement {i}" for i in range(6)], []]),
         ),
         patch("httpx.AsyncClient", return_value=mock_client),
     ):
         raw = [e async for e in research_module.research_stream(conv.conversation_id, user_id=admin_user.user_id)]
 
-    assert len(heartbeats_seen) == 2, heartbeats_seen  # one phase-2 batch, one gap-round batch
-    assert heartbeats_seen[1] > heartbeats_seen[0], "the gap round's search did not find a fresh heartbeat"
-    gap_events = [
-        e for e in _events(raw) if e.get("type") == "progress" and e.get("step") == 5 and "searches_done" in e
-    ]
-    assert [(e["searches_done"], e["searches_planned"], e["round"]) for e in gap_events] == [(1, 1, 1)]
+    assert len(heartbeats_seen) == 3, heartbeats_seen  # one phase-2 batch, two gap-round batches
+    assert heartbeats_seen[2] > heartbeats_seen[1], "no heartbeat between the gap round's two batches"
+    events = _events(raw)
+    gap_events = [e for e in events if e.get("type") == "progress" and e.get("step") == 5 and "searches_done" in e]
+    assert [(e["searches_done"], e["searches_planned"], e["round"]) for e in gap_events] == [(1, 2, 1), (2, 2, 1)]
+    assert any(e.get("type") == "notes" and "Gap search found" in e.get("content", "") for e in events), (
+        "the gap round did not reach its result"
+    )
