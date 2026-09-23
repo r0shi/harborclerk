@@ -32,9 +32,38 @@ WATCHDOG_THRESHOLD = 2
 # Sustained silence — while ``model_status`` keeps reporting ``ready`` —
 # means llama-server's HTTP server is alive but stuck mid-inference (the
 # "zombie llama" failure mode). 5 minutes is long enough to ride out a
-# slow search round on a Mac mini, short enough to bail before a 30-min
-# read timeout on a truly stuck research.
+# slow search round on a Mac mini, short enough to bail on a truly stuck
+# research in minutes.
 SSE_EVENT_SILENCE_TIMEOUT_SECONDS = 5 * 60
+
+
+def _stream_read_timeout_seconds() -> float:
+    """The research stream's per-read timeout, derived from the silence threshold.
+
+    A read that waits longer than ``SSE_EVENT_SILENCE_TIMEOUT_SECONDS`` is, by
+    definition, the stall the watchdog exists to catch, so the read timeout
+    follows that threshold rather than the research's ``time_limit_minutes``.
+    At the defaults the watchdog fires first, when a tick completes within
+    the two extra intervals; when it does not (a slow status call, a tick
+    that started late), the ``ReadTimeout`` branch in ``run_research`` records
+    the same ``sse_silent`` abort, so the outcome is the same either way.
+
+    The same value also bounds the wait for the POST's response headers. That
+    is fine: the research route only validates the request and writes the
+    conversation and state rows before it returns the streaming response
+    (``src/harbor_clerk/api/routes/research.py``), so the headers arrive well
+    before any inference starts.
+
+    It matters because closing the response from the watchdog thread does not
+    unblock a read already in progress (#701): the server saw the close and
+    cancelled the task, but ``iter_lines()`` returned only when httpx's read
+    timeout expired — 1,980 s after the last byte at the default 30-minute
+    limit, so every aborted attempt cost 33 minutes for a fault the watchdog
+    knew at 325 s. With the read timeout tied to the silence threshold, the
+    read gives up shortly after the watchdog does. A function rather than a
+    constant so a test can shrink the two tunables it derives from.
+    """
+    return SSE_EVENT_SILENCE_TIMEOUT_SECONDS + WATCHDOG_INTERVAL_SECONDS * 2
 
 
 @dataclass
@@ -425,9 +454,22 @@ class HarborClerkClient:
         A watchdog thread polls model + research status every
         ``WATCHDOG_INTERVAL_SECONDS``. Two consecutive bad readings
         (model not ``ready``, or research already ``interrupted``/``failed``)
-        forces the SSE stream closed so we don't sit on a hung llama-server.
-        When that happens the returned dict carries ``harness_aborted=True``
-        plus ``harness_abort_reason``.
+        or ``SSE_EVENT_SILENCE_TIMEOUT_SECONDS`` without an event forces the
+        SSE stream closed so we don't sit on a hung llama-server. When that
+        happens the returned dict carries ``harness_aborted=True`` plus
+        ``harness_abort_reason``.
+
+        The stream's per-read timeout is :func:`_stream_read_timeout_seconds`,
+        not the research's time limit: closing the response from the watchdog
+        does not unblock a read in progress (#701), so the read timeout is
+        what actually ends the wait. A read timeout with no abort recorded is
+        itself the silence the watchdog watches for, and is reported the same
+        way (``sse_silent``) rather than raised. That is a change in kind: a
+        ``ReadTimeout`` with no abort recorded used to escape as an exception
+        (the sweep marked the unit ``ERROR`` with no retry and the circuit
+        breaker did not count it); it is now a ``harness_aborted`` result, so
+        the sweep retries it once and the breaker counts it like any other
+        watchdog abort.
 
         This call is NOT retried by ``tenacity`` because partial SSE
         streams can't be safely re-opened against the same conv_id.
@@ -442,13 +484,18 @@ class HarborClerkClient:
         if scope:
             body["scope"] = scope
 
-        # Read timeout must accommodate the full time_limit + slack for
-        # synthesis tail.
-        read_timeout = time_limit_minutes * 60 + 180
-        timeout = httpx.Timeout(connect=30, read=read_timeout, write=10, pool=10)
+        # Per-read, not per-research: the server keeps events flowing for the
+        # whole time limit, so only a stall waits this long. See #701.
+        timeout = httpx.Timeout(connect=30, read=_stream_read_timeout_seconds(), write=10, pool=10)
 
+        # ``abort_reason`` is written by whichever side notices the failure first: the watchdog on a bad
+        # verdict, the main loop on a read timeout. ``abort_lock`` makes each check-then-write atomic with
+        # respect to the other, and covers the main loop's ``abort_event.set()`` and its final read, so a
+        # tick in flight when the stream ends can neither relabel the result nor overwrite the reason.
         abort_event = threading.Event()
+        abort_lock = threading.Lock()
         abort_reason: dict[str, str] = {}
+        abort_snapshot: dict[str, str] = {}
         conv_id_holder: list[str | None] = [None]
         response_holder: list[Any] = [None]
         verifier_verdicts: list[dict[str, Any]] = []
@@ -482,9 +529,15 @@ class HarborClerkClient:
                 silence = time.time() - last_event_at[0]
                 kind, detail = _evaluate_health(ms_state, rs_status, wstate, silence_seconds=silence)
                 if kind is not None:
-                    abort_reason["kind"] = kind
-                    abort_reason["detail"] = detail or kind
-                    _close_stream()
+                    # The main loop may have finished (``done``, ``error`` or its own read timeout) while
+                    # this tick's status calls were in flight. Its verdict stands: never relabel a
+                    # completed research as aborted, or a read-timeout reason as ``model_unhealthy``.
+                    with abort_lock:
+                        if abort_event.is_set():
+                            return
+                        abort_reason["kind"] = kind
+                        abort_reason["detail"] = detail or kind
+                        _close_stream()
                     return
 
         watchdog: threading.Thread | None = None
@@ -501,8 +554,6 @@ class HarborClerkClient:
 
             try:
                 for line in r.iter_lines():
-                    if abort_event.is_set():
-                        break
                     if not line.startswith("data: "):
                         continue
                     payload = line[6:]
@@ -521,13 +572,31 @@ class HarborClerkClient:
                         verifier_verdicts.append(event)
                     if etype in ("done", "error"):
                         break
+            except httpx.ReadTimeout:
+                # The read outlived the silence threshold: that is the stall
+                # the watchdog exists to catch, and the watchdog's close does
+                # not unblock a read in progress (#701), so this is how a
+                # stalled stream actually ends. If the watchdog already
+                # recorded why, keep its reason; otherwise this is the reason.
+                with abort_lock:
+                    if not abort_reason:
+                        silence = time.time() - last_event_at[0]
+                        abort_reason["kind"] = "sse_silent"
+                        abort_reason["detail"] = f"no SSE events for {silence:.0f}s (read timeout)"
             except Exception:
                 # Watchdog forced the stream closed → expected. Anything else
                 # is a real error worth surfacing.
-                if not abort_reason:
+                with abort_lock:
+                    aborted = bool(abort_reason)
+                if not aborted:
                     raise
             finally:
-                abort_event.set()
+                # Setting the event and reading the reason under the lock is what makes the watchdog's
+                # ``is_set()`` check binding: after this block no tick can write, and what was read here
+                # is what the result reports.
+                with abort_lock:
+                    abort_event.set()
+                    abort_snapshot.update(abort_reason)
                 if watchdog is not None:
                     watchdog.join(timeout=5)
 
@@ -535,11 +604,11 @@ class HarborClerkClient:
         final = self.poll_research(conv_id)
         if verifier_verdicts:
             final["verifier_verdicts"] = verifier_verdicts
-        if abort_reason:
+        if abort_snapshot:
             final = {
                 **final,
                 "harness_aborted": True,
-                "harness_abort_reason": abort_reason.get("detail", "unknown"),
+                "harness_abort_reason": abort_snapshot.get("detail", "unknown"),
             }
         return conv_id, final
 

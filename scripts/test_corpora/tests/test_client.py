@@ -1,8 +1,12 @@
 import json
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
 
+from scripts.test_corpora.runner import client as client_mod
 from scripts.test_corpora.runner.client import HarborClerkClient, _evaluate_health, _WatchdogState
 
 
@@ -713,3 +717,258 @@ def test_run_research_returns_interrupted_when_server_interrupts():
     conv_id, result = c.run_research("Q?", depth="standard", time_limit_minutes=1)
     assert result["status"] == "interrupted"
     assert result.get("report") is None
+
+
+def test_run_research_read_timeout_follows_silence_threshold_not_time_limit():
+    """The stream's per-read timeout is derived from the watchdog's silence threshold, not from
+    ``time_limit_minutes`` (#701). At the old ``time_limit_minutes * 60 + 180`` a 30-minute research
+    waited 1,980 s for a read the watchdog had already given up on at 300 s."""
+    seen: dict[str, float] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/research":
+            seen.update(request.extensions["timeout"])
+            return httpx.Response(
+                200,
+                headers={"X-Research-Id": "conv-t", "Content-Type": "text/event-stream"},
+                content='data: {"type":"done","conversation_id":"conv-t"}\n\n',
+            )
+        if request.method == "GET" and request.url.path == "/api/research/conv-t":
+            return httpx.Response(200, json={"status": "completed", "report": "x"})
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    c.run_research("Q?", depth="standard", time_limit_minutes=30)
+
+    expected = client_mod.SSE_EVENT_SILENCE_TIMEOUT_SECONDS + client_mod.WATCHDOG_INTERVAL_SECONDS * 2
+    assert seen["read"] == expected == 360
+    assert seen["read"] != 30 * 60 + 180
+    assert seen["read"] < 30 * 60
+    assert (seen["connect"], seen["write"], seen["pool"]) == (30, 10, 10)
+
+
+class _StalledResearchServer:
+    """A real HTTP server whose research stream sends one event and then goes silent forever.
+
+    ``POST /api/research`` writes the SSE headers and a ``started`` event, then blocks on the socket until
+    the client closes it, which is exactly what a wedged llama-server looks like from the harness. The
+    status endpoints keep the watchdog inert: the model is always ``ready``, and the research GET reports
+    ``running`` while the stream is open (``interrupted`` once it has been closed, for the final poll). The
+    research GET also waits up to 0.5 s for the close, which is longer than the read timeout the test sets,
+    so no watchdog tick can complete before the read gives up.
+    """
+
+    def __init__(self) -> None:
+        self.stream_closed = threading.Event()
+        self.stream_started = threading.Event()
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_: object) -> None:  # keep pytest output clean
+                pass
+
+            def _json(self, body: dict) -> None:
+                raw = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self) -> None:
+                if self.path == "/api/chat/models/status":
+                    self._json({"state": "ready", "model_id": "m"})
+                    return
+                if self.path.startswith("/api/research/"):
+                    # Give a just-closed stream a moment to be noticed, so the final poll is deterministic.
+                    closed = outer.stream_closed.wait(0.5)
+                    self._json({"status": "interrupted" if closed else "running", "report": None})
+                    return
+                self.send_error(404)
+
+            def do_POST(self) -> None:
+                if self.path != "/api/research":
+                    self.send_error(404)
+                    return
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("X-Research-Id", "conv-stall")
+                self.end_headers()
+                self.wfile.write(b'data: {"type":"started"}\n\n')
+                self.wfile.flush()
+                outer.stream_started.set()
+                # Hold the connection open, sending nothing, until the client closes it (recv returns b"").
+                # The timeout only bounds this thread's life if the client never closes.
+                self.connection.settimeout(30)
+                try:
+                    while self.connection.recv(1):
+                        pass
+                except OSError:
+                    pass
+                outer.stream_closed.set()
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def __enter__(self) -> "_StalledResearchServer":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def test_run_research_stalled_stream_ends_at_the_read_timeout_as_sse_silent(monkeypatch):
+    """The read timeout alone ends a stalled stream: shortly after the silence threshold, as an ``sse_silent``
+    abort, not after ``time_limit_minutes`` of read timeout and not as an exception (#701).
+
+    The watchdog is inert here by construction, so this guards the ``ReadTimeout`` branch and nothing else:
+    ``_evaluate_health``'s silence threshold is a default bound at definition time, which the monkeypatch of
+    ``SSE_EVENT_SILENCE_TIMEOUT_SECONDS`` does not reach, and the server's status endpoints never report a
+    bad reading (see ``_StalledResearchServer``). Run against a real socket because ``httpx.MockTransport``
+    cannot block a read."""
+    monkeypatch.setattr(client_mod, "SSE_EVENT_SILENCE_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(client_mod, "WATCHDOG_INTERVAL_SECONDS", 0.05)
+    assert client_mod._stream_read_timeout_seconds() < 1
+
+    outcome: dict[str, object] = {}
+
+    def run(base_url: str) -> None:
+        c = HarborClerkClient(base_url=base_url)
+        try:
+            outcome["result"] = c.run_research("Q?", depth="standard", time_limit_minutes=30)
+        except BaseException as exc:  # noqa: BLE001 - the test reports whatever escaped
+            outcome["error"] = exc
+
+    with _StalledResearchServer() as server:
+        t = threading.Thread(target=run, args=(server.base_url,), daemon=True)
+        t0 = time.time()
+        t.start()
+        assert server.stream_started.wait(5), "the client never opened the research stream"
+        t.join(timeout=10)
+        elapsed = time.time() - t0
+        assert not t.is_alive(), (
+            f"run_research still blocked after {elapsed:.1f}s: the read timeout did not end the stall"
+        )
+
+    assert "error" not in outcome, f"run_research raised instead of aborting: {outcome.get('error')!r}"
+    conv_id, result = outcome["result"]
+    assert conv_id == "conv-stall"
+    assert result["harness_aborted"] is True
+    assert result["harness_abort_reason"].startswith("no SSE events for ")
+    assert result["harness_abort_reason"].endswith("(read timeout)")
+    assert result["status"] == "interrupted"
+    assert elapsed < 5, f"took {elapsed:.1f}s; the read timeout should have fired in well under a second"
+
+
+class _ScriptedSseStream(httpx.SyncByteStream):
+    """An SSE body that yields ``started``, waits for a signal, then ends the way the test says.
+
+    ``release`` is the signal; by default it is the stream's own ``closed`` event, which the watchdog's
+    ``_close_stream()`` sets through ``httpx.Response.close()``. That is the real order of a watchdog abort:
+    the verdict lands, the response is closed, and only then does the blocked read give up.
+    """
+
+    def __init__(self, ending: str, release: threading.Event | None = None) -> None:
+        self.closed = threading.Event()
+        self._release = release if release is not None else self.closed
+        self._ending = ending
+
+    def close(self) -> None:
+        self.closed.set()
+
+    def __iter__(self):
+        yield b'data: {"type":"started"}\n\n'
+        assert self._release.wait(5), "the watchdog never reached its second tick"
+        if self._ending == "read_timeout":
+            raise httpx.ReadTimeout("timed out")
+        yield b'data: {"type":"done","conversation_id":"conv-race"}\n\n'
+
+
+@pytest.mark.parametrize(
+    ("ending", "expected_reason"),
+    [
+        ("done", None),
+        ("read_timeout", "(read timeout)"),
+    ],
+)
+def test_watchdog_tick_that_finishes_after_the_stream_ended_does_not_write_an_abort(
+    monkeypatch, ending, expected_reason
+):
+    """A watchdog tick in flight when the main loop finishes must not record its verdict afterwards.
+
+    The tick's status calls take real time, so the main loop can end (``done``, or its own read timeout)
+    while a tick is mid-flight; that tick's ``_evaluate_health`` may then return an abort. Before the guard,
+    it wrote ``abort_reason`` anyway, relabelling a completed research as ``harness_aborted`` and
+    overwriting a ``… (read timeout)`` reason with ``model state=loading``. The script: tick 1 sees the model
+    ``loading`` (one bad reading, no abort); tick 2's status call signals the stream to end, then answers
+    ``loading`` again after the main loop has finished, which is the second bad reading and an abort verdict.
+    """
+    monkeypatch.setattr(client_mod, "WATCHDOG_INTERVAL_SECONDS", 0.01)
+    second_tick = threading.Event()
+    status_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal status_calls
+        if request.method == "POST" and request.url.path == "/api/research":
+            return httpx.Response(
+                200,
+                headers={"X-Research-Id": "conv-race", "Content-Type": "text/event-stream"},
+                stream=_ScriptedSseStream(ending, release=second_tick),
+            )
+        if request.method == "GET" and request.url.path == "/api/chat/models/status":
+            status_calls += 1
+            if status_calls == 2:
+                second_tick.set()
+                # Let the main loop consume the ending and set abort_event before this tick's verdict lands.
+                time.sleep(0.3)
+            return httpx.Response(200, json={"state": "loading", "model_id": "m"})
+        if request.method == "GET" and request.url.path == "/api/research/conv-race":
+            return httpx.Response(200, json={"status": "completed", "report": "ok"})
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    _, result = c.run_research("Q?", depth="standard", time_limit_minutes=30)
+
+    assert status_calls >= 2, "the watchdog never took its second reading"
+    if expected_reason is None:
+        assert "harness_aborted" not in result, f"a completed research was relabelled: {result!r}"
+        assert result["status"] == "completed"
+    else:
+        assert result["harness_aborted"] is True
+        assert result["harness_abort_reason"].endswith(expected_reason), result["harness_abort_reason"]
+
+
+def test_read_timeout_after_the_watchdog_fired_keeps_the_watchdog_reason(monkeypatch):
+    """The watchdog fires first, then the read times out: the result carries the watchdog's reason.
+
+    This is the production order at the defaults (the watchdog's threshold is lower than the read timeout)
+    and the ``ReadTimeout`` branch must not overwrite what the watchdog recorded. Two ``loading`` readings
+    give a ``model_unhealthy`` verdict, the watchdog closes the response, and the stream then raises
+    ``httpx.ReadTimeout`` the way a real blocked read does once its timer expires.
+    """
+    monkeypatch.setattr(client_mod, "WATCHDOG_INTERVAL_SECONDS", 0.01)
+    stream = _ScriptedSseStream("read_timeout")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/research":
+            return httpx.Response(
+                200,
+                headers={"X-Research-Id": "conv-order", "Content-Type": "text/event-stream"},
+                stream=stream,
+            )
+        if request.method == "GET" and request.url.path == "/api/chat/models/status":
+            return httpx.Response(200, json={"state": "loading", "model_id": "m"})
+        if request.method == "GET" and request.url.path == "/api/research/conv-order":
+            return httpx.Response(200, json={"status": "running", "report": None})
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    _, result = c.run_research("Q?", depth="standard", time_limit_minutes=30)
+
+    assert stream.closed.is_set(), "the watchdog never closed the response"
+    assert result["harness_aborted"] is True
+    assert result["harness_abort_reason"] == "model state=loading"

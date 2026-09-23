@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from scripts.test_corpora.corpora.manifest import CorpusManifest
+from scripts.test_corpora.runner.circuit_breaker import is_operational_failure
 from scripts.test_corpora.runner.client import HarborClerkClient
 from scripts.test_corpora.runner.sweep import (
     _can_skip_ingest,
@@ -182,6 +183,20 @@ def test_is_retryable_when_harness_aborted():
         )
         is True
     )
+
+
+def test_read_timeout_abort_is_retryable_and_counts_as_operational():
+    """A stream read timeout used to escape ``run_research`` as an exception: the unit went ``ERROR`` with
+    no retry and the circuit breaker never saw it. It is now a ``harness_aborted`` result (#701), so it takes
+    the same path as any other watchdog abort: one retry, and an operational failure for the breaker. The
+    message mirrors the one the sweep builds from ``harness_abort_reason``."""
+    result = {
+        "status": "interrupted",
+        "harness_aborted": True,
+        "harness_abort_reason": "no SSE events for 360s (read timeout)",
+    }
+    assert _is_retryable_research_failure({"result": result}) is True
+    assert is_operational_failure(f"harness aborted research: {result['harness_abort_reason']}") is True
 
 
 def test_not_retryable_when_completed_with_answer():
