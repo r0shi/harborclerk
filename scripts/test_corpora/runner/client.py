@@ -488,8 +488,14 @@ class HarborClerkClient:
         # whole time limit, so only a stall waits this long. See #701.
         timeout = httpx.Timeout(connect=30, read=_stream_read_timeout_seconds(), write=10, pool=10)
 
+        # ``abort_reason`` is written by whichever side notices the failure first: the watchdog on a bad
+        # verdict, the main loop on a read timeout. ``abort_lock`` makes each check-then-write atomic with
+        # respect to the other, and covers the main loop's ``abort_event.set()`` and its final read, so a
+        # tick in flight when the stream ends can neither relabel the result nor overwrite the reason.
         abort_event = threading.Event()
+        abort_lock = threading.Lock()
         abort_reason: dict[str, str] = {}
+        abort_snapshot: dict[str, str] = {}
         conv_id_holder: list[str | None] = [None]
         response_holder: list[Any] = [None]
         verifier_verdicts: list[dict[str, Any]] = []
@@ -526,11 +532,12 @@ class HarborClerkClient:
                     # The main loop may have finished (``done``, ``error`` or its own read timeout) while
                     # this tick's status calls were in flight. Its verdict stands: never relabel a
                     # completed research as aborted, or a read-timeout reason as ``model_unhealthy``.
-                    if abort_event.is_set():
-                        return
-                    abort_reason["kind"] = kind
-                    abort_reason["detail"] = detail or kind
-                    _close_stream()
+                    with abort_lock:
+                        if abort_event.is_set():
+                            return
+                        abort_reason["kind"] = kind
+                        abort_reason["detail"] = detail or kind
+                        _close_stream()
                     return
 
         watchdog: threading.Thread | None = None
@@ -547,8 +554,6 @@ class HarborClerkClient:
 
             try:
                 for line in r.iter_lines():
-                    if abort_event.is_set():
-                        break
                     if not line.startswith("data: "):
                         continue
                     payload = line[6:]
@@ -573,17 +578,25 @@ class HarborClerkClient:
                 # not unblock a read in progress (#701), so this is how a
                 # stalled stream actually ends. If the watchdog already
                 # recorded why, keep its reason; otherwise this is the reason.
-                if not abort_reason:
-                    silence = time.time() - last_event_at[0]
-                    abort_reason["kind"] = "sse_silent"
-                    abort_reason["detail"] = f"no SSE events for {silence:.0f}s (read timeout)"
+                with abort_lock:
+                    if not abort_reason:
+                        silence = time.time() - last_event_at[0]
+                        abort_reason["kind"] = "sse_silent"
+                        abort_reason["detail"] = f"no SSE events for {silence:.0f}s (read timeout)"
             except Exception:
                 # Watchdog forced the stream closed → expected. Anything else
                 # is a real error worth surfacing.
-                if not abort_reason:
+                with abort_lock:
+                    aborted = bool(abort_reason)
+                if not aborted:
                     raise
             finally:
-                abort_event.set()
+                # Setting the event and reading the reason under the lock is what makes the watchdog's
+                # ``is_set()`` check binding: after this block no tick can write, and what was read here
+                # is what the result reports.
+                with abort_lock:
+                    abort_event.set()
+                    abort_snapshot.update(abort_reason)
                 if watchdog is not None:
                     watchdog.join(timeout=5)
 
@@ -591,11 +604,11 @@ class HarborClerkClient:
         final = self.poll_research(conv_id)
         if verifier_verdicts:
             final["verifier_verdicts"] = verifier_verdicts
-        if abort_reason:
+        if abort_snapshot:
             final = {
                 **final,
                 "harness_aborted": True,
-                "harness_abort_reason": abort_reason.get("detail", "unknown"),
+                "harness_abort_reason": abort_snapshot.get("detail", "unknown"),
             }
         return conv_id, final
 

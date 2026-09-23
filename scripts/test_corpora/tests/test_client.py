@@ -865,11 +865,20 @@ def test_run_research_stalled_stream_ends_at_the_read_timeout_as_sse_silent(monk
 
 
 class _ScriptedSseStream(httpx.SyncByteStream):
-    """An SSE body that yields ``started``, waits for a signal, then ends the way the test says."""
+    """An SSE body that yields ``started``, waits for a signal, then ends the way the test says.
 
-    def __init__(self, release: threading.Event, ending: str) -> None:
-        self._release = release
+    ``release`` is the signal; by default it is the stream's own ``closed`` event, which the watchdog's
+    ``_close_stream()`` sets through ``httpx.Response.close()``. That is the real order of a watchdog abort:
+    the verdict lands, the response is closed, and only then does the blocked read give up.
+    """
+
+    def __init__(self, ending: str, release: threading.Event | None = None) -> None:
+        self.closed = threading.Event()
+        self._release = release if release is not None else self.closed
         self._ending = ending
+
+    def close(self) -> None:
+        self.closed.set()
 
     def __iter__(self):
         yield b'data: {"type":"started"}\n\n'
@@ -908,7 +917,7 @@ def test_watchdog_tick_that_finishes_after_the_stream_ended_does_not_write_an_ab
             return httpx.Response(
                 200,
                 headers={"X-Research-Id": "conv-race", "Content-Type": "text/event-stream"},
-                stream=_ScriptedSseStream(second_tick, ending),
+                stream=_ScriptedSseStream(ending, release=second_tick),
             )
         if request.method == "GET" and request.url.path == "/api/chat/models/status":
             status_calls += 1
@@ -931,3 +940,35 @@ def test_watchdog_tick_that_finishes_after_the_stream_ended_does_not_write_an_ab
     else:
         assert result["harness_aborted"] is True
         assert result["harness_abort_reason"].endswith(expected_reason), result["harness_abort_reason"]
+
+
+def test_read_timeout_after_the_watchdog_fired_keeps_the_watchdog_reason(monkeypatch):
+    """The watchdog fires first, then the read times out: the result carries the watchdog's reason.
+
+    This is the production order at the defaults (the watchdog's threshold is lower than the read timeout)
+    and the ``ReadTimeout`` branch must not overwrite what the watchdog recorded. Two ``loading`` readings
+    give a ``model_unhealthy`` verdict, the watchdog closes the response, and the stream then raises
+    ``httpx.ReadTimeout`` the way a real blocked read does once its timer expires.
+    """
+    monkeypatch.setattr(client_mod, "WATCHDOG_INTERVAL_SECONDS", 0.01)
+    stream = _ScriptedSseStream("read_timeout")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path == "/api/research":
+            return httpx.Response(
+                200,
+                headers={"X-Research-Id": "conv-order", "Content-Type": "text/event-stream"},
+                stream=stream,
+            )
+        if request.method == "GET" and request.url.path == "/api/chat/models/status":
+            return httpx.Response(200, json={"state": "loading", "model_id": "m"})
+        if request.method == "GET" and request.url.path == "/api/research/conv-order":
+            return httpx.Response(200, json={"status": "running", "report": None})
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    _, result = c.run_research("Q?", depth="standard", time_limit_minutes=30)
+
+    assert stream.closed.is_set(), "the watchdog never closed the response"
+    assert result["harness_aborted"] is True
+    assert result["harness_abort_reason"] == "model state=loading"
