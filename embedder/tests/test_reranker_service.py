@@ -254,7 +254,7 @@ def test_rerank_refuses_a_non_finite_score():
 
     assert r.status_code == 500, f"expected 500 for a NaN score, got {r.status_code}: {r.text}"
     assert "1 non-finite" in r.json()["detail"]
-    assert "null" not in r.text.replace('"detail"', ""), "a null score must never reach the client"
+    assert "scores" not in r.json(), "a refused request must not carry a (partial or null) score list"
     assert calls == [1], "cache was not released when a score was non-finite"
 
 

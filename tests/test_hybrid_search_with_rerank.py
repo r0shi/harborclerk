@@ -112,3 +112,18 @@ async def test_hybrid_search_conflict_detection_survives_a_none_top_score(db_ses
     assert [h.doc_id for h in result.hits] == [h.doc_id for h in leaked]
     assert result.possible_conflict is False
     assert result.conflict_sources == []
+
+    # A None below the top: the top guard passes, and `float >= None` would
+    # raise inside close_hits. The None hit is left out of the comparison; the
+    # two finite hits from different docs still count as a conflict.
+    leaked = [
+        _hit("11111111-1111-1111-1111-111111111111", 0.5),
+        _hit("22222222-2222-2222-2222-222222222222", None),
+        _hit("33333333-3333-3333-3333-333333333333", 0.48),
+    ]
+    with patch("harbor_clerk.search.rerank_hits", new=AsyncMock(return_value=(leaked, "ok"))):
+        result = await hybrid_search(db_session, query="revenue", k=10)
+
+    assert [h.doc_id for h in result.hits] == [h.doc_id for h in leaked]
+    assert result.possible_conflict is True
+    assert {c.doc_id for c in result.conflict_sources} == {leaked[0].doc_id, leaked[2].doc_id}

@@ -197,5 +197,36 @@ async def test_rerank_hits_strict_mode_raises_on_null_score(httpx_mock: HTTPXMoc
         url="http://reranker:8001/rerank",
         json={"scores": [{"index": 0, "score": None}], "model": "m"},
     )
-    with pytest.raises(search_rerank.RerankResponseError):
+    with pytest.raises(search_rerank.RerankResponseError) as excinfo:
         await rerank_hits("q", [_hit("a", "A", "x", 0.5)], top_k=1)
+    # api/routes/search.py turns a ValueError from hybrid_search into a 422
+    # client error; a reranker malfunction must not be one.
+    assert not isinstance(excinfo.value, ValueError)
+
+
+@pytest.mark.asyncio
+async def test_rerank_hits_duplicate_index_falls_back_to_hybrid_order(httpx_mock: HTTPXMock):
+    """A repeated index would return one chunk twice and drop another under status "ok"."""
+    hits = [
+        _hit("doc-a", "A", "x", 0.5),
+        _hit("doc-b", "B", "y", 0.3),
+    ]
+    httpx_mock.add_response(
+        url="http://reranker:8001/rerank",
+        json={
+            "scores": [{"index": 0, "score": 0.9}, {"index": 0, "score": 0.8}],
+            "model": "BAAI/bge-reranker-v2-m3",
+        },
+    )
+    result, status = await rerank_hits("q", hits, top_k=2, return_status=True)
+    assert status == "failed"
+    assert [h.doc_id for h in result] == ["doc-a", "doc-b"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_hits_non_json_body_falls_back_to_hybrid_order(httpx_mock: HTTPXMock):
+    hits = [_hit("doc-a", "A", "x", 0.5), _hit("doc-b", "B", "y", 0.3)]
+    httpx_mock.add_response(url="http://reranker:8001/rerank", status_code=200, text="<html>gateway</html>")
+    result, status = await rerank_hits("q", hits, top_k=2, return_status=True)
+    assert status == "failed"
+    assert [h.doc_id for h in result] == ["doc-a", "doc-b"]

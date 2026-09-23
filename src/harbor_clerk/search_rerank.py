@@ -15,8 +15,14 @@ from harbor_clerk.search_types import SearchHit
 logger = logging.getLogger(__name__)
 
 
-class RerankResponseError(ValueError):
-    """The reranker answered 200 with a body we cannot apply."""
+class RerankResponseError(RuntimeError):
+    """The reranker answered 200 with a body we cannot apply.
+
+    Deliberately not a ValueError: api/routes/search.py maps a ValueError out of
+    hybrid_search to a 422 (meant for "doc_id and doc_ids are exclusive"), and a
+    reranker malfunction under ``reranker_strict`` is a server fault, not a
+    client error.
+    """
 
 
 def _reorder_by_response(pool: list[SearchHit], body: dict) -> list[SearchHit]:
@@ -30,6 +36,7 @@ def _reorder_by_response(pool: list[SearchHit], body: dict) -> list[SearchHit]:
     if not isinstance(entries, list):
         raise RerankResponseError("response has no 'scores' list")
     reordered: list[SearchHit] = []
+    seen: set[int] = set()
     for pos, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise RerankResponseError(f"entry {pos} is not an object")
@@ -37,6 +44,10 @@ def _reorder_by_response(pool: list[SearchHit], body: dict) -> list[SearchHit]:
         score = entry.get("score")
         if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx < len(pool):
             raise RerankResponseError(f"entry {pos} has index {idx!r} outside the pool of {len(pool)}")
+        if idx in seen:
+            # Would return one chunk twice and silently drop another.
+            raise RerankResponseError(f"entry {pos} repeats index {idx}")
+        seen.add(idx)
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
             raise RerankResponseError(f"entry {pos} (index {idx}) has a non-finite score {score!r}")
         reordered.append(dataclasses.replace(pool[idx], score=float(score)))
@@ -91,8 +102,12 @@ async def rerank_hits(
         return (fallback, "failed") if return_status else fallback
 
     try:
-        reordered = _reorder_by_response(pool, r.json())
-    except ValueError as exc:  # RerankResponseError, or r.json() on a non-JSON body
+        try:
+            body = r.json()
+        except ValueError as exc:  # a 200 that is not JSON
+            raise RerankResponseError(f"response body is not JSON: {exc}") from exc
+        reordered = _reorder_by_response(pool, body)
+    except RerankResponseError as exc:
         if settings.reranker_strict:
             raise
         logger.warning("reranker response unusable; falling back to hybrid-only top-K: %s", exc)

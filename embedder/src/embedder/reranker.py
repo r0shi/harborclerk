@@ -3,6 +3,11 @@
 Companion to the embedder. Loaded with BAAI/bge-reranker-v2-m3 at startup;
 exposes ``POST /rerank`` accepting ``{query, passages, top_k}`` and returning
 ``{scores: [{index, score}], model}`` sorted descending by score.
+
+A single non-finite score fails the whole request with a 500, and the client
+keeps the hybrid order for that search. The trade is deliberate: the cause of
+the NaN is not established (#699), so it surfaces as a "reranker failed"
+warning rather than a crash or a silently wrong order.
 """
 
 import asyncio
