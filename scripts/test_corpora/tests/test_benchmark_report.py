@@ -48,7 +48,18 @@ LEDGER = {
             "cache_tokens": 0,
             "output_tokens": 50000,
             "usd": 1.65,
-        }
+        },
+        # A cached tool loop: the prompt went through the cache and `input_tokens` is a few tokens a call.
+        "baseline_question": {
+            "calls": 20,
+            "units": 4,
+            "input_tokens": 12,
+            "cache_tokens": 900000,
+            "cache_write_tokens": 200000,
+            "cache_read_tokens": 700000,
+            "output_tokens": 8000,
+            "usd": 1.85,
+        },
     },
 }
 ROWS = [
@@ -207,7 +218,11 @@ def test_models_the_machine_did_not_run_are_listed_with_the_reason(tmp_path):
 
 def test_spend_is_broken_down_by_call_kind_and_the_reading_is_left_to_the_runner(tmp_path):
     text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER))
-    assert "| judge | 100 | 100 | 300000 | 50000 | 1.6500 |" in text
+    assert "| call kind | units | calls | input tokens | cache write | cache read | output tokens | USD |" in text
+    assert "| judge | 100 | 100 | 300000 | 0 | 0 | 50000 | 1.6500 |" in text, "a ledger row without the cache columns"
+    assert "| baseline_question | 4 | 20 | 12 | 200000 | 700000 | 8000 | 1.8500 |" in text, (
+        "the cache columns are where a cached prompt went; 12 input tokens alone would misstate the run"
+    )
     assert text.rstrip().endswith("what was not verified._")
 
 
