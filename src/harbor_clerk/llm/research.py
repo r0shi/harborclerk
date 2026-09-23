@@ -667,21 +667,35 @@ def _ingest_hits(coverage: dict[str, dict], hits: list[dict], query_text: str) -
             }
 
 
-async def _search_fan_out(
+async def _search_fan_out_steps(
     queries: list[str],
     user_id: uuid.UUID | None,
     k_per_query: int,
     *,
     paginate: bool = False,
     user_scope: UserScope | None = None,
-) -> dict[str, dict]:
-    """Phase 2: Run all queries, dedupe by chunk_id.
+) -> AsyncGenerator[tuple, None]:
+    """Phase 2: run all queries, dedupe by chunk_id, and say so after every search.
 
-    Returns {chunk_id: {doc_id, doc_title, page, score, snippet, section, queries}}.
+    Yields ``("progress", searches_done, searches_planned)`` after each batch_search call (up to five
+    queries, run one after another) and each pagination page, then ``("coverage", coverage)`` once, last.
+    ``searches_planned`` starts at the most this fan-out could run (the batches, plus two pages for each of
+    up to ten paginated queries) and only comes down, as queries turn out not to paginate or a page ends a
+    query early: done over planned never goes backwards, so a consumer may draw it.
+
+    The caller heartbeats and emits SSE on every progress step. At standard depth this phase is up to 35
+    searches with a reranker call in each; measured at 3-4 s a search when the machine is well, and 8 to
+    30 s when the GPU is paging (#698). Reported once per phase, the reaper's five-minute heartbeat and the
+    harness's silence watchdog both killed research that was still working (#700).
+
+    coverage is {chunk_id: {doc_id, doc_title, page, score, snippet, section, queries}}.
     When paginate=True, follows has_more on high-scoring queries for up to 2 extra pages.
     """
     coverage: dict[str, dict] = {}
     queries_with_more: list[tuple[str, int]] = []  # (query, next_offset)
+    searches_done = 0
+    pagination_budget = 2 * min(10, len(queries)) if paginate else 0
+    searches_planned = -(-len(queries) // 5) + pagination_budget
 
     # Batch queries 5 at a time via kb_batch_search
     for i in range(0, len(queries), 5):
@@ -703,11 +717,21 @@ async def _search_fan_out(
                     queries_with_more.append((query_text, k_per_query))
         except Exception:
             logger.exception("batch_search failed for queries: %s", batch)
+        searches_done += 1
+        yield ("progress", searches_done, searches_planned)
 
     # Pagination pass: follow has_more for queries that had many candidates
-    if paginate and queries_with_more:
-        for query_text, offset in queries_with_more[:10]:  # cap pagination effort
+    paginated = queries_with_more[:10]  # cap pagination effort; empty unless paginate
+    if pagination_budget > 2 * len(paginated):
+        # Fewer pages than budgeted. Say so now: with no pages to report on, the ratio would otherwise end the
+        # phase at its pre-correction figure.
+        searches_planned -= pagination_budget - 2 * len(paginated)
+        yield ("progress", searches_done, searches_planned)
+    if paginated:
+        for query_text, offset in paginated:
+            pages_left = 2
             for _page in range(2):  # up to 2 extra pages
+                pages_left -= 1
                 try:
                     page_json = await execute_tool(
                         "search_documents",
@@ -720,17 +744,46 @@ async def _search_fan_out(
                     hits = page_result.get("hits", [])
                     _ingest_hits(coverage, hits, query_text)
                     offset += len(hits)
-                    if not page_result.get("has_more"):
-                        break
+                    has_more = bool(page_result.get("has_more"))
                 except Exception:
                     logger.debug("Pagination failed for query: %s offset=%d", query_text, offset)
+                    has_more = False
+                searches_done += 1
+                if not has_more:
+                    searches_planned -= pages_left
+                yield ("progress", searches_done, searches_planned)
+                if not has_more:
                     break
 
     # Convert sets to lists for JSON serialization
     for entry in coverage.values():
         entry["queries"] = list(entry["queries"])
 
-    return coverage
+    yield ("coverage", coverage)
+
+
+def _searching_progress(
+    step: int,
+    searches_done: int,
+    searches_planned: int,
+    start_time: datetime,
+    strategy: str | None,
+    gap_round: int | None = None,
+) -> str:
+    """The SSE progress event for one step of a search fan-out. The gap round's events carry its ``round``, as
+    the ``gap_analysis`` event before them does, so the UI's round counter does not read the step number."""
+    event: dict = {
+        "type": "progress",
+        "step": step,
+        "phase": "searching",
+        "elapsed_seconds": int((datetime.now(UTC) - start_time).total_seconds()),
+        "strategy": strategy,
+        "searches_done": searches_done,
+        "searches_planned": searches_planned,
+    }
+    if gap_round is not None:
+        event["round"] = gap_round
+    return _sse(event)
 
 
 async def _read_evidence(
@@ -1328,13 +1381,22 @@ async def research_stream(
                             }
                         )
 
-                    coverage = await _search_fan_out(
+                    # A heartbeat and a progress event per search, not per phase (#700): the reaper marks a
+                    # task stale at five minutes of silence, and this phase has run longer than that while working.
+                    coverage: dict[str, dict] = {}
+                    async for fan_out_step in _search_fan_out_steps(
                         queries,
                         user_id,
                         depth_config["k_per_query"],
                         paginate=depth_config.get("paginate", False),
                         user_scope=user_scope,
-                    )
+                    ):
+                        if fan_out_step[0] == "coverage":
+                            coverage = fan_out_step[1]
+                            continue
+                        state.heartbeat_at = datetime.now(UTC)
+                        await session.commit()
+                        yield _searching_progress(2, fan_out_step[1], fan_out_step[2], start_time, strategy)
 
                     # Build coverage summary
                     unique_docs = {}
@@ -1536,12 +1598,21 @@ async def research_stream(
                         yield _sse({"type": "notes", "content": f"Found gaps — searching: {gap_list}"})
 
                         # Run gap queries
-                        gap_coverage = await _search_fan_out(
+                        gap_coverage: dict[str, dict] = {}
+                        async for fan_out_step in _search_fan_out_steps(
                             gap_queries,
                             user_id,
                             depth_config["k_per_query"],
                             user_scope=user_scope,
-                        )
+                        ):
+                            if fan_out_step[0] == "coverage":
+                                gap_coverage = fan_out_step[1]
+                                continue
+                            state.heartbeat_at = datetime.now(UTC)
+                            await session.commit()
+                            yield _searching_progress(
+                                5, fan_out_step[1], fan_out_step[2], start_time, strategy, gap_round=gap_round_n + 1
+                            )
                         # Filter out already-seen chunks
                         new_chunks = {k: v for k, v in gap_coverage.items() if k not in coverage}
 
