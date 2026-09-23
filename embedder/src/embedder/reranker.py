@@ -21,11 +21,26 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sentence_transformers import CrossEncoder
 
+from embedder.env import positive_int_env
 from embedder.gpu_cache import release_gpu_cache
 
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+
+# Pairs per forward pass. CrossEncoder's default is 32. Measured on the Mac mini (M4, 32 GB) with the 50
+# longest chunks of a contracts corpus (1,000 chars each), the app's own weights, MPS:
+#
+#     batch_size=32   4.24 s   +1.08 GB of activations over the drained baseline
+#     batch_size=16   3.40 s   +1.19 GB
+#     batch_size=8    3.15 s   +1.12 GB
+#     batch_size=4    3.05 s   +0.15 GB
+#
+# Four is both the fastest and an eighth of the memory: on MPS the large batches spend their time in
+# allocation, not compute. The activations are also what the allocator cache ratchets on (gpu_cache.py), so
+# a small batch keeps the service's footprint near its weights between calls. On a 32 GB Mac the reranker
+# and embedder together held 10 GB under a research fan-out, and the two 25 GB models paged the GPU (#698).
+PREDICT_BATCH_SIZE = positive_int_env("RERANK_BATCH_SIZE", 4)
 
 _model: CrossEncoder | None = None
 
@@ -98,7 +113,7 @@ async def rerank(req: RerankRequest):
         # catches once and degrades to the hybrid order, so the drain here is
         # for the *next* search, not a retry of this one.
         try:
-            return model.predict(pairs)
+            return model.predict(pairs, batch_size=PREDICT_BATCH_SIZE)
         finally:
             release_gpu_cache()
 

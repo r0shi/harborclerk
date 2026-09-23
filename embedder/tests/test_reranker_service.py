@@ -25,7 +25,7 @@ def stub_cross_encoder():
     """Stub CrossEncoder that returns predictable scores: higher index → higher score."""
     ce = MagicMock()
 
-    def predict(pairs):
+    def predict(pairs, batch_size=None):
         # pairs is [[query, passage], ...]; score = passage index / total
         # We inject the index via a control character so the stub knows the order
         return [float(i) / max(1, len(pairs) - 1) for i in range(len(pairs))]
@@ -95,7 +95,7 @@ def test_rerank_releases_the_gpu_cache(monkeypatch):
 
     calls = []
     model = MagicMock()
-    model.predict.side_effect = lambda pairs: np.array([0.5] * len(pairs))
+    model.predict.side_effect = lambda pairs, batch_size=None: np.array([0.5] * len(pairs))
 
     with (
         patch("embedder.reranker.CrossEncoder", return_value=model),
@@ -159,7 +159,7 @@ def test_rerank_binds_the_model_before_the_executor_hop():
     from fastapi.testclient import TestClient
 
     model = MagicMock()
-    model.predict.side_effect = lambda pairs: np.array([0.5] * len(pairs))
+    model.predict.side_effect = lambda pairs, batch_size=None: np.array([0.5] * len(pairs))
 
     real_get_event_loop = asyncio.get_event_loop
 
@@ -204,7 +204,7 @@ def test_release_runs_on_the_worker_thread_not_the_event_loop():
 
     model = MagicMock()
 
-    def _note_predict(pairs):
+    def _note_predict(pairs, batch_size=None):
         predict_thread.append(threading.current_thread().name)
         return np.array([0.5] * len(pairs))
 
@@ -241,7 +241,7 @@ def test_rerank_refuses_a_non_finite_score():
 
     calls = []
     model = MagicMock()
-    model.predict.side_effect = lambda pairs: np.array([0.7, float("nan"), 0.2])
+    model.predict.side_effect = lambda pairs, batch_size=None: np.array([0.7, float("nan"), 0.2])
 
     with (
         patch("embedder.reranker.CrossEncoder", return_value=model),
@@ -265,7 +265,7 @@ def test_rerank_refuses_an_infinite_score():
     from fastapi.testclient import TestClient
 
     model = MagicMock()
-    model.predict.side_effect = lambda pairs: np.array([float("inf"), 0.2])
+    model.predict.side_effect = lambda pairs, batch_size=None: np.array([float("inf"), 0.2])
 
     with patch("embedder.reranker.CrossEncoder", return_value=model):
         from embedder.reranker import app
@@ -275,3 +275,14 @@ def test_rerank_refuses_an_infinite_score():
 
     assert r.status_code == 500
     assert "non-finite" in r.json()["detail"]
+
+
+def test_rerank_predicts_in_small_batches(client, stub_cross_encoder):
+    """Four pairs a forward pass: measured on the mini as the fastest and an eighth of the activation memory
+    of CrossEncoder's default 32 (#698). The service must say so on every call, or the default is back."""
+    import embedder.reranker as rr
+
+    assert rr.PREDICT_BATCH_SIZE == 4
+    r = client.post("/rerank", json={"query": "q", "passages": [f"p{i}" for i in range(10)], "top_k": 3})
+    assert r.status_code == 200
+    assert stub_cross_encoder.predict.call_args.kwargs == {"batch_size": 4}

@@ -113,14 +113,18 @@ def test_memory_arithmetic_is_weights_plus_kv_plus_overhead():
 
 
 def test_min_ram_rounds_up_to_a_size_macs_come_with():
-    # 5 + 4.8 + 1 + 6 = 16.8e9 bytes, and a tenth of the Mac free on top: 18.7e9 = 17.4 GiB. Without the margin
-    # this was a 16 GB model, and a 16 GB Mac does still load it, at less than its window.
-    assert min_ram_gb(_info()) == 18
-    assert min_ram_gb(_info(size_bytes=2_500_000_000)) == 16, "14.3e9 and the margin: 15.9e9 = 14.8 GiB"
-    assert min_ram_gb(_info(size_bytes=6_000_000_000)) == 24, "17.8e9 and the margin: 19.8e9 = 18.5 GiB, past 18"
-    assert min_ram_gb(MODELS["qwen36-35b-a3b"]) == 36, "the 35B-A3B at full context is a 36 GB model, not a 32 GB one"
-    assert min_ram_gb(MODELS["gemma4-26b-a4b"]) == 32, "#548 does not move Gemma out of the 32 GB tier"
-    assert min_ram_gb(_info(size_bytes=600_000_000_000)) == 634, "past the largest Mac, the exact number of GiB"
+    # 5 + 4.8 + 1 + 8 = 18.8e9 bytes, and a tenth of the Mac free on top: 20.9e9 = 19.5 GiB. With the idle 6 GB
+    # headroom this was an 18 GB model; an 18 GB Mac does still load it, at less than its window.
+    assert min_ram_gb(_info()) == 24
+    assert min_ram_gb(_info(size_bytes=2_500_000_000)) == 18, "16.3e9 and the margin: 18.1e9 = 16.9 GiB, past 16"
+    assert min_ram_gb(_info(size_bytes=6_000_000_000)) == 24, "19.8e9 and the margin: 22.0e9 = 20.5 GiB"
+    assert min_ram_gb(MODELS["qwen36-35b-a3b"]) == 48, (
+        "the 35B-A3B at full context: 28.8 GB and the machine's 8, a tenth free"
+    )
+    assert min_ram_gb(MODELS["gemma4-26b-a4b"]) == 36, (
+        "#698 moves Gemma out of the 32 GB tier: 23.7 GB and the machine's 8"
+    )
+    assert min_ram_gb(_info(size_bytes=600_000_000_000)) == 636, "past the largest Mac, the exact number of GiB"
 
 
 def test_the_tier_a_model_is_listed_under_is_the_smallest_mac_that_gives_it_its_whole_window():
@@ -138,30 +142,30 @@ def test_max_context_is_what_fits_never_more_than_the_model_offers_and_zero_when
     m = _info()
     plenty = 64 * 1024**3
     assert max_context(m, plenty) == 32768
-    # 5 GB weights + 1 GB overhead + 6 GB headroom = 12 GB, at 147,456 bytes a token. A tenth of the Mac stays
+    # 5 GB weights + 1 GB overhead + 8 GB headroom = 14 GB, at 147,456 bytes a token. A tenth of the Mac stays
     # free where the model allows it (#684):
-    # 20 GB: 8 GB spare less 2 GB free is 40690 tokens, past what the model offers.
-    assert max_context(m, 20_000_000_000) == 32768
-    # 17 GB: 5 GB spare less 1.7 GB free is 22379 tokens, 21504 in 1024s. Over the working context: the margin holds.
-    assert max_context(m, 17_000_000_000) == 21504
-    # 16 GB: 4 GB spare fits 26624, and less 1.6 GB free only 15360. It fits only by eating into the margin, so
+    # 22 GB: 8 GB spare less 2.2 GB free is 39335 tokens, past what the model offers.
+    assert max_context(m, 22_000_000_000) == 32768
+    # 20 GB: 6 GB spare less 2 GB free is 27127 tokens, 26624 in 1024s. Over the working context: the margin holds.
+    assert max_context(m, 20_000_000_000) == 26624
+    # 18 GB: 4 GB spare fits 27127, and less 1.8 GB free only 14918. It fits only by eating into the margin, so
     # it gets the working context and no more.
-    assert max_context(m, 16_000_000_000) == TIGHT_FIT_CONTEXT == 16384
-    # 14 GB: 2 GB spare fits 13312 and the margin leaves 3072. What fits, since that is under the working context.
-    assert max_context(m, 14_000_000_000) == 13312
-    assert max_context(m, 12_500_000_000) == 0, "3389 tokens is not worth running"
-    assert max_context(m, 11_000_000_000) == 0
-    assert max_context(_info(kv_bytes_per_token=0), 16_000_000_000) == 32768, (
+    assert max_context(m, 18_000_000_000) == TIGHT_FIT_CONTEXT == 16384
+    # 16 GB: 2 GB spare fits 13563 and the margin leaves 2712. What fits, since that is under the working context.
+    assert max_context(m, 16_000_000_000) == 13312
+    assert max_context(m, 14_500_000_000) == 0, "3390 tokens is not worth running"
+    assert max_context(m, 13_000_000_000) == 0
+    assert max_context(_info(kv_bytes_per_token=0), 18_000_000_000) == 32768, (
         "no per-token cost: the model's own window"
     )
-    assert max_context(_info(kv_bytes_per_token=0), 11_000_000_000) == 0
+    assert max_context(_info(kv_bytes_per_token=0), 13_000_000_000) == 0
     fixed = _info(kv_bytes_per_token=20_480, kv_fixed_bytes=209_715_200, context_window=262144)
     assert (
-        max_context(fixed, 16_000_000_000) == (16_000_000_000 - 12_209_715_200 - 1_600_000_000) // 20_480 // 1024 * 1024
+        max_context(fixed, 18_000_000_000) == (18_000_000_000 - 14_209_715_200 - 1_800_000_000) // 20_480 // 1024 * 1024
     )
     assert free_margin_bytes(16_000_000_000) == 1_600_000_000 and free_margin_bytes(0) == 0
     # No per-token cost and nothing left once the margin is kept: the working context, not the whole window.
-    assert max_context(_info(kv_bytes_per_token=0), 13_000_000_000) == 16384
+    assert max_context(_info(kv_bytes_per_token=0), 15_000_000_000) == 16384
 
 
 def test_effective_context_is_the_requested_window_clamped_to_what_fits():
@@ -172,8 +176,8 @@ def test_effective_context_is_the_requested_window_clamped_to_what_fits():
     assert requested_context(_info(), True) == 32768, "YaRN on, but the model has none"
     plenty = 64 * 1024**3
     assert effective_context(m, True, plenty) == 131072
-    assert effective_context(m, True, 17_000_000_000) == 21504, "the YaRN window, clamped to what 17 GB has room for"
-    assert effective_context(m, False, 17_000_000_000) == 21504
+    assert effective_context(m, True, 20_000_000_000) == 26624, "the YaRN window, clamped to what 20 GB has room for"
+    assert effective_context(m, False, 20_000_000_000) == 26624
     assert effective_context(m, False, 0) == 32768, "memory unknown: the requested window"
     assert effective_context(m, True, 11_000_000_000) == 131072, (
         "does not fit at all: the launcher refuses; nothing to budget by"
@@ -348,26 +352,29 @@ def test_the_prompt_cache_gets_what_the_context_leaves():
     qwen8, gptoss, big, nine = MODELS["qwen3-8b"], MODELS["gpt-oss-20b"], MODELS["qwen36-35b-a3b"], MODELS["qwen35-9b"]
     assert prompt_cache_mib(qwen8, 32 * gib, 32768) == 8192, "room to spare: llama-server's own default, as before"
     # The free margin (a tenth of the Mac, #684) is not the cache's to spend. On an 18 GB Mac 32K of context
-    # and the margin leave 510 MiB. At the pin a state larger than the limit is not cached at all, and a
-    # 4096-token state of this model is 576 MiB: a cache in name only, so it is off. Before the margin this
-    # Mac had 2353 MiB of cache; the margin comes first, then the context, then the cache.
+    # does not fit beside the machine's 8 GB and the margin at all (the model gets 22,528), so no cache. At the
+    # pin a state larger than the limit is not cached at all, and a 4096-token state of this model is 576 MiB:
+    # a cache in name only, so it is off. The margin comes first, then the context, then the cache.
     assert prompt_cache_mib(qwen8, 18 * gib, 32768) == 0
-    assert prompt_cache_mib(qwen8, 24 * gib, 32768) == 6039, "what 32K of context and the margin leave on 24 GB"
-    assert max_context(qwen8, 16 * gib) == 22528 and prompt_cache_mib(qwen8, 16 * gib, 22528) == 0
-    # The cache never comes before the context. This model fits an 18 GB Mac only inside the margin, so it gets
-    # the working context, and no cache.
-    assert max_context(gptoss, 18 * gib) == TIGHT_FIT_CONTEXT and prompt_cache_mib(gptoss, 18 * gib, 16384) == 0
+    assert prompt_cache_mib(qwen8, 24 * gib, 32768) == 4132, "what 32K of context and the margin leave on 24 GB"
+    assert max_context(qwen8, 16 * gib) == TIGHT_FIT_CONTEXT and prompt_cache_mib(qwen8, 16 * gib, 16384) == 0
+    # The cache never comes before the context. This model is clamped on a 24 GB Mac, so no cache; on 18 GB the
+    # weights and the machine's 8 GB leave nothing, and it does not run at all.
+    assert max_context(gptoss, 24 * gib) == 101_376 and prompt_cache_mib(gptoss, 24 * gib, 101_376) == 0
+    assert max_context(gptoss, 18 * gib) == 0
     # The mini's 35B. Sized to fill the machine it was given 241,664 tokens and Metal refused the first prompt;
-    # 98,304 was measured working with 11% of the machine free, 131,072 with 8% (#684).
-    assert max_context(big, 32 * gib) == 73_728 and prompt_cache_mib(big, 32 * gib, 73_728) == 0
-    assert prompt_cache_mib(big, 36 * gib, 262_144) == 0, "21 MiB left once the margin is kept"
+    # at 73,728 (#692) it served, and paged the GPU under search once the reranker and embedder had their 10 GB
+    # (#698). With the machine's 8 GB counted it fits a 32 GB Mac only inside the margin: the working context.
+    assert max_context(big, 32 * gib) == TIGHT_FIT_CONTEXT and prompt_cache_mib(big, 32 * gib, 16_384) == 0
+    assert max_context(big, 36 * gib) == 164_864 and prompt_cache_mib(big, 36 * gib, 262_144) == 0
     # The fixed cost (recurrent state and the checkpoints kept of it) counts in what is left.
-    assert max_context(nine, 18 * gib) == 137_216 and prompt_cache_mib(nine, 18 * gib, 137_216) == 0
-    assert prompt_cache_mib(nine, 24 * gib, 262_144) == 1632
+    assert max_context(nine, 18 * gib) == 75_776 and prompt_cache_mib(nine, 18 * gib, 75_776) == 0
+    assert max_context(nine, 24 * gib) == 252_928 and prompt_cache_mib(nine, 24 * gib, 262_144) == 0
+    assert prompt_cache_mib(nine, 32 * gib, 262_144) == 7097
     # And in what a state needs. With 250 MiB left: a 4096-token state of this model is 329 MiB, 201 of it
     # fixed, so the cache is off. Forgetting the fixed part would switch on a cache that holds nothing.
     full = memory_bytes(nine, 262_144) + HOST_HEADROOM_BYTES
-    assert full == 21_481_220_832
+    assert full == 23_481_220_832
 
     def ram_leaving(spare: int) -> int:
         """The smallest Mac that has `spare` bytes left after the model, the headroom and its own margin."""
@@ -386,55 +393,55 @@ def test_the_prompt_cache_gets_what_the_context_leaves():
 # checkpoints budgeted for the models that make them. A change to any memory figure shows up here.
 WHAT_EACH_MAC_GETS = {
     "qwen3-8b": {
-        16: (22528, 0),
-        18: (32768, 0),
-        24: (32768, 6039),
+        16: (16384, 0),
+        18: (22528, 0),
+        24: (32768, 4132),
         32: (32768, 8192),
         36: (32768, 8192),
         64: (32768, 8192),
     },
     "qwen3-4b": {
-        16: (32768, 1080),
-        18: (32768, 2923),
-        24: (32768, 8192),
+        16: (26624, 0),
+        18: (32768, 1016),
+        24: (32768, 6545),
         32: (32768, 8192),
         36: (32768, 8192),
         64: (32768, 8192),
     },
     "qwen35-9b": {
-        16: (77824, 0),
-        18: (137216, 0),
-        24: (262144, 1632),
-        32: (262144, 8192),
+        16: (17408, 0),
+        18: (75776, 0),
+        24: (252928, 0),
+        32: (262144, 7097),
         36: (262144, 8192),
         64: (262144, 8192),
     },
     "qwen35-4b": {
-        16: (167936, 0),
-        18: (226304, 0),
-        24: (262144, 4435),
+        16: (106496, 0),
+        18: (165888, 0),
+        24: (262144, 2528),
         32: (262144, 8192),
         36: (262144, 8192),
         64: (262144, 8192),
     },
     "gemma4-12b": {
-        16: (16384, 0),
-        18: (76800, 0),
-        24: (262144, 2634),
-        32: (262144, 8192),
+        16: (0, 0),
+        18: (16384, 0),
+        24: (262144, 0),
+        32: (262144, 8100),
         36: (262144, 8192),
         64: (262144, 8192),
     },
-    "gemma4-26b-a4b": {16: (0, 0), 18: (0, 0), 24: (16384, 0), 32: (262144, 0), 36: (262144, 3936), 64: (262144, 8192)},
+    "gemma4-26b-a4b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (177152, 0), 36: (262144, 2028), 64: (262144, 8192)},
     "gpt-oss-20b": {
         16: (0, 0),
-        18: (16384, 0),
-        24: (128000, 1284),
-        32: (128000, 8192),
+        18: (0, 0),
+        24: (101376, 0),
+        32: (128000, 6749),
         36: (128000, 8192),
         64: (128000, 8192),
     },
-    "qwen36-35b-a3b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (73728, 0), 36: (262144, 0), 64: (262144, 8192)},
+    "qwen36-35b-a3b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (16384, 0), 36: (164864, 0), 64: (262144, 8192)},
 }
 
 
@@ -472,26 +479,26 @@ def test_the_pairings_kept_only_inside_the_margin_are_the_three_named_and_this_i
             if context and free < free_margin_bytes(ram):
                 tight[(m.id, tier)] = (context, round(100 * free / ram, 1))
     assert tight == {
-        ("gemma4-12b", 16): (16384, 4.5),
-        ("gemma4-26b-a4b", 24): (16384, 0.5),
-        ("gpt-oss-20b", 18): (16384, 1.2),
+        ("qwen3-8b", 16): (16384, 4.3),
+        ("gemma4-12b", 18): (16384, 4.8),
+        ("qwen36-35b-a3b", 32): (16384, 7.6),
     }
 
 
 def test_refusing_tight_fits_is_one_constant(monkeypatch):
-    """TIGHT_FIT_CONTEXT = 0 turns the margin from "how much" into "whether": exactly those three go, and no
-    other row of the pinned table moves."""
+    """TIGHT_FIT_CONTEXT = 0 makes the margin binding: exactly those three rows move, to what the margin leaves,
+    which is nothing worth running for two of them and 9,216 tokens for the 8B on 16 GB. No other row of the
+    pinned table moves."""
     monkeypatch.setattr("harbor_clerk.llm.models.TIGHT_FIT_CONTEXT", 0)
-    gone = {
-        (model_id, tier)
+    moved = {
+        (model_id, tier): max_context(MODELS[model_id], tier * 1024**3)
         for model_id, tiers in WHAT_EACH_MAC_GETS.items()
         for tier, (context, _) in tiers.items()
         if max_context(MODELS[model_id], tier * 1024**3) != context
     }
-    assert gone == {("gemma4-12b", 16), ("gemma4-26b-a4b", 24), ("gpt-oss-20b", 18)}
-    assert all(max_context(MODELS[model_id], tier * 1024**3) == 0 for model_id, tier in gone)
-    # And what the margin leaves must itself be worth running: 14 GB leaves this model 3072 tokens.
-    assert max_context(_info(), 14_000_000_000) == 0
+    assert moved == {("qwen3-8b", 16): 9216, ("gemma4-12b", 18): 0, ("qwen36-35b-a3b", 32): 0}
+    # And what the margin leaves must itself be worth running: 14.5 GB leaves this model 3072 tokens.
+    assert max_context(_info(), 14_500_000_000) == 0
 
 
 # With YaRN on (off by default), for the two models that have it. Review of #692 found these moved with the
@@ -499,11 +506,11 @@ def test_refusing_tight_fits_is_one_constant(monkeypatch):
 WHAT_YARN_GETS = {
     "qwen3-8b": (
         36,
-        {16: (22528, 0), 18: (35840, 0), 24: (74752, 0), 32: (128000, 0), 36: (131072, 3275), 64: (131072, 8192)},
+        {16: (16384, 0), 18: (22528, 0), 24: (61440, 0), 32: (113664, 0), 36: (131072, 1367), 64: (131072, 8192)},
     ),
     "qwen3-4b": (
         32,
-        {16: (39936, 0), 18: (53248, 0), 24: (92160, 0), 32: (131072, 2001), 36: (131072, 5688), 64: (131072, 8192)},
+        {16: (26624, 0), 18: (39936, 0), 24: (78848, 0), 32: (131072, 0), 36: (131072, 3780), 64: (131072, 8192)},
     ),
 }
 
@@ -539,9 +546,11 @@ def test_what_the_qwen35_pair_gets_on_the_macs_people_have():
     # With 33 copies of the recurrent state budgeted (llama-server's default of 32 checkpoints) these were
     # 83,968 and 173,056 on a 16 GB Mac. The launcher now keeps 3.
     # And a tenth of each Mac is left free (#684): 130,048 and 220,160 on 16 GB before that, 195,584 and 262,144 on 18 GB.
-    assert [max_context(nine, g * gib) for g in (8, 16, 18, 24)] == [0, 77_824, 137_216, 262_144]
-    assert [max_context(four, g * gib) for g in (8, 16, 18, 24)] == [0, 167_936, 226_304, 262_144]
-    assert (min_ram_gb(nine), min_ram_gb(four)) == (24, 24), "at the full window; the launcher clamps below that"
+    # And the machine's 8 GB, not 6, is counted (#698): 77,824 and 167,936 on 16 GB before that, 137,216 and 226,304
+    # on 18 GB, and both had their whole window on 24 GB.
+    assert [max_context(nine, g * gib) for g in (8, 16, 18, 24, 32)] == [0, 17_408, 75_776, 252_928, 262_144]
+    assert [max_context(four, g * gib) for g in (8, 16, 18, 24, 32)] == [0, 106_496, 165_888, 262_144, 262_144]
+    assert (min_ram_gb(nine), min_ram_gb(four)) == (32, 24), "at the full window; the launcher clamps below that"
 
 
 @pytest.mark.parametrize("model_id", sorted(GEOMETRY))
@@ -609,16 +618,16 @@ def test_prompt_budgets_come_from_one_function_that_follows_the_launcher(monkeyp
     from harbor_clerk.llm import chat, research, summarize
     from harbor_clerk.llm.models import context_budget
 
-    monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 17_000_000_000)
+    monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 20_000_000_000)
     assert context_budget(None, False) == 32768
     # llama-server splits -c across slots: `-c 32768 -np 2` reports 16384 per slot. A budget of the whole
     # window let a 20K-token conversation through to a 16K slot untrimmed.
-    assert context_budget(_info(parallel_slots=2), False) == 21504 // 2
+    assert context_budget(_info(parallel_slots=2), False) == 26624 // 2
     # The shipped case: one slot, so Qwen3-8B's requests get the whole 32K.
     monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 64 * 1024**3)
     assert context_budget(MODELS["qwen3-8b"], False) == 32768
-    monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 17_000_000_000)
-    assert context_budget(_info(), False) == max_context(_info(), 17_000_000_000) == 21504, (
+    monkeypatch.setattr("harbor_clerk.llm.models.system_ram_bytes", lambda: 20_000_000_000)
+    assert context_budget(_info(), False) == max_context(_info(), 20_000_000_000) == 26624, (
         "clamped, as the launcher clamps"
     )
     for module in (chat, research, summarize):

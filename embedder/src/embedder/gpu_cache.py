@@ -85,11 +85,16 @@ def _int_env(name: str, default: int) -> int:
 #     search steady state (single-query encodes)   0.44 GB   flat
 #     after three ingest batches of 64             8.22 GB
 #
-# 4 GB sits well clear of both: search never triggers a drain, and the ratchet
-# is caught long before it costs swap. A first attempt at 2 GB was too low —
-# searches issued right after an ingest still sat above the mark and drained on
-# every request, which is the interactive path this gate exists to protect.
-CACHE_HIGH_WATER_MB = _int_env("GPU_CACHE_HIGH_WATER_MB", 4096)
+# 1 GB sits clear of search's steady state, so a query never triggers a drain,
+# and the ratchet is caught within a GB. It was 4 GB, chosen so that searches
+# issued right after an ingest would not drain: a drain costs 3-17 ms for a GB,
+# which is noise beside the 3-4 s the reranker itself takes on a search, while
+# the 4 GB was real memory. Under a research fan-out the reranker's cache reached
+# the mark and the service held 6.9 GB, the embedder 3.0 GB, and on a 32 GB Mac
+# the two 25 GB models paged the GPU (#698). The mark is what the two services
+# are allowed to reach, and the memory budget (HOST_HEADROOM_BYTES in
+# src/harbor_clerk/llm/models.py) counts on it.
+CACHE_HIGH_WATER_MB = _int_env("GPU_CACHE_HIGH_WATER_MB", 1024)
 
 # 0 disables entirely, restoring PyTorch's default behaviour.
 ENABLED = CACHE_HIGH_WATER_MB > 0
