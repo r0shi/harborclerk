@@ -97,6 +97,14 @@ final class AppSettings: @unchecked Sendable {
         set { lock.withLock { data["gpu_cache_high_water_mb"] = newValue }; save() }
     }
 
+    /// Passages the reranker scores per forward pass. Four was measured on the
+    /// mini as the fastest and an eighth of the activation memory of the
+    /// library's 32 (#698). Default matches `embedder.reranker.PREDICT_BATCH_SIZE`.
+    var rerankBatchSize: Int {
+        get { lock.withLock { data["rerank_batch_size"] as? Int ?? 4 } }
+        set { lock.withLock { data["rerank_batch_size"] = newValue }; save() }
+    }
+
     var workerPreset: String {
         get { lock.withLock { data["worker_preset"] as? String ?? "balanced" } }
         set { lock.withLock { data["worker_preset"] = newValue }; save() }

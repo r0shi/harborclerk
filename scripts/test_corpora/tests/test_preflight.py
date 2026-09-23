@@ -150,7 +150,7 @@ def test_the_fit_arithmetic_is_the_registrys(tmp_path):
     from_source = pf.registry()
     assert set(from_source) >= {"qwen3-8b", "qwen35-9b", "gemma4-26b-a4b"}
     assert from_source["qwen3-8b"] == {"size_bytes": 5_027_783_488, "kv_bytes_per_token": 147_456, "kv_fixed_bytes": 0}
-    assert pf._constant("HOST_HEADROOM_BYTES") == 6_000_000_000
+    assert pf._constant("HOST_HEADROOM_BYTES") == 8_000_000_000
 
 
 def test_a_registry_entry_the_harness_cannot_read_says_which_and_why(tmp_path, monkeypatch):

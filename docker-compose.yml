@@ -139,7 +139,7 @@ services:
       # available the release is a deliberate no-op, because CPU-only PyTorch
       # has no device allocator to drain. Kept plumbed so a GPU-enabled
       # override file gets the bound cache without editing the service.
-      GPU_CACHE_HIGH_WATER_MB: ${GPU_CACHE_HIGH_WATER_MB:-4096}
+      GPU_CACHE_HIGH_WATER_MB: ${GPU_CACHE_HIGH_WATER_MB:-1024}
       # e5-family models need "query: "/"passage: " prefixes; Granite-R2 does
       # not. This is the switch the rollback path depends on — it was read but
       # settable nowhere, so that path could not actually be taken.
@@ -166,7 +166,9 @@ services:
   reranker:
     environment:
       # Same exposure as the embedder — variable-length passages.
-      GPU_CACHE_HIGH_WATER_MB: ${GPU_CACHE_HIGH_WATER_MB:-4096}
+      GPU_CACHE_HIGH_WATER_MB: ${GPU_CACHE_HIGH_WATER_MB:-1024}
+      # Pairs per forward pass. Four was measured fastest and an eighth of the activation memory of 32 (#698).
+      RERANK_BATCH_SIZE: ${RERANK_BATCH_SIZE:-4}
     build:
       context: .
       dockerfile: docker/reranker.Dockerfile
