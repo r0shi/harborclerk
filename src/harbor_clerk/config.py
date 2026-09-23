@@ -213,6 +213,9 @@ _NATIVE_ONLY_KEYS = frozenset(
         # reranker as GPU_CACHE_HIGH_WATER_MB (see their extraEnvironment). The
         # app process never reads it — only those two subprocesses do.
         "gpu_cache_high_water_mb",
+        # Same route: handed to the reranker as RERANK_BATCH_SIZE (#698); the app
+        # process never reads it.
+        "rerank_batch_size",
         # Caddy's configuration. The gateway is a separate process that the
         # menubar configures directly; none of it routes through Python.
         "gateway_bind_addresses",
