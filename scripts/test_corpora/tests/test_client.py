@@ -752,9 +752,10 @@ class _StalledResearchServer:
 
     ``POST /api/research`` writes the SSE headers and a ``started`` event, then blocks on the socket until
     the client closes it, which is exactly what a wedged llama-server looks like from the harness. The
-    research GET reports ``running`` while that stream is open and ``interrupted`` once it has been closed,
-    so the watchdog's ``research_failed`` check cannot fire first and mask the read-timeout path. The model
-    status is always ``ready`` for the same reason.
+    status endpoints keep the watchdog inert: the model is always ``ready``, and the research GET reports
+    ``running`` while the stream is open (``interrupted`` once it has been closed, for the final poll). The
+    research GET also waits up to 0.5 s for the close, which is longer than the read timeout the test sets,
+    so no watchdog tick can complete before the read gives up.
     """
 
     def __init__(self) -> None:
@@ -821,9 +822,14 @@ class _StalledResearchServer:
 
 
 def test_run_research_stalled_stream_ends_at_the_read_timeout_as_sse_silent(monkeypatch):
-    """A stream that goes silent must end shortly after the silence threshold, as an ``sse_silent`` abort,
-    not after ``time_limit_minutes`` of read timeout and not as an exception (#701). Run against a real
-    socket because ``httpx.MockTransport`` cannot block a read."""
+    """The read timeout alone ends a stalled stream: shortly after the silence threshold, as an ``sse_silent``
+    abort, not after ``time_limit_minutes`` of read timeout and not as an exception (#701).
+
+    The watchdog is inert here by construction, so this guards the ``ReadTimeout`` branch and nothing else:
+    ``_evaluate_health``'s silence threshold is a default bound at definition time, which the monkeypatch of
+    ``SSE_EVENT_SILENCE_TIMEOUT_SECONDS`` does not reach, and the server's status endpoints never report a
+    bad reading (see ``_StalledResearchServer``). Run against a real socket because ``httpx.MockTransport``
+    cannot block a read."""
     monkeypatch.setattr(client_mod, "SSE_EVENT_SILENCE_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(client_mod, "WATCHDOG_INTERVAL_SECONDS", 0.05)
     assert client_mod._stream_read_timeout_seconds() < 1
@@ -856,3 +862,72 @@ def test_run_research_stalled_stream_ends_at_the_read_timeout_as_sse_silent(monk
     assert result["harness_abort_reason"].endswith("(read timeout)")
     assert result["status"] == "interrupted"
     assert elapsed < 5, f"took {elapsed:.1f}s; the read timeout should have fired in well under a second"
+
+
+class _ScriptedSseStream(httpx.SyncByteStream):
+    """An SSE body that yields ``started``, waits for a signal, then ends the way the test says."""
+
+    def __init__(self, release: threading.Event, ending: str) -> None:
+        self._release = release
+        self._ending = ending
+
+    def __iter__(self):
+        yield b'data: {"type":"started"}\n\n'
+        assert self._release.wait(5), "the watchdog never reached its second tick"
+        if self._ending == "read_timeout":
+            raise httpx.ReadTimeout("timed out")
+        yield b'data: {"type":"done","conversation_id":"conv-race"}\n\n'
+
+
+@pytest.mark.parametrize(
+    ("ending", "expected_reason"),
+    [
+        ("done", None),
+        ("read_timeout", "(read timeout)"),
+    ],
+)
+def test_watchdog_tick_that_finishes_after_the_stream_ended_does_not_write_an_abort(
+    monkeypatch, ending, expected_reason
+):
+    """A watchdog tick in flight when the main loop finishes must not record its verdict afterwards.
+
+    The tick's status calls take real time, so the main loop can end (``done``, or its own read timeout)
+    while a tick is mid-flight; that tick's ``_evaluate_health`` may then return an abort. Before the guard,
+    it wrote ``abort_reason`` anyway, relabelling a completed research as ``harness_aborted`` and
+    overwriting a ``… (read timeout)`` reason with ``model state=loading``. The script: tick 1 sees the model
+    ``loading`` (one bad reading, no abort); tick 2's status call signals the stream to end, then answers
+    ``loading`` again after the main loop has finished, which is the second bad reading and an abort verdict.
+    """
+    monkeypatch.setattr(client_mod, "WATCHDOG_INTERVAL_SECONDS", 0.01)
+    second_tick = threading.Event()
+    status_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal status_calls
+        if request.method == "POST" and request.url.path == "/api/research":
+            return httpx.Response(
+                200,
+                headers={"X-Research-Id": "conv-race", "Content-Type": "text/event-stream"},
+                stream=_ScriptedSseStream(second_tick, ending),
+            )
+        if request.method == "GET" and request.url.path == "/api/chat/models/status":
+            status_calls += 1
+            if status_calls == 2:
+                second_tick.set()
+                # Let the main loop consume the ending and set abort_event before this tick's verdict lands.
+                time.sleep(0.3)
+            return httpx.Response(200, json={"state": "loading", "model_id": "m"})
+        if request.method == "GET" and request.url.path == "/api/research/conv-race":
+            return httpx.Response(200, json={"status": "completed", "report": "ok"})
+        return httpx.Response(404)
+
+    c = make_client(handler)
+    _, result = c.run_research("Q?", depth="standard", time_limit_minutes=30)
+
+    assert status_calls >= 2, "the watchdog never took its second reading"
+    if expected_reason is None:
+        assert "harness_aborted" not in result, f"a completed research was relabelled: {result!r}"
+        assert result["status"] == "completed"
+    else:
+        assert result["harness_aborted"] is True
+        assert result["harness_abort_reason"].endswith(expected_reason), result["harness_abort_reason"]

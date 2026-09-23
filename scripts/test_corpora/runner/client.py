@@ -43,8 +43,16 @@ def _stream_read_timeout_seconds() -> float:
     A read that waits longer than ``SSE_EVENT_SILENCE_TIMEOUT_SECONDS`` is, by
     definition, the stall the watchdog exists to catch, so the read timeout
     follows that threshold rather than the research's ``time_limit_minutes``.
-    The watchdog fires first because its threshold is lower; the two extra
-    intervals give it a reading past the threshold before the read gives up.
+    At the defaults the watchdog fires first, when a tick completes within
+    the two extra intervals; when it does not (a slow status call, a tick
+    that started late), the ``ReadTimeout`` branch in ``run_research`` records
+    the same ``sse_silent`` abort, so the outcome is the same either way.
+
+    The same value also bounds the wait for the POST's response headers. That
+    is fine: the research route only validates the request and writes the
+    conversation and state rows before it returns the streaming response
+    (``src/harbor_clerk/api/routes/research.py``), so the headers arrive well
+    before any inference starts.
 
     It matters because closing the response from the watchdog thread does not
     unblock a read already in progress (#701): the server saw the close and
@@ -456,7 +464,12 @@ class HarborClerkClient:
         does not unblock a read in progress (#701), so the read timeout is
         what actually ends the wait. A read timeout with no abort recorded is
         itself the silence the watchdog watches for, and is reported the same
-        way (``sse_silent``) rather than raised.
+        way (``sse_silent``) rather than raised. That is a change in kind: a
+        ``ReadTimeout`` with no abort recorded used to escape as an exception
+        (the sweep marked the unit ``ERROR`` with no retry and the circuit
+        breaker did not count it); it is now a ``harness_aborted`` result, so
+        the sweep retries it once and the breaker counts it like any other
+        watchdog abort.
 
         This call is NOT retried by ``tenacity`` because partial SSE
         streams can't be safely re-opened against the same conv_id.
@@ -510,6 +523,11 @@ class HarborClerkClient:
                 silence = time.time() - last_event_at[0]
                 kind, detail = _evaluate_health(ms_state, rs_status, wstate, silence_seconds=silence)
                 if kind is not None:
+                    # The main loop may have finished (``done``, ``error`` or its own read timeout) while
+                    # this tick's status calls were in flight. Its verdict stands: never relabel a
+                    # completed research as aborted, or a read-timeout reason as ``model_unhealthy``.
+                    if abort_event.is_set():
+                        return
                     abort_reason["kind"] = kind
                     abort_reason["detail"] = detail or kind
                     _close_stream()
