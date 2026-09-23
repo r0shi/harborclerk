@@ -582,11 +582,13 @@ async def hybrid_search(
     # --- 6. Conflict detection ---
     possible_conflict = False
     conflict_sources: list[ConflictSource] = []
-    if len(hits) >= 2:
+    # `top_score is None` cannot happen through rerank_hits any more (#699), but
+    # the crash it caused is not worth a second occurrence: skip detection.
+    if len(hits) >= 2 and hits[0].score is not None:
         top3 = hits[:3]
         top_score = top3[0].score
         threshold = top_score * 0.9  # within 10%
-        close_hits = [h for h in top3 if h.score >= threshold]
+        close_hits = [h for h in top3 if h.score is not None and h.score >= threshold]
         unique_docs = {h.doc_id for h in close_hits}
         if len(unique_docs) > 1:
             possible_conflict = True

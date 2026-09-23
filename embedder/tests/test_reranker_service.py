@@ -227,3 +227,51 @@ def test_release_runs_on_the_worker_thread_not_the_event_loop():
         f"release ran on {release_thread[0]} but predict ran on {predict_thread[0]} — "
         "it must share the worker thread, not run on the event loop"
     )
+
+
+def test_rerank_refuses_a_non_finite_score():
+    """#699: a NaN passes `score: float` validation and pydantic serialises it as
+    JSON null, which the client installed as a hit score and later multiplied.
+    The service must refuse the whole response (5xx, which the client already
+    treats as "reranker failed") rather than sort by NaN and return a null —
+    and the cache release must still run, since the guard sits after it.
+    """
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    calls = []
+    model = MagicMock()
+    model.predict.side_effect = lambda pairs: np.array([0.7, float("nan"), 0.2])
+
+    with (
+        patch("embedder.reranker.CrossEncoder", return_value=model),
+        patch("embedder.reranker.release_gpu_cache", side_effect=lambda: calls.append(1)),
+    ):
+        from embedder.reranker import app
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.post("/rerank", json={"query": "q", "passages": ["a", "b", "c"], "top_k": 2})
+
+    assert r.status_code == 500, f"expected 500 for a NaN score, got {r.status_code}: {r.text}"
+    assert "1 non-finite" in r.json()["detail"]
+    assert "scores" not in r.json(), "a refused request must not carry a (partial or null) score list"
+    assert calls == [1], "cache was not released when a score was non-finite"
+
+
+def test_rerank_refuses_an_infinite_score():
+    """Same guard, other branch of isfinite: inf serialises fine but is not a
+    usable score either (it would pin the passage to the top of every result)."""
+    import numpy as np
+    from fastapi.testclient import TestClient
+
+    model = MagicMock()
+    model.predict.side_effect = lambda pairs: np.array([float("inf"), 0.2])
+
+    with patch("embedder.reranker.CrossEncoder", return_value=model):
+        from embedder.reranker import app
+
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.post("/rerank", json={"query": "q", "passages": ["a", "b"], "top_k": 2})
+
+    assert r.status_code == 500
+    assert "non-finite" in r.json()["detail"]
