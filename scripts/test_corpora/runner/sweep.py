@@ -38,7 +38,7 @@ from anthropic._exceptions import OverloadedError, RateLimitError
 from scripts.test_corpora import conftest as cfg
 from scripts.test_corpora.corpora import cuad, enron, synthetic
 from scripts.test_corpora.corpora.manifest import CorpusManifest
-from scripts.test_corpora.runner import spend
+from scripts.test_corpora.runner import answer_key, spend
 from scripts.test_corpora.runner.circuit_breaker import CircuitBreaker, is_operational_failure
 from scripts.test_corpora.runner.claude_baseline import BaselineGenerator
 from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
@@ -548,6 +548,38 @@ def _phase_range(s: str) -> set[int]:
 # ── state planning ──
 
 
+QUESTIONS_DIR = Path(__file__).parent.parent / "questions"
+
+
+def load_questions(questions_dir: Path | None) -> tuple[dict[str, dict], dict[str, dict]]:
+    """(questions by corpus, answer keys by corpus). `questions_dir` is another question set in the same format
+    (questions/keyed/ has CUAD questions with an answer key); a corpus with no file there keeps the standard
+    questions, so --corpora still decides. An answer key is `<corpus>.key.json` beside the questions: human
+    labels the harness scores against without a judge or a baseline (runner/answer_key.py). The standard set
+    has none, and a corpus without one gets {}."""
+    questions, keys = {}, {}
+    for c in ("cuad", "enron", "synthetic"):
+        override = questions_dir / f"{c}.yaml" if questions_dir else None
+        q_path = override if override is not None and override.exists() else QUESTIONS_DIR / f"{c}.yaml"
+        if q_path is override:
+            log.info("questions for %s from %s", c, q_path)
+        questions[c] = yaml.safe_load(q_path.read_text())
+        key_path = q_path.with_suffix(".key.json")
+        keys[c] = json.loads(key_path.read_text()) if key_path.exists() else {}
+        if keys[c]:
+            log.info("answer key for %s: %d questions from %s", c, len(keys[c]), key_path)
+    return questions, keys
+
+
+def key_score_cell(key_entry: dict | None, result: dict | None, status: Status | None) -> str:
+    """The answer_key_score cell for a unit: the key's score of the answer text, to three places. "" when the
+    question has no key, and "" when the unit did not finish (an outage is not a wrong answer: the judge columns
+    of that row are blank too, and a reader of the CSV must not count it as 0)."""
+    if not key_entry or status not in (Status.DONE, Status.DEGRADED):
+        return ""
+    return f"{answer_key.score(key_entry, (result or {}).get('answer') or '')['score']:.3f}"
+
+
 def _question_ids(corpus_questions: dict) -> list[str]:
     """Return all question ids in a corpus's YAML, expanding cross-language pairs to lang-suffixed ids."""
     ids: list[str] = []
@@ -720,6 +752,9 @@ def _run_info(args: argparse.Namespace) -> dict[str, str]:
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "baseline_model": cfg.BASELINE_MODEL,
         "judge_model": "" if args.no_judge else args.judge_model,
+        # A run is its questions. Recorded so that a resume without --questions-dir is refused instead of asking
+        # the standard questions under the keyed ids and writing rows with no answer_key_score (review of #697).
+        "questions_dir": str(args.questions_dir) if args.questions_dir else "",
     }
 
 
@@ -892,6 +927,7 @@ METRICS_COLUMNS = (
     "verifier_unsupported",
     "verifier_skipped",
     "judge_answers_question",
+    "answer_key_score",
 )
 
 
@@ -1208,17 +1244,7 @@ def main(argv: list[str] | None = None) -> int:
             sf.save()
             log.warning("migrated %d legacy model ids in state.json", n_renamed)
 
-        # Load question YAML for each corpus
-        questions_by_corpus = {}
-        # --questions-dir: another question set in the same format (questions/keyed/ has CUAD questions with an
-        # answer key). A corpus with no file there keeps the standard questions, so --corpora still decides.
-        standard = Path(__file__).parent.parent / "questions"
-        for c in ("cuad", "enron", "synthetic"):
-            override = args.questions_dir / f"{c}.yaml" if args.questions_dir else None
-            q_path = override if override is not None and override.exists() else standard / f"{c}.yaml"
-            if q_path is override:
-                log.info("questions for %s from %s", c, q_path)
-            questions_by_corpus[c] = yaml.safe_load(q_path.read_text())
+        questions_by_corpus, answer_keys = load_questions(args.questions_dir)
 
         # Apply --corpora filter: scope plan_units to listed corpora only.
         # Useful for first-time smoke runs that want to skip the synthetic
@@ -1567,6 +1593,9 @@ def main(argv: list[str] | None = None) -> int:
 
                 t0 = time.time()
                 out: dict = {}
+                # Set by the branch that finishes the unit; the exception handlers below fall through to the
+                # metrics row with it unset, and the answer key must not read an outage as a wrong answer.
+                final_status: Status | None = None
                 try:
                     if phase == 0:
                         manifests[u.corpus] = _phase0_acquire(u.corpus, workdir)
@@ -1898,6 +1927,13 @@ def main(argv: list[str] | None = None) -> int:
 
                 # Compute metrics for phases that produced model answers
                 co = ce = eo = 0.0
+                # Against the answer key, when the question has one. Needs no baseline: it is what the key is
+                # for, and it is computed before the baseline is looked at so an unusable baseline cannot hide it.
+                answer_key_score = ""
+                if phase in (4, 5):
+                    answer_key_score = key_score_cell(
+                        answer_keys.get(u.corpus, {}).get(u.question_id), out.get("result"), final_status
+                    )
                 judge_verdict = ""
                 judge_completeness = 0
                 judge_answers_question = 0
@@ -2022,6 +2058,7 @@ def main(argv: list[str] | None = None) -> int:
                     verifier_partial=verifier_counts["partial"],
                     verifier_unsupported=verifier_counts["unsupported"],
                     verifier_skipped=verifier_counts["skipped"],
+                    answer_key_score=answer_key_score,
                 )
                 metrics_writer.writerow(metrics_row)
                 metrics_f.flush()

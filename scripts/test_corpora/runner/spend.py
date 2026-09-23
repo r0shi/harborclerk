@@ -199,6 +199,13 @@ class SpendMeter:
                     f"this run was judged by {was}; resuming it with {now} would mix two judges' scores in one "
                     "set of results. Start a new --run-id for a different judge."
                 )
+            asked, asking = prior.get("run", {}).get("questions_dir"), self._run_info.get("questions_dir")
+            if asked is not None and asking is not None and asked != asking:
+                raise SpendConfigError(
+                    f"this run asked the questions in {asked or 'questions/'}; resuming it with "
+                    f"{asking or 'questions/'} would mix two question sets under one set of ids. Pass the same "
+                    "--questions-dir, or start a new --run-id."
+                )
             before = prior.get("run", {})
             self._run_info = {**before, **self._run_info}
             for kept in ("suite_commit", "started_at"):

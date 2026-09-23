@@ -191,3 +191,37 @@ def test_the_committed_key_answers_the_committed_questions():
         if entry["kind"] == "list":
             assert 5 <= len(entry["positives"]) <= 25 and set(entry["positives"]) <= set(entry["universe"])
             assert len(entry["universe"]) == 79, "the 80 sampled contracts, less the one CUAD's CSV does not annotate"
+
+
+def test_the_sweep_loads_the_key_beside_the_questions_and_scores_against_it(tmp_path):
+    """questions/keyed/cuad.yaml with cuad.key.json beside it: the key is loaded; the standard set has none."""
+    from scripts.test_corpora.runner import sweep
+
+    questions, keys = sweep.load_questions(None)
+    assert set(questions) == {"cuad", "enron", "synthetic"} and keys == {"cuad": {}, "enron": {}, "synthetic": {}}
+    questions, keys = sweep.load_questions(KEYED)
+    assert [q["id"] for q in questions["cuad"]["ask"]] == list(keys["cuad"]) and len(keys["cuad"]) == 20
+    assert keys["enron"] == {} and questions["enron"] == sweep.load_questions(None)[0]["enron"], (
+        "no override: the standard"
+    )
+    # A directory with a questions file and no key: questions taken, key {}.
+    (tmp_path / "cuad.yaml").write_text(
+        yaml.safe_dump({"research": [], "ask": [{"id": "x", "text": "?", "notes": ""}]})
+    )
+    questions, keys = sweep.load_questions(tmp_path)
+    assert questions["cuad"]["ask"][0]["id"] == "x" and keys["cuad"] == {}
+
+
+def test_the_metrics_cell_is_the_keys_score_or_empty_without_a_key():
+    from scripts.test_corpora.runner.state import Status
+    from scripts.test_corpora.runner.sweep import key_score_cell
+
+    entry = {"kind": "list", "positives": [STAAR, EDIETS], "universe": UNIVERSE}
+    result = {"answer": "Staar Surgical Company has one.", "citations": [{"source": {"doc_title": EDIETS}}]}
+    assert key_score_cell(entry, result, Status.DONE) == "0.667", "the citation is a retrieval hit, not a name"
+    fact = {"kind": "fact", "all_of": [["Texas"]]}
+    assert key_score_cell(fact, {"answer": "Texas law."}, Status.DONE) == "1.000"
+    assert key_score_cell(fact, {"answer": "I could not find it."}, Status.DEGRADED) == "0.000", "a give-up is wrong"
+    # An outage is not a wrong answer: the judge columns of that row are blank, and so is this one.
+    assert key_score_cell(fact, None, Status.ERROR) == "" and key_score_cell(fact, {"answer": "Texas"}, None) == ""
+    assert key_score_cell(None, result, Status.DONE) == "" and key_score_cell({}, result, Status.DONE) == ""

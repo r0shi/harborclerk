@@ -94,6 +94,13 @@ different judges are not comparable (#661).
 
 ## 5. Run
 
+For CUAD, ask the keyed questions as well (`--questions-dir scripts/test_corpora/questions/keyed`, its own
+`--run-id`): every answer is also scored against the corpus's human annotations, with no judge and no baseline,
+and the report shows it as "answer key (0-1)". It is the one column that sees recall, and it found two model
+behaviours no judge reported (docs/reports/2026-09-22-rubric-test.md). A keyed run and a standard run are two
+runs; do not compare their judge columns.
+
+
 ```bash
 mkdir -p "$WORKDIR/results/$RUN"
 ADMIN="$(security find-generic-password -s harbor-clerk-acceptance | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p')"

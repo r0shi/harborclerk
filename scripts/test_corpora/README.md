@@ -176,6 +176,11 @@ through `runner/spend.py`, and a run cannot spend more than `cap_usd` in [`spend
 - `--spend-cap-usd N` (or `HC_EVAL_SPEND_CAP_USD`) lowers the cap for one run. Raising it is an edit to
   `spend.yaml`, in a PR.
 - A model with no price in `spend.yaml` cannot be called. Add the list price and the date you read it.
+- `--questions-dir DIR` asks the questions in `DIR/<corpus>.yaml` instead of `questions/`; `questions/keyed/`
+  has CUAD questions with an answer key (`<corpus>.key.json`), and every answer to a keyed question is also
+  scored against it in `metrics.csv` (`answer_key_score`, 0 to 1, from the answer's text alone) and the report
+  ("answer key (0-1)"). A run is its questions: the ledger records the directory, a resume must name the same
+  one, and a keyed run's judge columns are not comparable with a standard run's.
 - `--judge-model` changes the judge. The default is `gpt-5.6-luna` (since 2026-09-22, on price and vendor
   independence: `docs/reports/2026-09-22-rubric-test.md`), so the default run needs `OPENAI_API_KEY` as well as
   `ANTHROPIC_API_KEY` for the baselines; a Claude judge works too. Scores from different judges are not
