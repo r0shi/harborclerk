@@ -721,8 +721,12 @@ async def _search_fan_out_steps(
         yield ("progress", searches_done, searches_planned)
 
     # Pagination pass: follow has_more for queries that had many candidates
-    paginated = queries_with_more[:10] if paginate else []  # cap pagination effort
-    searches_planned -= pagination_budget - 2 * len(paginated)
+    paginated = queries_with_more[:10]  # cap pagination effort; empty unless paginate
+    if pagination_budget > 2 * len(paginated):
+        # Fewer pages than budgeted. Say so now: with no pages to report on, the ratio would otherwise end the
+        # phase at its pre-correction figure.
+        searches_planned -= pagination_budget - 2 * len(paginated)
+        yield ("progress", searches_done, searches_planned)
     if paginated:
         for query_text, offset in paginated:
             pages_left = 2
@@ -766,8 +770,8 @@ def _searching_progress(
     strategy: str | None,
     gap_round: int | None = None,
 ) -> str:
-    """The SSE progress event for one step of a search fan-out. The gap round's carry its ``round``, as the
-    ``gap_analysis`` event before them does, so the UI's round counter does not read the step number."""
+    """The SSE progress event for one step of a search fan-out. The gap round's events carry its ``round``, as
+    the ``gap_analysis`` event before them does, so the UI's round counter does not read the step number."""
     event: dict = {
         "type": "progress",
         "step": step,

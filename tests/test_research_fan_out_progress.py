@@ -64,7 +64,7 @@ async def test_fan_out_steps_report_after_every_search_then_the_coverage():
     with patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool(paginated_query="q1")):
         steps = [s async for s in research_module._search_fan_out_steps(queries, None, 20, paginate=True)]
 
-    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 16), (2, 16), (3, 3)]
+    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 16), (2, 16), (2, 4), (3, 3)]
     assert steps[-1][0] == "coverage"
     coverage = steps[-1][1]
     assert set(coverage) == {f"chunk-q{i}" for i in range(7)} | {"chunk-q1-page"}
@@ -99,7 +99,7 @@ async def test_fan_out_steps_follow_a_query_through_both_extra_pages():
 
     with patch.object(research_module, "execute_tool", side_effect=two_pages):
         steps = [s async for s in research_module._search_fan_out_steps(["q0", "q1"], None, 20, paginate=True)]
-    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 5), (2, 3), (3, 3)]
+    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 5), (1, 3), (2, 3), (3, 3)]
     assert {"chunk-q1-page-20", "chunk-q1-page-21"} <= set(steps[-1][1])
 
 
@@ -114,7 +114,7 @@ async def test_a_page_that_raises_ends_its_query_and_is_still_a_search_that_ran(
 
     with patch.object(research_module, "execute_tool", side_effect=failing_page):
         steps = [s async for s in research_module._search_fan_out_steps(["q0", "q1"], None, 20, paginate=True)]
-    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 5), (2, 2)]  # the second page is no longer planned
+    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 5), (1, 3), (2, 2)]  # the second page is unplanned
     assert set(steps[-1][1]) == {"chunk-q0", "chunk-q1"}
 
 
@@ -123,6 +123,16 @@ async def test_fan_out_without_pagination_plans_only_its_batches():
     with patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool(paginated_query="q1")):
         steps = [s async for s in research_module._search_fan_out_steps([f"q{i}" for i in range(7)], None, 20)]
     assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 2), (2, 2)]
+
+
+@pytest.mark.asyncio
+async def test_a_paginating_fan_out_in_which_no_query_paginates_still_ends_at_done_equals_planned():
+    """Without this, the last event of the phase says 2 of 16 and the corrected figure is never emitted."""
+    with patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool()):
+        steps = [
+            s async for s in research_module._search_fan_out_steps([f"q{i}" for i in range(7)], None, 20, paginate=True)
+        ]
+    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 16), (2, 16), (2, 2)]
 
 
 def _events(raw: list[str]) -> list[dict]:
@@ -172,10 +182,16 @@ async def test_research_stream_heartbeats_and_reports_between_search_batches(
     assert len(heartbeats_seen) == 2, heartbeats_seen
     assert heartbeats_seen[1] > heartbeats_seen[0], "the heartbeat did not move between the two batches"
 
-    searching = [e for e in _events(raw) if e.get("type") == "progress" and "searches_done" in e]
-    # Standard depth paginates, so planned starts at 2 batches + 2 pages for each of the 7 queries.
-    assert [(e["searches_done"], e["searches_planned"]) for e in searching[:2]] == [(1, 16), (2, 16)]
-    assert all(e["phase"] == "searching" and e["step"] == 2 for e in searching[:2])
+    events = _events(raw)
+    searching = [e for e in events if e.get("type") == "progress" and "searches_done" in e]
+    # Standard depth paginates, so planned starts at 2 batches + 2 pages for each of the 7 queries, and no
+    # query paginates, so the phase ends with the corrected figure.
+    assert [(e["searches_done"], e["searches_planned"]) for e in searching] == [(1, 16), (2, 16), (2, 2)]
+    assert all(e["phase"] == "searching" and e["step"] == 2 for e in searching)
+    # And phase 2 completed: the coverage step was consumed, and the stream went on to read passages.
+    assert any(e.get("type") == "tool_call" and e.get("name") == "read_passages" for e in events), (
+        "the stream did not get past the fan-out"
+    )
 
 
 @pytest.mark.asyncio
