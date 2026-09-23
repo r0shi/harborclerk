@@ -43,35 +43,35 @@ chars_per_token: 2.5
 # by_kind: tokens divided by `units`, never by `calls`. An estimate is per unit of work, and a baseline question
 # is a tool loop of several calls.
 #
-# baseline_question is MEASURED: bench-20260921-0041 on ix, CUAD, claude-sonnet-4-6, 16 questions, 133 calls,
-# 6,013,751 input tokens and 50,742 out, USD 18.80 (docs/reports/2026-09-21-benchmark-ix-bench-20260921-0041.md).
-# That is 375,859 in and 3,171 out per question, against the 20,000 and 1,500 guessed here before anything was
-# metered, which told the owner USD 2.64 for a run that cost 19.58 (#682). Two things about it:
-#   - It is a mean with a long tail: 15 questions averaged 7 calls and USD 0.83, the 16th took 24 calls and
-#     USD 5.98. The loop is now bounded at 12 calls (MAX_MODEL_CALLS).
-#   - It was measured WITHOUT prompt caching, which landed with that bound. Cached, most of those tokens are
-#     read at a tenth of the price, so this overstates, and the estimate prices every token as plain input.
-#     Until a cached run corrects it, it is an upper bound, which is the safe side: at this figure one corpus
-#     of 16 questions is about USD 19 and a four-corpus sweep is refused before it starts. CUAD's passages are
-#     long contracts; the other corpora have not been measured.
-#   - HOW TO CORRECT IT FROM A CACHED RUN. Not "input_tokens divided by units" any more: with breakpoints on,
-#     the API's input_tokens is only what came after the last breakpoint, close to nothing, and that rule
-#     would put a few hundred tokens here and rebuild the underestimate this replaced. An estimate holds input
-#     and output tokens only, priced as plain input, so state the cost in input-token equivalents:
+# baseline_question is MEASURED, on the bounded, cached loop (#682, MAX_MODEL_CALLS = 16): bench-20260922-2305
+# on ix, CUAD, claude-sonnet-4-6, 16 questions, 83 calls, USD 7.98 (docs/reports/2026-09-23-benchmark-ix-
+# bench-20260922-2305.md). Per question: 7 plain input tokens, 63,786 cache-write, 235,400 cache-read, 3,017
+# out, USD 0.4986. Stated in input-token equivalents by the rule below: 151,119 in and 3,017 out, rounded up.
+# The unbounded, uncached loop before it (bench-20260921-0041) was 375,859 in and 3,171 out per question, USD
+# 18.80 for the same 16 (#682); the 20,000 and 1,500 guessed before anything was metered told the owner
+# USD 2.64 for a run that cost 19.58. Three things about the figure:
+#   - It is CUAD: long contracts, research-type questions of up to 16 calls. The other corpora have not been
+#     metered, and an estimate that is right for CUAD is a ceiling for them, which is the safe side.
+#   - The ledger prices a cache write at the one-hour rate while the code asks for five-minute breakpoints, so
+#     usd overstates, and so does this: the safe side again.
+#   - HOW TO CORRECT IT FROM A CACHED RUN. Not "input_tokens divided by units": with breakpoints on, the API's
+#     input_tokens is only what came after the last breakpoint, close to nothing, and that rule would put a
+#     few tokens here and rebuild the underestimate this replaced. An estimate holds input and output tokens
+#     only, priced as plain input, so state the cost in input-token equivalents:
 #         input_tokens = (usd / units - output_tokens / units * output price) / input price, per million
-#     from the kind's row in spend.json. The ledger prices a cache write at the one-hour rate while the code
-#     asks for five-minute breakpoints, so usd overstates, and so will the estimate: the safe side again.
+#     from the kind's row in spend.json (the report's Cloud spend table shows the same row).
 # candidate_answer is what answer-eval and rerun_pr_j pay a cloud model per item. It was priced as a
 # baseline_question until that became CUAD's measured figure, which refused answer-eval on the synthetic corpus
 # outright (29 one-hop lookups at the price of 29 contract research questions). PROVISIONAL, not metered: the
 # ten CUAD ask-type questions took 6.0 model calls on average against 12.2 for the six research-type ones, and
 # a synthetic lookup should need fewer still. Correct it the same way from the first metered answer-eval.
-# judge is measured too, same run: 57 units, 2,507 in and 405 out each. The figure below stands.
+# judge is measured too, bench-20260922-2305, gpt-5.6-luna: 53 units, 2,656 in and 656 out each (the rubric of
+# #695 asks for more than the Sonnet 4.6 judge's 405). USD 0.0013 a verdict.
 # The rest are still PROVISIONAL, from RUNBOOK.md's old cost table.
 estimates:
   synthetic_doc: {input_tokens: 600, output_tokens: 1000}
-  baseline_question: {input_tokens: 376000, output_tokens: 3200}
+  baseline_question: {input_tokens: 152000, output_tokens: 3100}
   candidate_answer: {input_tokens: 120000, output_tokens: 1500}
-  judge: {input_tokens: 3000, output_tokens: 500}
+  judge: {input_tokens: 3000, output_tokens: 700}
   answer_judge: {input_tokens: 3000, output_tokens: 400}
   cross_judge: {input_tokens: 3000, output_tokens: 400}

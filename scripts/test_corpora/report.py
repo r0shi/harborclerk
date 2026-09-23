@@ -263,12 +263,15 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
         lines += [
             "## Cloud spend",
             "",
-            "| call kind | units | calls | input tokens | output tokens | USD |",
-            "|---|---|---|---|---|---|",
+            "| call kind | units | calls | input tokens | cache write | cache read | output tokens | USD |",
+            "|---|---|---|---|---|---|---|---|",
         ]
+        # With prompt caching on, `input_tokens` is only what came after the last breakpoint, a few tokens a
+        # call; the cache columns are where the prompt went. A ledger from before the columns existed has none.
         for kind, row in sorted(ledger["by_kind"].items()):
             lines.append(
-                f"| {kind} | {row.get('units', 0)} | {row['calls']} | {row['input_tokens']} | {row['output_tokens']} "
+                f"| {kind} | {row.get('units', 0)} | {row['calls']} | {row['input_tokens']} "
+                f"| {row.get('cache_write_tokens', 0)} | {row.get('cache_read_tokens', 0)} | {row['output_tokens']} "
                 f"| {row['usd']:.4f} |"
             )
         lines.append("")
