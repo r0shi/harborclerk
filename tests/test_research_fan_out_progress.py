@@ -57,13 +57,14 @@ def _fake_execute_tool(paginated_query: str | None = None, calls: list | None = 
 
 @pytest.mark.asyncio
 async def test_fan_out_steps_report_after_every_search_then_the_coverage():
-    """Seven queries are two batches; one query paginates and stops after one page: three searches,
-    each reported as it completes, the planned count corrected when the second page is not needed."""
+    """Seven queries are two batches; one query paginates and stops after one page: three searches, each
+    reported as it completes. Planned starts at the most that could run (2 batches + 2 pages for each of the
+    7 queries), drops to 4 once only one query paginates, and to 3 when its first page ends it."""
     queries = [f"q{i}" for i in range(7)]
     with patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool(paginated_query="q1")):
         steps = [s async for s in research_module._search_fan_out_steps(queries, None, 20, paginate=True)]
 
-    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 2), (2, 2), (3, 3)]
+    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 16), (2, 16), (3, 3)]
     assert steps[-1][0] == "coverage"
     coverage = steps[-1][1]
     assert set(coverage) == {f"chunk-q{i}" for i in range(7)} | {"chunk-q1-page"}
@@ -85,13 +86,43 @@ async def test_fan_out_steps_count_a_failed_batch_as_a_search_that_ran():
 
 
 @pytest.mark.asyncio
-async def test_search_fan_out_is_the_drained_steps():
-    """The old entry point returns exactly the coverage the generator ends with."""
-    queries = [f"q{i}" for i in range(7)]
+async def test_fan_out_steps_follow_a_query_through_both_extra_pages():
+    """A query that still has more after its first extra page gets the second. One batch and two pages: planned
+    settles at three once the other query turns out not to paginate, and stays there."""
+    inner = _fake_execute_tool(paginated_query="q1")
+
+    async def two_pages(name, args, user_id, *, mode=None, user_scope=None):
+        if name == "search_documents":
+            first = args["offset"] == 20
+            return json.dumps({"hits": [_hit(f"chunk-q1-page-{args['offset']}")], "has_more": first})
+        return await inner(name, args, user_id, mode=mode, user_scope=user_scope)
+
+    with patch.object(research_module, "execute_tool", side_effect=two_pages):
+        steps = [s async for s in research_module._search_fan_out_steps(["q0", "q1"], None, 20, paginate=True)]
+    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 5), (2, 3), (3, 3)]
+    assert {"chunk-q1-page-20", "chunk-q1-page-21"} <= set(steps[-1][1])
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_raises_ends_its_query_and_is_still_a_search_that_ran():
+    inner = _fake_execute_tool(paginated_query="q1")
+
+    async def failing_page(name, args, user_id, *, mode=None, user_scope=None):
+        if name == "search_documents":
+            raise RuntimeError("page fetch failed")
+        return await inner(name, args, user_id, mode=mode, user_scope=user_scope)
+
+    with patch.object(research_module, "execute_tool", side_effect=failing_page):
+        steps = [s async for s in research_module._search_fan_out_steps(["q0", "q1"], None, 20, paginate=True)]
+    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 5), (2, 2)]  # the second page is no longer planned
+    assert set(steps[-1][1]) == {"chunk-q0", "chunk-q1"}
+
+
+@pytest.mark.asyncio
+async def test_fan_out_without_pagination_plans_only_its_batches():
     with patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool(paginated_query="q1")):
-        drained = await research_module._search_fan_out(queries, None, 20, paginate=True)
-        steps = [s async for s in research_module._search_fan_out_steps(queries, None, 20, paginate=True)]
-    assert drained == steps[-1][1]
+        steps = [s async for s in research_module._search_fan_out_steps([f"q{i}" for i in range(7)], None, 20)]
+    assert [s[1:] for s in steps if s[0] == "progress"] == [(1, 2), (2, 2)]
 
 
 def _events(raw: list[str]) -> list[dict]:
@@ -142,5 +173,55 @@ async def test_research_stream_heartbeats_and_reports_between_search_batches(
     assert heartbeats_seen[1] > heartbeats_seen[0], "the heartbeat did not move between the two batches"
 
     searching = [e for e in _events(raw) if e.get("type") == "progress" and "searches_done" in e]
-    assert [(e["searches_done"], e["searches_planned"]) for e in searching[:2]] == [(1, 2), (2, 2)]
+    # Standard depth paginates, so planned starts at 2 batches + 2 pages for each of the 7 queries.
+    assert [(e["searches_done"], e["searches_planned"]) for e in searching[:2]] == [(1, 16), (2, 16)]
     assert all(e["phase"] == "searching" and e["step"] == 2 for e in searching[:2])
+
+
+@pytest.mark.asyncio
+async def test_research_stream_heartbeats_and_reports_during_the_gap_round_too(
+    db_session,
+    admin_user,
+    unscoped_research_state,  # noqa: F811
+    mock_research_session_factory,  # noqa: F811
+):
+    """The gap round is the second call site of the fan-out. With findings in hand and one gap query, its
+    batch_search must see a heartbeat newer than the last phase-2 batch left, and the stream must emit a
+    step-5 searching event that carries the round."""
+    from unittest.mock import AsyncMock
+
+    from harbor_clerk.models.research_state import ResearchState
+
+    conv, _state = unscoped_research_state
+    heartbeats_seen = []
+    inner = _fake_execute_tool()  # hits present, so the gap round is reachable
+
+    async def fake_execute_tool(name, args, user_id, *, mode=None, user_scope=None):
+        if name == "batch_search":
+            async with research_module.async_session_factory() as session:
+                fresh = await session.get(ResearchState, conv.conversation_id)
+                heartbeats_seen.append(fresh.heartbeat_at)
+            await asyncio.sleep(0.01)
+        return await inner(name, args, user_id, mode=mode, user_scope=user_scope)
+
+    mock_client = _make_mock_httpx_client(
+        planning_resp=_make_planning_response(["termination notice period clause"]),
+        note_resp=_make_note_extraction_response(),
+        synthesis_lines=_make_synthesis_stream_response(),
+    )
+    with (
+        patch.object(research_module, "execute_tool", side_effect=fake_execute_tool),
+        patch.object(research_module, "_extract_notes_with_retry", new=AsyncMock(return_value="Notes.")),
+        patch.object(
+            research_module, "_check_gaps", new=AsyncMock(side_effect=[["governing law of the agreement"], []])
+        ),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        raw = [e async for e in research_module.research_stream(conv.conversation_id, user_id=admin_user.user_id)]
+
+    assert len(heartbeats_seen) == 2, heartbeats_seen  # one phase-2 batch, one gap-round batch
+    assert heartbeats_seen[1] > heartbeats_seen[0], "the gap round's search did not find a fresh heartbeat"
+    gap_events = [
+        e for e in _events(raw) if e.get("type") == "progress" and e.get("step") == 5 and "searches_done" in e
+    ]
+    assert [(e["searches_done"], e["searches_planned"], e["round"]) for e in gap_events] == [(1, 1, 1)]
