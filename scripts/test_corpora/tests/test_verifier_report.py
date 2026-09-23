@@ -207,7 +207,7 @@ def test_a_metrics_row_takes_the_shape_of_the_files_own_header():
     """New columns go at the end, and a resumed run keeps writing the columns its file started with."""
     from scripts.test_corpora.runner.sweep import METRICS_COLUMNS, metrics_row_for
 
-    assert METRICS_COLUMNS[-1] == "judge_answers_question" and METRICS_COLUMNS[:12] == (
+    assert METRICS_COLUMNS[-2:] == ("judge_answers_question", "answer_key_score") and METRICS_COLUMNS[:12] == (
         "phase", "corpus", "model", "question_id", "depth", "status", "citation_overlap", "citation_extra",
         "entity_overlap", "latency_seconds", "judge_verdict", "judge_completeness",
     )  # fmt: skip
@@ -230,5 +230,5 @@ def test_a_metrics_file_with_a_column_this_sweep_cannot_write_is_refused_at_star
 
     unknown_metrics_columns(list(METRICS_COLUMNS))
     unknown_metrics_columns(list(METRICS_COLUMNS[:12]))  # an older file: fine, its columns are all known
-    with pytest.raises(SystemExit, match="answer_key_score"):
-        unknown_metrics_columns([*METRICS_COLUMNS, "answer_key_score"])
+    with pytest.raises(SystemExit, match="a_column_from_the_future"):
+        unknown_metrics_columns([*METRICS_COLUMNS, "a_column_from_the_future"])

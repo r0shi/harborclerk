@@ -102,6 +102,7 @@ def model_table(rows: list[dict[str, str]], phase: str, planned: Counter) -> lis
     columns = [
         "corpus", "model", "planned", "ran", "done", "degraded", "error", "citation overlap", "entity overlap",
         "median latency (s)", "judged", "pass", "marginal", "fail", "answers question (0-5)", "completeness (0-5)",
+        "answer key (0-1)",
     ]  # fmt: skip
     out = ["| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
     for corpus, model in keys:
@@ -131,6 +132,9 @@ def model_table(rows: list[dict[str, str]], phase: str, planned: Counter) -> lis
             # Rows from before the column: not "0", which would read as a score.
             _mean([float(u["judge_answers_question"]) for u in judged if u.get("judge_answers_question", "") != ""]),
             _mean([float(u["judge_completeness"]) for u in judged]),
+            # Scored against the corpus's own labels, no judge: only questions with a key, only rows that have
+            # the column. n/a for the standard question sets, which have no key.
+            _mean([float(u["answer_key_score"]) for u in done if u.get("answer_key_score", "") != ""]),
         ]
         out.append("| " + " | ".join(str(c) for c in cells) + " |")
     return out

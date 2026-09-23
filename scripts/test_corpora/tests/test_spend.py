@@ -1273,3 +1273,28 @@ def test_only_the_spend_module_refers_to_a_cloud_client_class():
         if hits := _client_references(path.read_text()):
             offenders[str(rel)] = hits
     assert offenders == {}, "an unmetered client is an uncapped one: use spend.anthropic_client / spend.openai_client"
+
+
+def test_a_run_is_its_questions_and_a_resume_must_ask_the_same_ones(tmp_path):
+    """Review of #697: a keyed run resumed without --questions-dir asked the standard questions under the keyed
+    ids and wrote rows with no answer_key_score, which the report's last-row-wins reading silently preferred."""
+    ledger = tmp_path / "spend.json"
+    SpendMeter(_config(), ledger_path=ledger, run_info={"questions_dir": "scripts/test_corpora/questions/keyed"})
+    same = SpendMeter(_config(), ledger_path=ledger, run_info={"questions_dir": "scripts/test_corpora/questions/keyed"})
+    assert same.snapshot()["run"]["questions_dir"] == "scripts/test_corpora/questions/keyed"
+    with pytest.raises(spend.SpendConfigError, match="mix two question sets"):
+        SpendMeter(_config(), ledger_path=ledger, run_info={"questions_dir": ""})
+    # A ledger from before the field, or an answer-eval ledger, records nothing and refuses nothing.
+    older = tmp_path / "older.json"
+    SpendMeter(_config(), ledger_path=older, run_info={"judge_model": "m"})
+    SpendMeter(_config(), ledger_path=older, run_info={"judge_model": "m", "questions_dir": "anything"})
+
+
+def test_the_sweeps_ledger_records_the_questions_it_asked(monkeypatch):
+    """Without this record the resume guard above has nothing to compare."""
+    from scripts.test_corpora.runner import sweep
+
+    monkeypatch.setattr("scripts.test_corpora.report.suite_commit", lambda: "abc1234")
+    keyed = sweep._run_info(sweep.make_parser().parse_args(["--run-id", "r", "--questions-dir", "questions/keyed"]))
+    plain = sweep._run_info(sweep.make_parser().parse_args(["--run-id", "r"]))
+    assert keyed["questions_dir"] == "questions/keyed" and plain["questions_dir"] == ""
