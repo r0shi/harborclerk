@@ -144,11 +144,11 @@ def test_max_context_is_what_fits_never_more_than_the_model_offers_and_zero_when
     assert max_context(m, plenty) == 32768
     # 5 GB weights + 1 GB overhead + 8 GB headroom = 14 GB, at 147,456 bytes a token. A tenth of the Mac stays
     # free where the model allows it (#684):
-    # 22 GB: 8 GB spare less 2.2 GB free is 39335 tokens, past what the model offers.
+    # 22 GB: 8 GB spare less 2.2 GB free is 39333 tokens, past what the model offers.
     assert max_context(m, 22_000_000_000) == 32768
     # 20 GB: 6 GB spare less 2 GB free is 27127 tokens, 26624 in 1024s. Over the working context: the margin holds.
     assert max_context(m, 20_000_000_000) == 26624
-    # 18 GB: 4 GB spare fits 27127, and less 1.8 GB free only 14918. It fits only by eating into the margin, so
+    # 18 GB: 4 GB spare fits 27127, and less 1.8 GB free only 14919. It fits only by eating into the margin, so
     # it gets the working context and no more.
     assert max_context(m, 18_000_000_000) == TIGHT_FIT_CONTEXT == 16384
     # 16 GB: 2 GB spare fits 13563 and the margin leaves 2712. What fits, since that is under the working context.

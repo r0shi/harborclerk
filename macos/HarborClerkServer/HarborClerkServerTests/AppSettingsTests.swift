@@ -247,9 +247,9 @@ final class AppSettingsTests: XCTestCase {
         }
         XCTAssertEqual(fit(64 * 1024 * 1024 * 1024), 32768)
         // A tenth of the Mac stays free where the model allows it (#684). Same cases as Python.
-        XCTAssertEqual(fit(22_000_000_000), 32768, "8 GB spare less 2.2 GB free is 39335 tokens: past the model's window")
+        XCTAssertEqual(fit(22_000_000_000), 32768, "8 GB spare less 2.2 GB free is 39333 tokens: past the model's window")
         XCTAssertEqual(fit(20_000_000_000), 26624, "6 GB spare less 2 GB free is 27127 tokens: the margin holds")
-        XCTAssertEqual(fit(18_000_000_000), 16384, "fits 27127 but only 14918 with the margin: the working context")
+        XCTAssertEqual(fit(18_000_000_000), 16384, "fits 27127 but only 14919 with the margin: the working context")
         XCTAssertEqual(fit(16_000_000_000), 13312, "what fits, since that is under the working context")
         XCTAssertEqual(fit(14_500_000_000), 0, "3390 tokens is not worth running")
         XCTAssertEqual(fit(13_000_000_000), 0)
