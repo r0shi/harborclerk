@@ -25,16 +25,21 @@ class RerankResponseError(RuntimeError):
     """
 
 
-def _reorder_by_response(pool: list[SearchHit], body: dict) -> list[SearchHit]:
+def _reorder_by_response(pool: list[SearchHit], body: dict, expected: int) -> list[SearchHit]:
     """Apply a ``/rerank`` body to ``pool``; raise RerankResponseError on any bad entry.
 
     Validated before anything is applied, so a reranking is never installed
     partially. A NaN from the CrossEncoder arrives here as JSON ``null`` (#699);
-    an index outside the pool would raise IndexError mid-loop.
+    an index outside the pool would raise IndexError mid-loop. The service
+    returns exactly ``min(top_k, len(passages))`` entries, so ``expected`` is
+    enforced: a short list would page an empty result while ``total_candidates``
+    still reports the pool.
     """
     entries = body.get("scores") if isinstance(body, dict) else None
     if not isinstance(entries, list):
         raise RerankResponseError("response has no 'scores' list")
+    if len(entries) != expected:
+        raise RerankResponseError(f"response has {len(entries)} entries, expected {expected}")
     reordered: list[SearchHit] = []
     seen: set[int] = set()
     for pos, entry in enumerate(entries):
@@ -106,7 +111,7 @@ async def rerank_hits(
             body = r.json()
         except ValueError as exc:  # a 200 that is not JSON
             raise RerankResponseError(f"response body is not JSON: {exc}") from exc
-        reordered = _reorder_by_response(pool, body)
+        reordered = _reorder_by_response(pool, body, expected=effective_top_k)
     except RerankResponseError as exc:
         if settings.reranker_strict:
             raise

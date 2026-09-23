@@ -274,3 +274,4 @@ def test_rerank_refuses_an_infinite_score():
             r = c.post("/rerank", json={"query": "q", "passages": ["a", "b"], "top_k": 2})
 
     assert r.status_code == 500
+    assert "non-finite" in r.json()["detail"]
