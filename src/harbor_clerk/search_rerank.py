@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 from typing import Literal
 
 import httpx
@@ -12,6 +13,34 @@ from harbor_clerk.config import get_settings as _settings
 from harbor_clerk.search_types import SearchHit
 
 logger = logging.getLogger(__name__)
+
+
+class RerankResponseError(ValueError):
+    """The reranker answered 200 with a body we cannot apply."""
+
+
+def _reorder_by_response(pool: list[SearchHit], body: dict) -> list[SearchHit]:
+    """Apply a ``/rerank`` body to ``pool``; raise RerankResponseError on any bad entry.
+
+    Validated before anything is applied, so a reranking is never installed
+    partially. A NaN from the CrossEncoder arrives here as JSON ``null`` (#699);
+    an index outside the pool would raise IndexError mid-loop.
+    """
+    entries = body.get("scores") if isinstance(body, dict) else None
+    if not isinstance(entries, list):
+        raise RerankResponseError("response has no 'scores' list")
+    reordered: list[SearchHit] = []
+    for pos, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise RerankResponseError(f"entry {pos} is not an object")
+        idx = entry.get("index")
+        score = entry.get("score")
+        if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx < len(pool):
+            raise RerankResponseError(f"entry {pos} has index {idx!r} outside the pool of {len(pool)}")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+            raise RerankResponseError(f"entry {pos} (index {idx}) has a non-finite score {score!r}")
+        reordered.append(dataclasses.replace(pool[idx], score=float(score)))
+    return reordered
 
 
 def _format_passage(hit: SearchHit) -> str:
@@ -28,7 +57,8 @@ async def rerank_hits(
 ) -> list[SearchHit] | tuple[list[SearchHit], Literal["ok", "disabled", "failed"]]:
     """Call the reranker service; reorder ``hits`` by reranker score; return top_k.
 
-    On HTTP failure:
+    On HTTP failure, or a 200 whose body cannot be applied (a ``null`` or
+    non-finite score, an index outside the pool):
       - if ``settings.reranker_strict`` is True, propagate the exception
       - otherwise log a warning and return ``hits[:top_k]`` in the original order
 
@@ -60,13 +90,14 @@ async def rerank_hits(
         fallback = hits[:top_k]
         return (fallback, "failed") if return_status else fallback
 
-    body = r.json()
-    reordered: list[SearchHit] = []
-    for entry in body["scores"]:
-        idx = entry["index"]
-        score = entry["score"]
-        h = pool[idx]
-        reordered.append(dataclasses.replace(h, score=score))
+    try:
+        reordered = _reorder_by_response(pool, r.json())
+    except ValueError as exc:  # RerankResponseError, or r.json() on a non-JSON body
+        if settings.reranker_strict:
+            raise
+        logger.warning("reranker response unusable; falling back to hybrid-only top-K: %s", exc)
+        fallback = hits[:top_k]
+        return (fallback, "failed") if return_status else fallback
 
     result = reordered[:top_k]
     return (result, "ok") if return_status else result

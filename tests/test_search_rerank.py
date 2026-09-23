@@ -126,3 +126,76 @@ async def test_rerank_hits_caps_at_pool_size(httpx_mock: HTTPXMock, monkeypatch)
     body = json.loads(req.content)
     assert len(body["passages"]) == 3
     assert len(result) == 3
+
+
+@pytest.mark.asyncio
+async def test_rerank_hits_null_score_falls_back_to_hybrid_order(httpx_mock: HTTPXMock):
+    """#699: a NaN from the CrossEncoder arrives as JSON null. Installing it as a
+    hit score crashed hybrid_search's conflict detection (`None * 0.9`). The
+    client must treat the body like an HTTP failure: hybrid order, "failed"."""
+    hits = [
+        _hit("doc-a", "A", "x", 0.5),
+        _hit("doc-b", "B", "y", 0.3),
+        _hit("doc-c", "C", "z", 0.1),
+    ]
+    httpx_mock.add_response(
+        url="http://reranker:8001/rerank",
+        json={
+            "scores": [
+                {"index": 2, "score": 0.9},
+                {"index": 0, "score": None},
+                {"index": 1, "score": 0.1},
+            ],
+            "model": "BAAI/bge-reranker-v2-m3",
+        },
+    )
+    result, status = await rerank_hits("q", hits, top_k=2, return_status=True)
+    assert status == "failed"
+    assert [h.doc_id for h in result] == ["doc-a", "doc-b"], "must not partially apply a reranking"
+    assert [h.score for h in result] == [0.5, 0.3]
+    assert all(h.score is not None for h in result)
+
+
+@pytest.mark.asyncio
+async def test_rerank_hits_out_of_range_index_falls_back_to_hybrid_order(httpx_mock: HTTPXMock):
+    hits = [
+        _hit("doc-a", "A", "x", 0.5),
+        _hit("doc-b", "B", "y", 0.3),
+    ]
+    httpx_mock.add_response(
+        url="http://reranker:8001/rerank",
+        json={
+            "scores": [{"index": 1, "score": 0.9}, {"index": 7, "score": 0.8}],
+            "model": "BAAI/bge-reranker-v2-m3",
+        },
+    )
+    result, status = await rerank_hits("q", hits, top_k=2, return_status=True)
+    assert status == "failed"
+    assert [h.doc_id for h in result] == ["doc-a", "doc-b"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_hits_strict_mode_raises_on_null_score(httpx_mock: HTTPXMock, monkeypatch):
+    """Strict mode fails loudly on an unusable body, as it does on an HTTP error."""
+    from harbor_clerk import search_rerank
+
+    monkeypatch.setattr(
+        search_rerank,
+        "_settings",
+        lambda: type(
+            "S",
+            (),
+            {
+                "reranker_url": "http://reranker:8001",
+                "reranker_strict": True,
+                "reranker_timeout_seconds": 30.0,
+                "reranker_pool_size": 50,
+            },
+        )(),
+    )
+    httpx_mock.add_response(
+        url="http://reranker:8001/rerank",
+        json={"scores": [{"index": 0, "score": None}], "model": "m"},
+    )
+    with pytest.raises(search_rerank.RerankResponseError):
+        await rerank_hits("q", [_hit("a", "A", "x", 0.5)], top_k=1)

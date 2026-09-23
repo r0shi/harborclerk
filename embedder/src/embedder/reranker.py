@@ -7,6 +7,7 @@ exposes ``POST /rerank`` accepting ``{query, passages, top_k}`` and returning
 
 import asyncio
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
 
@@ -97,11 +98,20 @@ async def rerank(req: RerankRequest):
             release_gpu_cache()
 
     raw_scores = await asyncio.get_event_loop().run_in_executor(None, _predict_and_release)
-    indexed = sorted(
-        ((i, float(s)) for i, s in enumerate(raw_scores)),
-        key=lambda x: x[1],
-        reverse=True,
-    )
+    scores = [float(s) for s in raw_scores]
+    # A NaN passes `score: float` validation and pydantic serialises it as JSON
+    # null, which the client installed as a hit's score and later multiplied
+    # (#699). Sorting by it is undefined as well. Refuse the whole response
+    # instead: the client treats a 5xx as "reranker failed" and keeps the
+    # hybrid order, which is the documented degradation.
+    non_finite = sum(1 for s in scores if not math.isfinite(s))
+    if non_finite:
+        logger.error("reranker produced %d non-finite score(s) out of %d", non_finite, len(scores))
+        raise HTTPException(
+            status_code=500,
+            detail=f"reranker produced {non_finite} non-finite score(s) out of {len(scores)}",
+        )
+    indexed = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
     top = indexed[: req.top_k]
     return RerankResponse(
         scores=[ScoreEntry(index=i, score=s) for i, s in top],
