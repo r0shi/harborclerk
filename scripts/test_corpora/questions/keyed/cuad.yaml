@@ -1,0 +1,64 @@
+research: []
+ask:
+- id: cuad-key-1
+  text: What is the governing law of the 2 Themart Com Inc Agency Agreement?
+  notes: Governing Law-Answer = 'California'
+- id: cuad-key-2
+  text: What is the governing law of the Arca Us Treasury Fund Development Agreement?
+  notes: Governing Law-Answer = 'New York'
+- id: cuad-key-3
+  text: What is the governing law of the Berkshire Hills Bancorp Inc Endorsement Agreement?
+  notes: Governing Law-Answer = 'Connecticut'
+- id: cuad-key-4
+  text: What is the governing law of the Clickstream Corp Development Agreement?
+  notes: Governing Law-Answer = 'Florida'
+- id: cuad-key-5
+  text: What is the governing law of the Cns Pharmaceuticals Inc Development Agreement?
+  notes: Governing Law-Answer = 'Texas'
+- id: cuad-key-6
+  text: What is the governing law of the Creditcardscom Inc Affiliate Agreement?
+  notes: Governing Law-Answer = 'Delaware'
+- id: cuad-key-7
+  text: What is the governing law of the Cybergy Holdings Inc Affiliate Agreement?
+  notes: Governing Law-Answer = 'Nevada'
+- id: cuad-key-8
+  text: What is the governing law of the Eco Science Solutions Inc Endorsement Agreement?
+  notes: Governing Law-Answer = 'Michigan'
+- id: cuad-key-9
+  text: What is the agreement date of the Aimmune Therapeutics Inc Development Agreement?
+  notes: Agreement Date-Answer = 2020-02-04
+- id: cuad-key-10
+  text: What is the agreement date of the Bizzingo Inc Endorsement Agreement?
+  notes: Agreement Date-Answer = 2012-03-14
+- id: cuad-key-11
+  text: What is the agreement date of the Coherus Biosciences Inc Development Agreement?
+  notes: Agreement Date-Answer = 2019-11-02
+- id: cuad-key-12
+  text: On what date does the initial term of the Embark Com Inc Co-Branding Agreement expire?
+  notes: Expiration Date-Answer = 2000-12-31
+- id: cuad-key-13
+  text: On what date does the initial term of the Emerald Health Bioceuticals Inc Development Agreement expire?
+  notes: Expiration Date-Answer = 2018-12-31
+- id: cuad-key-14
+  text: On what date does the initial term of the Integrity Media Inc Co-Branding Agreement expire?
+  notes: Expiration Date-Answer = 2004-12-31
+- id: cuad-key-15
+  text: Which contracts contain a clause prohibiting the solicitation of the other party's customers? List every
+    one you can find.
+  notes: No-Solicit Of Customers-Answer = Yes for 8 of 79 annotated contracts in the sample
+- id: cuad-key-16
+  text: Which contracts contain a non-disparagement clause? List every one you can find.
+  notes: Non-Disparagement-Answer = Yes for 9 of 79 annotated contracts in the sample
+- id: cuad-key-17
+  text: Which contracts contain an irrevocable or perpetual license grant? List every one you can find.
+  notes: Irrevocable Or Perpetual License-Answer = Yes for 10 of 79 annotated contracts in the sample
+- id: cuad-key-18
+  text: Which contracts contain a right of first refusal, first offer or first negotiation? List every one you can
+    find.
+  notes: Rofr/Rofo/Rofn-Answer = Yes for 16 of 79 annotated contracts in the sample
+- id: cuad-key-19
+  text: Which contracts contain a requirement that a party maintain insurance? List every one you can find.
+  notes: Insurance-Answer = Yes for 21 of 79 annotated contracts in the sample
+- id: cuad-key-20
+  text: Which contracts are governed by Delaware law? List every one you can find.
+  notes: Governing Law-Answer = 'Delaware' for 7 of 79
