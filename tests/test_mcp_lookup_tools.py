@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.mcp_lookup_tools import (
     _find_candidates,
+    _find_candidates_by_words,
     _query_documents_by_date,
     documents_by_date,
     verify_identifier,
@@ -903,3 +904,68 @@ async def test_documents_by_date_email_from_address_filter(db_session):
     doc_ids = {str(d.doc_id) for d, _, _ in rows}
     assert str(a.doc_id) in doc_ids
     assert str(b.doc_id) not in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# The word pass (#711): a display name against a filing name
+# ---------------------------------------------------------------------------
+
+ARCA = "ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development Agreement"
+CLICKSTREAM = "ClickstreamCorp_20200330_1-A_EX1A-6 MAT CTRCT_12089935_EX1A-6 MAT CTRCT_Development Agreement"
+
+
+@pytest.mark.asyncio
+async def test_a_display_name_resolves_to_its_filing_name_by_words(db_session):
+    """No substring of the display name is the filing name, so the exact pass finds nothing; every word of
+    it is in the filing name, so the word pass finds exactly the one document and says how."""
+    target = await _seed_doc(db_session, title=ARCA)
+    await _seed_doc(db_session, title=CLICKSTREAM)
+    await db_session.flush()
+    assert await _find_candidates(db_session, "Arca Us Treasury Fund Development Agreement") == []
+    out = await verify_identifier(db_session, "Arca Us Treasury Fund Development Agreement")
+    assert out["status"] == "unique" and out["match"]["doc_id"] == str(target.doc_id)
+    assert out["matched_by"] == "words"
+
+
+@pytest.mark.asyncio
+async def test_words_shared_by_several_documents_are_ambiguous_not_unique(db_session):
+    a = await _seed_doc(db_session, title=ARCA)
+    b = await _seed_doc(db_session, title=CLICKSTREAM)
+    await db_session.flush()
+    # "Development Agreement" alone is a substring of both titles, so the exact pass answers ambiguous itself;
+    # with a year added no substring matches and the word pass finds both.
+    out = await verify_identifier(db_session, "Development Agreement 2020")
+    assert out["status"] == "ambiguous" and out["count"] == 2 and out["matched_by"] == "words"
+    assert {c["doc_id"] for c in out["candidates"]} == {str(a.doc_id), str(b.doc_id)}
+
+
+@pytest.mark.asyncio
+async def test_an_exact_match_wins_and_is_not_marked_loose(db_session):
+    target = await _seed_doc(db_session, title=ARCA)
+    await db_session.flush()
+    out = await verify_identifier(db_session, "ArcaUsTreasuryFund_20200207")
+    assert out["status"] == "unique" and out["match"]["doc_id"] == str(target.doc_id)
+    assert "matched_by" not in out
+
+
+@pytest.mark.asyncio
+async def test_a_name_no_document_carries_is_still_not_found(db_session):
+    await _seed_doc(db_session, title=ARCA)
+    await db_session.flush()
+    out = await verify_identifier(db_session, "Emerald Health Bioceuticals Development Agreement")
+    assert out == {"status": "not_found", "identifier": "Emerald Health Bioceuticals Development Agreement"}
+
+
+@pytest.mark.asyncio
+async def test_the_word_pass_needs_two_words_and_matches_the_filename_too(db_session):
+    """One word is the exact pass's own substring match, so the word pass declines it; the filename counts
+    like the title does."""
+    target = await _seed_doc(db_session, title="scan 0412", canonical_filename="Berkshire_Hills_Endorsement.pdf")
+    await db_session.flush()
+    assert await _find_candidates_by_words(db_session, "Berkshire") == []
+    assert [d.doc_id for d in await _find_candidates_by_words(db_session, "Berkshire Hills endorsement")] == [
+        target.doc_id
+    ]
+    assert await _find_candidates_by_words(db_session, "Berkshire Hills 50% off") == [], (
+        "ILIKE metacharacters are literal"
+    )

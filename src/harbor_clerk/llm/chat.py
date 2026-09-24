@@ -139,8 +139,9 @@ _CORE_INSTRUCTIONS = (
     "always search for it — do not assume it is absent from the corpus just "
     "because it was not in earlier results. Previous searches may not have "
     "covered all relevant content.\n\n"
-    "For factual questions:\n"
-    "  search_documents → read_passages → expand_context if needed\n\n"
+    "For factual questions, including ones that name a document:\n"
+    "  search_documents → read_passages → expand_context if needed\n"
+    "  (verify_identifier only to tell apart similarly named documents in the results)\n\n"
     'For broad or comparative questions ("compare all X", "what does the corpus say about Y"):\n'
     "  Start with corpus_overview to see what documents and topics exist, then use\n"
     "  search_documents with targeted queries based on what you find.\n"

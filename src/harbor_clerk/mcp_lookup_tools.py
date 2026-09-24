@@ -149,6 +149,35 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
     return result
 
 
+async def _find_candidates_by_words(session: AsyncSession, identifier: str) -> list[Document]:
+    """The loose pass, for when `_find_candidates` finds nothing: every word of the identifier must occur in
+    the title or the canonical filename (case-insensitive, any order, anything between).
+
+    People name a document by a display name and files carry a filing name: "Arca US Treasury Fund
+    development agreement" against ``ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development
+    Agreement``. No substring of the one is the other, but every word of the display name is a substring of
+    the filing name, and the conjunction is selective: on the 80-contract CUAD corpus each of 14 such names
+    resolves to exactly its document (#711). A single word is the exact pass's own substring match, so this
+    pass asks for two or more; a word shared by many documents ("Development Agreement") comes back
+    ambiguous, as the exact pass would. Capped like the exact pass.
+    """
+    words = [w for w in _normalize(identifier).split() if any(ch.isalnum() for ch in w)]
+    if len(words) < 2:
+        return []
+    conditions = []
+    for word in words:
+        pattern = f"%{escape_ilike(word)}%"
+        conditions.append(or_(Document.title.op("ILIKE")(pattern), Document.canonical_filename.op("ILIKE")(pattern)))
+    stmt = (
+        select(Document)
+        .where(Document.status == "active")
+        .where(*conditions)
+        .order_by(Document.title)
+        .limit(_VERIFY_CANDIDATE_CAP)
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
 def _has_nested_metadata(metadata_by_doc: dict[str, dict]) -> bool:
     """Return True if any candidate document has a dict-valued leaf inside a
     known metadata namespace (e.g. ``sidecar.contract`` is itself a dict).
@@ -178,19 +207,27 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
       - {"status": "ambiguous", "count": N, "candidates": [...],
          "suggestion": "...", "overflow"?: true}
 
+    The exact pass (`_find_candidates`: substring of title or filename, equal to a metadata identifier) is
+    tried first; when it finds nothing, the word pass (`_find_candidates_by_words`) is, and a unique or
+    ambiguous result from it carries ``"matched_by": "words"`` so the caller knows the name was loose.
+
     Empty / whitespace-only identifier returns {"error": "..."}.
     """
     if not identifier or not identifier.strip():
         return {"error": "identifier must be a non-empty string"}
 
     candidates = await _find_candidates(session, identifier)
+    matched_by_words = False
+    if not candidates:
+        candidates = await _find_candidates_by_words(session, identifier)
+        matched_by_words = bool(candidates)
 
     if not candidates:
         return {"status": "not_found", "identifier": identifier}
 
     if len(candidates) == 1:
         d = candidates[0]
-        return {
+        payload: dict = {
             "status": "unique",
             "match": {
                 "doc_id": str(d.doc_id),
@@ -199,6 +236,9 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
                 "discriminating_fields": {},
             },
         }
+        if matched_by_words:
+            payload["matched_by"] = "words"
+        return payload
 
     # Ambiguous — compute which metadata paths differ across candidates.
     titles = {str(d.doc_id): (d.title or str(d.doc_id)) for d in candidates}
@@ -245,7 +285,7 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
             "Multiple candidates have identical discriminating metadata — try kb_get_document on each to inspect body."
         )
 
-    payload: dict = {
+    payload = {
         "status": "ambiguous",
         "count": len(candidates),
         "candidates": cand_payload,
@@ -253,6 +293,8 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
     }
     if overflow:
         payload["overflow"] = True
+    if matched_by_words:
+        payload["matched_by"] = "words"
     return payload
 
 

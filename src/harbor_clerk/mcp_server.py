@@ -2744,7 +2744,9 @@ async def kb_verify_identifier(identifier: str) -> str:
 
     Use this BEFORE quoting a specific document — checks the identifier
     against title, filename, and identifier-like metadata fields. Sharp
-    affordance for fabrication-prevention.
+    affordance for fabrication-prevention. A display name matches its filing
+    name by words: "Arca US Treasury Fund development agreement" resolves to
+    ArcaUsTreasuryFund_20200207_…_Development Agreement (matched_by="words").
 
     When to call:
       - Before claiming "the X contract says…" — verify X is a real, unique
@@ -2768,9 +2770,11 @@ async def kb_verify_identifier(identifier: str) -> str:
     refine the identifier with a more specific substring.
 
     How to decline:
-      - status="not_found" means the identifier is NOT in the corpus. Do
-        NOT search by similarity as a substitute — tell the user the
-        identifier doesn't exist.
+      - status="not_found" means no document carries the identifier, exactly
+        or by its words. Tell the user so; do NOT present a similar document
+        as this one. A question about content is still answerable: search
+        for the subject and the parties with kb_search and name the document
+        the search actually returns.
       - status="ambiguous" with no discriminating_fields means the
         candidates are indistinguishable by metadata; inspect with
         kb_get_document if you must.
@@ -2795,10 +2799,12 @@ async def kb_verify_identifier(identifier: str) -> str:
     # tools/list description it saw at session start.
     if isinstance(result, dict) and result.get("status") == "not_found":
         result["instruction"] = (
-            "This identifier does not exist in the corpus. State that plainly to the user. "
-            "Do NOT search for, suggest, or substitute a similar or adjacent document, and "
-            "do NOT pad the decline with 'the closest match is...' or 'you may be interested "
-            "in...'. The correct answer is that the document is absent."
+            "No document carries this identifier, exactly or by its words: it does not exist in the corpus. "
+            "State that plainly to the user. "
+            "Do NOT present a similar or adjacent document as this one, and do NOT pad the decline with "
+            "'the closest match is...' or 'you may be interested in...'. If the question is about content "
+            "rather than about this document's existence, answer it with search_documents on the subject and "
+            "the parties, and name the document the search actually returns."
         )
     return json.dumps(result, default=str)
 
