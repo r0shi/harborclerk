@@ -25,9 +25,18 @@ from dataclasses import dataclass
 # between file + KV and the server's RSS (about 0.8 GB for an 8B at 32K).
 RUNTIME_OVERHEAD_BYTES = 1_000_000_000
 # What the rest of the machine needs while the model runs: the OS, the
-# embedder and reranker, Postgres, the Tika JVM and the API. Six GB is the
-# floor observed on the mini with the whole app up and nothing else.
-HOST_HEADROOM_BYTES = 6_000_000_000
+# embedder and reranker, Postgres, the Tika JVM and the API. Six GB was the
+# floor observed on the mini with the whole app up, idle, and it was measured
+# with the two services' allocator caches empty. Under a search they grow: the
+# reranker to its cache mark plus its activations, the embedder to its mark
+# (GPU_CACHE_HIGH_WATER_MB, 1 GB each since #698, and a 4-pair predict batch in
+# the reranker). Measured on the mini during a research fan-out with the old
+# 4 GB marks: reranker 6.9 GB, embedder 3.0 GB, and the two models the budget
+# had sized to 25 GB paged the GPU, every search two to eight times slower
+# (#698). Eight GB is the idle floor plus what the two services are now allowed
+# to add. It is what the machine uses, not what is kept free: that is the
+# margin below.
+HOST_HEADROOM_BYTES = 8_000_000_000
 # What is kept free on top of that when a context is sized: a tenth of the Mac's memory. The headroom above is
 # what the rest of the machine *uses* (measured again 2026-09-21: about 5.6 GB beside a resident 21.6 GB model),
 # so a context sized to fill everything else left the machine with nothing free. Measured on the mini (32 GB),
@@ -42,13 +51,15 @@ HOST_HEADROOM_BYTES = 6_000_000_000
 # TIGHT_FIT_CONTEXT or what fits, whichever is less. That keeps three pairings the arithmetic does not like,
 # with this much of the Mac predicted free (the margin is 10%, and on the mini 4% was already swapping):
 #
-#     gemma4-26b-a4b on 24 GB   0.14 GB   0.5%        gpt-oss-20b on 18 GB   0.22 GB   1.2%
-#     gemma4-12b on 16 GB       0.78 GB   4.5%
+#     qwen3-8b on 16 GB         0.74 GB   4.3%        gemma4-12b on 18 GB    0.92 GB   4.8%
+#     qwen36-35b-a3b on 32 GB   2.63 GB   7.6%
 #
-# They are no worse than before the margin (which left them nothing), none has been measured, and what else is
-# resident differs from Mac to Mac, so they are kept and named here. TIGHT_FIT_CONTEXT = 0 refuses them instead
-# (here and in Swift): the owner's decision, one constant, and test_refusing_tight_fits_is_one_constant shows
-# exactly what it takes away.
+# (Before the headroom counted the services under search (#698) the three were gemma4-26b-a4b on 24 GB,
+# gpt-oss-20b on 18 GB and gemma4-12b on 16 GB; those now do not load at all, and these three took their
+# place.) They are no worse than before the margin (which left them nothing), none has been measured, and
+# what else is resident differs from Mac to Mac, so they are kept and named here. TIGHT_FIT_CONTEXT = 0 gives
+# them what the margin leaves instead, refusing the two it leaves under 4096 (here and in Swift): the owner's
+# decision, one constant, and test_refusing_tight_fits_is_one_constant shows exactly what it takes away.
 FREE_MEMORY_DIVISOR = 10
 TIGHT_FIT_CONTEXT = 16_384
 # Physical memory Apple sells Macs with, for rounding a requirement up. A

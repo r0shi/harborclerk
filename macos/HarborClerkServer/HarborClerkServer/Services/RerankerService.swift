@@ -18,6 +18,7 @@ final class RerankerService: PythonService {
             // MPS allocator code does anything at all.
             "RERANKER_MODEL": modelPath,
             "GPU_CACHE_HIGH_WATER_MB": String(AppSettings.shared.gpuCacheHighWaterMB),
+            "RERANK_BATCH_SIZE": String(AppSettings.shared.rerankBatchSize),
             "HOST": "127.0.0.1",
             "PORT": String(AppSettings.shared.rerankerPort),
         ]

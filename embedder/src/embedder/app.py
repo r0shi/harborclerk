@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
 
+from embedder.env import positive_int_env as _positive_int_env
 from embedder.gpu_cache import release_gpu_cache
 
 logger = logging.getLogger(__name__)
@@ -27,24 +28,6 @@ MODEL_NAME = os.environ.get("EMBED_MODEL", "ibm-granite/granite-embedding-311m-m
 # Configured via env var so the e5 rollback path keeps working.
 NEEDS_PREFIX = os.environ.get("EMBED_NEEDS_PREFIX", "false").lower() in ("true", "1", "yes")
 TASK_PREFIXES = {"query": "query: ", "passage": "passage: "}
-
-
-def _positive_int_env(name: str, default: int) -> int:
-    """Read a positive int from the environment, tolerating junk.
-
-    Every other env read in this module is total, and this one must be too: it
-    runs at import, so a bad value stops uvicorn binding at all — on the service
-    this change exists to keep alive. An unset compose passthrough
-    (`EMBED_MAX_CONCURRENCY=${EMBED_MAX_CONCURRENCY}`) or a bare `NAME=` line in
-    .env both arrive as the empty string.
-    """
-    raw = os.environ.get(name, "")
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        if raw:
-            logger.warning("%s=%r is not an integer; using %d", name, raw, default)
-        return default
 
 
 # How many encodes may run at once. The weights are shared, so what concurrency

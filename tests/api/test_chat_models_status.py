@@ -227,8 +227,8 @@ async def test_model_list_says_what_fits_this_mac(client, admin_token, _small_ma
     assert resp.status_code == 200
     by_id = {m["id"]: m for m in resp.json()}
     small, heavy = by_id["qwen3-4b"], by_id["qwen36-35b-a3b"]
-    assert small["min_ram_gb"] == 16 and small["max_context_here"] == 0 and small["fits_here"] is False
-    assert heavy["min_ram_gb"] == 36 and heavy["max_context_here"] == 0
+    assert small["min_ram_gb"] == 18 and small["max_context_here"] == 0 and small["fits_here"] is False
+    assert heavy["min_ram_gb"] == 48 and heavy["max_context_here"] == 0
     assert heavy["memory_bytes"] > 28_000_000_000 and heavy["system_ram_gb"] == 7.5, "8e9 bytes is 7.5 GiB"
     plenty = {m["id"] for m in resp.json() if m["fits_here"]}
     assert plenty == set(), "nothing fits an 8 GB Mac with the rest of the app resident"
@@ -240,7 +240,7 @@ async def test_activating_a_model_this_mac_cannot_hold_is_refused_with_no_overri
     refuse to start it, so an override here would activate a model that never runs."""
     refused = await client.put("/api/chat/models/qwen36-35b-a3b/activate", headers=auth_header(admin_token))
     assert refused.status_code == 409
-    assert "needs about 36 GB" in refused.json()["detail"] and "this Mac has 7.5 GB" in refused.json()["detail"]
+    assert "needs about 48 GB" in refused.json()["detail"] and "this Mac has 7.5 GB" in refused.json()["detail"]
     forced = await client.put("/api/chat/models/qwen36-35b-a3b/activate?force=true", headers=auth_header(admin_token))
     assert forced.status_code == 409, "an unknown query parameter changes nothing"
 
@@ -252,8 +252,8 @@ async def test_activating_a_model_that_fits_at_a_smaller_context_is_allowed(
     """The launcher clamps the context; the API does not stand in the way."""
     from harbor_clerk.llm.models import MODELS, max_context
 
-    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 12_000_000_000)
-    assert 0 < max_context(MODELS["qwen3-4b"], 12_000_000_000) < MODELS["qwen3-4b"].context_window
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 14_000_000_000)
+    assert 0 < max_context(MODELS["qwen3-4b"], 14_000_000_000) < MODELS["qwen3-4b"].context_window
     resp = await client.put("/api/chat/models/qwen3-4b/activate", headers=auth_header(admin_token))
     assert resp.status_code == 200
     listed = await client.get("/api/chat/models", headers=auth_header(admin_token))
@@ -284,8 +284,9 @@ async def test_the_list_reports_the_context_the_launcher_will_ask_for_when_yarn_
     monkeypatch.setattr(get_settings(), "llm_yarn_enabled", True)
     resp = await client.get("/api/chat/models", headers=auth_header(admin_token))
     q8 = next(m for m in resp.json() if m["id"] == "qwen3-8b")
-    assert q8["max_context_here"] == 22528 and q8["fits_here"] is False, (
-        "the 131072 YaRN window, clamped as the launcher clamps it: a tenth of the Mac stays free (#684)"
+    assert q8["max_context_here"] == 16384 and q8["fits_here"] is False, (
+        "the 131072 YaRN window, clamped as the launcher clamps it: a tenth of the Mac stays free (#684), and the "
+        "rest of the machine has its 8 GB (#698), so this Mac gets the working context"
     )
     assert q8["min_ram_gb"] == 36, "at 131072 tokens it is a 36 GB-tier model, not 16"
     monkeypatch.setattr(get_settings(), "llm_yarn_enabled", False)
@@ -295,8 +296,8 @@ async def test_the_list_reports_the_context_the_launcher_will_ask_for_when_yarn_
         if m["id"] == "qwen3-8b"
     )
     # YaRN off, the clamp is the same one: this Mac was never short of the plain window by much, and is now.
-    assert plain["max_context_here"] == 22528 and plain["fits_here"] is False and plain["min_ram_gb"] == 18
-    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 18 * 1024**3)
+    assert plain["max_context_here"] == 16384 and plain["fits_here"] is False and plain["min_ram_gb"] == 24
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 24 * 1024**3)
     roomy = next(
         m
         for m in (await client.get("/api/chat/models", headers=auth_header(admin_token))).json()

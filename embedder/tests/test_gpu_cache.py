@@ -176,7 +176,7 @@ def test_a_negative_value_does_not_silently_disable_the_guard(gpu_cache):
     growth back with no log line. The old test asserted `>= 0`, enshrining it."""
     mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="-1")
     assert mod.ENABLED, "-1 disabled the guard"
-    assert mod.CACHE_HIGH_WATER_MB == 4096
+    assert mod.CACHE_HIGH_WATER_MB == 1024
 
 
 def test_the_first_failure_is_logged(gpu_cache, monkeypatch, caplog):
@@ -247,7 +247,7 @@ def test_the_cooldown_expires(gpu_cache, monkeypatch):
 def test_an_absurd_high_water_is_rejected(gpu_cache):
     """A value past any real device is as 'off' as 0, just spelled differently."""
     mod = gpu_cache(GPU_CACHE_HIGH_WATER_MB="999999999")
-    assert mod.CACHE_HIGH_WATER_MB == 4096
+    assert mod.CACHE_HIGH_WATER_MB == 1024
     assert mod.ENABLED
 
 

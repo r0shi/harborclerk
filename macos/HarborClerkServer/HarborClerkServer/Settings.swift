@@ -93,8 +93,16 @@ final class AppSettings: @unchecked Sendable {
     /// unless it is passed explicitly, and macOS is the only platform where the
     /// MPS path runs. Default matches `embedder.gpu_cache.CACHE_HIGH_WATER_MB`.
     var gpuCacheHighWaterMB: Int {
-        get { lock.withLock { data["gpu_cache_high_water_mb"] as? Int ?? 4096 } }
+        get { lock.withLock { data["gpu_cache_high_water_mb"] as? Int ?? 1024 } }
         set { lock.withLock { data["gpu_cache_high_water_mb"] = newValue }; save() }
+    }
+
+    /// Passages the reranker scores per forward pass. Four was measured on the
+    /// mini as the fastest and an eighth of the activation memory of the
+    /// library's 32 (#698). Default matches `embedder.reranker.PREDICT_BATCH_SIZE`.
+    var rerankBatchSize: Int {
+        get { lock.withLock { data["rerank_batch_size"] as? Int ?? 4 } }
+        set { lock.withLock { data["rerank_batch_size"] = newValue }; save() }
     }
 
     var workerPreset: String {
@@ -385,16 +393,21 @@ final class AppSettings: @unchecked Sendable {
 enum MemoryBudget {
     /// Compute buffers, Metal scratch, the process itself.
     static let runtimeOverheadBytes = 1_000_000_000
-    /// The OS, the embedder and reranker, Postgres, the Tika JVM and the API.
-    static let hostHeadroomBytes = 6_000_000_000
+    /// The OS, the embedder and reranker, Postgres, the Tika JVM and the API,
+    /// while a search runs: the two services grow by their allocator caches
+    /// (`gpuCacheHighWaterMB` each) and the reranker's activations when they
+    /// work. Six GB was the floor at idle; it was not enough (#698). See
+    /// HOST_HEADROOM_BYTES in src/harbor_clerk/llm/models.py.
+    static let hostHeadroomBytes = 8_000_000_000
     /// Kept free on top of that when a context is sized: a tenth of the Mac. The
     /// headroom is what the rest of the machine uses, so a context sized to fill
     /// everything else left nothing free: the mini's 35B-A3B was given 241,664
     /// tokens and Metal refused its first prompt (#684). It decides how much
     /// context a model gets, never whether it loads: what fits only by eating
-    /// into it runs at `tightFitContext` (0 would refuse it instead). See
-    /// FREE_MEMORY_DIVISOR in src/harbor_clerk/llm/models.py for the measurements
-    /// and the three pairings this keeps.
+    /// into it runs at `tightFitContext` (0 gives it what the margin leaves, and
+    /// refuses it when that is under 4096). See FREE_MEMORY_DIVISOR in
+    /// src/harbor_clerk/llm/models.py for the measurements and the three
+    /// pairings this keeps.
     static let freeMemoryDivisor = 10
     static let tightFitContext = 16_384
     /// Context checkpoints per slot (--ctx-checkpoints). llama-server's default is

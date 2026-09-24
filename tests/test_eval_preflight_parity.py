@@ -56,7 +56,8 @@ def test_the_two_agree_at_the_edge_where_a_few_thousand_tokens_is_not_worth_runn
         kv_fixed_bytes=figures["kv_fixed_bytes"],
     )
     verdicts = set()
-    for ram in range(12_000_000_000, 13_200_000_000, 10_000_000):
+    # 5 GB of weights, 1 GB of overhead and the machine's 8 GB: the edge is a little past 14 GB.
+    for ram in range(14_000_000_000, 15_200_000_000, 10_000_000):
         ours = preflight.fits(figures, ram, overhead=RUNTIME_OVERHEAD_BYTES, headroom=HOST_HEADROOM_BYTES)
         assert ours == (max_context(model, ram) > 0), f"{ram} bytes"
         verdicts.add(ours)
