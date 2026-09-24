@@ -280,5 +280,5 @@ def test_verify_identifier_description_puts_search_first():
     vi = next(t for t in _BASE_CHAT_TOOLS if t["function"]["name"] == "verify_identifier")
     desc = vi["function"]["description"].lower()
     assert "search_documents first" in desc
-    assert "display name" in desc and "by words" in desc
+    assert "display name" in desc and "by words" in desc and "confirmed against the name" in desc
     assert "do not fall back" not in desc

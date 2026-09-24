@@ -211,6 +211,8 @@ def _render_verify_identifier(payload: Any, stream: TextIO) -> None:
         stream.write(f"unique: {_citation(m)}  [{m.get('doc_id', '')}]\n")
         if m.get("canonical_filename"):
             stream.write(f"  filename: {m['canonical_filename']}\n")
+        if payload.get("matched_by") == "words":
+            stream.write("  matched by the words of the name, not exactly: confirm the title is the one you meant\n")
         return
 
     if status == "ambiguous":

@@ -149,19 +149,49 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
     return result
 
 
-async def _find_candidates_by_words(session: AsyncSession, identifier: str) -> list[Document]:
-    """The loose pass, for when `_find_candidates` finds nothing: every word of the identifier must occur in
-    the title or the canonical filename (case-insensitive, any order, anything between).
+# Words a person puts in a document's name that a filing name never carries.
+_NAME_STOPWORDS = frozenset({"the", "a", "an", "of", "and", "its", "for", "to", "in", "on", "with", "by", "between"})
+# One camel-case or digit run: "ArcaUsTreasuryFund" -> Arca, Us, Treasury, Fund; "CNSPharma" -> CNS, Pharma.
+_CAMEL_RUN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
 
-    People name a document by a display name and files carry a filing name: "Arca US Treasury Fund
+
+def _name_tokens(text: str) -> list[str]:
+    """The words of a name as a person typed it: alphanumeric runs, lower-cased, without the stopwords and
+    without one-letter fragments punctuation leaves behind ("Fund's" -> fund). Digits stay ("2 Themart")."""
+    out: list[str] = []
+    for run in re.findall(r"[A-Za-z0-9]+", text):
+        low = run.lower()
+        if low in _NAME_STOPWORDS or (len(low) == 1 and low.isalpha()):
+            continue
+        out.append(low)
+    return out
+
+
+def _title_tokens(text: str | None) -> set[str]:
+    """The words of a title or filename, split on punctuation and on camel-case, lower-cased."""
+    tokens: set[str] = set()
+    for run in re.findall(r"[A-Za-z0-9]+", text or ""):
+        tokens.update(m.lower() for m in _CAMEL_RUN_RE.findall(run))
+    return tokens
+
+
+async def _find_candidates_by_words(session: AsyncSession, identifier: str) -> list[Document]:
+    """The loose pass, for when `_find_candidates` finds nothing: every word of the name must be a word of
+    the title or the canonical filename, in any order.
+
+    People name a document by a display name and files carry a filing name: "the Arca US Treasury Fund
     development agreement" against ``ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development
-    Agreement``. No substring of the one is the other, but every word of the display name is a substring of
-    the filing name, and the conjunction is selective: on the 80-contract CUAD corpus each of 14 such names
-    resolves to exactly its document (#711). A single word is the exact pass's own substring match, so this
-    pass asks for two or more; a word shared by many documents ("Development Agreement") comes back
-    ambiguous, as the exact pass would. Capped like the exact pass.
+    Agreement``. No substring of the one is the other, but every word of the name is a word of the filing
+    name once camel-case is split, and the conjunction is selective: on the 80-contract CUAD corpus each of
+    14 such names resolves to exactly its document (#711).
+
+    Words, not substrings: "Arca" is not "Arcadia" and "US" is not in "Industries". The review of the first
+    version found both false positives with substrings, on a tool whose "unique" is what callers quote
+    without checking. SQL narrows with substrings (a superset, bounded by the cap), Python decides by token
+    equality. A single word is the exact pass's own substring match, so this pass asks for two or more; a
+    name shared by several documents comes back ambiguous, as the exact pass would.
     """
-    words = [w for w in _normalize(identifier).split() if any(ch.isalnum() for ch in w)]
+    words = _name_tokens(identifier)
     if len(words) < 2:
         return []
     conditions = []
@@ -175,7 +205,18 @@ async def _find_candidates_by_words(session: AsyncSession, identifier: str) -> l
         .order_by(Document.title)
         .limit(_VERIFY_CANDIDATE_CAP)
     )
-    return list((await session.execute(stmt)).scalars().all())
+    wanted = set(words)
+    return [
+        d
+        for d in (await session.execute(stmt)).scalars().all()
+        if wanted <= (_title_tokens(d.title) | _title_tokens(d.canonical_filename))
+    ]
+
+
+_WORDS_MATCH_INSTRUCTION = (
+    "Matched by the words of the name, not exactly. Before quoting this document, confirm its title against "
+    "the name the user gave; if it is not the document they meant, say so rather than quote it."
+)
 
 
 def _has_nested_metadata(metadata_by_doc: dict[str, dict]) -> bool:
@@ -209,7 +250,8 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
 
     The exact pass (`_find_candidates`: substring of title or filename, equal to a metadata identifier) is
     tried first; when it finds nothing, the word pass (`_find_candidates_by_words`) is, and a unique or
-    ambiguous result from it carries ``"matched_by": "words"`` so the caller knows the name was loose.
+    ambiguous result from it carries ``"matched_by": "words"`` and an ``instruction`` to confirm the title
+    against the name the user gave, so a loose match is never quoted as an exact one.
 
     Empty / whitespace-only identifier returns {"error": "..."}.
     """
@@ -238,6 +280,7 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
         }
         if matched_by_words:
             payload["matched_by"] = "words"
+            payload["instruction"] = _WORDS_MATCH_INSTRUCTION
         return payload
 
     # Ambiguous — compute which metadata paths differ across candidates.
@@ -295,6 +338,7 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
         payload["overflow"] = True
     if matched_by_words:
         payload["matched_by"] = "words"
+        payload["instruction"] = _WORDS_MATCH_INSTRUCTION
     return payload
 
 

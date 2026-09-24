@@ -196,3 +196,16 @@ def test_render_text_falls_back_to_json_for_unknown_command():
     # No pretty-printer for unknown command → indented JSON to keep output usable.
     assert "foo" in buf.getvalue()
     assert "bar" in buf.getvalue()
+
+
+def test_render_text_verify_identifier_says_when_the_match_was_by_words():
+    """A loose match must not read like an exact one to a human either (#711)."""
+    buf = io.StringIO()
+    payload = {
+        "status": "unique",
+        "match": {"doc_id": "d1", "title": "ArcaUsTreasuryFund_20200207_Development Agreement", "citation": "Arca"},
+        "matched_by": "words",
+        "instruction": "Matched by the words of the name, not exactly. ...",
+    }
+    render(payload, mode=OutputMode.TEXT, command="verify-identifier", stream=buf)
+    assert "matched by the words of the name" in buf.getvalue()

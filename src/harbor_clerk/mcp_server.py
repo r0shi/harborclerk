@@ -2745,8 +2745,9 @@ async def kb_verify_identifier(identifier: str) -> str:
     Use this BEFORE quoting a specific document — checks the identifier
     against title, filename, and identifier-like metadata fields. Sharp
     affordance for fabrication-prevention. A display name matches its filing
-    name by words: "Arca US Treasury Fund development agreement" resolves to
-    ArcaUsTreasuryFund_20200207_…_Development Agreement (matched_by="words").
+    name by words: "the Arca US Treasury Fund development agreement" resolves
+    to ArcaUsTreasuryFund_20200207_…_Development Agreement with
+    matched_by="words" and an instruction to confirm the title before quoting.
 
     When to call:
       - Before claiming "the X contract says…" — verify X is a real, unique
@@ -2754,7 +2755,9 @@ async def kb_verify_identifier(identifier: str) -> str:
       - When kb_search returns hits whose titles all share a substring you
         used as an identifier — verify whether you're looking at one doc or
         N variants
-      - When the user asks about a specific named document
+      - When the user asks about a specific named document: search its
+        content with kb_search first, then verify which document you are
+        quoting. Do not open with this call and stop at not_found.
 
     What you get back:
       - status="not_found": no document matches — say so plainly; do NOT
@@ -2773,8 +2776,8 @@ async def kb_verify_identifier(identifier: str) -> str:
       - status="not_found" means no document carries the identifier, exactly
         or by its words. Tell the user so; do NOT present a similar document
         as this one. A question about content is still answerable: search
-        for the subject and the parties with kb_search and name the document
-        the search actually returns.
+        for the subject and the parties with kb_search and present what you
+        find under its own title, not as the document the user named.
       - status="ambiguous" with no discriminating_fields means the
         candidates are indistinguishable by metadata; inspect with
         kb_get_document if you must.
@@ -2804,7 +2807,8 @@ async def kb_verify_identifier(identifier: str) -> str:
             "Do NOT present a similar or adjacent document as this one, and do NOT pad the decline with "
             "'the closest match is...' or 'you may be interested in...'. If the question is about content "
             "rather than about this document's existence, answer it with search_documents on the subject and "
-            "the parties, and name the document the search actually returns."
+            "the parties, and present what you find as the document it is, under its own title, not as the "
+            "one the user named."
         )
     return json.dumps(result, default=str)
 

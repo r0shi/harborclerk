@@ -12,9 +12,15 @@ DESCRIPTION
     - identifier-like metadata keys (id, contract_id, policy_id, case_id,
       order_id, invoice_id, message_id, *_id) under metadata.sidecar.** or
       metadata.frontmatter.** (case-insensitive EQUALS)
+    - and, when none of those match, the WORDS of the name against the words
+      of the title or filename (camel-case split, any order): "the Arca US
+      Treasury Fund development agreement" finds ArcaUsTreasuryFund_..._
+      Development Agreement. Such a result carries matched_by: "words" and
+      an instruction to confirm the title before quoting it.
 
   Status outcomes:
-    not_found  → no document matches; do NOT fall back to similarity
+    not_found  → no document carries the name, exactly or by its words; do
+                 not present a similar document as this one
     unique     → exactly one match
     ambiguous  → multiple matches; each candidate carries
                  discriminating_fields showing what distinguishes it
@@ -33,7 +39,9 @@ RETURNS (JSON)
   { "status": "unique",
     "match": { "doc_id": "...", "title": "...",
                "canonical_filename": "...",
-               "discriminating_fields": {} } }
+               "discriminating_fields": {} },
+    "matched_by": "words",            // only when matched by the name's words
+    "instruction": "Matched by the words of the name, not exactly. ..." }
 
   // ambiguous (count > 1)
   { "status": "ambiguous",
