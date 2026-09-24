@@ -211,12 +211,16 @@ def _render_verify_identifier(payload: Any, stream: TextIO) -> None:
         stream.write(f"unique: {_citation(m)}  [{m.get('doc_id', '')}]\n")
         if m.get("canonical_filename"):
             stream.write(f"  filename: {m['canonical_filename']}\n")
+        if payload.get("matched_by") == "words":
+            stream.write("  matched by the words of the name, not exactly: confirm the title is the one you meant\n")
         return
 
     if status == "ambiguous":
         count = payload.get("count", 0)
         overflow = " (overflow)" if payload.get("overflow") else ""
         stream.write(f"ambiguous: {count} candidates{overflow}\n")
+        if payload.get("matched_by") == "words":
+            stream.write("  matched by the words of the name, not exactly\n")
         for c in payload.get("candidates", []):
             stream.write(f"  - {_citation(c)}  [{c.get('doc_id', '')}]\n")
             for path, value in (c.get("discriminating_fields") or {}).items():

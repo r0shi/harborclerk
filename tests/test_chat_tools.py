@@ -269,3 +269,16 @@ async def test_permission_error_reaches_the_llm_without_a_class_name():
 
     assert "PermissionError" not in result, f"class name leaked to the LLM: {result}"
     assert "authenticat" in result.lower() or "admin" in result.lower(), result
+
+
+def test_verify_identifier_description_puts_search_first():
+    """#711: a model that follows tool descriptions to the letter opened every single-contract question with
+    verify_identifier and stopped at not_found. The description now says what to do first, and that a display
+    name resolves loosely."""
+    from harbor_clerk.llm.tools import _BASE_CHAT_TOOLS
+
+    vi = next(t for t in _BASE_CHAT_TOOLS if t["function"]["name"] == "verify_identifier")
+    desc = vi["function"]["description"].lower()
+    assert "search_documents first" in desc
+    assert "display name" in desc and "by words" in desc and "confirmed against the name" in desc
+    assert "do not fall back" not in desc

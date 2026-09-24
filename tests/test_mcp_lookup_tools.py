@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from harbor_clerk.api.deps import Principal
 from harbor_clerk.mcp_lookup_tools import (
     _find_candidates,
+    _find_candidates_by_words,
     _query_documents_by_date,
     documents_by_date,
     verify_identifier,
@@ -903,3 +904,179 @@ async def test_documents_by_date_email_from_address_filter(db_session):
     doc_ids = {str(d.doc_id) for d, _, _ in rows}
     assert str(a.doc_id) in doc_ids
     assert str(b.doc_id) not in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# The word pass (#711): a display name against a filing name
+# ---------------------------------------------------------------------------
+
+ARCA = "ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development Agreement"
+CLICKSTREAM = "ClickstreamCorp_20200330_1-A_EX1A-6 MAT CTRCT_12089935_EX1A-6 MAT CTRCT_Development Agreement"
+
+
+@pytest.mark.asyncio
+async def test_a_display_name_resolves_to_its_filing_name_by_words(db_session):
+    """No substring of the display name is the filing name, so the exact pass finds nothing; every word of
+    it is in the filing name, so the word pass finds exactly the one document and says how."""
+    target = await _seed_doc(db_session, title=ARCA)
+    await _seed_doc(db_session, title=CLICKSTREAM)
+    await db_session.flush()
+    assert await _find_candidates(db_session, "Arca Us Treasury Fund Development Agreement") == []
+    out = await verify_identifier(db_session, "Arca Us Treasury Fund Development Agreement")
+    assert out["status"] == "unique" and out["match"]["doc_id"] == str(target.doc_id)
+    assert out["matched_by"] == "words"
+    assert "confirm its title" in out["instruction"], "a loose match is never handed over as an exact one"
+
+
+@pytest.mark.asyncio
+async def test_the_word_pass_survives_articles_punctuation_and_case(db_session):
+    """The question says "the Arca US Treasury Fund development agreement"; a model may quote it, add a
+    possessive or a full stop. All of these are the same name."""
+    target = await _seed_doc(db_session, title=ARCA)
+    await _seed_doc(db_session, title=CLICKSTREAM)
+    await db_session.flush()
+    for name in (
+        "the Arca US Treasury Fund development agreement",
+        "Arca US Treasury Fund Development Agreement.",
+        "Arca US Treasury Fund's Development Agreement",
+        "Arca US Treasury Fund (Development Agreement)",
+        '"Arca US Treasury Fund Development Agreement"',
+    ):
+        out = await verify_identifier(db_session, name)
+        assert out["status"] == "unique" and out["match"]["doc_id"] == str(target.doc_id), name
+
+
+@pytest.mark.asyncio
+async def test_the_word_pass_matches_words_not_substrings(db_session):
+    """ "Arca" is not "Arcadia" and "US" is not inside "Industries": a substring match returned unique for the
+    wrong document on both, and unique is what callers quote without checking."""
+    await _seed_doc(db_session, title="ArcadiaBiosciences_20190315_10-K_EX-10.22_Development Agreement")
+    await _seed_doc(db_session, title="Prudential_Industries_Trust_Business_Plus_20200101_Master Services Agreement")
+    await db_session.flush()
+    assert (await verify_identifier(db_session, "Arca Development Agreement"))["status"] == "not_found"
+    assert (await verify_identifier(db_session, "US Trust Services Agreement"))["status"] == "not_found"
+    assert (await verify_identifier(db_session, "Prudential Industries Trust services agreement"))["status"] == "unique"
+
+
+def test_name_and_title_tokenisers():
+    from harbor_clerk.mcp_lookup_tools import _name_tokens, _title_tokens
+
+    assert _name_tokens("the Arca US Treasury Fund's development agreement.") == [
+        "arca",
+        "us",
+        "treasury",
+        "fund",
+        "development",
+        "agreement",
+    ]
+    assert _name_tokens("2 Themart Com Inc Agency Agreement")[0] == "2", "digits stay"
+    assert _name_tokens("T-Mobile agreement") == ["t", "mobile", "agreement"], "one-letter words stay, on both sides"
+    # A run a person says as one word is kept whole as well as split.
+    assert {"paypal", "pay", "pal"} <= _title_tokens("PayPal_Services_Agreement.pdf")
+    assert {"q4", "k5", "3m"} <= _title_tokens("Q4 K5 3M")
+    assert _name_tokens("PayPal Q4 3M") == ["paypal", "q4", "3m"]
+    # Accents fold on both sides.
+    assert _name_tokens("Société Générale agreement") == ["societe", "generale", "agreement"]
+    assert {"societe", "generale"} <= _title_tokens("Société_Générale_Agreement.pdf")
+    assert _title_tokens("ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_Development Agreement") >= {
+        "arca",
+        "us",
+        "treasury",
+        "fund",
+        "20200207",
+        "development",
+        "agreement",
+    }
+    assert {"cns", "pharmaceuticals", "inc"} <= _title_tokens("CnsPharmaceuticalsInc_20200326_8-K")
+    assert "arcadia" in _title_tokens("ArcadiaBiosciences") and "arca" not in _title_tokens("ArcadiaBiosciences")
+
+
+@pytest.mark.asyncio
+async def test_words_shared_by_several_documents_are_ambiguous_not_unique(db_session):
+    a = await _seed_doc(db_session, title=ARCA)
+    b = await _seed_doc(db_session, title=CLICKSTREAM)
+    await db_session.flush()
+    # "Development Agreement" alone is a substring of both titles, so the exact pass answers ambiguous itself;
+    # reversed, no substring matches and the word pass finds both.
+    out = await verify_identifier(db_session, "Agreement, Development")
+    assert out["status"] == "ambiguous" and out["count"] == 2 and out["matched_by"] == "words"
+    assert "confirm its title" in out["instruction"]
+    assert {c["doc_id"] for c in out["candidates"]} == {str(a.doc_id), str(b.doc_id)}
+
+
+@pytest.mark.asyncio
+async def test_an_exact_match_wins_and_is_not_marked_loose(db_session):
+    target = await _seed_doc(db_session, title=ARCA)
+    await db_session.flush()
+    out = await verify_identifier(db_session, "ArcaUsTreasuryFund_20200207")
+    assert out["status"] == "unique" and out["match"]["doc_id"] == str(target.doc_id)
+    assert "matched_by" not in out
+
+
+@pytest.mark.asyncio
+async def test_a_name_no_document_carries_is_still_not_found(db_session):
+    await _seed_doc(db_session, title=ARCA)
+    await db_session.flush()
+    out = await verify_identifier(db_session, "Acme Widgets Master Services Agreement")
+    assert out == {"status": "not_found", "identifier": "Acme Widgets Master Services Agreement"}
+
+
+@pytest.mark.asyncio
+async def test_the_word_pass_needs_two_words_and_matches_the_filename_too(db_session):
+    """One word is the exact pass's own substring match, so the word pass declines it; the filename counts
+    like the title does."""
+    target = await _seed_doc(db_session, title="scan 0412", canonical_filename="Berkshire_Hills_Endorsement.pdf")
+    await db_session.flush()
+    assert await _find_candidates_by_words(db_session, "Berkshire") == []
+    assert [d.doc_id for d in await _find_candidates_by_words(db_session, "Berkshire Hills endorsement")] == [
+        target.doc_id
+    ]
+    assert await _find_candidates_by_words(db_session, "Berkshire Hills 50% off") == [], (
+        "'off' is not a word of the name"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_one_letter_word_of_the_name_still_counts(db_session):
+    """ "T-Mobile agreement" must not resolve to Sprint's: dropping the "t" widened the name."""
+    sprint = await _seed_doc(db_session, title="Sprint Mobile Agreement.pdf")
+    await db_session.flush()
+    assert (await verify_identifier(db_session, "T-Mobile agreement"))["status"] == "not_found"
+    tm = await _seed_doc(db_session, title="T-Mobile_Agreement_2021.pdf")
+    await db_session.flush()
+    out = await verify_identifier(db_session, "T-Mobile agreement")
+    assert out["status"] == "unique" and out["match"]["doc_id"] == str(tm.doc_id) != str(sprint.doc_id)
+
+
+@pytest.mark.asyncio
+async def test_a_run_said_as_one_word_and_an_accented_name_resolve(db_session):
+    paypal = await _seed_doc(db_session, title="PayPal_Services_Agreement.pdf")
+    sg = await _seed_doc(db_session, title="Société_Générale_Facility_Agreement.pdf")
+    await db_session.flush()
+    assert (await verify_identifier(db_session, "PayPal services agreement"))["match"]["doc_id"] == str(paypal.doc_id)
+    assert (await verify_identifier(db_session, "Societe Generale facility agreement"))["match"]["doc_id"] == str(
+        sg.doc_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_hundred_substring_decoys_do_not_hide_the_document_or_stand_in_for_it(db_session):
+    """The SQL pass narrows by substring; a cap there ran before the token check and dropped the true document
+    behind decoys that contain its words as fragments ("us" in "Business", "trust" in "Trustee"). The cap
+    applies to what passed the token check."""
+    for i in range(100):
+        await _seed_doc(db_session, title=f"Business_Trustee_Agreement_{i:03d}.pdf")
+    target = await _seed_doc(db_session, title="US Trust Agreement.pdf")  # sorts after every decoy
+    await db_session.flush()
+    out = await verify_identifier(db_session, "the US Trust agreement")
+    assert out["status"] == "unique" and out["match"]["doc_id"] == str(target.doc_id)
+    assert "overflow" not in out
+
+
+@pytest.mark.asyncio
+async def test_a_word_said_twice_is_still_one_word(db_session):
+    """The two-word minimum counts distinct words: "Acme Acme" must not reach the word pass."""
+    await _seed_doc(db_session, title="Acme_Corp_Master_Services_Agreement.pdf")
+    await db_session.flush()
+    assert (await verify_identifier(db_session, "Acme Acme"))["status"] == "not_found"
+    assert (await verify_identifier(db_session, "Acme Corp"))["status"] == "unique"

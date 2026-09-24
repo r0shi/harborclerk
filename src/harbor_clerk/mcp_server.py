@@ -2744,7 +2744,11 @@ async def kb_verify_identifier(identifier: str) -> str:
 
     Use this BEFORE quoting a specific document — checks the identifier
     against title, filename, and identifier-like metadata fields. Sharp
-    affordance for fabrication-prevention.
+    affordance for fabrication-prevention. When no title contains the name
+    exactly, a display name matches its filing name by words: "the Arca US
+    Treasury Fund development agreement" resolves
+    to ArcaUsTreasuryFund_20200207_…_Development Agreement with
+    matched_by="words" and an instruction to confirm the title before quoting.
 
     When to call:
       - Before claiming "the X contract says…" — verify X is a real, unique
@@ -2752,7 +2756,9 @@ async def kb_verify_identifier(identifier: str) -> str:
       - When kb_search returns hits whose titles all share a substring you
         used as an identifier — verify whether you're looking at one doc or
         N variants
-      - When the user asks about a specific named document
+      - When the user asks about a specific named document: search its
+        content with kb_search first, then verify which document you are
+        quoting. Do not open with this call and stop at not_found.
 
     What you get back:
       - status="not_found": no document matches — say so plainly; do NOT
@@ -2768,9 +2774,11 @@ async def kb_verify_identifier(identifier: str) -> str:
     refine the identifier with a more specific substring.
 
     How to decline:
-      - status="not_found" means the identifier is NOT in the corpus. Do
-        NOT search by similarity as a substitute — tell the user the
-        identifier doesn't exist.
+      - status="not_found" means no document carries the identifier, exactly
+        or by its words. Tell the user so; do NOT present a similar document
+        as this one. A question about content is still answerable: search
+        for the subject and the parties with kb_search and present what you
+        find under its own title, not as the document the user named.
       - status="ambiguous" with no discriminating_fields means the
         candidates are indistinguishable by metadata; inspect with
         kb_get_document if you must.
@@ -2795,10 +2803,13 @@ async def kb_verify_identifier(identifier: str) -> str:
     # tools/list description it saw at session start.
     if isinstance(result, dict) and result.get("status") == "not_found":
         result["instruction"] = (
-            "This identifier does not exist in the corpus. State that plainly to the user. "
-            "Do NOT search for, suggest, or substitute a similar or adjacent document, and "
-            "do NOT pad the decline with 'the closest match is...' or 'you may be interested "
-            "in...'. The correct answer is that the document is absent."
+            "No document carries this identifier, exactly or by its words: it does not exist in the corpus. "
+            "State that plainly to the user. "
+            "Do NOT present a similar or adjacent document as this one, and do NOT pad the decline with "
+            "'the closest match is...' or 'you may be interested in...'. If the question is about content "
+            "rather than about this document's existence, answer it with the search tool (kb_search here, "
+            "search_documents in chat) on the subject and the parties, and present what you find as the "
+            "document it is, under its own title, not as the one the user named."
         )
     return json.dumps(result, default=str)
 

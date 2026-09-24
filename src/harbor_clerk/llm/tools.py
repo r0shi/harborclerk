@@ -366,14 +366,20 @@ _BASE_CHAT_TOOLS = [
         "function": {
             "name": "verify_identifier",
             "description": (
-                "Resolve a specific document identifier (title, filename, or "
-                "metadata identifier) to exactly one doc_id. Call BEFORE "
-                "quoting a named document so you do not confuse it with "
-                "similarly-named documents. Returns status='unique' with "
-                "doc_id + title; status='ambiguous' with discriminating "
-                "fields per candidate; or status='not_found' (the document "
-                "does not exist in the corpus — do NOT fall back to similarity "
-                "search)."
+                "Resolve a document the user named (title, filename, or "
+                "metadata identifier) to exactly one doc_id; a display name "
+                "such as 'Arca US Treasury Fund development agreement' matches "
+                "its filing name by words when no title contains it exactly, "
+                "loosely: a matched_by='words' result "
+                "must be confirmed against the name the user gave before you "
+                "quote it. For a question about a document's "
+                "content, call search_documents first; call this when the "
+                "results show several similarly-named documents and you are "
+                "about to quote one. Returns status='unique' with doc_id + "
+                "title; status='ambiguous' with discriminating fields per "
+                "candidate; or status='not_found' (no document carries the "
+                "name — do not present a similar document as this one; a "
+                "content question is still answered by search_documents)."
             ),
             "parameters": {
                 "type": "object",
