@@ -207,14 +207,13 @@ async def _find_candidates_by_words(session: AsyncSession, identifier: str) -> l
     same order. A single word is the exact pass's own substring match, so this pass asks for two or more; a
     name shared by several documents comes back ambiguous, as the exact pass would.
     """
-    words = _name_tokens(identifier)
-    if len(words) < 2:
+    wanted = set(_name_tokens(identifier))
+    if len(wanted) < 2:  # distinct words: "Acme Acme" is one word said twice
         return []
-    wanted = set(words)
     names = select(Document.doc_id, Document.title, Document.canonical_filename).where(Document.status == "active")
     matched_ids = [
         row.doc_id
-        for row in (await session.execute(names.order_by(Document.title))).all()
+        for row in sorted((await session.execute(names)).all(), key=lambda r: r.title or "")
         if wanted <= (_title_tokens(row.title) | _title_tokens(row.canonical_filename))
     ][:_VERIFY_CANDIDATE_CAP]
     if not matched_ids:

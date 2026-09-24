@@ -1071,3 +1071,12 @@ async def test_a_hundred_substring_decoys_do_not_hide_the_document_or_stand_in_f
     out = await verify_identifier(db_session, "the US Trust agreement")
     assert out["status"] == "unique" and out["match"]["doc_id"] == str(target.doc_id)
     assert "overflow" not in out
+
+
+@pytest.mark.asyncio
+async def test_a_word_said_twice_is_still_one_word(db_session):
+    """The two-word minimum counts distinct words: "Acme Acme" must not reach the word pass."""
+    await _seed_doc(db_session, title="Acme_Corp_Master_Services_Agreement.pdf")
+    await db_session.flush()
+    assert (await verify_identifier(db_session, "Acme Acme"))["status"] == "not_found"
+    assert (await verify_identifier(db_session, "Acme Corp"))["status"] == "unique"

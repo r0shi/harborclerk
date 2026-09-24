@@ -2744,8 +2744,9 @@ async def kb_verify_identifier(identifier: str) -> str:
 
     Use this BEFORE quoting a specific document — checks the identifier
     against title, filename, and identifier-like metadata fields. Sharp
-    affordance for fabrication-prevention. A display name matches its filing
-    name by words: "the Arca US Treasury Fund development agreement" resolves
+    affordance for fabrication-prevention. When no title contains the name
+    exactly, a display name matches its filing name by words: "the Arca US
+    Treasury Fund development agreement" resolves
     to ArcaUsTreasuryFund_20200207_…_Development Agreement with
     matched_by="words" and an instruction to confirm the title before quoting.
 
