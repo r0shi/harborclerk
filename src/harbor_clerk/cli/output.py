@@ -219,6 +219,8 @@ def _render_verify_identifier(payload: Any, stream: TextIO) -> None:
         count = payload.get("count", 0)
         overflow = " (overflow)" if payload.get("overflow") else ""
         stream.write(f"ambiguous: {count} candidates{overflow}\n")
+        if payload.get("matched_by") == "words":
+            stream.write("  matched by the words of the name, not exactly\n")
         for c in payload.get("candidates", []):
             stream.write(f"  - {_citation(c)}  [{c.get('doc_id', '')}]\n")
             for path, value in (c.get("discriminating_fields") or {}).items():

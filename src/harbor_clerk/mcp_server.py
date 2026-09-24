@@ -2806,9 +2806,9 @@ async def kb_verify_identifier(identifier: str) -> str:
             "State that plainly to the user. "
             "Do NOT present a similar or adjacent document as this one, and do NOT pad the decline with "
             "'the closest match is...' or 'you may be interested in...'. If the question is about content "
-            "rather than about this document's existence, answer it with search_documents on the subject and "
-            "the parties, and present what you find as the document it is, under its own title, not as the "
-            "one the user named."
+            "rather than about this document's existence, answer it with the search tool (kb_search here, "
+            "search_documents in chat) on the subject and the parties, and present what you find as the "
+            "document it is, under its own title, not as the one the user named."
         )
     return json.dumps(result, default=str)
 

@@ -107,7 +107,7 @@ async def test_verify_identifier_not_found_carries_anti_hedge_instruction():
     assert "closest match" in instr
     # The decline must not stop the model from answering the question (#711): Gemma read the previous text
     # ("Do NOT search for ... a similar document") as "do not search" and declined 12 of 14 content questions.
-    assert "search_documents" in instr and "do not search" not in instr
+    assert "search_documents" in instr and "kb_search" in instr and "do not search" not in instr
     assert "under its own title" in instr, "the search hit is presented as itself, never as the document the user named"
     assert "do not" in instr
 

@@ -15,6 +15,7 @@ Task 2 establishes the candidate-matching layer for verify_identifier.
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -153,25 +154,37 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
 _NAME_STOPWORDS = frozenset({"the", "a", "an", "of", "and", "its", "for", "to", "in", "on", "with", "by", "between"})
 # One camel-case or digit run: "ArcaUsTreasuryFund" -> Arca, Us, Treasury, Fund; "CNSPharma" -> CNS, Pharma.
 _CAMEL_RUN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
+# Letters and digits in any script; underscore is punctuation here.
+_WORD_RUN_RE = re.compile(r"[^\W_]+")
+_POSSESSIVE_RE = re.compile(r"[\u2019']s\b")
+
+
+def _strip_accents(text: str) -> str:
+    """ "Société Générale" -> "Societe Generale": filing names lose their accents on the way through a
+    filesystem more often than not, and a combining mark would otherwise split a word in two."""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+
+
+def _fold(text: str) -> str:
+    """Stripped of diacritics and case-folded, so the two spellings above are the same words."""
+    return _strip_accents(text).casefold()
 
 
 def _name_tokens(text: str) -> list[str]:
-    """The words of a name as a person typed it: alphanumeric runs, lower-cased, without the stopwords and
-    without one-letter fragments punctuation leaves behind ("Fund's" -> fund). Digits stay ("2 Themart")."""
-    out: list[str] = []
-    for run in re.findall(r"[A-Za-z0-9]+", text):
-        low = run.lower()
-        if low in _NAME_STOPWORDS or (len(low) == 1 and low.isalpha()):
-            continue
-        out.append(low)
-    return out
+    """The words of a name as a person typed it: alphanumeric runs, folded, without the stopwords and
+    without the possessive ("Fund's" -> fund). One-letter words stay ("T-Mobile" -> t, mobile), on both sides,
+    so a fragment cannot widen a name into another company's title."""
+    return [run for run in _WORD_RUN_RE.findall(_fold(_POSSESSIVE_RE.sub("", text))) if run not in _NAME_STOPWORDS]
 
 
 def _title_tokens(text: str | None) -> set[str]:
-    """The words of a title or filename, split on punctuation and on camel-case, lower-cased."""
+    """The words of a title or filename, split on punctuation and on camel-case, folded. Each run is kept whole
+    as well as split, so "PayPal" is pay, pal and paypal, and "K5" is k, 5 and k5: a name says such a run as
+    one word."""
     tokens: set[str] = set()
-    for run in re.findall(r"[A-Za-z0-9]+", text or ""):
-        tokens.update(m.lower() for m in _CAMEL_RUN_RE.findall(run))
+    for run in _WORD_RUN_RE.findall(_strip_accents(text or "")):  # case kept: the camel split needs it
+        tokens.add(run.casefold())
+        tokens.update(m.casefold() for m in _CAMEL_RUN_RE.findall(run))
     return tokens
 
 
@@ -185,32 +198,30 @@ async def _find_candidates_by_words(session: AsyncSession, identifier: str) -> l
     name once camel-case is split, and the conjunction is selective: on the 80-contract CUAD corpus each of
     14 such names resolves to exactly its document (#711).
 
-    Words, not substrings: "Arca" is not "Arcadia" and "US" is not in "Industries". The review of the first
-    version found both false positives with substrings, on a tool whose "unique" is what callers quote
-    without checking. SQL narrows with substrings (a superset, bounded by the cap), Python decides by token
-    equality. A single word is the exact pass's own substring match, so this pass asks for two or more; a
+    Words, not substrings: "Arca" is not "Arcadia" and "US" is not in "Industries". The first version
+    matched substrings and returned unique for the wrong document on both, on a tool whose "unique" is what
+    callers quote without checking. The second narrowed with an ILIKE prefilter, which dropped the true
+    document behind a hundred decoys at its cap and behind an accent it could not see. So: one query for the
+    titles and filenames of every active document (two short columns), the decision in Python by token
+    equality, the cap applied to what passed. The exact pass scans the same table with ILIKE; this costs the
+    same order. A single word is the exact pass's own substring match, so this pass asks for two or more; a
     name shared by several documents comes back ambiguous, as the exact pass would.
     """
     words = _name_tokens(identifier)
     if len(words) < 2:
         return []
-    conditions = []
-    for word in words:
-        pattern = f"%{escape_ilike(word)}%"
-        conditions.append(or_(Document.title.op("ILIKE")(pattern), Document.canonical_filename.op("ILIKE")(pattern)))
-    stmt = (
-        select(Document)
-        .where(Document.status == "active")
-        .where(*conditions)
-        .order_by(Document.title)
-        .limit(_VERIFY_CANDIDATE_CAP)
-    )
     wanted = set(words)
-    return [
-        d
-        for d in (await session.execute(stmt)).scalars().all()
-        if wanted <= (_title_tokens(d.title) | _title_tokens(d.canonical_filename))
-    ]
+    names = select(Document.doc_id, Document.title, Document.canonical_filename).where(Document.status == "active")
+    matched_ids = [
+        row.doc_id
+        for row in (await session.execute(names.order_by(Document.title))).all()
+        if wanted <= (_title_tokens(row.title) | _title_tokens(row.canonical_filename))
+    ][:_VERIFY_CANDIDATE_CAP]
+    if not matched_ids:
+        return []
+    docs = (await session.execute(select(Document).where(Document.doc_id.in_(matched_ids)))).scalars().all()
+    by_id = {d.doc_id: d for d in docs}
+    return [by_id[i] for i in matched_ids if i in by_id]
 
 
 _WORDS_MATCH_INSTRUCTION = (

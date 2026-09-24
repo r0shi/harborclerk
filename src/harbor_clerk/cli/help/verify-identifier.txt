@@ -40,8 +40,9 @@ RETURNS (JSON)
     "match": { "doc_id": "...", "title": "...",
                "canonical_filename": "...",
                "discriminating_fields": {} },
-    "matched_by": "words",            // only when matched by the name's words
+    "matched_by": "words",            // only when matched by the name's words;
     "instruction": "Matched by the words of the name, not exactly. ..." }
+                                      // ambiguous results carry the same two
 
   // ambiguous (count > 1)
   { "status": "ambiguous",

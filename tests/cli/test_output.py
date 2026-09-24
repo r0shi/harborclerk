@@ -209,3 +209,20 @@ def test_render_text_verify_identifier_says_when_the_match_was_by_words():
     }
     render(payload, mode=OutputMode.TEXT, command="verify-identifier", stream=buf)
     assert "matched by the words of the name" in buf.getvalue()
+
+
+def test_render_text_verify_identifier_says_when_an_ambiguous_match_was_by_words():
+    buf = io.StringIO()
+    payload = {
+        "status": "ambiguous",
+        "count": 2,
+        "candidates": [
+            {"doc_id": "d1", "title": "A", "citation": "A"},
+            {"doc_id": "d2", "title": "B", "citation": "B"},
+        ],
+        "suggestion": "pick one",
+        "matched_by": "words",
+        "instruction": "Matched by the words of the name, not exactly. ...",
+    }
+    render(payload, mode=OutputMode.TEXT, command="verify-identifier", stream=buf)
+    assert "matched by the words of the name" in buf.getvalue()

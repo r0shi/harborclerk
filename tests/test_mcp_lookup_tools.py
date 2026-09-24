@@ -969,7 +969,15 @@ def test_name_and_title_tokenisers():
         "development",
         "agreement",
     ]
-    assert _name_tokens("2 Themart Com Inc Agency Agreement")[0] == "2", "digits stay, one-letter fragments go"
+    assert _name_tokens("2 Themart Com Inc Agency Agreement")[0] == "2", "digits stay"
+    assert _name_tokens("T-Mobile agreement") == ["t", "mobile", "agreement"], "one-letter words stay, on both sides"
+    # A run a person says as one word is kept whole as well as split.
+    assert {"paypal", "pay", "pal"} <= _title_tokens("PayPal_Services_Agreement.pdf")
+    assert {"q4", "k5", "3m"} <= _title_tokens("Q4 K5 3M")
+    assert _name_tokens("PayPal Q4 3M") == ["paypal", "q4", "3m"]
+    # Accents fold on both sides.
+    assert _name_tokens("Société Générale agreement") == ["societe", "generale", "agreement"]
+    assert {"societe", "generale"} <= _title_tokens("Société_Générale_Agreement.pdf")
     assert _title_tokens("ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_Development Agreement") >= {
         "arca",
         "us",
@@ -992,6 +1000,7 @@ async def test_words_shared_by_several_documents_are_ambiguous_not_unique(db_ses
     # reversed, no substring matches and the word pass finds both.
     out = await verify_identifier(db_session, "Agreement, Development")
     assert out["status"] == "ambiguous" and out["count"] == 2 and out["matched_by"] == "words"
+    assert "confirm its title" in out["instruction"]
     assert {c["doc_id"] for c in out["candidates"]} == {str(a.doc_id), str(b.doc_id)}
 
 
@@ -1025,3 +1034,40 @@ async def test_the_word_pass_needs_two_words_and_matches_the_filename_too(db_ses
     assert await _find_candidates_by_words(db_session, "Berkshire Hills 50% off") == [], (
         "'off' is not a word of the name"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_one_letter_word_of_the_name_still_counts(db_session):
+    """ "T-Mobile agreement" must not resolve to Sprint's: dropping the "t" widened the name."""
+    sprint = await _seed_doc(db_session, title="Sprint Mobile Agreement.pdf")
+    await db_session.flush()
+    assert (await verify_identifier(db_session, "T-Mobile agreement"))["status"] == "not_found"
+    tm = await _seed_doc(db_session, title="T-Mobile_Agreement_2021.pdf")
+    await db_session.flush()
+    out = await verify_identifier(db_session, "T-Mobile agreement")
+    assert out["status"] == "unique" and out["match"]["doc_id"] == str(tm.doc_id) != str(sprint.doc_id)
+
+
+@pytest.mark.asyncio
+async def test_a_run_said_as_one_word_and_an_accented_name_resolve(db_session):
+    paypal = await _seed_doc(db_session, title="PayPal_Services_Agreement.pdf")
+    sg = await _seed_doc(db_session, title="Société_Générale_Facility_Agreement.pdf")
+    await db_session.flush()
+    assert (await verify_identifier(db_session, "PayPal services agreement"))["match"]["doc_id"] == str(paypal.doc_id)
+    assert (await verify_identifier(db_session, "Societe Generale facility agreement"))["match"]["doc_id"] == str(
+        sg.doc_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_hundred_substring_decoys_do_not_hide_the_document_or_stand_in_for_it(db_session):
+    """The SQL pass narrows by substring; a cap there ran before the token check and dropped the true document
+    behind decoys that contain its words as fragments ("us" in "Business", "trust" in "Trustee"). The cap
+    applies to what passed the token check."""
+    for i in range(100):
+        await _seed_doc(db_session, title=f"Business_Trustee_Agreement_{i:03d}.pdf")
+    target = await _seed_doc(db_session, title="US Trust Agreement.pdf")  # sorts after every decoy
+    await db_session.flush()
+    out = await verify_identifier(db_session, "the US Trust agreement")
+    assert out["status"] == "unique" and out["match"]["doc_id"] == str(target.doc_id)
+    assert "overflow" not in out
