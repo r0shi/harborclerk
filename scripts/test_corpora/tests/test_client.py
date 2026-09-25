@@ -246,6 +246,55 @@ def test_pipeline_status_quiet():
     assert c.pipeline_quiet() is True
 
 
+def test_pipeline_is_quiet_while_summaries_are_still_queued():
+    """Summaries do not gate search (#717): 5,772 of them queued on the llm queue kept the Enron ingest "not
+    drained" for four hours after every document was ready."""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "queues": {
+                    "io": {"queued": 0, "running": 0},
+                    "cpu": {"queued": 0, "running": 0},
+                    "llm": {"queued": 5772, "running": 1},
+                },
+                "by_stage": {
+                    "extract": {"queued": 0, "running": 0, "queue": "io"},
+                    "embed": {"queued": 0, "running": 0, "queue": "cpu"},
+                    "summarize": {"queued": 5772, "running": 1, "queue": "llm"},
+                    "finalize": {"queued": 0, "running": 0, "queue": "io"},
+                },
+            },
+        )
+
+    c = make_client(handler)
+    assert c.pipeline_quiet() is True
+    assert c.summarize_backlog() == 5773
+
+
+def test_pipeline_is_busy_while_a_gating_stage_has_work():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "queues": {
+                    "io": {"queued": 0, "running": 0},
+                    "cpu": {"queued": 1, "running": 0},
+                    "llm": {"queued": 0, "running": 0},
+                },
+                "by_stage": {
+                    "embed": {"queued": 1, "running": 0, "queue": "cpu"},
+                    "summarize": {"queued": 0, "running": 0, "queue": "llm"},
+                },
+            },
+        )
+
+    c = make_client(handler)
+    assert c.pipeline_quiet() is False
+    assert c.summarize_backlog() == 0
+
+
 def test_pipeline_status_busy():
     def handler(request):
         return httpx.Response(

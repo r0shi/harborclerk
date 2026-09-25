@@ -1055,6 +1055,14 @@ def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest, api_base: st
     log.info("waiting for pipeline to drain (this can take a while)")
     if not hc.wait_for_quiet_pipeline(max_wait_seconds=4 * 3600):
         raise RuntimeError(f"pipeline never drained for {manifest.corpus_id}")
+    backlog = hc.summarize_backlog()
+    if backlog:
+        # Summaries do not gate search, so the run proceeds; the report's reader should know they ran beside it.
+        log.warning(
+            "%d summaries still queued or running for %s; they do not gate search and the run proceeds",
+            backlog,
+            manifest.corpus_id,
+        )
 
     # Phase 3: warning-level sanity check on document count. Treated as
     # informational because the synthetic corpus has JSON sidecars in the

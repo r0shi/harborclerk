@@ -690,10 +690,32 @@ class HarborClerkClient:
         r.raise_for_status()
         return r.json()
 
+    # The one stage that does not gate a document being searchable: it runs after finalize on the llm queue,
+    # and on a Mac with Apple Intelligence as the summarizer at about 20 documents a minute. Counting it, the
+    # 10,576-email Enron corpus was "not drained" four hours after every document was ready (#717).
+    BACKGROUND_STAGES = frozenset({"summarize"})
+
     def pipeline_quiet(self) -> bool:
+        """No job queued or running in any stage that gates search. Summaries are a background stage: the
+        snapshot's ``by_stage`` says what is where; a snapshot without it (older API) is judged by its queues."""
         s = self.pipeline_status()
+        by_stage = s.get("by_stage")
+        if isinstance(by_stage, dict) and by_stage:
+            return all(
+                st.get("queued", 0) == 0 and st.get("running", 0) == 0
+                for name, st in by_stage.items()
+                if name not in self.BACKGROUND_STAGES
+            )
         q = s["queues"]
         return all(q[name]["queued"] == 0 and q[name]["running"] == 0 for name in q)
+
+    def summarize_backlog(self) -> int:
+        """Summaries still queued or running: background work that a quiet pipeline may still carry."""
+        by_stage = self.pipeline_status().get("by_stage") or {}
+        return sum(
+            int(by_stage.get(s, {}).get("queued", 0)) + int(by_stage.get(s, {}).get("running", 0))
+            for s in self.BACKGROUND_STAGES
+        )
 
     def wait_for_quiet_pipeline(self, max_wait_seconds: int = 7200, poll_seconds: int = 30) -> bool:
         deadline = time.time() + max_wait_seconds
