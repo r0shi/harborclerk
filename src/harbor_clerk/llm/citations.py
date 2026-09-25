@@ -26,6 +26,7 @@ def extract_citations_from_tool_result(raw_result: str) -> list[dict]:
 
     - ``kb_search`` → ``{"hits": [{"doc_id", "chunk_id", "doc_title", "pages", "score", ...}]}``
     - ``kb_batch_search`` → ``{"results": [{"hits": [...]}]}``
+    - ``kb_documents_by_date`` → ``{"results": [{"doc_id", "title", "date", ...}]}``
     - ``kb_read_passages`` → ``{"passages": [{"chunk_id", "doc_title", "pages", ...}]}``
       (no top-level ``doc_id``; passages carry chunk_id only)
     - ``kb_expand_context`` → ``{"doc_id", "doc_title", "chunks": [{"chunk_id", "pages", ...}]}``
@@ -90,12 +91,15 @@ def extract_citations_from_tool_result(raw_result: str) -> list[dict]:
         if isinstance(h, dict):
             _record(h)
 
-    # kb_batch_search: {"results": [{"hits": [...]}]}
+    # kb_batch_search: {"results": [{"hits": [...]}]}; kb_documents_by_date: {"results": [{doc_id, title, date, ...}]}
     for r in data.get("results") or []:
         if isinstance(r, dict):
-            for h in r.get("hits") or []:
-                if isinstance(h, dict):
-                    _record(h)
+            if r.get("hits"):
+                for h in r["hits"]:
+                    if isinstance(h, dict):
+                        _record(h)
+            elif r.get("doc_id"):
+                _record(r)
 
     # kb_read_passages: {"passages": [{chunk_id, doc_title, pages, ...}]}
     for p in data.get("passages") or []:

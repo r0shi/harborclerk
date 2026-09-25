@@ -305,8 +305,14 @@ def test_map_args_documents_by_date_passes_what_chat_may_set_and_caps_the_limit(
         "query": "Skilling",
         "before": "2001-08-14",
     }
+    # The words a model uses for a direction map to the tool's two; an unknown word passes through so the tool's
+    # own error comes back for the model to correct, instead of a silent swap to "earliest".
+    for word in ("Latest", "last", "newest", "most recent", "DESC"):
+        assert _map_args_documents_by_date({"direction": word})["direction"] == "latest", word
+    for word in ("first", "oldest", "Earliest"):
+        assert _map_args_documents_by_date({"direction": word})["direction"] == "earliest", word
     assert _map_args_documents_by_date({"direction": "sideways", "limit": 500}) == {
-        "direction": "earliest",
+        "direction": "sideways",
         "limit": 50,
     }
     assert _map_args_documents_by_date({}) == {"direction": "earliest"}
@@ -324,3 +330,9 @@ def test_the_system_prompt_sends_chronological_questions_to_documents_by_date():
     from harbor_clerk.llm.chat import SYSTEM_PROMPT
 
     assert "documents_by_date" in SYSTEM_PROMPT and "the earliest email about X" in SYSTEM_PROMPT
+    # The carve-out sits where the rule is: a model that reads only the bold "always search first" must see it.
+    rule = SYSTEM_PROMPT.index("**Always search first.**")
+    assert (
+        "The one exception" in SYSTEM_PROMPT[rule : rule + 500]
+        and "documents_by_date" in SYSTEM_PROMPT[rule : rule + 500]
+    )

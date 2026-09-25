@@ -59,3 +59,26 @@ async def test_execute_tool_corpus_overview_with_folder_scope_restricts(
     result = json.loads(result_str)
     # With scope to folder_a only, document_count should be exactly 2
     assert result.get("document_count") == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_documents_by_date_with_folder_scope_restricts(
+    db_session, admin_user, two_folder_corpus, mock_session_factory
+):
+    """#722's review: the date tool ignored the scope every other kb_* tool applies, so a folder-scoped chat saw
+    the other folder's documents. The scope restricts the candidates before the sort and the limit."""
+    folder_a, _, docs_in_a, _ = two_folder_corpus
+    scope = UserScope(folder_ids=[folder_a.folder_id])
+
+    result = json.loads(
+        await execute_tool(
+            "documents_by_date", {"direction": "earliest", "limit": 50}, user_id=admin_user.user_id, user_scope=scope
+        )
+    )
+    returned = {r["doc_id"] for r in result["results"]}
+    assert returned == {str(d.doc_id) for d in docs_in_a}, result
+
+    unscoped = json.loads(
+        await execute_tool("documents_by_date", {"direction": "earliest", "limit": 50}, user_id=admin_user.user_id)
+    )
+    assert len(unscoped["results"]) >= 4

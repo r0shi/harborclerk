@@ -405,7 +405,9 @@ _BASE_CHAT_TOOLS = [
                 "most recent document matching something, or for what came "
                 "before or after a date: search_documents ranks by similarity "
                 "and will not find an edge reliably. Each result carries doc_id, "
-                "title, the date and where it came from."
+                "title, the date and where it came from, not the text: to quote "
+                "the document, follow with search_documents (query, doc_id) or "
+                "read_document. Dates as YYYY-MM-DD."
             ),
             "parameters": {
                 "type": "object",
@@ -421,11 +423,11 @@ _BASE_CHAT_TOOLS = [
                     },
                     "after": {
                         "type": "string",
-                        "description": "ISO date or datetime; only documents dated after it (optional).",
+                        "description": "YYYY-MM-DD (or an ISO datetime); only documents dated after it (optional).",
                     },
                     "before": {
                         "type": "string",
-                        "description": "ISO date or datetime; only documents dated before it (optional).",
+                        "description": "YYYY-MM-DD (or an ISO datetime); only documents dated before it (optional).",
                     },
                     "limit": {
                         "type": "integer",
@@ -601,11 +603,31 @@ def _map_args_entity_search(args: dict) -> dict:
     return mapped
 
 
+# What a model says for a direction, in the words of the question it is answering. An unknown word passes
+# through so the tool's own error ("direction must be 'earliest' or 'latest'") comes back for the model to
+# correct; silently swapping "last" for "earliest" gave it the first email with nothing to react to.
+_DIRECTION_SYNONYMS = {
+    "earliest": "earliest",
+    "first": "earliest",
+    "oldest": "earliest",
+    "asc": "earliest",
+    "ascending": "earliest",
+    "latest": "latest",
+    "last": "latest",
+    "newest": "latest",
+    "most recent": "latest",
+    "most_recent": "latest",
+    "recent": "latest",
+    "desc": "latest",
+    "descending": "latest",
+}
+
+
 def _map_args_documents_by_date(args: dict) -> dict:
-    """The four Enron boundary questions the local models got wrong (#722) all had a direction and a subject;
+    """The two Enron boundary questions all four local models got wrong (#722) had a direction and a subject;
     the MCP tool's metadata_filter and date_field stay MCP-only."""
-    direction = args.get("direction") or "earliest"
-    mapped: dict = {"direction": direction if direction in ("earliest", "latest") else "earliest"}
+    direction = str(args.get("direction") or "earliest").strip().lower()
+    mapped: dict = {"direction": _DIRECTION_SYNONYMS.get(direction, direction)}
     for key in ("query", "after", "before"):
         if args.get(key):
             mapped[key] = args[key]

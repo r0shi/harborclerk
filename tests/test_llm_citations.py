@@ -344,3 +344,32 @@ def test_dedupe_chunk_only_records_kept() -> None:
     out = dedupe_citations(cites)
     assert len(out) == 1
     assert out[0]["chunk_id"] == "c1"
+
+
+def test_extract_from_kb_documents_by_date_rows() -> None:
+    """#722: the date tool's rows carry doc_id and title but no hits list; before this they yielded no citations,
+    so an answer built from the tool had no sources and a citation overlap of zero."""
+    raw = json.dumps(
+        {
+            "direction": "latest",
+            "count": 2,
+            "results": [
+                {
+                    "doc_id": "d1",
+                    "title": "Skilling to Lay",
+                    "date": "2001-08-13T15:02:00",
+                    "date_source": "tika.created_at",
+                },
+                {
+                    "doc_id": "d2",
+                    "title": "Re: resignation",
+                    "date": "2001-08-14T09:10:00",
+                    "date_source": "tika.created_at",
+                    "citation": "Re: resignation",
+                },
+            ],
+        }
+    )
+    cites = extract_citations_from_tool_result(raw)
+    assert [c["doc_id"] for c in cites] == ["d1", "d2"]
+    assert cites[0]["doc_title"] == "Skilling to Lay" and cites[1]["citation"] == "Re: resignation"
