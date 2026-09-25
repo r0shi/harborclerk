@@ -137,11 +137,12 @@ def test_failure_correlation_earliest_latest_questions_no_by_date_tool():
     verdicts = [
         _verdict("enron-earliest-california", correctness=0),
         _verdict("synth-latest-contract", correctness=5),
+        _verdict("enron-last-skilling", correctness=5),
         _verdict("enron-find-something", correctness=3),
     ]
     result = failure_correlation(caps, verdicts)
     qids = {item["qid"] for item in result["earliest_latest_questions_no_by_date_tool"]}
-    assert qids == {"enron-earliest-california"}
+    assert qids == {"enron-earliest-california"}, "the chat name of the tool counts as having used it"
 
 
 def test_failure_correlation_ambiguous_id_questions_no_verify_tool():
