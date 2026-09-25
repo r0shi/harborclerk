@@ -325,7 +325,11 @@ def test_wait_for_summaries_returns_when_the_backlog_reaches_zero_and_gives_up_w
     def stalled(request):
         return httpx.Response(200, json={"queues": {}, "by_stage": {"summarize": {"queued": 7, "running": 1}}})
 
-    assert make_client(stalled).wait_for_summaries(max_stall_seconds=0, poll_seconds=0) is False
+    # A stalled backlog is given up on at once, well before the hard deadline: without the stall check this
+    # spins until the deadline, so the deadline here is short and the elapsed time is what is asserted.
+    started = time.monotonic()
+    assert make_client(stalled).wait_for_summaries(max_stall_seconds=0, max_wait_seconds=3, poll_seconds=0) is False
+    assert time.monotonic() - started < 1.0, "gave up on the deadline, not on the stall"
 
 
 def test_pipeline_status_busy():
