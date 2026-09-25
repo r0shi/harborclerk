@@ -12,17 +12,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Watchdog tunables for run_research. Two consecutive bad readings (~60s by
 # default) force the SSE stream closed so we don't sit on a hung llama-server.
+logger = logging.getLogger(__name__)
+
 WATCHDOG_INTERVAL_SECONDS = 30
 WATCHDOG_THRESHOLD = 2
 
@@ -718,26 +721,43 @@ class HarborClerkClient:
         )
 
     def wait_for_summaries(
-        self, max_stall_seconds: float = 1800, max_wait_seconds: float = 12 * 3600, poll_seconds: float = 30
-    ) -> bool:
+        self,
+        max_stall_seconds: float = 1800,
+        max_wait_seconds: float = 12 * 3600,
+        poll_seconds: float = 30,
+        log_every_seconds: float = 600,
+        clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> Literal["done", "stalled", "deadline"]:
         """Wait for the summarize backlog to reach zero. Bounded by progress, not by a clock: the summarizer's
         speed is the machine's (Apple Intelligence at about 20 documents a minute on the mini, the active model
-        when one is active), so a flat cap is wrong for every corpus but one. Gives up when the backlog has not
-        fallen for ``max_stall_seconds``, or after ``max_wait_seconds`` regardless. True when it reached zero."""
-        deadline = time.time() + max_wait_seconds
+        when one is active), so a flat cap is wrong for every corpus but one.
+
+        "done" when it reached zero; "stalled" when the backlog has not fallen for ``max_stall_seconds`` (the
+        summarizer is not working: an error); "deadline" when ``max_wait_seconds`` passed while the count was
+        still falling (the summarizer is working, slowly: the caller decides). A progress line every
+        ``log_every_seconds`` so the log does not read as a hang."""
+        started = clock()
+        deadline = started + max_wait_seconds
         last = self.summarize_backlog()
-        last_fell_at = time.time()
+        last_fell_at = started
+        last_logged_at = started
         while last > 0:
-            now = time.time()
-            if now >= deadline or now - last_fell_at >= max_stall_seconds:
-                return False
+            now = clock()
+            if now - last_fell_at >= max_stall_seconds:
+                return "stalled"
+            if now >= deadline:
+                return "deadline"
+            if now - last_logged_at >= log_every_seconds:
+                logger.info("summaries still queued or running: %d (%.0f min so far)", last, (now - started) / 60)
+                last_logged_at = now
             if poll_seconds > 0:
-                time.sleep(poll_seconds)
+                sleep(poll_seconds)
             backlog = self.summarize_backlog()
             if backlog < last:
-                last_fell_at = time.time()
+                last_fell_at = clock()
             last = backlog
-        return True
+        return "done"
 
     def wait_for_quiet_pipeline(self, max_wait_seconds: int = 7200, poll_seconds: int = 30) -> bool:
         deadline = time.time() + max_wait_seconds

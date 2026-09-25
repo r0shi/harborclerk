@@ -313,23 +313,54 @@ def test_pipeline_is_busy_while_the_last_gating_job_is_still_running():
     assert make_client(handler).pipeline_quiet() is False
 
 
-def test_wait_for_summaries_returns_when_the_backlog_reaches_zero_and_gives_up_when_it_stalls():
-    backlogs = iter([3, 2, 1, 0])
+class _Clock:
+    """A clock the test advances: each poll costs `step` seconds, so no test waits for real."""
 
-    def falling(request):
-        n = next(backlogs)
+    def __init__(self, step: float):
+        self.now = 1000.0
+        self.step = step
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += self.step
+
+
+def _summaries_client(backlogs: list[int]):
+    it = iter(backlogs)
+    last = backlogs[-1]
+
+    def handler(request):
+        n = next(it, last)
         return httpx.Response(200, json={"queues": {}, "by_stage": {"summarize": {"queued": n, "running": 0}}})
 
-    assert make_client(falling).wait_for_summaries(max_stall_seconds=60, poll_seconds=0) is True
+    return make_client(handler)
 
-    def stalled(request):
-        return httpx.Response(200, json={"queues": {}, "by_stage": {"summarize": {"queued": 7, "running": 1}}})
 
-    # A stalled backlog is given up on at once, well before the hard deadline: without the stall check this
-    # spins until the deadline, so the deadline here is short and the elapsed time is what is asserted.
-    started = time.monotonic()
-    assert make_client(stalled).wait_for_summaries(max_stall_seconds=0, max_wait_seconds=3, poll_seconds=0) is False
-    assert time.monotonic() - started < 1.0, "gave up on the deadline, not on the stall"
+def test_wait_for_summaries_tells_done_from_stalled_from_deadline():
+    """Three ways out, and the sweep treats them differently (#717): done proceeds; stalled is an error (the
+    summarizer is not working); deadline proceeds with a warning (it is working, slowly). Progress that pauses
+    for less than the stall window is still progress."""
+    clock = _Clock(step=4)
+    # Falls, sits flat for two polls (8 s, under the 10 s stall window), falls again to zero: done.
+    c = _summaries_client([5, 4, 4, 4, 3, 2, 1, 0])
+    assert c.wait_for_summaries(max_stall_seconds=10, poll_seconds=1, clock=clock, sleep=clock.sleep) == "done"
+    # Flat for good: stalled, at the third poll (12 s), long before any deadline.
+    clock = _Clock(step=4)
+    c = _summaries_client([7, 7, 7, 7, 7, 7])
+    assert (
+        c.wait_for_summaries(max_stall_seconds=10, max_wait_seconds=100, poll_seconds=1, clock=clock, sleep=clock.sleep)
+        == "stalled"
+    )
+    assert clock.now - 1000.0 <= 16, "gave up on the stall, not the deadline"
+    # Falling but not fast enough: the deadline, reported as such.
+    clock = _Clock(step=4)
+    c = _summaries_client([100, 99, 98, 97, 96, 95, 94])
+    assert (
+        c.wait_for_summaries(max_stall_seconds=10, max_wait_seconds=9, poll_seconds=1, clock=clock, sleep=clock.sleep)
+        == "deadline"
+    )
 
 
 def test_pipeline_status_busy():

@@ -358,3 +358,22 @@ def test_the_report_says_when_units_ran_beside_a_summarize_backlog():
         {"phase": "4", "summarize_backlog": "12"},
     ]
     assert _summaries_note(beside)[0].startswith("**2 of 3 units ran while summaries were still queued** (up to 5,745")
+
+
+def test_a_rendered_report_carries_the_summaries_note_when_a_unit_ran_beside_a_backlog(tmp_path):
+    header = [*HEADER, "summarize_backlog"]
+    rows = [[*r, "0"] for r in ROWS]
+    rows[0][-1] = "5745"
+    run = tmp_path / "results" / "Bench 04"
+    run.mkdir(parents=True)
+    with (run / "metrics.csv").open("w", newline="") as f:
+        csv.writer(f).writerows([header, *rows])
+    (run / "spend.json").write_text(json.dumps(LEDGER))
+    text = _render(run)
+    assert "ran while summaries were still queued** (up to 5,745" in text
+    quiet = tmp_path / "results" / "Bench 05"
+    quiet.mkdir(parents=True)
+    with (quiet / "metrics.csv").open("w", newline="") as f:
+        csv.writer(f).writerows([header, *[[*r, "0"] for r in ROWS]])
+    (quiet / "spend.json").write_text(json.dumps(LEDGER))
+    assert "summaries were still queued" not in _render(quiet)
