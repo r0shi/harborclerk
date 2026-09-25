@@ -460,3 +460,41 @@ def test_a_run_that_would_call_a_model_without_its_key_stops_before_spending(tmp
         )
     assert rc == 3 and baseline.assert_not_called() is None
     assert not (run_dir / "metrics.csv").exists() or (run_dir / "metrics.csv").read_text().count("\n") <= 1
+
+
+def _snapshot_with_summaries(n: int) -> dict:
+    return {
+        "queues": {"io": {"queued": 0, "running": 0}, "llm": {"queued": n, "running": 0}},
+        "by_stage": {
+            "finalize": {"queued": 0, "running": 0, "queue": "io"},
+            "summarize": {"queued": n, "running": 0, "queue": "llm"},
+        },
+    }
+
+
+def _loaded_corpus_with_summaries(n: int):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/jobs/snapshot":
+            return httpx.Response(200, json=_snapshot_with_summaries(n))
+        if request.url.path == "/api/watch/folders":
+            return httpx.Response(200, json=[{"folder_id": "f1", "path": "/tmp/cuad-ingest"}])
+        if request.url.path == "/api/docs":
+            return httpx.Response(200, json={"items": [], "total": 80, "limit": 0})
+        return httpx.Response(404)
+
+    return handler
+
+
+def test_can_skip_ingest_waits_for_summaries_by_default_and_fails_when_they_stall():
+    """#717: a loaded, search-ready corpus with summaries still queued is not yet the same corpus for every
+    model. By default the resume path waits for them; a backlog that does not fall is an error, not a start."""
+    c = _make_client(_loaded_corpus_with_summaries(5745))
+    with pytest.raises(RuntimeError, match="summaries stalled"):
+        _can_skip_ingest(c, _manifest(), max_drain_wait=0, summary_stall_seconds=0)
+
+
+def test_can_skip_ingest_proceeds_beside_summaries_when_told_to_and_says_so(caplog):
+    c = _make_client(_loaded_corpus_with_summaries(5745))
+    with caplog.at_level("WARNING"):
+        assert _can_skip_ingest(c, _manifest(), max_drain_wait=0, wait_for_summaries=False) is True
+    assert "5745 summaries still queued" in caplog.text and "later models will read them" in caplog.text

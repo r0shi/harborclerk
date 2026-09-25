@@ -717,6 +717,28 @@ class HarborClerkClient:
             for s in self.BACKGROUND_STAGES
         )
 
+    def wait_for_summaries(
+        self, max_stall_seconds: float = 1800, max_wait_seconds: float = 12 * 3600, poll_seconds: float = 30
+    ) -> bool:
+        """Wait for the summarize backlog to reach zero. Bounded by progress, not by a clock: the summarizer's
+        speed is the machine's (Apple Intelligence at about 20 documents a minute on the mini, the active model
+        when one is active), so a flat cap is wrong for every corpus but one. Gives up when the backlog has not
+        fallen for ``max_stall_seconds``, or after ``max_wait_seconds`` regardless. True when it reached zero."""
+        deadline = time.time() + max_wait_seconds
+        last = self.summarize_backlog()
+        last_fell_at = time.time()
+        while last > 0:
+            now = time.time()
+            if now >= deadline or now - last_fell_at >= max_stall_seconds:
+                return False
+            if poll_seconds > 0:
+                time.sleep(poll_seconds)
+            backlog = self.summarize_backlog()
+            if backlog < last:
+                last_fell_at = time.time()
+            last = backlog
+        return True
+
     def wait_for_quiet_pipeline(self, max_wait_seconds: int = 7200, poll_seconds: int = 30) -> bool:
         deadline = time.time() + max_wait_seconds
         while time.time() < deadline:

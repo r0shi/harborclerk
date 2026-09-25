@@ -341,3 +341,20 @@ def test_the_answer_key_column_is_averaged_over_the_rows_that_have_one(tmp_path)
         csv.writer(f).writerows([header, *rows])
     (run / "spend.json").write_text(json.dumps(LEDGER))
     assert "| 2 | 1 | 0 | 1 | n/a | 3.00 | 0.75 |" in _render(run)
+
+
+def test_the_report_says_when_units_ran_beside_a_summarize_backlog():
+    """A row's summarize_backlog is what the unit started beside; 0 on every row says nothing, anything else is
+    said once above the tables with the largest backlog seen."""
+    from scripts.test_corpora.report import _summaries_note
+
+    quiet = [{"phase": "4", "summarize_backlog": "0"}, {"phase": "4", "summarize_backlog": "0"}]
+    assert _summaries_note(quiet) == []
+    predates = [{"phase": "4"}, {"phase": "1", "summarize_backlog": "9"}]
+    assert _summaries_note(predates) == [], "no model unit carries a backlog: the phase-1 baseline does not count"
+    beside = [
+        {"phase": "4", "summarize_backlog": "5745"},
+        {"phase": "4", "summarize_backlog": "0"},
+        {"phase": "4", "summarize_backlog": "12"},
+    ]
+    assert _summaries_note(beside)[0].startswith("**2 of 3 units ran while summaries were still queued** (up to 5,745")

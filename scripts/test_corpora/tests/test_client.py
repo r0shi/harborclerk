@@ -295,6 +295,39 @@ def test_pipeline_is_busy_while_a_gating_stage_has_work():
     assert c.summarize_backlog() == 0
 
 
+def test_pipeline_is_busy_while_the_last_gating_job_is_still_running():
+    """Nothing queued, one finalize running: the last document is not searchable yet."""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "queues": {"io": {"queued": 0, "running": 1}},
+                "by_stage": {
+                    "finalize": {"queued": 0, "running": 1, "queue": "io"},
+                    "summarize": {"queued": 0, "running": 0},
+                },
+            },
+        )
+
+    assert make_client(handler).pipeline_quiet() is False
+
+
+def test_wait_for_summaries_returns_when_the_backlog_reaches_zero_and_gives_up_when_it_stalls():
+    backlogs = iter([3, 2, 1, 0])
+
+    def falling(request):
+        n = next(backlogs)
+        return httpx.Response(200, json={"queues": {}, "by_stage": {"summarize": {"queued": n, "running": 0}}})
+
+    assert make_client(falling).wait_for_summaries(max_stall_seconds=60, poll_seconds=0) is True
+
+    def stalled(request):
+        return httpx.Response(200, json={"queues": {}, "by_stage": {"summarize": {"queued": 7, "running": 1}}})
+
+    assert make_client(stalled).wait_for_summaries(max_stall_seconds=0, poll_seconds=0) is False
+
+
 def test_pipeline_status_busy():
     def handler(request):
         return httpx.Response(
