@@ -282,3 +282,45 @@ def test_verify_identifier_description_puts_search_first():
     assert "search_documents first" in desc
     assert "display name" in desc and "by words" in desc and "confirmed against the name" in desc
     assert "do not fall back" not in desc
+
+
+def test_documents_by_date_in_base_chat_tools_with_a_direction():
+    """#722: every local model answered the Enron "earliest" and "last" questions with similarity search and got
+    them wrong; the baseline used kb_documents_by_date and got them right. The chat surface now has it."""
+    from harbor_clerk.llm.tools import _BASE_CHAT_TOOLS
+
+    tool = next(t for t in _BASE_CHAT_TOOLS if t["function"]["name"] == "documents_by_date")
+    params = tool["function"]["parameters"]
+    assert params["required"] == ["direction"]
+    assert params["properties"]["direction"]["enum"] == ["earliest", "latest"]
+    assert {"query", "after", "before", "limit"} <= set(params["properties"])
+    assert "search_documents ranks by similarity" in tool["function"]["description"]
+
+
+def test_map_args_documents_by_date_passes_what_chat_may_set_and_caps_the_limit():
+    from harbor_clerk.llm.tools import _map_args_documents_by_date
+
+    assert _map_args_documents_by_date({"direction": "latest", "query": "Skilling", "before": "2001-08-14"}) == {
+        "direction": "latest",
+        "query": "Skilling",
+        "before": "2001-08-14",
+    }
+    assert _map_args_documents_by_date({"direction": "sideways", "limit": 500}) == {
+        "direction": "earliest",
+        "limit": 50,
+    }
+    assert _map_args_documents_by_date({}) == {"direction": "earliest"}
+
+
+def test_dispatch_routes_documents_by_date_to_kb_documents_by_date():
+    from harbor_clerk.llm.tools import _TOOL_DISPATCH
+
+    mcp_name, mapper = _TOOL_DISPATCH["documents_by_date"]
+    assert mcp_name == "kb_documents_by_date"
+    assert mapper({"direction": "earliest"}) == {"direction": "earliest"}
+
+
+def test_the_system_prompt_sends_chronological_questions_to_documents_by_date():
+    from harbor_clerk.llm.chat import SYSTEM_PROMPT
+
+    assert "documents_by_date" in SYSTEM_PROMPT and "the earliest email about X" in SYSTEM_PROMPT

@@ -149,6 +149,9 @@ _CORE_INSTRUCTIONS = (
     "  use offset to page through or try more specific queries to find what you missed.\n\n"
     'For structural questions ("how many documents?", "what file types?"):\n'
     "  corpus_overview\n\n"
+    'For chronological questions ("the earliest email about X", "the last document before Y", "the most recent"):\n'
+    "  documents_by_date, with the direction and the subject — search_documents ranks by similarity and\n"
+    "  will not find an edge reliably\n\n"
     "For browsing recent changes:\n"
     "  list_documents (shows a paginated subset, not the full corpus)\n\n"
     'For entity questions ("who is mentioned?", "what organizations?"):\n'
