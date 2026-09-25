@@ -316,6 +316,7 @@ def test_map_args_documents_by_date_passes_what_chat_may_set_and_caps_the_limit(
         "limit": 50,
     }
     assert _map_args_documents_by_date({}) == {"direction": ""}, "a missing direction is the tool's error to raise"
+    assert "limit" not in _map_args_documents_by_date({"direction": "latest", "limit": True}), "a bool is not a count"
 
 
 def test_dispatch_routes_documents_by_date_to_kb_documents_by_date():
