@@ -266,7 +266,7 @@ def render_markdown(audit: dict) -> str:
         _render_fc_block(out, "Low correctness + low tool use", fc["low_correctness_low_tool_use"])
         _render_fc_block(
             out,
-            "Earliest/latest questions, no kb_documents_by_date",
+            "Earliest/latest questions, no documents_by_date (kb_documents_by_date from MCP)",
             fc["earliest_latest_questions_no_by_date_tool"],
         )
         _render_fc_block(

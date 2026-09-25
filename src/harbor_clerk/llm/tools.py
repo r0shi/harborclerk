@@ -634,7 +634,7 @@ def _map_args_documents_by_date(args: dict) -> dict:
         if args.get(key):
             mapped[key] = args[key]
     limit = args.get("limit")
-    if isinstance(limit, int) and limit > 0:
+    if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
         mapped["limit"] = min(limit, 50)
     return mapped
 
