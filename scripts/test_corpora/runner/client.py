@@ -697,6 +697,8 @@ class HarborClerkClient:
     # and on a Mac with Apple Intelligence as the summarizer at about 20 documents a minute. Counting it, the
     # 10,576-email Enron corpus was "not drained" four hours after every document was ready (#717).
     BACKGROUND_STAGES = frozenset({"summarize"})
+    # The most `wait_for_summaries` waits while the count keeps falling; the sweep names it in its warning.
+    SUMMARY_WAIT_MAX_SECONDS = 12 * 3600
 
     def pipeline_quiet(self) -> bool:
         """No job queued or running in any stage that gates search. Summaries are a background stage: the
@@ -723,7 +725,7 @@ class HarborClerkClient:
     def wait_for_summaries(
         self,
         max_stall_seconds: float = 1800,
-        max_wait_seconds: float = 12 * 3600,
+        max_wait_seconds: float = SUMMARY_WAIT_MAX_SECONDS,
         poll_seconds: float = 30,
         log_every_seconds: float = 600,
         clock: Callable[[], float] = time.time,

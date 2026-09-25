@@ -345,7 +345,7 @@ def test_the_answer_key_column_is_averaged_over_the_rows_that_have_one(tmp_path)
 
 def test_the_report_says_when_units_ran_beside_a_summarize_backlog():
     """A row's summarize_backlog is what the unit started beside; 0 on every row says nothing, anything else is
-    said once above the tables with the largest backlog seen."""
+    said once, after the model tables and before the spend, with the largest backlog seen."""
     from scripts.test_corpora.report import _summaries_note
 
     quiet = [{"phase": "4", "summarize_backlog": "0"}, {"phase": "4", "summarize_backlog": "0"}]

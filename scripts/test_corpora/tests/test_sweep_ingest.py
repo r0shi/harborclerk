@@ -496,6 +496,7 @@ def _mock_hc_after_ingest(backlog: int, outcome: str, doc_count: int = 80):
     hc.summarize_backlog.return_value = backlog
     hc.wait_for_summaries.return_value = outcome
     hc.document_count.return_value = doc_count
+    hc.SUMMARY_WAIT_MAX_SECONDS = 12 * 3600  # the constant the deadline warning names
     return hc
 
 

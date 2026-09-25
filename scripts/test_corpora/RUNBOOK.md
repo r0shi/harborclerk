@@ -25,6 +25,10 @@ If you want to keep an existing corpus intact, point the sweep at a **separate H
 
 ---
 
+## Summaries are waited for, then measured beside
+
+After the search-gating stages drain, the sweep also waits for the summarize backlog (a background stage that does not gate search) so every model measures the same corpus: a later model reads summaries written earlier, and an active model writes them itself between its own questions. The wait is bounded by progress (a backlog that has not fallen for 30 minutes is an error; one still falling at 12 hours is proceeded beside, with a warning). `--no-wait-for-summaries` proceeds at once; either way `metrics.csv`'s `summarize_backlog` column says what each unit started beside. On the mini Apple Intelligence summarizes about 20 documents a minute: budget it for a large corpus (#717).
+
 ## Pick your topology
 
 The sweep can be run on one machine or split across two. The shape of the deployment changes which commands you run and what gets rsynced; the universal pre-flight, recovery, and aggregation steps below are the same.
@@ -323,7 +327,5 @@ export RUN=2026-05-06-retry
 
 # Start from Phase 0 again
 ```
-
-After the search-gating stages drain, the sweep also waits for the summarize backlog (a background stage that does not gate search) so every model measures the same corpus: a later model reads summaries written earlier, and an active model writes them itself between its own questions. The wait is bounded by progress (a backlog that has not fallen for 30 minutes is an error; one still falling at 12 hours is proceeded beside, with a warning). `--no-wait-for-summaries` proceeds at once; either way `metrics.csv`'s `summarize_backlog` column says what each unit started beside. On the mini Apple Intelligence summarizes about 20 documents a minute: budget it for a large corpus (#717).
 
 Phase 0's `.acquired` markers and the `hf_enron/` HF download cache stay, so corpus acquisition is cheap on re-runs — only the run-specific state (responses, baselines, metrics) is regenerated. The expensive Phase 0 synthetic generation is preserved as long as `synthetic/ingest/.acquired` exists.

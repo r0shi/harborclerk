@@ -897,7 +897,8 @@ def _settle_summaries(hc: HarborClerkClient, corpus_id: str, wait: bool, stall_s
     questions it is being measured on. Every model measures the same corpus only when they are done (#717).
 
     ``wait=False`` proceeds and says so. A backlog that stops falling is an error (the summarizer is not
-    working); one still falling at the 12-hour deadline is proceeded beside with a warning (it is working, and
+    working); one still falling at the deadline (HarborClerkClient.SUMMARY_WAIT_MAX_SECONDS) is proceeded beside
+    with a warning (it is working, and
     metrics.csv carries the backlog per unit), never the run's death, which is what #717 was."""
     backlog = hc.summarize_backlog()
     if not backlog:
@@ -923,10 +924,12 @@ def _settle_summaries(hc: HarborClerkClient, corpus_id: str, wait: bool, stall_s
         )
     if outcome == "deadline":
         log.warning(
-            "%d summaries still queued or running for %s after the 12-hour wait; still falling, so proceeding beside "
-            "them: the active model will generate the rest between its own questions, and later models will read them",
+            "%d summaries still queued or running for %s after the %.0f-hour wait; still falling, so proceeding "
+            "beside them: the active model will generate the rest between its own questions, and later models will "
+            "read them",
             hc.summarize_backlog(),
             corpus_id,
+            hc.SUMMARY_WAIT_MAX_SECONDS / 3600,
         )
 
 
