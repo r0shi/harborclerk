@@ -2882,9 +2882,8 @@ async def kb_documents_by_date(
     principal = _get_principal()
     async with async_session_factory() as session:
         # Per-scope: the same intersection every other kb_* tool applies (#722's review found this one did not).
+        # An empty visible set goes through the query as an empty IN, so an invalid direction still errors.
         visible_ids = await _visible_doc_ids(session, principal)
-        if visible_ids is not None and not visible_ids:
-            return json.dumps({"direction": direction, "count": 0, "results": [], "scoped": True})
         result = await _documents_by_date_impl(
             session,
             direction=direction,

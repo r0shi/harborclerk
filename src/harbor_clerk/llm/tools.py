@@ -626,7 +626,9 @@ _DIRECTION_SYNONYMS = {
 def _map_args_documents_by_date(args: dict) -> dict:
     """The two Enron boundary questions all four local models got wrong (#722) had a direction and a subject;
     the MCP tool's metadata_filter and date_field stay MCP-only."""
-    direction = str(args.get("direction") or "earliest").strip().lower()
+    # Missing or unknown: passed through as given, so the tool's error ("direction must be 'earliest' or
+    # 'latest'") comes back for the model to correct; a default would hand it the first document silently.
+    direction = str(args.get("direction") or "").strip().lower()
     mapped: dict = {"direction": _DIRECTION_SYNONYMS.get(direction, direction)}
     for key in ("query", "after", "before"):
         if args.get(key):

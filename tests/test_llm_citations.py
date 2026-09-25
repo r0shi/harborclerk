@@ -373,3 +373,6 @@ def test_extract_from_kb_documents_by_date_rows() -> None:
     cites = extract_citations_from_tool_result(raw)
     assert [c["doc_id"] for c in cites] == ["d1", "d2"]
     assert cites[0]["doc_title"] == "Skilling to Lay" and cites[1]["citation"] == "Re: resignation"
+    # kb_find_all's results[] rows have a doc_id and no date: an enumeration of the corpus, not a citation.
+    find_all = json.dumps({"results": [{"doc_id": "d9", "title": "Anything", "score": 0.9}], "total": 1})
+    assert extract_citations_from_tool_result(find_all) == []

@@ -315,7 +315,7 @@ def test_map_args_documents_by_date_passes_what_chat_may_set_and_caps_the_limit(
         "direction": "sideways",
         "limit": 50,
     }
-    assert _map_args_documents_by_date({}) == {"direction": "earliest"}
+    assert _map_args_documents_by_date({}) == {"direction": ""}, "a missing direction is the tool's error to raise"
 
 
 def test_dispatch_routes_documents_by_date_to_kb_documents_by_date():
