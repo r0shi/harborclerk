@@ -107,3 +107,67 @@ def test_synthetic_marker_without_files_re_acquires(tmp_path: Path):
 
     assert m.doc_count == 2
     assert sorted(m.ingest_dir.glob("*.txt"))
+
+
+# ── #732: the prompts name the entities the questions ask about ──
+
+
+def test_every_prompt_that_speaks_of_a_vendor_client_or_campaign_names_a_declared_one():
+    import random
+
+    rng = random.Random(7)
+    seen_vendors, seen_campaigns, seen_clients = set(), set(), set()
+    for _ in range(40):
+        for doc_type in ("invoice", "vendor_contract"):
+            prompt = synthetic._draw_prompt(doc_type, rng)
+            named = [v for v in synthetic.COMPANY["key_vendors"] if v in prompt]
+            assert len(named) == 1, prompt
+            seen_vendors.update(named)
+        prompt = synthetic._draw_prompt("marketing_brief", rng)
+        named = [c for c in synthetic.COMPANY["campaigns"] if c in prompt]
+        assert len(named) == 1 and any(c in prompt for c in synthetic.COMPANY["key_clients"]), prompt
+        seen_campaigns.update(named)
+        for doc_type in ("board_minutes", "quarterly_report"):
+            prompt = synthetic._draw_prompt(doc_type, rng)
+            named = [c for c in synthetic.COMPANY["key_clients"] if c in prompt]
+            assert len(named) == 1, prompt
+            seen_clients.update(named)
+        assert synthetic.COMPANY["key_people"]["ceo"] in synthetic._draw_prompt("board_minutes", rng)
+    # Over a corpus's worth of draws every declared name is asked for at least once.
+    assert seen_vendors == set(synthetic.COMPANY["key_vendors"])
+    assert seen_campaigns == set(synthetic.COMPANY["campaigns"])
+    assert seen_clients == set(synthetic.COMPANY["key_clients"])
+    assert "Skylight" in synthetic.COMPANY["campaigns"], "the campaign questions/synthetic.yaml asks about"
+
+
+def test_missing_declared_entities_names_what_no_document_mentions(tmp_path: Path):
+    ingest, facts = tmp_path / "ingest", tmp_path / "facts"
+    ingest.mkdir()
+    facts.mkdir()
+    (ingest / "0001_invoice.txt").write_text("INVOICE from Globex Supplies to Marbledock. Acme Corp is cc'd.")
+    (ingest / "0002_board_minutes.txt").write_text("Skylight campaign approved.")
+    # A document the OCR step turned into a PDF: its name survives in its facts only.
+    (facts / "0003_vendor_contract.json").write_text('{"vendor": "Initech Software"}')
+    missing = synthetic.missing_declared_entities(ingest, facts)
+    assert missing == ["Northwind Partners", "Polestar Industries", "Cyberdyne IT", "Northstar", "Harbour Lights"]
+    for name in missing:
+        (ingest / f"x_{name}.txt").write_text(name.lower())  # case does not matter
+    assert synthetic.missing_declared_entities(ingest, facts) == []
+
+
+def test_acquire_says_which_declared_names_the_corpus_does_not_contain(tmp_path: Path, caplog):
+    """The model was asked for the names and did not use them: the manifest and the log both say so, so the
+    run's report can read the questions that name them as negatives instead of lookups."""
+    fake_anthropic = MagicMock()
+    fake_anthropic.messages.create.return_value.content = [
+        MagicMock(text='{"text": "INVOICE from Nobody Inc.", "facts": {"vendor": "Nobody Inc."}}')
+    ]
+    with patch.object(synthetic, "_make_client", return_value=fake_anthropic), caplog.at_level("WARNING"):
+        m = synthetic.acquire(workdir=tmp_path / "synth", doc_counts={"invoice": 2}, ocr_subset_count=0)
+    assert m.notes.endswith("not in the corpus: " + ", ".join(synthetic.DECLARED_ENTITIES))
+    assert "contains none of: Acme Corp" in caplog.text and "#732" in caplog.text
+
+    # The same corpus, met again through its marker: the same note.
+    with patch.object(synthetic, "_make_client", return_value=fake_anthropic):
+        again = synthetic.acquire(workdir=tmp_path / "synth", doc_counts={"invoice": 2}, ocr_subset_count=0)
+    assert again.notes == m.notes
