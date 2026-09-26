@@ -186,7 +186,12 @@ def _evaluate_health(
 
 
 def _is_unauthorized(exc: BaseException) -> bool:
-    """True when ``exc`` is, or wraps (the MCP client raises task groups), an HTTP 401."""
+    """True when ``exc`` is, or wraps, an HTTP 401.
+
+    The streamable-HTTP transport of the pinned ``mcp`` package lets ``httpx.HTTPStatusError`` surface from a
+    task group, so a refused call arrives as an ``ExceptionGroup`` holding one. A later ``mcp`` that maps a 401
+    to an exception of its own would pass this test unseen and disable the re-login; the test that drives
+    ``call_tool`` against a real 401 server is what would notice."""
     if isinstance(exc, BaseExceptionGroup):
         return any(_is_unauthorized(e) for e in exc.exceptions)
     return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401
@@ -358,9 +363,10 @@ class HarborClerkClient:
                 # is the cheapest endpoint that goes through the auth flow.
                 try:
                     self.health()
-                except Exception:
-                    # If health fails for any reason (e.g. HC down), let the
-                    # caller decide how to handle a missing token.
+                except Exception as exc:
+                    # HC down, or the password no longer accepted: the caller decides what a missing token
+                    # means, but the reason is said here, because the caller's own error will not say it.
+                    logger.warning("login to Harbor Clerk did not yield a token: %r", exc)
                     return None
             return auth._token
         # Legacy path: token may have been set directly on client headers.

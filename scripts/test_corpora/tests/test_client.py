@@ -1201,3 +1201,46 @@ def test_refresh_bearer_token_logs_in_again_and_the_client_uses_the_new_token():
     assert c.get_bearer_token() == "t2"
     c.health()
     assert authorizations[-1] == "Bearer t2"
+
+
+class _RefusingMcpServer(BaseHTTPRequestHandler):
+    """Answers 401 to every request and records the Authorization header it was shown."""
+
+    seen: list[str] = []
+
+    def do_POST(self):  # noqa: N802 (http.server's name)
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        _RefusingMcpServer.seen.append(self.headers.get("Authorization", ""))
+        self.send_response(401)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST
+    do_DELETE = do_POST
+
+    def log_message(self, *args):  # quiet
+        pass
+
+
+def test_a_401_from_the_real_mcp_transport_is_recognised_and_the_call_repeated_with_the_new_token():
+    """The seam the hand-built exception cannot cover: whatever the pinned ``mcp`` raises for a 401 must be what
+    ``_is_unauthorized`` looks for, or the re-login never happens and the suite stays green."""
+    _RefusingMcpServer.seen = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _RefusingMcpServer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        source = _TokenSource()
+        sess = client_mod.SyncMcpSession(
+            f"http://127.0.0.1:{server.server_port}/mcp/mcp",
+            timeout=5.0,
+            bearer=source.bearer,
+            refresh_bearer=source.refresh,
+        )
+        with pytest.raises(Exception) as excinfo:
+            sess.call_tool("kb_search", {"query": "x"})
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert client_mod._is_unauthorized(excinfo.value), f"the transport raised {excinfo.value!r}"
+    assert source.refreshes == 1
+    assert _RefusingMcpServer.seen[:1] == ["Bearer t1"] and "Bearer t2" in _RefusingMcpServer.seen
