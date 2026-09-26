@@ -594,3 +594,44 @@ def test_can_skip_ingest_proceeds_beside_summaries_when_told_to_and_says_so(capl
     with caplog.at_level("WARNING"):
         assert _can_skip_ingest(c, _manifest(), max_drain_wait=0, wait_for_summaries=False) is True
     assert "5745 summaries still queued" in caplog.text and "later models will read them" in caplog.text
+
+
+# ── #719: an answer the app forced is degraded, not done ──
+
+
+def test_a_completed_answer_the_app_forced_is_degraded_and_a_chosen_one_is_done():
+    from scripts.test_corpora.runner.state import Status
+    from scripts.test_corpora.runner.sweep import _status_of_completed
+
+    chosen = {"status": "completed", "answer": "The fee was $4,500 a month, per the Globex contract."}
+    assert _status_of_completed(chosen) == (Status.DONE, None)
+
+    forced = dict(chosen, stop_reason="time_budget")
+    assert _status_of_completed(forced) == (Status.DEGRADED, "answer forced by the app's time_budget")
+
+    punted = {"status": "completed", "answer": "", "stop_reason": "time_budget"}
+    status, reason = _status_of_completed(punted)
+    assert status == Status.DEGRADED and reason and "time_budget" not in reason, "an empty answer keeps its own reason"
+
+
+def test_run_local_records_the_stop_reason_the_done_event_carries(tmp_path: Path):
+    """The chat unit keeps ``stop_reason`` from the done event beside the answer, and leaves it out when the
+    event has none, so a result file from before the field parses as it did."""
+    from scripts.test_corpora.runner.sweep import _run_local
+
+    def events(stop_reason):
+        done = {"type": "done", "rag_context": {"citations": [{"doc_id": "D1"}]}}
+        if stop_reason:
+            done["stop_reason"] = stop_reason
+        return [{"type": "token", "content": "Answer."}, done]
+
+    hc = MagicMock()
+    hc.create_conversation.return_value = "CONV-1"
+    hc.stream_ask.return_value = events("time_budget")
+    out = _run_local(hc, "cuad", "qwen3-8b", "cuad-ask-1", "q?", "standard", 10, False, tmp_path)
+    assert out["result"]["stop_reason"] == "time_budget"
+    assert out["result"]["answer"] == "Answer." and out["result"]["citations"] == [{"doc_id": "D1"}]
+
+    hc.stream_ask.return_value = events(None)
+    out = _run_local(hc, "cuad", "qwen3-8b", "cuad-ask-2", "q?", "standard", 10, False, tmp_path)
+    assert "stop_reason" not in out["result"]

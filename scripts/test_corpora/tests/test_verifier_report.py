@@ -207,7 +207,7 @@ def test_a_metrics_row_takes_the_shape_of_the_files_own_header():
     """New columns go at the end, and a resumed run keeps writing the columns its file started with."""
     from scripts.test_corpora.runner.sweep import METRICS_COLUMNS, metrics_row_for
 
-    assert METRICS_COLUMNS[-3:] == ("judge_answers_question", "answer_key_score", "summarize_backlog") and METRICS_COLUMNS[:12] == (
+    assert METRICS_COLUMNS[-3:] == ("answer_key_score", "summarize_backlog", "stop_reason") and METRICS_COLUMNS[:12] == (
         "phase", "corpus", "model", "question_id", "depth", "status", "citation_overlap", "citation_extra",
         "entity_overlap", "latency_seconds", "judge_verdict", "judge_completeness",
     )  # fmt: skip

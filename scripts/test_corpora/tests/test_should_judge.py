@@ -96,3 +96,32 @@ def test_judge_runs_when_all_conditions_met() -> None:
         model_answer="Real answer with content.",
         no_judge=False,
     )
+
+
+# ── #719: an answer the app forced is degraded, and still judged ──
+
+
+def test_a_forced_answer_is_judged_although_degraded_and_other_degraded_answers_are_not() -> None:
+    from scripts.test_corpora.runner.sweep import FORCED_ANSWER_REASON_PREFIX
+
+    assert _should_judge(
+        phase=4,
+        status=Status.DEGRADED,
+        model_answer="The fee was $4,500.",
+        no_judge=False,
+        error=f"{FORCED_ANSWER_REASON_PREFIX} time_budget",
+    )
+    assert not _should_judge(
+        phase=4,
+        status=Status.DEGRADED,
+        model_answer="I don't have the capability to search.",
+        no_judge=False,
+        error="refusal: the model declined",
+    )
+    assert not _should_judge(
+        phase=4,
+        status=Status.DEGRADED,
+        model_answer="",
+        no_judge=False,
+        error=f"{FORCED_ANSWER_REASON_PREFIX} time_budget",
+    )

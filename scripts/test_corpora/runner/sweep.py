@@ -208,7 +208,10 @@ def _wait_for_hc_reachable(hc: HarborClerkClient, max_wait_seconds: int = HC_REC
     return False
 
 
-def _should_judge(*, phase: int, status: Status, model_answer: str, no_judge: bool) -> bool:
+FORCED_ANSWER_REASON_PREFIX = "answer forced by the app's"
+
+
+def _should_judge(*, phase: int, status: Status, model_answer: str, no_judge: bool, error: str | None = None) -> bool:
     """Whether to call the LLM-as-judge for one finished unit.
 
     Phase 4 (main matrix) and phase 5 (parity heavies) are the phases that
@@ -232,7 +235,11 @@ def _should_judge(*, phase: int, status: Status, model_answer: str, no_judge: bo
         return False
     if phase not in (4, 5):
         return False
-    if status != Status.DONE:
+    if status == Status.DEGRADED and (error or "").startswith(FORCED_ANSWER_REASON_PREFIX):
+        # The app stopped the search and forced this answer (#719). The user received it, so the judge
+        # reads it; the degraded status keeps it beside the chosen answers in the matrix, not among them.
+        pass
+    elif status != Status.DONE:
         return False
     return bool(model_answer and model_answer.strip())
 
@@ -354,6 +361,24 @@ def _run_canary(hc: HarborClerkClient, corpus: str, log: logging.Logger) -> dict
         "answer_chars": len(final_text),
         "reason": reason,
     }
+
+
+def _status_of_completed(result: dict) -> tuple[Status, str | None]:
+    """The unit status of a ``completed`` chat or research result.
+
+    A non-empty answer is not automatically a real engagement with the corpus. ``classify_answer`` is the one
+    authority on completed outcomes: it folds the empty answer in beside refusals ("I don't have the
+    capability...") and roleplay (a small model writing ``[search_documents: "..."]`` as text). Chat and
+    research get the same treatment, so the matrix tells "said something useful" from "punted" the same way.
+
+    An answer the app forced (``stop_reason``: its time budget, context budget or tool-round cap, #719) is one
+    the user received but not one the model chose to give: degraded, measured beside the real ones."""
+    label, reason = classify_answer(result.get("answer") or "")
+    if label != "real":
+        return Status.DEGRADED, reason
+    if result.get("stop_reason"):
+        return Status.DEGRADED, f"{FORCED_ANSWER_REASON_PREFIX} {result['stop_reason']}"
+    return Status.DONE, None
 
 
 def _is_retryable_research_failure(out: dict) -> bool:
@@ -833,11 +858,15 @@ def _run_local(
         # Citations are in the final {type: "done"} event's rag_context.citations field.
         final_text = "".join(e.get("content", "") for e in events if e.get("type") == "token")
         citations: list[dict] = []
+        stop_reason: str | None = None
         for e in events:
             if e.get("type") == "done":
                 rc = e.get("rag_context") or {}
                 for c in rc.get("citations", []) or e.get("citations", []):
                     citations.append(c if isinstance(c, dict) else {"doc_id": c})
+                # Why the app stopped the search before the model chose to answer ("time_budget",
+                # "context_budget", "tool_rounds"); absent when the model answered on its own (#719).
+                stop_reason = e.get("stop_reason") or None
         # Preserve the raw SSE event stream so post-hoc analysis can tell
         # ``model invoked the tool`` from ``model narrated a tool call as
         # text.`` ``tool_call`` and ``tool_result`` events carry the
@@ -853,6 +882,8 @@ def _run_local(
             "tool_events": tool_events,
             "tool_call_count": tool_call_count,
         }
+        if stop_reason:
+            result["stop_reason"] = stop_reason
 
     out = {
         "corpus": corpus,
@@ -999,6 +1030,7 @@ METRICS_COLUMNS = (
     "judge_answers_question",
     "answer_key_score",
     "summarize_backlog",
+    "stop_reason",
 )
 
 
@@ -1466,6 +1498,7 @@ def main(argv: list[str] | None = None) -> int:
                 "the judge_answers_question column; the verdicts in it followed completeness and are not comparable with new ones",
             ),
             ("summarize_backlog", "the summarize_backlog column (summaries queued when each unit started)"),
+            ("stop_reason", "the stop_reason column (why the app forced an answer, #719)"),
         ):
             if column not in metrics_columns:
                 log.warning(
@@ -1855,28 +1888,11 @@ def main(argv: list[str] | None = None) -> int:
                     if phase in (2, 3, 4, 5, 6):
                         result = out.get("result", {}) or {}
                         result_status = result.get("status")
-                        result_answer = result.get("answer") or ""
                         if result.get("harness_aborted"):
                             final_status = Status.ERROR
                             error_msg = f"harness aborted research: {result.get('harness_abort_reason', 'unknown')}"
                         elif result_status == "completed":
-                            # Tighter DONE predicate: a non-empty answer is not
-                            # automatically a real engagement with the corpus.
-                            # ``classify_answer`` is the single authority on
-                            # completed-status outcomes — it folds the
-                            # "empty/whitespace answer" case in alongside
-                            # refusals ("I don't have the capability...") and
-                            # roleplay (small models that emit ``[search_documents:
-                            # "..."]`` as text instead of invoking the tool). Both
-                            # the chat path and the research path get the same
-                            # treatment so the matrix consistently captures
-                            # "answer said something useful" vs "answer punted."
-                            label, reason = classify_answer(result_answer)
-                            if label == "real":
-                                final_status = Status.DONE
-                            else:
-                                final_status = Status.DEGRADED
-                                error_msg = reason
+                            final_status, error_msg = _status_of_completed(result)
                         elif result_status == "interrupted":
                             final_status = Status.ERROR
                             # ``result["error"]`` carries the structured reason
@@ -2087,6 +2103,7 @@ def main(argv: list[str] | None = None) -> int:
                                 status=final_status,
                                 model_answer=model_answer,
                                 no_judge=args.no_judge,
+                                error=error_msg,
                             ):
                                 owning_c = (
                                     u.corpus
@@ -2163,6 +2180,7 @@ def main(argv: list[str] | None = None) -> int:
                     verifier_skipped=verifier_counts["skipped"],
                     answer_key_score=answer_key_score,
                     summarize_backlog=summarize_backlog_at_start,
+                    stop_reason=(out.get("result") or {}).get("stop_reason") or "" if phase in (2, 3, 4, 5, 6) else "",
                 )
                 metrics_writer.writerow(metrics_row)
                 metrics_f.flush()

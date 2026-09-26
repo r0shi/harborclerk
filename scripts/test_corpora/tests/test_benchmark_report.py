@@ -106,11 +106,18 @@ def test_the_commit_is_the_one_that_ran_the_sweep_not_the_one_the_report_was_ren
 
 def test_each_model_gets_a_row_of_what_was_measured(tmp_path):
     text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER))
-    assert "| cuad | `qwen3-8b` | n/a | 3 | 2 | 1 | 0 | 0.60 | 0.50 | 100 | 2 | 1 | 0 | 1 | n/a | 3.00 | n/a |" in text
-    # Finished and never judged: absent from the judged columns, not scored zero.
-    assert "| cuad | `qwen35-9b` | n/a | 1 | 1 | 0 | 0 | 0.90 | 0.80 | 60 | 0 | 0 | 0 | 0 | n/a | n/a | n/a |" in text
     assert (
-        "| enron | `qwen36-35b-a3b` | n/a | 1 | 0 | 0 | 1 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a | n/a |" in text
+        "| cuad | `qwen3-8b` | n/a | 3 | 2 | 1 | 0 | 0 | 0 | 0.60 | 0.50 | 100 | 2 | 1 | 0 | 1 | n/a | 3.00 | n/a |"
+        in text
+    )
+    # Finished and never judged: absent from the judged columns, not scored zero.
+    assert (
+        "| cuad | `qwen35-9b` | n/a | 1 | 1 | 0 | 0 | 0 | 0 | 0.90 | 0.80 | 60 | 0 | 0 | 0 | 0 | n/a | n/a | n/a |"
+        in text
+    )
+    assert (
+        "| enron | `qwen36-35b-a3b` | n/a | 1 | 0 | 0 | 0 | 0 | 1 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a | n/a |"
+        in text
     )
     assert "## Phase 4: every model, every question" in text and "## Phase 5: the two largest, judged" in text
     assert "1 finished unit(s) in the judged phases have no verdict (an unusable baseline, a judge failure" in text
@@ -138,9 +145,11 @@ def test_units_that_never_ran_are_not_hidden_behind_the_ones_that_did(tmp_path):
         ]
     }
     text = _render(_run_dir(tmp_path, ROWS, ledger=LEDGER, state=state))
-    assert "| cuad | `qwen3-8b` | 16 | 3 | 2 | 1 | 0 |" in text
-    assert "| cuad | `qwen3-4b` | 16 | 0 | 0 | 0 | 0 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a | n/a |" in text
-    assert "| enron | `qwen36-35b-a3b` | 4 | 1 | 0 | 0 | 1 |" in text
+    assert "| cuad | `qwen3-8b` | 16 | 3 | 2 | 1 | 0 | 0 | 0 |" in text
+    assert (
+        "| cuad | `qwen3-4b` | 16 | 0 | 0 | 0 | 0 | 0 | 0 | n/a | n/a | n/a | 0 | 0 | 0 | 0 | n/a | n/a | n/a |" in text
+    )
+    assert "| enron | `qwen36-35b-a3b` | 4 | 1 | 0 | 0 | 0 | 0 | 1 |" in text
     assert "gemma4-26b-a4b` |" not in text.split("## Models this machine did not run")[0], "it has its own section"
     assert "**47 planned unit(s) never ran**" in text  # 52 planned, 5 ran
 
@@ -151,8 +160,14 @@ def test_corpora_are_not_pooled_into_one_row(tmp_path):
         [4, "enron", "qwen3-8b", "q1", "standard", "done", "0.000", 0, "0.000", "300.0", "fail", 0],
     ]
     text = _render(_run_dir(tmp_path, rows, ledger=LEDGER))
-    assert "| cuad | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 1.00 | 1.00 | 10 | 1 | 1 | 0 | 0 | n/a | 5.00 | n/a |" in text
-    assert "| enron | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 0.00 | 0.00 | 300 | 1 | 0 | 0 | 1 | n/a | 0.00 | n/a |" in text
+    assert (
+        "| cuad | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 0 | 0 | 1.00 | 1.00 | 10 | 1 | 1 | 0 | 0 | n/a | 5.00 | n/a |"
+        in text
+    )
+    assert (
+        "| enron | `qwen3-8b` | n/a | 1 | 1 | 0 | 0 | 0 | 0 | 0.00 | 0.00 | 300 | 1 | 0 | 0 | 1 | n/a | 0.00 | n/a |"
+        in text
+    )
 
 
 def test_the_host_is_the_machine_that_ran_the_sweep(tmp_path):
@@ -168,7 +183,10 @@ def test_a_rerun_unit_counts_once_by_its_last_row(tmp_path):
     """metrics.csv is append-only; --rerun appends a second row for the same unit."""
     again = [*ROWS, [4, "cuad", "qwen3-8b", "q3", "standard", "done", "0.600", 0, "0.500", "90.0", "pass", 5]]
     text = _render(_run_dir(tmp_path, again, ledger=LEDGER))
-    assert "| cuad | `qwen3-8b` | n/a | 3 | 3 | 0 | 0 | 0.60 | 0.50 | 90 | 3 | 2 | 0 | 1 | n/a | 3.67 | n/a |" in text
+    assert (
+        "| cuad | `qwen3-8b` | n/a | 3 | 3 | 0 | 0 | 0 | 0 | 0.60 | 0.50 | 90 | 3 | 2 | 0 | 1 | n/a | 3.67 | n/a |"
+        in text
+    )
 
 
 def test_a_failed_or_missing_preflight_says_the_timings_are_not_a_baseline(tmp_path):
@@ -266,7 +284,7 @@ def test_every_phase_that_runs_a_model_is_in_the_report_and_in_the_count(tmp_pat
     }
     text = _render(_run_dir(tmp_path, rows, ledger=LEDGER, state=state))
     assert "## Phase 6: the unified corpus" in text
-    assert "| unified | `qwen36-35b-a3b` | 9 | 1 | 1 | 0 | 0 | 0.40 | 0.30 | 500 |" in text
+    assert "| unified | `qwen36-35b-a3b` | 9 | 1 | 1 | 0 | 0 | 0 | 0 | 0.40 | 0.30 | 500 |" in text
     assert "## Phase 2: smoke" in text and "| cuad | `qwen36-35b-a3b` | 1 | 0 |" in text
     assert "- Corpora: cuad, enron, synthetic, unified\n" in text, "synthetic was planned and produced nothing"
     assert "| synthetic | `qwen3-8b` | 16 | 0 |" in text
@@ -317,7 +335,10 @@ def test_a_run_with_the_answers_question_column_reports_it(tmp_path):
     (run / "spend.json").write_text(json.dumps(LEDGER))
     text = _render(run)
     assert "| answers question (0-5) | completeness (0-5) | answer key (0-1) |" in text
-    assert "| cuad | `qwen3-8b` | n/a | 3 | 2 | 1 | 0 | 0.60 | 0.50 | 100 | 2 | 1 | 0 | 1 | 4.00 | 3.00 | n/a |" in text
+    assert (
+        "| cuad | `qwen3-8b` | n/a | 3 | 2 | 1 | 0 | 0 | 0 | 0.60 | 0.50 | 100 | 2 | 1 | 0 | 1 | 4.00 | 3.00 | n/a |"
+        in text
+    )
 
 
 def test_the_answer_key_column_is_averaged_over_the_rows_that_have_one(tmp_path):
@@ -377,3 +398,39 @@ def test_a_rendered_report_carries_the_summaries_note_when_a_unit_ran_beside_a_b
         csv.writer(f).writerows([header, *[[*r, "0"] for r in ROWS]])
     (quiet / "spend.json").write_text(json.dumps(LEDGER))
     assert "summaries were still queued" not in _render(quiet)
+
+
+def test_forced_answers_are_counted_and_judged_beside_the_chosen_ones(tmp_path):
+    """#719: an answer the app forced is degraded and judged. The table counts it under `forced` and `forced
+    pass`, never under `judged`; the note says what the columns mean. A file from before the column is read
+    as before."""
+    header = [*HEADER, "stop_reason"]
+    rows = [
+        ["4", "cuad", "m", "q1", "standard", "done", "0.5", "0", "0.5", "10", "pass", "4", ""],
+        ["4", "cuad", "m", "q2", "standard", "degraded", "0.0", "0", "0.0", "310", "pass", "3", "time_budget"],
+        ["4", "cuad", "m", "q3", "standard", "degraded", "0.0", "0", "0.0", "320", "fail", "1", "time_budget"],
+        ["4", "cuad", "m", "q4", "standard", "degraded", "0.0", "0", "0.0", "2", "", "", ""],  # an empty answer
+    ]
+    run = tmp_path / "results" / "r"
+    run.mkdir(parents=True)
+    with (run / "metrics.csv").open("w", newline="") as f:
+        csv.writer(f).writerows([header, *rows])
+    text = report.render(run, preflight=None, today="2026-09-26", host="ix", commit="abc1234")
+    row = next(line for line in text.splitlines() if line.startswith("| cuad | `m` |"))
+    cells = [c.strip() for c in row.strip("|").split("|")]
+    columns = [
+        c.strip()
+        for c in next(line for line in text.splitlines() if line.startswith("| corpus |")).strip("|").split("|")
+    ]
+    by = dict(zip(columns, cells))
+    assert by["done"] == "1" and by["degraded"] == "3"
+    assert by["forced"] == "2" and by["forced pass"] == "1"
+    assert by["judged"] == "1" and by["pass"] == "1", "the chosen answers only"
+    assert "2 answers were forced by the app" in text and "2 by time budget" in text
+
+    # Before the column existed: nothing forced, no note.
+    old = _run_dir(tmp_path, [["4", "cuad", "m", "q1", "standard", "degraded", "0", "0", "0", "3", "", ""]])
+    text = report.render(old, preflight=None, today="2026-09-26", host="ix", commit="abc1234")
+    assert "forced by the app" not in text
+    row = next(line for line in text.splitlines() if line.startswith("| cuad | `m` |"))
+    assert "| 0 | 0 |" in row  # forced, forced pass
