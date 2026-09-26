@@ -297,3 +297,16 @@ def test_normalize_for_match_strips_asterisks_and_lowercases() -> None:
     assert _normalize_for_match("**KnowLedge BASE is currently EMPTY**") == "knowledge base is currently empty"
     assert _normalize_for_match("currently **empty** — no docs") == "currently empty — no docs"
     assert _normalize_for_match("plain lowercase passes through") == "plain lowercase passes through"
+
+
+def test_a_baseline_that_describes_the_corpus_is_not_an_empty_corpus() -> None:
+    """The Enron baseline for "what companies are mentioned most often" said "the corpus appears to be the
+    well-known Enron email dataset" in the middle of a good answer, and a signature of "corpus appears to be"
+    called it empty (bench-20260925-0028-enron: four models' rows without quality columns)."""
+    answer = (
+        "### 1. **Enron** — 18,127 mentions\nBy a massive margin, **Enron** is the dominant company in the corpus. "
+        "This makes complete sense, as the corpus appears to be the well-known **Enron email dataset**, consisting "
+        "of internal corporate communications.\n\n### 2. **The New York Times** — 1,129 mentions"
+    )
+    assert baseline_quality_problem({"answer": answer}) is None
+    assert baseline_quality_problem({"answer": "The corpus appears to be empty."}) == "baseline says corpus is empty"

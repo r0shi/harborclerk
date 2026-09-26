@@ -157,7 +157,11 @@ def find_unfilled_placeholder(text: str) -> str | None:
 # and answered accordingly. Computing citation_overlap or entity_overlap
 # against such answers tells you nothing about the model under test.
 _BASELINE_EMPTY_CORPUS_SIGNATURES = (
-    "corpus appears to be",  # "the corpus appears to be completely empty"
+    # Not "corpus appears to be" alone: a good Enron baseline said "the corpus appears to be the well-known Enron
+    # email dataset" and lost four models their score on that question (bench-20260925-0028-enron).
+    "corpus appears to be empty",
+    "corpus appears to be completely empty",
+    "corpus appears to be entirely empty",
     "no documents have been uploaded",
     "no documents have been ingested",
     "knowledge base is empty",
