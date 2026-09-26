@@ -142,19 +142,19 @@ def _make_mcp_session(*, api_base: str, insecure: bool) -> Any:
     """
     from scripts.test_corpora.runner.client import HarborClerkClient, SyncMcpSession
 
-    token = os.environ.get("HC_API_KEY")
-    if not token:
-        user, password = os.environ.get("HC_USERNAME"), os.environ.get("HC_PASSWORD")
-        if not (user and password):
-            raise RuntimeError(
-                "rerun_pr_j needs HC_API_KEY (corpus-scoped) or HC_USERNAME + HC_PASSWORD in the environment"
-            )
-        hc = HarborClerkClient(api_base, verify=not insecure)
-        hc.login(user, password)
-        token = hc.get_bearer_token()
-
     mcp_url = os.environ.get("HC_MCP_URL") or f"{api_base}/mcp/mcp"
-    return SyncMcpSession(url=mcp_url, headers={"Authorization": f"Bearer {token}"})
+    token = os.environ.get("HC_API_KEY")
+    if token:
+        return SyncMcpSession(url=mcp_url, headers={"Authorization": f"Bearer {token}"})
+    user, password = os.environ.get("HC_USERNAME"), os.environ.get("HC_PASSWORD")
+    if not (user and password):
+        raise RuntimeError(
+            "rerun_pr_j needs HC_API_KEY (corpus-scoped) or HC_USERNAME + HC_PASSWORD in the environment"
+        )
+    hc = HarborClerkClient(api_base, verify=not insecure)
+    hc.login(user, password)
+    # A login token lasts 30 minutes; the session asks for the current one and re-logs in on a 401 (#681).
+    return SyncMcpSession(url=mcp_url, bearer=hc.get_bearer_token, refresh_bearer=hc.refresh_bearer_token)
 
 
 def main(argv: list[str] | None = None) -> int:

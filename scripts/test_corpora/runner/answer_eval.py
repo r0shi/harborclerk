@@ -287,8 +287,11 @@ def _live_capture_fn(*, api_base: str, corpus: str, model: str, insecure: bool) 
     from scripts.test_corpora.runner.providers.factory import model_is_cloud
 
     if model_is_cloud(model):
+        mcp_url = os.environ.get("HC_MCP_URL") or f"{api_base}/mcp/mcp"
         token = os.environ.get("HC_API_KEY")
-        if not token:
+        if token:
+            mcp = SyncMcpSession(url=mcp_url, headers={"Authorization": f"Bearer {token}"})
+        else:
             user, password = os.environ.get("HC_USERNAME"), os.environ.get("HC_PASSWORD")
             if not (user and password):
                 raise RuntimeError(
@@ -296,13 +299,11 @@ def _live_capture_fn(*, api_base: str, corpus: str, model: str, insecure: bool) 
                 )
             hc = HarborClerkClient(api_base, verify=not insecure)
             hc.login(user, password)
-            token = hc.get_bearer_token()
-            if not token:
+            if not hc.get_bearer_token():
                 raise RuntimeError("HC login did not yield a bearer token — check HC_USERNAME / HC_PASSWORD")
             log.warning("HC_API_KEY unset — using an unscoped login; search is NOT corpus-restricted")
-
-        mcp_url = os.environ.get("HC_MCP_URL") or f"{api_base}/mcp/mcp"
-        mcp = SyncMcpSession(url=mcp_url, headers={"Authorization": f"Bearer {token}"})
+            # A login token lasts 30 minutes; the session asks for the current one and re-logs in on a 401 (#681).
+            mcp = SyncMcpSession(url=mcp_url, bearer=hc.get_bearer_token, refresh_bearer=hc.refresh_bearer_token)
         provider = make_provider(model, mcp_session=mcp, spend_kind="candidate_answer")
     else:
         # Local-model path — needs admin auth for PUT /chat/models/{id}/activate.

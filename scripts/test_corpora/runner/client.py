@@ -185,6 +185,13 @@ def _evaluate_health(
     return (None, None)
 
 
+def _is_unauthorized(exc: BaseException) -> bool:
+    """True when ``exc`` is, or wraps (the MCP client raises task groups), an HTTP 401."""
+    if isinstance(exc, BaseExceptionGroup):
+        return any(_is_unauthorized(e) for e in exc.exceptions)
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401
+
+
 class SyncMcpSession:
     """Synchronous façade over ``mcp.ClientSession`` + streamable-HTTP transport.
 
@@ -209,21 +216,39 @@ class SyncMcpSession:
         url: str,
         headers: dict[str, str] | None = None,
         timeout: float = 60.0,
+        *,
+        bearer: Callable[[], str | None] | None = None,
+        refresh_bearer: Callable[[], str | None] | None = None,
     ) -> None:
+        """``headers`` are sent as given. ``bearer`` is asked for the token before every call, so a session that
+        outlives an access token (30 minutes) sends the one the REST client holds now, not the one it held when
+        the session was opened (#681). ``refresh_bearer`` is called once when a call is refused with 401, and the
+        call is repeated with the token it returns; the MCP call is often the first request after an expiry, so
+        the REST client's own re-login has not happened yet."""
         self._url = url
         self._headers = headers or {}
         self._timeout = timeout
+        self._bearer = bearer
+        self._refresh_bearer = refresh_bearer
+
+    def _headers_now(self) -> dict[str, str]:
+        headers = dict(self._headers)
+        if self._bearer is not None:
+            token = self._bearer()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        return headers
 
     # ── async internals ──
 
-    async def _list_tools_async(self) -> list[Any]:
+    async def _list_tools_async(self, headers: dict[str, str]) -> list[Any]:
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
         async with (
             streamablehttp_client(
                 self._url,
-                headers=self._headers,
+                headers=headers,
                 timeout=self._timeout,
             ) as (read, write, _),
             ClientSession(read, write) as session,
@@ -232,14 +257,14 @@ class SyncMcpSession:
             result = await session.list_tools()
             return result.tools
 
-    async def _call_tool_async(self, name: str, args: dict) -> Any:
+    async def _call_tool_async(self, headers: dict[str, str], name: str, args: dict) -> Any:
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
         async with (
             streamablehttp_client(
                 self._url,
-                headers=self._headers,
+                headers=headers,
                 timeout=self._timeout,
             ) as (read, write, _),
             ClientSession(read, write) as session,
@@ -247,15 +272,30 @@ class SyncMcpSession:
             await session.initialize()
             return await session.call_tool(name, args)
 
+    def _run(self, op: Callable[[dict[str, str]], Any]) -> Any:
+        """Run one MCP operation with the current headers; on a 401, log in again once and repeat it."""
+        try:
+            return asyncio.run(op(self._headers_now()))
+        except Exception as exc:
+            if self._refresh_bearer is None or not _is_unauthorized(exc):
+                raise
+            logger.warning(
+                "MCP call to %s refused with 401: the access token has expired; logging in again and retrying once",
+                self._url,
+            )
+            if not self._refresh_bearer():
+                raise
+            return asyncio.run(op(self._headers_now()))
+
     # ── public synchronous API ──
 
     def list_tools(self) -> list[Any]:
         """Return a list of ``mcp.types.Tool`` objects."""
-        return asyncio.run(self._list_tools_async())
+        return self._run(self._list_tools_async)
 
     def call_tool(self, name: str, args: dict) -> Any:
         """Execute one MCP tool call and return the ``CallToolResult``."""
-        return asyncio.run(self._call_tool_async(name, args))
+        return self._run(lambda headers: self._call_tool_async(headers, name, args))
 
     # ── context manager ──
 
@@ -328,6 +368,18 @@ class HarborClerkClient:
         if h.startswith("Bearer "):
             return h[len("Bearer ") :]
         return None
+
+    def refresh_bearer_token(self) -> str | None:
+        """Log in again and return the new token, for a caller whose own request was refused with 401.
+
+        ``_JWTRefreshAuth`` re-logs in only when a request *through this client* is refused; the MCP session
+        has its own connection, so its 401 is not seen here (#681). Dropping the held token makes the next
+        authenticated request log in first; ``health()`` is that request."""
+        auth = self._client.auth
+        if not isinstance(auth, _JWTRefreshAuth):
+            return self.get_bearer_token()
+        auth._token = None
+        return self.get_bearer_token()
 
     # ── model management ──
 

@@ -1717,16 +1717,13 @@ def main(argv: list[str] | None = None) -> int:
                         if mcp_session is None:
                             mcp_url = os.environ.get("HC_MCP_URL") or f"{args.api_base}/mcp/mcp"
                             log.info("opening MCP session at %s for Phase 1 baselines", mcp_url)
-                            # Forward HC's bearer to the separate MCP httpx client.
-                            # After PR #306 the token lives inside hc._client.auth, not
-                            # in client.headers — `get_bearer_token` triggers the lazy
-                            # login if needed and returns the active token. Without
-                            # this, the MCP session goes out unauthenticated and 401s.
-                            token = hc.get_bearer_token()
-                            mcp_headers: dict[str, str] = {"Authorization": f"Bearer {token}"} if token else {}
+                            # The MCP client has its own connection, so it asks hc for the bearer before
+                            # every call and has hc log in again when a call is refused: phase 1 outlives
+                            # the 30-minute access token whenever ingest or the baselines run long (#681).
                             mcp_session = SyncMcpSession(
                                 url=mcp_url,
-                                headers=mcp_headers,
+                                bearer=hc.get_bearer_token,
+                                refresh_bearer=hc.refresh_bearer_token,
                             )
                         text, _lang = _question_text(questions_by_corpus[u.corpus], u.question_id)
                         placeholder = find_unfilled_placeholder(text)
