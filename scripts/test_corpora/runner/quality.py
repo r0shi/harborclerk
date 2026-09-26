@@ -54,7 +54,10 @@ _REFUSAL_PHRASES = (
 # emitting them as structured calls, and any model does once the chat loop has
 # stopped offering tools at its context budget (#712). Two fingerprints: the
 # bracketed tool name, ``[search_documents: "..."]``, and Qwen3's XML-ish form,
-# ``<tool_call> <function=search_documents> ...`` (#733).
+# ``<tool_call> <function=search_documents> ...`` (#733). ``<function=`` needs one
+# of the tool names; a bare ``<tool_call>`` counts on its own, since the JSON-body
+# form (Hermes, Qwen2.5) carries the name inside the tag, and no document in the
+# corpora this measures says ``<tool_call>`` in prose.
 _TOOL_NAMES_FOR_ROLEPLAY = (
     "search_documents",
     "kb_search",
