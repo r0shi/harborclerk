@@ -74,6 +74,8 @@ _TOOL_NAMES_FOR_ROLEPLAY = (
     "kb_find_related",
     "document_outline",
     "kb_document_outline",
+    "documents_by_date",
+    "kb_documents_by_date",
 )
 _ROLEPLAY_RE = re.compile(
     r"\[\s*(?:" + "|".join(_TOOL_NAMES_FOR_ROLEPLAY) + r")\b",

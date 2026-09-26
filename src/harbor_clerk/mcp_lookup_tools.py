@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
+import uuid
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -422,8 +424,12 @@ async def _query_documents_by_date(
     before: str | None = None,
     date_field: str | None = None,
     limit: int = 10,
+    doc_ids: Collection[uuid.UUID] | None = None,
 ) -> list[tuple[Document, datetime, str]]:
     """Run the SQL query for documents_by_date and return rows.
+
+    ``doc_ids`` restricts the candidates before the sort and the limit: a folder-scoped principal's visible set.
+    Filtering the ten returned rows afterwards would return nothing when the edge lies outside the scope.
 
     Each row is (Document, effective_date, date_source_label). Caller is
     responsible for shaping the response.
@@ -493,6 +499,9 @@ async def _query_documents_by_date(
     for cond in doc_conditions:
         stmt = stmt.where(cond)
 
+    if doc_ids is not None:
+        stmt = stmt.where(Document.doc_id.in_(list(doc_ids)))
+
     # Optional after / before bounds on the effective date.
     if after:
         stmt = stmt.where(expr >= _parse_iso_date(after))
@@ -521,8 +530,10 @@ async def documents_by_date(
     before: str | None = None,
     date_field: str | None = None,
     limit: int = 10,
+    doc_ids: Collection[uuid.UUID] | None = None,
 ) -> dict:
-    """Return documents sorted by their effective date.
+    """Return documents sorted by their effective date. ``doc_ids`` (a scope's visible set) restricts the
+    candidates before the sort; None is unrestricted.
 
     Response shape:
       {"direction": <input>, "count": N, "results": [
@@ -544,6 +555,7 @@ async def documents_by_date(
             before=before,
             date_field=date_field,
             limit=limit,
+            doc_ids=doc_ids,
         )
     except ValueError as exc:
         return {"error": message_or_type(exc)}

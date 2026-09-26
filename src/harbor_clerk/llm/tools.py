@@ -395,6 +395,49 @@ _BASE_CHAT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "documents_by_date",
+            "description": (
+                "Documents sorted by their date, earliest or latest first. Use for "
+                "any question about the first, last, earliest, latest, oldest or "
+                "most recent document matching something, or for what came "
+                "before or after a date: search_documents ranks by similarity "
+                "and will not find an edge reliably. Each result carries doc_id, "
+                "title, the date and where it came from, not the text: to quote "
+                "the document, follow with search_documents (query, doc_id) or "
+                "read_document. Dates as YYYY-MM-DD."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["earliest", "latest"],
+                        "description": "Which end to return first.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Restrict to documents matching this text (optional).",
+                    },
+                    "after": {
+                        "type": "string",
+                        "description": "YYYY-MM-DD (or an ISO datetime); only documents dated after it (optional).",
+                    },
+                    "before": {
+                        "type": "string",
+                        "description": "YYYY-MM-DD (or an ISO datetime); only documents dated before it (optional).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "How many to return (default 10, max 50).",
+                    },
+                },
+                "required": ["direction"],
+            },
+        },
+    },
 ]
 
 # Tool defined separately because it's added to chat conditionally — only
@@ -560,6 +603,42 @@ def _map_args_entity_search(args: dict) -> dict:
     return mapped
 
 
+# What a model says for a direction, in the words of the question it is answering. An unknown word passes
+# through so the tool's own error ("direction must be 'earliest' or 'latest'") comes back for the model to
+# correct; silently swapping "last" for "earliest" gave it the first email with nothing to react to.
+_DIRECTION_SYNONYMS = {
+    "earliest": "earliest",
+    "first": "earliest",
+    "oldest": "earliest",
+    "asc": "earliest",
+    "ascending": "earliest",
+    "latest": "latest",
+    "last": "latest",
+    "newest": "latest",
+    "most recent": "latest",
+    "most_recent": "latest",
+    "recent": "latest",
+    "desc": "latest",
+    "descending": "latest",
+}
+
+
+def _map_args_documents_by_date(args: dict) -> dict:
+    """The two Enron boundary questions all four local models got wrong (#722) had a direction and a subject;
+    the MCP tool's metadata_filter and date_field stay MCP-only."""
+    # Missing or unknown: passed through as given, so the tool's error ("direction must be 'earliest' or
+    # 'latest'") comes back for the model to correct; a default would hand it the first document silently.
+    direction = str(args.get("direction") or "").strip().lower()
+    mapped: dict = {"direction": _DIRECTION_SYNONYMS.get(direction, direction)}
+    for key in ("query", "after", "before"):
+        if args.get(key):
+            mapped[key] = args[key]
+    limit = args.get("limit")
+    if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+        mapped["limit"] = min(limit, 50)
+    return mapped
+
+
 def _map_args_entity_overview(args: dict) -> dict:
     mapped: dict = {}
     if args.get("doc_id"):
@@ -646,6 +725,7 @@ _TOOL_DISPATCH: dict[str, tuple[str, callable]] = {
     "corpus_topics": ("kb_corpus_topics", _map_args_corpus_topics),
     "find_all_documents": ("kb_find_all", _map_args_find_all),
     "verify_identifier": ("kb_verify_identifier", _map_args_verify_identifier),
+    "documents_by_date": ("kb_documents_by_date", _map_args_documents_by_date),
     "batch_search": ("kb_batch_search", _map_args_batch_search_chat),
 }
 

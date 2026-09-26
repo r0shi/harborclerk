@@ -127,7 +127,9 @@ def failure_correlation(captures: list[dict], verdicts: list[dict]) -> dict:
             )
 
         qid_lc = qid.lower()
-        if any(t in qid_lc for t in _EARLIEST_LATEST_TRIGGERS) and "kb_documents_by_date" not in tools_used:
+        # The MCP surface records kb_documents_by_date; the chat surface records documents_by_date (#722).
+        used_by_date = {"kb_documents_by_date", "documents_by_date"} & set(tools_used)
+        if any(t in qid_lc for t in _EARLIEST_LATEST_TRIGGERS) and not used_by_date:
             earliest_latest.append(
                 {
                     "qid": qid,

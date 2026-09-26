@@ -2879,7 +2879,11 @@ async def kb_documents_by_date(
         date_source is "ingest", note that no metadata date was available
         — the result is sorted by ingest time, not by document content date.
     """
+    principal = _get_principal()
     async with async_session_factory() as session:
+        # Per-scope: the same intersection every other kb_* tool applies (#722's review found this one did not).
+        # An empty visible set goes through the query as an empty IN, so an invalid direction still errors.
+        visible_ids = await _visible_doc_ids(session, principal)
         result = await _documents_by_date_impl(
             session,
             direction=direction,
@@ -2889,6 +2893,7 @@ async def kb_documents_by_date(
             before=before,
             date_field=date_field,
             limit=limit,
+            doc_ids=visible_ids,
         )
         rows = result.get("results") if isinstance(result, dict) else None
         if isinstance(rows, list):
