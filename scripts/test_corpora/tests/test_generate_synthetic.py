@@ -17,18 +17,17 @@ from scripts.test_corpora.groundtruth.generate_synthetic import (
 # ── fixture helpers ─────────────────────────────────────────────────────────
 
 
-def _write_doc(ingest: Path, stem: str, sidecar: dict, text: str = "rendered body") -> None:
-    """Write a synthetic doc pair: the .json sidecar + the .txt rendering."""
-    (ingest / f"{stem}.json").write_text(json.dumps(sidecar))
-    (ingest / f"{stem}.txt").write_text(text)
+def _write_doc(facts: Path, stem: str, sidecar: dict, text: str = "rendered body") -> None:
+    """Write a fact sidecar into facts/. The rendered document lives in ingest/, which the generator never reads."""
+    (facts / f"{stem}.json").write_text(json.dumps(sidecar))
 
 
 def _make_full_fixture(tmp_path: Path) -> Path:
     """Build a minimal fixture covering all 9 doc-types so generate() can run end-to-end."""
-    ingest = tmp_path / "ingest"
-    ingest.mkdir()
+    facts = tmp_path / "facts"
+    facts.mkdir()
     _write_doc(
-        ingest,
+        facts,
         "0001_invoice",
         {
             "vendor": "Acme Supplies",
@@ -39,7 +38,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0002_invoice",
         {
             "vendor": "Globex Supplies",
@@ -50,7 +49,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0010_board_minutes",
         {
             "date": "2025-03-01",
@@ -60,7 +59,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0011_board_minutes",
         {
             "date": "2025-04-02",
@@ -70,7 +69,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0020_onboarding_letter",
         {
             "employee_name": "n/a",
@@ -81,7 +80,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0030_quarterly_report",
         {
             "quarter": "Q2",
@@ -91,7 +90,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0040_vendor_contract",
         {
             "vendor": "Pinnacle Tech Solutions, LLC",
@@ -102,7 +101,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0050_internal_memo",
         {
             "from": "Helena Voss, COO",
@@ -112,7 +111,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0060_policy_doc",
         {
             "policy_name": "Information Security Policy",
@@ -122,7 +121,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0070_marketing_brief",
         {
             "campaign_name": "Marbledock Elevate 2025",
@@ -132,7 +131,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
         },
     )
     _write_doc(
-        ingest,
+        facts,
         "0080_employee_handbook",
         {
             "year": 2025,
@@ -140,7 +139,7 @@ def _make_full_fixture(tmp_path: Path) -> Path:
             "lang_split": {"primary": "English", "secondary": "French", "total_section_count": 4},
         },
     )
-    return ingest
+    return facts
 
 
 # ── helper tests ────────────────────────────────────────────────────────────
@@ -163,12 +162,12 @@ def test_load_sidecar_reads_json(tmp_path: Path):
 
 def test_iter_sidecars_filters_by_doctype_and_sorts(tmp_path: Path):
     """_iter_sidecars yields (stem, sidecar) for matching docs, sorted by stem."""
-    ingest = tmp_path / "ingest"
-    ingest.mkdir()
-    _write_doc(ingest, "0002_invoice", {"vendor": "B"})
-    _write_doc(ingest, "0001_invoice", {"vendor": "A"})
-    _write_doc(ingest, "0003_board_minutes", {"date": "2025-01-01"})
-    pairs = list(_iter_sidecars(ingest, "invoice"))
+    facts = tmp_path / "facts"
+    facts.mkdir()
+    _write_doc(facts, "0002_invoice", {"vendor": "B"})
+    _write_doc(facts, "0001_invoice", {"vendor": "A"})
+    _write_doc(facts, "0003_board_minutes", {"date": "2025-01-01"})
+    pairs = list(_iter_sidecars(facts, "invoice"))
     assert [stem for stem, _ in pairs] == ["0001_invoice", "0002_invoice"]
     assert pairs[0][1]["vendor"] == "A"
 
@@ -208,9 +207,9 @@ def test_find_item_builds_count_all_sample_shape():
 
 def test_generate_emits_items_across_all_doc_types(tmp_path: Path):
     """The orchestrator emits items for every doc-type plus cross-doc + negatives."""
-    ingest = _make_full_fixture(tmp_path)
+    facts = _make_full_fixture(tmp_path)
     out = tmp_path / "synthetic.yaml"
-    n = generate(ingest_dir=ingest, out_path=out)
+    n = generate(facts_dir=facts, out_path=out)
 
     data = yaml.safe_load(out.read_text())
     assert data["corpus"] == "synthetic"
@@ -262,9 +261,9 @@ def test_generate_emits_items_across_all_doc_types(tmp_path: Path):
 
 def test_generate_emits_french_items_when_fr_sidecars_present(tmp_path: Path):
     """When the corpus has FR-tagged sidecars (lang: fr), the generator emits FR items."""
-    ingest = _make_full_fixture(tmp_path)  # 0011_board_minutes has lang: fr
+    facts = _make_full_fixture(tmp_path)  # 0011_board_minutes has lang: fr
     out = tmp_path / "synthetic.yaml"
-    generate(ingest_dir=ingest, out_path=out)
+    generate(facts_dir=facts, out_path=out)
     data = yaml.safe_load(out.read_text())
     fr_items = [i for i in data["items"] if i["id"].startswith("synth-fr-")]
     assert len(fr_items) >= 1, "no FR items emitted despite FR-tagged sidecars in fixture"
@@ -278,10 +277,10 @@ def test_generate_emits_french_items_when_fr_sidecars_present(tmp_path: Path):
 
 def test_generate_raises_when_negative_vendor_unexpectedly_matches(tmp_path: Path):
     """If a docs in the corpus actually has the negative vendor name, generate refuses."""
-    ingest = _make_full_fixture(tmp_path)
+    facts = _make_full_fixture(tmp_path)
     # Plant a doc that contains "Globex Aerospace" — the negative target.
     _write_doc(
-        ingest,
+        facts,
         "0099_vendor_contract",
         {
             "vendor": "Globex Aerospace",
@@ -294,7 +293,7 @@ def test_generate_raises_when_negative_vendor_unexpectedly_matches(tmp_path: Pat
     )
     out = tmp_path / "synthetic.yaml"
     with pytest.raises(RuntimeError, match="negative vendor 'Globex Aerospace' unexpectedly matches"):
-        generate(ingest_dir=ingest, out_path=out)
+        generate(facts_dir=facts, out_path=out)
 
 
 def test_generate_silently_skips_items_with_duplicate_questions(tmp_path: Path, capsys):
@@ -308,8 +307,8 @@ def test_generate_silently_skips_items_with_duplicate_questions(tmp_path: Path, 
     Reproducer: overwrite 0002_invoice to share 0001_invoice's invoice_number,
     so the lookup-by-number recipe emits the same question text for both
     sidecars. The 0001 item survives; the 0002 item is dropped."""
-    ingest = _make_full_fixture(tmp_path)
-    (ingest / "0002_invoice.json").write_text(
+    facts = _make_full_fixture(tmp_path)
+    (facts / "0002_invoice.json").write_text(
         json.dumps(
             {
                 "vendor": "Other Vendor",
@@ -321,7 +320,7 @@ def test_generate_silently_skips_items_with_duplicate_questions(tmp_path: Path, 
         )
     )
     out = tmp_path / "synthetic.yaml"
-    generate(ingest_dir=ingest, out_path=out)
+    generate(facts_dir=facts, out_path=out)
     data = yaml.safe_load(out.read_text())
 
     # Both invoice recipes key their question on invoice_number, so when 0002
@@ -340,9 +339,9 @@ def test_generate_silently_skips_items_with_duplicate_questions(tmp_path: Path, 
 
 def test_generate_raises_when_negative_invoice_number_unexpectedly_matches(tmp_path: Path):
     """If a doc in the corpus actually uses invoice_number INV-99999, generate refuses."""
-    ingest = _make_full_fixture(tmp_path)
+    facts = _make_full_fixture(tmp_path)
     _write_doc(
-        ingest,
+        facts,
         "0098_invoice",
         {
             "vendor": "x",
@@ -354,4 +353,4 @@ def test_generate_raises_when_negative_invoice_number_unexpectedly_matches(tmp_p
     )
     out = tmp_path / "synthetic.yaml"
     with pytest.raises(RuntimeError, match="negative invoice_number 'INV-99999' unexpectedly matches"):
-        generate(ingest_dir=ingest, out_path=out)
+        generate(facts_dir=facts, out_path=out)

@@ -9,6 +9,10 @@ A configurable subset is rendered to PDF at low DPI with noise/rotation
 to force OCR. The rest are written as plain text + bilingual variants
 where applicable.
 
+The sidecars are the answer key, so they live in ``facts/`` beside ``ingest/``,
+never in the folder the app watches: a sidecar in the index is a document that
+states the answer to every lookup question about its neighbour (#726).
+
 Idempotent via marker file ``.acquired``. Resuming a partial generation
 relies on per-doc filenames being content-addressed (numeric prefix +
 type), so a re-run only fills in the missing slots.
@@ -17,12 +21,15 @@ type), so a re-run only fills in the missing slots.
 from __future__ import annotations
 
 import json
+import logging
 import random
 from pathlib import Path
 
 import anthropic
 
 from .manifest import CorpusManifest
+
+log = logging.getLogger(__name__)
 
 # The spend estimate prices generation by this name, so it is stated once.
 GENERATION_MODEL = "claude-sonnet-4-6"
@@ -126,20 +133,49 @@ def _doc_names(doc_counts: dict[str, int] | None = None) -> list[tuple[str, str]
     return names
 
 
-def _is_generated(ingest_dir: Path, base: str) -> bool:
+FACTS_DIRNAME = "facts"
+
+
+def facts_dir_for(workdir: Path) -> Path:
+    """Where the per-document fact sidecars live: beside the watched ``ingest/`` folder, not in it."""
+    return Path(workdir) / FACTS_DIRNAME
+
+
+def _is_generated(ingest_dir: Path, facts_dir: Path, base: str) -> bool:
     # The facts file is written last, so it marks a finished document. The .txt may since have become a .pdf.
-    return (ingest_dir / f"{base}.json").exists() and any(
-        (ingest_dir / f"{base}{s}").exists() for s in (".txt", ".pdf")
-    )
+    return (facts_dir / f"{base}.json").exists() and any((ingest_dir / f"{base}{s}").exists() for s in (".txt", ".pdf"))
+
+
+def _move_sidecars_out_of_ingest(ingest_dir: Path, facts_dir: Path) -> int:
+    """Move fact sidecars that an earlier generation wrote into the watched folder to ``facts/`` (#726).
+
+    The generation they belong to is kept, not bought again; a sidecar that already has a copy in ``facts/``
+    is simply removed from the watched folder. Returns how many files left ``ingest/``."""
+    moved = 0
+    for stray in sorted(ingest_dir.glob("*.json")):
+        facts_dir.mkdir(parents=True, exist_ok=True)
+        target = facts_dir / stray.name
+        if target.exists():
+            stray.unlink()
+        else:
+            stray.rename(target)
+        moved += 1
+    return moved
 
 
 def planned_generation_count(workdir: Path, doc_counts: dict[str, int] | None = None) -> int:
     """How many documents `acquire` would generate, for the pre-run spend estimate: none once the corpus is
     acquired, otherwise the ones a stopped generation has not written yet."""
     ingest_dir = Path(workdir) / "ingest"
+    facts_dir = facts_dir_for(workdir)
     if (ingest_dir / ".acquired").exists() and any(d.suffix in {".txt", ".pdf"} for d in ingest_dir.glob("*")):
         return 0
-    return sum(1 for _, base in _doc_names(doc_counts) if not _is_generated(ingest_dir, base))
+    # A sidecar an earlier generation left in ingest/ still marks its document as bought; acquire moves it.
+    return sum(
+        1
+        for _, base in _doc_names(doc_counts)
+        if not (_is_generated(ingest_dir, facts_dir, base) or _is_generated(ingest_dir, ingest_dir, base))
+    )
 
 
 def _draw_prompt(doc_type: str, rng: random.Random) -> str:
@@ -208,8 +244,20 @@ def acquire(
 ) -> CorpusManifest:
     workdir = Path(workdir)
     ingest_dir = workdir / "ingest"
+    facts_dir = facts_dir_for(workdir)
     marker = ingest_dir / ".acquired"
     counts = doc_counts or DOC_COUNTS_DEFAULT
+
+    if ingest_dir.exists():
+        moved = _move_sidecars_out_of_ingest(ingest_dir, facts_dir)
+        if moved:
+            log.warning(
+                "moved %d fact sidecar(s) out of the watched folder %s into %s: an index built from that folder "
+                "held the answer key and must be re-ingested (#726)",
+                moved,
+                ingest_dir,
+                facts_dir,
+            )
 
     if marker.exists():
         docs = sorted(ingest_dir.glob("*"))
@@ -229,19 +277,20 @@ def acquire(
         marker.unlink()  # remove stale marker so future runs don't keep tripping it
 
     ingest_dir.mkdir(parents=True, exist_ok=True)
+    facts_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(42)
     client = _make_client()
 
     all_docs: list[tuple[str, dict]] = []  # (type, generated dict)
     for doc_type, base in _doc_names(counts):
-        if _is_generated(ingest_dir, base):
+        if _is_generated(ingest_dir, facts_dir, base):
             # Bought by an earlier, stopped generation (the spend cap, Ctrl-C). Not bought again. One the OCR
             # step already turned into a PDF has no text left to read, and needs none: that step skips it.
             _draw_prompt(doc_type, rng)
             txt = ingest_dir / f"{base}.txt"
             gen = {
                 "text": txt.read_text() if txt.exists() else None,
-                "facts": json.loads((ingest_dir / f"{base}.json").read_text()),
+                "facts": json.loads((facts_dir / f"{base}.json").read_text()),
             }
             all_docs.append((doc_type, gen))
             continue
@@ -251,7 +300,7 @@ def acquire(
             # Skip individual failures rather than abort the whole sweep
             gen = {"text": f"[generation failed: {exc}]", "facts": {"_error": str(exc)}}
         (ingest_dir / f"{base}.txt").write_text(gen["text"])
-        (ingest_dir / f"{base}.json").write_text(json.dumps(gen.get("facts", {}), indent=2))
+        (facts_dir / f"{base}.json").write_text(json.dumps(gen.get("facts", {}), indent=2))
         all_docs.append((doc_type, gen))
 
     # OCR subset: pick N docs randomly, render to PDF, replace .txt

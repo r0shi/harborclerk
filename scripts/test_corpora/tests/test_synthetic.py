@@ -23,11 +23,63 @@ def test_synthetic_acquire_writes_doc_and_sidecar(tmp_path: Path):
     assert m.doc_count == 2
     docs = sorted(m.ingest_dir.glob("*.txt"))
     assert len(docs) == 2
-    # Each doc has a JSON sidecar with ground-truth facts
-    sidecars = sorted(m.ingest_dir.glob("*.json"))
-    assert len(sidecars) == 2
+    # Each doc has a JSON sidecar with ground-truth facts, beside the watched folder and never in it (#726)
+    assert sorted(m.ingest_dir.glob("*.json")) == []
+    sidecars = sorted(synthetic.facts_dir_for(tmp_path / "synth").glob("*.json"))
+    assert [p.stem for p in sidecars] == [d.stem for d in docs]
     facts = json.loads(sidecars[0].read_text())
     assert facts["vendor"] == "Acme"
+
+
+def test_sidecars_an_earlier_generation_left_in_the_watched_folder_are_moved_out_and_not_bought_again(tmp_path: Path):
+    """#726: the generation before the fix wrote the answer key into ingest/. acquire keeps that generation (it
+    cost money) and moves the sidecars to facts/, so a re-ingest indexes only the documents."""
+    workdir = tmp_path / "synth"
+    ingest_dir = workdir / "ingest"
+    ingest_dir.mkdir(parents=True)
+    for base in ("0001_invoice", "0002_invoice"):
+        (ingest_dir / f"{base}.txt").write_text("INVOICE")
+        (ingest_dir / f"{base}.json").write_text(json.dumps({"vendor": "Acme", "total_usd": 1}))
+    (ingest_dir / ".acquired").write_text("acquired")
+    # One sidecar already has a copy in facts/: the stray is dropped, not duplicated
+    facts_dir = synthetic.facts_dir_for(workdir)
+    facts_dir.mkdir()
+    (facts_dir / "0002_invoice.json").write_text(json.dumps({"vendor": "Acme", "total_usd": 2}))
+
+    assert synthetic.planned_generation_count(workdir, {"invoice": 2}) == 0
+    fake_anthropic = MagicMock()
+    with patch.object(synthetic, "_make_client", return_value=fake_anthropic):
+        m = synthetic.acquire(workdir=workdir, doc_counts={"invoice": 2}, ocr_subset_count=0)
+
+    fake_anthropic.messages.create.assert_not_called()
+    assert m.doc_count == 2
+    assert sorted(ingest_dir.glob("*.json")) == []
+    assert sorted(p.name for p in facts_dir.glob("*.json")) == ["0001_invoice.json", "0002_invoice.json"]
+    assert json.loads((facts_dir / "0002_invoice.json").read_text())["total_usd"] == 2
+
+
+def test_a_stopped_generation_resumes_from_the_sidecars_in_facts(tmp_path: Path):
+    """The resume path reads the facts of a bought document from facts/ and generates only the missing one."""
+    workdir = tmp_path / "synth"
+    ingest_dir = workdir / "ingest"
+    facts_dir = synthetic.facts_dir_for(workdir)
+    ingest_dir.mkdir(parents=True)
+    facts_dir.mkdir()
+    (ingest_dir / "0001_invoice.txt").write_text("INVOICE one")
+    (facts_dir / "0001_invoice.json").write_text(json.dumps({"vendor": "Acme", "total_usd": 1}))
+    assert synthetic.planned_generation_count(workdir, {"invoice": 2}) == 1
+
+    fake_anthropic = MagicMock()
+    fake_anthropic.messages.create.return_value.content = [
+        MagicMock(text='{"text": "INVOICE two", "facts": {"vendor": "Beta", "total_usd": 2}}')
+    ]
+    with patch.object(synthetic, "_make_client", return_value=fake_anthropic):
+        m = synthetic.acquire(workdir=workdir, doc_counts={"invoice": 2}, ocr_subset_count=0)
+
+    assert fake_anthropic.messages.create.call_count == 1
+    assert m.doc_count == 2
+    assert json.loads((facts_dir / "0002_invoice.json").read_text())["vendor"] == "Beta"
+    assert sorted(ingest_dir.glob("*.json")) == []
 
 
 def test_synthetic_marker_without_files_re_acquires(tmp_path: Path):

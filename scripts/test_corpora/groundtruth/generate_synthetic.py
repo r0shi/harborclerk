@@ -47,10 +47,10 @@ def _load_sidecar(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def _iter_sidecars(ingest_dir: Path, doctype: str) -> Iterable[tuple[str, dict]]:
-    """Yield (stem, sidecar) for every ``*_<doctype>.json`` in ``ingest_dir``,
+def _iter_sidecars(facts_dir: Path, doctype: str) -> Iterable[tuple[str, dict]]:
+    """Yield (stem, sidecar) for every ``*_<doctype>.json`` in ``facts_dir``,
     sorted deterministically by filename."""
-    for p in sorted(ingest_dir.glob(f"*_{doctype}.json")):
+    for p in sorted(facts_dir.glob(f"*_{doctype}.json")):
         yield _to_title(p.name), _load_sidecar(p)
 
 
@@ -253,8 +253,8 @@ RECIPES: dict[str, Callable[[str, dict], list[dict]]] = {
 # ── cross-doc finds + negatives + FR ────────────────────────────────────────
 
 
-def _find_invoices_over_5000(ingest_dir: Path) -> dict:
-    matches = [stem for stem, sc in _iter_sidecars(ingest_dir, "invoice") if float(sc.get("total_usd", 0)) > 5000]
+def _find_invoices_over_5000(facts_dir: Path) -> dict:
+    matches = [stem for stem, sc in _iter_sidecars(facts_dir, "invoice") if float(sc.get("total_usd", 0)) > 5000]
     return _find_item(
         id_="synth-find-invoices-over-5000",
         question="Find all invoices with a total amount over $5,000 USD.",
@@ -263,10 +263,10 @@ def _find_invoices_over_5000(ingest_dir: Path) -> dict:
     )
 
 
-def _find_policies_effective_in_q4_2025(ingest_dir: Path) -> dict:
+def _find_policies_effective_in_q4_2025(facts_dir: Path) -> dict:
     matches = [
         stem
-        for stem, sc in _iter_sidecars(ingest_dir, "policy_doc")
+        for stem, sc in _iter_sidecars(facts_dir, "policy_doc")
         if str(sc.get("effective_date", "")).startswith(("2025-10", "2025-11", "2025-12"))
     ]
     return _find_item(
@@ -277,9 +277,9 @@ def _find_policies_effective_in_q4_2025(ingest_dir: Path) -> dict:
     )
 
 
-def _neg_invoice_number(ingest_dir: Path) -> dict:
+def _neg_invoice_number(facts_dir: Path) -> dict:
     """A lookup with an invoice_number that doesn't exist in the corpus."""
-    for _, sc in _iter_sidecars(ingest_dir, "invoice"):
+    for _, sc in _iter_sidecars(facts_dir, "invoice"):
         if sc.get("invoice_number") == NEGATIVE_INVOICE_NUMBER:
             raise RuntimeError(
                 f"negative invoice_number {NEGATIVE_INVOICE_NUMBER!r} unexpectedly matches "
@@ -295,9 +295,9 @@ def _neg_invoice_number(ingest_dir: Path) -> dict:
     }
 
 
-def _find_neg_vendor(ingest_dir: Path) -> dict:
+def _find_neg_vendor(facts_dir: Path) -> dict:
     """A find with a vendor that doesn't exist anywhere in the corpus."""
-    for p in sorted(ingest_dir.glob("*.json")):
+    for p in sorted(facts_dir.glob("*.json")):
         if NEGATIVE_VENDOR.lower() in p.read_text().lower():
             raise RuntimeError(
                 f"negative vendor {NEGATIVE_VENDOR!r} unexpectedly matches "
@@ -312,7 +312,7 @@ def _find_neg_vendor(ingest_dir: Path) -> dict:
     )
 
 
-def _emit_fr_items(ingest_dir: Path) -> list[dict]:
+def _emit_fr_items(facts_dir: Path) -> list[dict]:
     """Emit ≤2 French-language items derived from sidecars tagged ``lang: "fr"``.
 
     Scans board_minutes first, then internal_memo (the types that carry an
@@ -323,7 +323,7 @@ def _emit_fr_items(ingest_dir: Path) -> list[dict]:
     """
     items: list[dict] = []
     for doctype in ("board_minutes", "internal_memo"):
-        for stem, sc in _iter_sidecars(ingest_dir, doctype):
+        for stem, sc in _iter_sidecars(facts_dir, doctype):
             if sc.get("lang") != "fr":
                 continue
             if doctype == "board_minutes":
@@ -354,7 +354,7 @@ def _emit_fr_items(ingest_dir: Path) -> list[dict]:
 # ── orchestrator ────────────────────────────────────────────────────────────
 
 
-def generate(ingest_dir: Path, out_path: Path, *, per_type: int = 2) -> int:
+def generate(facts_dir: Path, out_path: Path, *, per_type: int = 2) -> int:
     """Emit the Synthetic ground-truth YAML. Returns the number of items written.
 
     For each doc-type, applies the per-type recipe to the first ``per_type``
@@ -379,7 +379,7 @@ def generate(ingest_dir: Path, out_path: Path, *, per_type: int = 2) -> int:
     #      `dup_skipped` count is reported to stderr so a curator can spot a
     #      doc-type that's contributing fewer items than expected.
     for doctype, recipe in RECIPES.items():
-        sidecars = _iter_sidecars(ingest_dir, doctype)
+        sidecars = _iter_sidecars(facts_dir, doctype)
         if doctype == "quarterly_report":
             seen_qy: set[tuple] = set()
             deduped: list[tuple[str, dict]] = []
@@ -404,15 +404,15 @@ def generate(ingest_dir: Path, out_path: Path, *, per_type: int = 2) -> int:
         )
 
     # Cross-doc finds.
-    items.append(_find_invoices_over_5000(ingest_dir))
-    items.append(_find_policies_effective_in_q4_2025(ingest_dir))
+    items.append(_find_invoices_over_5000(facts_dir))
+    items.append(_find_policies_effective_in_q4_2025(facts_dir))
 
     # Negatives (validated against the corpus — raises if either accidentally matches).
-    items.append(_neg_invoice_number(ingest_dir))
-    items.append(_find_neg_vendor(ingest_dir))
+    items.append(_neg_invoice_number(facts_dir))
+    items.append(_find_neg_vendor(facts_dir))
 
     # French-language items.
-    items.extend(_emit_fr_items(ingest_dir))
+    items.extend(_emit_fr_items(facts_dir))
 
     # Guard against silent duplicate ids — recipe ids are derived from sidecar
     # fields (invoice_number, date, role, etc.), so two sidecars sharing such a
@@ -432,11 +432,16 @@ def generate(ingest_dir: Path, out_path: Path, *, per_type: int = 2) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate the Synthetic answer-eval ground-truth set.")
-    ap.add_argument("--ingest-dir", type=Path, required=True, help="Synthetic ingest dir (*.json + *.txt)")
+    ap.add_argument(
+        "--facts-dir",
+        type=Path,
+        required=True,
+        help="the synthetic corpus's facts/ dir (the *.json sidecars, beside the watched ingest/ dir)",
+    )
     ap.add_argument("--out", type=Path, required=True, help="output synthetic.yaml")
     ap.add_argument("--per-type", type=int, default=2, help="docs sampled per doc-type")
     a = ap.parse_args(argv)
-    n = generate(ingest_dir=a.ingest_dir, out_path=a.out, per_type=a.per_type)
+    n = generate(facts_dir=a.facts_dir, out_path=a.out, per_type=a.per_type)
     print(f"wrote {n} ground-truth items -> {a.out}")
     return 0
 

@@ -874,10 +874,12 @@ def _run_local(
 def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
     """Return True iff HC already has the given corpus loaded.
 
-    Two checks: a watch folder whose ``path`` equals ``manifest.ingest_dir``,
-    AND ``document_count() >= 50% of manifest.doc_count``. The doc-count
-    floor matches ``_ingest_corpus``'s "ingest looks incomplete" sanity
-    check, so anything we'd accept fresh we also accept on resume.
+    Three checks: a watch folder whose ``path`` equals ``manifest.ingest_dir``,
+    ``document_count() >= 50% of manifest.doc_count``, and no more documents
+    than the manifest counts. The floor matches ``_ingest_corpus``'s "ingest
+    looks incomplete" check, so anything we'd accept fresh we also accept on
+    resume; the ceiling is the same rule as its refusal: an index larger than
+    the corpus holds something beside it (#726) and is not this corpus.
 
     Pure point-in-time check — the caller is responsible for ensuring HC's
     queue is drained before trusting the doc count (see ``_can_skip_ingest``).
@@ -887,7 +889,16 @@ def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
     if not any(f.get("path") == target for f in folders):
         return False
     threshold = max(1, int(manifest.doc_count * 0.5))
-    return hc.document_count() >= threshold
+    actual = hc.document_count()
+    if actual > manifest.doc_count:
+        log.warning(
+            "%s is watched but the index holds %d documents and the corpus has %d: not this corpus, re-ingesting",
+            target,
+            actual,
+            manifest.doc_count,
+        )
+        return False
+    return actual >= threshold
 
 
 def _settle_summaries(hc: HarborClerkClient, corpus_id: str, wait: bool, stall_seconds: float) -> None:
@@ -1125,11 +1136,15 @@ def _ingest_corpus(
         raise RuntimeError(f"pipeline never drained for {manifest.corpus_id}")
     _settle_summaries(hc, manifest.corpus_id, wait_for_summaries, summary_stall_seconds)
 
-    # Phase 3: warning-level sanity check on document count. Treated as
-    # informational because the synthetic corpus has JSON sidecars in the
-    # ingest dir that HC may or may not ingest depending on its allowed
-    # extensions, so an exact match isn't guaranteed.
+    # Phase 3: the document count. Too few is logged as an error and the run goes on (a file the app refuses is
+    # the app's finding). Too many is refused: the folder holds something the manifest does not count, every
+    # model would measure it, and once it was the corpus's own answer key (#726, the synthetic fact sidecars).
     actual = hc.document_count()
+    if actual > manifest.doc_count:
+        raise RuntimeError(
+            f"the index holds {actual} documents but {manifest.corpus_id} has {manifest.doc_count}: something "
+            f"beside the corpus is in {manifest.ingest_dir}, and every model would measure it"
+        )
     if actual < manifest.doc_count * 0.5:
         log.error(
             "ingest looks incomplete for %s: HC has %d active docs, manifest expected %d",
