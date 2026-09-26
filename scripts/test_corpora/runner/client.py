@@ -789,9 +789,8 @@ class HarborClerkClient:
         """GET /api/docs?limit=0 — total active document count.
 
         Used to verify ingestion landed the expected number of documents.
-        Note: counts everything HC's watcher decided to ingest, which may
-        include synthetic-corpus JSON sidecars unless HC's watcher filters
-        them.
+        It counts everything HC's watcher decided to ingest; the sweep treats
+        more than the manifest counts as a different corpus (#726).
         """
         r = self._client.get("/api/docs", params={"limit": 0})
         r.raise_for_status()

@@ -11,7 +11,11 @@ where applicable.
 
 The sidecars are the answer key, so they live in ``facts/`` beside ``ingest/``,
 never in the folder the app watches: a sidecar in the index is a document that
-states the answer to every lookup question about its neighbour (#726).
+states the answer to every lookup question about its neighbour (#726). This
+also means the app's sidecar metadata extractor, which reads ``<stem>.json``
+beside a document, finds nothing for this corpus: a benchmark that carried the
+key as ``metadata.sidecar.*`` would measure every model reading the key. The
+extractor is exercised by its own tests, not by this corpus.
 
 Idempotent via marker file ``.acquired``. Resuming a partial generation
 relies on per-doc filenames being content-addressed (numeric prefix +
@@ -156,6 +160,7 @@ def _move_sidecars_out_of_ingest(ingest_dir: Path, facts_dir: Path) -> int:
         facts_dir.mkdir(parents=True, exist_ok=True)
         target = facts_dir / stray.name
         if target.exists():
+            log.info("%s already has %s; the copy in the watched folder is dropped", facts_dir, stray.name)
             stray.unlink()
         else:
             stray.rename(target)
