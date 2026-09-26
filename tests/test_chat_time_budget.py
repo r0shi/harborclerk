@@ -35,9 +35,10 @@ class _Clock:
         return self.now
 
 
-def _mock_client(responses: list[list[str]], on_send=None):
+def _mock_client(responses: list[list[str]], on_send=None, on_line=None):
     """An httpx.AsyncClient whose successive sends serve the given SSE line lists. ``on_send(n)`` runs before the
-    n-th response streams, so a test can move the clock at a chosen point."""
+    n-th response streams and ``on_line(n, i)`` after its i-th line, so a test can move the clock at a chosen
+    point."""
     calls = {"n": 0}
 
     def build(*_a, **_k):
@@ -50,8 +51,10 @@ def _mock_client(responses: list[list[str]], on_send=None):
         async def aiter_lines():
             if on_send:
                 on_send(n)
-            for line in lines:
+            for i, line in enumerate(lines):
                 yield line
+                if on_line:
+                    on_line(n, i)
 
         resp.aiter_lines = aiter_lines
         resp.aclose = AsyncMock()
@@ -149,7 +152,33 @@ async def test_a_budget_spent_between_rounds_forces_the_answer_and_says_so(
     assert done["stop_reason"] == "time_budget"
     assert text.startswith("It cost $4,500 a month.")
     assert "I stopped searching after 5 minutes" in text
+    assert client.send.call_count == 1, "no second round was started once the budget was gone"
     assert client.stream.call_count == 1, "one forced final answer, without tools"
+
+
+@pytest.mark.asyncio
+async def test_the_forced_answer_is_cut_after_its_grace(db_session, admin_user, chat_session_factory, monkeypatch):
+    """The forced final answer is bounded too: past the grace it keeps what has streamed and stops."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [
+            [_tool_call_chunk(), "data: [DONE]"],
+            [_chunk(content="First. "), _chunk(content="Second. "), _chunk(content="Third."), "data: [DONE]"],
+        ],
+        on_line=lambda n, i: setattr(clock, "now", 301.0 + 121.0) if (n == 1 and i == 0) else None,
+    )
+    text, done, tool_calls = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.startswith("First. ") and "Second" not in text and "stopped searching" in text
 
 
 @pytest.mark.asyncio
