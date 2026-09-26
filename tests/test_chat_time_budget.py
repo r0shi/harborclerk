@@ -476,11 +476,12 @@ async def test_an_answer_that_completes_late_is_not_tagged_as_cut(
 
 
 @pytest.mark.asyncio
-async def test_a_cut_during_a_keepalive_leaves_no_pending_fetch_on_the_production_path(
+async def test_a_cut_during_a_keepalive_cancels_the_fetch_before_the_response_is_closed(
     db_session, admin_user, chat_session_factory, monkeypatch
 ):
     """The budget runs out while the model is silent: the loop leaves with `break` during a keepalive. The
-    fetch of the next line must be cancelled then, not left to fail unawaited when the response closes."""
+    fetch of the next line must already be cancelled when the response is closed, not left for the garbage
+    collector to close later, racing the close and failing unawaited."""
     import asyncio
 
     from harbor_clerk.llm import chat as chat_module
@@ -496,17 +497,23 @@ async def test_a_cut_during_a_keepalive_leaves_no_pending_fetch_on_the_productio
         await never.wait()
         yield "data: never"
 
+    before = {t for t in asyncio.all_tasks() if not t.done()}
+    live_at_close: list[set] = []
+
+    async def close_response():
+        # What the fetch task looks like at the moment the response is closed: cancelled already, or not.
+        live_at_close.append({t for t in asyncio.all_tasks() if not t.done() and not t.cancelling()} - before)
+
     resp = MagicMock()
     resp.status_code = 200
     resp.aiter_lines = silent_after_one_token
-    resp.aclose = AsyncMock()
+    resp.aclose = AsyncMock(side_effect=close_response)
     client = MagicMock()
     client.build_request = MagicMock(return_value=MagicMock())
     client.send = AsyncMock(return_value=resp)
     client.aclose = AsyncMock()
-    before = {t for t in asyncio.all_tasks() if not t.done()}
     text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
-    await asyncio.sleep(0)
-    pending = {t for t in asyncio.all_tasks() if not t.done()} - before
-    assert pending == set(), f"a fetch was left pending: {pending}"
+    assert live_at_close and live_at_close[0] == set(), (
+        f"a fetch was still running when the response closed: {live_at_close}"
+    )
     assert text.startswith("Start ") and done["stop_reason"] == "time_budget"
