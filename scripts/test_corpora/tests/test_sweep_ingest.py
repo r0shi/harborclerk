@@ -137,6 +137,22 @@ def test_can_skip_ingest_false_when_queue_busy_and_no_drain_budget():
     assert "/api/watch/folders" not in seen_paths
 
 
+def test_hc_corpus_matches_false_when_the_index_holds_more_than_the_corpus():
+    """#726: the watched folder is ours but the index is twice the manifest (the synthetic corpus's fact sidecars
+    were in it). That is not this corpus; a resume must re-ingest, not skip."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/watch/folders":
+            return httpx.Response(200, json=[{"folder_id": "f1", "path": "/tmp/cuad-ingest"}])
+        if request.url.path == "/api/docs":
+            return httpx.Response(200, json={"items": [], "total": 160, "limit": 0, "offset": 0})
+        return httpx.Response(404)
+
+    c = _make_client(handler)
+    assert _hc_corpus_matches(c, _manifest(doc_count=80)) is False
+    assert _hc_corpus_matches(c, _manifest(doc_count=160)) is True
+
+
 def test_hc_corpus_matches_handles_tiny_corpus_floor():
     """A 1-document corpus's threshold floors at 1 (50% of 1 = 0 by int()).
     Without the `max(1, ...)` floor, an empty DB would falsely match every
@@ -522,6 +538,28 @@ def test_ingest_corpus_proceeds_beside_a_falling_backlog_at_the_deadline_with_a_
     with caplog.at_level("WARNING"):
         sweep_module._ingest_corpus(hc, _manifest(), "http://localhost:8100", tmp_path)
     assert "after the 12-hour wait" in caplog.text and "proceeding beside them" in caplog.text
+
+
+def test_ingest_corpus_refuses_an_index_larger_than_the_corpus(monkeypatch, tmp_path):
+    """#726: after the drain the index holds more documents than the manifest counts. Something beside the corpus
+    is in the watched folder and every model would measure it: the unit fails, naming both counts."""
+    from scripts.test_corpora.runner import sweep as sweep_module
+
+    monkeypatch.setattr(sweep_module, "_refuse_to_wipe_a_real_instance", lambda *a, **k: None)
+    hc = _mock_hc_after_ingest(0, "done", doc_count=560)
+    with pytest.raises(RuntimeError, match="the index holds 560 documents but cuad has 280"):
+        sweep_module._ingest_corpus(hc, _manifest(doc_count=280), "http://localhost:8100", tmp_path)
+
+
+def test_ingest_corpus_logs_but_proceeds_when_the_index_is_short(monkeypatch, tmp_path, caplog):
+    """The floor is unchanged: a short index is an error in the log and the run goes on."""
+    from scripts.test_corpora.runner import sweep as sweep_module
+
+    monkeypatch.setattr(sweep_module, "_refuse_to_wipe_a_real_instance", lambda *a, **k: None)
+    hc = _mock_hc_after_ingest(0, "done", doc_count=30)
+    with caplog.at_level("ERROR"):
+        sweep_module._ingest_corpus(hc, _manifest(doc_count=80), "http://localhost:8100", tmp_path)
+    assert "ingest looks incomplete for cuad: HC has 30 active docs, manifest expected 80" in caplog.text
 
 
 def test_ingest_corpus_skips_the_wait_when_told_to(monkeypatch, tmp_path, caplog):

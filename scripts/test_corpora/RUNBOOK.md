@@ -243,6 +243,15 @@ rm "$WORKDIR/<corpus>/ingest/.acquired"
 # then re-run with --rerun 'phase=0,corpus=<corpus>' and --resume
 ```
 
+The synthetic corpus keeps its per-document fact sidecars in `$WORKDIR/synthetic/facts/`, beside the watched
+`ingest/` dir and never in it: a sidecar in the index is a document that states the answer to every lookup
+question about its neighbour (#726). `acquire` moves any it finds in `ingest/` out, and the sweep refuses to
+proceed on an index that holds more documents than the manifest counts. `groundtruth/generate_synthetic.py`
+reads `--facts-dir`. A consequence: the app's sidecar metadata extractor reads `<stem>.json` beside a document, so
+synthetic documents carry no `metadata.sidecar.*`, and `metadata_filter`, `verify_identifier` and
+`documents_by_date` have no sidecar facts to draw on for this corpus. That is intended: metadata that mirrors the
+key would measure every model reading the key.
+
 ### Regenerating corrupt baselines
 
 After PR #338 the harness flags baselines that say *"corpus is empty"*, *"I was unable to find"*, or *"I notice your message contains an unfilled placeholder"* via `quality.baseline_quality_problem` and skips metric computation for those units. Five baselines in `2026-05-05-prod` matched these signatures and are now harmless but useless. To regenerate them:

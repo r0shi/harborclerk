@@ -1134,7 +1134,8 @@ def test_a_document_the_ocr_step_already_turned_into_a_pdf_is_not_bought_again(t
     _use(cap=100.0)
     ingest = tmp_path / "ingest"
     ingest.mkdir()
-    (ingest / "0001_invoice.json").write_text("{}")
+    (tmp_path / "facts").mkdir()
+    (tmp_path / "facts" / "0001_invoice.json").write_text("{}")
     (ingest / "0001_invoice.pdf").write_bytes(b"%PDF-1.4 rendered by the generation this one resumes")
     rendered = []
     monkeypatch.setattr(synthetic, "_render_to_pdf_with_noise", lambda text, path, rng: rendered.append(path.name))
