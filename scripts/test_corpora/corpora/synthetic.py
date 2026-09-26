@@ -65,12 +65,18 @@ COMPANY = {
     },
     "key_clients": ["Acme Corp", "Northwind Partners", "Polestar Industries"],
     "key_vendors": ["Globex Supplies", "Initech Software", "Cyberdyne IT"],
+    "campaigns": ["Skylight", "Northstar", "Harbour Lights"],
 }
+
+# Every name the questions in questions/synthetic.yaml may ask about. The prompts place each of them in the
+# corpus; `missing_declared_entities` says which did not arrive (#732: the first corpus had none of them, because
+# the prompts said "one of the company's known vendors" and never named one).
+DECLARED_ENTITIES: tuple[str, ...] = (*COMPANY["key_clients"], *COMPANY["key_vendors"], *COMPANY["campaigns"])
 
 PROMPT_TEMPLATES = {
     "invoice": (
-        "Generate a realistic invoice from a vendor of {company_name} dated {date}. "
-        "Use ONE of the company's known vendors. Total between $1000 and $50000. "
+        "Generate a realistic invoice from the vendor {vendor} to {company_name} dated {date}. "
+        "The vendor is {vendor}, exactly that name. Total between $1000 and $50000. "
         "Return a JSON object with keys: text (the full invoice as plain text) and "
         "facts (object with vendor, invoice_number, date, total_usd, line_items). "
         "Output JSON only, no prose."
@@ -83,13 +89,15 @@ PROMPT_TEMPLATES = {
     ),
     "board_minutes": (
         "Generate board meeting minutes for {company_name} for {date}. "
-        "Include 4-6 agenda items, attendees from key_people, and concrete decisions. "
+        "Include 4-6 agenda items, one of them about the client {client}, attendees from the "
+        "leadership ({ceo}, CEO; {cfo}, CFO; {head_of_ops}, head of operations), and concrete decisions. "
         "Return JSON with keys: text and facts (object with date, attendees, "
         "decisions, lang). Output JSON only."
     ),
     "vendor_contract": (
-        "Generate a vendor service contract between {company_name} and one of its "
-        "vendors, dated {date}. Include term length, payment terms, governing law. "
+        "Generate a vendor service contract between {company_name} and its vendor {vendor}, "
+        "dated {date}. The vendor is {vendor}, exactly that name. Include term length, payment terms, "
+        "governing law. "
         "Return JSON with keys: text and facts (object with vendor, term_months, "
         "monthly_fee_usd, governing_law, signatures). Output JSON only."
     ),
@@ -104,7 +112,8 @@ PROMPT_TEMPLATES = {
         "facts (object with policy_name, version, effective_date, owner). Output JSON only."
     ),
     "marketing_brief": (
-        "Generate a marketing brief for {company_name} dated {date} for a campaign. "
+        "Generate a marketing brief for {company_name} dated {date} for its campaign named {campaign}; "
+        "the campaign_name is {campaign}, exactly that name, and the copy targets the client {client}. "
         "Return JSON with keys: text and facts (object with campaign_name, target, "
         "budget_usd, owner). Output JSON only."
     ),
@@ -114,8 +123,8 @@ PROMPT_TEMPLATES = {
         "and facts (object with year, sections, lang_split). Output JSON only."
     ),
     "quarterly_report": (
-        "Generate a quarterly report excerpt for {company_name} for Q{q} {year}. "
-        "Return JSON with keys: text and facts (object with quarter, year, "
+        "Generate a quarterly report excerpt for {company_name} for Q{q} {year}, naming {client} "
+        "among the key accounts. Return JSON with keys: text and facts (object with quarter, year, "
         "revenue_usd, key_initiatives). Output JSON only."
     ),
 }
@@ -189,12 +198,53 @@ def _draw_prompt(doc_type: str, rng: random.Random) -> str:
     template = PROMPT_TEMPLATES[doc_type]
     # Pick a deterministic-ish date in 2025
     date = f"2025-{rng.randint(1, 12):02d}-{rng.randint(1, 28):02d}"
+    # Every draw happens for every document, whether its template uses it or not, so the sequence of prompts
+    # does not depend on which templates name what.
+    q = rng.randint(1, 4)
+    vendor = rng.choice(COMPANY["key_vendors"])
+    client = rng.choice(COMPANY["key_clients"])
+    campaign = rng.choice(COMPANY["campaigns"])
     return template.format(
         company_name=COMPANY["name"],
         date=date,
         year=2025,
-        q=rng.randint(1, 4),
+        q=q,
+        vendor=vendor,
+        client=client,
+        campaign=campaign,
+        **COMPANY["key_people"],
     )
+
+
+def missing_declared_entities(ingest_dir: Path, facts_dir: Path) -> list[str]:
+    """The declared names that appear in no generated document's text. A question that names one of these has
+    nothing to find (#732).
+
+    The text is what the app indexes; the facts live outside the watched folder (#726) and do not count, except
+    for a document the OCR step turned into a PDF, whose text is gone and whose facts are what is left to read."""
+    ingest_dir, facts_dir = Path(ingest_dir), Path(facts_dir)
+    parts = [p.read_text(errors="replace") for p in ingest_dir.glob("*.txt")] if ingest_dir.exists() else []
+    if facts_dir.exists():
+        parts += [
+            p.read_text(errors="replace")
+            for p in facts_dir.glob("*.json")
+            if not (ingest_dir / f"{p.stem}.txt").exists()
+        ]
+    haystack = " ".join(parts).lower()
+    return [name for name in DECLARED_ENTITIES if name.lower() not in haystack]
+
+
+def _notes(ingest_dir: Path, facts_dir: Path) -> str:
+    notes = "synthetic bilingual small-business"
+    missing = missing_declared_entities(ingest_dir, facts_dir)
+    if missing:
+        log.warning(
+            "the synthetic corpus contains none of: %s; a question that names one of them would have nothing to find "
+            "(#732)",
+            ", ".join(missing),
+        )
+        notes += "; not in the corpus: " + ", ".join(missing)
+    return notes
 
 
 def _generate_one(
@@ -277,7 +327,7 @@ def acquire(
                 doc_count=doc_count,
                 total_size_bytes=sum(d.stat().st_size for d in docs if d.is_file()),
                 license="generated",
-                notes="synthetic bilingual small-business",
+                notes=_notes(ingest_dir, facts_dir),
             )
         marker.unlink()  # remove stale marker so future runs don't keep tripping it
 
@@ -329,5 +379,5 @@ def acquire(
         doc_count=sum(1 for d in ingest_dir.glob("*") if d.suffix in {".txt", ".pdf"}),
         total_size_bytes=sum(d.stat().st_size for d in ingest_dir.glob("*") if d.is_file()),
         license="generated",
-        notes="synthetic bilingual small-business",
+        notes=_notes(ingest_dir, facts_dir),
     )

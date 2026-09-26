@@ -247,7 +247,11 @@ The synthetic corpus keeps its per-document fact sidecars in `$WORKDIR/synthetic
 `ingest/` dir and never in it: a sidecar in the index is a document that states the answer to every lookup
 question about its neighbour (#726). `acquire` moves any it finds in `ingest/` out, and the sweep refuses to
 proceed on an index that holds more documents than the manifest counts. `groundtruth/generate_synthetic.py`
-reads `--facts-dir`. A consequence: the app's sidecar metadata extractor reads `<stem>.json` beside a document, so
+reads `--facts-dir`. The prompts name the firm's declared clients, vendors and campaigns (`COMPANY` in
+`corpora/synthetic.py`), which is what `questions/synthetic.yaml` asks about; `acquire` warns, and the manifest
+notes, any declared name the generated corpus does not contain (#732). A corpus generated before that fix
+contains none of them: to regenerate, move `synthetic/ingest/` and `synthetic/facts/` aside, since removing
+`.acquired` alone keeps every document it finds. A consequence: the app's sidecar metadata extractor reads `<stem>.json` beside a document, so
 synthetic documents carry no `metadata.sidecar.*`, and `metadata_filter`, `verify_identifier` and
 `documents_by_date` have no sidecar facts to draw on for this corpus. That is intended: metadata that mirrors the
 key would measure every model reading the key.
