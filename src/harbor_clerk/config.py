@@ -105,6 +105,10 @@ class Settings(BaseSettings):
     # Chat/Research search tunables
     chat_search_paginated: bool = Field(default=False)
     chat_search_k: int = Field(default=10)
+    # A chat answer is bounded by context and by tool rounds; this bounds it by time. Once spent, the loop
+    # stops searching and answers from what it has, saying so (#719: a 26B model paged through a mailbox
+    # for 71 minutes and 19 calls before the client gave up). 0 disables the bound.
+    chat_time_budget_seconds: float = Field(default=300.0)
     research_search_paginated: bool = Field(default=True)
     research_search_k: int = Field(default=20)
 

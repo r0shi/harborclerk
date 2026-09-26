@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
@@ -41,6 +42,18 @@ _TOOL_LOOP_BUDGET = 0.75
 
 # Hard safety cap on tool rounds (prevents infinite loops even if budget check fails).
 _MAX_TOOL_ROUNDS = 25
+
+# Once the time budget (settings.chat_time_budget_seconds) is spent, the forced final answer gets this long.
+_FINAL_ANSWER_GRACE_SECONDS = 120.0
+
+# The clock the budget is kept by; tests replace it here, not in ``time`` (the event loop keeps time there too).
+_now = time.monotonic
+
+
+def _stopped_early_note(spent_seconds: float) -> str:
+    minutes = max(1, round(spent_seconds / 60))
+    unit = "minute" if minutes == 1 else "minutes"
+    return f"\n\n_(I stopped searching after {minutes} {unit} and answered from what I had found.)_"
 
 
 def _estimate_tokens(text: str) -> int:
@@ -283,6 +296,12 @@ async def chat_stream(
         assistant_content = ""
         total_tokens = 0
         budget_exhausted = False
+        # The time budget (#719): checked between rounds and between streamed lines, so a single long
+        # generation is cut too. 0 means no bound.
+        time_budget = float(settings.chat_time_budget_seconds or 0)
+        started_at = _now()
+        deadline = started_at + time_budget if time_budget > 0 else None
+        time_exhausted = False
 
         # Accumulated citations parsed from each tool result. Deduped+attached
         # to the assistant ChatMessage row (``rag_context`` column) and emitted
@@ -299,6 +318,15 @@ async def chat_stream(
                     "Context budget %.0f%% >= %.0f%% after %d tool rounds, forcing text response (conversation=%s)",
                     usage_frac * 100,
                     _TOOL_LOOP_BUDGET * 100,
+                    _round,
+                    conversation_id,
+                )
+                break
+            if deadline is not None and _round > 0 and _now() >= deadline:
+                time_exhausted = True
+                logger.info(
+                    "Time budget of %.0fs spent after %d tool rounds, forcing text response (conversation=%s)",
+                    time_budget,
                     _round,
                     conversation_id,
                 )
@@ -394,6 +422,12 @@ async def chat_stream(
 
                     report_llm_success()
                     async for line in _iter_with_keepalive(response.aiter_lines()):
+                        if deadline is not None and _now() >= deadline:
+                            # One generation can outlast the whole budget (a 26B model at 11 tokens a
+                            # second wrote for ten minutes at a stretch, #719). Closing the stream, in
+                            # the finally below, is what stops llama-server decoding.
+                            time_exhausted = True
+                            break
                         if line is _KEEPALIVE_SENTINEL:
                             yield ": keepalive\n\n"
                             continue
@@ -471,6 +505,19 @@ async def chat_stream(
                 yield f"data: {json.dumps(done_payload)}\n\n"
                 return
 
+            if time_exhausted:
+                # Cut mid-generation. Text the user already watched arrive is the answer; a partial tool call
+                # is dropped and the final answer is forced from what the earlier rounds found.
+                logger.info(
+                    "Time budget of %.0fs spent during tool round %d, stopping the search (conversation=%s)",
+                    time_budget,
+                    _round + 1,
+                    conversation_id,
+                )
+                if text_buffer and not (tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]):
+                    assistant_content = text_buffer
+                break
+
             # If we got tool calls, execute them and loop
             if tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]:
                 # Save assistant tool-call message
@@ -535,9 +582,22 @@ async def chat_stream(
         # If the loop ended without a text response (budget exhausted or
         # hard cap hit), make one final LLM call without tools to force
         # a text response from whatever context we have.
-        if not assistant_content and (budget_exhausted or _round == _MAX_TOOL_ROUNDS - 1):
-            reason = "context budget" if budget_exhausted else f"{_MAX_TOOL_ROUNDS} tool rounds"
+        stop_reason: str | None = None
+        if time_exhausted:
+            stop_reason = "time_budget"
+        elif budget_exhausted:
+            stop_reason = "context_budget"
+        elif not assistant_content and _round == _MAX_TOOL_ROUNDS - 1:
+            stop_reason = "tool_rounds"
+        if not assistant_content and stop_reason:
+            reason = {
+                "time_budget": f"time budget of {time_budget:.0f}s",
+                "context_budget": "context budget",
+                "tool_rounds": f"{_MAX_TOOL_ROUNDS} tool rounds",
+            }[stop_reason]
             logger.info("Forcing final text response after %s (conversation=%s)", reason, conversation_id)
+            # The forced answer is bounded too, or the bound is not one.
+            final_deadline = _now() + _FINAL_ANSWER_GRACE_SECONDS if deadline is not None else None
             try:
                 async with (
                     httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client,
@@ -549,6 +609,13 @@ async def chat_stream(
                 ):
                     if response.status_code < 400:
                         async for line in _iter_with_keepalive(response.aiter_lines()):
+                            if final_deadline is not None and _now() >= final_deadline:
+                                logger.info(
+                                    "Final answer cut after %.0fs of grace (conversation=%s)",
+                                    _FINAL_ANSWER_GRACE_SECONDS,
+                                    conversation_id,
+                                )
+                                break
                             if line is _KEEPALIVE_SENTINEL:
                                 yield ": keepalive\n\n"
                                 continue
@@ -576,6 +643,11 @@ async def chat_stream(
                 "For broader questions that need to cover many documents, try the Research tab."
             )
             yield f"data: {json.dumps({'type': 'token', 'content': assistant_content})}\n\n"
+        if time_exhausted:
+            # The answer says it stopped early, in the text the user keeps (#719).
+            note = _stopped_early_note(_now() - started_at)
+            assistant_content += note
+            yield f"data: {json.dumps({'type': 'token', 'content': note})}\n\n"
 
         # Estimate context usage for the UI indicator.
         # Include tool schema, all messages sent to the LLM, and the response.
@@ -613,6 +685,11 @@ async def chat_stream(
             "context_pct": context_pct,
             "rag_context": rag_context_payload,
         }
+        if stop_reason:
+            # Why the search stopped before the model chose to answer: "time_budget", "context_budget" or
+            # "tool_rounds". Absent when the model answered on its own. The eval harness records a bounded
+            # answer as degraded rather than as a plain completion.
+            done_payload["stop_reason"] = stop_reason
         if conv and conv.title != "New conversation":
             done_payload["title"] = conv.title
         if active_model_id:
