@@ -429,6 +429,9 @@ async def chat_stream(
                         return
 
                     report_llm_success()
+                    # Keepalives are keyed to the client's silence, not the model's (#731): a tool call or a
+                    # model's thinking streams lines the client hears nothing of, for minutes at a time.
+                    last_sent = _now()
                     async for line in _iter_with_keepalive(response.aiter_lines()):
                         if deadline is not None:
                             # One generation can outlast the whole budget (a 26B model at 11 tokens a
@@ -446,6 +449,7 @@ async def chat_stream(
                                 break
                         if line is _KEEPALIVE_SENTINEL:
                             yield ": keepalive\n\n"
+                            last_sent = _now()
                             continue
                         if not line.startswith("data: "):
                             continue
@@ -491,6 +495,10 @@ async def chat_stream(
                             token_text = delta["content"]
                             text_buffer += token_text
                             yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
+                            last_sent = _now()
+                        elif _now() - last_sent >= _KEEPALIVE_INTERVAL:
+                            yield ": keepalive\n\n"
+                            last_sent = _now()
                 finally:
                     await response_obj.aclose()
                     await client_obj.aclose()
@@ -627,6 +635,7 @@ async def chat_stream(
                     ) as response,
                 ):
                     if response.status_code < 400:
+                        last_sent = _now()
                         async for line in _iter_with_keepalive(response.aiter_lines()):
                             if final_deadline is not None and _now() >= final_deadline:
                                 logger.info(
@@ -637,6 +646,7 @@ async def chat_stream(
                                 break
                             if line is _KEEPALIVE_SENTINEL:
                                 yield ": keepalive\n\n"
+                                last_sent = _now()
                                 continue
                             if not line.startswith("data: "):
                                 continue
@@ -651,6 +661,10 @@ async def chat_stream(
                             if delta.get("content"):
                                 assistant_content += delta["content"]
                                 yield f"data: {json.dumps({'type': 'token', 'content': delta['content']})}\n\n"
+                                last_sent = _now()
+                            elif _now() - last_sent >= _KEEPALIVE_INTERVAL:
+                                yield ": keepalive\n\n"
+                                last_sent = _now()
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # Fall through to the fallback message below
             if assistant_content and streamed_prefix:

@@ -361,3 +361,55 @@ async def test_a_consumer_that_stops_during_a_keepalive_leaves_no_pending_fetch(
     await asyncio.sleep(0)
     pending = {t for t in asyncio.all_tasks() if not t.done()} - fetches_before
     assert pending == set(), f"a fetch was left pending: {pending}"
+
+
+@pytest.mark.asyncio
+async def test_a_long_tool_call_or_thinking_generation_still_sends_the_client_keepalives(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """#731: the model streams tool-call arguments (or its thinking) for minutes; the client hears none of it,
+    and a keepalive keyed to the model's silence never fires. One is sent once the client has heard nothing
+    for the keepalive interval."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    arg_delta = lambda piece: _chunk(tool_calls=[{"index": 0, "function": {"arguments": piece}}])  # noqa: E731
+    first_round = [
+        _chunk(
+            tool_calls=[
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search_documents", "arguments": ""},
+                }
+            ]
+        ),
+        arg_delta('{"query": '),
+        arg_delta('"a long '),
+        arg_delta('argument"}'),
+        "data: [DONE]",
+    ]
+    # Each argument delta arrives 31 s after the last: the model is never silent, the client always is.
+    client, _ = _mock_client(
+        [first_round, [_chunk(content="Done."), "data: [DONE]"]],
+        on_line=lambda n, i: setattr(clock, "now", clock.now + 31.0) if n == 0 else None,
+    )
+    monkeypatch.setattr(get_settings(), "chat_time_budget_seconds", 0.0)
+    monkeypatch.setattr(chat_module, "_now", clock)
+
+    async def fake_execute_tool(fn_name, fn_args, user_id, *, user_scope=None):
+        return json.dumps({"results": [], "total": 0})
+
+    raw: list[str] = []
+    with (
+        patch.object(chat_module, "execute_tool", side_effect=fake_execute_tool),
+        patch("httpx.AsyncClient", return_value=client),
+    ):
+        async for line in chat_module.chat_stream(conv.conversation_id, "q?", admin_user.user_id):
+            raw.append(line)
+    keepalives = [i for i, line in enumerate(raw) if line.startswith(": keepalive")]
+    first_token = next(i for i, line in enumerate(raw) if '"type": "token"' in line)
+    assert len(keepalives) >= 3, f"one keepalive per silent half-minute; got {len(keepalives)}"
+    assert keepalives[0] < first_token, "the keepalives come while the tool call is being written"
