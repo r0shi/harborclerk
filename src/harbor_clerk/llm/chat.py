@@ -53,7 +53,7 @@ _now = time.monotonic
 def _stopped_early_note(spent_seconds: float) -> str:
     minutes = max(1, round(spent_seconds / 60))
     unit = "minute" if minutes == 1 else "minutes"
-    return f"\n\n_(I stopped searching after {minutes} {unit} and answered from what I had found.)_"
+    return f"\n\n_(I stopped after {minutes} {unit} and answered from what I had found.)_"
 
 
 def _estimate_tokens(text: str) -> int:
@@ -199,19 +199,26 @@ async def _iter_with_keepalive(aiter):
     Starlette can detect client disconnects during long LLM thinks.
     """
     ait = aiter.__aiter__()
-    while True:
-        try:
-            nxt = asyncio.ensure_future(ait.__anext__())
-            # Wait for the next item, yielding keepalives while it's pending.
-            # Re-use the SAME future across timeouts — never call __anext__ twice.
-            while True:
-                done, _ = await asyncio.wait({nxt}, timeout=_KEEPALIVE_INTERVAL)
-                if done:
-                    yield nxt.result()
-                    break
-                yield _KEEPALIVE_SENTINEL
-        except StopAsyncIteration:
-            return
+    nxt: asyncio.Future | None = None
+    try:
+        while True:
+            try:
+                nxt = asyncio.ensure_future(ait.__anext__())
+                # Wait for the next item, yielding keepalives while it's pending.
+                # Re-use the SAME future across timeouts — never call __anext__ twice.
+                while True:
+                    done, _ = await asyncio.wait({nxt}, timeout=_KEEPALIVE_INTERVAL)
+                    if done:
+                        yield nxt.result()
+                        break
+                    yield _KEEPALIVE_SENTINEL
+            except StopAsyncIteration:
+                return
+    finally:
+        # A consumer that stops between items (the time budget, a disconnect) leaves the fetch pending; once
+        # the response closes it would fail with nobody awaiting it ("Task exception was never retrieved").
+        if nxt is not None and not nxt.done():
+            nxt.cancel()
 
 
 async def chat_stream(
@@ -302,6 +309,7 @@ async def chat_stream(
         started_at = _now()
         deadline = started_at + time_budget if time_budget > 0 else None
         time_exhausted = False
+        streamed_prefix = ""  # text the user watched arrive before a cut dropped the tool call beside it
 
         # Accumulated citations parsed from each tool result. Deduped+attached
         # to the assistant ChatMessage row (``rag_context`` column) and emitted
@@ -422,12 +430,20 @@ async def chat_stream(
 
                     report_llm_success()
                     async for line in _iter_with_keepalive(response.aiter_lines()):
-                        if deadline is not None and _now() >= deadline:
+                        if deadline is not None:
                             # One generation can outlast the whole budget (a 26B model at 11 tokens a
                             # second wrote for ten minutes at a stretch, #719). Closing the stream, in
-                            # the finally below, is what stops llama-server decoding.
-                            time_exhausted = True
-                            break
+                            # the finally below, is what stops llama-server decoding. A tool call being
+                            # written is cut at the deadline; an answer already being written gets the
+                            # same grace a forced answer would. Checked before "[DONE]" on purpose: a
+                            # tool call that completes as the budget runs out is not searched either.
+                            writing_answer = bool(text_buffer) and not (
+                                tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]
+                            )
+                            cut_at = deadline + _FINAL_ANSWER_GRACE_SECONDS if writing_answer else deadline
+                            if _now() >= cut_at:
+                                time_exhausted = True
+                                break
                         if line is _KEEPALIVE_SENTINEL:
                             yield ": keepalive\n\n"
                             continue
@@ -506,8 +522,9 @@ async def chat_stream(
                 return
 
             if time_exhausted:
-                # Cut mid-generation. Text the user already watched arrive is the answer; a partial tool call
-                # is dropped and the final answer is forced from what the earlier rounds found.
+                # Cut mid-generation. Text the user already watched arrive is the answer, or the start of it
+                # when a tool call was being written beside it: that call is dropped and the rest of the
+                # answer is forced from what the earlier rounds found, after the text the user saw.
                 logger.info(
                     "Time budget of %.0fs spent during tool round %d, stopping the search (conversation=%s)",
                     time_budget,
@@ -516,6 +533,8 @@ async def chat_stream(
                 )
                 if text_buffer and not (tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]):
                     assistant_content = text_buffer
+                else:
+                    streamed_prefix = text_buffer
                 break
 
             # If we got tool calls, execute them and loop
@@ -634,6 +653,8 @@ async def chat_stream(
                                 yield f"data: {json.dumps({'type': 'token', 'content': delta['content']})}\n\n"
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # Fall through to the fallback message below
+            if assistant_content and streamed_prefix:
+                assistant_content = streamed_prefix + assistant_content
 
         # If we still have no text, emit a fallback message
         if not assistant_content:

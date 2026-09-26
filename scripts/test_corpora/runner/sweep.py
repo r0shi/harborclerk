@@ -208,7 +208,10 @@ def _wait_for_hc_reachable(hc: HarborClerkClient, max_wait_seconds: int = HC_REC
     return False
 
 
-def _should_judge(*, phase: int, status: Status, model_answer: str, no_judge: bool) -> bool:
+FORCED_ANSWER_REASON_PREFIX = "answer forced by the app's"
+
+
+def _should_judge(*, phase: int, status: Status, model_answer: str, no_judge: bool, error: str | None = None) -> bool:
     """Whether to call the LLM-as-judge for one finished unit.
 
     Phase 4 (main matrix) and phase 5 (parity heavies) are the phases that
@@ -232,7 +235,11 @@ def _should_judge(*, phase: int, status: Status, model_answer: str, no_judge: bo
         return False
     if phase not in (4, 5):
         return False
-    if status != Status.DONE:
+    if status == Status.DEGRADED and (error or "").startswith(FORCED_ANSWER_REASON_PREFIX):
+        # The app stopped the search and forced this answer (#719). The user received it, so the judge
+        # reads it; the degraded status keeps it beside the chosen answers in the matrix, not among them.
+        pass
+    elif status != Status.DONE:
         return False
     return bool(model_answer and model_answer.strip())
 
@@ -370,7 +377,7 @@ def _status_of_completed(result: dict) -> tuple[Status, str | None]:
     if label != "real":
         return Status.DEGRADED, reason
     if result.get("stop_reason"):
-        return Status.DEGRADED, f"answer forced by the app's {result['stop_reason']}"
+        return Status.DEGRADED, f"{FORCED_ANSWER_REASON_PREFIX} {result['stop_reason']}"
     return Status.DONE, None
 
 
@@ -2097,6 +2104,7 @@ def main(argv: list[str] | None = None) -> int:
                                 status=final_status,
                                 model_answer=model_answer,
                                 no_judge=args.no_judge,
+                                error=error_msg,
                             ):
                                 owning_c = (
                                     u.corpus
