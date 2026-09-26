@@ -217,14 +217,20 @@ def _draw_prompt(doc_type: str, rng: random.Random) -> str:
 
 
 def missing_declared_entities(ingest_dir: Path, facts_dir: Path) -> list[str]:
-    """The declared names that appear in no generated document (its text, or its facts once the OCR step has
-    turned the text into a PDF). A question that names one of these has nothing to find (#732)."""
-    haystack = " ".join(
-        p.read_text(errors="replace").lower()
-        for d, pattern in ((Path(ingest_dir), "*.txt"), (Path(facts_dir), "*.json"))
-        if d.exists()
-        for p in d.glob(pattern)
-    )
+    """The declared names that appear in no generated document's text. A question that names one of these has
+    nothing to find (#732).
+
+    The text is what the app indexes; the facts live outside the watched folder (#726) and do not count, except
+    for a document the OCR step turned into a PDF, whose text is gone and whose facts are what is left to read."""
+    ingest_dir, facts_dir = Path(ingest_dir), Path(facts_dir)
+    parts = [p.read_text(errors="replace") for p in ingest_dir.glob("*.txt")] if ingest_dir.exists() else []
+    if facts_dir.exists():
+        parts += [
+            p.read_text(errors="replace")
+            for p in facts_dir.glob("*.json")
+            if not (ingest_dir / f"{p.stem}.txt").exists()
+        ]
+    haystack = " ".join(parts).lower()
     return [name for name in DECLARED_ENTITIES if name.lower() not in haystack]
 
 
@@ -233,7 +239,8 @@ def _notes(ingest_dir: Path, facts_dir: Path) -> str:
     missing = missing_declared_entities(ingest_dir, facts_dir)
     if missing:
         log.warning(
-            "the synthetic corpus contains none of: %s; a question that names one of them has nothing to find (#732)",
+            "the synthetic corpus contains none of: %s; a question that names one of them would have nothing to find "
+            "(#732)",
             ", ".join(missing),
         )
         notes += "; not in the corpus: " + ", ".join(missing)

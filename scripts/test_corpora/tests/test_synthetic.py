@@ -148,6 +148,10 @@ def test_missing_declared_entities_names_what_no_document_mentions(tmp_path: Pat
     (ingest / "0002_board_minutes.txt").write_text("Skylight campaign approved.")
     # A document the OCR step turned into a PDF: its name survives in its facts only.
     (facts / "0003_vendor_contract.json").write_text('{"vendor": "Initech Software"}')
+    (ingest / "0003_vendor_contract.pdf").write_bytes(b"%PDF-1.4")
+    # A document whose text is still there: its facts do not count, the app never sees them (#726).
+    (ingest / "0004_invoice.txt").write_text("INVOICE from the usual supplier.")
+    (facts / "0004_invoice.json").write_text('{"vendor": "Cyberdyne IT"}')
     missing = synthetic.missing_declared_entities(ingest, facts)
     assert missing == ["Northwind Partners", "Polestar Industries", "Cyberdyne IT", "Northstar", "Harbour Lights"]
     for name in missing:
@@ -171,3 +175,15 @@ def test_acquire_says_which_declared_names_the_corpus_does_not_contain(tmp_path:
     with patch.object(synthetic, "_make_client", return_value=fake_anthropic):
         again = synthetic.acquire(workdir=tmp_path / "synth", doc_counts={"invoice": 2}, ocr_subset_count=0)
     assert again.notes == m.notes
+
+
+def test_a_corpus_that_contains_every_declared_name_gets_a_plain_note_and_no_warning(tmp_path: Path, caplog):
+    fake_anthropic = MagicMock()
+    everything = " ".join(synthetic.DECLARED_ENTITIES)
+    fake_anthropic.messages.create.return_value.content = [
+        MagicMock(text=json.dumps({"text": f"INVOICE mentioning {everything}", "facts": {"vendor": "Globex Supplies"}}))
+    ]
+    with patch.object(synthetic, "_make_client", return_value=fake_anthropic), caplog.at_level("WARNING"):
+        m = synthetic.acquire(workdir=tmp_path / "synth", doc_counts={"invoice": 1}, ocr_subset_count=0)
+    assert m.notes == "synthetic bilingual small-business"
+    assert "contains none of" not in caplog.text
