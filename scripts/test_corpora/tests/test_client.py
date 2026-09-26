@@ -1089,3 +1089,158 @@ def test_read_timeout_after_the_watchdog_fired_keeps_the_watchdog_reason(monkeyp
     assert stream.closed.is_set(), "the watchdog never closed the response"
     assert result["harness_aborted"] is True
     assert result["harness_abort_reason"] == "model state=loading"
+
+
+# ── SyncMcpSession and the 30-minute access token (#681) ──
+
+
+def _unauthorized_group() -> ExceptionGroup:
+    """What the MCP client raises when the server answers 401: an HTTPStatusError inside a task group."""
+    request = httpx.Request("POST", "http://hc/mcp/mcp")
+    err = httpx.HTTPStatusError("401", request=request, response=httpx.Response(401, request=request))
+    return ExceptionGroup("unhandled errors in a TaskGroup", [err])
+
+
+class _TokenSource:
+    """Stands in for HarborClerkClient: holds a token, hands out a new one when asked to log in again."""
+
+    def __init__(self) -> None:
+        self.token = "t1"
+        self.refreshes = 0
+
+    def bearer(self) -> str:
+        return self.token
+
+    def refresh(self) -> str:
+        self.refreshes += 1
+        self.token = f"t{self.refreshes + 1}"
+        return self.token
+
+
+def test_mcp_session_sends_the_token_held_now_and_logs_in_again_once_when_refused():
+    """The session outlives the access token. It asks for the bearer before every call, and when a call is
+    refused with 401 it has the client log in again and repeats the call with the new token, once."""
+    source = _TokenSource()
+    sess = client_mod.SyncMcpSession("http://hc/mcp/mcp", bearer=source.bearer, refresh_bearer=source.refresh)
+    seen: list[str] = []
+    refuse_next = {"on": False}
+
+    async def op(headers):
+        seen.append(headers["Authorization"])
+        if refuse_next["on"]:
+            refuse_next["on"] = False
+            raise _unauthorized_group()
+        return "ok"
+
+    assert sess._run(op) == "ok"
+    source.token = "t1-rotated-by-the-rest-client"  # the REST client re-logged in on its own 401
+    assert sess._run(op) == "ok"
+    refuse_next["on"] = True  # the MCP call is the first request after the expiry
+    assert sess._run(op) == "ok"
+    assert seen == [
+        "Bearer t1",
+        "Bearer t1-rotated-by-the-rest-client",
+        "Bearer t1-rotated-by-the-rest-client",
+        "Bearer t2",
+    ]
+    assert source.refreshes == 1
+
+
+def test_mcp_session_gives_up_after_one_re_login_and_does_not_re_login_for_other_errors():
+    source = _TokenSource()
+    sess = client_mod.SyncMcpSession("http://hc/mcp/mcp", bearer=source.bearer, refresh_bearer=source.refresh)
+
+    async def always_refused(headers):
+        raise _unauthorized_group()
+
+    with pytest.raises(ExceptionGroup):
+        sess._run(always_refused)
+    assert source.refreshes == 1, "one re-login, then the refusal stands"
+
+    async def server_error(headers):
+        request = httpx.Request("POST", "http://hc/mcp/mcp")
+        raise ExceptionGroup(
+            "x", [httpx.HTTPStatusError("500", request=request, response=httpx.Response(500, request=request))]
+        )
+
+    with pytest.raises(ExceptionGroup):
+        sess._run(server_error)
+    assert source.refreshes == 1, "a 500 is not an expired token"
+
+
+def test_mcp_session_without_a_refresh_lets_a_401_through_and_static_headers_stay():
+    """The API-key path: a fixed header, nothing to refresh."""
+    sess = client_mod.SyncMcpSession("http://hc/mcp/mcp", headers={"Authorization": "Bearer key"})
+    seen: list[dict] = []
+
+    async def op(headers):
+        seen.append(headers)
+        raise _unauthorized_group()
+
+    with pytest.raises(ExceptionGroup):
+        sess._run(op)
+    assert seen == [{"Authorization": "Bearer key"}]
+
+
+def test_refresh_bearer_token_logs_in_again_and_the_client_uses_the_new_token():
+    """HarborClerkClient.refresh_bearer_token drops the held token and logs in again; the next request through
+    the client carries the new one, so the MCP session and the REST client agree on it."""
+    tokens = iter(["t1", "t2"])
+    authorizations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/auth/login":
+            return httpx.Response(200, json={"access_token": next(tokens)})
+        authorizations.append(request.headers.get("Authorization", ""))
+        return httpx.Response(200, json={"status": "ok"})
+
+    c = HarborClerkClient(base_url="https://localhost", transport=httpx.MockTransport(handler), verify=False)
+    c.login("u@example.com", "pw")
+    assert c.get_bearer_token() == "t1"
+    assert c.refresh_bearer_token() == "t2"
+    assert c.get_bearer_token() == "t2"
+    c.health()
+    assert authorizations[-1] == "Bearer t2"
+
+
+class _RefusingMcpServer(BaseHTTPRequestHandler):
+    """Answers 401 to every request and records the Authorization header it was shown."""
+
+    seen: list[str] = []
+
+    def do_POST(self):  # noqa: N802 (http.server's name)
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        _RefusingMcpServer.seen.append(self.headers.get("Authorization", ""))
+        self.send_response(401)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST
+    do_DELETE = do_POST
+
+    def log_message(self, *args):  # quiet
+        pass
+
+
+def test_a_401_from_the_real_mcp_transport_is_recognised_and_the_call_repeated_with_the_new_token():
+    """The seam the hand-built exception cannot cover: whatever the pinned ``mcp`` raises for a 401 must be what
+    ``_is_unauthorized`` looks for, or the re-login never happens and the suite stays green."""
+    _RefusingMcpServer.seen = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _RefusingMcpServer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        source = _TokenSource()
+        sess = client_mod.SyncMcpSession(
+            f"http://127.0.0.1:{server.server_port}/mcp/mcp",
+            timeout=5.0,
+            bearer=source.bearer,
+            refresh_bearer=source.refresh,
+        )
+        with pytest.raises(Exception) as excinfo:
+            sess.call_tool("kb_search", {"query": "x"})
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert client_mod._is_unauthorized(excinfo.value), f"the transport raised {excinfo.value!r}"
+    assert source.refreshes == 1
+    assert _RefusingMcpServer.seen[:1] == ["Bearer t1"] and "Bearer t2" in _RefusingMcpServer.seen
