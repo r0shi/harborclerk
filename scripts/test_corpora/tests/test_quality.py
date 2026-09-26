@@ -346,3 +346,7 @@ def test_an_answer_that_mentions_a_function_in_prose_is_not_roleplay() -> None:
         classify_answer("The policy defines <role>Approver</role> for expense sign-off, effective 2025-06-01.")[0]
         == "real"
     )
+
+    # The tag with a name that is not a tool: a function tag alone is not the fingerprint.
+    assert classify_answer("Per the spec, <function=payment> is the clause that sets net-30 terms.")[0] == "real"
+    assert classify_answer("Per the spec, <function=search_documents_v2> is a made-up tool.")[0] == "real"
