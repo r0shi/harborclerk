@@ -51,8 +51,10 @@ _REFUSAL_PHRASES = (
 
 # Tool-call syntax leaking into the answer body. Small models with weak
 # tool-calling fine-tunes sometimes narrate tool calls as text instead of
-# emitting them as structured calls. The bracketed-tool-name pattern is the
-# fingerprint: ``[search_documents: "..."]`` rather than an actual call.
+# emitting them as structured calls, and any model does once the chat loop has
+# stopped offering tools at its context budget (#712). Two fingerprints: the
+# bracketed tool name, ``[search_documents: "..."]``, and Qwen3's XML-ish form,
+# ``<tool_call> <function=search_documents> ...`` (#733).
 _TOOL_NAMES_FOR_ROLEPLAY = (
     "search_documents",
     "kb_search",
@@ -78,7 +80,9 @@ _TOOL_NAMES_FOR_ROLEPLAY = (
     "kb_documents_by_date",
 )
 _ROLEPLAY_RE = re.compile(
-    r"\[\s*(?:" + "|".join(_TOOL_NAMES_FOR_ROLEPLAY) + r")\b",
+    r"\[\s*(?:" + "|".join(_TOOL_NAMES_FOR_ROLEPLAY) + r")\b"
+    r"|<tool_call>"
+    r"|<function=\s*(?:" + "|".join(_TOOL_NAMES_FOR_ROLEPLAY) + r")\b",
     re.IGNORECASE,
 )
 

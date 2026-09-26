@@ -310,3 +310,39 @@ def test_a_baseline_that_describes_the_corpus_is_not_an_empty_corpus() -> None:
     )
     assert baseline_quality_problem({"answer": answer}) is None
     assert baseline_quality_problem({"answer": "The corpus appears to be empty."}) == "baseline says corpus is empty"
+
+
+# ── #733: Qwen3's tool-call form ──
+
+
+def test_roleplay_qwen3_tool_call_form_is_recognised() -> None:
+    """Qwen3.6 on the synthetic corpus, once the chat loop stopped offering tools at its context budget: the
+    answer ends in the call it wanted to make, in Qwen3's XML-ish form. That is roleplay, not a real answer."""
+    answer = (
+        'The initial results don\'t mention "Globex Supplies." Let me search more specifically for that vendor '
+        "name.\n\n<tool_call>\n<function=search_documents>\n<parameter=query>\nGlobex Supplies vendor contract\n"
+        "</parameter>\n<parameter=k>\n10\n</parameter>\n</function>\n</tool_call>"
+    )
+    label, reason = classify_answer(answer)
+    assert label == "roleplay" and reason and "roleplay" in reason
+
+
+def test_roleplay_function_tag_alone_and_tool_call_tag_alone_each_count() -> None:
+    assert (
+        classify_answer("Searching now. <function=kb_search> <parameter=query>x</parameter> </function>")[0]
+        == "roleplay"
+    )
+    assert classify_answer('Let me look.\n<tool_call>\n{"name": "search_documents"}\n</tool_call>')[0] == "roleplay"
+
+
+def test_an_answer_that_mentions_a_function_in_prose_is_not_roleplay() -> None:
+    """The fingerprint is the tag, not the word: an answer that talks about a function, or quotes an XML element
+    of a document, is real."""
+    assert (
+        classify_answer("The contract's function=payment clause sets terms at net 30, per the vendor document.")[0]
+        == "real"
+    )
+    assert (
+        classify_answer("The policy defines <role>Approver</role> for expense sign-off, effective 2025-06-01.")[0]
+        == "real"
+    )
