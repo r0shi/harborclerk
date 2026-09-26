@@ -59,6 +59,26 @@ def _load(path: Path) -> dict | None:
         return None
 
 
+def _summaries_note(rows: list[dict[str, str]]) -> list[str]:
+    """One line when any model unit ran while summaries were still queued (the summarize_backlog column): the
+    active model generated them between its own questions, so those latencies and answers are not the quiet
+    machine's. Nothing when every row says 0, or when the file predates the column."""
+    ran_beside = [
+        r for r in rows if r["phase"] in MODEL_PHASES and (r.get("summarize_backlog") or "").strip() not in ("", "0")
+    ]
+    if not ran_beside:
+        return []
+    measured = sum(1 for r in rows if r["phase"] in MODEL_PHASES and (r.get("summarize_backlog") or "").strip() != "")
+    most = max(int(r["summarize_backlog"]) for r in ran_beside)
+    return [
+        f"**{len(ran_beside)} of {measured} units ran while summaries were still queued** (up to {most:,} at a unit's "
+        "start; the `summarize_backlog` column names them). The active model generated those summaries between its "
+        "own questions, so their latencies are not a quiet machine's, and a later model read summaries an earlier "
+        "one wrote.",
+        "",
+    ]
+
+
 def _rows(run_dir: Path) -> list[dict[str, str]]:
     path = run_dir / "metrics.csv"
     if not path.exists():
@@ -231,6 +251,7 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
         lines += ["## Results", "", "No metrics.csv rows: the run produced no model results.", ""]
 
     if rows:
+        lines += _summaries_note(rows)
         note = (
             "The overlap means include units whose baseline was unusable: the sweep records those as 0.000, and "
             "metrics.csv does not tell them from a true zero. `log.txt` names each one."

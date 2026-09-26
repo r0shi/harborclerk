@@ -246,6 +246,123 @@ def test_pipeline_status_quiet():
     assert c.pipeline_quiet() is True
 
 
+def test_pipeline_is_quiet_while_summaries_are_still_queued():
+    """Summaries do not gate search (#717): 5,772 of them queued on the llm queue kept the Enron ingest "not
+    drained" for four hours after every document was ready."""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "queues": {
+                    "io": {"queued": 0, "running": 0},
+                    "cpu": {"queued": 0, "running": 0},
+                    "llm": {"queued": 5772, "running": 1},
+                },
+                "by_stage": {
+                    "extract": {"queued": 0, "running": 0, "queue": "io"},
+                    "embed": {"queued": 0, "running": 0, "queue": "cpu"},
+                    "summarize": {"queued": 5772, "running": 1, "queue": "llm"},
+                    "finalize": {"queued": 0, "running": 0, "queue": "io"},
+                },
+            },
+        )
+
+    c = make_client(handler)
+    assert c.pipeline_quiet() is True
+    assert c.summarize_backlog() == 5773
+
+
+def test_pipeline_is_busy_while_a_gating_stage_has_work():
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "queues": {
+                    "io": {"queued": 0, "running": 0},
+                    "cpu": {"queued": 1, "running": 0},
+                    "llm": {"queued": 0, "running": 0},
+                },
+                "by_stage": {
+                    "embed": {"queued": 1, "running": 0, "queue": "cpu"},
+                    "summarize": {"queued": 0, "running": 0, "queue": "llm"},
+                },
+            },
+        )
+
+    c = make_client(handler)
+    assert c.pipeline_quiet() is False
+    assert c.summarize_backlog() == 0
+
+
+def test_pipeline_is_busy_while_the_last_gating_job_is_still_running():
+    """Nothing queued, one finalize running: the last document is not searchable yet."""
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "queues": {"io": {"queued": 0, "running": 1}},
+                "by_stage": {
+                    "finalize": {"queued": 0, "running": 1, "queue": "io"},
+                    "summarize": {"queued": 0, "running": 0},
+                },
+            },
+        )
+
+    assert make_client(handler).pipeline_quiet() is False
+
+
+class _Clock:
+    """A clock the test advances: each poll costs `step` seconds, so no test waits for real."""
+
+    def __init__(self, step: float):
+        self.now = 1000.0
+        self.step = step
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += self.step
+
+
+def _summaries_client(backlogs: list[int]):
+    it = iter(backlogs)
+    last = backlogs[-1]
+
+    def handler(request):
+        n = next(it, last)
+        return httpx.Response(200, json={"queues": {}, "by_stage": {"summarize": {"queued": n, "running": 0}}})
+
+    return make_client(handler)
+
+
+def test_wait_for_summaries_tells_done_from_stalled_from_deadline():
+    """Three ways out, and the sweep treats them differently (#717): done proceeds; stalled is an error (the
+    summarizer is not working); deadline proceeds with a warning (it is working, slowly). Progress that pauses
+    for less than the stall window is still progress."""
+    clock = _Clock(step=4)
+    # Falls, sits flat for two polls (8 s, under the 10 s stall window), falls again to zero: done.
+    c = _summaries_client([5, 4, 4, 4, 3, 2, 1, 0])
+    assert c.wait_for_summaries(max_stall_seconds=10, poll_seconds=1, clock=clock, sleep=clock.sleep) == "done"
+    # Flat for good: stalled, at the third poll (12 s), long before any deadline.
+    clock = _Clock(step=4)
+    c = _summaries_client([7, 7, 7, 7, 7, 7])
+    assert (
+        c.wait_for_summaries(max_stall_seconds=10, max_wait_seconds=100, poll_seconds=1, clock=clock, sleep=clock.sleep)
+        == "stalled"
+    )
+    assert clock.now - 1000.0 <= 16, "gave up on the stall, not the deadline"
+    # Falling but not fast enough: the deadline, reported as such.
+    clock = _Clock(step=4)
+    c = _summaries_client([100, 99, 98, 97, 96, 95, 94])
+    assert (
+        c.wait_for_summaries(max_stall_seconds=10, max_wait_seconds=9, poll_seconds=1, clock=clock, sleep=clock.sleep)
+        == "deadline"
+    )
+
+
 def test_pipeline_status_busy():
     def handler(request):
         return httpx.Response(

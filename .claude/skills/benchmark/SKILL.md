@@ -81,7 +81,9 @@ it, drop the `-w` from `find-generic-password` and look at the exit status.
 ## 4. Plan, and price it
 
 Scope to the question. A full sweep is 17 to 25 hours of model time; one corpus,
-the models being compared, phases `0,1,4` is usually the whole question.
+the models being compared, phases `0,1,4` is usually the whole question. A large
+corpus adds its summaries before the first unit: the sweep waits for them so every
+model measures the same corpus (about 20 documents a minute on the mini; #717).
 **One corpus per run**: at the measured price of a Claude baseline (about USD 19
 for a corpus of 16 questions, #682) two corpora are refused before they start.
 The sweep prices the pending cloud work before it starts and refuses a run

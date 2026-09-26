@@ -453,6 +453,16 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--insecure", action="store_true", help="disable TLS verify (self-signed)")
     p.add_argument("--dry-run", action="store_true", help="run Phase 0 only, no API calls beyond acquire")
     p.add_argument(
+        "--no-wait-for-summaries",
+        action="store_true",
+        help=(
+            "start measuring once every search-gating stage is done, while summaries (a background stage) are "
+            "still queued. Once a model is active it generates them on its one slot between its own questions, "
+            "and later models read them, so the default waits until they are done; metrics.csv records the "
+            "backlog at each unit's start either way (summarize_backlog)."
+        ),
+    )
+    p.add_argument(
         "--no-judge",
         action="store_true",
         help=(
@@ -880,10 +890,56 @@ def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
     return hc.document_count() >= threshold
 
 
+def _settle_summaries(hc: HarborClerkClient, corpus_id: str, wait: bool, stall_seconds: float) -> None:
+    """The search-gating stages are done; summaries may not be. Waiting is the default: they do not gate search,
+    but a model that runs later reads summaries written earlier (kb_get_document, kb_corpus_overview, ...), and
+    unless the host forces Apple Intelligence, an active model writes them itself on its one slot between the
+    questions it is being measured on. Every model measures the same corpus only when they are done (#717).
+
+    ``wait=False`` proceeds and says so. A backlog that stops falling is an error (the summarizer is not
+    working); one still falling at the deadline (HarborClerkClient.SUMMARY_WAIT_MAX_SECONDS) is proceeded beside
+    with a warning (it is working, and
+    metrics.csv carries the backlog per unit), never the run's death, which is what #717 was."""
+    backlog = hc.summarize_backlog()
+    if not backlog:
+        return
+    if not wait:
+        log.warning(
+            "%d summaries still queued or running for %s; proceeding without them (--no-wait-for-summaries): "
+            "the active model will generate them between its own questions, and later models will read them",
+            backlog,
+            corpus_id,
+        )
+        return
+    log.info(
+        "%d summaries still queued or running for %s; waiting for them so every model measures the same corpus",
+        backlog,
+        corpus_id,
+    )
+    outcome = hc.wait_for_summaries(max_stall_seconds=stall_seconds)
+    if outcome == "stalled":
+        raise RuntimeError(
+            f"summaries stalled for {corpus_id}: {hc.summarize_backlog()} still queued or running and the count has "
+            f"not fallen for {stall_seconds:.0f}s"
+        )
+    if outcome == "deadline":
+        log.warning(
+            "%d summaries still queued or running for %s after the %.0f-hour wait; still falling, so proceeding "
+            "beside them: the active model will generate the rest between its own questions, and later models will "
+            "read them",
+            hc.summarize_backlog(),
+            corpus_id,
+            hc.SUMMARY_WAIT_MAX_SECONDS / 3600,
+        )
+
+
 def _can_skip_ingest(
     hc: HarborClerkClient,
     manifest: CorpusManifest,
     max_drain_wait: int = 4 * 3600,
+    *,
+    wait_for_summaries: bool = True,
+    summary_stall_seconds: float = 1800,
 ) -> bool:
     """Decide whether to skip ``_ingest_corpus``'s wipe-and-re-ingest cycle.
 
@@ -898,7 +954,10 @@ def _can_skip_ingest(
         log.info("pipeline still draining at startup — waiting before checking corpus state")
         if not hc.wait_for_quiet_pipeline(max_wait_seconds=max_drain_wait):
             return False
-    return _hc_corpus_matches(hc, manifest)
+    if not _hc_corpus_matches(hc, manifest):
+        return False
+    _settle_summaries(hc, manifest.corpus_id, wait_for_summaries, summary_stall_seconds)
+    return True
 
 
 DISPOSABLE_ENV = "HC_EVAL_DISPOSABLE"
@@ -928,6 +987,7 @@ METRICS_COLUMNS = (
     "verifier_skipped",
     "judge_answers_question",
     "answer_key_score",
+    "summarize_backlog",
 )
 
 
@@ -1022,7 +1082,15 @@ def _refuse_to_wipe_a_real_instance(hc: HarborClerkClient, api_base: str, workdi
         )
 
 
-def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest, api_base: str, workdir: Path) -> None:
+def _ingest_corpus(
+    hc: HarborClerkClient,
+    manifest: CorpusManifest,
+    api_base: str,
+    workdir: Path,
+    *,
+    wait_for_summaries: bool = True,
+    summary_stall_seconds: float = 1800,
+) -> None:
     """Wipe the DB, register the corpus's ingest dir, wait for ingestion to
     fully complete before returning.
 
@@ -1055,6 +1123,7 @@ def _ingest_corpus(hc: HarborClerkClient, manifest: CorpusManifest, api_base: st
     log.info("waiting for pipeline to drain (this can take a while)")
     if not hc.wait_for_quiet_pipeline(max_wait_seconds=4 * 3600):
         raise RuntimeError(f"pipeline never drained for {manifest.corpus_id}")
+    _settle_summaries(hc, manifest.corpus_id, wait_for_summaries, summary_stall_seconds)
 
     # Phase 3: warning-level sanity check on document count. Treated as
     # informational because the synthetic corpus has JSON sidecars in the
@@ -1381,6 +1450,7 @@ def main(argv: list[str] | None = None) -> int:
                 "judge_answers_question",
                 "the judge_answers_question column; the verdicts in it followed completeness and are not comparable with new ones",
             ),
+            ("summarize_backlog", "the summarize_backlog column (summaries queued when each unit started)"),
         ):
             if column not in metrics_columns:
                 log.warning(
@@ -1484,11 +1554,15 @@ def main(argv: list[str] | None = None) -> int:
                     notes="unified pass",
                 )
                 manifests["unified"] = unified_manifest
-                if current_corpus_in_db is None and _can_skip_ingest(hc, unified_manifest):
+                if current_corpus_in_db is None and _can_skip_ingest(
+                    hc, unified_manifest, wait_for_summaries=not args.no_wait_for_summaries
+                ):
                     log.info("HC already has unified corpus loaded — skipping re-ingest")
                     current_corpus_in_db = "unified"
                 elif current_corpus_in_db != "unified":
-                    _ingest_corpus(hc, unified_manifest, args.api_base, workdir)
+                    _ingest_corpus(
+                        hc, unified_manifest, args.api_base, workdir, wait_for_summaries=not args.no_wait_for_summaries
+                    )
                     current_corpus_in_db = "unified"
             elif corpus == "unified" and args.no_ingest:
                 current_corpus_in_db = "unified"
@@ -1546,11 +1620,19 @@ def main(argv: list[str] | None = None) -> int:
                             ingest_dir,
                         )
                         manifests[u.corpus] = _phase0_acquire(u.corpus, workdir)
-                    if current_corpus_in_db is None and _can_skip_ingest(hc, manifests[u.corpus]):
+                    if current_corpus_in_db is None and _can_skip_ingest(
+                        hc, manifests[u.corpus], wait_for_summaries=not args.no_wait_for_summaries
+                    ):
                         log.info("HC already has %s loaded — skipping re-ingest", u.corpus)
                         current_corpus_in_db = u.corpus
                     elif u.corpus != current_corpus_in_db:
-                        _ingest_corpus(hc, manifests[u.corpus], args.api_base, workdir)
+                        _ingest_corpus(
+                            hc,
+                            manifests[u.corpus],
+                            args.api_base,
+                            workdir,
+                            wait_for_summaries=not args.no_wait_for_summaries,
+                        )
                         current_corpus_in_db = u.corpus
                 elif phase in (1, 4, 5) and u.corpus != current_corpus_in_db and args.no_ingest:
                     current_corpus_in_db = u.corpus
@@ -1590,6 +1672,15 @@ def main(argv: list[str] | None = None) -> int:
                     u.phase,
                     u.depth,
                 )
+                # Summaries queued when this unit started: 0 is the comparable case. Recorded, not enforced, so a
+                # --no-wait-for-summaries run says on every row what it ran beside. Not for phase 0 (no unit is
+                # measured) and not on --dry-run (which promises no API calls beyond acquire).
+                summarize_backlog_at_start: int | str = ""
+                if u.phase > 0 and not args.dry_run:
+                    try:
+                        summarize_backlog_at_start = hc.summarize_backlog()
+                    except Exception:  # a snapshot the API could not give is not a reason to lose the unit
+                        summarize_backlog_at_start = ""
 
                 t0 = time.time()
                 out: dict = {}
@@ -2059,6 +2150,7 @@ def main(argv: list[str] | None = None) -> int:
                     verifier_unsupported=verifier_counts["unsupported"],
                     verifier_skipped=verifier_counts["skipped"],
                     answer_key_score=answer_key_score,
+                    summarize_backlog=summarize_backlog_at_start,
                 )
                 metrics_writer.writerow(metrics_row)
                 metrics_f.flush()

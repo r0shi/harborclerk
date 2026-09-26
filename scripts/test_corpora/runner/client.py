@@ -12,17 +12,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Watchdog tunables for run_research. Two consecutive bad readings (~60s by
 # default) force the SSE stream closed so we don't sit on a hung llama-server.
+logger = logging.getLogger(__name__)
+
 WATCHDOG_INTERVAL_SECONDS = 30
 WATCHDOG_THRESHOLD = 2
 
@@ -690,10 +693,73 @@ class HarborClerkClient:
         r.raise_for_status()
         return r.json()
 
+    # The one stage that does not gate a document being searchable: it runs after finalize on the llm queue,
+    # and on a Mac with Apple Intelligence as the summarizer at about 20 documents a minute. Counting it, the
+    # 10,576-email Enron corpus was "not drained" four hours after every document was ready (#717).
+    BACKGROUND_STAGES = frozenset({"summarize"})
+    # The most `wait_for_summaries` waits while the count keeps falling; the sweep names it in its warning.
+    SUMMARY_WAIT_MAX_SECONDS = 12 * 3600
+
     def pipeline_quiet(self) -> bool:
+        """No job queued or running in any stage that gates search. Summaries are a background stage: the
+        snapshot's ``by_stage`` says what is where; a snapshot without it (older API) is judged by its queues."""
         s = self.pipeline_status()
+        by_stage = s.get("by_stage")
+        if isinstance(by_stage, dict) and by_stage:
+            return all(
+                st.get("queued", 0) == 0 and st.get("running", 0) == 0
+                for name, st in by_stage.items()
+                if name not in self.BACKGROUND_STAGES
+            )
         q = s["queues"]
         return all(q[name]["queued"] == 0 and q[name]["running"] == 0 for name in q)
+
+    def summarize_backlog(self) -> int:
+        """Summaries still queued or running: background work that a quiet pipeline may still carry."""
+        by_stage = self.pipeline_status().get("by_stage") or {}
+        return sum(
+            int(by_stage.get(s, {}).get("queued", 0)) + int(by_stage.get(s, {}).get("running", 0))
+            for s in self.BACKGROUND_STAGES
+        )
+
+    def wait_for_summaries(
+        self,
+        max_stall_seconds: float = 1800,
+        max_wait_seconds: float = SUMMARY_WAIT_MAX_SECONDS,
+        poll_seconds: float = 30,
+        log_every_seconds: float = 600,
+        clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> Literal["done", "stalled", "deadline"]:
+        """Wait for the summarize backlog to reach zero. Bounded by progress, not by a clock: the summarizer's
+        speed is the machine's (Apple Intelligence at about 20 documents a minute on the mini, the active model
+        when one is active), so a flat cap is wrong for every corpus but one.
+
+        "done" when it reached zero; "stalled" when the backlog has not fallen for ``max_stall_seconds`` (the
+        summarizer is not working: an error); "deadline" when ``max_wait_seconds`` passed while the count was
+        still falling (the summarizer is working, slowly: the caller decides). A progress line every
+        ``log_every_seconds`` so the log does not read as a hang."""
+        started = clock()
+        deadline = started + max_wait_seconds
+        last = self.summarize_backlog()
+        last_fell_at = started
+        last_logged_at = started
+        while last > 0:
+            now = clock()
+            if now - last_fell_at >= max_stall_seconds:
+                return "stalled"
+            if now >= deadline:
+                return "deadline"
+            if now - last_logged_at >= log_every_seconds:
+                logger.info("summaries still queued or running: %d (%.0f min so far)", last, (now - started) / 60)
+                last_logged_at = now
+            if poll_seconds > 0:
+                sleep(poll_seconds)
+            backlog = self.summarize_backlog()
+            if backlog < last:
+                last_fell_at = clock()
+            last = backlog
+        return "done"
 
     def wait_for_quiet_pipeline(self, max_wait_seconds: int = 7200, poll_seconds: int = 30) -> bool:
         deadline = time.time() + max_wait_seconds

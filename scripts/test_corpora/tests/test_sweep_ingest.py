@@ -460,3 +460,99 @@ def test_a_run_that_would_call_a_model_without_its_key_stops_before_spending(tmp
         )
     assert rc == 3 and baseline.assert_not_called() is None
     assert not (run_dir / "metrics.csv").exists() or (run_dir / "metrics.csv").read_text().count("\n") <= 1
+
+
+def _snapshot_with_summaries(n: int) -> dict:
+    return {
+        "queues": {"io": {"queued": 0, "running": 0}, "llm": {"queued": n, "running": 0}},
+        "by_stage": {
+            "finalize": {"queued": 0, "running": 0, "queue": "io"},
+            "summarize": {"queued": n, "running": 0, "queue": "llm"},
+        },
+    }
+
+
+def _loaded_corpus_with_summaries(n: int):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/jobs/snapshot":
+            return httpx.Response(200, json=_snapshot_with_summaries(n))
+        if request.url.path == "/api/watch/folders":
+            return httpx.Response(200, json=[{"folder_id": "f1", "path": "/tmp/cuad-ingest"}])
+        if request.url.path == "/api/docs":
+            return httpx.Response(200, json={"items": [], "total": 80, "limit": 0})
+        return httpx.Response(404)
+
+    return handler
+
+
+def _mock_hc_after_ingest(backlog: int, outcome: str, doc_count: int = 80):
+    """An hc for _ingest_corpus whose gating stages are done and whose summaries end the given way."""
+    from unittest.mock import MagicMock
+
+    hc = MagicMock()
+    hc.watch_folder_list.return_value = []
+    hc.wait_for_pipeline_activity.return_value = True
+    hc.wait_for_quiet_pipeline.return_value = True
+    hc.summarize_backlog.return_value = backlog
+    hc.wait_for_summaries.return_value = outcome
+    hc.document_count.return_value = doc_count
+    hc.SUMMARY_WAIT_MAX_SECONDS = 12 * 3600  # the constant the deadline warning names
+    return hc
+
+
+def test_ingest_corpus_waits_for_summaries_and_fails_on_a_stall(monkeypatch, tmp_path):
+    """The primary ingest path (#717): after the gating stages drain, a summarize backlog is waited for; one that
+    stops falling ends the run with a message naming the count."""
+    from scripts.test_corpora.runner import sweep as sweep_module
+
+    monkeypatch.setattr(sweep_module, "_refuse_to_wipe_a_real_instance", lambda *a, **k: None)
+    hc = _mock_hc_after_ingest(5745, "stalled")
+    with pytest.raises(RuntimeError, match="summaries stalled for cuad: 5745"):
+        sweep_module._ingest_corpus(hc, _manifest(), "http://localhost:8100", tmp_path)
+    hc.wait_for_summaries.assert_called_once()
+
+
+def test_ingest_corpus_proceeds_beside_a_falling_backlog_at_the_deadline_with_a_warning(monkeypatch, tmp_path, caplog):
+    """A backlog still falling at the 12-hour deadline is the summarizer working slowly, not a fault: the run
+    proceeds and says what it proceeds beside. Killing the run here was #717 with a longer fuse."""
+    from scripts.test_corpora.runner import sweep as sweep_module
+
+    monkeypatch.setattr(sweep_module, "_refuse_to_wipe_a_real_instance", lambda *a, **k: None)
+    hc = _mock_hc_after_ingest(4000, "deadline")
+    with caplog.at_level("WARNING"):
+        sweep_module._ingest_corpus(hc, _manifest(), "http://localhost:8100", tmp_path)
+    assert "after the 12-hour wait" in caplog.text and "proceeding beside them" in caplog.text
+
+
+def test_ingest_corpus_skips_the_wait_when_told_to(monkeypatch, tmp_path, caplog):
+    from scripts.test_corpora.runner import sweep as sweep_module
+
+    monkeypatch.setattr(sweep_module, "_refuse_to_wipe_a_real_instance", lambda *a, **k: None)
+    hc = _mock_hc_after_ingest(5745, "done")
+    with caplog.at_level("WARNING"):
+        sweep_module._ingest_corpus(hc, _manifest(), "http://localhost:8100", tmp_path, wait_for_summaries=False)
+    hc.wait_for_summaries.assert_not_called()
+    assert "--no-wait-for-summaries" in caplog.text
+
+
+def test_the_no_wait_for_summaries_flag_parses_and_defaults_to_waiting():
+    from scripts.test_corpora.runner.sweep import make_parser
+
+    base = ["--run-id", "r", "--workdir", "/tmp/w"]
+    assert make_parser().parse_args(base).no_wait_for_summaries is False
+    assert make_parser().parse_args([*base, "--no-wait-for-summaries"]).no_wait_for_summaries is True
+
+
+def test_can_skip_ingest_waits_for_summaries_by_default_and_fails_when_they_stall():
+    """#717: a loaded, search-ready corpus with summaries still queued is not yet the same corpus for every
+    model. By default the resume path waits for them; a backlog that does not fall is an error, not a start."""
+    c = _make_client(_loaded_corpus_with_summaries(5745))
+    with pytest.raises(RuntimeError, match="summaries stalled"):
+        _can_skip_ingest(c, _manifest(), max_drain_wait=0, summary_stall_seconds=0)
+
+
+def test_can_skip_ingest_proceeds_beside_summaries_when_told_to_and_says_so(caplog):
+    c = _make_client(_loaded_corpus_with_summaries(5745))
+    with caplog.at_level("WARNING"):
+        assert _can_skip_ingest(c, _manifest(), max_drain_wait=0, wait_for_summaries=False) is True
+    assert "5745 summaries still queued" in caplog.text and "later models will read them" in caplog.text
