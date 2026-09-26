@@ -59,6 +59,22 @@ def _load(path: Path) -> dict | None:
         return None
 
 
+def _forced_note(rows: list[dict[str, str]]) -> list[str]:
+    """One line when any answer was forced by the app (the stop_reason column): what "forced" counts, and that
+    those units are in `degraded` too. Nothing when no row carries a reason."""
+    forced = [r for r in rows if r["phase"] in MODEL_PHASES and (r.get("stop_reason") or "").strip()]
+    if not forced:
+        return []
+    reasons = Counter(r["stop_reason"].strip() for r in forced)
+    named = ", ".join(f"{n} by {reason.replace('_', ' ')}" for reason, n in sorted(reasons.items()))
+    return [
+        f"**{len(forced)} answers were forced by the app** ({named}): it stopped the search and answered from what "
+        "it had, saying so. They are judged, counted under `forced` and `forced pass`, and included in `degraded`; "
+        "`judged` and the columns after it are the answers the model chose to give.",
+        "",
+    ]
+
+
 def _summaries_note(rows: list[dict[str, str]]) -> list[str]:
     """One line when any model unit ran while summaries were still queued (the summarize_backlog column): the
     active model generated them between its own questions, so those latencies and answers are not the quiet
@@ -120,15 +136,18 @@ def model_table(rows: list[dict[str, str]], phase: str, planned: Counter) -> lis
     if not keys:
         return []
     columns = [
-        "corpus", "model", "planned", "ran", "done", "degraded", "error", "citation overlap", "entity overlap",
-        "median latency (s)", "judged", "pass", "marginal", "fail", "answers question (0-5)", "completeness (0-5)",
-        "answer key (0-1)",
+        "corpus", "model", "planned", "ran", "done", "degraded", "forced", "forced pass", "error", "citation overlap",
+        "entity overlap", "median latency (s)", "judged", "pass", "marginal", "fail", "answers question (0-5)",
+        "completeness (0-5)", "answer key (0-1)",
     ]  # fmt: skip
     out = ["| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
     for corpus, model in keys:
         units = by_key.get((corpus, model), [])
         status = Counter(u["status"] for u in units)
         done = [u for u in units if u["status"] == "done"]
+        # An answer the app forced (its time budget, context budget or tool-round cap, #719): degraded, judged,
+        # and counted here beside the chosen answers, never among them.
+        forced = [u for u in units if u["status"] == "degraded" and (u.get("stop_reason") or "").strip()]
         judged = [u for u in done if u.get("judge_verdict")]
         verdicts = Counter(u["judge_verdict"] for u in judged)
         latency = [float(u["latency_seconds"]) for u in done if u.get("latency_seconds")]
@@ -141,6 +160,8 @@ def model_table(rows: list[dict[str, str]], phase: str, planned: Counter) -> lis
             ran,
             status["done"],
             status["degraded"],
+            len(forced),
+            sum(1 for u in forced if u.get("judge_verdict") == "pass"),
             status["error"] + status["failed"],
             _mean([float(u["citation_overlap"]) for u in done]),
             _mean([float(u["entity_overlap"]) for u in done]),
@@ -252,6 +273,7 @@ def render(run_dir: Path, *, preflight: dict | None, today: str, host: str, comm
 
     if rows:
         lines += _summaries_note(rows)
+        lines += _forced_note(rows)
         note = (
             "The overlap means include units whose baseline was unusable: the sweep records those as 0.000, and "
             "metrics.csv does not tell them from a true zero. `log.txt` names each one."

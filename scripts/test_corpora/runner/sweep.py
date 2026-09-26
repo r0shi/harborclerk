@@ -1030,6 +1030,7 @@ METRICS_COLUMNS = (
     "judge_answers_question",
     "answer_key_score",
     "summarize_backlog",
+    "stop_reason",
 )
 
 
@@ -1497,6 +1498,7 @@ def main(argv: list[str] | None = None) -> int:
                 "the judge_answers_question column; the verdicts in it followed completeness and are not comparable with new ones",
             ),
             ("summarize_backlog", "the summarize_backlog column (summaries queued when each unit started)"),
+            ("stop_reason", "the stop_reason column (why the app forced an answer, #719)"),
         ):
             if column not in metrics_columns:
                 log.warning(
@@ -2181,6 +2183,7 @@ def main(argv: list[str] | None = None) -> int:
                     verifier_skipped=verifier_counts["skipped"],
                     answer_key_score=answer_key_score,
                     summarize_backlog=summarize_backlog_at_start,
+                    stop_reason=(out.get("result") or {}).get("stop_reason") or "" if phase in (2, 3, 4, 5, 6) else "",
                 )
                 metrics_writer.writerow(metrics_row)
                 metrics_f.flush()

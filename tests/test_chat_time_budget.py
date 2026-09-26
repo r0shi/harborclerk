@@ -413,3 +413,100 @@ async def test_a_long_tool_call_or_thinking_generation_still_sends_the_client_ke
     first_token = next(i for i, line in enumerate(raw) if '"type": "token"' in line)
     assert len(keepalives) >= 3, f"one keepalive per silent half-minute; got {len(keepalives)}"
     assert keepalives[0] < first_token, "the keepalives come while the tool call is being written"
+
+
+@pytest.mark.asyncio
+async def test_the_watched_prefix_is_stored_even_when_the_forced_call_yields_nothing(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The forced call can produce nothing (a 500, a timeout, a cut before its first token). The stored message
+    still begins with the text the user watched arrive, then the note."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    partial_call = _chunk(
+        tool_calls=[
+            {
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search_documents", "arguments": '{"que'},
+            }
+        ]
+    )
+    client, _ = _mock_client(
+        [[_chunk(content="Let me look. "), partial_call, "data: [DONE]"], []],
+        on_line=lambda n, i: setattr(clock, "now", 301.0) if (n == 0 and i == 1) else None,
+    )
+    # The forced call fails outright.
+    failed = MagicMock()
+    failed.status_code = 500
+    failed.aclose = AsyncMock()
+    client.stream.return_value.__aenter__ = AsyncMock(return_value=failed)
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    assert tool_calls == [] and done["stop_reason"] == "time_budget"
+
+    from sqlalchemy import select
+
+    from harbor_clerk.models.chat_message import ChatMessage
+
+    rows = (
+        (await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id)))
+        .scalars()
+        .all()
+    )
+    saved = [r.content for r in rows if r.role == "assistant" and r.content]
+    assert saved and saved[-1].startswith("Let me look. ") and "I stopped after" in saved[-1]
+    assert text.startswith("Let me look. "), "and it is what the client received"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_completes_late_is_not_tagged_as_cut(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The model wrote its whole answer; only its "[DONE]" arrives after the grace. Nothing was cut, so there is
+    no note and no stop reason."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [[_chunk(content="All of it. "), _chunk(content="Every word."), "data: [DONE]"]],
+        on_line=lambda n, i: setattr(clock, "now", 1000.0) if (n == 0 and i == 1) else None,
+    )
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    assert text == "All of it. Every word." and "stop_reason" not in done
+
+
+@pytest.mark.asyncio
+async def test_a_cut_during_a_keepalive_leaves_no_pending_fetch_on_the_production_path(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The budget runs out while the model is silent: the loop leaves with `break` during a keepalive. The
+    fetch of the next line must be cancelled then, not left to fail unawaited when the response closes."""
+    import asyncio
+
+    from harbor_clerk.llm import chat as chat_module
+
+    monkeypatch.setattr(chat_module, "_KEEPALIVE_INTERVAL", 0.01)
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    never = asyncio.Event()
+
+    async def silent_after_one_token():
+        yield _chunk(content="Start ")
+        clock.now = 301.0 + 121.0  # the deadline and the grace pass while the model is silent
+        await never.wait()
+        yield "data: never"
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.aiter_lines = silent_after_one_token
+    resp.aclose = AsyncMock()
+    client = MagicMock()
+    client.build_request = MagicMock(return_value=MagicMock())
+    client.send = AsyncMock(return_value=resp)
+    client.aclose = AsyncMock()
+    before = {t for t in asyncio.all_tasks() if not t.done()}
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    await asyncio.sleep(0)
+    pending = {t for t in asyncio.all_tasks() if not t.done()} - before
+    assert pending == set(), f"a fetch was left pending: {pending}"
+    assert text.startswith("Start ") and done["stop_reason"] == "time_budget"

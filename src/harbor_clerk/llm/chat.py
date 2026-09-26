@@ -6,6 +6,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import TYPE_CHECKING
 
 import httpx
@@ -432,73 +433,78 @@ async def chat_stream(
                     # Keepalives are keyed to the client's silence, not the model's (#731): a tool call or a
                     # model's thinking streams lines the client hears nothing of, for minutes at a time.
                     last_sent = _now()
-                    async for line in _iter_with_keepalive(response.aiter_lines()):
-                        if deadline is not None:
-                            # One generation can outlast the whole budget (a 26B model at 11 tokens a
-                            # second wrote for ten minutes at a stretch, #719). Closing the stream, in
-                            # the finally below, is what stops llama-server decoding. A tool call being
-                            # written is cut at the deadline; an answer already being written gets the
-                            # same grace a forced answer would. Checked before "[DONE]" on purpose: a
-                            # tool call that completes as the budget runs out is not searched either.
-                            writing_answer = bool(text_buffer) and not (
-                                tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]
-                            )
-                            cut_at = deadline + _FINAL_ANSWER_GRACE_SECONDS if writing_answer else deadline
-                            if _now() >= cut_at:
-                                time_exhausted = True
+                    # aclosing: leaving this loop with `break` must close the iterator now, not when the garbage
+                    # collector gets to it, so its pending fetch is cancelled before the response is closed.
+                    async with aclosing(_iter_with_keepalive(response.aiter_lines())) as lines:
+                        async for line in lines:
+                            if deadline is not None:
+                                # One generation can outlast the whole budget (a 26B model at 11 tokens a
+                                # second wrote for ten minutes at a stretch, #719). Closing the stream, in
+                                # the finally below, is what stops llama-server decoding. A tool call being
+                                # written is cut at the deadline; an answer already being written gets the
+                                # same grace a forced answer would, and its "[DONE]" is let through: nothing
+                                # was cut. A tool call's "[DONE]" is not: one that completes as the budget
+                                # runs out is not searched either.
+                                writing_answer = bool(text_buffer) and not (
+                                    tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]
+                                )
+                                answer_done = writing_answer and isinstance(line, str) and line[6:].strip() == "[DONE]"
+                                cut_at = deadline + _FINAL_ANSWER_GRACE_SECONDS if writing_answer else deadline
+                                if not answer_done and _now() >= cut_at:
+                                    time_exhausted = True
+                                    break
+                            if line is _KEEPALIVE_SENTINEL:
+                                yield ": keepalive\n\n"
+                                last_sent = _now()
+                                continue
+                            if not line.startswith("data: "):
+                                continue
+                            data = line[6:]
+                            if data.strip() == "[DONE]":
                                 break
-                        if line is _KEEPALIVE_SENTINEL:
-                            yield ": keepalive\n\n"
-                            last_sent = _now()
-                            continue
-                        if not line.startswith("data: "):
-                            continue
-                        data = line[6:]
-                        if data.strip() == "[DONE]":
-                            break
 
-                        try:
-                            chunk = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
+                            try:
+                                chunk = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
 
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        usage = chunk.get("usage")
-                        if usage:
-                            total_tokens += usage.get("total_tokens", 0)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            usage = chunk.get("usage")
+                            if usage:
+                                total_tokens += usage.get("total_tokens", 0)
 
-                        # Accumulate tool calls from deltas
-                        if "tool_calls" in delta:
-                            for tc in delta["tool_calls"]:
-                                idx = tc.get("index", 0)
-                                while len(tool_calls_accumulated) <= idx:
-                                    tool_calls_accumulated.append(
-                                        {
-                                            "id": "",
-                                            "type": "function",
-                                            "function": {
-                                                "name": "",
-                                                "arguments": "",
-                                            },
-                                        }
-                                    )
-                                if "id" in tc and tc["id"]:
-                                    tool_calls_accumulated[idx]["id"] = tc["id"]
-                                fn = tc.get("function", {})
-                                if "name" in fn and fn["name"]:
-                                    tool_calls_accumulated[idx]["function"]["name"] = fn["name"]
-                                if "arguments" in fn:
-                                    tool_calls_accumulated[idx]["function"]["arguments"] += fn["arguments"]
+                            # Accumulate tool calls from deltas
+                            if "tool_calls" in delta:
+                                for tc in delta["tool_calls"]:
+                                    idx = tc.get("index", 0)
+                                    while len(tool_calls_accumulated) <= idx:
+                                        tool_calls_accumulated.append(
+                                            {
+                                                "id": "",
+                                                "type": "function",
+                                                "function": {
+                                                    "name": "",
+                                                    "arguments": "",
+                                                },
+                                            }
+                                        )
+                                    if "id" in tc and tc["id"]:
+                                        tool_calls_accumulated[idx]["id"] = tc["id"]
+                                    fn = tc.get("function", {})
+                                    if "name" in fn and fn["name"]:
+                                        tool_calls_accumulated[idx]["function"]["name"] = fn["name"]
+                                    if "arguments" in fn:
+                                        tool_calls_accumulated[idx]["function"]["arguments"] += fn["arguments"]
 
-                        # Stream text tokens
-                        if "content" in delta and delta["content"]:
-                            token_text = delta["content"]
-                            text_buffer += token_text
-                            yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
-                            last_sent = _now()
-                        elif _now() - last_sent >= _KEEPALIVE_INTERVAL:
-                            yield ": keepalive\n\n"
-                            last_sent = _now()
+                            # Stream text tokens
+                            if "content" in delta and delta["content"]:
+                                token_text = delta["content"]
+                                text_buffer += token_text
+                                yield f"data: {json.dumps({'type': 'token', 'content': token_text})}\n\n"
+                                last_sent = _now()
+                            elif _now() - last_sent >= _KEEPALIVE_INTERVAL:
+                                yield ": keepalive\n\n"
+                                last_sent = _now()
                 finally:
                     await response_obj.aclose()
                     await client_obj.aclose()
@@ -623,8 +629,10 @@ async def chat_stream(
                 "tool_rounds": f"{_MAX_TOOL_ROUNDS} tool rounds",
             }[stop_reason]
             logger.info("Forcing final text response after %s (conversation=%s)", reason, conversation_id)
-            # The forced answer is bounded too, or the bound is not one.
-            final_deadline = _now() + _FINAL_ANSWER_GRACE_SECONDS if deadline is not None else None
+            # The forced answer is bounded too, or the bound is not one. The grace runs from the first line
+            # received, not from the request: the prompt is re-read in full first (no tools this time, so the
+            # prompt cache misses), and on a full context that alone can take most of two minutes.
+            final_deadline: float | None = None
             try:
                 async with (
                     httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client,
@@ -636,38 +644,42 @@ async def chat_stream(
                 ):
                     if response.status_code < 400:
                         last_sent = _now()
-                        async for line in _iter_with_keepalive(response.aiter_lines()):
-                            if final_deadline is not None and _now() >= final_deadline:
-                                logger.info(
-                                    "Final answer cut after %.0fs of grace (conversation=%s)",
-                                    _FINAL_ANSWER_GRACE_SECONDS,
-                                    conversation_id,
-                                )
-                                break
-                            if line is _KEEPALIVE_SENTINEL:
-                                yield ": keepalive\n\n"
-                                last_sent = _now()
-                                continue
-                            if not line.startswith("data: "):
-                                continue
-                            data = line[6:]
-                            if data.strip() == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(data)
-                            except json.JSONDecodeError:
-                                continue
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            if delta.get("content"):
-                                assistant_content += delta["content"]
-                                yield f"data: {json.dumps({'type': 'token', 'content': delta['content']})}\n\n"
-                                last_sent = _now()
-                            elif _now() - last_sent >= _KEEPALIVE_INTERVAL:
-                                yield ": keepalive\n\n"
-                                last_sent = _now()
+                        async with aclosing(_iter_with_keepalive(response.aiter_lines())) as lines:
+                            async for line in lines:
+                                if deadline is not None and final_deadline is None:
+                                    final_deadline = _now() + _FINAL_ANSWER_GRACE_SECONDS
+                                if final_deadline is not None and _now() >= final_deadline:
+                                    logger.info(
+                                        "Final answer cut after %.0fs of grace (conversation=%s)",
+                                        _FINAL_ANSWER_GRACE_SECONDS,
+                                        conversation_id,
+                                    )
+                                    break
+                                if line is _KEEPALIVE_SENTINEL:
+                                    yield ": keepalive\n\n"
+                                    last_sent = _now()
+                                    continue
+                                if not line.startswith("data: "):
+                                    continue
+                                data = line[6:]
+                                if data.strip() == "[DONE]":
+                                    break
+                                try:
+                                    chunk = json.loads(data)
+                                except json.JSONDecodeError:
+                                    continue
+                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                if delta.get("content"):
+                                    assistant_content += delta["content"]
+                                    yield f"data: {json.dumps({'type': 'token', 'content': delta['content']})}\n\n"
+                                    last_sent = _now()
+                                elif _now() - last_sent >= _KEEPALIVE_INTERVAL:
+                                    yield ": keepalive\n\n"
+                                    last_sent = _now()
             except (httpx.ConnectError, httpx.TimeoutException):
                 pass  # Fall through to the fallback message below
-            if assistant_content and streamed_prefix:
+            if streamed_prefix:
+                # Whatever the forced call produced, or did not: the stored message begins with what was watched.
                 assistant_content = streamed_prefix + assistant_content
 
         # If we still have no text, emit a fallback message
