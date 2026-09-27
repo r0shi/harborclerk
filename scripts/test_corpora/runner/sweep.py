@@ -947,24 +947,60 @@ def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
     return True
 
 
-def _files_the_index_did_not_read(documents: list[dict], ingest_dir: Path) -> list[str]:
-    """The files in ``ingest_dir`` that the index has no document for, or whose document is older than the file.
+def _build_unified_ingest_dir(workdir: Path, manifests: dict[str, CorpusManifest]) -> Path:
+    """``workdir/unified/ingest``: every document of cuad, enron and synthetic, as ``<corpus>__<name>``.
 
-    A document's ``updated_at`` is when the app last read the file; a file written after that is not what the
-    index holds. Dotfiles (the ``.acquired`` marker) and directories are not documents and are not counted.
-    A document with no ``source_path`` or no ``updated_at`` cannot be matched and counts as unread: re-ingesting
-    is the safe side."""
+    Idempotent: a copy that is already there with the source's size and mtime is left alone, and a copy keeps
+    its source's mtime, so a resumed unified run can tell the index read these files (#740: the previous
+    version rewrote every copy on every start, which made every file newer than its document). Dotfiles are
+    not documents: the corpora's ``.acquired`` markers are not copied, and marker copies an earlier build made
+    are removed."""
+    import shutil
+
+    unified_dir = workdir / "unified" / "ingest"
+    unified_dir.mkdir(parents=True, exist_ok=True)
+    for stray in unified_dir.iterdir():
+        if stray.is_file() and stray.name.split("__", 1)[-1].startswith("."):
+            stray.unlink()
+    for c in ("cuad", "enron", "synthetic"):
+        for f in sorted(manifests[c].ingest_dir.iterdir()):
+            if not f.is_file() or f.name.startswith("."):
+                continue
+            target = unified_dir / f"{c}__{f.name}"
+            src = f.stat()
+            if target.exists():
+                dst = target.stat()
+                if dst.st_size == src.st_size and int(dst.st_mtime) == int(src.st_mtime):
+                    continue
+            shutil.copy2(f, target)
+    return unified_dir
+
+
+def _files_the_index_did_not_read(documents: list[dict], ingest_dir: Path) -> list[str]:
+    """The files in ``ingest_dir`` that the index has no document for, or that were written after the app last
+    touched their document.
+
+    The app's mark is the later of the document row's ``created_at`` (the watcher saw the file, before reading
+    it) and ``updated_at`` (finalize, after reading it). Either follows the file's writing when the index read
+    this file; a file written later is not what the index holds. Only the later counts because ``updated_at`` is
+    pinned to the sent date for an email that never reached finalize, which is years before any file. Dotfiles
+    (the ``.acquired`` marker) and directories are not documents and are not counted. A document with no
+    ``source_path`` or no timestamps cannot be matched and counts as unread: re-ingesting is the safe side."""
     from datetime import datetime
+
+    def _ts(value: object) -> float | None:
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() if value else None
+        except ValueError:
+            return None
 
     read_at: dict[str, float] = {}
     for doc in documents:
-        path, updated = doc.get("source_path"), doc.get("updated_at")
-        if not path or not updated:
+        path = doc.get("source_path")
+        marks = [t for t in (_ts(doc.get("created_at")), _ts(doc.get("updated_at"))) if t is not None]
+        if not path or not marks:
             continue
-        try:
-            read_at[str(Path(path))] = datetime.fromisoformat(str(updated).replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            continue
+        read_at[str(Path(path))] = max(marks)
     stale: list[str] = []
     for f in sorted(Path(ingest_dir).iterdir()) if Path(ingest_dir).is_dir() else []:
         if not f.is_file() or f.name.startswith("."):
@@ -1628,14 +1664,10 @@ def main(argv: list[str] | None = None) -> int:
             # ingest gate inside the per-unit body wouldn't trigger because
             # phase 6 isn't in (1, 4, 5).
             if corpus == "unified" and not args.dry_run and not args.no_ingest:
-                unified_dir = workdir / "unified" / "ingest"
-                unified_dir.mkdir(parents=True, exist_ok=True)
                 for c in ("cuad", "enron", "synthetic"):
                     if c not in manifests:
                         manifests[c] = _phase0_acquire(c, workdir)
-                    for f in manifests[c].ingest_dir.iterdir():
-                        if f.is_file():
-                            (unified_dir / f"{c}__{f.name}").write_bytes(f.read_bytes())
+                unified_dir = _build_unified_ingest_dir(workdir, manifests)
                 unified_manifest = CorpusManifest(
                     corpus_id="unified",
                     ingest_dir=unified_dir,

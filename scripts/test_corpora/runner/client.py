@@ -862,7 +862,10 @@ class HarborClerkClient:
         items: list[dict[str, Any]] = []
         offset = 0
         while True:
-            r = self._client.get("/api/docs", params={"limit": 500, "offset": offset})
+            # Oldest first, by creation: a sort on updated_at would move rows across pages while summaries land.
+            r = self._client.get(
+                "/api/docs", params={"limit": 500, "offset": offset, "sort": "created", "sort_dir": "asc"}
+            )
             r.raise_for_status()
             page = r.json()
             items.extend(page.get("items", []))
