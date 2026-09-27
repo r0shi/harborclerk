@@ -187,3 +187,46 @@ def test_a_corpus_that_contains_every_declared_name_gets_a_plain_note_and_no_war
         m = synthetic.acquire(workdir=tmp_path / "synth", doc_counts={"invoice": 1}, ocr_subset_count=0)
     assert m.notes == "synthetic bilingual small-business"
     assert "contains none of" not in caplog.text
+
+
+# ── #737: the model does not always return text as a string ──
+
+
+def test_a_text_returned_as_sections_or_paragraphs_is_written_as_one_document():
+    gen = synthetic._normalise_generated(
+        {
+            "text": {"en": "Welcome to Marbledock.", "fr": {"intro": "Bienvenue chez Marbledock."}},
+            "facts": {"year": 2025},
+        },
+        "employee_handbook",
+    )
+    assert gen["text"] == "## en\n\nWelcome to Marbledock.\n\n## fr\n\n## intro\n\nBienvenue chez Marbledock."
+    assert gen["facts"] == {"year": 2025}
+    assert synthetic._normalise_generated({"text": ["One.", "Two."], "facts": {}}, "memo")["text"] == "One.\n\nTwo."
+    assert synthetic._normalise_generated({"text": "Plain.", "facts": "not an object"}, "memo") == {
+        "text": "Plain.",
+        "facts": {"_facts": "not an object"},
+    }
+
+
+def test_a_text_that_cannot_become_a_document_is_a_failure_of_its_slot_not_of_the_corpus(tmp_path: Path):
+    """The crash was outside the per-document guard: text was a dict, write_text raised, and the sweep died with
+    244 documents bought. A response with no usable text is now refused inside the guard, so acquire records a
+    generation failure for that slot and goes on."""
+    import pytest
+
+    with pytest.raises(RuntimeError, match="not text"):
+        synthetic._normalise_generated({"text": 42, "facts": {}}, "memo")
+    with pytest.raises(RuntimeError, match="empty text"):
+        synthetic._normalise_generated({"text": "  ", "facts": {}}, "memo")
+    with pytest.raises(RuntimeError, match="not an object with a text key"):
+        synthetic._normalise_generated(["not", "an", "object"], "memo")
+
+    fake_anthropic = MagicMock()
+    fake_anthropic.messages.create.return_value.content = [
+        MagicMock(text='{"text": {"en": "Section A", "fr": "Section B"}, "facts": {"year": 2025}}')
+    ]
+    with patch.object(synthetic, "_make_client", return_value=fake_anthropic):
+        m = synthetic.acquire(workdir=tmp_path / "synth", doc_counts={"employee_handbook": 1}, ocr_subset_count=0)
+    assert m.doc_count == 1
+    assert (m.ingest_dir / "0001_employee_handbook.txt").read_text() == "## en\n\nSection A\n\n## fr\n\nSection B"

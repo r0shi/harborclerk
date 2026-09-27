@@ -119,8 +119,8 @@ PROMPT_TEMPLATES = {
     ),
     "employee_handbook": (
         "Generate an excerpt from the {year} employee handbook of {company_name} "
-        "with parallel English and French sections. Return JSON with keys: text "
-        "and facts (object with year, sections, lang_split). Output JSON only."
+        "with parallel English and French sections. Return JSON with keys: text (one string holding both "
+        "sections, not an object) and facts (object with year, sections, lang_split). Output JSON only."
     ),
     "quarterly_report": (
         "Generate a quarterly report excerpt for {company_name} for Q{q} {year}, naming {client} "
@@ -267,7 +267,32 @@ def _generate_one(
     end = text.rfind("}")
     if start == -1 or end == -1:
         raise RuntimeError(f"no JSON in response for {doc_type}: {text[:200]}")
-    return json.loads(text[start : end + 1])
+    return _normalise_generated(json.loads(text[start : end + 1]), doc_type)
+
+
+def _flatten_text(value: object) -> str:
+    """One string from what the model put under ``text``: a string as is; an object of sections (a bilingual
+    handbook came back as ``{"en": ..., "fr": ...}``, #737) as headed sections; a list as paragraphs."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n\n".join(f"## {key}\n\n{_flatten_text(part)}" for key, part in value.items())
+    if isinstance(value, list):
+        return "\n\n".join(_flatten_text(part) for part in value)
+    raise RuntimeError(f"generated text is {type(value).__name__}, not text")
+
+
+def _normalise_generated(gen: object, doc_type: str) -> dict:
+    """The shape acquire writes: ``text`` a non-empty string, ``facts`` an object. The model does not always
+    return that shape, and a document that fails here is a generation failure for its slot, caught by acquire,
+    not a crash of the corpus after 244 documents were bought (#737)."""
+    if not isinstance(gen, dict) or "text" not in gen:
+        raise RuntimeError(f"response for {doc_type} is not an object with a text key")
+    text = _flatten_text(gen["text"])
+    if not text.strip():
+        raise RuntimeError(f"response for {doc_type} has empty text")
+    facts = gen.get("facts")
+    return {"text": text, "facts": facts if isinstance(facts, dict) else {"_facts": facts}}
 
 
 def _render_to_pdf_with_noise(text: str, out_path: Path, rng: random.Random) -> None:
