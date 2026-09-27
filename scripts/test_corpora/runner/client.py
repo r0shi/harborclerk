@@ -854,6 +854,22 @@ class HarborClerkClient:
         r.raise_for_status()
         return r.json().get("total", 0)
 
+    def list_documents(self) -> list[dict[str, Any]]:
+        """GET /api/docs, every page: the active documents with their ``source_path`` and ``updated_at``.
+
+        What the sweep compares against the files in a corpus's ingest dir before it trusts an index it did not
+        build (#740): a path and a count say nothing about whether the files are the ones the index read."""
+        items: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            r = self._client.get("/api/docs", params={"limit": 500, "offset": offset})
+            r.raise_for_status()
+            page = r.json()
+            items.extend(page.get("items", []))
+            offset += 500
+            if len(items) >= int(page.get("total", 0)) or not page.get("items"):
+                return items
+
     def health(self) -> dict[str, Any]:
         """GET /api/system/health."""
         r = self._client.get("/api/system/health")

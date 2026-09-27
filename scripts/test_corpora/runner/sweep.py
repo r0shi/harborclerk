@@ -905,12 +905,15 @@ def _run_local(
 def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
     """Return True iff HC already has the given corpus loaded.
 
-    Three checks: a watch folder whose ``path`` equals ``manifest.ingest_dir``,
-    ``document_count() >= 50% of manifest.doc_count``, and no more documents
-    than the manifest counts. The floor matches ``_ingest_corpus``'s "ingest
-    looks incomplete" check, so anything we'd accept fresh we also accept on
-    resume; the ceiling is the same rule as its refusal: an index larger than
-    the corpus holds something beside it (#726) and is not this corpus.
+    Four checks: a watch folder whose ``path`` equals ``manifest.ingest_dir``;
+    ``document_count() >= 50% of manifest.doc_count``; no more documents than
+    the manifest counts; and the index read the files that are there now. The
+    floor matches ``_ingest_corpus``'s "ingest looks incomplete" check, so
+    anything we'd accept fresh we also accept on resume; the ceiling is the
+    same rule as its refusal: an index larger than the corpus holds something
+    beside it (#726) and is not this corpus. The last check is #740: a corpus
+    regenerated into the same folder kept the path and the count, and 18
+    baselines were measured against the documents the folder used to hold.
 
     Pure point-in-time check — the caller is responsible for ensuring HC's
     queue is drained before trusting the doc count (see ``_can_skip_ingest``).
@@ -929,7 +932,47 @@ def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
             manifest.doc_count,
         )
         return False
-    return actual >= threshold
+    if actual < threshold:
+        return False
+    stale = _files_the_index_did_not_read(hc.list_documents(), manifest.ingest_dir)
+    if stale:
+        log.warning(
+            "%s is watched and the count matches, but %d file(s) are newer than their document or have none "
+            "(first: %s): the folder changed under the index, not this corpus, re-ingesting (#740)",
+            target,
+            len(stale),
+            stale[0],
+        )
+        return False
+    return True
+
+
+def _files_the_index_did_not_read(documents: list[dict], ingest_dir: Path) -> list[str]:
+    """The files in ``ingest_dir`` that the index has no document for, or whose document is older than the file.
+
+    A document's ``updated_at`` is when the app last read the file; a file written after that is not what the
+    index holds. Dotfiles (the ``.acquired`` marker) and directories are not documents and are not counted.
+    A document with no ``source_path`` or no ``updated_at`` cannot be matched and counts as unread: re-ingesting
+    is the safe side."""
+    from datetime import datetime
+
+    read_at: dict[str, float] = {}
+    for doc in documents:
+        path, updated = doc.get("source_path"), doc.get("updated_at")
+        if not path or not updated:
+            continue
+        try:
+            read_at[str(Path(path))] = datetime.fromisoformat(str(updated).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+    stale: list[str] = []
+    for f in sorted(Path(ingest_dir).iterdir()) if Path(ingest_dir).is_dir() else []:
+        if not f.is_file() or f.name.startswith("."):
+            continue
+        when = read_at.get(str(f))
+        if when is None or f.stat().st_mtime > when:
+            stale.append(f.name)
+    return stale
 
 
 def _settle_summaries(hc: HarborClerkClient, corpus_id: str, wait: bool, stall_seconds: float) -> None:

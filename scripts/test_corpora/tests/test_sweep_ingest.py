@@ -45,7 +45,7 @@ def test_hc_corpus_matches_true_when_folder_and_count_align():
         if request.url.path == "/api/watch/folders":
             return httpx.Response(200, json=[{"folder_id": "f1", "path": "/tmp/cuad-ingest"}])
         if request.url.path == "/api/docs":
-            assert request.url.params.get("limit") == "0"
+            assert request.url.params.get("limit") in ("0", "500")  # the count, then the listing of documents
             return httpx.Response(200, json={"items": [], "total": 80, "limit": 0, "offset": 0})
         return httpx.Response(404)
 
@@ -635,3 +635,80 @@ def test_run_local_records_the_stop_reason_the_done_event_carries(tmp_path: Path
     hc.stream_ask.return_value = events(None)
     out = _run_local(hc, "cuad", "qwen3-8b", "cuad-ask-2", "q?", "standard", 10, False, tmp_path)
     assert "stop_reason" not in out["result"]
+
+
+# ── #740: the folder changed under the index ──
+
+
+def _docs_reading(files: dict[str, str]) -> list[dict]:
+    """Documents as /api/docs lists them: one per file, read at the given ISO time."""
+    return [{"source_path": path, "updated_at": when, "title": Path(path).stem} for path, when in files.items()]
+
+
+def test_a_file_newer_than_its_document_or_without_one_means_the_index_did_not_read_this_folder(tmp_path: Path):
+    import os
+
+    from scripts.test_corpora.runner.sweep import _files_the_index_did_not_read
+
+    ingest = tmp_path / "ingest"
+    ingest.mkdir()
+    for name in ("0001_invoice.txt", "0002_invoice.pdf", "0003_memo.txt"):
+        (ingest / name).write_text("v2")
+    (ingest / ".acquired").write_text("acquired")  # the marker is not a document
+    (ingest / "sub").mkdir()  # nor is a directory
+    old, new = 1_000_000.0, 2_000_000_000.0
+    os.utime(ingest / "0001_invoice.txt", (old, old))  # read after it was written
+    os.utime(ingest / "0002_invoice.pdf", (new, new))  # written after it was read
+    os.utime(ingest / "0003_memo.txt", (old, old))  # never read: no document
+    read_at = "2001-09-09T01:46:40Z"  # 1_000_000_000: after `old`, before `new`
+    docs = _docs_reading({str(ingest / "0001_invoice.txt"): read_at, str(ingest / "0002_invoice.pdf"): read_at})
+    assert _files_the_index_did_not_read(docs, ingest) == ["0002_invoice.pdf", "0003_memo.txt"]
+
+    # Every file read after it was written: nothing stale. A document that cannot be matched counts as unread.
+    docs = _docs_reading({str(ingest / n): read_at for n in ("0001_invoice.txt", "0002_invoice.pdf", "0003_memo.txt")})
+    os.utime(ingest / "0002_invoice.pdf", (old, old))
+    assert _files_the_index_did_not_read(docs, ingest) == []
+    assert _files_the_index_did_not_read([{"title": "no path"}], ingest) == [
+        "0001_invoice.txt",
+        "0002_invoice.pdf",
+        "0003_memo.txt",
+    ]
+    assert _files_the_index_did_not_read(docs, tmp_path / "gone") == [], "no folder, nothing to compare"
+
+
+def test_hc_corpus_matches_false_when_the_folder_changed_under_the_index(tmp_path: Path):
+    """#740: the path is watched and the count is right, but the files were regenerated after the index read
+    the old ones. 18 baselines were measured against the old documents before this check existed."""
+    import os
+
+    ingest = tmp_path / "cuad-ingest"
+    ingest.mkdir()
+    for i in range(3):
+        (ingest / f"{i}.pdf").write_bytes(b"%PDF")
+        os.utime(ingest / f"{i}.pdf", (1_000_000.0, 1_000_000.0))  # written before the read below
+    os.utime(ingest / "1.pdf", (2_000_000_000.0, 2_000_000_000.0))  # regenerated after it
+    docs = _docs_reading({str(ingest / f"{i}.pdf"): "2001-09-09T01:46:40Z" for i in range(3)})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/watch/folders":
+            return httpx.Response(200, json=[{"folder_id": "f1", "path": str(ingest)}])
+        if request.url.path == "/api/docs":
+            return httpx.Response(
+                200, json={"items": docs if request.url.params.get("limit") != "0" else [], "total": 3}
+            )
+        return httpx.Response(404)
+
+    c = _make_client(handler)
+    assert _hc_corpus_matches(c, _manifest(ingest_dir=str(ingest), doc_count=3)) is False
+    os.utime(ingest / "1.pdf", (1_000_000.0, 1_000_000.0))  # the file the index read
+    assert _hc_corpus_matches(c, _manifest(ingest_dir=str(ingest), doc_count=3)) is True
+
+
+def test_list_documents_walks_every_page():
+    pages = {"0": [{"source_path": f"/c/{i}"} for i in range(500)], "500": [{"source_path": "/c/500"}]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/docs" and request.url.params.get("limit") == "500"
+        return httpx.Response(200, json={"items": pages[request.url.params.get("offset", "0")], "total": 501})
+
+    assert len(_make_client(handler).list_documents()) == 501
