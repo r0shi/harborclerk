@@ -905,19 +905,26 @@ def _run_local(
 def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
     """Return True iff HC already has the given corpus loaded.
 
-    Three checks: a watch folder whose ``path`` equals ``manifest.ingest_dir``,
-    ``document_count() >= 50% of manifest.doc_count``, and no more documents
-    than the manifest counts. The floor matches ``_ingest_corpus``'s "ingest
-    looks incomplete" check, so anything we'd accept fresh we also accept on
-    resume; the ceiling is the same rule as its refusal: an index larger than
-    the corpus holds something beside it (#726) and is not this corpus.
+    Four checks: a watch folder whose ``path`` equals ``manifest.ingest_dir``;
+    ``document_count() >= 50% of manifest.doc_count``; no more documents than
+    the manifest counts; and no file in the folder written after the app last
+    scanned it. The floor matches ``_ingest_corpus``'s "ingest looks
+    incomplete" check, so anything we'd accept fresh we also accept on resume;
+    the ceiling is the same rule as its refusal: an index larger than the
+    corpus holds something beside it (#726) and is not this corpus. The last
+    check is #740: a corpus regenerated into the same folder kept the path and
+    the count, and 18 baselines were measured against the documents the folder
+    used to hold. The scan is the one time the app is known to have compared
+    every file to the index (it reads each one's hash then); per-document
+    timestamps cannot serve, since an email's are pinned to its sent date.
 
     Pure point-in-time check — the caller is responsible for ensuring HC's
     queue is drained before trusting the doc count (see ``_can_skip_ingest``).
     """
     target = str(manifest.ingest_dir)
     folders = hc.watch_folder_list()
-    if not any(f.get("path") == target for f in folders):
+    ours = [f for f in folders if f.get("path") == target]
+    if not ours:
         return False
     threshold = max(1, int(manifest.doc_count * 0.5))
     actual = hc.document_count()
@@ -929,7 +936,77 @@ def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
             manifest.doc_count,
         )
         return False
-    return actual >= threshold
+    if actual < threshold:
+        return False
+    stale = _files_the_index_did_not_read(ours[0].get("last_scan_at"), manifest.ingest_dir)
+    if stale:
+        log.warning(
+            "%s is watched and the count matches, but %d file(s) were written after the app last scanned the "
+            "folder (first: %s): the folder changed under the index, not this corpus, re-ingesting (#740)",
+            target,
+            len(stale),
+            stale[0],
+        )
+        return False
+    return True
+
+
+def _build_unified_ingest_dir(workdir: Path, manifests: dict[str, CorpusManifest]) -> Path:
+    """``workdir/unified/ingest``: every document of cuad, enron and synthetic, as ``<corpus>__<name>``.
+
+    Idempotent: a copy that is already there with the source's size and mtime is left alone, and a copy keeps
+    its source's mtime, so a resumed unified run can tell the index read these files (#740: the previous
+    version rewrote every copy on every start, which made every file newer than its document). Dotfiles are
+    not documents: the corpora's ``.acquired`` markers are not copied, and marker copies an earlier build made
+    are removed."""
+    import shutil
+
+    unified_dir = workdir / "unified" / "ingest"
+    unified_dir.mkdir(parents=True, exist_ok=True)
+    for stray in unified_dir.iterdir():
+        if stray.is_file() and "__" in stray.name and stray.name.split("__", 1)[1].startswith("."):
+            stray.unlink()
+    for c in ("cuad", "enron", "synthetic"):
+        for f in sorted(manifests[c].ingest_dir.iterdir()):
+            if not f.is_file() or f.name.startswith("."):
+                continue
+            target = unified_dir / f"{c}__{f.name}"
+            src = f.stat()
+            if target.exists():
+                dst = target.stat()
+                if dst.st_size == src.st_size and int(dst.st_mtime) == int(src.st_mtime):
+                    continue
+            shutil.copy2(f, target)
+    return unified_dir
+
+
+def _files_the_index_did_not_read(last_scan_at: object, ingest_dir: Path) -> list[str]:
+    """The files under ``ingest_dir`` written after the app's last scan of the folder, or every file when the
+    folder has not been scanned.
+
+    The scan (``watched_folders.last_scan_at``) walks every file and compares its hash to the index, so a file
+    present then was read; one written since was seen at most by the live observer, which the app may not have
+    had on this directory (#739). Recursive, as the watcher is. Dotfiles (the ``.acquired`` marker) and
+    directories are not documents and are not counted."""
+    from datetime import UTC, datetime
+
+    ingest_dir = Path(ingest_dir)
+    if not ingest_dir.is_dir():
+        return []
+    files = sorted(
+        f
+        for f in ingest_dir.rglob("*")
+        if f.is_file() and not any(part.startswith(".") for part in f.relative_to(ingest_dir).parts)
+    )
+    try:
+        when = datetime.fromisoformat(str(last_scan_at).replace("Z", "+00:00")) if last_scan_at else None
+        # The API emits tz-aware times; a naive one would otherwise be read as local time.
+        scanned = when.replace(tzinfo=when.tzinfo or UTC).timestamp() if when else None
+    except ValueError:
+        scanned = None
+    if scanned is None:
+        return [str(f.relative_to(ingest_dir)) for f in files]
+    return [str(f.relative_to(ingest_dir)) for f in files if f.stat().st_mtime > scanned]
 
 
 def _settle_summaries(hc: HarborClerkClient, corpus_id: str, wait: bool, stall_seconds: float) -> None:
@@ -1585,14 +1662,10 @@ def main(argv: list[str] | None = None) -> int:
             # ingest gate inside the per-unit body wouldn't trigger because
             # phase 6 isn't in (1, 4, 5).
             if corpus == "unified" and not args.dry_run and not args.no_ingest:
-                unified_dir = workdir / "unified" / "ingest"
-                unified_dir.mkdir(parents=True, exist_ok=True)
                 for c in ("cuad", "enron", "synthetic"):
                     if c not in manifests:
                         manifests[c] = _phase0_acquire(c, workdir)
-                    for f in manifests[c].ingest_dir.iterdir():
-                        if f.is_file():
-                            (unified_dir / f"{c}__{f.name}").write_bytes(f.read_bytes())
+                unified_dir = _build_unified_ingest_dir(workdir, manifests)
                 unified_manifest = CorpusManifest(
                     corpus_id="unified",
                     ingest_dir=unified_dir,
