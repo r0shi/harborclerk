@@ -742,9 +742,15 @@ def test_the_unified_ingest_dir_is_built_once_and_holds_no_markers(tmp_path: Pat
     first = {p.name: p.stat().st_mtime for p in unified.iterdir() if "__" in p.name}
     assert all(int(m) == 1_000_000 for m in first.values()), "a copy keeps its source's mtime"
 
+    import shutil
+    from unittest.mock import patch
+
     (tmp_path / "cuad" / "ingest" / "a.pdf").write_text("cuad v2")  # a source that changed is copied again
     os.utime(tmp_path / "cuad" / "ingest" / "a.pdf", (3_000_000.0, 3_000_000.0))
-    _build_unified_ingest_dir(tmp_path, manifests)
+    # copy2 keeps the source mtime, so mtimes alone cannot tell a skipped copy from a redone one: count the copies.
+    with patch("shutil.copy2", wraps=shutil.copy2) as copy2:
+        _build_unified_ingest_dir(tmp_path, manifests)
+    assert [Path(c.args[0]).name for c in copy2.call_args_list] == ["a.pdf"], "only the changed source is copied"
     second = {p.name: p.stat().st_mtime for p in unified.iterdir() if "__" in p.name}
     assert int(second["cuad__a.pdf"]) == 3_000_000 and (unified / "cuad__a.pdf").read_text() == "cuad v2"
     assert second["enron__b.eml"] == first["enron__b.eml"] and second["synthetic__c.txt"] == first["synthetic__c.txt"]

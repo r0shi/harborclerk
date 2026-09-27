@@ -166,6 +166,9 @@ class WatcherDaemon:
             return
 
         # Mark scan complete and write the skip tally on the folder row.
+        # The stamp lands after the walk on purpose: a file present at last_scan_at has had its hash compared
+        # to the index. The eval harness relies on that when it decides whether to trust an index it did not
+        # build (scripts/test_corpora/runner/sweep.py, _files_the_index_did_not_read, #740).
         sess = self._session_factory()
         try:
             folder = sess.query(WatchedFolder).filter_by(folder_id=folder_id).one_or_none()

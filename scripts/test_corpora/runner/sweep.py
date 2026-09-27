@@ -988,7 +988,7 @@ def _files_the_index_did_not_read(last_scan_at: object, ingest_dir: Path) -> lis
     present then was read; one written since was seen at most by the live observer, which the app may not have
     had on this directory (#739). Recursive, as the watcher is. Dotfiles (the ``.acquired`` marker) and
     directories are not documents and are not counted."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     ingest_dir = Path(ingest_dir)
     if not ingest_dir.is_dir():
@@ -999,7 +999,9 @@ def _files_the_index_did_not_read(last_scan_at: object, ingest_dir: Path) -> lis
         if f.is_file() and not any(part.startswith(".") for part in f.relative_to(ingest_dir).parts)
     )
     try:
-        scanned = datetime.fromisoformat(str(last_scan_at).replace("Z", "+00:00")).timestamp() if last_scan_at else None
+        when = datetime.fromisoformat(str(last_scan_at).replace("Z", "+00:00")) if last_scan_at else None
+        # The API emits tz-aware times; a naive one would otherwise be read as local time.
+        scanned = when.replace(tzinfo=when.tzinfo or UTC).timestamp() if when else None
     except ValueError:
         scanned = None
     if scanned is None:
