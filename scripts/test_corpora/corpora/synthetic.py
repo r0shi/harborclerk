@@ -276,9 +276,13 @@ def _flatten_text(value: object) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        return "\n\n".join(f"## {key}\n\n{_flatten_text(part)}" for key, part in value.items())
+        # An empty section (a null "fr" beside a real "en") is left out, not a reason to lose the document.
+        sections = ((key, _flatten_text(part)) for key, part in value.items() if part is not None)
+        return "\n\n".join(f"## {key}\n\n{text}" for key, text in sections if text.strip())
     if isinstance(value, list):
-        return "\n\n".join(_flatten_text(part) for part in value)
+        return "\n\n".join(t for t in (_flatten_text(part) for part in value if part is not None) if t.strip())
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)  # a number inside a section or a list is text
     raise RuntimeError(f"generated text is {type(value).__name__}, not text")
 
 
@@ -288,10 +292,14 @@ def _normalise_generated(gen: object, doc_type: str) -> dict:
     not a crash of the corpus after 244 documents were bought (#737)."""
     if not isinstance(gen, dict) or "text" not in gen:
         raise RuntimeError(f"response for {doc_type} is not an object with a text key")
+    if not isinstance(gen["text"], (str, dict, list)):
+        raise RuntimeError(f"generated text for {doc_type} is {type(gen['text']).__name__}, not text")
     text = _flatten_text(gen["text"])
     if not text.strip():
         raise RuntimeError(f"response for {doc_type} has empty text")
-    facts = gen.get("facts")
+    facts = gen.get("facts", {})
+    if facts is None:
+        facts = {}
     return {"text": text, "facts": facts if isinstance(facts, dict) else {"_facts": facts}}
 
 

@@ -203,6 +203,13 @@ def test_a_text_returned_as_sections_or_paragraphs_is_written_as_one_document():
     assert gen["text"] == "## en\n\nWelcome to Marbledock.\n\n## fr\n\n## intro\n\nBienvenue chez Marbledock."
     assert gen["facts"] == {"year": 2025}
     assert synthetic._normalise_generated({"text": ["One.", "Two."], "facts": {}}, "memo")["text"] == "One.\n\nTwo."
+    # A null section beside real text, or a number in a list, does not cost the bought document; a missing
+    # facts key is written as it always was.
+    assert synthetic._normalise_generated({"text": {"en": "Only English.", "fr": None}}, "handbook") == {
+        "text": "## en\n\nOnly English.",
+        "facts": {},
+    }
+    assert synthetic._normalise_generated({"text": ["Total:", 42], "facts": None}, "memo")["text"] == "Total:\n\n42"
     assert synthetic._normalise_generated({"text": "Plain.", "facts": "not an object"}, "memo") == {
         "text": "Plain.",
         "facts": {"_facts": "not an object"},
