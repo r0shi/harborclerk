@@ -907,20 +907,24 @@ def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
 
     Four checks: a watch folder whose ``path`` equals ``manifest.ingest_dir``;
     ``document_count() >= 50% of manifest.doc_count``; no more documents than
-    the manifest counts; and the index read the files that are there now. The
-    floor matches ``_ingest_corpus``'s "ingest looks incomplete" check, so
-    anything we'd accept fresh we also accept on resume; the ceiling is the
-    same rule as its refusal: an index larger than the corpus holds something
-    beside it (#726) and is not this corpus. The last check is #740: a corpus
-    regenerated into the same folder kept the path and the count, and 18
-    baselines were measured against the documents the folder used to hold.
+    the manifest counts; and no file in the folder written after the app last
+    scanned it. The floor matches ``_ingest_corpus``'s "ingest looks
+    incomplete" check, so anything we'd accept fresh we also accept on resume;
+    the ceiling is the same rule as its refusal: an index larger than the
+    corpus holds something beside it (#726) and is not this corpus. The last
+    check is #740: a corpus regenerated into the same folder kept the path and
+    the count, and 18 baselines were measured against the documents the folder
+    used to hold. The scan is the one time the app is known to have compared
+    every file to the index (it reads each one's hash then); per-document
+    timestamps cannot serve, since an email's are pinned to its sent date.
 
     Pure point-in-time check — the caller is responsible for ensuring HC's
     queue is drained before trusting the doc count (see ``_can_skip_ingest``).
     """
     target = str(manifest.ingest_dir)
     folders = hc.watch_folder_list()
-    if not any(f.get("path") == target for f in folders):
+    ours = [f for f in folders if f.get("path") == target]
+    if not ours:
         return False
     threshold = max(1, int(manifest.doc_count * 0.5))
     actual = hc.document_count()
@@ -934,11 +938,11 @@ def _hc_corpus_matches(hc: HarborClerkClient, manifest: CorpusManifest) -> bool:
         return False
     if actual < threshold:
         return False
-    stale = _files_the_index_did_not_read(hc.list_documents(), manifest.ingest_dir)
+    stale = _files_the_index_did_not_read(ours[0].get("last_scan_at"), manifest.ingest_dir)
     if stale:
         log.warning(
-            "%s is watched and the count matches, but %d file(s) are newer than their document or have none "
-            "(first: %s): the folder changed under the index, not this corpus, re-ingesting (#740)",
+            "%s is watched and the count matches, but %d file(s) were written after the app last scanned the "
+            "folder (first: %s): the folder changed under the index, not this corpus, re-ingesting (#740)",
             target,
             len(stale),
             stale[0],
@@ -960,7 +964,7 @@ def _build_unified_ingest_dir(workdir: Path, manifests: dict[str, CorpusManifest
     unified_dir = workdir / "unified" / "ingest"
     unified_dir.mkdir(parents=True, exist_ok=True)
     for stray in unified_dir.iterdir():
-        if stray.is_file() and stray.name.split("__", 1)[-1].startswith("."):
+        if stray.is_file() and "__" in stray.name and stray.name.split("__", 1)[1].startswith("."):
             stray.unlink()
     for c in ("cuad", "enron", "synthetic"):
         for f in sorted(manifests[c].ingest_dir.iterdir()):
@@ -976,39 +980,31 @@ def _build_unified_ingest_dir(workdir: Path, manifests: dict[str, CorpusManifest
     return unified_dir
 
 
-def _files_the_index_did_not_read(documents: list[dict], ingest_dir: Path) -> list[str]:
-    """The files in ``ingest_dir`` that the index has no document for, or that were written after the app last
-    touched their document.
+def _files_the_index_did_not_read(last_scan_at: object, ingest_dir: Path) -> list[str]:
+    """The files under ``ingest_dir`` written after the app's last scan of the folder, or every file when the
+    folder has not been scanned.
 
-    The app's mark is the later of the document row's ``created_at`` (the watcher saw the file, before reading
-    it) and ``updated_at`` (finalize, after reading it). Either follows the file's writing when the index read
-    this file; a file written later is not what the index holds. Only the later counts because ``updated_at`` is
-    pinned to the sent date for an email that never reached finalize, which is years before any file. Dotfiles
-    (the ``.acquired`` marker) and directories are not documents and are not counted. A document with no
-    ``source_path`` or no timestamps cannot be matched and counts as unread: re-ingesting is the safe side."""
+    The scan (``watched_folders.last_scan_at``) walks every file and compares its hash to the index, so a file
+    present then was read; one written since was seen at most by the live observer, which the app may not have
+    had on this directory (#739). Recursive, as the watcher is. Dotfiles (the ``.acquired`` marker) and
+    directories are not documents and are not counted."""
     from datetime import datetime
 
-    def _ts(value: object) -> float | None:
-        try:
-            return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() if value else None
-        except ValueError:
-            return None
-
-    read_at: dict[str, float] = {}
-    for doc in documents:
-        path = doc.get("source_path")
-        marks = [t for t in (_ts(doc.get("created_at")), _ts(doc.get("updated_at"))) if t is not None]
-        if not path or not marks:
-            continue
-        read_at[str(Path(path))] = max(marks)
-    stale: list[str] = []
-    for f in sorted(Path(ingest_dir).iterdir()) if Path(ingest_dir).is_dir() else []:
-        if not f.is_file() or f.name.startswith("."):
-            continue
-        when = read_at.get(str(f))
-        if when is None or f.stat().st_mtime > when:
-            stale.append(f.name)
-    return stale
+    ingest_dir = Path(ingest_dir)
+    if not ingest_dir.is_dir():
+        return []
+    files = sorted(
+        f
+        for f in ingest_dir.rglob("*")
+        if f.is_file() and not any(part.startswith(".") for part in f.relative_to(ingest_dir).parts)
+    )
+    try:
+        scanned = datetime.fromisoformat(str(last_scan_at).replace("Z", "+00:00")).timestamp() if last_scan_at else None
+    except ValueError:
+        scanned = None
+    if scanned is None:
+        return [str(f.relative_to(ingest_dir)) for f in files]
+    return [str(f.relative_to(ingest_dir)) for f in files if f.stat().st_mtime > scanned]
 
 
 def _settle_summaries(hc: HarborClerkClient, corpus_id: str, wait: bool, stall_seconds: float) -> None:

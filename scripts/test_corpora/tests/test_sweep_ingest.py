@@ -38,21 +38,20 @@ def _manifest(ingest_dir: str = "/tmp/cuad-ingest", doc_count: int = 80) -> Corp
 
 
 def test_hc_corpus_matches_true_when_folder_and_count_align(tmp_path: Path):
-    """Happy-path: HC has the right watch folder AND a plausible doc count, and the folder's one file has a
-    document the app touched after the file was written. Returns True so the caller skips the wipe-and-re-ingest
-    cycle."""
+    """Happy-path: HC has the right watch folder AND a plausible doc count, and the app scanned the folder after
+    its one file was written. Returns True so the caller skips the wipe-and-re-ingest cycle."""
     ingest = tmp_path / "cuad-ingest"
     ingest.mkdir()
     (ingest / "a.pdf").write_bytes(b"%PDF")
-    docs = [{"source_path": str(ingest / "a.pdf"), "created_at": "2999-01-01T00:00:00Z", "updated_at": None}]
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/watch/folders":
-            return httpx.Response(200, json=[{"folder_id": "f1", "path": str(ingest)}])
+            return httpx.Response(
+                200, json=[{"folder_id": "f1", "path": str(ingest), "last_scan_at": "2999-01-01T00:00:00+00:00"}]
+            )
         if request.url.path == "/api/docs":
-            assert request.url.params.get("limit") in ("0", "500")  # the count, then the listing of documents
-            items = docs if request.url.params.get("limit") == "500" else []
-            return httpx.Response(200, json={"items": items, "total": 80, "limit": 0, "offset": 0})
+            assert request.url.params.get("limit") == "0"
+            return httpx.Response(200, json={"items": [], "total": 80, "limit": 0, "offset": 0})
         return httpx.Response(404)
 
     c = _make_client(handler)
@@ -646,49 +645,37 @@ def test_run_local_records_the_stop_reason_the_done_event_carries(tmp_path: Path
 # ── #740: the folder changed under the index ──
 
 
-def _docs_reading(files: dict[str, str]) -> list[dict]:
-    """Documents as /api/docs lists them: one per file, created and finalized at the given ISO time."""
-    return [
-        {"source_path": path, "created_at": when, "updated_at": when, "title": Path(path).stem}
-        for path, when in files.items()
-    ]
-
-
-def test_a_file_newer_than_its_document_or_without_one_means_the_index_did_not_read_this_folder(tmp_path: Path):
+def test_files_written_after_the_folders_last_scan_are_the_ones_the_index_did_not_read(tmp_path: Path):
     import os
 
     from scripts.test_corpora.runner.sweep import _files_the_index_did_not_read
 
     ingest = tmp_path / "ingest"
-    ingest.mkdir()
-    for name in ("0001_invoice.txt", "0002_invoice.pdf", "0003_memo.txt"):
+    (ingest / "sub").mkdir(parents=True)
+    for name in ("0001_invoice.txt", "0002_invoice.pdf", "sub/0003_memo.txt"):
         (ingest / name).write_text("v2")
     (ingest / ".acquired").write_text("acquired")  # the marker is not a document
-    (ingest / "sub").mkdir()  # nor is a directory
     old, new = 1_000_000.0, 2_000_000_000.0
-    os.utime(ingest / "0001_invoice.txt", (old, old))  # read after it was written
-    os.utime(ingest / "0002_invoice.pdf", (new, new))  # written after it was read
-    os.utime(ingest / "0003_memo.txt", (old, old))  # never read: no document
-    read_at = "2001-09-09T01:46:40Z"  # 1_000_000_000: after `old`, before `new`
-    docs = _docs_reading({str(ingest / "0001_invoice.txt"): read_at, str(ingest / "0002_invoice.pdf"): read_at})
-    assert _files_the_index_did_not_read(docs, ingest) == ["0002_invoice.pdf", "0003_memo.txt"]
-
-    # Every file read after it was written: nothing stale. A document that cannot be matched counts as unread.
-    docs = _docs_reading({str(ingest / n): read_at for n in ("0001_invoice.txt", "0002_invoice.pdf", "0003_memo.txt")})
-    os.utime(ingest / "0002_invoice.pdf", (old, old))
-    assert _files_the_index_did_not_read(docs, ingest) == []
-    assert _files_the_index_did_not_read([{"title": "no path"}], ingest) == [
+    os.utime(ingest / "0001_invoice.txt", (old, old))  # present at the scan
+    os.utime(ingest / "0002_invoice.pdf", (new, new))  # written after it
+    os.utime(ingest / "sub/0003_memo.txt", (new, new))  # the watcher is recursive; so is the check
+    scanned = "2001-09-09T01:46:40+00:00"  # 1_000_000_000: after `old`, before `new`
+    assert _files_the_index_did_not_read(scanned, ingest) == ["0002_invoice.pdf", "sub/0003_memo.txt"]
+    assert _files_the_index_did_not_read("2099-01-01T00:00:00Z", ingest) == [], "everything predates the scan"
+    # No scan yet (or none recorded): nothing is known to have been read.
+    assert _files_the_index_did_not_read(None, ingest) == ["0001_invoice.txt", "0002_invoice.pdf", "sub/0003_memo.txt"]
+    assert _files_the_index_did_not_read("not a time", ingest) == [
         "0001_invoice.txt",
         "0002_invoice.pdf",
-        "0003_memo.txt",
+        "sub/0003_memo.txt",
     ]
-    assert _files_the_index_did_not_read(docs, tmp_path / "gone") == [], "no folder, nothing to compare"
+    assert _files_the_index_did_not_read(scanned, tmp_path / "gone") == [], "no folder, nothing to compare"
 
 
-def test_an_email_that_never_reached_finalize_is_not_stale_because_of_its_pinned_date(tmp_path: Path):
-    """The app pins an email's updated_at to its sent date (2001 for Enron) and finalize resets it; an email
-    whose pipeline failed keeps 2001. The row's created_at, the watcher seeing the file, still follows the
-    file's writing, and that is the mark that counts."""
+def test_an_email_whose_timestamps_are_pinned_to_its_sent_date_is_not_stale(tmp_path: Path):
+    """The app pins an email document's created_at and updated_at to the sent date (2001 for Enron) and only
+    finalize resets one of them, so per-document timestamps would call a failed email stale forever. The mark
+    is the folder's scan, which does not depend on the document at all."""
     import os
 
     from scripts.test_corpora.runner.sweep import _files_the_index_did_not_read
@@ -696,25 +683,42 @@ def test_an_email_that_never_reached_finalize_is_not_stale_because_of_its_pinned
     ingest = tmp_path / "enron"
     ingest.mkdir()
     (ingest / "1.eml").write_text("Subject: x")
-    os.utime(ingest / "1.eml", (1_000_000_000.0, 1_000_000_000.0))  # 2001-09-09
-    failed_email = [
-        {
-            "source_path": str(ingest / "1.eml"),
-            "created_at": "2026-09-25T00:30:00Z",
-            "updated_at": "2001-05-14T09:00:00Z",
-        }
-    ]
-    assert _files_the_index_did_not_read(failed_email, ingest) == []
-    # The same row for a file regenerated after the watcher saw it: stale.
-    os.utime(ingest / "1.eml", (2_000_000_000.0, 2_000_000_000.0))
-    assert _files_the_index_did_not_read(failed_email, ingest) == ["1.eml"]
+    os.utime(ingest / "1.eml", (1_800_000_000.0, 1_800_000_000.0))  # acquired in 2027, scanned right after
+    assert _files_the_index_did_not_read("2027-01-15T09:00:00+00:00", ingest) == []
+
+
+def test_hc_corpus_matches_false_when_the_folder_changed_under_the_index(tmp_path: Path):
+    """#740: the path is watched and the count is right, but the files were regenerated after the app last
+    scanned the folder. 18 baselines were measured against the old documents before this check existed."""
+    import os
+
+    ingest = tmp_path / "cuad-ingest"
+    ingest.mkdir()
+    for i in range(3):
+        (ingest / f"{i}.pdf").write_bytes(b"%PDF")
+        os.utime(ingest / f"{i}.pdf", (1_000_000.0, 1_000_000.0))  # written before the scan below
+    os.utime(ingest / "1.pdf", (2_000_000_000.0, 2_000_000_000.0))  # regenerated after it
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/watch/folders":
+            return httpx.Response(
+                200, json=[{"folder_id": "f1", "path": str(ingest), "last_scan_at": "2001-09-09T01:46:40+00:00"}]
+            )
+        if request.url.path == "/api/docs":
+            return httpx.Response(200, json={"items": [], "total": 3})
+        return httpx.Response(404)
+
+    c = _make_client(handler)
+    assert _hc_corpus_matches(c, _manifest(ingest_dir=str(ingest), doc_count=3)) is False
+    os.utime(ingest / "1.pdf", (1_000_000.0, 1_000_000.0))  # the file the scan saw
+    assert _hc_corpus_matches(c, _manifest(ingest_dir=str(ingest), doc_count=3)) is True
 
 
 def test_the_unified_ingest_dir_is_built_once_and_holds_no_markers(tmp_path: Path):
-    """#740: the builder rewrote every copy on every start, so on a resume every file was newer than its
-    document and the unified index was never trusted; it also copied the corpora's `.acquired` markers as
+    """#740: the builder rewrote every copy on every start, so on a resume every file was newer than the scan
+    and the unified index was never trusted; it also copied the corpora's `.acquired` markers as
     `cuad__.acquired`, files the watcher never ingests. Copies now keep the source's mtime, are made once, and
-    markers are neither copied nor kept."""
+    markers are neither copied nor kept; a dotfile of the unified dir's own is left alone."""
     import os
 
     from scripts.test_corpora.runner.sweep import _build_unified_ingest_dir
@@ -730,55 +734,17 @@ def test_the_unified_ingest_dir_is_built_once_and_holds_no_markers(tmp_path: Pat
     unified = tmp_path / "unified" / "ingest"
     unified.mkdir(parents=True)
     (unified / "cuad__.acquired").write_text("left by an earlier build")
+    (unified / ".DS_Store").write_text("the folder's own dotfile, not a marker copy")
 
     out = _build_unified_ingest_dir(tmp_path, manifests)
     assert out == unified
-    assert sorted(p.name for p in unified.iterdir()) == ["cuad__a.pdf", "enron__b.eml", "synthetic__c.txt"]
-    first = {p.name: p.stat().st_mtime for p in unified.iterdir()}
+    assert sorted(p.name for p in unified.iterdir()) == [".DS_Store", "cuad__a.pdf", "enron__b.eml", "synthetic__c.txt"]
+    first = {p.name: p.stat().st_mtime for p in unified.iterdir() if "__" in p.name}
     assert all(int(m) == 1_000_000 for m in first.values()), "a copy keeps its source's mtime"
 
     (tmp_path / "cuad" / "ingest" / "a.pdf").write_text("cuad v2")  # a source that changed is copied again
     os.utime(tmp_path / "cuad" / "ingest" / "a.pdf", (3_000_000.0, 3_000_000.0))
     _build_unified_ingest_dir(tmp_path, manifests)
-    second = {p.name: p.stat().st_mtime for p in unified.iterdir()}
+    second = {p.name: p.stat().st_mtime for p in unified.iterdir() if "__" in p.name}
     assert int(second["cuad__a.pdf"]) == 3_000_000 and (unified / "cuad__a.pdf").read_text() == "cuad v2"
     assert second["enron__b.eml"] == first["enron__b.eml"] and second["synthetic__c.txt"] == first["synthetic__c.txt"]
-
-
-def test_hc_corpus_matches_false_when_the_folder_changed_under_the_index(tmp_path: Path):
-    """#740: the path is watched and the count is right, but the files were regenerated after the index read
-    the old ones. 18 baselines were measured against the old documents before this check existed."""
-    import os
-
-    ingest = tmp_path / "cuad-ingest"
-    ingest.mkdir()
-    for i in range(3):
-        (ingest / f"{i}.pdf").write_bytes(b"%PDF")
-        os.utime(ingest / f"{i}.pdf", (1_000_000.0, 1_000_000.0))  # written before the read below
-    os.utime(ingest / "1.pdf", (2_000_000_000.0, 2_000_000_000.0))  # regenerated after it
-    docs = _docs_reading({str(ingest / f"{i}.pdf"): "2001-09-09T01:46:40Z" for i in range(3)})
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/watch/folders":
-            return httpx.Response(200, json=[{"folder_id": "f1", "path": str(ingest)}])
-        if request.url.path == "/api/docs":
-            return httpx.Response(
-                200, json={"items": docs if request.url.params.get("limit") != "0" else [], "total": 3}
-            )
-        return httpx.Response(404)
-
-    c = _make_client(handler)
-    assert _hc_corpus_matches(c, _manifest(ingest_dir=str(ingest), doc_count=3)) is False
-    os.utime(ingest / "1.pdf", (1_000_000.0, 1_000_000.0))  # the file the index read
-    assert _hc_corpus_matches(c, _manifest(ingest_dir=str(ingest), doc_count=3)) is True
-
-
-def test_list_documents_walks_every_page():
-    pages = {"0": [{"source_path": f"/c/{i}"} for i in range(500)], "500": [{"source_path": "/c/500"}]}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/docs" and request.url.params.get("limit") == "500"
-        assert request.url.params.get("sort") == "created" and request.url.params.get("sort_dir") == "asc"
-        return httpx.Response(200, json={"items": pages[request.url.params.get("offset", "0")], "total": 501})
-
-    assert len(_make_client(handler).list_documents()) == 501
