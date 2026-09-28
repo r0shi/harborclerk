@@ -186,7 +186,12 @@ def _make_mock_httpx_client(
     note_resp: str,
     synthesis_lines: list[str],
 ) -> MagicMock:
-    """Return a mock AsyncClient that serves planning → note → synthesis."""
+    """Return a mock AsyncClient that serves planning → note → synthesis.
+
+    The non-streaming calls (`_llm_complete`) go through ``client.post``; synthesis (`_stream_llm_tokens`)
+    goes through ``client.send`` of a built request. Until #706 this fixture served synthesis through
+    ``post`` too, so every stream reached synthesis, failed on a non-awaitable ``send``, and ended through
+    the generator's ``except`` — green, while no test ever saw a ``done`` event."""
     call_order = [0]
 
     def make_non_streaming(body: str):
@@ -199,6 +204,7 @@ def _make_mock_httpx_client(
     def make_streaming(lines: list[str]):
         resp = MagicMock()
         resp.status_code = 200
+        resp.raise_for_status = MagicMock()
 
         async def aiter_lines():
             for line in lines:
@@ -211,17 +217,14 @@ def _make_mock_httpx_client(
     def _post(*args, **kwargs):
         call_order[0] += 1
         if call_order[0] == 1:
-            # Phase 1: query planning (non-streaming)
+            # Phase 1: query planning
             return make_non_streaming(planning_resp)
-        elif call_order[0] == 2:
-            # Phase 4: note extraction (non-streaming)
-            return make_non_streaming(note_resp)
-        else:
-            # Synthesis (streaming)
-            return make_streaming(synthesis_lines)
+        # Phase 4 (and a gap round's) note extraction
+        return make_non_streaming(note_resp)
 
     client = MagicMock()
     client.post = AsyncMock(side_effect=_post)
+    client.send = AsyncMock(side_effect=lambda *args, **kwargs: make_streaming(synthesis_lines))
     client.aclose = AsyncMock()
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
@@ -282,6 +285,10 @@ async def test_research_stream_passes_user_scope_to_execute_tool(
         assert scope.folder_ids == [folder_a.folder_id], (
             f"execute_tool call #{i + 1}: expected folder_ids=[{folder_a.folder_id}], got {scope.folder_ids}"
         )
+    # The run reached synthesis and finished (#706): a stream that ends in ``error`` proves nothing about
+    # the phases after the one under test.
+    last = json.loads(events[-1].removeprefix("data: "))
+    assert last["type"] == "done", last
 
 
 @pytest.mark.asyncio
