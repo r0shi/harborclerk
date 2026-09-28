@@ -42,8 +42,14 @@ APP_LLAMA_SERVER = Path("/Applications/HarborClerkServer.app/Contents/Resources/
 MIN_FREE_PERCENT = 50
 MAX_IDLE_GPU_PERCENT = 25
 GIB = 1024**3
+# The entity_overlap metric (runner/metrics.py) loads this on the first local-model answer. It is a wheel from a
+# GitHub release, not a dependency in pyproject.toml, so a fresh venv does not have it and the sweep died on it
+# after ingest, USD 18 of baselines and the first model's first answer (#683). The command is the README's.
+SPACY_MODEL = "en_core_web_sm"
+SPACY_INSTALL = "uv --project scripts/test_corpora run python -m spacy download en_core_web_sm"
 
 Run = Callable[[list[str]], str | None]
+Load = Callable[[str], object]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -281,6 +287,26 @@ def check_instance(fetch: Callable[[str], dict | None], api_base: str) -> Check:
     )
 
 
+def load_spacy_model(name: str) -> object:
+    import spacy
+
+    return spacy.load(name)
+
+
+def check_spacy_model(load: Load) -> Check:
+    """The sweep's own environment, not the machine: the one dependency `uv sync` cannot install."""
+    try:
+        load(SPACY_MODEL)
+    except Exception as exc:  # OSError [E050] when the model is absent; ImportError when spacy itself is
+        return Check(
+            f"spaCy model {SPACY_MODEL}",
+            FAIL,
+            f"does not load ({type(exc).__name__}: {str(exc).splitlines()[0][:120]}). The entity_overlap metric "
+            f"needs it, and the sweep dies on its first local-model answer without it: `{SPACY_INSTALL}`",
+        )
+    return Check(f"spaCy model {SPACY_MODEL}", PASS, "loads")
+
+
 def fetch_json(url: str) -> dict | None:
     import httpx
 
@@ -305,6 +331,7 @@ def preflight(
     models_named: bool = True,
     run: Run = run_command,
     fetch: Callable[[str], dict | None] = fetch_json,
+    load: Load = load_spacy_model,
     system: str | None = None,
 ) -> list[Check]:
     checks: list[Check] = []
@@ -320,6 +347,7 @@ def preflight(
         checks.append(Check("machine state", SKIPPED, "thermal, power, GPU and memory checks are written for macOS"))
         ram_bytes = None
     checks += check_foreign_servers(run, fetch)
+    checks.append(check_spacy_model(load))
     checks += check_models_fit(models, ram_bytes, named=models_named)
     if api_base:
         checks.append(check_instance(fetch, api_base))

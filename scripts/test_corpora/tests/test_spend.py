@@ -480,8 +480,12 @@ def test_a_phase_by_phase_resume_is_priced_for_the_phase_it_runs(tmp_path, monke
     phase1 = meter.estimate([("baseline_question", "claude-sonnet-4-6", 16)])
     both = phase1 + meter.estimate([("judge", cfg.JUDGE_MODEL, 16 * len(cfg.ALL_MODELS))])
     between = f"{(phase1 + both) / 2:.2f}"
-    with pytest.raises(PastTheEstimate):
-        sweep.main([*base, "--resume", "--phases", "1", "--spend-cap-usd", between])
+    # The probe is an exception nothing in the sweep handles, so reaching it is the sweep's own exit code for
+    # one (#683), where a refused estimate is 3.
+    with caplog.at_level("ERROR"):
+        assert sweep.main([*base, "--resume", "--phases", "1", "--spend-cap-usd", between]) == sweep.EXIT_UNCAUGHT
+    assert "PastTheEstimate" in caplog.text
+    caplog.clear()
     with caplog.at_level("ERROR"):
         assert sweep.main([*base, "--resume", "--phases", "1,4", "--spend-cap-usd", between]) == 3
     assert "with --resume if this run id already has units" in caplog.text

@@ -85,6 +85,12 @@ HC_RECOVERY_WAIT_SECONDS = 120
 # clean exit + --resume costs less than re-running cells.
 HC_UNREACHABLE_CONSECUTIVE_LIMIT = 3
 
+# main()'s exit code for an exception nothing in the sweep handled. The others are 0 (complete), 3 (the spend
+# cap) and 4 (the instance may not be wiped); the benchmark skill documents all four. Distinct from the 1 a
+# SystemExit with a message gives, so a launcher can tell "refused, read the message" from "crashed, read the
+# traceback in log.txt" (#683).
+EXIT_UNCAUGHT = 5
+
 
 # Anthropic 429 (rate-limited) / 529 (overloaded) retry budget for Phase 1
 # baselines. The SDK's built-in retries cover only ~5s, but a real rate-limit
@@ -1855,6 +1861,7 @@ def main(argv: list[str] | None = None) -> int:
                                 Status.ERROR,
                                 error=f"unfilled placeholder: {placeholder}",
                             )
+                            sf.save()  # no metrics row follows a unit that was never asked, so it is saved here
                             continue
                         out = _with_anthropic_retry(
                             _phase1_baseline, anthro, mcp_session, u.corpus, u.question_id, text, run_dir
@@ -1890,6 +1897,7 @@ def main(argv: list[str] | None = None) -> int:
                                 Status.ERROR,
                                 error=f"unfilled placeholder: {placeholder}",
                             )
+                            sf.save()  # no metrics row follows a unit that was never asked, so it is saved here
                             continue
                         # In --no-ingest mode (unified-corpus HC), resolve the
                         # corpus's watch-folder UUID once and reuse it. Passing
@@ -2102,6 +2110,12 @@ def main(argv: list[str] | None = None) -> int:
                     # is propagating out — flip it back to PENDING so a
                     # `--resume` invocation picks it up cleanly without
                     # needing `--rerun`.
+                    #
+                    # A finished unit is NOT saved here. Its status is persisted after its metrics.csv row is
+                    # written, below: saved first, a crash in the metrics (a missing spaCy model, #683) left a
+                    # unit `done` with no row, which --resume then skipped and the report silently counted
+                    # short. Until the row exists the file still says IN_PROGRESS from the start of the unit,
+                    # which the next start recovers as pending.
                     current = sf.get(u.phase, u.corpus, u.model, u.question_id, u.depth)
                     if current is not None and current.status == Status.IN_PROGRESS:
                         log.warning(
@@ -2113,7 +2127,7 @@ def main(argv: list[str] | None = None) -> int:
                         current.status = Status.PENDING
                         current.heartbeat = None
                         current.started_at = None
-                    sf.save()
+                        sf.save()
 
                 latency = time.time() - t0
 
@@ -2191,8 +2205,8 @@ def main(argv: list[str] | None = None) -> int:
                                         model_answer=model_answer,
                                     )
                                 except spend.SpendError as exc:
-                                    # The run stops here, but not before this unit's row is written: it is
-                                    # already DONE in state.json, --resume will skip it, and metrics.csv is
+                                    # The run stops here, but not before this unit's row is written and its
+                                    # status saved: --resume will then skip it, and metrics.csv is
                                     # append-only. Minutes to hours of local compute are in that row.
                                     spend_stop = exc
                                 except Exception:
@@ -2257,6 +2271,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 metrics_writer.writerow(metrics_row)
                 metrics_f.flush()
+                # The row exists; now the unit may be called finished. Every path through the unit body that
+                # reaches this line has its row, and no finished status is persisted before it, except for a
+                # unit that was never asked (the placeholder `continue` above, which gets no row) (#683).
+                sf.save()
                 if spend_stop is not None:
                     raise spend_stop
 
@@ -2298,6 +2316,14 @@ def main(argv: list[str] | None = None) -> int:
         # Refused beside the deletion itself, after the run had started: the instance changed under it.
         log.error("stopped before a wipe: %s", exc)
         return 4
+    except Exception:
+        # Anything the unit loop did not handle: a bug, a missing spaCy model (#683), a dependency the
+        # environment lacks. The state file is deliberately not saved here. What it holds on disk is the
+        # truth about the rows that exist; a unit whose metrics were being computed is still IN_PROGRESS
+        # there and comes back as pending at the next start. The traceback goes to log.txt, and the exit code
+        # is one the benchmark skill documents instead of the interpreter's 1 for any traceback.
+        log.exception("the sweep died on an uncaught exception; fix the cause and run again with --resume")
+        return EXIT_UNCAUGHT
     finally:
         sf.release_lock()
 
