@@ -718,8 +718,9 @@ async def test_thinking_alone_cannot_hold_the_forced_answer_open(
     db_session, admin_user, chat_session_factory, monkeypatch
 ):
     """A model that thinks regardless: past the thinking bound with no content yet, the call is cut, and content that
-    starts later is not read. What it thought by then is what it produced, so that is shown, with the note; the
-    app does not say the model wrote nothing when it did (gpt-oss writes its whole answer in that channel)."""
+    starts later is not read. What it thought by then is what it produced, so that is shown, under the app's lead
+    that says so and without the note that calls it an answer; the app does not say the model wrote nothing when it
+    did (gpt-oss writes its whole answer in that channel)."""
     from harbor_clerk.llm import chat as chat_module
 
     conv = await _conversation(db_session, admin_user)
@@ -754,8 +755,11 @@ async def test_thinking_alone_cannot_hold_the_forced_answer_open(
     )
     assert done["stop_reason"] == "time_budget"
     assert "Late words" not in text, "content that starts past the thinking bound is cut"
-    assert text.startswith("Hmm. Still thinking."), "what the model thought is what it produced"
-    assert "I stopped after" in text
+    assert text == chat_module._cut_thought_answer("Hmm. Still thinking. ", "time")
+    assert text.startswith(
+        "_The model was still reasoning when its time ran out; what it had:_\n\nHmm. Still thinking."
+    )
+    assert "I stopped after" not in text, "the lead says the time ran out; the note would call the thought an answer"
     assert "produced no answer" not in text, "the model wrote something, in its reasoning channel"
 
 
@@ -850,7 +854,18 @@ def test_the_fallback_is_what_the_eval_harness_reads_as_no_answer(stop_reason, s
     from scripts.test_corpora.runner.quality import classify_answer
 
     label, reason = classify_answer(prefix + _nothing_produced_fallback(stop_reason, server_failure))
-    assert label == "empty" and reason and "the model produced no answer" in reason
+    assert label == "empty" and reason
+    assert ("the model server failed" if server_failure else "the model produced no answer") in reason
+
+
+@pytest.mark.parametrize("ran_out", ["time", "context"])
+@pytest.mark.parametrize("prefix", ["", "Let me look. \n\n"])
+def test_a_cut_thought_is_what_the_eval_harness_reads_as_no_answer(ran_out, prefix):
+    from harbor_clerk.llm.chat import _cut_thought_answer
+    from scripts.test_corpora.runner.quality import classify_answer
+
+    label, reason = classify_answer(prefix + _cut_thought_answer("The fee is in section 4, which", ran_out))
+    assert label == "empty" and reason and "still reasoning" in reason
 
 
 @pytest.mark.asyncio
@@ -938,7 +953,9 @@ async def test_a_thought_the_server_cut_short_is_shown_not_called_nothing(
 ):
     """The model filled what was left of its context with reasoning and never reached its answer: llama-server ends
     the stream with ``finish_reason: "length"`` and "[DONE]" all the same. The thought is what it produced; it is
-    shown rather than reported as nothing."""
+    shown under the app's lead rather than reported as nothing or passed off as an answer."""
+    from harbor_clerk.llm import chat as chat_module
+
     conv = await _conversation(db_session, admin_user)
     clock = _Clock()
     client, _ = _mock_client(
@@ -957,8 +974,8 @@ async def test_a_thought_the_server_cut_short_is_shown_not_called_nothing(
         on_tool=lambda: setattr(clock, "now", 301.0),
     )
     assert done["stop_reason"] == "time_budget"
-    assert text.startswith("The fee is in section 4, which") and "I stopped after" in text
-    assert "produced no answer" not in text
+    assert text == chat_module._cut_thought_answer("The fee is in section 4, which", "context")
+    assert "I stopped after" not in text and "produced no answer" not in text
 
 
 @pytest.mark.asyncio
@@ -1095,3 +1112,114 @@ async def test_a_model_that_returns_nothing_unforced_gets_the_plain_fallback_and
     assert client.stream.call_count == 0, "nothing was forced"
     assert text == chat_module._nothing_produced_fallback(None)
     assert text.startswith("_The model produced no answer: it returned nothing for this question.")
+
+
+@pytest.mark.asyncio
+async def test_blank_content_before_a_reasoning_answer_does_not_hide_the_answer(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """A reasoning parser commonly streams "\\n\\n" as content once it has stripped a closing think tag, then the
+    answer in the reasoning channel. Blank content is no content: the finished reasoning answer is the answer."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [
+            [_tool_call_chunk(), "data: [DONE]"],
+            [
+                _chunk(content="\n\n"),
+                _reasoning_chunk("The fee was $4,500 a month."),
+                _finish_chunk("stop"),
+                "data: [DONE]",
+            ],
+        ]
+    )
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.strip().startswith("The fee was $4,500 a month.") and "I stopped after" in text
+    assert "produced no answer" not in text and "still reasoning" not in text
+
+
+@pytest.mark.asyncio
+async def test_blank_content_and_nothing_else_is_nothing(db_session, admin_user, chat_session_factory, monkeypatch):
+    """The forced call streams only "\\n\\n": the app's sentence, not a blank answer with the note."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [[_tool_call_chunk(), "data: [DONE]"], [_chunk(content="\n\n"), _finish_chunk("stop"), "data: [DONE]"]]
+    )
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.strip() == chat_module._nothing_produced_fallback("time_budget")
+    assert "I stopped after" not in text
+
+
+@pytest.mark.asyncio
+async def test_blank_content_before_a_tool_call_is_not_an_answer_being_written(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The model streams "\\n\\n", then starts a tool call as the budget runs out. Blank text is not an answer
+    being written, so the tool call is cut at the deadline, not given the grace and executed."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [
+            [_chunk(content="\n\n"), _tool_call_chunk(), "data: [DONE]"],
+            [_chunk(content="Nothing was searched."), "data: [DONE]"],
+        ],
+        on_line=lambda n, i: setattr(clock, "now", 301.0) if (n == 0 and i == 0) else None,
+    )
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    assert tool_calls == [], "the tool call written past the deadline is not executed"
+    assert done["stop_reason"] == "time_budget"
+    assert "Nothing was searched." in text
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_turns_results_do_not_count_as_this_turns_search(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The conversation searched in an earlier turn, so its history holds tool rows. This turn is cut before any
+    result: the forced call must not point the model at "the results above", which are the old turn's."""
+    from harbor_clerk.llm import chat as chat_module
+    from harbor_clerk.models.chat_message import ChatMessage
+
+    conv = await _conversation(db_session, admin_user)
+    call = [{"id": "call_0", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}}]
+    for msg in (
+        ChatMessage(conversation_id=conv.conversation_id, role="user", content="Earlier question?"),
+        ChatMessage(conversation_id=conv.conversation_id, role="assistant", content="", tool_calls=call),
+        ChatMessage(
+            conversation_id=conv.conversation_id, role="tool", content='{"results": []}', tool_call_id="call_0"
+        ),
+        ChatMessage(conversation_id=conv.conversation_id, role="assistant", content="Earlier answer."),
+    ):
+        db_session.add(msg)
+    await db_session.commit()
+    clock = _Clock()
+    client, _ = _mock_client(
+        [[_tool_call_chunk(), "data: [DONE]"], [_chunk(content="I could not search."), "data: [DONE]"]],
+        on_send=lambda n: setattr(clock, "now", 301.0) if n == 0 else None,
+    )
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    assert tool_calls == [] and done["stop_reason"] == "time_budget"
+    payload = client.stream.call_args.kwargs["json"]
+    assert any(m["role"] == "tool" for m in payload["messages"]), "the old turn's results are in the history"
+    assert payload["messages"][-1] == {"role": "user", "content": chat_module._SEARCH_OVER_UNSEARCHED_MESSAGE}

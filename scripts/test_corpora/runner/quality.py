@@ -95,14 +95,21 @@ _ROLEPLAY_RE = re.compile(
 # under 800.
 _REFUSAL_MAX_LEN = 1500
 
-# The app's own sentence when no answer came from the model (``_nothing_produced_fallback`` in
-# ``harbor_clerk.llm.chat``, #742): the model wrote nothing, or the model server failed the forced call. It opens
-# with one of these, in italics, on its own line (after the text the user watched arrive, when there was any), and
-# a model answering the question does not. The user received a sentence, but the model gave no answer, so it is
-# ``empty`` here and not judged.
-APP_FALLBACK_LEADS = ("the model produced no answer", "the model server failed")
+# The app's own sentences when no answer came from the model (``_nothing_produced_fallback`` and
+# ``_cut_thought_answer`` in ``harbor_clerk.llm.chat``, #742): the model wrote nothing, the model server failed
+# the forced call, or the model was still reasoning when it was cut and its thought is shown under the app's
+# lead. Each opens with one of these, in italics, on its own line (after the text the user watched arrive, when
+# there was any), and a model answering the question does not. The user received a sentence, but the model gave
+# no answer, so it is ``empty`` here and not judged; the reason says which sentence it was.
+APP_FALLBACK_LEADS = {
+    "the model produced no answer": "completed with the app's fallback (the model produced no answer)",
+    "the model server failed": "completed with the app's fallback (the model server failed)",
+    "the model was still reasoning when its": (
+        "completed with the app's fallback (the model was still reasoning when its time ran out)"
+    ),
+}
 _APP_FALLBACK_RE = re.compile(
-    r"^[\s_*]*(?:" + "|".join(re.escape(lead) for lead in APP_FALLBACK_LEADS) + r")\b", re.I | re.M
+    r"^[\s_*]*(?P<lead>" + "|".join(re.escape(lead) for lead in APP_FALLBACK_LEADS) + r")\b", re.I | re.M
 )
 
 AnswerLabel = Literal["real", "refusal", "roleplay", "empty"]
@@ -133,8 +140,8 @@ def classify_answer(answer: str | None) -> tuple[AnswerLabel, str | None]:
     if not answer or not answer.strip():
         return ("empty", "completed with empty answer")
 
-    if _APP_FALLBACK_RE.search(answer):
-        return ("empty", "completed with the app's fallback (the model produced no answer)")
+    if fallback := _APP_FALLBACK_RE.search(answer):
+        return ("empty", APP_FALLBACK_LEADS[fallback.group("lead").lower()])
 
     if _ROLEPLAY_RE.search(answer):
         return (

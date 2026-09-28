@@ -113,6 +113,13 @@ def _nothing_produced_fallback(stop_reason: str | None, server_failure: str | No
     return f"_{lead} {advice}_"
 
 
+def _cut_thought_answer(thought: str, ran_out: str) -> str:
+    """A thought cut short (by the time bounds, or by the server when the context ran out under it), under the app's
+    lead: what the model had is shown, and not as an answer it gave. The lead's first words are the harness's too
+    (``APP_FALLBACK_LEADS``)."""
+    return f"_The model was still reasoning when its {ran_out} ran out; what it had:_\n\n{thought.strip()}"
+
+
 def _forced_answer_cut(now: float, thinking_deadline: float | None, final_deadline: float | None) -> str | None:
     """Why the forced answer is cut at ``now`` ("grace" or "thinking"), or None to keep reading.
 
@@ -380,6 +387,7 @@ async def chat_stream(
         deadline = started_at + time_budget if time_budget > 0 else None
         time_exhausted = False
         streamed_prefix = ""  # text the user watched arrive before a cut dropped the tool call beside it
+        searched_this_turn = False  # a tool result came back in this turn (history may hold earlier turns' results)
 
         # Accumulated citations parsed from each tool result. Deduped+attached
         # to the assistant ChatMessage row (``rag_context`` column) and emitted
@@ -514,7 +522,9 @@ async def chat_stream(
                                 # same grace a forced answer would, and its "[DONE]" is let through: nothing
                                 # was cut. A tool call's "[DONE]" is not: one that completes as the budget
                                 # runs out is not searched either.
-                                writing_answer = bool(text_buffer) and not (
+                                # Blank content is not an answer being written: a reasoning parser commonly
+                                # streams "\n\n" as content once it has stripped a closing think tag.
+                                writing_answer = bool(text_buffer.strip()) and not (
                                     tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]
                                 )
                                 answer_done = writing_answer and isinstance(line, str) and line[6:].strip() == "[DONE]"
@@ -617,7 +627,9 @@ async def chat_stream(
                     _round + 1,
                     conversation_id,
                 )
-                if text_buffer and not (tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]):
+                if text_buffer.strip() and not (
+                    tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]
+                ):
                     assistant_content = text_buffer
                 else:
                     streamed_prefix = text_buffer
@@ -668,6 +680,7 @@ async def chat_stream(
                         tool_call_id=tc.get("id", f"call_{fn_name}"),
                     )
                     session.add(tool_msg)
+                    searched_this_turn = True
                     truncated_result = _truncate_for_llm(result_str, tool_result_max_chars)
                     messages.append(
                         {
@@ -695,8 +708,9 @@ async def chat_stream(
         elif not assistant_content and _round == _MAX_TOOL_ROUNDS - 1:
             stop_reason = "tool_rounds"
         server_failure: str | None = None  # how the forced call itself failed, when it did
-        produced_nothing = not assistant_content
-        if not assistant_content and stop_reason:
+        thought_cut_short = False  # the forced answer is a thought cut short, under the app's lead
+        produced_nothing = not assistant_content.strip()
+        if produced_nothing and stop_reason:
             reason = {
                 "time_budget": f"time budget of {time_budget:.0f}s",
                 "context_budget": "context budget",
@@ -717,12 +731,11 @@ async def chat_stream(
             cut: str | None = None
             reasoning_buffer = ""  # the model's reasoning channel: the answer when no content comes (below)
             finish_reason: str | None = None  # "stop" when the model ended its answer, "length" when the server did
-            searched = any(m.get("role") == "tool" for m in messages)
+            # This turn's results, not the history's: an earlier turn's tool rows are in ``messages`` too, and
+            # "the results above" would point the model at them.
+            search_over = _SEARCH_OVER_MESSAGE if searched_this_turn else _SEARCH_OVER_UNSEARCHED_MESSAGE
             final_payload = {
-                "messages": [
-                    *messages,
-                    {"role": "user", "content": _SEARCH_OVER_MESSAGE if searched else _SEARCH_OVER_UNSEARCHED_MESSAGE},
-                ],
+                "messages": [*messages, {"role": "user", "content": search_over}],
                 "stream": True,
                 "temperature": 0.3,
                 # No thinking before the answer: llama-server reads ``enable_thinking`` for the templates that take
@@ -827,12 +840,14 @@ async def chat_stream(
                     type(exc).__name__,
                     conversation_id,
                 )
-            if not assistant_content and reasoning_buffer.strip():
+            if not assistant_content.strip() and reasoning_buffer.strip():
                 # gpt-oss routes its whole answer through the reasoning channel even when asked not to think, and a
                 # model that thinks regardless has only that channel to show for its time (research.py's streaming
-                # path does the same). What it wrote there is the answer, finished or cut: saying the model wrote
-                # nothing would be false. Streamed live it would have shown thinking as the answer while content
-                # might still follow, so it arrives now, in one piece.
+                # path does the same). What it wrote there is shown: saying the model wrote nothing would be false.
+                # An answer the model finished there is a plain answer. A thought cut short, by our bounds or by the
+                # server's context, is shown under the app's lead, so it is not read (or judged) as an answer.
+                # Streamed live it would have shown thinking as the answer while content might still follow, so it
+                # arrives now, in one piece.
                 logger.info(
                     "Final answer came as %d chars of reasoning_content and no content (finish_reason=%s, cut=%s) "
                     "(conversation=%s)",
@@ -841,23 +856,32 @@ async def chat_stream(
                     cut,
                     conversation_id,
                 )
-                assistant_content = reasoning_buffer.strip()
+                if cut is not None:
+                    assistant_content = _cut_thought_answer(reasoning_buffer, "time")
+                    thought_cut_short = True
+                elif finish_reason == "length":
+                    assistant_content = _cut_thought_answer(reasoning_buffer, "context")
+                    thought_cut_short = True
+                else:
+                    assistant_content = reasoning_buffer.strip()
                 yield f"data: {json.dumps({'type': 'token', 'content': assistant_content})}\n\n"
-            produced_nothing = not assistant_content
+            produced_nothing = not assistant_content.strip()
             if streamed_prefix:
                 # Whatever the forced call produced, or did not: the stored message begins with what was watched.
                 assistant_content = streamed_prefix + assistant_content
 
         # No answer where one was due: the app says so in its own words, after any text the user watched arrive.
         # The sentence is not the model's, so the note that the model "answered from what it had found" is not
-        # appended to it.
+        # appended to it, nor to a thought cut short, whose lead already says the time ran out.
         if produced_nothing:
             fallback = _nothing_produced_fallback(stop_reason, server_failure)
-            if assistant_content:
+            if assistant_content.strip():
                 fallback = "\n\n" + fallback
-            assistant_content += fallback
+                assistant_content += fallback
+            else:
+                assistant_content = fallback
             yield f"data: {json.dumps({'type': 'token', 'content': fallback})}\n\n"
-        if time_exhausted and not produced_nothing:
+        if time_exhausted and not produced_nothing and not thought_cut_short:
             # The answer says it stopped early, in the text the user keeps (#719).
             note = _stopped_early_note(_now() - started_at)
             assistant_content += note

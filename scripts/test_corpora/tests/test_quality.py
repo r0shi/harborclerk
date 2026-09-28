@@ -138,7 +138,20 @@ def test_the_apps_sentence_for_a_failed_model_server_is_empty_too() -> None:
     )
     label, reason = classify_answer(answer)
     assert label == "empty"
-    assert reason == "completed with the app's fallback (the model produced no answer)"
+    assert reason == "completed with the app's fallback (the model server failed)"
+
+
+def test_the_apps_lead_on_a_thought_cut_short_is_empty_too() -> None:
+    # Verbatim from harbor_clerk.llm.chat._cut_thought_answer: the thought follows the lead on its own lines.
+    answer = (
+        "_The model was still reasoning when its time ran out; what it had:_\n\n"
+        "The fee is in section 4, which says the vendor bills monthly"
+    )
+    label, reason = classify_answer(answer)
+    assert label == "empty"
+    assert reason == "completed with the app's fallback (the model was still reasoning when its time ran out)"
+    label, _ = classify_answer(answer.replace("its time", "its context"))
+    assert label == "empty"
 
 
 def test_the_apps_sentence_after_a_watched_prefix_is_still_empty() -> None:
