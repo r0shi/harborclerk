@@ -6,8 +6,8 @@ not_found / unique / ambiguous; documents_by_date returns docs sorted by
 their effective date (per metadata_dates.effective_date priority chain).
 
 This module exposes two public async functions used by mcp_server.py:
-  - verify_identifier(session, identifier, doc_ids=None) -> dict   (added in Task 3)
-  - documents_by_date(session, ..., doc_ids=None) -> dict          (added in Task 5)
+  - verify_identifier(session, identifier, doc_ids=None) -> dict
+  - documents_by_date(session, ..., doc_ids=None) -> dict
 
 Both take ``doc_ids``, a principal's visible set (None when unrestricted), and apply it inside the query:
 before any cap, so a scoped caller neither resolves nor learns the existence of a document outside its scope.

@@ -91,16 +91,31 @@ async def test_execute_tool_documents_by_date_scope_restricts_before_the_sort_an
     assert [r["doc_id"] for r in unscoped["results"]] == [str(d.doc_id) for d in reversed(docs_in_b)], unscoped
 
 
+def _key_scoped_to(folder_id):
+    """An API-key principal whose scope is the one folder: the MCP surface's way of being scoped."""
+    import uuid
+
+    from harbor_clerk.api.deps import Principal
+    from harbor_clerk.api.scope import KeyScope
+
+    scope = KeyScope(
+        scope_topic_ids=None,
+        scope_folder_ids=[str(folder_id)],
+        permission_tier="search",
+        tool_overrides={},
+        max_snippet_chars=None,
+        rate_limit_rpm=None,
+        rate_limit_rph=None,
+    )
+    return Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
+
+
 @pytest.mark.asyncio
 async def test_kb_documents_by_date_honours_a_scoped_api_key_and_an_empty_scope(
     db_session, admin_user, two_folder_corpus, mock_session_factory
 ):
     """The MCP surface: a key scoped to folder A sees A; a key scoped to a folder with no documents sees none,
     and an invalid direction is still an error there, not a silent empty page."""
-    import uuid
-
-    from harbor_clerk.api.deps import Principal
-    from harbor_clerk.api.scope import KeyScope
     from harbor_clerk.mcp_server import _mcp_principal, kb_documents_by_date
     from harbor_clerk.models.watched import WatchedFolder
 
@@ -108,18 +123,7 @@ async def test_kb_documents_by_date_honours_a_scoped_api_key_and_an_empty_scope(
     empty = WatchedFolder(path="/c", display_name="Folder C", auto_discovered=False)
     db_session.add(empty)
     await db_session.flush()
-
-    def key_for(folder_id) -> Principal:
-        scope = KeyScope(
-            scope_topic_ids=None,
-            scope_folder_ids=[str(folder_id)],
-            permission_tier="search",
-            tool_overrides={},
-            max_snippet_chars=None,
-            rate_limit_rpm=None,
-            rate_limit_rph=None,
-        )
-        return Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
+    key_for = _key_scoped_to
 
     token = _mcp_principal.set(key_for(folder_a.folder_id))
     try:
@@ -238,10 +242,7 @@ async def test_kb_verify_identifier_scoped_key_applies_the_scope_before_the_meta
     restrict that read, not its result: with a hundred out-of-scope documents carrying the identifier, a key
     scoped to A still resolves A's one. A key scoped to a folder with no documents finds nothing, even for a
     title that exists."""
-    import uuid
-
     from harbor_clerk.api.deps import Principal
-    from harbor_clerk.api.scope import KeyScope
     from harbor_clerk.mcp_server import _mcp_principal, kb_verify_identifier
     from harbor_clerk.models.watched import WatchedFolder
 
@@ -249,22 +250,14 @@ async def test_kb_verify_identifier_scoped_key_applies_the_scope_before_the_meta
     empty = WatchedFolder(path="/c", display_name="Folder C", auto_discovered=False)
     db_session.add(empty)
     await db_session.flush()
+    # The unscoped read below is an unordered LIMIT 100 over the documents with metadata, and the overflow
+    # assertion needs every row it takes to carry the identifier. That holds because these 101 are the only
+    # documents with metadata: two_folder_corpus's four have none and are excluded by `doc_metadata != {}`.
     sidecar = {"sidecar": {"contract_id": "K-CAP-724"}}
     for i in range(100):
         await _doc_in_folder(db_session, folder_b, title=f"Decoy {i}", filename=f"decoy{i}.pdf", metadata=sidecar)
     in_a = await _doc_in_folder(db_session, folder_a, title="The one in A", filename="a-cap.pdf", metadata=sidecar)
-
-    def key_for(folder_id) -> Principal:
-        scope = KeyScope(
-            scope_topic_ids=None,
-            scope_folder_ids=[str(folder_id)],
-            permission_tier="search",
-            tool_overrides={},
-            max_snippet_chars=None,
-            rate_limit_rpm=None,
-            rate_limit_rph=None,
-        )
-        return Principal(type="api_key", id=uuid.uuid4(), role="user", key_scope=scope)
+    key_for = _key_scoped_to
 
     token = _mcp_principal.set(key_for(folder_a.folder_id))
     try:
@@ -285,4 +278,7 @@ async def test_kb_verify_identifier_scoped_key_applies_the_scope_before_the_meta
         none = json.loads(await kb_verify_identifier(docs_in_a[0].title))
     finally:
         _mcp_principal.reset(token)
-    assert none["status"] == "not_found" and docs_in_a[0].title not in json.dumps(none.get("match")), none
+    # The not_found payload echoes the identifier (the title asked for), so the leak to check for is the
+    # document itself: its doc_id, or a match or candidate list carrying it.
+    assert none["status"] == "not_found" and "match" not in none and "candidates" not in none, none
+    assert str(docs_in_a[0].doc_id) not in json.dumps(none), none
