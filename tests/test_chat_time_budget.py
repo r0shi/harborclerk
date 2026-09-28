@@ -420,8 +420,9 @@ async def test_a_long_tool_call_or_thinking_generation_still_sends_the_client_ke
 async def test_the_watched_prefix_is_stored_even_when_the_forced_call_yields_nothing(
     db_session, admin_user, chat_session_factory, monkeypatch
 ):
-    """The forced call can produce nothing (a 500, a timeout, a cut before its first token). The stored message
-    still begins with the text the user watched arrive, then the note."""
+    """The forced call can produce nothing (here a 500). The stored message still begins with the text the user
+    watched arrive; the app's sentence for the failure follows it, and the note that the model "answered from what
+    it had found" does not, since it did not."""
     conv = await _conversation(db_session, admin_user)
     clock = _Clock()
     partial_call = _chunk(
@@ -441,6 +442,8 @@ async def test_the_watched_prefix_is_stored_even_when_the_forced_call_yields_not
     # The forced call fails outright.
     failed = MagicMock()
     failed.status_code = 500
+    failed.text = ""
+    failed.aread = AsyncMock()
     failed.aclose = AsyncMock()
     client.stream.return_value.__aenter__ = AsyncMock(return_value=failed)
     text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
@@ -456,8 +459,9 @@ async def test_the_watched_prefix_is_stored_even_when_the_forced_call_yields_not
         .all()
     )
     saved = [r.content for r in rows if r.role == "assistant" and r.content]
-    assert saved and saved[-1].startswith("Let me look. ") and "I stopped after" in saved[-1]
-    assert text.startswith("Let me look. "), "and it is what the client received"
+    assert saved and saved[-1].startswith("Let me look. \n\n_The model server failed while the final answer was being")
+    assert "(HTTP 500)" in saved[-1] and "I stopped after" not in saved[-1]
+    assert text == saved[-1], "and it is what the client received"
 
 
 @pytest.mark.asyncio
@@ -592,3 +596,631 @@ async def test_a_reset_during_the_forced_answer_keeps_what_was_streamed_and_fini
     text, done, _ = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
     assert done["stop_reason"] == "time_budget", "the generator finished instead of raising"
     assert text.startswith("I found"), "what was streamed before the reset is kept"
+
+
+# ── #742: the forced final answer, when the model thinks, and when it produces nothing ──
+
+
+def _reasoning_chunk(text: str) -> str:
+    """A thinking delta as llama-server streams it: ``reasoning_content``, not ``content``."""
+    return _chunk(reasoning_content=text)
+
+
+def _finish_chunk(reason: str) -> str:
+    """llama-server's last chunk: an empty delta carrying ``finish_reason`` ("stop", or "length" when the context
+    ran out under the model), before "[DONE]"."""
+    return "data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": reason}]})
+
+
+def _forced_response(client, aiter_lines) -> None:
+    """Serve the forced final call from a hand-written line generator (the mock's lists cannot go silent)."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.aiter_lines = aiter_lines
+    resp.aclose = AsyncMock()
+    client.stream.return_value.__aenter__ = AsyncMock(return_value=resp)
+
+
+async def _assistant_rows(db_session, conv_id) -> list[str]:
+    from sqlalchemy import select
+
+    from harbor_clerk.models.chat_message import ChatMessage
+
+    rows = (await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv_id))).scalars()
+    return [r.content for r in rows if r.role == "assistant" and r.content]
+
+
+@pytest.mark.asyncio
+async def test_the_forced_call_asks_for_no_thinking_and_says_the_search_is_over(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The forced final call carries no tools, the request fields that stop a model thinking first (llama-server's
+    ``enable_thinking`` template kwarg; ``reasoning_effort`` for gpt-oss, which thinks regardless), and a last user
+    message saying the search has ended. Without that message Qwen3.6 wrote its next tool call as text, eight
+    times in ten. The message is the call's, not the conversation's: it is not stored."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [[_tool_call_chunk(), "data: [DONE]"], [_chunk(content="From the results, $4,500."), "data: [DONE]"]]
+    )
+    text, done, tool_calls = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert tool_calls == ["search_documents"] and done["stop_reason"] == "time_budget"
+    assert client.stream.call_count == 1
+    payload = client.stream.call_args.kwargs["json"]
+    assert "tools" not in payload
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["reasoning_effort"] == "low"
+    assert payload["messages"][-1] == {"role": "user", "content": chat_module._SEARCH_OVER_MESSAGE}
+    assert payload["messages"][-2]["role"] == "tool", "it comes after the results the model is to answer from"
+    assert text.startswith("From the results, $4,500.")
+    saved = await _assistant_rows(db_session, conv.conversation_id)
+    assert saved == [text], "the conversation keeps the answer, not the instruction"
+
+
+@pytest.mark.asyncio
+async def test_the_grace_runs_from_the_first_content_token_not_the_first_thinking_token(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The model thinks for 100 s before its first word (Gemma 4 and gpt-oss both do, asked not to or not). The
+    grace runs from the word: what it writes in the two minutes after that stands, and only what comes later is
+    cut. Measured from the first line, the thinking would have spent the grace and the answer would be cut at its
+    second word."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+
+    def move(n, i):
+        if n != 1:
+            return
+        # after: thinking line 0 → t=351; thinking line 1 → t=401; content 0 (t=401) → t=520; content 1 → t=522
+        clock.now = {0: 351.0, 1: 401.0, 2: 520.0, 3: 522.0}.get(i, clock.now)
+
+    client, _ = _mock_client(
+        [
+            [_tool_call_chunk(), "data: [DONE]"],
+            [
+                _reasoning_chunk("Let me see. "),
+                _reasoning_chunk("The results say... "),
+                _chunk(content="The fee "),
+                _chunk(content="was $4,500."),
+                _chunk(content=" Per month."),
+                "data: [DONE]",
+            ],
+        ],
+        on_line=move,
+    )
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.startswith("The fee was $4,500."), text
+    assert "Per month" not in text, "the word past the grace is cut"
+    assert "Let me see" not in text, "thinking is not shown as the answer"
+
+
+@pytest.mark.asyncio
+async def test_thinking_alone_cannot_hold_the_forced_answer_open(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """A model that thinks regardless: past the thinking bound with no content yet, the call is cut, and content that
+    starts later is not read. What it thought by then is what it produced, so that is shown, under the app's lead
+    that says so and without the note that calls it an answer; the app does not say the model wrote nothing when it
+    did (gpt-oss writes its whole answer in that channel)."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+
+    def move(n, i):
+        if n == 1 and i == 0:
+            clock.now = 361.0
+        if n == 1 and i == 1:
+            clock.now = 301.0 + chat_module._FINAL_ANSWER_THINKING_SECONDS + 1.0
+
+    client, _ = _mock_client(
+        [
+            [_tool_call_chunk(), "data: [DONE]"],
+            [
+                _reasoning_chunk("Hmm. "),
+                _reasoning_chunk("Still thinking. "),
+                _chunk(content="Late words."),
+                "data: [DONE]",
+            ],
+        ],
+        on_line=move,
+    )
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert "Late words" not in text, "content that starts past the thinking bound is cut"
+    assert text == chat_module._cut_thought_answer("Hmm. Still thinking. ", "time")
+    assert text.startswith(
+        "_The model was still reasoning when its time ran out; what it had:_\n\nHmm. Still thinking."
+    )
+    assert "I stopped after" not in text, "the lead says the time ran out; the note would call the thought an answer"
+    assert "produced no answer" not in text, "the model wrote something, in its reasoning channel"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_the_model_routed_through_its_reasoning_channel_is_the_answer(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """gpt-oss puts its whole answer in ``reasoning_content`` even asked not to think (research.py sees the same).
+    An answer the model finished there (``finish_reason`` "stop") is not nothing: it is shown and stored, with the
+    note."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [
+            [_tool_call_chunk(), "data: [DONE]"],
+            [
+                _reasoning_chunk("The fee was "),
+                _reasoning_chunk("$4,500 a month."),
+                _finish_chunk("stop"),
+                "data: [DONE]",
+            ],
+        ]
+    )
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.startswith("The fee was $4,500 a month.") and "I stopped after" in text
+    assert "produced no answer" not in text
+    saved = await _assistant_rows(db_session, conv.conversation_id)
+    assert saved and saved[-1].startswith("The fee was $4,500 a month.")
+
+
+@pytest.mark.asyncio
+async def test_a_forced_call_that_produces_nothing_ends_in_the_apps_words_not_an_answer(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The time budget is spent and the forced call returns no text at all. What the user gets says the model
+    produced no answer in the time allowed, in the app's voice: not the old first-person sentence that read as
+    the model's answer, and not the note that it "answered from what it had found"."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"], ["data: [DONE]"]])
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget", "the done payload's contract with the harness stands"
+    assert text == chat_module._nothing_produced_fallback("time_budget")
+    assert text.startswith("_The model produced no answer in the time allowed")
+    assert "wasn't able to formulate" not in text and "I stopped after" not in text
+    saved = await _assistant_rows(db_session, conv.conversation_id)
+    assert saved == [text]
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_after_the_context_budget_names_the_context(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    monkeypatch.setattr(chat_module, "_TOOL_LOOP_BUDGET", 0.0)
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"], ["data: [DONE]"]])
+    text, done, _ = await _drive(conv.conversation_id, admin_user, client, _Clock(), monkeypatch, budget=0.0)
+    assert done["stop_reason"] == "context_budget"
+    assert text == chat_module._nothing_produced_fallback("context_budget")
+    assert text.startswith("_The model produced no answer in the context allowed")
+
+
+@pytest.mark.parametrize("stop_reason", ["time_budget", "context_budget", "tool_rounds", None])
+@pytest.mark.parametrize("server_failure", [None, "HTTP 500", "unreachable", "timed out"])
+@pytest.mark.parametrize("prefix", ["", "Let me look. \n\n"])
+def test_the_fallback_is_what_the_eval_harness_reads_as_no_answer(stop_reason, server_failure, prefix):
+    """The sentence's opening is a contract with the harness's ``classify_answer``: the app's fallback is an
+    empty answer there, never judged as the model's, whichever variant it is and even after a watched prefix. Both
+    sides are in this repository, so the contract is tested from the app's side too."""
+    from harbor_clerk.llm.chat import _nothing_produced_fallback
+    from scripts.test_corpora.runner.quality import classify_answer
+
+    label, reason = classify_answer(prefix + _nothing_produced_fallback(stop_reason, server_failure))
+    assert label == "empty" and reason
+    assert ("the model server failed" if server_failure else "the model produced no answer") in reason
+
+
+@pytest.mark.parametrize("ran_out", ["time", "context"])
+@pytest.mark.parametrize("prefix", ["", "Let me look. \n\n"])
+def test_a_cut_thought_is_what_the_eval_harness_reads_as_no_answer(ran_out, prefix):
+    from harbor_clerk.llm.chat import _cut_thought_answer
+    from scripts.test_corpora.runner.quality import classify_answer
+
+    label, reason = classify_answer(prefix + _cut_thought_answer("The fee is in section 4, which", ran_out))
+    assert label == "empty" and reason and "still reasoning" in reason
+
+
+@pytest.mark.asyncio
+async def test_the_forced_answers_clocks_start_at_the_models_first_line_not_at_a_keepalive(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The prompt is re-read before the forced call's first token, in silence, and keepalive sentinels arrive
+    meanwhile. They start neither clock: a model whose first line comes 100 s into that silence gets its thinking
+    bound from that line, and the answer it starts 25 s later stands."""
+    import asyncio
+
+    from harbor_clerk.llm import chat as chat_module
+
+    monkeypatch.setattr(chat_module, "_KEEPALIVE_INTERVAL", 0.01)
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"]])
+
+    async def silent_then_answer():
+        await asyncio.sleep(0.05)  # sentinels flow while the prompt is re-read
+        clock.now = 400.0
+        yield _reasoning_chunk("A moment. ")
+        clock.now = 425.0
+        yield _chunk(content="The fee was $4,500.")
+        yield _finish_chunk("stop")
+        yield "data: [DONE]"
+
+    _forced_response(client, silent_then_answer)
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.startswith("The fee was $4,500."), text
+
+
+@pytest.mark.asyncio
+async def test_a_running_grace_still_cuts_a_model_that_falls_silent(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The sentinel starts no clock, but a clock already running is checked on it: a model that wrote a word and
+    then went quiet past its grace is cut at the keepalive, and the pending fetch is cancelled with it."""
+    import asyncio
+
+    from harbor_clerk.llm import chat as chat_module
+
+    monkeypatch.setattr(chat_module, "_KEEPALIVE_INTERVAL", 0.01)
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"]])
+    resumed: list[bool] = []
+
+    async def one_word_then_silence():
+        yield _chunk(content="Start ")
+        clock.now = 301.0 + chat_module._FINAL_ANSWER_GRACE_SECONDS + 1.0  # the grace passes in silence
+        await asyncio.sleep(0.2)
+        resumed.append(True)  # only reached when the cut did not happen at the keepalive
+        yield _chunk(content="Late.")
+        yield _finish_chunk("stop")
+        yield "data: [DONE]"
+
+    _forced_response(client, one_word_then_silence)
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.startswith("Start ") and "Late" not in text
+    assert resumed == [], "the cut came at the keepalive, not at the next line"
+
+
+@pytest.mark.asyncio
+async def test_a_thought_the_server_cut_short_is_shown_not_called_nothing(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The model filled what was left of its context with reasoning and never reached its answer: llama-server ends
+    the stream with ``finish_reason: "length"`` and "[DONE]" all the same. The thought is what it produced; it is
+    shown under the app's lead rather than reported as nothing or passed off as an answer."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [
+            [_tool_call_chunk(), "data: [DONE]"],
+            [_reasoning_chunk("The fee is in section 4, which"), _finish_chunk("length"), "data: [DONE]"],
+        ]
+    )
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text == chat_module._cut_thought_answer("The fee is in section 4, which", "context")
+    assert "I stopped after" not in text and "produced no answer" not in text
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_after_the_tool_round_cap_names_the_cap(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    rounds = chat_module._MAX_TOOL_ROUNDS
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"]] * rounds + [["data: [DONE]"]])
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, _Clock(), monkeypatch, budget=0.0)
+    assert len(tool_calls) == rounds and done["stop_reason"] == "tool_rounds"
+    assert text == chat_module._nothing_produced_fallback("tool_rounds")
+    assert f"after {rounds} tool rounds" in text
+
+
+@pytest.mark.asyncio
+async def test_a_finished_answer_whose_finish_chunk_arrives_at_the_thinking_bound_is_kept(
+    db_session, admin_user, chat_session_factory, monkeypatch, caplog
+):
+    """gpt-oss wrote its whole answer in its reasoning channel and finished; the finish chunk and "[DONE]" arrive at
+    the thinking bound. They carry no token, so they are let through and nothing is cut: the answer stands as a
+    finished one, not as a thought cut short."""
+    import logging
+
+    from harbor_clerk.llm import chat as chat_module
+
+    caplog.set_level(logging.INFO, logger="harbor_clerk.llm.chat")
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+
+    def move(n, i):
+        if n == 1 and i == 1:
+            clock.now = 301.0 + chat_module._FINAL_ANSWER_THINKING_SECONDS
+
+    client, _ = _mock_client(
+        [
+            [_tool_call_chunk(), "data: [DONE]"],
+            [
+                _reasoning_chunk("The fee was "),
+                _reasoning_chunk("$4,500 a month."),
+                _finish_chunk("stop"),
+                "data: [DONE]",
+            ],
+        ],
+        on_line=move,
+    )
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.startswith("The fee was $4,500 a month.") and "I stopped after" in text
+    assert "produced no answer" not in text
+    assert "Final answer cut" not in caplog.text, "the finish chunk cut nothing"
+    assert "finish_reason=stop, cut=None" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_forced_call_the_server_fails_is_said_to_have_failed_not_to_have_written_nothing(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The forced call comes back 500: the model did not write nothing, the server failed. The sentence says which,
+    with the status, and the failure reaches the health indicator."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"]])
+    failed = MagicMock()
+    failed.status_code = 500
+    failed.text = "slot unavailable"
+    failed.aread = AsyncMock()
+    failed.aclose = AsyncMock()
+    client.stream.return_value.__aenter__ = AsyncMock(return_value=failed)
+    reported: list[int] = []
+    monkeypatch.setattr(chat_module, "report_llm_error", reported.append)
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text == chat_module._nothing_produced_fallback("time_budget", "HTTP 500")
+    assert text.startswith("_The model server failed while the final answer was being written (HTTP 500)")
+    assert "wrote nothing" not in text and "I stopped after" not in text
+    assert reported == [500]
+
+
+@pytest.mark.asyncio
+async def test_a_search_cut_before_any_result_is_told_so_not_to_answer_from_results_above(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The first generation outlasts the budget: no tool result exists. The forced call's last message must not
+    point at "the results above"."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [[_tool_call_chunk(), "data: [DONE]"], [_chunk(content="I could not search."), "data: [DONE]"]],
+        on_send=lambda n: setattr(clock, "now", 301.0) if n == 0 else None,
+    )
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    assert tool_calls == [] and done["stop_reason"] == "time_budget"
+    payload = client.stream.call_args.kwargs["json"]
+    assert not any(m["role"] == "tool" for m in payload["messages"])
+    assert payload["messages"][-1] == {"role": "user", "content": chat_module._SEARCH_OVER_UNSEARCHED_MESSAGE}
+    assert text.startswith("I could not search.")
+
+
+@pytest.mark.asyncio
+async def test_a_model_that_returns_nothing_unforced_gets_the_plain_fallback_and_no_stop_reason(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The very first generation ends with neither a tool call nor text. No search was stopped, so there is no
+    stop_reason and no forced call; the app still says, in its own words, that the model produced no answer."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    client, _ = _mock_client([["data: [DONE]"]])
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, _Clock(), monkeypatch, budget=300.0)
+    assert tool_calls == [] and "stop_reason" not in done
+    assert client.stream.call_count == 0, "nothing was forced"
+    assert text == chat_module._nothing_produced_fallback(None)
+    assert text.startswith("_The model produced no answer: it returned nothing for this question.")
+
+
+@pytest.mark.asyncio
+async def test_blank_content_before_a_reasoning_answer_does_not_hide_the_answer(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """A reasoning parser commonly streams "\\n\\n" as content once it has stripped a closing think tag, then the
+    answer in the reasoning channel. Blank content is no content: the finished reasoning answer is the answer."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [
+            [_tool_call_chunk(), "data: [DONE]"],
+            [
+                _chunk(content="\n\n"),
+                _reasoning_chunk("The fee was $4,500 a month."),
+                _finish_chunk("stop"),
+                "data: [DONE]",
+            ],
+        ]
+    )
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.strip().startswith("The fee was $4,500 a month.") and "I stopped after" in text
+    assert "produced no answer" not in text and "still reasoning" not in text
+
+
+@pytest.mark.asyncio
+async def test_blank_content_and_nothing_else_is_nothing(db_session, admin_user, chat_session_factory, monkeypatch):
+    """The forced call streams only "\\n\\n": the app's sentence, not a blank answer with the note."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [[_tool_call_chunk(), "data: [DONE]"], [_chunk(content="\n\n"), _finish_chunk("stop"), "data: [DONE]"]]
+    )
+    text, done, _ = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        clock,
+        monkeypatch,
+        budget=300.0,
+        on_tool=lambda: setattr(clock, "now", 301.0),
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert text.strip() == chat_module._nothing_produced_fallback("time_budget")
+    assert "I stopped after" not in text
+
+
+@pytest.mark.asyncio
+async def test_blank_content_before_the_deadline_does_not_grant_the_grace_to_what_follows(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The model streams "\\n\\n" inside the budget and its first real token after the deadline. Blank text is not
+    an answer being written, so the generation is cut at the deadline like any other and the answer is forced; it
+    does not run on under the grace an answer in progress would get."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client(
+        [
+            [_chunk(content="\n\n"), _chunk(content="The fee was $4,500."), "data: [DONE]"],
+            [_chunk(content="From the results, $4,500."), "data: [DONE]"],
+        ],
+        on_line=lambda n, i: setattr(clock, "now", 301.0) if (n == 0 and i == 0) else None,
+    )
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    assert tool_calls == [] and done["stop_reason"] == "time_budget"
+    assert client.stream.call_count == 1, "the generation was cut at the deadline and the answer forced"
+    assert "The fee was" not in text and text.strip().startswith("From the results, $4,500.")
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_turns_results_do_not_count_as_this_turns_search(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The conversation searched in an earlier turn, so its history holds tool rows. This turn is cut before any
+    result: the forced call must not point the model at "the results above", which are the old turn's."""
+    from harbor_clerk.llm import chat as chat_module
+    from harbor_clerk.models.chat_message import ChatMessage
+
+    conv = await _conversation(db_session, admin_user)
+    call = [{"id": "call_0", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}}]
+    for msg in (
+        ChatMessage(conversation_id=conv.conversation_id, role="user", content="Earlier question?"),
+        ChatMessage(conversation_id=conv.conversation_id, role="assistant", content="", tool_calls=call),
+        ChatMessage(
+            conversation_id=conv.conversation_id, role="tool", content='{"results": []}', tool_call_id="call_0"
+        ),
+        ChatMessage(conversation_id=conv.conversation_id, role="assistant", content="Earlier answer."),
+    ):
+        db_session.add(msg)
+    await db_session.commit()
+    clock = _Clock()
+    client, _ = _mock_client(
+        [[_tool_call_chunk(), "data: [DONE]"], [_chunk(content="I could not search."), "data: [DONE]"]],
+        on_send=lambda n: setattr(clock, "now", 301.0) if n == 0 else None,
+    )
+    text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    assert tool_calls == [] and done["stop_reason"] == "time_budget"
+    payload = client.stream.call_args.kwargs["json"]
+    assert any(m["role"] == "tool" for m in payload["messages"]), "the old turn's results are in the history"
+    assert payload["messages"][-1] == {"role": "user", "content": chat_module._SEARCH_OVER_UNSEARCHED_MESSAGE}

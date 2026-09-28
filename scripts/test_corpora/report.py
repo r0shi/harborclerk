@@ -69,7 +69,9 @@ def _forced_note(rows: list[dict[str, str]]) -> list[str]:
     named = ", ".join(f"{n} by {reason.replace('_', ' ')}" for reason, n in sorted(reasons.items()))
     return [
         f"**{len(forced)} answers were forced by the app** ({named}): it stopped the search and answered from what "
-        "it had, saying so. They are judged, counted under `forced` and `forced pass`, and included in `degraded`; "
+        "it had, saying so. They are judged (except the app's own sentences for a model that then produced nothing, "
+        "a model server that failed, or a thought cut short, which have no answer to judge), counted under `forced` "
+        "and `forced pass`, and included in `degraded`; "
         "`judged` and the columns after it are the answers the model chose to give.",
         "",
     ]

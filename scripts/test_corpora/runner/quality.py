@@ -95,6 +95,23 @@ _ROLEPLAY_RE = re.compile(
 # under 800.
 _REFUSAL_MAX_LEN = 1500
 
+# The app's own sentences when no answer came from the model (``_nothing_produced_fallback`` and
+# ``_cut_thought_answer`` in ``harbor_clerk.llm.chat``, #742): the model wrote nothing, the model server failed
+# the forced call, or the model was still reasoning when it was cut and its thought is shown under the app's
+# lead. Each opens with one of these, in italics, on its own line (after the text the user watched arrive, when
+# there was any), and a model answering the question does not. The user received a sentence, but the model gave
+# no answer, so it is ``empty`` here and not judged; the reason says which sentence it was.
+APP_FALLBACK_LEADS = {
+    "the model produced no answer": "completed with the app's fallback (the model produced no answer)",
+    "the model server failed": "completed with the app's fallback (the model server failed)",
+    "the model was still reasoning when its": (
+        "completed with the app's fallback (the model was still reasoning when its time ran out)"
+    ),
+}
+_APP_FALLBACK_RE = re.compile(
+    r"^[\s_*]*(?P<lead>" + "|".join(re.escape(lead) for lead in APP_FALLBACK_LEADS) + r")\b", re.I | re.M
+)
+
 AnswerLabel = Literal["real", "refusal", "roleplay", "empty"]
 
 
@@ -110,7 +127,9 @@ def classify_answer(answer: str | None) -> tuple[AnswerLabel, str | None]:
     1. Empty/whitespace → ``empty``. This is the dead-LLM cascade signature
        (chat returns "completed" with no tokens in ~2s) and is already
        captured as DEGRADED upstream; included here so the function totals
-       to a complete classification.
+       to a complete classification. The app's fallback sentence when no
+       answer came from the model (#742) is ``empty`` too, with its own
+       reason: the words are the app's, not an answer.
     2. Roleplay → ``roleplay``. Checked before refusal because a model that
        roleplays tool calls *and* hedges should be flagged as roleplay (the
        more specific bucket).
@@ -120,6 +139,9 @@ def classify_answer(answer: str | None) -> tuple[AnswerLabel, str | None]:
     """
     if not answer or not answer.strip():
         return ("empty", "completed with empty answer")
+
+    if fallback := _APP_FALLBACK_RE.search(answer):
+        return ("empty", APP_FALLBACK_LEADS[fallback.group("lead").lower()])
 
     if _ROLEPLAY_RE.search(answer):
         return (

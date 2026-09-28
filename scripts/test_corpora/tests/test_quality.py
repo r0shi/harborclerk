@@ -105,6 +105,76 @@ def test_real_answer_with_brackets_but_no_tool_name() -> None:
     assert label == "real"
 
 
+def test_the_apps_fallback_for_a_model_that_produced_nothing_is_empty_not_real() -> None:
+    # Verbatim from harbor_clerk.llm.chat._nothing_produced_fallback after a time-budget stop (#742). The user
+    # received a sentence, but it is the app's, and there is no model answer to judge.
+    answer = (
+        "_The model produced no answer in the time allowed: the search stopped at its time budget, and when asked "
+        "to answer from what it had found, the model wrote nothing in the time it had. Try a narrower question, or "
+        "the Research tab for a question that spans many documents._"
+    )
+    label, reason = classify_answer(answer)
+    assert label == "empty"
+    assert reason == "completed with the app's fallback (the model produced no answer)"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "_The model produced no answer in the context allowed: the search results filled the model's context._",
+        "The model produced no answer after 25 tool rounds: the search stopped at its cap.",
+        "  **The model produced no answer: it returned nothing for this question.**",
+    ],
+)
+def test_the_apps_fallback_is_recognised_by_its_opening_whatever_the_reason(answer: str) -> None:
+    label, _ = classify_answer(answer)
+    assert label == "empty"
+
+
+def test_the_apps_sentence_for_a_failed_model_server_is_empty_too() -> None:
+    answer = (
+        "_The model server failed while the final answer was being written (HTTP 500): the search stopped at its "
+        "time budget, and the answer then asked for from what it had found did not come. Try again in a moment; if "
+        "it fails again, check the model in Settings._"
+    )
+    label, reason = classify_answer(answer)
+    assert label == "empty"
+    assert reason == "completed with the app's fallback (the model server failed)"
+
+
+def test_the_apps_lead_on_a_thought_cut_short_is_empty_too() -> None:
+    # Verbatim from harbor_clerk.llm.chat._cut_thought_answer: the thought follows the lead on its own lines.
+    answer = (
+        "_The model was still reasoning when its time ran out; what it had:_\n\n"
+        "The fee is in section 4, which says the vendor bills monthly"
+    )
+    label, reason = classify_answer(answer)
+    assert label == "empty"
+    assert reason == "completed with the app's fallback (the model was still reasoning when its time ran out)"
+    label, _ = classify_answer(answer.replace("its time", "its context"))
+    assert label == "empty"
+
+
+def test_the_apps_sentence_after_a_watched_prefix_is_still_empty() -> None:
+    # Chat keeps the text the user watched arrive in front of the app's sentence; the sentence starts its own line.
+    answer = (
+        "Let me look. \n\n_The model produced no answer in the time allowed: the search stopped at its time budget, "
+        "and when asked to answer from what it had found, the model wrote nothing in the time it had._"
+    )
+    label, _ = classify_answer(answer)
+    assert label == "empty"
+
+
+def test_a_real_answer_that_mentions_a_model_producing_nothing_is_real() -> None:
+    # Only the opening is the app's signature; an answer that says the words later is the model's.
+    answer = (
+        "The Q3 contract cost $4,500 a month [Globex Services Agreement, page 2]. "
+        "On the follow-up the model produced no answer, so that part is unverified; the model server failed once."
+    )
+    label, _ = classify_answer(answer)
+    assert label == "real"
+
+
 # ── find_unfilled_placeholder ──
 
 

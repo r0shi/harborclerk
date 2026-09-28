@@ -44,8 +44,27 @@ _TOOL_LOOP_BUDGET = 0.75
 # Hard safety cap on tool rounds (prevents infinite loops even if budget check fails).
 _MAX_TOOL_ROUNDS = 25
 
-# Once the time budget (settings.chat_time_budget_seconds) is spent, the forced final answer gets this long.
+# When a time budget (settings.chat_time_budget_seconds; 0 turns every bound off) is configured and spent, the
+# forced final answer gets this long, from its first content token. Thinking is not content: a model that reasons
+# before it writes spent the whole grace on reasoning deltas and the user got nothing (#742), so the forced call asks
+# it not to think, and one that thinks regardless gets _FINAL_ANSWER_THINKING_SECONDS from its first token to start
+# writing, or is cut: thinking alone cannot hold the answer open. What it thought by then is shown (see the forced
+# call), so a model whose answer lives in its reasoning channel (gpt-oss) has this long for the whole of it.
 _FINAL_ANSWER_GRACE_SECONDS = 120.0
+_FINAL_ANSWER_THINKING_SECONDS = 120.0
+
+# The forced final call's last message. Omitting the tool definitions says nothing to a model in the middle of a
+# search: Qwen3.6 wrote the next tool call as text, eight times in ten (#742). Told the search is over, it answers.
+# The second form is for a search cut before any result came back (the first generation outlasted the budget):
+# there are no "results above" to answer from.
+_SEARCH_OVER_MESSAGE = (
+    "The search has ended. Answer the question now from the results above; do not call any tool. "
+    "If they do not contain the answer, say what was found and what was not."
+)
+_SEARCH_OVER_UNSEARCHED_MESSAGE = (
+    "The search has ended before any result came back; do not call any tool. Say that the documents could not be "
+    "searched in the time allowed, and answer only what you can without them."
+)
 
 # The clock the budget is kept by; tests replace it here, not in ``time`` (the event loop keeps time there too).
 _now = time.monotonic
@@ -55,6 +74,63 @@ def _stopped_early_note(spent_seconds: float) -> str:
     minutes = max(1, round(spent_seconds / 60))
     unit = "minute" if minutes == 1 else "minutes"
     return f"\n\n_(I stopped after {minutes} {unit} and answered from what I had found.)_"
+
+
+def _nothing_produced_fallback(stop_reason: str | None, server_failure: str | None = None) -> str:
+    """The app's words when no answer came from the model, naming why (#742, #712 item 2, #684 item 3).
+
+    The old sentence ("I used the available context to search but wasn't able to formulate a complete response")
+    read as the model's answer, and a run of dead-server and budget failures was reported as answered. This one
+    says who failed and in what: the model, which wrote nothing, or the model server, which failed the forced call
+    (``server_failure`` says how). The eval harness recognises either opening (``APP_FALLBACK_LEADS`` in
+    ``scripts/test_corpora/runner/quality.py``) and does not judge it as an answer: the first words are a contract.
+    """
+    stopped = {
+        "time_budget": "the search stopped at its time budget",
+        "context_budget": "the search results filled the model's context",
+        "tool_rounds": f"the search stopped at its cap of {_MAX_TOOL_ROUNDS} tool rounds",
+    }.get(stop_reason or "")
+    if server_failure:
+        lead = f"The model server failed while the final answer was being written ({server_failure})"
+        lead += f": {stopped}, and the answer then asked for from what it had found did not come." if stopped else "."
+        advice = "Try again in a moment; if it fails again, check the model in Settings."
+    else:
+        lead = {
+            "time_budget": (
+                "The model produced no answer in the time allowed: the search stopped at its time budget, and when "
+                "asked to answer from what it had found, the model wrote nothing in the time it had."
+            ),
+            "context_budget": (
+                "The model produced no answer in the context allowed: the search results filled the model's "
+                "context, and when asked to answer from what it had found, the model wrote nothing."
+            ),
+            "tool_rounds": (
+                f"The model produced no answer after {_MAX_TOOL_ROUNDS} tool rounds: the search stopped at its cap, "
+                "and when asked to answer from what it had found, the model wrote nothing."
+            ),
+        }.get(stop_reason or "", "The model produced no answer: it returned nothing for this question.")
+        advice = "Try a narrower question, or the Research tab for a question that spans many documents."
+    return f"_{lead} {advice}_"
+
+
+def _cut_thought_answer(thought: str, ran_out: str) -> str:
+    """A thought cut short (by the time bounds, or by the server when the context ran out under it), under the app's
+    lead: what the model had is shown, and not as an answer it gave. The lead's first words are the harness's too
+    (``APP_FALLBACK_LEADS``)."""
+    return f"_The model was still reasoning when its {ran_out} ran out; what it had:_\n\n{thought.strip()}"
+
+
+def _forced_answer_cut(now: float, thinking_deadline: float | None, final_deadline: float | None) -> str | None:
+    """Why the forced answer is cut at ``now`` ("grace" or "thinking"), or None to keep reading.
+
+    The grace, once running, is the only bound. Before it runs, the thinking bound is, once the model's first
+    token has started it; before that nothing is: the prompt is still being re-read.
+    """
+    if final_deadline is not None:
+        return "grace" if now >= final_deadline else None
+    if thinking_deadline is not None and now >= thinking_deadline:
+        return "thinking"
+    return None
 
 
 def _estimate_tokens(text: str) -> int:
@@ -311,6 +387,7 @@ async def chat_stream(
         deadline = started_at + time_budget if time_budget > 0 else None
         time_exhausted = False
         streamed_prefix = ""  # text the user watched arrive before a cut dropped the tool call beside it
+        searched_this_turn = False  # a tool result came back in this turn (history may hold earlier turns' results)
 
         # Accumulated citations parsed from each tool result. Deduped+attached
         # to the assistant ChatMessage row (``rag_context`` column) and emitted
@@ -445,7 +522,9 @@ async def chat_stream(
                                 # same grace a forced answer would, and its "[DONE]" is let through: nothing
                                 # was cut. A tool call's "[DONE]" is not: one that completes as the budget
                                 # runs out is not searched either.
-                                writing_answer = bool(text_buffer) and not (
+                                # Blank content is not an answer being written: a reasoning parser commonly
+                                # streams "\n\n" as content once it has stripped a closing think tag.
+                                writing_answer = bool(text_buffer.strip()) and not (
                                     tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]
                                 )
                                 answer_done = writing_answer and isinstance(line, str) and line[6:].strip() == "[DONE]"
@@ -548,7 +627,9 @@ async def chat_stream(
                     _round + 1,
                     conversation_id,
                 )
-                if text_buffer and not (tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]):
+                if text_buffer.strip() and not (
+                    tool_calls_accumulated and tool_calls_accumulated[0]["function"]["name"]
+                ):
                     assistant_content = text_buffer
                 else:
                     streamed_prefix = text_buffer
@@ -599,6 +680,7 @@ async def chat_stream(
                         tool_call_id=tc.get("id", f"call_{fn_name}"),
                     )
                     session.add(tool_msg)
+                    searched_this_turn = True
                     truncated_result = _truncate_for_llm(result_str, tool_result_max_chars)
                     messages.append(
                         {
@@ -625,40 +707,74 @@ async def chat_stream(
             stop_reason = "context_budget"
         elif not assistant_content and _round == _MAX_TOOL_ROUNDS - 1:
             stop_reason = "tool_rounds"
-        if not assistant_content and stop_reason:
+        server_failure: str | None = None  # how the forced call itself failed, when it did
+        thought_cut_short = False  # the forced answer is a thought cut short, under the app's lead
+        produced_nothing = not assistant_content.strip()
+        if produced_nothing and stop_reason:
             reason = {
                 "time_budget": f"time budget of {time_budget:.0f}s",
                 "context_budget": "context budget",
                 "tool_rounds": f"{_MAX_TOOL_ROUNDS} tool rounds",
             }[stop_reason]
             logger.info("Forcing final text response after %s (conversation=%s)", reason, conversation_id)
-            # The forced answer is bounded too, or the bound is not one. The grace runs from the first line
-            # received, not from the request: the prompt is re-read in full first (no tools this time, so the
-            # prompt cache misses), and on a full context that alone can take most of two minutes.
+            # The forced answer is bounded too, or the bound is not one. Both clocks start from the model's tokens,
+            # not from the request: the prompt is re-read in full first (no tools this time, so the prompt cache
+            # misses), and on a full context that alone can take most of two minutes, in silence. A keepalive
+            # sentinel is our silence, not the model's token: it starts no clock, though a clock already running is
+            # checked on it, so a model that falls silent past its grace is cut then. (The client's read timeout of
+            # 120 s is a third bound on that silence, older than both.) The thinking bound runs from the model's
+            # first token, the grace from its first content token (#742). A line carrying no token, the finish
+            # chunk or "[DONE]", is let through whenever it arrives: it cuts nothing, and cutting it would turn a
+            # finished answer into none.
+            thinking_deadline: float | None = None
             final_deadline: float | None = None
+            cut: str | None = None
+            reasoning_buffer = ""  # the model's reasoning channel: the answer when no content comes (below)
+            finish_reason: str | None = None  # "stop" when the model ended its answer, "length" when the server did
+            # This turn's results, not the history's: an earlier turn's tool rows are in ``messages`` too, and
+            # "the results above" would point the model at them.
+            search_over = _SEARCH_OVER_MESSAGE if searched_this_turn else _SEARCH_OVER_UNSEARCHED_MESSAGE
+            final_payload = {
+                "messages": [*messages, {"role": "user", "content": search_over}],
+                "stream": True,
+                "temperature": 0.3,
+                # No thinking before the answer: llama-server reads ``enable_thinking`` for the templates that take
+                # it (Qwen3, Gemma 4) and passes ``reasoning_effort`` to gpt-oss's, which thinks regardless and
+                # reasons least at "low". Not "none": at the pin (b29c606) that turns enable_thinking off for every
+                # template and erases the reasoning_effort kwarg, so gpt-oss would get neither hint. Templates that
+                # know neither ignore both.
+                "chat_template_kwargs": {"enable_thinking": False},
+                "reasoning_effort": "low",
+            }
             try:
                 async with (
                     httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client,
                     client.stream(
                         "POST",
                         f"{settings.llama_server_url}/v1/chat/completions",
-                        json={"messages": messages, "stream": True, "temperature": 0.3},
+                        json=final_payload,
                     ) as response,
                 ):
-                    if response.status_code < 400:
+                    if response.status_code >= 400:
+                        await response.aread()
+                        if response.status_code >= 500:
+                            report_llm_error(response.status_code)
+                        server_failure = f"HTTP {response.status_code}"
+                        logger.warning(
+                            "Forced final answer failed: %s %s (conversation=%s)",
+                            server_failure,
+                            response.text[:500],
+                            conversation_id,
+                        )
+                    else:
                         last_sent = _now()
                         async with aclosing(_iter_with_keepalive(response.aiter_lines())) as lines:
                             async for line in lines:
-                                if deadline is not None and final_deadline is None:
-                                    final_deadline = _now() + _FINAL_ANSWER_GRACE_SECONDS
-                                if final_deadline is not None and _now() >= final_deadline:
-                                    logger.info(
-                                        "Final answer cut after %.0fs of grace (conversation=%s)",
-                                        _FINAL_ANSWER_GRACE_SECONDS,
-                                        conversation_id,
-                                    )
-                                    break
                                 if line is _KEEPALIVE_SENTINEL:
+                                    if deadline is not None:
+                                        cut = _forced_answer_cut(_now(), thinking_deadline, final_deadline)
+                                        if cut:
+                                            break
                                     yield ": keepalive\n\n"
                                     last_sent = _now()
                                     continue
@@ -671,29 +787,101 @@ async def chat_stream(
                                     chunk = json.loads(data)
                                 except json.JSONDecodeError:
                                     continue
-                                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                                if delta.get("content"):
-                                    assistant_content += delta["content"]
-                                    yield f"data: {json.dumps({'type': 'token', 'content': delta['content']})}\n\n"
+                                choice = chunk.get("choices", [{}])[0]
+                                finish_reason = choice.get("finish_reason") or finish_reason
+                                delta = choice.get("delta", {})
+                                token = delta.get("content") or ""
+                                thought = delta.get("reasoning_content") or ""
+                                if not token and not thought:
+                                    continue
+                                if deadline is not None:
+                                    if thinking_deadline is None:
+                                        thinking_deadline = _now() + _FINAL_ANSWER_THINKING_SECONDS
+                                    cut = _forced_answer_cut(_now(), thinking_deadline, final_deadline)
+                                    if cut:
+                                        break
+                                    if token and final_deadline is None:
+                                        final_deadline = _now() + _FINAL_ANSWER_GRACE_SECONDS
+                                if token:
+                                    assistant_content += token
+                                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
                                     last_sent = _now()
-                                elif _now() - last_sent >= _KEEPALIVE_INTERVAL:
-                                    yield ": keepalive\n\n"
-                                    last_sent = _now()
-            except httpx.TransportError:
-                pass  # Fall through to the fallback message below
+                                else:
+                                    reasoning_buffer += thought
+                                    if _now() - last_sent >= _KEEPALIVE_INTERVAL:
+                                        yield ": keepalive\n\n"
+                                        last_sent = _now()
+                        if cut == "grace":
+                            logger.info(
+                                "Final answer cut after %.0fs of grace (conversation=%s)",
+                                _FINAL_ANSWER_GRACE_SECONDS,
+                                conversation_id,
+                            )
+                        elif cut == "thinking":
+                            logger.info(
+                                "Final answer cut: no content %.0fs after the model's first token, %d chars of "
+                                "reasoning (conversation=%s)",
+                                _FINAL_ANSWER_THINKING_SECONDS,
+                                len(reasoning_buffer),
+                                conversation_id,
+                            )
+            except httpx.TransportError as exc:
+                # A swap or a crash mid-answer resets the connection (#690): that is a lost server too, not a model
+                # that wrote nothing.
+                if isinstance(exc, httpx.TimeoutException):
+                    server_failure = "timed out"
+                elif isinstance(exc, httpx.ConnectError):
+                    server_failure = "unreachable"
+                else:
+                    server_failure = "reset the connection"
+                logger.warning(
+                    "Forced final answer failed: the model server %s (%s) (conversation=%s)",
+                    server_failure,
+                    type(exc).__name__,
+                    conversation_id,
+                )
+            if not assistant_content.strip() and reasoning_buffer.strip():
+                # gpt-oss routes its whole answer through the reasoning channel even when asked not to think, and a
+                # model that thinks regardless has only that channel to show for its time (research.py's streaming
+                # path does the same). What it wrote there is shown: saying the model wrote nothing would be false.
+                # An answer the model finished there is a plain answer. A thought cut short, by our bounds or by the
+                # server's context, is shown under the app's lead, so it is not read (or judged) as an answer.
+                # Streamed live it would have shown thinking as the answer while content might still follow, so it
+                # arrives now, in one piece.
+                logger.info(
+                    "Final answer came as %d chars of reasoning_content and no content (finish_reason=%s, cut=%s) "
+                    "(conversation=%s)",
+                    len(reasoning_buffer),
+                    finish_reason,
+                    cut,
+                    conversation_id,
+                )
+                if cut is not None:
+                    assistant_content = _cut_thought_answer(reasoning_buffer, "time")
+                    thought_cut_short = True
+                elif finish_reason == "length":
+                    assistant_content = _cut_thought_answer(reasoning_buffer, "context")
+                    thought_cut_short = True
+                else:
+                    assistant_content = reasoning_buffer.strip()
+                yield f"data: {json.dumps({'type': 'token', 'content': assistant_content})}\n\n"
+            produced_nothing = not assistant_content.strip()
             if streamed_prefix:
                 # Whatever the forced call produced, or did not: the stored message begins with what was watched.
                 assistant_content = streamed_prefix + assistant_content
 
-        # If we still have no text, emit a fallback message
-        if not assistant_content:
-            assistant_content = (
-                "I used the available context to search but wasn't able to formulate a complete response. "
-                "You can try rephrasing your question or asking something more specific. "
-                "For broader questions that need to cover many documents, try the Research tab."
-            )
-            yield f"data: {json.dumps({'type': 'token', 'content': assistant_content})}\n\n"
-        if time_exhausted:
+        # No answer where one was due: the app says so in its own words, after any text the user watched arrive.
+        # The sentence is not the model's, so the note that the model "answered from what it had found" is not
+        # appended to it, nor to a thought cut short, whose lead already says the time ran out.
+        if produced_nothing:
+            fallback = _nothing_produced_fallback(stop_reason, server_failure)
+            if assistant_content.strip():
+                fallback = "\n\n" + fallback
+                assistant_content += fallback
+            else:
+                assistant_content = fallback
+            yield f"data: {json.dumps({'type': 'token', 'content': fallback})}\n\n"
+        if time_exhausted and not produced_nothing and not thought_cut_short:
             # The answer says it stopped early, in the text the user keeps (#719).
             note = _stopped_early_note(_now() - started_at)
             assistant_content += note
