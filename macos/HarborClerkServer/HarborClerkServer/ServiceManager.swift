@@ -19,6 +19,13 @@ protocol ManagedService: AnyObject {
     /// path — launchd's KeepAlive already handles crash recovery, and
     /// double-restarting via both layers would be a foot-gun.
     var isLaunchdManaged: Bool { get }
+    /// True while this service holds a child it spawned that is still alive.
+    /// The recorded `state` and this can disagree: a health-check timeout
+    /// marks a service errored while its child is still loading, the flap
+    /// guard leaves an errored service's child alive, and a stop that lands
+    /// while `start()` is suspended runs before the spawn. Relaunch paths
+    /// decide what to stop by this, not by `state` (#689).
+    var holdsLiveProcess: Bool { get }
     func start() async throws
     func stop() async
     func healthCheck() async -> Bool
@@ -26,8 +33,22 @@ protocol ManagedService: AnyObject {
 
 /// Default-false `isLaunchdManaged` for services that aren't launchd-managed.
 /// PostgresService and TikaService override with `let isLaunchdManaged = true`.
+/// Default-false `holdsLiveProcess` for services with no child of their own
+/// (the launchd-managed pair); every service that keeps a `Process` overrides it.
 extension ManagedService {
     var isLaunchdManaged: Bool { false }
+    var holdsLiveProcess: Bool { false }
+}
+
+/// Sleep that a cancelled Task still serves in full. `Task.sleep` returns
+/// at once on a cancelled Task, so a wait loop built on it spins: the
+/// `startService` health wait did exactly that whenever the Task driving
+/// it was cancelled by a newer config change, probing the port without pause
+/// on the MainActor until the deadline.
+func sleepEvenIfCancelled(seconds: TimeInterval) async {
+    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { c.resume() }
+    }
 }
 
 // MARK: - Health-probe helper
@@ -195,8 +216,10 @@ class ServiceManager: ObservableObject {
 
     // MARK: - Orphan PID cleanup
 
-    /// Path to the file tracking child PIDs across launches.
-    private static let pidFileURL: URL = AppSettings.dataDir.appendingPathComponent("child-pids.txt")
+    /// Path to the file tracking child PIDs across launches. A variable so a
+    /// test that drives `startService` to `running` writes its pid file into a
+    /// scratch directory rather than the live app's.
+    var pidFileURL: URL = AppSettings.dataDir.appendingPathComponent("child-pids.txt")
 
     /// Record all current child PIDs to disk so orphans can be cleaned up on next launch.
     private func savePidFile() {
@@ -218,17 +241,17 @@ class ServiceManager: ObservableObject {
             }
         }
         let content = pids.joined(separator: "\n")
-        try? content.write(to: Self.pidFileURL, atomically: true, encoding: .utf8)
+        try? content.write(to: pidFileURL, atomically: true, encoding: .utf8)
     }
 
     /// Remove the PID file (called after orderly shutdown).
     private func removePidFile() {
-        try? FileManager.default.removeItem(at: Self.pidFileURL)
+        try? FileManager.default.removeItem(at: pidFileURL)
     }
 
     /// Kill any orphaned child processes from a prior run that didn't shut down cleanly.
     private func killOrphanedProcesses() async {
-        guard let content = try? String(contentsOf: Self.pidFileURL, encoding: .utf8) else { return }
+        guard let content = try? String(contentsOf: pidFileURL, encoding: .utf8) else { return }
         let pids = content.components(separatedBy: "\n")
             .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
         guard !pids.isEmpty else { return }
@@ -553,7 +576,7 @@ class ServiceManager: ObservableObject {
         // child-pids.txt — anything our in-memory state lost track of
         // (e.g. an auto-restart that swapped the Process ref after the
         // last savePidFile call).
-        if let contents = try? String(contentsOf: Self.pidFileURL, encoding: .utf8) {
+        if let contents = try? String(contentsOf: pidFileURL, encoding: .utf8) {
             for line in contents.components(separatedBy: "\n") {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 guard let pid = Int32(trimmed), pid > 0, !killed.contains(pid) else { continue }
@@ -597,7 +620,33 @@ class ServiceManager: ObservableObject {
         // "couldn't bind HTTP server socket" failures + flap-protection
         // trip when used as part of an automated sweep.
         try? await Task.sleep(for: .seconds(5))
+        // Cancelled while sleeping means stopAll or a settings restart took
+        // over; starting now would hand them a child to tear down again.
+        guard !Task.isCancelled else { return }
         await startService(service)
+    }
+
+    /// Stop a service that is about to be started again, deciding by the
+    /// process it holds rather than by the state it recorded.
+    ///
+    /// The relaunch paths used to read `errored` and `stopped` as "nothing
+    /// to stop" and only reset the state. Both are reachable with the child
+    /// alive (see `ManagedService.holdsLiveProcess`), and for llama-server
+    /// that left a 14 GB process resident while the app reported it stopped
+    /// (#689). `stop()` is the one place that acts on the process, so
+    /// anything alive goes through it. Returns whether it did.
+    @discardableResult
+    func stopForRelaunch(_ service: any ManagedService) async -> Bool {
+        if service.state == .errored {
+            // A deliberate relaunch earns a fresh flap budget.
+            restartHistory.removeValue(forKey: service.name)
+        }
+        if (service.state == .errored || service.state == .stopped) && !service.holdsLiveProcess {
+            service.state = .stopped
+            return false
+        }
+        await service.stop()
+        return true
     }
 
     /// Auto-restart an errored service with flap detection.
@@ -640,6 +689,7 @@ class ServiceManager: ObservableObject {
             Log.logger("lifecycle").info(
                 "[\(service.name, privacy: .public)] Backing off \(String(format: "%.1f", wait), privacy: .public)s before retry")
             try? await Task.sleep(for: .seconds(Int(ceil(wait))))
+            guard !Task.isCancelled else { return }
         }
 
         history.append(now)
@@ -689,17 +739,16 @@ class ServiceManager: ObservableObject {
         do {
             try await service.start()
 
-            // Service chose not to start (e.g. LLM with no model selected)
-            if service.state == .stopped {
-                notifyStateChanged()
-                return
-            }
-            // Service refused to start and said why (LLM: model file missing,
-            // or the model does not fit this Mac's memory). Without this the
-            // health loop below waits its full timeout, the menubar shows
-            // "starting" for two minutes, and the log says "Health check
-            // timeout" instead of the real reason.
-            if service.state == .errored {
+            // Only a service still `starting` is ours to drive. It may have
+            // chosen not to start (LLM with no model: `stopped`), refused and
+            // said why (model file missing, model does not fit: `errored` —
+            // without this the health loop waits its full timeout, the menubar
+            // shows "starting" for two minutes, and the log says "Health check
+            // timeout" instead of the real reason), or a stop may have landed
+            // while `start()` was suspended (`stopping`/`stopped`). Advancing
+            // any of those to `running` or `errored` below would report a state
+            // the process does not have (#689).
+            guard service.state == .starting else {
                 notifyStateChanged()
                 return
             }
@@ -721,7 +770,12 @@ class ServiceManager: ObservableObject {
                     Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Process exited during startup")
                     return
                 }
-                if await service.healthCheck() {
+                let healthy = await service.healthCheck()
+                // Re-checked after the await: a stop, a shutdown or a newer
+                // relaunch may have moved the state meanwhile, and the owner
+                // of that transition finishes it, not this loop.
+                guard service.state == .starting else { return }
+                if healthy {
                     service.state = .running
                     // Reset crash counter now that the service is confirmed healthy
                     if let pySvc = service as? PythonService {
@@ -731,13 +785,27 @@ class ServiceManager: ObservableObject {
                     notifyStateChanged()
                     return
                 }
-                try? await Task.sleep(for: .seconds(1))
+                // Not `Task.sleep`: this loop keeps driving after its Task is
+                // cancelled (the state guards are what end it), and a
+                // cancelled `Task.sleep` returns at once, which made it spin.
+                await sleepEvenIfCancelled(seconds: 1)
+                // A stop that landed during the sleep has nilled the process;
+                // without this the exit checks above would call that `errored`.
+                guard service.state == .starting else { return }
             }
 
             // Timeout waiting for health
+            guard service.state == .starting else { return }
             service.state = .errored
             notifyStateChanged()
-            Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout")
+            if service.holdsLiveProcess {
+                // Kept, not killed: a model that loads slowly is still coming
+                // up and will serve. Every stop and relaunch path now acts on
+                // the process rather than this state, so it is not a leak.
+                Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout; the process is still running and is stopped by the next stop or relaunch")
+            } else {
+                Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout")
+            }
         } catch {
             service.state = .errored
             notifyStateChanged()
@@ -907,21 +975,19 @@ class ServiceManager: ObservableObject {
             }
         }
         if needsGatewayRestart {
-            await gatewayService.stop()
+            await stopForRelaunch(gatewayService)
         }
         for svc in nonWorkerPython {
             await svc.stop()
         }
         notifyStateChanged()
 
-        // 2. Stop infrastructure services (reset errored state + flap history for fresh start)
+        // 2. Stop infrastructure services. By the process each holds, not its
+        //    state: an errored one may still have a child alive (#689). The
+        //    launchd pair report no child of their own and keep the old
+        //    behaviour of a state reset when errored.
         for svc in infraToRestart {
-            if svc.state == .errored {
-                svc.state = .stopped
-                restartHistory.removeValue(forKey: svc.name)
-            } else {
-                await svc.stop()
-            }
+            await stopForRelaunch(svc)
         }
         notifyStateChanged()
 
@@ -967,10 +1033,6 @@ class ServiceManager: ObservableObject {
             await startService(svc)
         }
         if needsGatewayRestart {
-            if gatewayService.state == .errored {
-                gatewayService.state = .stopped
-                restartHistory.removeValue(forKey: gatewayService.name)
-            }
             await Self.killStaleProcess(onPort: AppSettings.shared.gatewayPort)
             await startService(gatewayService)
         }
@@ -1069,73 +1131,67 @@ class ServiceManager: ObservableObject {
         let settings = AppSettings.shared
         settings.reload()
 
-        // Check for LLM restart signal from Python (persistent 5xx detection)
-        if settings.llmRestartRequested {
-            Log.logger("lifecycle").warning("LLM restart requested by API (persistent 5xx)")
-            settings.clearLlmRestart()
-            configChangeTask?.cancel()
-            configChangeTask = Task {
-                if llamaService.state == .running || llamaService.state == .starting {
-                    await llamaService.stop()
-                    notifyStateChanged()
-                    try? await Task.sleep(for: .seconds(1))
-                } else if llamaService.state == .errored {
-                    llamaService.state = .stopped
-                    restartHistory.removeValue(forKey: llamaService.name)
-                    notifyStateChanged()
-                }
-                if !settings.llmModelId.isEmpty {
-                    await startService(llamaService)
-                }
-            }
-            return
-        }
-
+        // Python answers a model switch or a deactivation with two replacements
+        // of config.json (the model id, then the restart signal), and clearing
+        // the signal here is a third; the 3 s poller sees them in any grouping.
+        // One relaunch serves both, and the id is recorded whichever arrived
+        // first. Handling the signal without recording the id made the next
+        // tick see a "changed" id and stop the server the signal had just
+        // launched: every activation through the API started llama-server
+        // twice, and the two Tasks then drove one service at once.
+        let restartRequested = settings.llmRestartRequested
         let newModelId = settings.llmModelId
-        guard newModelId != lastLlmModelId else { return }
-
         let previousId = lastLlmModelId
+        guard restartRequested || newModelId != previousId else { return }
+
+        if restartRequested {
+            Log.logger("lifecycle").warning("LLM restart requested by API")
+            settings.clearLlmRestart()
+        }
+        if newModelId != previousId {
+            Log.logger("lifecycle").info(
+                "Config change: llm_model_id \(previousId, privacy: .public) → \(newModelId, privacy: .public)"
+            )
+        }
         lastLlmModelId = newModelId
-        Log.logger("lifecycle").info(
-            "Config change: llm_model_id \(previousId, privacy: .public) → \(newModelId, privacy: .public)"
-        )
 
         configChangeTask?.cancel()
         configChangeTask = Task {
-            // Stop current llama-server if running or errored
-            if llamaService.state == .running || llamaService.state == .starting {
-                await llamaService.stop()
-                notifyStateChanged()
-                // 1s wasn't enough on macOS — llama-server's old socket
-                // sometimes hadn't released port 8102 by the time the new
-                // process tried to bind, causing "couldn't bind HTTP server
-                // socket" and an immediate exit. 5s gives the kernel ample
-                // time to release the port.
-                try? await Task.sleep(for: .seconds(5))
-            } else if llamaService.state == .errored {
-                // Reset errored state and clear flap history so the new model gets a fresh start
-                llamaService.state = .stopped
-                restartHistory.removeValue(forKey: llamaService.name)
-                notifyStateChanged()
-            }
+            await relaunchLlama(modelId: newModelId)
+        }
+    }
 
-            if newModelId.isEmpty {
-                // Model deactivated — stay stopped
-                llamaService.state = .stopped
-                notifyStateChanged()
-            } else {
-                // Start with new model
-                await startService(llamaService)
-            }
+    /// Stop the llama-server the service holds, if any, and start `modelId`
+    /// if there is one. Decides by the process, not the recorded state: the
+    /// state has said `errored` and `stopped` over a live server (#689).
+    ///
+    /// A newer config change cancels this Task and runs its own relaunch;
+    /// the stop is finished regardless (the successor joins it inside
+    /// `LlamaService.stop()`), the start is left to the successor.
+    private func relaunchLlama(modelId: String) async {
+        let stopped = await stopForRelaunch(llamaService)
+        notifyStateChanged()
 
-            // Update Python services' env so restarts pick up the new model ID
-            let env = Self.pythonEnvironment()
-            for service in services {
-                if let pySvc = service as? PythonService {
-                    pySvc.baseEnvironment = env
-                }
+        // Python services read the model id from their environment at launch,
+        // so any later restart of one picks up the new id.
+        let env = Self.pythonEnvironment()
+        for service in services {
+            if let pySvc = service as? PythonService {
+                pySvc.baseEnvironment = env
             }
         }
+
+        guard !Task.isCancelled, !modelId.isEmpty else { return }
+        if stopped {
+            // 1s wasn't enough on macOS — llama-server's old socket
+            // sometimes hadn't released port 8102 by the time the new
+            // process tried to bind, causing "couldn't bind HTTP server
+            // socket" and an immediate exit. 5s gives the kernel ample
+            // time to release the port.
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+        }
+        await startService(llamaService)
     }
 
     // MARK: - Environment

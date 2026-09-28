@@ -14,6 +14,17 @@ final class LlamaService: ManagedService {
 
     /// Expose the child PID for orphan tracking.
     var processIdentifier: Int32? { process?.isRunning == true ? process?.processIdentifier : nil }
+    var holdsLiveProcess: Bool { processIdentifier != nil }
+
+    /// The stop in flight, so a second caller joins it instead of racing it.
+    /// Two relaunches overlap when config.json changes twice within a few
+    /// seconds (activate, then deactivate; or the model id and the restart
+    /// signal landing on different poll ticks). Two stops of one process both
+    /// waited for it, both nilled `process` (losing a successor that had been
+    /// assigned in between) and both probed the port, where the slower one
+    /// found the successor's socket and killed it as a straggler.
+    private var stopInFlight: Task<Void, Never>?
+    private let stopLock = NSLock()
 
     private var llamaBin: URL {
         Bundle.main.resourceURL!.appendingPathComponent("llama/llama-server")
@@ -44,6 +55,15 @@ final class LlamaService: ManagedService {
         // service goes to errored — fixable only by manual intervention
         // until now.
         await ServiceManager.killStaleProcess(onPort: settings.llamaPort)
+
+        // A stop that landed during that await has already moved the state on;
+        // spawning now would leave a server nothing tracks and nothing stops,
+        // because every stop path decides by `process` and this one would be
+        // assigned after the stop had cleared it (#689).
+        guard state == .starting else {
+            Log.logger("llm").notice("Not launching: stopped while preparing to start (state \(self.state.rawValue, privacy: .public))")
+            return
+        }
 
         let yarnEnabled = settings.llmYarnEnabled
         let yarnConfig = settings.activeModelYarn
@@ -146,11 +166,41 @@ final class LlamaService: ManagedService {
         process = proc
     }
 
+    /// Stop whatever llama-server this service holds, whatever state it
+    /// recorded. The state is advisory: it has said `errored` over a server
+    /// that was still loading and then served for hours, and `stopped` over
+    /// one spawned after a stop had run. The process is the fact (#689).
+    ///
+    /// Concurrent callers join the stop in flight rather than running a
+    /// second one; see `stopInFlight`.
     func stop() async {
-        state = .stopping
+        let (task, joined): (Task<Void, Never>, Bool) = stopLock.withLock {
+            if let inFlight = stopInFlight { return (inFlight, true) }
+            // Set before the Task is scheduled, so a `start()` resuming from
+            // an await sees it at once rather than after the executor gets
+            // round to running the stop. Only the caller that owns the stop
+            // sets it: a joiner may arrive after the stop has already reached
+            // `stopped`, and must not move it back.
+            state = .stopping
+            let task = Task { await self.performStop() }
+            stopInFlight = task
+            return (task, false)
+        }
+        await task.value
+        if !joined {
+            stopLock.withLock { stopInFlight = nil }
+        }
+    }
 
+    private func performStop() async {
         if let proc = process, proc.isRunning {
-            proc.terminate() // SIGTERM
+            // The whole group, per macos/AGENTS.md; llama-server spawns no
+            // children today, so this is the rule rather than a repair.
+            // `terminate()` is the fallback for a child that was not made a
+            // group leader (setpgid failed and was logged at launch).
+            if killpg(proc.processIdentifier, SIGTERM) != 0 {
+                proc.terminate()
+            }
             // Model unload can be slow — 10s grace, then SIGKILL. Uses the
             // shared helper so the Pipe+waitUntilExit deadlock pattern
             // (audit memo: project_menubar_process_management_audit.md)
@@ -187,7 +237,9 @@ final class LlamaService: ManagedService {
             "LLM port \(self.port, privacy: .public) still held after stop; force-killing pids \(stragglers, privacy: .public)"
         )
         for pid in stragglers {
-            kill(pid, SIGKILL)
+            // Group first; a pid that leads no group returns ESRCH and the
+            // plain kill covers it. Same idiom as killOrphanedProcesses.
+            if killpg(pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
         }
         // Brief pause for the kernel to release the socket.
         try? await Task.sleep(nanoseconds: 500_000_000) // 500 ms

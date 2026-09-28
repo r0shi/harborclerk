@@ -6,6 +6,7 @@ class PythonService: ManagedService {
     let name: String
     var state: ServiceState = .stopped
     var process: Process?
+    var holdsLiveProcess: Bool { process?.isRunning == true }
     var baseEnvironment: [String: String] = [:]
 
     /// Seconds to wait after SIGTERM before sending SIGKILL.
