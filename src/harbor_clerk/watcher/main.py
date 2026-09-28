@@ -124,7 +124,9 @@ class WatcherDaemon:
                     # Classify BEFORE handing off to _on_event so we can
                     # tally UNSUPPORTED_EXTENSION skips without going
                     # through the event-handler path twice.
-                    reason = classify_skip(rel_path, abs_path)
+                    # `filenames` is this directory's listing already; passing it spares
+                    # a scandir per .json (quadratic in a flat folder of annotated files).
+                    reason = classify_skip(rel_path, abs_path, sibling_names=filenames)
                     if reason is SkipReason.UNSUPPORTED_EXTENSION:
                         skipped_count += 1
                         suffix = os.path.splitext(rel_path)[1].lower()
