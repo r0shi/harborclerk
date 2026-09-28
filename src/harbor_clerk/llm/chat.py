@@ -509,7 +509,10 @@ async def chat_stream(
                     await response_obj.aclose()
                     await client_obj.aclose()
 
-            except (httpx.ConnectError, httpx.TimeoutException):
+            except httpx.TransportError:
+                # Connect, timeout, or a reset mid-stream when the server is swapped or crashes while writing: to
+                # the caller these are one event, the server is gone. Anything narrower let a ReadError out of
+                # the generator, so the stream dropped with no error event and no stored message (#690).
                 error_summary = "LLM server is not running. Select and activate a model in Settings."
                 session.add(
                     ChatMessage(
@@ -676,7 +679,7 @@ async def chat_stream(
                                 elif _now() - last_sent >= _KEEPALIVE_INTERVAL:
                                     yield ": keepalive\n\n"
                                     last_sent = _now()
-            except (httpx.ConnectError, httpx.TimeoutException):
+            except httpx.TransportError:
                 pass  # Fall through to the fallback message below
             if streamed_prefix:
                 # Whatever the forced call produced, or did not: the stored message begins with what was watched.

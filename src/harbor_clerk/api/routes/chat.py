@@ -468,8 +468,16 @@ async def llm_status(
             async with httpx.AsyncClient(timeout=2.0) as client:
                 r = await client.get(f"{settings.llama_server_url}/health")
                 state = "ready" if r.status_code == 200 else "loading"
-        except (httpx.ConnectError, httpx.TimeoutException):
+        except httpx.TransportError:
+            # A model swap kills the old server under an open connection: the probe connects, then the read is
+            # reset or the response cut short (ReadError, RemoteProtocolError), not refused (#690). Every
+            # transport failure means the same thing here, the server is not there yet, so the poller polls on.
             state = "loading"
+        except Exception:
+            # Anything else is a 500. uvicorn logs the traceback to stderr, which in the native app is the Swift
+            # pipe, not the api.log file, so the 500 in #690 left no trace. Log it where the file handler is.
+            logger.exception("llama-server health probe failed: %s/health", settings.llama_server_url)
+            raise
 
     # Summarize backend resolution mirrors the precedence in
     # `harbor_clerk.llm.summarize.generate_summary`:

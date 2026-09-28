@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 import respx
 from httpx import Response
@@ -162,3 +163,13 @@ def test_call_tool_sends_dual_accept_header(cfg):
     accept = route.calls.last.request.headers["accept"]
     assert "application/json" in accept
     assert "text/event-stream" in accept
+
+
+@respx.mock
+def test_a_reset_mid_request_is_a_connection_error_not_a_traceback(cfg):
+    """The API restarting under an open request resets it: httpx raises ReadError, not ConnectError (#690)."""
+    respx.post("https://test.local/mcp/").mock(side_effect=httpx.ReadError("Connection reset by peer"))
+    client = McpHttpClient(cfg)
+    with pytest.raises(McpClientError) as exc:
+        client.call_tool("kb_search", {"query": "x"})
+    assert exc.value.kind == "connection"
