@@ -44,7 +44,7 @@ def test_an_answer_that_opens_by_saying_the_fact_is_absent_scores_0_whatever_it_
     # A plain correct answer still scores 1.0; so does one that says something else is absent, later.
     assert score(nevada, "The agreement is governed by the laws of the State of Nevada.")["score"] == 1.0
     assert score(nevada, "**Nevada.** The venue, however, is not explicitly stated.")["score"] == 1.0
-    assert score(nevada, "\n\nNevada law governs\nThe venue is not explicitly stated.")["score"] == 1.0
+    assert score(nevada, "\n\nNevada law governs\r\nThe venue is not explicitly stated.")["score"] == 1.0
     # The date matcher is the same kind of check, and gets the same guard; the phrasings are quality.py's.
     absent_date = {"kind": "date", "date": "2022-03-15"}
     assert score(absent_date, "I could not find the agreement date; the term ran from March 15, 2022.") == {
@@ -52,6 +52,55 @@ def test_an_answer_that_opens_by_saying_the_fact_is_absent_scores_0_whatever_it_
         "absent": "could not find",
     }
     assert score(absent_date, "March 15, 2022. I could not find an expiry date.")["score"] == 1.0
+
+
+def test_the_opening_is_the_first_sentence_past_a_heading_a_label_a_list_marker_or_a_reasoning_block():
+    """Review of #764: the #713 answer came back behind a heading, a bold label and a list number, and "Inc." ended
+    the sentence early. A thinking model's block, kept in the answer, is not its opening either."""
+    nevada = {"kind": "fact", "all_of": [["Nevada"]]}
+    said_absent = "The governing law is not explicitly stated in the excerpts. A party is based in Nevada."
+    for shape in (
+        f"## Governing Law\n{said_absent}",
+        f"**Answer:**\n{said_absent}",
+        f"1. {said_absent}",
+        f"- {said_absent}",
+        f"<think>Let me look for Nevada.</think>\n{said_absent}",
+    ):
+        assert opening(shape) == "The governing law is not explicitly stated in the excerpts", shape
+        assert score(nevada, shape)["score"] == 0.0, shape
+    assert opening(
+        "The parties are Cybergy Holdings, Inc. and Mount Knowledge Holdings Inc. in Nevada. Law: none."
+    ) == ("The parties are Cybergy Holdings, Inc. and Mount Knowledge Holdings Inc. in Nevada")
+    assert opening("Governed by U.S. law (e.g., Nevada). The venue is not explicitly stated.") == (
+        "Governed by U.S. law (e.g., Nevada)"
+    )
+    # An abbreviation before a capital does end the sentence early; the check reads less and is the weaker for it.
+    assert (
+        opening("Incorporated in the U.S. Virgin Islands. The law is not explicitly stated.")
+        == "Incorporated in the U.S"
+    )
+    # A reasoning block that says the fact is absent is not the answer's opening; the answer after it is.
+    assert score(nevada, "<think>The law is not explicitly stated anywhere.</think>\nNevada.")["score"] == 1.0
+    assert opening("**Nevada.** The venue, however, is not explicitly stated.") == "**Nevada"
+
+
+def test_what_the_opening_rule_costs_is_a_decision():
+    """The rule is dumb on purpose, and these are its two known costs, pinned so a change to them is a decision:
+    a caveat about something else in the first sentence zeroes a correct answer, and an answer that states the
+    parties first and the absence second is credited for a keyed term it mentions in passing."""
+    nevada = {"kind": "fact", "all_of": [["Nevada"]]}
+    assert score(nevada, "Although the venue is not explicitly stated, the agreement is governed by Nevada law.") == {
+        "score": 0.0,
+        "groups_found": 0,
+        "groups": 1,
+        "absent": "not explicitly stated",
+    }
+    assert score(nevada, "I could not find a venue clause, but the governing law is Nevada.")["score"] == 0.0
+    parties_first = (
+        "The parties are Cybergy Holdings, Inc. and Mount Knowledge Holdings Inc. in Nevada. The governing law is "
+        "not explicitly stated in the retrieved excerpts."
+    )
+    assert score(nevada, parties_first)["score"] == 1.0
 
 
 @pytest.mark.parametrize(
