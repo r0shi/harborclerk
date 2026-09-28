@@ -719,12 +719,16 @@ class ServiceManager: ObservableObject {
     }
 
     func startService(_ service: any ManagedService) async {
-        // Bail if a shutdown was requested while we were waiting to start, or
-        // a stop is still in flight: `start()` would spawn into it, and the
-        // stop's tail then runs beside a child it never waited on. Start and
-        // Restart from the status window reach here at any moment; the
-        // relaunch paths only after their own stop has returned.
-        guard service.state != .shutdownPending, service.state != .stopping else {
+        // Bail if a shutdown was requested while we were waiting to start, if
+        // a stop is still in flight (`start()` would spawn into it, and the
+        // stop's tail then runs beside a child it never waited on), or if
+        // another caller is already starting it: no legitimate caller finds
+        // `starting` otherwise, and two drivers meant two spawns a few seconds
+        // apart — two models loading at once (macos/AGENTS.md: the Mac runs
+        // out of memory, not the server). Start and Restart from the status
+        // window reach here at any moment; the relaunch paths only after their
+        // own stop has returned.
+        guard service.state != .shutdownPending, service.state != .stopping, service.state != .starting else {
             Log.logger("lifecycle").notice(
                 "[\(service.name, privacy: .public)] Not starting: \(service.state.rawValue, privacy: .public)")
             return
@@ -886,16 +890,32 @@ class ServiceManager: ObservableObject {
         // subsequent runs work normally.
         isShuttingDown = true
         defer { isShuttingDown = false }
+        // Preferences saves config.json before this runs, so the 3 s poller
+        // may tick during the await below and see a "changed" model id. The
+        // id is recorded before the first await so that tick has nothing to
+        // act on; otherwise it created a fresh relaunch nothing here cancels,
+        // and that relaunch and step 3 drove one service — two spawns, two
+        // models loading at once. Same reason the poller records it.
+        let relaunchesLlama = Self.settingsRestartRelaunchesLlama(changedKeys)
+        if changedKeys.contains("llm_model_id") {
+            lastLlmModelId = AppSettings.shared.llmModelId
+        }
         // The config-watcher relaunch is cancelled only when this restart
         // relaunches llama itself. A cancelled relaunch does not start (the
         // canceller owns the next start), so cancelling it for a change that
         // never touches llama — worker preset, log level — stranded a model
         // activated seconds earlier at `stopped` until a manual Start.
-        if Self.settingsRestartRelaunchesLlama(changedKeys) {
+        if relaunchesLlama {
             configChangeTask?.cancel()
             configChangeTask = nil
         }
         await healthChecker?.cancelInFlightRestarts()
+        if relaunchesLlama {
+            // A restart-signal tick during that await (the id branch cannot
+            // fire, see above) may have created a new relaunch; it is ours.
+            configChangeTask?.cancel()
+            configChangeTask = nil
+        }
 
         // Determine which infrastructure and python services need restart
         var infraToRestart: [any ManagedService] = []
@@ -937,10 +957,6 @@ class ServiceManager: ObservableObject {
 
             case "llm_model_id", "llm_yarn_enabled":
                 infraToRestart.append(llamaService)
-                // Recorded here as the config watcher records it, so the next
-                // poll of the file this save just wrote does not read the id
-                // as changed and relaunch the server this restart launches.
-                if key == "llm_model_id" { lastLlmModelId = AppSettings.shared.llmModelId }
 
             case "api_port":
                 pythonToRestart.insert(ObjectIdentifier(apiService))

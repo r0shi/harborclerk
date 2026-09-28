@@ -234,6 +234,8 @@ final class LlamaService: ManagedService {
             // can reach — the one orphan path the state guards do not close.
             if process === proc { process = nil }
         } else if process?.isRunning != true {
+            // Re-read rather than reusing the capture above: a concurrent
+            // reassignment to a live child between the two must stay.
             process = nil
         }
 

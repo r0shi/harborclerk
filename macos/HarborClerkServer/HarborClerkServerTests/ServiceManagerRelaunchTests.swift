@@ -243,6 +243,20 @@ final class ServiceManagerRelaunchTests: XCTestCase {
         XCTAssertEqual(svc.state, .stopping)
     }
 
+    /// A second driver on a service another caller is already starting would
+    /// spawn a second child a few seconds after the first.
+    func testStartServiceIsANoOpOnAServiceAlreadyStarting() async {
+        let sm = makeManager()
+        let svc = MockProcessService(state: .starting)
+        svc.healthy = true
+
+        await sm.startService(svc)
+
+        XCTAssertEqual(svc.startCalls, 0, "another caller owns this start")
+        XCTAssertEqual(svc.healthCalls, 0)
+        XCTAssertEqual(svc.state, .starting)
+    }
+
     func testStartServiceHonoursARefusal() async {
         let sm = makeManager()
         let svc = MockProcessService(state: .stopped)
