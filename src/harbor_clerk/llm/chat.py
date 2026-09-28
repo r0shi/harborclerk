@@ -669,14 +669,17 @@ async def chat_stream(
                 "tool_rounds": f"{_MAX_TOOL_ROUNDS} tool rounds",
             }[stop_reason]
             logger.info("Forcing final text response after %s (conversation=%s)", reason, conversation_id)
-            # The forced answer is bounded too, or the bound is not one. Both clocks start from lines received, not
-            # from the request: the prompt is re-read in full first (no tools this time, so the prompt cache
-            # misses), and on a full context that alone can take most of two minutes. The thinking bound runs from
-            # the first line, the grace from the first content token (#742).
+            # The forced answer is bounded too, or the bound is not one. Both clocks start from the model's lines,
+            # not from the request: the prompt is re-read in full first (no tools this time, so the prompt cache
+            # misses), and on a full context that alone can take most of two minutes, in silence. A keepalive
+            # sentinel is our silence, not the model's line: it starts no clock, though a clock already running is
+            # checked on it, so a model that falls silent past its grace is cut then. (The client's read timeout of
+            # 120 s is a third bound on that silence, older than both.) The thinking bound runs from the model's
+            # first line, the grace from its first content token (#742).
             thinking_deadline: float | None = None
             final_deadline: float | None = None
             reasoning_buffer = ""  # what the model wrote in its reasoning channel; the answer, if it is all there is
-            answer_complete = False
+            finish_reason: str | None = None  # "stop" when the model ended its answer; "length" when the server did
             final_payload = {
                 "messages": [*messages, {"role": "user", "content": _SEARCH_OVER_MESSAGE}],
                 "stream": True,
@@ -701,7 +704,7 @@ async def chat_stream(
                         async with aclosing(_iter_with_keepalive(response.aiter_lines())) as lines:
                             async for line in lines:
                                 if deadline is not None:
-                                    if thinking_deadline is None:
+                                    if thinking_deadline is None and line is not _KEEPALIVE_SENTINEL:
                                         thinking_deadline = _now() + _FINAL_ANSWER_THINKING_SECONDS
                                     if final_deadline is not None and _now() >= final_deadline:
                                         logger.info(
@@ -710,7 +713,11 @@ async def chat_stream(
                                             conversation_id,
                                         )
                                         break
-                                    if final_deadline is None and _now() >= thinking_deadline:
+                                    if (
+                                        final_deadline is None
+                                        and thinking_deadline is not None
+                                        and _now() >= thinking_deadline
+                                    ):
                                         logger.info(
                                             "Final answer cut: no content after %.0fs, %d chars of reasoning "
                                             "(conversation=%s)",
@@ -727,13 +734,14 @@ async def chat_stream(
                                     continue
                                 data = line[6:]
                                 if data.strip() == "[DONE]":
-                                    answer_complete = True
                                     break
                                 try:
                                     chunk = json.loads(data)
                                 except json.JSONDecodeError:
                                     continue
-                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                choice = chunk.get("choices", [{}])[0]
+                                finish_reason = choice.get("finish_reason") or finish_reason
+                                delta = choice.get("delta", {})
                                 if delta.get("content"):
                                     if deadline is not None and final_deadline is None:
                                         final_deadline = _now() + _FINAL_ANSWER_GRACE_SECONDS
@@ -748,10 +756,11 @@ async def chat_stream(
                                     last_sent = _now()
             except httpx.TransportError:
                 pass  # Fall through to the fallback message below
-            if not assistant_content and answer_complete and reasoning_buffer.strip():
+            if not assistant_content and finish_reason == "stop" and reasoning_buffer.strip():
                 # gpt-oss routes its whole answer through the reasoning channel even when asked not to think
-                # (research.py saw the same): a finished answer there is the answer, not nothing. A thought cut
-                # short is not one, and falls through to the fallback.
+                # (research.py saw the same): an answer the model finished there is the answer, not nothing. A
+                # thought cut short is not one, whether we cut it (the bounds above) or the server did (finish_reason
+                # "length": the context ran out under it), and falls through to the fallback.
                 logger.info(
                     "Final answer came as %d chars of reasoning_content and no content (conversation=%s)",
                     len(reasoning_buffer),
