@@ -2783,8 +2783,13 @@ async def kb_verify_identifier(identifier: str) -> str:
         candidates are indistinguishable by metadata; inspect with
         kb_get_document if you must.
     """
+    principal = _get_principal()
     async with async_session_factory() as session:
-        result = await _verify_identifier_impl(session, identifier)
+        # Per-scope, like every other kb_* tool that reads documents (#724): a scoped key or a folder-scoped
+        # chat must not resolve, or learn the title of, a document in a folder outside its scope. The set is
+        # applied inside the lookup, before its caps, not to the result.
+        visible_ids = await _visible_doc_ids(session, principal)
+        result = await _verify_identifier_impl(session, identifier, doc_ids=visible_ids)
         payloads: list[dict] = []
         if isinstance(result, dict):
             if isinstance(result.get("match"), dict):
