@@ -33,10 +33,14 @@ from scripts.test_corpora.runner.quality import nothing_found_signature
 
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october")
 _MONTHS += ("november", "december")
-# What may stand in front of an answer's first sentence: a thinking model's reasoning block, a heading, a bold
-# label on a line of its own (`**Answer:**`), a list marker. Read past, so the sentence is the one judged.
+# What may stand in front of an answer's first sentence: a thinking model's reasoning block, a bold label on a
+# line of its own (`**Answer:**`, `**Answer**:`), a list marker. Read past, so the sentence is the one judged. A
+# label is bold text ending in a colon; bold text on its own line without one (`**Nevada.**`) is the answer, not a
+# label, and a heading (`## Nevada`) is kept for the same reason (review of #764). The cost is the other way: the
+# #713 answer under `## Governing Law`, or under a colon-less `**Answer**`, is not caught, and that is the miss
+# the scorer had before this rule. Pinned in the tests as the decision it is.
 _THINK = re.compile(r"<think>.*?</think>\s*", re.S)
-_DECORATION = re.compile(r"^(?:#+\s[^\r\n]*|\*\*[^*\r\n]+\*\*:?)[ \t]*(?:\r?\n|$)")
+_LABEL_LINE = re.compile(r"^(?:\*\*[^*\r\n]+:\*\*|\*\*[^*\r\n]+\*\*:)[ \t]*(?:\r?\n|$)")
 _LIST_MARKER = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
 # A sentence ends at `.`, `!` or `?` (closing bold, quotes or brackets allowed after it) before whitespace and a
 # capital, digit or opening mark, or the end, or at a line break. "Inc. and" is not an end; "U.S. Virgin" is.
@@ -44,11 +48,11 @@ _SENTENCE_END = re.compile(r"[.!?][*_)\]\"'”’]*(?=\s+[A-Z0-9\"“*(\[]|\s*$)
 
 
 def opening(answer: str) -> str:
-    """The answer's first sentence, past whatever decoration stands in front of it. An end read too early ("U.S."
-    before "Virgin Islands") weakens the absence check, since less is read; it never touches the term match,
-    which is over the whole answer."""
+    """The answer's first sentence, past a reasoning block, label lines and a list marker in front of it. An end
+    read too early ("U.S." before "Virgin Islands") weakens the absence check, since less is read; it never
+    touches the term match, which is over the whole answer."""
     text = _THINK.sub("", answer).lstrip()
-    while found := _DECORATION.match(text):
+    while found := _LABEL_LINE.match(text):
         text = text[found.end() :].lstrip()
     text = _LIST_MARKER.sub("", text, count=1)
     found = _SENTENCE_END.search(text)
@@ -128,7 +132,9 @@ def named_contracts(text: str, universe: list[str]) -> set[str]:
 
 def score(entry: dict, answer: str) -> dict:
     """{"score": 0..1, ...detail}. An empty answer scores 0, and so does a fact or date answer whose opening
-    sentence says the thing is absent, before its text is searched (#713)."""
+    sentence says the thing is absent, before its text is searched (#713). "Absent" is any of quality.py's
+    no-findings phrasings: the four the baseline check reads anywhere ("no information about ...") and the two
+    read only in an opening."""
     answer = answer or ""
     kind = entry["kind"]
     if kind in ("fact", "date"):

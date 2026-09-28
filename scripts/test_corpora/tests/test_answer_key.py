@@ -54,20 +54,31 @@ def test_an_answer_that_opens_by_saying_the_fact_is_absent_scores_0_whatever_it_
     assert score(absent_date, "March 15, 2022. I could not find an expiry date.")["score"] == 1.0
 
 
-def test_the_opening_is_the_first_sentence_past_a_heading_a_label_a_list_marker_or_a_reasoning_block():
-    """Review of #764: the #713 answer came back behind a heading, a bold label and a list number, and "Inc." ended
-    the sentence early. A thinking model's block, kept in the answer, is not its opening either."""
+def test_the_opening_is_the_first_sentence_past_a_label_a_list_marker_or_a_reasoning_block():
+    """Review of #764: the #713 answer came back behind a bold label and a list number, and "Inc." ended the
+    sentence early. A thinking model's block, kept in the answer, is not its opening either."""
     nevada = {"kind": "fact", "all_of": [["Nevada"]]}
     said_absent = "The governing law is not explicitly stated in the excerpts. A party is based in Nevada."
     for shape in (
-        f"## Governing Law\n{said_absent}",
         f"**Answer:**\n{said_absent}",
+        f"**Answer**:\n{said_absent}",
         f"1. {said_absent}",
         f"- {said_absent}",
         f"<think>Let me look for Nevada.</think>\n{said_absent}",
     ):
         assert opening(shape) == "The governing law is not explicitly stated in the excerpts", shape
         assert score(nevada, shape)["score"] == 0.0, shape
+    # A bold line or a heading without a colon is the answer, not a label (second review of #764: read past, the
+    # caveat after it zeroed a correct answer). Beside the label case, so a change to the rule is a decision.
+    caveat = "The venue is not explicitly stated."
+    for shape in (
+        f"**Nevada.**\n{caveat}",
+        f"**Nevada**\n\n{caveat}",
+        f"**Governing law: Nevada**\n{caveat}",
+        f"## Nevada\n{caveat}",
+    ):
+        assert "not explicitly stated" not in opening(shape), shape
+        assert score(nevada, shape)["score"] == 1.0, shape
     assert opening(
         "The parties are Cybergy Holdings, Inc. and Mount Knowledge Holdings Inc. in Nevada. Law: none."
     ) == ("The parties are Cybergy Holdings, Inc. and Mount Knowledge Holdings Inc. in Nevada")
@@ -101,6 +112,16 @@ def test_what_the_opening_rule_costs_is_a_decision():
         "not explicitly stated in the retrieved excerpts."
     )
     assert score(nevada, parties_first)["score"] == 1.0
+    # A heading, or a bold line without a colon, is kept as the opening, since `## Nevada` and `**Nevada**` are
+    # answers: the #713 shape under a topic heading or a colon-less label is the miss the scorer had before the
+    # rule, not a new one (reviews of #764 and #771).
+    said_absent = "The governing law is not explicitly stated in the excerpts. A party is in Nevada."
+    for label, shape in (
+        ("## Governing Law", f"## Governing Law\n{said_absent}"),
+        ("**Answer**", f"**Answer**\n{said_absent}"),
+    ):
+        assert opening(shape) == label, shape
+        assert score(nevada, shape)["score"] == 1.0, shape
 
 
 @pytest.mark.parametrize(
