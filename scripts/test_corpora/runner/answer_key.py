@@ -37,7 +37,8 @@ _MONTHS += ("november", "december")
 # line of its own (`**Answer:**`, `**Answer**:`), a list marker. Read past, so the sentence is the one judged. A
 # label is bold text ending in a colon; bold text on its own line without one (`**Nevada.**`) is the answer, not a
 # label, and a heading (`## Nevada`) is kept for the same reason (review of #764). The cost is the other way: the
-# #713 answer under `## Governing Law` is not caught, and that is the miss the scorer had before this rule.
+# #713 answer under `## Governing Law`, or under a colon-less `**Answer**`, is not caught, and that is the miss
+# the scorer had before this rule. Pinned in the tests as the decision it is.
 _THINK = re.compile(r"<think>.*?</think>\s*", re.S)
 _LABEL_LINE = re.compile(r"^(?:\*\*[^*\r\n]+:\*\*|\*\*[^*\r\n]+\*\*:)[ \t]*(?:\r?\n|$)")
 _LIST_MARKER = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
