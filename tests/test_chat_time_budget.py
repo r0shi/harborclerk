@@ -1172,24 +1172,25 @@ async def test_blank_content_and_nothing_else_is_nothing(db_session, admin_user,
 
 
 @pytest.mark.asyncio
-async def test_blank_content_before_a_tool_call_is_not_an_answer_being_written(
+async def test_blank_content_before_the_deadline_does_not_grant_the_grace_to_what_follows(
     db_session, admin_user, chat_session_factory, monkeypatch
 ):
-    """The model streams "\\n\\n", then starts a tool call as the budget runs out. Blank text is not an answer
-    being written, so the tool call is cut at the deadline, not given the grace and executed."""
+    """The model streams "\\n\\n" inside the budget and its first real token after the deadline. Blank text is not
+    an answer being written, so the generation is cut at the deadline like any other and the answer is forced; it
+    does not run on under the grace an answer in progress would get."""
     conv = await _conversation(db_session, admin_user)
     clock = _Clock()
     client, _ = _mock_client(
         [
-            [_chunk(content="\n\n"), _tool_call_chunk(), "data: [DONE]"],
-            [_chunk(content="Nothing was searched."), "data: [DONE]"],
+            [_chunk(content="\n\n"), _chunk(content="The fee was $4,500."), "data: [DONE]"],
+            [_chunk(content="From the results, $4,500."), "data: [DONE]"],
         ],
         on_line=lambda n, i: setattr(clock, "now", 301.0) if (n == 0 and i == 0) else None,
     )
     text, done, tool_calls = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
-    assert tool_calls == [], "the tool call written past the deadline is not executed"
-    assert done["stop_reason"] == "time_budget"
-    assert "Nothing was searched." in text
+    assert tool_calls == [] and done["stop_reason"] == "time_budget"
+    assert client.stream.call_count == 1, "the generation was cut at the deadline and the answer forced"
+    assert "The fee was" not in text and text.strip().startswith("From the results, $4,500.")
 
 
 @pytest.mark.asyncio
