@@ -13,7 +13,7 @@ import re
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
 from contextlib import aclosing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy import select
@@ -49,7 +49,9 @@ _LLM_TIMEOUT = 120.0
 # model is minutes, not seconds: gpt-oss-20b on the mini wrote 5,200-token notes at 16 tokens a second,
 # over five minutes (#720). The timeout is sized for the largest cap at that rate (8,000 tokens is 500 s)
 # plus prefill, not for the fast models, because a timeout that fires on a working call is a retry of a
-# five-minute generation behind the same single slot.
+# five-minute generation behind the same single slot. It is also what catches a hung server: while a call
+# is in flight the stream keeps heartbeating and emitting events, so the reaper and the harness's silence
+# watchdog cannot tell a hung model from a slow one, and this read timeout is the only detector left.
 _SLOW_LLM_TIMEOUT = 600.0
 # While an LLM call is in flight the stream refreshes the heartbeat and emits a progress event this often.
 # The API's reaper marks a research task stale at five minutes without a heartbeat and the eval harness
@@ -854,8 +856,8 @@ async def _keepalive_tick(
     gap_round: int | None = None,
 ) -> str:
     """One keepalive of the stream while an LLM call runs: refresh the heartbeat the reaper reads, commit it,
-    and return the progress event to send. One function for every call site, so one test guards them all:
-    the review of #755 mutated two of five copies of this body and nothing failed."""
+    and return the progress event to send. One body for every call site, so one test guards them all; five
+    copies of it had three that no test guarded."""
     state.heartbeat_at = datetime.now(UTC)
     await session.commit()
     return _waiting_progress(step, phase, call, call_started, start_time, strategy, gap_round=gap_round)
@@ -889,15 +891,11 @@ async def _with_keepalive(
                     await queue.put(("item", item))
             else:
                 await queue.put(("item", await source))
-        except asyncio.CancelledError:
-            raise
-        except BaseException as exc:
-            # Everything but cancellation is reported to the consumer. If the pump ended without a
-            # message, the consumer below would tick keepalives forever for a call that is dead, which is
-            # the very failure this helper exists to prevent.
-            await queue.put(("error", exc))
-            return
-        await queue.put(("end", None))
+        finally:
+            # Wakes the consumer however the pump ended; the consumer reads the outcome from the task. If
+            # the pump could end without this, the consumer would tick keepalives forever for a call that
+            # is dead, which is the very failure this helper exists to prevent.
+            queue.put_nowait(("end", None))
 
     task = asyncio.create_task(pump())
     try:
@@ -908,9 +906,12 @@ async def _with_keepalive(
                 yield ("keepalive", None)
                 continue
             if kind == "end":
+                if not task.done():
+                    await asyncio.wait({task})
+                exc = task.exception()
+                if exc is not None:
+                    raise exc
                 return
-            if kind == "error":
-                raise value  # type: ignore[misc]
             yield kind, value
     finally:
         if not task.done():
@@ -1102,6 +1103,8 @@ async def _extract_notes_with_retry(
     user_question: str,
     passages_text: str,
     coverage: dict[str, dict],
+    *,
+    deadline: datetime | None = None,
 ) -> str:
     """Extract notes, but don't let a weak model's 'no relevant findings'
     verdict be terminal when retrieval clearly succeeded.
@@ -1111,6 +1114,11 @@ async def _extract_notes_with_retry(
     retry also bails, fall back to handing the raw passages to synthesis.
     Below the floor the sentinel is trusted — the corpus genuinely lacks
     the information.
+
+    ``deadline`` is the moment the synthesis reserve begins. Each attempt may
+    run for _SLOW_LLM_TIMEOUT, so the second is skipped (raw passages go to
+    synthesis) once the deadline has passed; two back-to-back attempts with no
+    check between them could otherwise take a 10-minute run past 35 minutes.
     """
     notes_text = await _extract_notes(client, url, user_question, passages_text)
     if not _is_no_findings_sentinel(notes_text):
@@ -1120,6 +1128,14 @@ async def _extract_notes_with_retry(
     if top_score < _RETRIEVAL_RELEVANCE_FLOOR:
         logger.info("Note extraction returned no-findings; top score %.2f below floor — trusting it", top_score)
         return notes_text
+
+    if deadline is not None and datetime.now(UTC) >= deadline:
+        logger.warning(
+            "Note extraction bailed despite top score %.2f, but the synthesis reserve has begun — "
+            "passing raw passages to synthesis instead of retrying",
+            top_score,
+        )
+        return f"## Raw passages\n{passages_text[:_NOTE_PROMPT_CHAR_CAP]}"
 
     logger.info("Note extraction bailed despite top score %.2f — retrying forcefully", top_score)
     notes_text = await _extract_notes(client, url, user_question, passages_text, forceful=True)
@@ -1658,7 +1674,14 @@ async def research_stream(
                             call_started = datetime.now(UTC)
                             async with aclosing(
                                 _with_keepalive(
-                                    _extract_notes_with_retry(client, llm_url, user_question, passages_text, coverage)
+                                    _extract_notes_with_retry(
+                                        client,
+                                        llm_url,
+                                        user_question,
+                                        passages_text,
+                                        coverage,
+                                        deadline=start_time + timedelta(seconds=time_limit_s - synthesis_reserve_s),
+                                    )
                                 )
                             ) as steps:
                                 async for kind, value in steps:
@@ -1802,8 +1825,6 @@ async def research_stream(
                             passage_budget_chars // 3,
                             user_scope=user_scope,
                         )
-                        seen_cite_ids = {c["doc_id"] for c in research_citations}
-                        research_citations.extend(d for d in gap_evidence_docs if d["doc_id"] not in seen_cite_ids)
                         # The same reserve as phase 4's: the round was allowed to start at up to 70% of the
                         # budget, and its note-extraction call may run for _SLOW_LLM_TIMEOUT, so without
                         # this check the call could start with less time left than synthesis needs.
@@ -1845,6 +1866,12 @@ async def research_stream(
                                         gap_notes = value
                                 collected_notes.append(f"## Research notes (gap round {gap_round_n + 1})\n{gap_notes}")
                                 yield _sse({"type": "notes", "content": gap_notes[:2000]})
+                                # Cited only now: a document whose passages never reached notes or
+                                # synthesis (extraction skipped or failed) must not appear as a source.
+                                seen_cite_ids = {c["doc_id"] for c in research_citations}
+                                research_citations.extend(
+                                    d for d in gap_evidence_docs if d["doc_id"] not in seen_cite_ids
+                                )
                                 last_round_added_content = True
                             except Exception:
                                 logger.exception("Gap note extraction failed (round %d)", gap_round_n + 1)

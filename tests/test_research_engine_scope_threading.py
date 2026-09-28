@@ -325,12 +325,16 @@ async def test_research_stream_unscoped_passes_none_scope(
         patch.object(research_module, "execute_tool", side_effect=fake_execute_tool),
         patch("httpx.AsyncClient", return_value=mock_client),
     ):
-        async for _ in research_module.research_stream(
-            conv.conversation_id,
-            user_id=admin_user.user_id,
-        ):
-            pass
+        events = [
+            event
+            async for event in research_module.research_stream(
+                conv.conversation_id,
+                user_id=admin_user.user_id,
+            )
+        ]
 
     assert len(captured_scopes) >= 1, "execute_tool was never called"
     for i, scope in enumerate(captured_scopes):
         assert scope is None, f"execute_tool call #{i + 1}: expected None for unscoped run, got {scope!r}"
+    last = json.loads(events[-1].removeprefix("data: "))
+    assert last["type"] == "done", last

@@ -127,6 +127,26 @@ async def test_retry_falls_back_to_raw_passages_when_retry_also_bails():
 
 
 @pytest.mark.asyncio
+async def test_forceful_retry_is_skipped_once_the_synthesis_reserve_has_begun():
+    """Each attempt may run for _SLOW_LLM_TIMEOUT; past the deadline the second one is not started and the
+    raw passages go to synthesis, as when the retry also bails."""
+    from datetime import UTC, datetime, timedelta
+
+    with patch("harbor_clerk.llm.research._extract_notes", new=AsyncMock(return_value=_SENTINEL)) as m:
+        out = await _extract_notes_with_retry(
+            None, "http://x", "q", _PASSAGES, _coverage(1.7), deadline=datetime.now(UTC) - timedelta(seconds=1)
+        )
+    assert out.startswith("## Raw passages")
+    assert m.await_count == 1
+
+    with patch("harbor_clerk.llm.research._extract_notes", new=AsyncMock(return_value=_SENTINEL)) as m:
+        await _extract_notes_with_retry(
+            None, "http://x", "q", _PASSAGES, _coverage(1.7), deadline=datetime.now(UTC) + timedelta(minutes=5)
+        )
+    assert m.await_count == 2  # time left: the forceful attempt runs
+
+
+@pytest.mark.asyncio
 async def test_low_score_sentinel_is_trusted_no_retry():
     """Sentinel + low retrieval score → the sentinel is kept; the corpus
     genuinely lacks the information. No retry."""

@@ -192,6 +192,7 @@ async def test_research_stream_heartbeats_and_reports_between_search_batches(
     assert any(e.get("type") == "tool_call" and e.get("name") == "read_passages" for e in events), (
         "the stream did not get past the fan-out"
     )
+    assert events[-1]["type"] == "done", events[-1]
 
 
 @pytest.mark.asyncio
@@ -246,3 +247,4 @@ async def test_research_stream_heartbeats_and_reports_during_the_gap_round_too(
     assert any(e.get("type") == "notes" and "Gap search found" in e.get("content", "") for e in events), (
         "the gap round did not reach its result"
     )
+    assert events[-1]["type"] == "done", events[-1]

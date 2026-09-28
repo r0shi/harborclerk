@@ -79,9 +79,14 @@ async def test_with_keepalive_raises_the_sources_exception_after_the_items_befor
         raise httpx.ReadTimeout("model stalled")
 
     seen = []
-    with pytest.raises(httpx.ReadTimeout):
-        async for step in _with_keepalive(failing(), interval=1.0):
+
+    async def consume() -> None:
+        async for step in _with_keepalive(failing(), interval=0.01):
             seen.append(step)
+
+    # Bounded, so a helper that never learns the source died fails here instead of hanging the suite.
+    with pytest.raises(httpx.ReadTimeout):
+        await asyncio.wait_for(consume(), 1.0)
     assert seen == [("item", "partial")]
 
 
@@ -176,6 +181,44 @@ async def _heartbeat_of(conversation_id):
         return (await session.get(ResearchState, conversation_id)).heartbeat_at
 
 
+async def _citations_of(conversation_id) -> list[dict]:
+    from harbor_clerk.models.research_state import ResearchState
+
+    async with research_module.async_session_factory() as session:
+        return (await session.get(ResearchState, conversation_id)).citations or []
+
+
+async def _evidence_phase3_then_gap(coverage, *args, **kwargs):
+    """`_read_evidence` for phase 3 (no evidence docs) and then for the gap round (one document, `gap-doc`)."""
+    if any(cid.startswith("chunk-governing") for cid in coverage):
+        return "gap passage", [{"doc_id": "gap-doc", "title": "Gap doc"}]
+    return "a passage", []
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_consumer_task_cancels_the_source():
+    """The Starlette disconnect path: the task iterating the stream is cancelled at an await."""
+    cancelled = asyncio.Event()
+
+    async def source() -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def consume() -> None:
+        async for _ in _with_keepalive(source(), interval=0.01):
+            pass
+
+    consumer = asyncio.create_task(consume())
+    await asyncio.sleep(0.03)
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+    assert cancelled.is_set()
+
+
 @pytest.mark.asyncio
 async def test_research_stream_heartbeats_and_reports_while_note_extraction_runs(
     db_session,
@@ -190,7 +233,7 @@ async def test_research_stream_heartbeats_and_reports_while_note_extraction_runs
     monkeypatch.setattr(research_module, "_LLM_KEEPALIVE_INTERVAL", 0.02)
     heartbeats: dict[str, object] = {}
 
-    async def slow_notes(client, url, question, passages, coverage) -> str:
+    async def slow_notes(client, url, question, passages, coverage, *, deadline=None) -> str:
         heartbeats["at_call_start"] = await _heartbeat_of(conv.conversation_id)
         await asyncio.sleep(0.15)
         heartbeats["at_call_end"] = await _heartbeat_of(conv.conversation_id)
@@ -257,7 +300,7 @@ async def test_research_stream_heartbeats_and_reports_during_planning_and_the_ga
         patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool()),
         patch.object(research_module, "_plan_queries", new=slow("planning", ["termination notice period clause"])),
         patch.object(research_module, "_extract_notes_with_retry", new=AsyncMock(return_value="Notes.")),
-        patch.object(research_module, "_read_evidence", new=AsyncMock(return_value=("a passage", []))),
+        patch.object(research_module, "_read_evidence", new=AsyncMock(side_effect=_evidence_phase3_then_gap)),
         patch.object(research_module, "_check_gaps", new=slow("gap_analysis", ["governing law clause"])),
         patch.object(research_module, "_extract_notes", new=slow("gap_notes", "Gap notes.")),
         patch("httpx.AsyncClient", return_value=mock_client),
@@ -265,10 +308,13 @@ async def test_research_stream_heartbeats_and_reports_during_planning_and_the_ga
         raw = [e async for e in research_module.research_stream(conv.conversation_id, user_id=admin_user.user_id)]
 
     assert moved == {"planning": True, "gap_analysis": True, "gap_notes": True}, moved
+    # The gap round's passages reached notes, so its document is a source of the report.
+    assert "gap-doc" in {c["doc_id"] for c in await _citations_of(conv.conversation_id)}
     events = _events(raw)
     waiting = [e for e in events if e.get("type") == "progress" and "llm_call" in e]
     assert {e["llm_call"] for e in waiting} >= {"planning", "gap_analysis", "notes"}, waiting
-    assert all(e["step"] == 1 and e["phase"] == "planning" for e in waiting if e["llm_call"] == "planning")
+    planning_waits = [e for e in waiting if e["llm_call"] == "planning"]
+    assert all(e["step"] == 1 and e["phase"] == "planning" and "round" not in e for e in planning_waits)
     # Round 1 runs both calls; round 2 re-suggests the same query, finds nothing new and stops after its gap
     # analysis, so its events carry round 2.
     gap_waits = [e for e in waiting if e["step"] == 5]
@@ -477,7 +523,7 @@ async def test_gap_round_note_extraction_is_skipped_when_the_budget_is_tight(
     )
     with (
         patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool()),
-        patch.object(research_module, "_read_evidence", new=AsyncMock(return_value=("a passage", []))),
+        patch.object(research_module, "_read_evidence", new=AsyncMock(side_effect=_evidence_phase3_then_gap)),
         patch.object(research_module, "_check_gaps", new=AsyncMock(side_effect=[["governing law clause"], []])),
         patch.object(research_module, "_extract_notes", new=extract),
         patch("httpx.AsyncClient", return_value=mock_client),
@@ -491,3 +537,5 @@ async def test_gap_round_note_extraction_is_skipped_when_the_budget_is_tight(
     assert extract.await_count == 0, "gap-round note extraction ran with less time left than synthesis needs"
     assert any(e.get("type") == "notes" and "skipping note extraction" in e["content"] for e in events)
     assert events[-1]["type"] == "done", events[-1]
+    # Its passages never reached notes or synthesis, so the gap round's document is not a source.
+    assert "gap-doc" not in {c["doc_id"] for c in await _citations_of(conv.conversation_id)}
