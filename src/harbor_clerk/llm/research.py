@@ -54,6 +54,10 @@ _SLOW_LLM_TIMEOUT = 600.0
 # aborts at 325 s without an SSE event; a call that is working must look like it to both (#720, as #700
 # did for the search fan-out).
 _LLM_KEEPALIVE_INTERVAL = 30.0
+# Progress events carry the step of the phase they belong to: 1 planning, 2 searching, 3 reading,
+# 4 analyzing, 5 gap analysis. Synthesis follows them and is the same step on a fresh run and on a
+# resume, where the earlier steps did not run in this process.
+_SYNTHESIS_STEP = 6
 
 # Per-phase output caps. Without these, models like Gemma 26B routinely
 # produce 5,000+ tokens for what should be a ~200-token JSON object, which
@@ -855,7 +859,12 @@ async def _with_keepalive(
                     await queue.put(("item", item))
             else:
                 await queue.put(("item", await source))
-        except Exception as exc:
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            # Everything but cancellation is reported to the consumer. If the pump ended without a
+            # message, the consumer below would tick keepalives forever for a call that is dead, which is
+            # the very failure this helper exists to prevent.
             await queue.put(("error", exc))
             return
         await queue.put(("end", None))
@@ -1756,7 +1765,25 @@ async def research_stream(
                         )
                         seen_cite_ids = {c["doc_id"] for c in research_citations}
                         research_citations.extend(d for d in gap_evidence_docs if d["doc_id"] not in seen_cite_ids)
-                        if gap_passages.strip():
+                        # The same reserve as phase 4's: the round was allowed to start at up to 70% of the
+                        # budget, and its note-extraction call may run for _SLOW_LLM_TIMEOUT, so without
+                        # this check the call could start with less time left than synthesis needs.
+                        elapsed = int((datetime.now(UTC) - start_time).total_seconds())
+                        if gap_passages.strip() and elapsed > time_limit_s - synthesis_reserve_s:
+                            logger.warning(
+                                "Skipping gap-round note extraction: elapsed=%ds, budget=%ds, reserving %ds",
+                                elapsed,
+                                time_limit_s,
+                                synthesis_reserve_s,
+                            )
+                            yield _sse(
+                                {
+                                    "type": "notes",
+                                    "content": f"Time-budget tight — skipping note extraction{round_label}.",
+                                }
+                            )
+                            last_round_added_content = False
+                        elif gap_passages.strip():
                             try:
                                 call_started = datetime.now(UTC)
                                 async for kind, value in _with_keepalive(
@@ -1823,10 +1850,12 @@ async def research_stream(
 
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(_SYNTHESIS_TIMEOUT)) as client:
-                    # Tokens are the stream's own keepalive, except on models that route the whole answer
-                    # through the reasoning channel (gpt-oss): those tokens are buffered, not sent, so the
-                    # stream would be silent for the whole synthesis without this.
+                    # Tokens keep the SSE client alive but not the reaper, which reads heartbeat_at: a
+                    # healthy content stream longer than five minutes was reaped mid-report. And on models
+                    # that route the whole answer through the reasoning channel (gpt-oss) the tokens are
+                    # buffered, not sent, so the stream is silent too. Both cases refresh on the interval.
                     call_started = datetime.now(UTC)
+                    last_heartbeat = call_started
                     async for kind, token in _with_keepalive(
                         _stream_llm_tokens(
                             client,
@@ -1836,12 +1865,15 @@ async def research_stream(
                             max_tokens=_MAX_TOKENS_SYNTHESIS,
                         )
                     ):
-                        if kind == "keepalive":
-                            state.heartbeat_at = datetime.now(UTC)
+                        now = datetime.now(UTC)
+                        if kind == "keepalive" or (now - last_heartbeat).total_seconds() >= _LLM_KEEPALIVE_INTERVAL:
+                            state.heartbeat_at = now
+                            last_heartbeat = now
                             await session.commit()
                             yield _waiting_progress(
-                                step_count, "synthesis", "synthesis", call_started, start_time, strategy
+                                _SYNTHESIS_STEP, "synthesis", "synthesis", call_started, start_time, strategy
                             )
+                        if kind == "keepalive":
                             continue
                         report_content += token
                         yield _sse({"type": "token", "content": token})

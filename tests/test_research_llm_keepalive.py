@@ -16,6 +16,7 @@ from harbor_clerk.llm import research as research_module
 from harbor_clerk.llm.research import (
     _MAX_TOKENS_NOTES,
     _SLOW_LLM_TIMEOUT,
+    _SYNTHESIS_STEP,
     _check_gaps,
     _extract_notes,
     _llm_complete,
@@ -284,4 +285,102 @@ async def test_research_stream_falls_back_to_raw_passages_when_note_extraction_t
 
     events = _events(raw)
     assert any(e.get("type") == "notes" and e["content"].startswith("## Raw passages") for e in events)
+    assert events[-1]["type"] == "done", events[-1]
+
+
+class _Dead(BaseException):
+    """Not an Exception: what a pump that only caught Exception would let end the task silently."""
+
+
+@pytest.mark.asyncio
+async def test_with_keepalive_reports_a_source_that_dies_outside_exception_instead_of_ticking_forever():
+    async def dies() -> None:
+        raise _Dead()
+
+    async def consume() -> None:
+        async for _ in _with_keepalive(dies(), interval=0.01):
+            pass
+
+    # A consumer left ticking keepalives for a dead call would refresh the heartbeat of nothing, forever;
+    # the wait_for bound turns that into a failure instead of a hang.
+    with pytest.raises(_Dead):
+        await asyncio.wait_for(consume(), 1.0)
+
+
+@pytest.mark.asyncio
+async def test_research_stream_heartbeats_while_synthesis_streams_steadily(
+    db_session,
+    admin_user,
+    unscoped_research_state,  # noqa: F811
+    mock_research_session_factory,  # noqa: F811
+    monkeypatch,
+):
+    """Tokens keep the SSE client alive but not the reaper. A content stream that never pauses long enough
+    for a keepalive tick must still move the persisted heartbeat once per interval."""
+    conv, _state = unscoped_research_state
+    monkeypatch.setattr(research_module, "_LLM_KEEPALIVE_INTERVAL", 0.05)
+    heartbeats: dict[str, object] = {}
+
+    async def steady(client, url, messages, *, timeout=None, max_tokens=None):
+        heartbeats["at_call_start"] = await _heartbeat_of(conv.conversation_id)
+        for _ in range(30):
+            await asyncio.sleep(0.01)
+            yield "x"
+        heartbeats["at_call_end"] = await _heartbeat_of(conv.conversation_id)
+
+    mock_client = _make_mock_httpx_client(
+        planning_resp=_make_planning_response(["termination notice period clause"]),
+        note_resp=_make_note_extraction_response(),
+        synthesis_lines=[],
+    )
+    with (
+        patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool(hits=False)),
+        patch.object(research_module, "_stream_llm_tokens", new=steady),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        raw = [e async for e in research_module.research_stream(conv.conversation_id, user_id=admin_user.user_id)]
+
+    assert heartbeats["at_call_end"] > heartbeats["at_call_start"], heartbeats
+    events = _events(raw)
+    waiting = [e for e in events if e.get("type") == "progress" and e.get("llm_call") == "synthesis"]
+    assert waiting and all(e["step"] == _SYNTHESIS_STEP for e in waiting), waiting
+    assert "".join(e["content"] for e in events if e.get("type") == "token") == "x" * 30
+    assert events[-1]["type"] == "done", events[-1]
+
+
+@pytest.mark.asyncio
+async def test_gap_round_note_extraction_is_skipped_when_the_budget_is_tight(
+    db_session,
+    admin_user,
+    unscoped_research_state,  # noqa: F811
+    mock_research_session_factory,  # noqa: F811
+):
+    """The gap round may start at up to 70% of the budget and its note-extraction call may run for
+    _SLOW_LLM_TIMEOUT, so it gets phase 4's reserve check: with a one-minute budget the reserve (180 s) is
+    already spent, the round's passages go unextracted, and the run still reaches synthesis and ``done``."""
+    conv, state = unscoped_research_state
+    state.time_limit_minutes = 1
+    await db_session.commit()
+
+    extract = AsyncMock(return_value="Gap notes.")
+    mock_client = _make_mock_httpx_client(
+        planning_resp=_make_planning_response(["termination notice period clause"]),
+        note_resp=_make_note_extraction_response(),
+        synthesis_lines=_make_synthesis_stream_response("Final answer."),
+    )
+    with (
+        patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool()),
+        patch.object(research_module, "_read_evidence", new=AsyncMock(return_value=("a passage", []))),
+        patch.object(research_module, "_check_gaps", new=AsyncMock(side_effect=[["governing law clause"], []])),
+        patch.object(research_module, "_extract_notes", new=extract),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        raw = [e async for e in research_module.research_stream(conv.conversation_id, user_id=admin_user.user_id)]
+
+    events = _events(raw)
+    assert any(e.get("type") == "notes" and "Gap search found" in e["content"] for e in events), (
+        "the gap round did not reach its passages"
+    )
+    assert extract.await_count == 0, "gap-round note extraction ran with less time left than synthesis needs"
+    assert any(e.get("type") == "notes" and "skipping note extraction" in e["content"] for e in events)
     assert events[-1]["type"] == "done", events[-1]
