@@ -287,6 +287,9 @@ def test_a_missing_spacy_model_fails_the_preflight_and_names_the_install_command
     # spaCy itself missing is the same failure, with the same fix.
     no_spacy = _run(tmp_path, _machine(), load=_raising(ImportError("No module named 'spacy'")))
     assert _check(no_spacy, "spaCy model en_core_web_sm").status == pf.FAIL
+    # An exception with no message is a FAIL too, not a traceback out of the one check that must not raise.
+    mute = _check(_run(tmp_path, _machine(), load=_raising(RuntimeError())), "spaCy model en_core_web_sm")
+    assert mute.status == pf.FAIL and "RuntimeError" in mute.detail and pf.SPACY_INSTALL in mute.detail
 
 
 def test_the_spacy_model_the_metrics_load_is_the_one_checked(tmp_path):

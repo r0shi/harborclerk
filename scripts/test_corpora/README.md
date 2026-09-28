@@ -112,7 +112,8 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.preflight -
 
 Thermal pressure, power, free memory, a busy GPU at idle, other model servers, the installed `llama-server`
 against the pin, the spaCy model `en_core_web_sm` (the `entity_overlap` metric loads it on the first local-model
-answer, and a fresh venv does not have it; the check names the install command, #683), whether each model fits
+answer, and a fresh venv does not have it; the check names the install command and fails whatever phases the run
+will do, since the preflight does not know them, #683), whether each model fits
 this machine (a named model that cannot load fails; with no `--models`, it only warns, since the sweep skips it),
 and the health of the instance `HC_API_BASE` names. A check that
 could not look (no app bundle, not a Mac) makes the verdict `warn`, never `pass`. It changes nothing. Exit 1

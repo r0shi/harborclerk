@@ -44,7 +44,8 @@ MAX_IDLE_GPU_PERCENT = 25
 GIB = 1024**3
 # The entity_overlap metric (runner/metrics.py) loads this on the first local-model answer. It is a wheel from a
 # GitHub release, not a dependency in pyproject.toml, so a fresh venv does not have it and the sweep died on it
-# after ingest, USD 18 of baselines and the first model's first answer (#683). The command is the README's.
+# after ingest, USD 18 of baselines and the first model's first answer (#683). The README's install command, in
+# the from-the-repository-root form the benchmark skill runs everything in.
 SPACY_MODEL = "en_core_web_sm"
 SPACY_INSTALL = "uv --project scripts/test_corpora run python -m spacy download en_core_web_sm"
 
@@ -294,15 +295,19 @@ def load_spacy_model(name: str) -> object:
 
 
 def check_spacy_model(load: Load) -> Check:
-    """The sweep's own environment, not the machine: the one dependency `uv sync` cannot install."""
+    """The sweep's own environment, not the machine: the one dependency `uv sync` cannot install. Checked whatever
+    the run will do (the preflight does not know its phases): a baseline-only run does not load the model, and
+    fails here all the same, because installing it is one command and finding out mid-run cost a day."""
     try:
         load(SPACY_MODEL)
     except Exception as exc:  # OSError [E050] when the model is absent; ImportError when spacy itself is
+        # An exception with no message must still become a FAIL, not a traceback out of the preflight.
+        first_line = (str(exc).splitlines() or [""])[0][:120]
         return Check(
             f"spaCy model {SPACY_MODEL}",
             FAIL,
-            f"does not load ({type(exc).__name__}: {str(exc).splitlines()[0][:120]}). The entity_overlap metric "
-            f"needs it, and the sweep dies on its first local-model answer without it: `{SPACY_INSTALL}`",
+            f"does not load ({type(exc).__name__}: {first_line}). The entity_overlap metric needs it, and the "
+            f"sweep dies on its first local-model answer without it: `{SPACY_INSTALL}`",
         )
     return Check(f"spaCy model {SPACY_MODEL}", PASS, "loads")
 

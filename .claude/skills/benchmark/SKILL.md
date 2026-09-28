@@ -24,8 +24,8 @@ uv --project scripts/test_corpora run python -m scripts.test_corpora.preflight \
 It checks thermal pressure, power, free memory, a busy GPU at idle, other model
 servers (Ollama), that the installed `llama-server` is at the pin, that the spaCy
 model the metrics load is installed (a fresh venv lacks it; the check names the
-install command, #683), that each model fits this machine, and that the instance
-is healthy. It changes nothing.
+install command and runs whatever phases the run will do, #683), that each model
+fits this machine, and that the instance is healthy. It changes nothing.
 
 - **`fail` stops the run.** A number taken on a throttled machine, or through a
   stale `llama-server`, is not a baseline, and a report that says so is still
@@ -122,7 +122,9 @@ than the work moves. Exit codes: **0** complete; **3** stopped by the spend cap
 or a refused spend setting (finished units are saved; `--resume` continues the
 same run and the same ledger); **4** the instance may not be wiped (a refused
 first start leaves nothing behind: fix the cause and run the same command);
-**5** an uncaught exception (the traceback is in `log.txt`; the unit it was on is not marked done, and a unit is never marked done before its `metrics.csv` row exists; fix the cause, then `--resume`). Models the instance has not downloaded, or cannot load at any
+**5** an uncaught exception (the traceback is in `log.txt`; the unit it was on
+is not marked done, and a unit is never marked done before its `metrics.csv`
+row exists; fix the cause, then `--resume`). Models the instance has not downloaded, or cannot load at any
 context, are skipped with a reason, listed in the report, and reconsidered at every start:
 downloading a model is the owner's decision.
 
