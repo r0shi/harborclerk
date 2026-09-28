@@ -208,6 +208,27 @@ class TestCallLlmRetry:
             assert result == "Summary."
             assert mock_post.call_count == 2
 
+    def test_retries_on_a_reset_mid_request(self):
+        """A model swap resets an open connection: httpx raises ReadError, not ConnectError. Retried the same way
+        (#690)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"choices": [{"message": {"content": "Summary."}}]}
+
+        with (
+            patch(
+                "harbor_clerk.llm.summarize.httpx.post",
+                side_effect=[httpx.ReadError("Connection reset by peer"), mock_response],
+            ) as mock_post,
+            patch("harbor_clerk.llm.summarize.time.sleep"),
+        ):
+            from harbor_clerk.llm.summarize import _call_llm
+
+            result = _call_llm("system", "user", timeout=10.0, max_attempts=3)
+            assert result == "Summary."
+            assert mock_post.call_count == 2
+
     def test_retries_on_503(self):
         busy_response = MagicMock()
         busy_response.status_code = 503

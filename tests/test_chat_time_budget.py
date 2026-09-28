@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from harbor_clerk.config import get_settings
@@ -517,3 +518,77 @@ async def test_a_cut_during_a_keepalive_cancels_the_fetch_before_the_response_is
         f"a fetch was still running when the response closed: {live_at_close}"
     )
     assert text.startswith("Start ") and done["stop_reason"] == "time_budget"
+
+
+# --- a model server lost mid-stream (#690) --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(httpx.ReadError("Connection reset by peer"), id="read-reset"),
+        pytest.param(
+            httpx.RemoteProtocolError("peer closed connection without sending complete message body"), id="cut"
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_reset_mid_stream_ends_the_chat_like_a_lost_server(
+    db_session, admin_user, chat_session_factory, monkeypatch, exc
+):
+    """A swap or a crash while llama-server is writing resets the connection: httpx raises ``ReadError`` (or
+    ``RemoteProtocolError``) from the line iterator, not ``ConnectError``. The generator must end the way it ends for
+    a refused connection, with an error event, a stored message and a ``done``, rather than let the exception out and
+    drop the stream."""
+    from sqlalchemy import select
+
+    from harbor_clerk.models.chat_message import ChatMessage
+
+    conv = await _conversation(db_session, admin_user)
+
+    def reset_after_first_token(n, i):
+        raise exc
+
+    client, _ = _mock_client([[_chunk(content="The Q3 contract"), "data: [DONE]"]], on_line=reset_after_first_token)
+    _, done, _ = await _drive(conv.conversation_id, admin_user, client, _Clock(), monkeypatch, budget=0.0)
+    assert done["type"] == "done", "the generator finished instead of raising"
+    stored = (
+        (
+            await db_session.execute(
+                select(ChatMessage).where(
+                    ChatMessage.conversation_id == conv.conversation_id, ChatMessage.role == "assistant"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(stored) == 1 and stored[0].content.startswith("Error: LLM server is not running")
+
+
+@pytest.mark.asyncio
+async def test_a_reset_during_the_forced_answer_keeps_what_was_streamed_and_finishes(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The forced final answer is a second stream from the same server. A reset while it is being written (the
+    swap landed between the rounds and the answer) ends the answer where it was, as a refusal would, instead of
+    escaping the generator: what was streamed is kept and the stream is closed with its done event."""
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+
+    def advance(n):
+        if n == 0:
+            clock.now = 301.0  # the deadline passes while the tool call streams: the answer will be forced
+
+    def reset_the_forced_answer(n, i):
+        if n == 1:
+            raise httpx.ReadError("Connection reset by peer")
+
+    client, _ = _mock_client(
+        [[_tool_call_chunk(), "data: [DONE]"], [_chunk(content="I found"), "data: [DONE]"]],
+        on_send=advance,
+        on_line=reset_the_forced_answer,
+    )
+    text, done, _ = await _drive(conv.conversation_id, admin_user, client, clock, monkeypatch, budget=300.0)
+    assert done["stop_reason"] == "time_budget", "the generator finished instead of raising"
+    assert text.startswith("I found"), "what was streamed before the reset is kept"

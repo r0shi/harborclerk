@@ -298,9 +298,11 @@ async def _llm_complete(
             if content.startswith("<think>") and "</think>" in content:
                 content = content[content.index("</think>") + len("</think>") :].strip()
             return content
-        except (httpx.ConnectError, httpx.TimeoutException):
+        except (httpx.NetworkError, httpx.RemoteProtocolError, httpx.TimeoutException) as exc:
+            # Nothing was consumed from a call that never returned, so a reset during a model swap (ReadError,
+            # RemoteProtocolError) is retried like a refused connection or a timeout (#690).
             if attempt == 0:
-                logger.warning("LLM timeout in phase=%s, retrying", phase)
+                logger.warning("LLM %s in phase=%s, retrying", type(exc).__name__, phase)
                 await asyncio.sleep(2)
                 continue
             raise
@@ -341,17 +343,18 @@ async def _stream_llm_tokens(
                 ),
                 stream=True,
             )
-        except httpx.ConnectError as exc:
+        except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
             # Transient: llama-server briefly unreachable between requests
             # (observed once on cheese × Qwen3.6 35B-A3B during the
-            # cross-topic sweep — succeeded on retry). Mirror the 5xx
+            # cross-topic sweep — succeeded on retry), or reset under the
+            # open while it is being swapped (#690). Mirror the 5xx
             # branch's semantics: one extra attempt with 2s backoff. Read
-            # and write timeouts are intentionally NOT retried — those
-            # mean the model itself stalled mid-stream and starting over
-            # would discard partial output for no gain.
+            # and write timeouts are intentionally NOT retried — no
+            # headers yet means the model stalled on the prompt, and
+            # starting over would repeat the stall for no gain.
             if _attempt == 1:
                 raise
-            logger.warning("LLM connect error in synthesis: %r, retrying in 2s", exc)
+            logger.warning("LLM %s in synthesis: %r, retrying in 2s", type(exc).__name__, exc)
             await asyncio.sleep(2)
             continue
         if response_obj.status_code < 500 or _attempt == 1:
@@ -1337,7 +1340,7 @@ async def research_stream(
                             depth_config,
                             doc_list,
                         )
-                    except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
+                    except (httpx.HTTPStatusError, httpx.TransportError) as exc:
                         logger.error("LLM error during query planning: %s", exc)
                         # Fallback: use question and keyword splits when the LLM is unreachable.
                         queries = [user_question]
@@ -1520,7 +1523,7 @@ async def research_stream(
                             notes_text = await _extract_notes_with_retry(
                                 client, llm_url, user_question, passages_text, coverage
                             )
-                        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
+                        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
                             logger.error("LLM error during note extraction: %s", exc)
                             # Fallback: use raw passages as notes
                             notes_text = f"## Raw passages\n{passages_text[:_NOTE_PROMPT_CHAR_CAP]}"
@@ -1716,8 +1719,10 @@ async def research_stream(
                 await session.commit()
                 yield _sse({"type": "error", "message": f"Synthesis failed: LLM error ({exc.response.status_code})"})
                 return
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                logger.error("LLM connection/timeout error during synthesis: %s: %r", type(exc).__name__, exc)
+            except httpx.TransportError as exc:
+                # A reset mid-stream (server swapped or crashed while writing) must land here too: escaping to the
+                # outer handler called it an unexpected internal error and marked the task failed (#690).
+                logger.error("LLM transport error during synthesis: %s: %r", type(exc).__name__, exc)
                 state.status = "interrupted"
                 state.error = "Synthesis failed: LLM server not reachable"
                 state.notes = notes

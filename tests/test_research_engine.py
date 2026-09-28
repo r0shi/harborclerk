@@ -289,3 +289,78 @@ def test_fit_notes_to_budget_head_truncates_when_evidence_alone_exceeds_budget()
     assert "## Planned queries" not in fitted
     assert len(fitted) < len(notes)
     assert "truncated" in fitted
+
+
+@pytest.mark.asyncio
+async def test_llm_complete_retries_once_when_the_server_is_lost_mid_request(monkeypatch):
+    """A model swap resets the open request: httpx raises ReadError, not ConnectError, and nothing of the reply was
+    consumed, so the one retry a refused connection gets applies (#690)."""
+    import httpx
+
+    from harbor_clerk.llm import research as research_module
+    from harbor_clerk.llm.research import _llm_complete
+
+    monkeypatch.setattr(research_module.asyncio, "sleep", AsyncMock())
+    ok = httpx.Response(
+        200, json={"choices": [{"message": {"content": "planned"}}]}, request=httpx.Request("POST", "http://llm.test")
+    )
+    client = AsyncMock()
+    client.post = AsyncMock(side_effect=[httpx.ReadError("Connection reset by peer"), ok])
+    content = await _llm_complete(client, "http://llm.test/v1/chat/completions", [{"role": "user", "content": "q"}])
+    assert content == "planned" and client.post.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_llm_complete_gives_up_after_the_second_transport_failure(monkeypatch):
+    import httpx
+
+    from harbor_clerk.llm import research as research_module
+    from harbor_clerk.llm.research import _llm_complete
+
+    monkeypatch.setattr(research_module.asyncio, "sleep", AsyncMock())
+    client = AsyncMock()
+    client.post = AsyncMock(side_effect=httpx.RemoteProtocolError("Server disconnected"))
+    with pytest.raises(httpx.RemoteProtocolError):
+        await _llm_complete(client, "http://llm.test/v1/chat/completions", [{"role": "user", "content": "q"}])
+    assert client.post.await_count == 2
+
+
+def _sse_response(lines: list[str]):
+    """A streamed llama-server reply as ``_stream_llm_tokens`` reads it."""
+    from unittest.mock import MagicMock
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    resp.aclose = AsyncMock()
+
+    async def aiter_lines():
+        for line in lines:
+            yield line
+
+    resp.aiter_lines = aiter_lines
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_stream_llm_tokens_retries_the_open_once_after_a_reset(monkeypatch):
+    """Opening the synthesis stream while the server is swapped is reset before any header arrives: nothing has been
+    generated yet, so the open is retried like a refused connection (#690). A timeout is not: see the comment at
+    the except."""
+    import httpx
+
+    from harbor_clerk.llm import research as research_module
+    from harbor_clerk.llm.research import _stream_llm_tokens
+
+    monkeypatch.setattr(research_module.asyncio, "sleep", AsyncMock())
+    ok = _sse_response(['data: {"choices": [{"delta": {"content": "report"}}]}', "data: [DONE]"])
+    client = AsyncMock()
+    client.build_request = lambda *a, **k: object()
+    client.send = AsyncMock(side_effect=[httpx.ReadError("Connection reset by peer"), ok])
+    tokens = [t async for t in _stream_llm_tokens(client, "http://llm.test/v1/chat/completions", [])]
+    assert tokens == ["report"] and client.send.await_count == 2
+
+    client.send = AsyncMock(side_effect=httpx.ReadTimeout("no headers in time"))
+    with pytest.raises(httpx.ReadTimeout):
+        _ = [t async for t in _stream_llm_tokens(client, "http://llm.test/v1/chat/completions", [])]
+    assert client.send.await_count == 1, "a timeout on the open is still not retried"

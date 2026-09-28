@@ -293,7 +293,9 @@ def _call_llm(
             # Non-JSON mode: extract marked answer
             content = _extract_marked_answer(content)
             return content if _has_visible_content(content) else None
-        except (httpx.TimeoutException, httpx.ConnectError) as e:
+        except httpx.TransportError as e:
+            # A reset or a cut response while the server is swapped is retried like a refused connection or a
+            # timeout (#690); the fail-fast below stays on ConnectError alone, see its test for why.
             elapsed = time.perf_counter() - call_started
             last_err = e
             # Fail-fast when the user has intentionally deactivated the

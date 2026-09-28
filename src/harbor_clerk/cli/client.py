@@ -65,7 +65,9 @@ class McpHttpClient:
             # path `/mcp` collide with the SPA catch-all route — sending to
             # `/mcp/` lands cleanly inside the mount.
             resp = self._http.post("/mcp/", json=body)
-        except (httpx.ConnectError, httpx.TimeoutException, ConnectionError) as e:
+        except (httpx.TransportError, ConnectionError) as e:
+            # A reset or a cut response is a connection failure to the user as much as a refusal is; narrower
+            # left a traceback on the terminal (#690).
             raise McpClientError(kind="connection", message=str(e)) from e
 
         if resp.status_code == 401:

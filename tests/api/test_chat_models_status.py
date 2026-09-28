@@ -304,3 +304,70 @@ async def test_the_list_reports_the_context_the_launcher_will_ask_for_when_yarn_
         if m["id"] == "qwen3-8b"
     )
     assert roomy["max_context_here"] == 32768 and roomy["fits_here"] is True
+
+
+# --- a model swap under the probe (#690) ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _llama_probe_raises():
+    """Give the route's own ``httpx.AsyncClient`` a transport that fails the way a swapped server does.
+
+    The route constructs its client inside the request, so the class is swapped for a factory that pins a
+    ``MockTransport`` whose handler raises the given exception. The test's ASGI client already exists and is
+    untouched. Unlike ``_fail_llama_probe`` this fails below ``AsyncClient.get``, where a reset happens."""
+    real_client = httpx.AsyncClient
+
+    def _set(exc: Exception):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise exc
+
+        def factory(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        return patch("httpx.AsyncClient", factory)
+
+    return _set
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(httpx.ReadError("Connection reset by peer"), id="read-reset"),
+        pytest.param(httpx.RemoteProtocolError("Server disconnected without sending a response."), id="cut-response"),
+        pytest.param(httpx.ConnectError("Connection refused"), id="refused"),
+        pytest.param(httpx.ReadTimeout("timed out"), id="timeout"),
+    ],
+)
+async def test_status_says_loading_for_any_transport_failure_of_the_probe(
+    client, admin_token, _set_llm_model_id, _llama_probe_raises, _afm_binary, exc
+):
+    """A swap kills the old server under an open connection: the probe connects, then the read is reset or the
+    response is cut. That is not a 500 (#690); the frontend polls this every second through exactly that window."""
+    _afm_binary(False)
+    _set_llm_model_id("qwen3-8b")
+    with _llama_probe_raises(exc):
+        resp = await client.get("/api/chat/models/status", headers=auth_header(admin_token))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "loading"
+    assert body["summarize"] == {"backend": "qwen3-8b", "name": "Qwen3 8B", "state": "loading"}
+
+
+async def test_status_logs_the_traceback_when_the_probe_fails_for_another_reason(
+    client, admin_token, _set_llm_model_id, _llama_probe_raises, _afm_binary, caplog
+):
+    """The 500 in #690 left nothing in the API log: uvicorn writes its traceback to stderr, which the native app
+    does not keep. The route logs the failure itself before letting it become a 500."""
+    _afm_binary(False)
+    _set_llm_model_id("qwen3-8b")
+    with _llama_probe_raises(RuntimeError("probe exploded")), pytest.raises(RuntimeError, match="probe exploded"):
+        # ASGITransport re-raises what the app did not handle; on a real server that is the 500.
+        await client.get("/api/chat/models/status", headers=auth_header(admin_token))
+
+    failures = [r for r in caplog.records if r.name == "harbor_clerk.api.routes.chat" and r.levelname == "ERROR"]
+    assert len(failures) == 1, [r.getMessage() for r in caplog.records]
+    assert "health probe failed" in failures[0].getMessage()
+    assert failures[0].exc_info is not None and "probe exploded" in caplog.text
