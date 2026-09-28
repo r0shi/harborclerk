@@ -468,10 +468,13 @@ async def llm_status(
             async with httpx.AsyncClient(timeout=2.0) as client:
                 r = await client.get(f"{settings.llama_server_url}/health")
                 state = "ready" if r.status_code == 200 else "loading"
-        except httpx.TransportError:
+        except httpx.TransportError as exc:
             # A model swap kills the old server under an open connection: the probe connects, then the read is
             # reset or the response cut short (ReadError, RemoteProtocolError), not refused (#690). Every
             # transport failure means the same thing here, the server is not there yet, so the poller polls on.
+            # At debug, because this is polled every second or two through a swap; the type is kept so a URL
+            # that can never work (UnsupportedProtocol, ProxyError) is not a silent, permanent "loading".
+            logger.debug("llama-server health probe: %s: %s", type(exc).__name__, exc)
             state = "loading"
         except Exception:
             # Anything else is a 500. uvicorn logs the traceback to stderr, which in the native app is the Swift
