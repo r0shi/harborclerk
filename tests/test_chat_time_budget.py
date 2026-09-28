@@ -978,12 +978,16 @@ async def test_the_fallback_after_the_tool_round_cap_names_the_cap(
 
 @pytest.mark.asyncio
 async def test_a_finished_answer_whose_finish_chunk_arrives_at_the_thinking_bound_is_kept(
-    db_session, admin_user, chat_session_factory, monkeypatch
+    db_session, admin_user, chat_session_factory, monkeypatch, caplog
 ):
     """gpt-oss wrote its whole answer in its reasoning channel and finished; the finish chunk and "[DONE]" arrive at
-    the thinking bound. They carry no token, so they are let through and nothing is cut: the answer stands."""
+    the thinking bound. They carry no token, so they are let through and nothing is cut: the answer stands as a
+    finished one, not as a thought cut short."""
+    import logging
+
     from harbor_clerk.llm import chat as chat_module
 
+    caplog.set_level(logging.INFO, logger="harbor_clerk.llm.chat")
     conv = await _conversation(db_session, admin_user)
     clock = _Clock()
 
@@ -1015,6 +1019,8 @@ async def test_a_finished_answer_whose_finish_chunk_arrives_at_the_thinking_boun
     assert done["stop_reason"] == "time_budget"
     assert text.startswith("The fee was $4,500 a month.") and "I stopped after" in text
     assert "produced no answer" not in text
+    assert "Final answer cut" not in caplog.text, "the finish chunk cut nothing"
+    assert "finish_reason=stop, cut=None" in caplog.text
 
 
 @pytest.mark.asyncio
