@@ -145,23 +145,27 @@ final class LlamaServiceStopTests: XCTestCase {
         XCTAssertTrue(svc.holdsLiveProcess)
     }
 
-    /// A child that was not made a group leader (setpgid failed at launch):
-    /// `killpg` on its pid is ESRCH and `terminate()` must carry the SIGTERM,
-    /// or the child only dies to the SIGKILL escalation a grace period later.
-    func testStopFallsBackToTerminateForANonGroupLeader() async throws {
+    /// Foundation's `Process.run()` already spawns its child as a group
+    /// leader on macOS, so `performStop`'s `terminate()` fallback for a
+    /// non-leader cannot be reached through `Process`: a test that removed
+    /// the fallback stayed green because `killpg` succeeded anyway. Pinned
+    /// here so the next reader does not spend the same hour, and so a
+    /// Foundation change that stops doing this shows up as a failure.
+    func testPlainRunChildAlreadyLeadsItsGroupSoTheFallbackIsUnreachable() async throws {
         let svc = try makeService()
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/bin/sleep")
         proc.arguments = ["30"]
         try proc.run()
         spawned.append(proc)
+        XCTAssertEqual(getpgid(proc.processIdentifier), proc.processIdentifier, "Process.run() child leads its own group")
         svc.process = proc
         svc.state = .running
 
         await bounded { await svc.stop() }
 
         XCTAssertFalse(proc.isRunning)
-        XCTAssertEqual(proc.terminationStatus, SIGTERM, "died to the SIGTERM fallback, not to the SIGKILL escalation")
+        XCTAssertEqual(proc.terminationStatus, SIGTERM, "the group SIGTERM reached it; no SIGKILL escalation")
         XCTAssertNil(svc.process)
     }
 

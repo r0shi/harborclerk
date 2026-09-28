@@ -212,8 +212,12 @@ final class LlamaService: ManagedService {
         if let proc = process, proc.isRunning {
             // The whole group, per macos/AGENTS.md; llama-server spawns no
             // children today, so this is the rule rather than a repair.
-            // `terminate()` is the fallback for a child that was not made a
-            // group leader (setpgid failed and was logged at launch).
+            // `terminate()` is the fallback for a child that leads no group.
+            // Measured: Foundation's `Process.run()` already spawns the child
+            // as its own group leader on macOS (pgid == pid), so the fallback
+            // is unreachable through `Process` and `runAsProcessGroupLeader`'s
+            // setpgid is a no-op there; it stays for a launch path that is not
+            // `Process`. LlamaServiceStopTests pins the measurement.
             if killpg(proc.processIdentifier, SIGTERM) != 0 {
                 proc.terminate()
             }
