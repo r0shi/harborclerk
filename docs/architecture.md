@@ -333,7 +333,7 @@ section is worse than an honest signpost.
 | **Secrets and encryption** — envelope cipher, key sources, master-key management | `secrets/cipher.py`, `secrets/keysource.py` |
 | **Topic modelling** — BERTopic clustering surfaced in Observatory | `topics.py`, `corpus_topics` tables |
 | **Language packs** — on-demand OCR and NER model downloads | `lang_packs/`, `languages.py`, `api/routes/languages.py` |
-| **Metadata extractors** — sidecar and frontmatter parsing into `documents.metadata` JSONB | `ingest/metadata_extractors/` |
+| **Metadata extractors** — sidecar and frontmatter parsing into `documents.metadata` JSONB. A sidecar is `<stem>.json` beside a watched document; the watcher attaches it as `metadata.sidecar.*` and does not index the file as a document (a `.json` with no such sibling is an ordinary document) | `ingest/metadata_extractors/`, `watcher/events.py` |
 | **Markdown extraction** — a non-Tika path preserving heading structure | `worker/markdown_extract.py`, `worker/heading_parser.py` |
 
 ## Generated reference

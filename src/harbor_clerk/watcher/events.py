@@ -8,6 +8,7 @@ provided session. Caller is responsible for commit.
 import hashlib
 import logging
 import os
+import posixpath
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,6 +37,9 @@ logger = logging.getLogger(__name__)
 # See the early "skip 0-byte files" check in `handle_event` below.
 _EMPTY_FILE_SHA256 = hashlib.sha256(b"").digest()
 
+# What SidecarExtractor reads beside a document (`src.with_suffix(".json")`).
+_SIDECAR_SUFFIX = ".json"
+
 
 class EventKind(str, Enum):
     created = "created"
@@ -54,10 +58,18 @@ class SkipReason(str, Enum):
     the allowlist. These ARE surfaced per-folder ("N files not ingested —
     unsupported types: …") so the user can decide whether to extend the
     allowlist or accept the omission.
+
+    ``SIDECAR`` covers a ``.json`` beside a document with the same stem: the
+    metadata sidecar convention of ``ingest/metadata_extractors/sidecar.py``.
+    Its contents reach the index as ``metadata.sidecar.*`` on that document,
+    so indexing the file as a document of its own would add a second hit
+    that states the first one's facts (#728). Not surfaced: the file is not
+    lost, it is attached.
     """
 
     NOISE = "noise"
     UNSUPPORTED_EXTENSION = "unsupported_extension"
+    SIDECAR = "sidecar"
 
 
 @dataclass
@@ -68,13 +80,18 @@ class FileEvent:
     absolute_path: str
 
 
-def classify_skip(relative_path: str) -> SkipReason | None:
+def classify_skip(relative_path: str, absolute_path: str | None = None) -> SkipReason | None:
     """Classify why ``relative_path`` would be skipped by the watcher.
 
     Returns ``None`` if the path WOULD be accepted by ``_should_ignore``
     (i.e. nothing to skip). Otherwise returns the reason, splitting
     intentional-noise filters from real "unsupported extension" rejects
     so callers can count only the latter.
+
+    The name alone decides noise and extension. Whether a ``.json`` is a
+    metadata sidecar depends on what sits beside it on disk, so that check
+    runs only when ``absolute_path`` is given; name-only callers (the API's
+    extension validation) never see ``SIDECAR``.
     """
     parts = relative_path.split("/")
     if any(p == "__MACOSX" for p in parts):
@@ -88,7 +105,41 @@ def classify_skip(relative_path: str) -> SkipReason | None:
     suffix = Path(relative_path).suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         return SkipReason.UNSUPPORTED_EXTENSION
+    if absolute_path is not None and is_sidecar(absolute_path):
+        return SkipReason.SIDECAR
     return None
+
+
+def is_sidecar(absolute_path: str) -> bool:
+    """True when ``absolute_path`` is a ``.json`` beside a file the watcher would ingest with the same stem.
+
+    Mirrors ``SidecarExtractor``, which reads ``src.with_suffix(".json")``:
+    the stem must match exactly, and only a sibling that would itself be
+    admitted counts (``report.json`` beside ``report.exe`` is an ordinary
+    document). A directory that cannot be listed is not a sidecar: the
+    ordinary path handles the file's own I/O errors.
+    """
+    path = Path(absolute_path)
+    if path.suffix.lower() != _SIDECAR_SUFFIX:
+        return False
+    try:
+        with os.scandir(path.parent) as entries:
+            for entry in entries:
+                if entry.name == path.name or not entry.is_file():
+                    continue
+                sibling = Path(entry.name)
+                if sibling.stem != path.stem or sibling.suffix.lower() == _SIDECAR_SUFFIX:
+                    continue
+                if classify_skip(entry.name) is None:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _sidecar_relative_path(relative_path: str) -> str:
+    """The relative path ``SidecarExtractor`` would read for ``relative_path``."""
+    return posixpath.splitext(relative_path)[0] + _SIDECAR_SUFFIX
 
 
 def _should_ignore(relative_path: str) -> bool:
@@ -119,7 +170,14 @@ def _sha256_of(path: str) -> bytes:
 
 def handle_event(session: Session, event: FileEvent) -> None:
     """Apply a FileEvent to the database. Caller is responsible for commit."""
-    if _should_ignore(event.relative_path):
+    reason = classify_skip(event.relative_path, event.absolute_path)
+    if reason is SkipReason.SIDECAR:
+        # The sidecar may have been indexed as a document before its
+        # sibling landed, or before this rule existed. Any event on it,
+        # a deletion included, retires that row.
+        _retire_sidecar_row(session, event.folder_id, event.relative_path)
+        return
+    if reason is not None:
         logger.debug("watcher: ignored event for %s", event.relative_path)
         return
 
@@ -158,6 +216,13 @@ def handle_event(session: Session, event: FileEvent) -> None:
         logger.debug("watcher: skipping event with empty-file sha for %s", event.relative_path)
         return
 
+    # This file's `<stem>.json`, if one was indexed as a document (it landed
+    # first, or before this rule existed), is its sidecar from now on. Runs
+    # before the no-op branch so the initial scan after an upgrade retires
+    # the rows the old rule created.
+    if Path(event.relative_path).suffix.lower() != _SIDECAR_SUFFIX:
+        _retire_sidecar_row(session, event.folder_id, _sidecar_relative_path(event.relative_path))
+
     # Branch 1: existing+active+same → no-op
     if existing is not None and existing.status == WatchedFileStatus.active and existing.sha256 == sha:
         return
@@ -172,6 +237,12 @@ def handle_event(session: Session, event: FileEvent) -> None:
     if existing is not None and existing.status == WatchedFileStatus.removed and existing.sha256 == sha:
         existing.status = WatchedFileStatus.active
         existing.removed_at = None
+        # The row may have been retired with its document hidden (a sidecar
+        # whose sibling has since gone, or the API's /watch/remove); a live
+        # WatchedFile pointing at a hidden document would be unreachable.
+        doc = session.get(Document, existing.doc_id)
+        if doc is not None:
+            doc.status = "active"
         return
 
     # Branch 4: existing+removed+different → resurrect + reprocess
@@ -198,6 +269,9 @@ def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path:
     doc.source_path = source_path
     doc.pipeline_status = PipelineStatus.queued
     doc.error = None
+    # Same reason as branch 3 of handle_event: a resurrected row's document
+    # must be visible again.
+    doc.status = "active"
     # For .eml: re-parse so the email_* columns (subject, from, to, date,
     # etc.) reflect the new bytes. Otherwise an in-place edit that, say,
     # corrects a misspelled subject would leave the old subject in the DB.
@@ -221,6 +295,30 @@ def _reprocess_doc(session: Session, doc_id: uuid.UUID, sha: bytes, source_path:
             pipeline_seq=doc.pipeline_seq,
         )
     )
+
+
+def _retire_sidecar_row(session: Session, folder_id: uuid.UUID, relative_path: str) -> bool:
+    """Mark the WatchedFile at ``relative_path`` removed and hide its document, if it is active.
+
+    Mirrors ``api/routes/watch.py::remove_file`` rather than the delete
+    branch above: a sidecar was never a document, so it leaves search now
+    instead of lingering until the reaper hard-deletes the row 30 days on.
+    Returns True when a row was retired.
+    """
+    wf = (
+        session.query(WatchedFile)
+        .filter_by(folder_id=folder_id, relative_path=relative_path, status=WatchedFileStatus.active)
+        .one_or_none()
+    )
+    if wf is None:
+        return False
+    wf.status = WatchedFileStatus.removed
+    wf.removed_at = datetime.now(UTC)
+    doc = session.get(Document, wf.doc_id) if wf.doc_id else None
+    if doc is not None:
+        doc.status = "removed"
+    logger.info("watcher: %s is a metadata sidecar of a sibling document; retired its own document row", relative_path)
+    return True
 
 
 def _try_parse_eml(absolute_path: str) -> EmailParseResult | None:

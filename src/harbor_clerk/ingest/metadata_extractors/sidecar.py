@@ -11,6 +11,12 @@ Example: a watched folder containing
 would surface the INV-001.json contents under the 'sidecar' namespace on
 the Document for INV-001.pdf.
 
+The sidecar file itself is not indexed: the watcher (`watcher/events.py`,
+`SkipReason.SIDECAR`) skips a `.json` whose stem matches a sibling it would
+ingest, since a second document stating the first one's facts is what a
+search would find first (#728). A `.json` with no such sibling is an
+ordinary document.
+
 Returns None for docs without source_path (legacy uploads), without a
 matching sidecar file, with malformed JSON, with an empty object, or
 with a non-object top-level JSON value (list/string/etc).
