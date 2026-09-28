@@ -619,6 +619,27 @@ def test_a_completed_answer_the_app_forced_is_degraded_and_a_chosen_one_is_done(
     assert status == Status.DEGRADED and reason and "time_budget" not in reason, "an empty answer keeps its own reason"
 
 
+def test_the_apps_fallback_for_a_forced_answer_is_degraded_by_its_own_reason_and_not_judged():
+    """#742: when the forced answer came back empty, chat sends the app's own sentence beside ``stop_reason``. It is
+    the fallback that names the status, not the forced-answer reason, so ``_should_judge`` does not send an app
+    sentence to the judge as a model answer; the stop_reason column still counts it under ``forced``."""
+    from scripts.test_corpora.runner.state import Status
+    from scripts.test_corpora.runner.sweep import _should_judge, _status_of_completed
+
+    fell_back = {
+        "status": "completed",
+        "answer": (
+            "_The model produced no answer in the time allowed: the search stopped at its time budget, and when "
+            "asked to answer from what it had found, the model wrote nothing in the time it had._"
+        ),
+        "stop_reason": "time_budget",
+    }
+    status, reason = _status_of_completed(fell_back)
+    assert status == Status.DEGRADED
+    assert reason == "completed with the app's fallback (the model produced no answer)"
+    assert not _should_judge(phase=4, status=status, model_answer=fell_back["answer"], no_judge=False, error=reason)
+
+
 def test_run_local_records_the_stop_reason_the_done_event_carries(tmp_path: Path):
     """The chat unit keeps ``stop_reason`` from the done event beside the answer, and leaves it out when the
     event has none, so a result file from before the field parses as it did."""
