@@ -1,8 +1,11 @@
 """Filesystem-event → database-write translation.
 
-Pure module: no watchdog imports, no I/O scheduling. Caller passes in
-synthetic FileEvent records; this module does the database work in the
-provided session. Caller is responsible for commit.
+No watchdog imports, no I/O scheduling. Caller passes in synthetic FileEvent
+records; this module does the database work in the provided session. Caller
+is responsible for commit. It does read the filesystem: the event's file is
+hashed, an `.eml` is parsed, and a `.json` is judged a metadata sidecar or a
+document by listing its directory and reading it (`sidecar_owner_names`).
+Nothing under a watched folder is ever written, copied or moved.
 """
 
 import hashlib
@@ -225,12 +228,15 @@ def handle_event(session: Session, event: FileEvent) -> None:
         return
     if owners:
         # The file is gone, so the database says what it was. A sibling
-        # whose metadata carries the sidecar namespace read it, and drops
-        # it on re-extraction. An active row means the `.json` was also a
-        # document (an ordinary one the extractor declined, or one indexed
-        # before its sibling or by an earlier build): the delete branch
-        # below handles that row as for any deleted file.
-        _reextract_sidecar_owners(session, event, owners, attached_only=True)
+        # whose metadata carries the sidecar namespace read it; the
+        # namespace is dropped in place, since there is nothing left to
+        # read and a re-extraction would race the sibling's own deletion
+        # (both trashed together, this event first) and strip its chunks.
+        # An active row means the `.json` was also a document (an ordinary
+        # one the extractor declined, or one indexed before its sibling or
+        # by an earlier build): the delete branch below handles that row
+        # as for any deleted file.
+        _drop_sidecar_namespace(session, event, owners)
         if existing is None or existing.status != WatchedFileStatus.active:
             return
 
@@ -370,25 +376,13 @@ def _retire_sidecar_row(session: Session, folder_id: uuid.UUID, relative_path: s
     return True
 
 
-def _reextract_sidecar_owners(
-    session: Session, event: FileEvent, owner_names: Iterable[str], *, attached_only: bool = False
-) -> int:
-    """Queue a fresh extraction of the sidecar event's owners (its admitted same-stem siblings).
+def _active_owner_docs(session: Session, event: FileEvent, owner_names: Iterable[str]):
+    """Yield ``(relative_path, WatchedFile, Document)`` for each owner that is a live, visible document.
 
-    The extract stage is the only reader of the sidecar, so a sidecar that
-    is created, edited or deleted after its document was extracted would
-    otherwise leave `metadata.sidecar.*` frozen (#760). An extraction that is
-    still queued will read the file as it now is, so it is left alone rather
-    than re-queued with a bumped generation; that is also what keeps a
-    document and its sidecar landing together from being extracted twice
-    (one already running is replaced, and may run twice: a stale snapshot
-    of the sidecar is worse). With ``attached_only`` (the file is gone),
-    only a document whose metadata carries the sidecar namespace, i.e. one
-    that read it, is re-extracted. Returns how many documents were re-queued.
+    A hidden document (admin "deleted", or retired) is not the watcher's to
+    touch; the worker would not claim its jobs anyway.
     """
-    path = Path(event.absolute_path)
     rel_dir = posixpath.dirname(event.relative_path)
-    requeued = 0
     for name in owner_names:
         rel = posixpath.join(rel_dir, name) if rel_dir else name
         wf = (
@@ -399,12 +393,26 @@ def _reextract_sidecar_owners(
         if wf is None or wf.doc_id is None:
             continue
         doc = session.get(Document, wf.doc_id)
-        # A hidden document (admin "deleted", or retired) is not the
-        # watcher's to wake; the worker would not claim its jobs anyway.
         if doc is None or doc.status != "active":
             continue
-        if attached_only and "sidecar" not in (doc.doc_metadata or {}):
-            continue
+        yield rel, wf, doc
+
+
+def _reextract_sidecar_owners(session: Session, event: FileEvent, owner_names: Iterable[str]) -> int:
+    """Queue a fresh extraction of the sidecar event's owners (its admitted same-stem siblings).
+
+    The extract stage is the only reader of the sidecar, so a sidecar that
+    is created or edited after its document was extracted would otherwise
+    leave `metadata.sidecar.*` frozen (#760). An extraction that is still
+    queued will read the file as it now is, so it is left alone rather than
+    re-queued with a bumped generation; that is also what keeps a document
+    and its sidecar landing together from being extracted twice (one already
+    running is replaced, and may run twice: a stale snapshot of the sidecar
+    is worse). Returns how many documents were re-queued.
+    """
+    parent = Path(event.absolute_path).parent
+    requeued = 0
+    for rel, wf, _doc in _active_owner_docs(session, event, owner_names):
         pending = (
             session.query(IngestionJob)
             .filter_by(doc_id=wf.doc_id, stage=JobStage.extract, status=JobStatus.queued)
@@ -412,10 +420,39 @@ def _reextract_sidecar_owners(
         )
         if pending is not None:
             continue
-        _reprocess_doc(session, wf.doc_id, wf.sha256, str(path.parent / name))
+        _reprocess_doc(session, wf.doc_id, wf.sha256, str(parent / Path(rel).name))
         requeued += 1
         logger.info("watcher: sidecar %s changed; re-extracting %s", event.relative_path, rel)
     return requeued
+
+
+def _drop_sidecar_namespace(session: Session, event: FileEvent, owner_names: Iterable[str]) -> int:
+    """Remove `metadata.sidecar.*` (and its provenance stamp) from the owners of a deleted sidecar.
+
+    The inverse of what the extract stage did when it read the file. Done in
+    place rather than by re-extraction: there is nothing on disk to read, and
+    a re-extraction would race the owner's own deletion when document and
+    sidecar are trashed together with the sidecar's event handled first,
+    stripping the owner's chunks and queueing an extract of a path that is
+    gone. Returns how many documents were changed.
+    """
+    dropped = 0
+    for rel, _wf, doc in _active_owner_docs(session, event, owner_names):
+        meta = doc.doc_metadata or {}
+        if "sidecar" not in meta:
+            continue
+        # A new dict, not a mutation: JSONB columns are compared by value on
+        # flush, and an in-place change would go unnoticed.
+        new_meta = {key: value for key, value in meta.items() if key != "sidecar"}
+        provenance = {k: v for k, v in (new_meta.get("_source_provenance") or {}).items() if k != "sidecar"}
+        if provenance:
+            new_meta["_source_provenance"] = provenance
+        else:
+            new_meta.pop("_source_provenance", None)
+        doc.doc_metadata = new_meta or None
+        dropped += 1
+        logger.info("watcher: sidecar %s deleted; dropped metadata.sidecar from %s", event.relative_path, rel)
+    return dropped
 
 
 def _unhide_document(session: Session, doc_id: uuid.UUID | None) -> None:

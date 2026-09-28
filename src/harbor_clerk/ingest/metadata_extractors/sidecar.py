@@ -15,8 +15,9 @@ The sidecar file itself is not indexed: the watcher (`watcher/events.py`,
 `SkipReason.SIDECAR`) skips a `.json` that `load_sidecar` accepts and whose
 stem matches a sibling the watcher would ingest, since a second document
 stating the first one's facts is what a search would find first (#728), and
-re-queues that sibling's extraction when the sidecar is created, changed or
-deleted, so the attached metadata follows the file. A `.json` with no such
+re-queues that sibling's extraction when the sidecar is created or changed,
+and drops `metadata.sidecar.*` from it in place when the sidecar is deleted,
+so the attached metadata follows the file. A `.json` with no such
 sibling, or one this module would decline (over the size cap, malformed,
 not an object, empty), is an ordinary document. `load_sidecar` is the one
 predicate both sides use, so a file is either attached or indexed, never
