@@ -65,6 +65,20 @@ final class LlamaServiceStopTests: XCTestCase {
         return Int(UInt16(bigEndian: addr.sin_port))
     }
 
+    /// Run `body` and fail the test if it has not returned within `seconds`.
+    /// A stop that never returns is what a broken coalescing or cleanup line
+    /// looks like from here; without the bound, a mutation of one of those
+    /// lines hung the run for over an hour instead of failing it.
+    private func bounded(_ seconds: TimeInterval = 10, _ body: @escaping @Sendable () async -> Void) async {
+        let returned = expectation(description: "returned within \(seconds)s")
+        let task = Task {
+            await body()
+            returned.fulfill()
+        }
+        await fulfillment(of: [returned], timeout: seconds)
+        task.cancel()
+    }
+
     private func makeService() throws -> LlamaService {
         let svc = LlamaService()
         svc.portOverride = try freePort()
@@ -80,9 +94,11 @@ final class LlamaServiceStopTests: XCTestCase {
         svc.process = proc
         svc.state = .running
 
-        async let first: Void = svc.stop()
-        async let second: Void = svc.stop()
-        _ = await (first, second)
+        await bounded {
+            async let first: Void = svc.stop()
+            async let second: Void = svc.stop()
+            _ = await (first, second)
+        }
 
         XCTAssertEqual(svc.stopsPerformed, 1, "the second caller joins the stop in flight")
         XCTAssertFalse(proc.isRunning)
@@ -94,11 +110,11 @@ final class LlamaServiceStopTests: XCTestCase {
         let svc = try makeService()
         svc.process = try spawnSleeper()
         svc.state = .running
-        await svc.stop()
+        await bounded { await svc.stop() }
 
         svc.process = try spawnSleeper()
         svc.state = .running
-        await svc.stop()
+        await bounded { await svc.stop() }
 
         XCTAssertEqual(svc.stopsPerformed, 2, "a finished stop is not joined; the next caller gets its own")
         XCTAssertNil(svc.process)
@@ -121,7 +137,7 @@ final class LlamaServiceStopTests: XCTestCase {
         let successor = try spawnSleeper()
         svc.process = successor
 
-        await stopping.value
+        await bounded { await stopping.value }
 
         XCTAssertFalse(old.isRunning, "the stop still kills the child it waited on")
         XCTAssertTrue(successor.isRunning)
@@ -142,7 +158,7 @@ final class LlamaServiceStopTests: XCTestCase {
         svc.process = proc
         svc.state = .running
 
-        await svc.stop()
+        await bounded { await svc.stop() }
 
         XCTAssertFalse(proc.isRunning)
         XCTAssertEqual(proc.terminationStatus, SIGTERM, "died to the SIGTERM fallback, not to the SIGKILL escalation")

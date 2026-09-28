@@ -275,8 +275,13 @@ final class LlamaService: ManagedService {
         try? await Task.sleep(nanoseconds: 500_000_000) // 500 ms
     }
 
-    /// Return PIDs (if any) currently bound to the LLM port. Uses lsof
-    /// off the main thread.
+    /// Return PIDs (if any) currently bound to the LLM port.
+    ///
+    /// `runAndAwait` (terminationHandler) rather than `run()` on one thread
+    /// and `waitUntilExit()` on another: lsof is a short-lived child, and that
+    /// pattern has missed the exit of exactly those (ProcessAsync.swift). Here
+    /// it showed as a stop that took seconds instead of one, and once as one
+    /// that never returned, so the same shape as `killStaleProcess(onPort:)`.
     private func pidsHoldingPort() async -> [Int32] {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
@@ -284,21 +289,12 @@ final class LlamaService: ManagedService {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
-        do {
-            try proc.run()
-        } catch {
-            return []
-        }
-        return await withCheckedContinuation { (c: CheckedContinuation<[Int32], Never>) in
-            DispatchQueue.global().async {
-                proc.waitUntilExit()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let pids = (String(data: data, encoding: .utf8) ?? "")
-                    .split(whereSeparator: \.isNewline)
-                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-                c.resume(returning: pids)
-            }
-        }
+        guard (try? await proc.runAndAwait()) != nil else { return [] }
+        try? pipe.fileHandleForWriting.close()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return (String(data: data, encoding: .utf8) ?? "")
+            .split(whereSeparator: \.isNewline)
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
     }
 
     func healthCheck() async -> Bool {
