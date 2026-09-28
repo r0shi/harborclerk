@@ -10,7 +10,13 @@ read: a fact is present or it is not; a list is the F1 of the contracts an answe
 contracts labelled. What counts as "naming" a contract is the weakest part, and `named_contracts` says exactly what
 it does, and what it deliberately ignores. The fact matcher accepts negation ("New York law, not Delaware" finds
 "Delaware"); a key is one phrase, so this has not mattered yet, and is stated so that a score of 1.0 is read as
-"the phrase is present", nothing more.
+"the phrase is present", nothing more. The one thing read before the phrase is looked for is the answer's opening
+sentence: one that contains a "found nothing" phrasing ("is not explicitly stated in the retrieved excerpts", then
+a party "in Nevada", the keyed answer; #713) scores 0, whatever the answer says after. That is the whole rule, and
+its costs are accepted and pinned in the tests: a correct answer whose first sentence carries a caveat about
+something else ("Although the venue is not explicitly stated, Nevada law governs") scores 0, and an answer that
+states the parties first and the absence second scores 1.0. The phrasings are the harness's no-findings list in
+`quality.py`, not a second list; two of them count only here, in an opening.
 
 Key entries (see `corpora/cuad_key.py`, which writes them):
     {"kind": "fact",  "all_of": [["california"], ["exxonmobil", "exxon mobil"]]}    every group, any spelling in it
@@ -23,8 +29,30 @@ from __future__ import annotations
 import re
 from datetime import date
 
+from scripts.test_corpora.runner.quality import nothing_found_signature
+
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october")
 _MONTHS += ("november", "december")
+# What may stand in front of an answer's first sentence: a thinking model's reasoning block, a heading, a bold
+# label on a line of its own (`**Answer:**`), a list marker. Read past, so the sentence is the one judged.
+_THINK = re.compile(r"<think>.*?</think>\s*", re.S)
+_DECORATION = re.compile(r"^(?:#+\s[^\r\n]*|\*\*[^*\r\n]+\*\*:?)[ \t]*(?:\r?\n|$)")
+_LIST_MARKER = re.compile(r"^(?:[-*•]|\d+[.)])\s+")
+# A sentence ends at `.`, `!` or `?` (closing bold, quotes or brackets allowed after it) before whitespace and a
+# capital, digit or opening mark, or the end, or at a line break. "Inc. and" is not an end; "U.S. Virgin" is.
+_SENTENCE_END = re.compile(r"[.!?][*_)\]\"'”’]*(?=\s+[A-Z0-9\"“*(\[]|\s*$)|\r?\n")
+
+
+def opening(answer: str) -> str:
+    """The answer's first sentence, past whatever decoration stands in front of it. An end read too early ("U.S."
+    before "Virgin Islands") weakens the absence check, since less is read; it never touches the term match,
+    which is over the whole answer."""
+    text = _THINK.sub("", answer).lstrip()
+    while found := _DECORATION.match(text):
+        text = text[found.end() :].lstrip()
+    text = _LIST_MARKER.sub("", text, count=1)
+    found = _SENTENCE_END.search(text)
+    return text[: found.start()] if found else text
 
 
 def normalize(text: str) -> str:
@@ -99,9 +127,15 @@ def named_contracts(text: str, universe: list[str]) -> set[str]:
 
 
 def score(entry: dict, answer: str) -> dict:
-    """{"score": 0..1, ...detail}. An empty answer scores 0."""
+    """{"score": 0..1, ...detail}. An empty answer scores 0, and so does a fact or date answer whose opening
+    sentence says the thing is absent, before its text is searched (#713)."""
     answer = answer or ""
     kind = entry["kind"]
+    if kind in ("fact", "date"):
+        absent = nothing_found_signature(opening(answer), at_opening=True)
+        if absent:
+            groups = {"groups_found": 0, "groups": len(entry["all_of"])} if kind == "fact" else {}
+            return {"score": 0.0, **groups, "absent": absent}
     if kind == "fact":
         squeezed = normalize(answer)
         hits = [any(normalize(alt) in squeezed for alt in group) for group in entry["all_of"]]

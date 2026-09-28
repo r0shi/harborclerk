@@ -197,11 +197,25 @@ _BASELINE_EMPTY_CORPUS_SIGNATURES = (
     # empty-corpus signal that it's safe even without a cited-count check.
     "actuellement vide",
 )
+# The harness's "found nothing" phrasings, read in one place (`nothing_found_signature`) by two callers:
+# `baseline_quality_problem` looks for them anywhere in a baseline; the answer key (`answer_key.score`, #713) looks
+# for them in an answer's opening sentence, so an answer that says the fact is absent and then mentions the keyed
+# term in passing scores 0 instead of 1.0. These four are whole-answer statements, safe to find anywhere.
 _BASELINE_NOTHING_FOUND_SIGNATURES = (
     "i was unable to find",
     "i couldn't find any",
     "all searches returned zero results",
     "no information about",
+)
+# These say "found nothing" only where an answer opens with them. Inside a thorough answer they are ordinary
+# English ("I could not find a separate schedule, but section 12 sets..."), and the baselines are asked to be
+# thorough; read anywhere in a baseline, one such clause would blank a question's metrics for every model in the
+# run (review of #764). The answer key reads them, in an opening; the baseline check does not.
+_OPENING_NOTHING_FOUND_SIGNATURES = (
+    # qwen3-8b on cuad-key-7, bench-20260924-0724-keyed (#713): "is not explicitly stated in the retrieved
+    # excerpts", then a party "in Nevada", the keyed answer.
+    "not explicitly stated",
+    "could not find",
 )
 _BASELINE_PLACEHOLDER_SIGNATURES = (
     "unfilled template placeholder",
@@ -221,6 +235,15 @@ def _normalize_for_match(text: str) -> str:
     carry no semantic load — they're a presentation artifact — so removing
     them before matching is safe and makes the marker list short."""
     return text.lower().replace("*", "")
+
+
+def nothing_found_signature(text: str, *, at_opening: bool = False) -> str | None:
+    """The first "found nothing" phrasing in `text`, or None. The one place the lists are read, for the baseline
+    check and the answer key alike. `at_opening`: `text` is an answer's opening sentence, where the phrasings that
+    count only there are read too."""
+    low = _normalize_for_match(text or "")
+    signatures = _BASELINE_NOTHING_FOUND_SIGNATURES + (_OPENING_NOTHING_FOUND_SIGNATURES if at_opening else ())
+    return next((sig for sig in signatures if sig in low), None)
 
 
 def baseline_quality_problem(baseline: dict) -> str | None:
@@ -248,9 +271,8 @@ def baseline_quality_problem(baseline: dict) -> str | None:
     for sig in _BASELINE_PLACEHOLDER_SIGNATURES:
         if sig in low:
             return "baseline saw unfilled placeholder"
-    for sig in _BASELINE_NOTHING_FOUND_SIGNATURES:
-        if sig in low:
-            return "baseline found no matching documents"
+    if nothing_found_signature(answer):
+        return "baseline found no matching documents"
     for sig in _BASELINE_REFUSAL_SIGNATURES:
         if sig in low:
             return "baseline is a refusal"

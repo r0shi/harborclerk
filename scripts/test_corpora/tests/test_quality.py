@@ -8,6 +8,7 @@ from scripts.test_corpora.runner.quality import (
     baseline_quality_problem,
     classify_answer,
     find_unfilled_placeholder,
+    nothing_found_signature,
 )
 
 # ── classify_answer ──
@@ -177,6 +178,21 @@ def test_baseline_found_nothing() -> None:
         )
     }
     assert baseline_quality_problem(baseline) == "baseline found no matching documents"
+
+
+def test_the_no_findings_list_is_shared_with_the_answer_key_and_two_phrasings_count_only_in_an_opening() -> None:
+    """#713: the answer key reads the same list over an answer's opening. The two phrasings added for it are
+    ordinary English inside a thorough baseline (review of #764), so they count in an opening and nowhere else:
+    a baseline that says so mid-answer is not a no-findings baseline, and its metrics are kept."""
+    assert nothing_found_signature("The law is **not explicitly stated** here.", at_opening=True) == (
+        "not explicitly stated"
+    )
+    assert nothing_found_signature("I could not find it.", at_opening=True) == "could not find"
+    assert nothing_found_signature("The law is not explicitly stated here.") is None
+    assert nothing_found_signature("I was unable to find it.") == "i was unable to find"
+    assert nothing_found_signature("Nevada.", at_opening=True) is None and nothing_found_signature("") is None
+    thorough = "Nevada law governs (section 12). I could not find a separate venue clause; it is not explicitly stated."
+    assert baseline_quality_problem({"answer": thorough}) is None
 
 
 def test_baseline_real_answer_passes() -> None:
