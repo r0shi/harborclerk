@@ -6,8 +6,11 @@ not_found / unique / ambiguous; documents_by_date returns docs sorted by
 their effective date (per metadata_dates.effective_date priority chain).
 
 This module exposes two public async functions used by mcp_server.py:
-  - verify_identifier(session, identifier) -> dict   (added in Task 3)
-  - documents_by_date(session, ...) -> dict          (added in Task 5)
+  - verify_identifier(session, identifier, doc_ids=None) -> dict
+  - documents_by_date(session, ..., doc_ids=None) -> dict
+
+Both take ``doc_ids``, a principal's visible set (None when unrestricted), and apply it inside the query:
+before any cap, so a scoped caller neither resolves nor learns the existence of a document outside its scope.
 
 Task 2 establishes the candidate-matching layer for verify_identifier.
 """
@@ -78,7 +81,9 @@ def _iter_id_like_leaves(metadata: dict) -> list[Any]:
     return out
 
 
-async def _find_candidates(session: AsyncSession, identifier: str) -> list[Document]:
+async def _find_candidates(
+    session: AsyncSession, identifier: str, doc_ids: Collection[uuid.UUID] | None = None
+) -> list[Document]:
     """Return the set of active Documents matching `identifier` by any of:
       - title CONTAINS identifier (case-insensitive, whitespace-normalised)
       - canonical_filename CONTAINS identifier (same normalisation)
@@ -89,10 +94,15 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
     Deduplicated by doc_id. Capped at _VERIFY_CANDIDATE_CAP results
     (the public verify_identifier in Task 3 sets `overflow: true` when
     the cap is reached).
+
+    ``doc_ids`` (a scoped principal's visible set; None is unrestricted) restricts both passes in SQL, before
+    the metadata pass's cap: filtering afterwards would let a hundred out-of-scope documents fill the cap and
+    hide the one the caller may see (#724).
     """
     normalized = _normalize(identifier)
     if not normalized:
         return []
+    scope_clause = Document.doc_id.in_(list(doc_ids)) if doc_ids is not None else None
 
     # SQL-side pass: title / canonical_filename ILIKE (escape metacharacters
     # so an identifier like "50% off" or "___" doesn't act as a wildcard),
@@ -113,6 +123,8 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
             )
         )
     )
+    if scope_clause is not None:
+        stmt = stmt.where(scope_clause)
     sql_hits = (await session.execute(stmt)).scalars().all()
     sql_hit_ids = {d.doc_id for d in sql_hits}
 
@@ -121,13 +133,10 @@ async def _find_candidates(session: AsyncSession, identifier: str) -> list[Docum
     # Capped at _VERIFY_CANDIDATE_CAP so the Python-side loop is always
     # bounded: a corpus with 10k+ metadata-bearing docs never loads them
     # all into memory on a single call.
-    stmt_meta = (
-        select(Document)
-        .where(Document.status == "active")
-        .where(Document.doc_metadata != {})
-        .limit(_VERIFY_CANDIDATE_CAP)
-    )
-    meta_hits = (await session.execute(stmt_meta)).scalars().all()
+    stmt_meta = select(Document).where(Document.status == "active").where(Document.doc_metadata != {})
+    if scope_clause is not None:
+        stmt_meta = stmt_meta.where(scope_clause)
+    meta_hits = (await session.execute(stmt_meta.limit(_VERIFY_CANDIDATE_CAP))).scalars().all()
 
     extra: list[Document] = []
     for doc in meta_hits:
@@ -190,9 +199,12 @@ def _title_tokens(text: str | None) -> set[str]:
     return tokens
 
 
-async def _find_candidates_by_words(session: AsyncSession, identifier: str) -> list[Document]:
+async def _find_candidates_by_words(
+    session: AsyncSession, identifier: str, doc_ids: Collection[uuid.UUID] | None = None
+) -> list[Document]:
     """The loose pass, for when `_find_candidates` finds nothing: every word of the name must be a word of
-    the title or the canonical filename, in any order.
+    the title or the canonical filename, in any order. ``doc_ids`` (a scope's visible set; None is
+    unrestricted) restricts the names read, so the cap is applied to what the caller may see.
 
     People name a document by a display name and files carry a filing name: "the Arca US Treasury Fund
     development agreement" against ``ArcaUsTreasuryFund_20200207_N-2_EX-99.K5_11971930_EX-99.K5_Development
@@ -213,6 +225,8 @@ async def _find_candidates_by_words(session: AsyncSession, identifier: str) -> l
     if len(wanted) < 2:  # distinct words: "Acme Acme" is one word said twice
         return []
     names = select(Document.doc_id, Document.title, Document.canonical_filename).where(Document.status == "active")
+    if doc_ids is not None:
+        names = names.where(Document.doc_id.in_(list(doc_ids)))
     matched_ids = [
         row.doc_id
         for row in sorted((await session.execute(names)).all(), key=lambda r: r.title or "")
@@ -250,8 +264,11 @@ def _has_nested_metadata(metadata_by_doc: dict[str, dict]) -> bool:
     return False
 
 
-async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
-    """Verify that an identifier resolves to a unique document.
+async def verify_identifier(
+    session: AsyncSession, identifier: str, doc_ids: Collection[uuid.UUID] | None = None
+) -> dict:
+    """Verify that an identifier resolves to a unique document, among those in ``doc_ids`` (a scoped
+    principal's visible set; None is unrestricted).
 
     Returns one of three response shapes:
       - {"status": "not_found", "identifier": <input>}
@@ -266,14 +283,18 @@ async def verify_identifier(session: AsyncSession, identifier: str) -> dict:
     against the name the user gave, so a loose match is never quoted as an exact one.
 
     Empty / whitespace-only identifier returns {"error": "..."}.
+
+    The scope is applied inside both passes, not to the result: a document outside it must not turn a
+    unique match into an ambiguous one, and its title and filename must not come back in the candidates
+    (#724).
     """
     if not identifier or not identifier.strip():
         return {"error": "identifier must be a non-empty string"}
 
-    candidates = await _find_candidates(session, identifier)
+    candidates = await _find_candidates(session, identifier, doc_ids)
     matched_by_words = False
     if not candidates:
-        candidates = await _find_candidates_by_words(session, identifier)
+        candidates = await _find_candidates_by_words(session, identifier, doc_ids)
         matched_by_words = bool(candidates)
 
     if not candidates:

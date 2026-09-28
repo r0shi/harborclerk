@@ -17,9 +17,13 @@ response-payload levers that land in context at decision time:
 from __future__ import annotations
 
 import json
+import uuid
 from unittest.mock import AsyncMock, patch
 
-from harbor_clerk.mcp_server import _format_search_response, kb_verify_identifier
+import pytest
+
+from harbor_clerk.api.deps import Principal
+from harbor_clerk.mcp_server import _format_search_response, _mcp_principal, kb_verify_identifier
 from harbor_clerk.search_types import SearchHit, SearchResult
 
 
@@ -94,7 +98,16 @@ def test_no_continuation_block_on_exact_last_page():
 # ---------------------------------------------------------------------------
 
 
-async def test_verify_identifier_not_found_carries_anti_hedge_instruction():
+@pytest.fixture
+def mcp_principal():
+    """kb_verify_identifier applies the caller's scope like every other kb_* tool (#724), so it needs a caller;
+    an unrestricted one leaves the patched lookup's result as it is."""
+    token = _mcp_principal.set(Principal(type="user", id=uuid.uuid4(), role="admin"))
+    yield
+    _mcp_principal.reset(token)
+
+
+async def test_verify_identifier_not_found_carries_anti_hedge_instruction(mcp_principal):
     fake = {"status": "not_found", "identifier": "does-not-exist"}
     with patch("harbor_clerk.mcp_server._verify_identifier_impl", new=AsyncMock(return_value=fake)):
         raw = await kb_verify_identifier("does-not-exist")
@@ -112,7 +125,7 @@ async def test_verify_identifier_not_found_carries_anti_hedge_instruction():
     assert "do not" in instr
 
 
-async def test_verify_identifier_unique_has_no_instruction():
+async def test_verify_identifier_unique_has_no_instruction(mcp_principal):
     fake = {"status": "unique", "match": {"doc_id": "d1", "title": "T"}}
     with patch("harbor_clerk.mcp_server._verify_identifier_impl", new=AsyncMock(return_value=fake)):
         raw = await kb_verify_identifier("real-doc")
@@ -122,7 +135,7 @@ async def test_verify_identifier_unique_has_no_instruction():
     assert "instruction" not in out
 
 
-async def test_verify_identifier_ambiguous_has_no_instruction():
+async def test_verify_identifier_ambiguous_has_no_instruction(mcp_principal):
     fake = {"status": "ambiguous", "candidates": [{"doc_id": "a"}, {"doc_id": "b"}]}
     with patch("harbor_clerk.mcp_server._verify_identifier_impl", new=AsyncMock(return_value=fake)):
         raw = await kb_verify_identifier("ambiguous-substring")
@@ -131,7 +144,7 @@ async def test_verify_identifier_ambiguous_has_no_instruction():
     assert "instruction" not in out
 
 
-async def test_verify_identifier_error_shape_gets_no_instruction():
+async def test_verify_identifier_error_shape_gets_no_instruction(mcp_principal):
     """`verify_identifier` returns {"error": ...} for empty/whitespace input.
     That shape has no `status` key — the guard must skip it, never attaching
     the anti-hedge directive to an error response."""
