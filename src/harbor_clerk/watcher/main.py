@@ -105,7 +105,7 @@ class WatcherDaemon:
         per-folder ``skipped_count`` + ``skipped_extensions`` from files
         the watcher rejected for an unsupported extension (NOT counting
         intentional-noise filters: dotfiles, AppleDouble, __MACOSX,
-        Excalidraw).
+        Excalidraw, or a document's JSON metadata sidecar).
         """
         logger.info("watcher: initial scan of %s starting", root)
         count = 0
@@ -124,7 +124,9 @@ class WatcherDaemon:
                     # Classify BEFORE handing off to _on_event so we can
                     # tally UNSUPPORTED_EXTENSION skips without going
                     # through the event-handler path twice.
-                    reason = classify_skip(rel_path)
+                    # `filenames` is this directory's listing already; passing it spares
+                    # a scandir per .json (quadratic in a flat folder of annotated files).
+                    reason = classify_skip(rel_path, abs_path, sibling_names=filenames)
                     if reason is SkipReason.UNSUPPORTED_EXTENSION:
                         skipped_count += 1
                         suffix = os.path.splitext(rel_path)[1].lower()
@@ -139,9 +141,11 @@ class WatcherDaemon:
                         # ignore it anyway, but skipping the call saves
                         # the SHA computation and DB roundtrip.
                         continue
-                    if reason is SkipReason.NOISE:
-                        # Noise filters are intentional; don't tally and
-                        # don't dispatch.
+                    if reason is not None:
+                        # NOISE and SIDECAR are intentional; don't tally and
+                        # don't dispatch. A sidecar indexed as a document by
+                        # an earlier build is retired when the scan reaches
+                        # its sibling (handle_event), so it needs no visit.
                         continue
 
                     self._on_event(

@@ -1,7 +1,10 @@
 import hashlib
+import json
+from types import SimpleNamespace
 
 import pytest
 
+from harbor_clerk.ingest.metadata_extractors.sidecar import SidecarExtractor
 from harbor_clerk.models.chunk import Chunk
 from harbor_clerk.models.document import Document
 from harbor_clerk.models.document_heading import DocumentHeading
@@ -10,7 +13,7 @@ from harbor_clerk.models.entity import Entity
 from harbor_clerk.models.enums import JobStage, JobStatus, PipelineStatus
 from harbor_clerk.models.ingestion_job import IngestionJob
 from harbor_clerk.models.watched import WatchedFile, WatchedFileStatus, WatchedFolder
-from harbor_clerk.watcher.events import EventKind, FileEvent, _should_ignore, handle_event
+from harbor_clerk.watcher.events import EventKind, FileEvent, _should_ignore, handle_event, is_sidecar
 
 
 @pytest.fixture
@@ -575,3 +578,597 @@ class TestClassifySkip:
         UX prompt than silently filtering."""
         assert classify_skip("README") is SkipReason.UNSUPPORTED_EXTENSION
         assert classify_skip("LICENSE") is SkipReason.UNSUPPORTED_EXTENSION
+
+
+# ---------------------------------------------------------------------------
+# JSON metadata sidecars (#728): `<stem>.json` beside a document is attached
+# to it by SidecarExtractor and must not become a document of its own.
+# ---------------------------------------------------------------------------
+
+
+class TestSidecarClassification:
+    def test_json_beside_admitted_sibling_is_a_sidecar(self, tmp_path):
+        (tmp_path / "INV-001.pdf").write_bytes(b"%PDF-1.4")
+        (tmp_path / "INV-001.json").write_text('{"vendor": "Acme"}')
+        sidecar = str(tmp_path / "INV-001.json")
+        assert is_sidecar(sidecar) is True
+        assert classify_skip("INV-001.json", sidecar) is SkipReason.SIDECAR
+
+    def test_json_alone_is_an_ordinary_document(self, tmp_path):
+        (tmp_path / "data.json").write_text("{}")
+        alone = str(tmp_path / "data.json")
+        assert is_sidecar(alone) is False
+        assert classify_skip("data.json", alone) is None
+
+    def test_sibling_must_itself_be_admitted(self, tmp_path):
+        """A neighbour the watcher rejects (unsupported extension, AppleDouble
+        noise) does not make the .json a sidecar: nothing would carry its facts."""
+        (tmp_path / "dump.exe").write_bytes(b"MZ")
+        (tmp_path / "._dump.pdf").write_bytes(b"AppleDouble")
+        # A payload the extractor would accept, so only the sibling rule is under test.
+        (tmp_path / "dump.json").write_text('{"vendor": "Acme"}')
+        assert is_sidecar(str(tmp_path / "dump.json")) is False
+
+    def test_stem_must_match_exactly(self, tmp_path):
+        (tmp_path / "report.pdf").write_bytes(b"%PDF-1.4")
+        (tmp_path / "report-notes.json").write_text("{}")
+        assert is_sidecar(str(tmp_path / "report-notes.json")) is False
+
+    def test_non_json_is_never_a_sidecar(self, tmp_path):
+        (tmp_path / "notes.pdf").write_bytes(b"%PDF-1.4")
+        (tmp_path / "notes.md").write_text("# notes\n")
+        assert is_sidecar(str(tmp_path / "notes.md")) is False
+
+    def test_name_only_classification_never_says_sidecar(self, tmp_path):
+        """The API validates by name and has no folder to look at."""
+        (tmp_path / "INV-001.pdf").write_bytes(b"%PDF-1.4")
+        (tmp_path / "INV-001.json").write_text("{}")
+        assert classify_skip("INV-001.json") is None
+        assert _should_ignore("INV-001.json") is False
+
+    def test_unlistable_directory_is_not_a_sidecar(self, tmp_path):
+        assert is_sidecar(str(tmp_path / "missing-dir" / "x.json")) is False
+
+    def test_suffix_case_is_exact_on_both_sides(self, tmp_path):
+        """`with_suffix(".json")` never reads `INV-001.JSON`, so on a
+        case-sensitive filesystem it is a document; the watcher agrees."""
+        (tmp_path / "INV-001.pdf").write_bytes(b"%PDF-1.4")
+        (tmp_path / "INV-001.JSON").write_text('{"vendor": "Acme"}')
+        assert is_sidecar(str(tmp_path / "INV-001.JSON")) is False
+
+    @pytest.mark.parametrize(
+        ("payload", "attached"),
+        [
+            ('{"vendor": "Acme"}', True),
+            ("[1, 2, 3]", False),
+            ("{}", False),
+            ("{not json", False),
+            (json.dumps({"blob": "x" * 70_000}), False),
+        ],
+        ids=["object", "list", "empty", "malformed", "oversize"],
+    )
+    def test_watcher_and_extractor_agree(self, tmp_path, payload, attached):
+        """One predicate on both sides: a .json beside a document is either
+        attached by the extract stage or indexed by the watcher, never neither."""
+        pdf = tmp_path / "INV-001.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        sidecar = tmp_path / "INV-001.json"
+        sidecar.write_text(payload)
+
+        extracted = SidecarExtractor().extract(doc=SimpleNamespace(doc_id="d"), raw_bytes=b"", source_path=str(pdf))
+        assert (extracted is not None) is attached
+        assert is_sidecar(str(sidecar)) is attached
+        assert (classify_skip("INV-001.json", str(sidecar)) is SkipReason.SIDECAR) is attached
+
+    def test_sibling_names_spare_the_listing(self, tmp_path):
+        """The initial scan already holds the directory listing; it decides."""
+        (tmp_path / "INV-001.json").write_text('{"vendor": "Acme"}')
+        assert is_sidecar(str(tmp_path / "INV-001.json"), sibling_names=["INV-001.pdf"]) is True
+        assert is_sidecar(str(tmp_path / "INV-001.json"), sibling_names=[]) is False
+
+    def test_missing_json_is_judged_by_its_sibling(self, tmp_path):
+        """A deleted sidecar has no contents to check; the sibling alone
+        decides here, and handle_event asks the database what it was."""
+        (tmp_path / "INV-001.pdf").write_bytes(b"%PDF-1.4")
+        assert is_sidecar(str(tmp_path / "INV-001.json")) is True
+        assert is_sidecar(str(tmp_path / "other.json")) is False
+
+
+def _sidecar_pair(tmp_path, stem="INV-001"):
+    pdf = tmp_path / f"{stem}.pdf"
+    pdf.write_bytes(b"%PDF-1.4 invoice body")
+    sidecar = tmp_path / f"{stem}.json"
+    sidecar.write_text('{"vendor": "Acme", "total_usd": 1200}')
+    return pdf, sidecar
+
+
+def test_sidecar_json_beside_document_is_not_indexed(sync_session, folder, tmp_path):
+    """Event path: the document is indexed once, the sidecar not at all."""
+    pdf, sidecar = _sidecar_pair(tmp_path)
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+
+    doc = sync_session.query(Document).one()
+    assert doc.canonical_filename == "INV-001.pdf"
+    assert sync_session.query(WatchedFile).one().relative_path == "INV-001.pdf"
+    assert sync_session.query(IngestionJob).one().doc_id == doc.doc_id
+
+
+def test_json_without_sibling_is_indexed(sync_session, folder, tmp_path):
+    f = tmp_path / "settings-export.json"
+    f.write_text('{"theme": "dark"}')
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "settings-export.json", str(f)))
+    sync_session.commit()
+
+    doc = sync_session.query(Document).one()
+    assert doc.canonical_filename == "settings-export.json"
+    assert doc.mime_type == "application/json"
+    assert doc.status == "active"
+
+
+def test_sidecar_landing_first_is_retired_when_its_document_arrives(sync_session, folder, tmp_path):
+    """The sidecar may be written before the document it describes. It is
+    an ordinary document until the sibling lands, then leaves the index."""
+    sidecar = tmp_path / "INV-001.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+    json_doc = sync_session.query(Document).one()
+    assert json_doc.status == "active"
+
+    pdf = tmp_path / "INV-001.pdf"
+    pdf.write_bytes(b"%PDF-1.4 invoice body")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    sync_session.commit()
+
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="INV-001.json").one()
+    assert json_wf.status == WatchedFileStatus.removed
+    assert json_wf.removed_at is not None
+    sync_session.refresh(json_doc)
+    assert json_doc.status == "removed"
+    pdf_doc = sync_session.query(Document).filter_by(canonical_filename="INV-001.pdf").one()
+    assert pdf_doc.status == "active"
+    assert sync_session.query(IngestionJob).filter_by(doc_id=pdf_doc.doc_id).count() == 1
+
+    # A later event for the sidecar itself does not bring the row back.
+    sidecar.write_text('{"vendor": "Acme", "total_usd": 1200}')
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+    sync_session.refresh(json_wf)
+    assert json_wf.status == WatchedFileStatus.removed
+    assert sync_session.query(Document).count() == 2
+
+
+def _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypatch):
+    """Rows as builds before #728 left them: document and sidecar both active.
+
+    The document is indexed first so its arrival has no sidecar row to
+    retire; the sidecar is then admitted with the sibling check disabled.
+    """
+    import harbor_clerk.watcher.events as ev
+
+    pdf, sidecar = _sidecar_pair(tmp_path)
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    with monkeypatch.context() as m:
+        m.setattr(ev, "sidecar_owner_names", lambda _path, sibling_names=None: [])
+        handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+    assert sync_session.query(WatchedFile).filter_by(status=WatchedFileStatus.active).count() == 2
+    return pdf, sidecar
+
+
+def test_sidecar_indexed_by_an_earlier_build_is_retired_by_a_no_op_sibling_event(
+    sync_session, folder, tmp_path, monkeypatch
+):
+    """The initial scan revisits every file with an unchanged hash; that
+    no-op visit of the document is what retires the sidecar's stale row."""
+    pdf, _ = _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypatch)
+
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    sync_session.commit()
+
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="INV-001.json").one()
+    assert json_wf.status == WatchedFileStatus.removed
+    assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "removed"
+    pdf_wf = sync_session.query(WatchedFile).filter_by(relative_path="INV-001.pdf").one()
+    assert pdf_wf.status == WatchedFileStatus.active
+    assert sync_session.query(Document).filter_by(doc_id=pdf_wf.doc_id).one().status == "active"
+
+
+def test_sidecar_indexed_by_an_earlier_build_is_retired_by_its_own_event(sync_session, folder, tmp_path, monkeypatch):
+    _, sidecar = _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypatch)
+
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="INV-001.json").one()
+    assert json_wf.status == WatchedFileStatus.removed
+    assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "removed"
+
+
+def test_deleting_a_sidecar_an_earlier_build_indexed_is_an_ordinary_delete(sync_session, folder, tmp_path, monkeypatch):
+    """The file is gone, so its active row says it was a document too: the
+    delete branch handles it as for any deleted file (the document's fate on
+    deletion is #604's), and the sibling is left alone because its metadata
+    never carried the sidecar namespace."""
+    pdf, sidecar = _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypatch)
+    pdf_doc = sync_session.query(Document).filter_by(canonical_filename="INV-001.pdf").one()
+
+    sidecar.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="INV-001.json").one()
+    assert json_wf.status == WatchedFileStatus.removed
+    assert json_wf.removed_at is not None
+    assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "active"
+    sync_session.refresh(pdf_doc)
+    assert pdf_doc.pipeline_seq == 0
+
+
+@pytest.mark.parametrize(
+    "content_after", [b"same bytes", b"changed bytes"], ids=["branch3-same-sha", "branch4-new-sha"]
+)
+def test_resurrected_row_restores_document_visibility(sync_session, folder, tmp_path, content_after):
+    """A row retired with its document hidden (a sidecar whose sibling has
+    gone, or the API's /watch/remove) comes back visible when its file does."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"same bytes")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+    wf = sync_session.query(WatchedFile).one()
+    doc = sync_session.query(Document).one()
+    wf.status = WatchedFileStatus.removed
+    doc.status = "removed"
+    sync_session.commit()
+
+    f.write_bytes(content_after)
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+
+    sync_session.refresh(wf)
+    sync_session.refresh(doc)
+    assert wf.status == WatchedFileStatus.active
+    assert doc.status == "active"
+
+
+@pytest.mark.parametrize(
+    ("row_status", "content_after"),
+    [
+        (WatchedFileStatus.active, b"changed bytes"),
+        (WatchedFileStatus.removed, b"same bytes"),
+        (WatchedFileStatus.removed, b"changed bytes"),
+    ],
+    ids=["branch2-active-edit", "branch3-removed-same-sha", "branch4-removed-new-sha"],
+)
+def test_admin_deleted_document_is_not_revived_by_filesystem_events(
+    sync_session, folder, tmp_path, row_status, content_after
+):
+    """DELETE /docs/{id} sets "deleted" and leaves the WatchedFile alone. No
+    edit, trash or restore of the file on disk may undo an admin's decision;
+    only the watcher's own "removed" is the watcher's to reverse."""
+    f = tmp_path / "doc.pdf"
+    f.write_bytes(b"same bytes")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+    wf = sync_session.query(WatchedFile).one()
+    doc = sync_session.query(Document).one()
+    doc.status = "deleted"
+    wf.status = row_status
+    sync_session.commit()
+
+    f.write_bytes(content_after)
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "doc.pdf", str(f)))
+    sync_session.commit()
+
+    sync_session.refresh(wf)
+    sync_session.refresh(doc)
+    assert wf.status == WatchedFileStatus.active
+    assert doc.status == "deleted"
+
+
+def test_retiring_a_sidecar_row_leaves_an_admin_deleted_document_deleted(sync_session, folder, tmp_path, monkeypatch):
+    """The retire hides an active duplicate; an admin's "deleted" outranks it
+    and stays what the audit log says it is (the reaper hard-deletes the row
+    and document 30 days after `removed_at` whatever the status)."""
+    pdf, _ = _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypatch)
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="INV-001.json").one()
+    json_doc = sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one()
+    json_doc.status = "deleted"
+    sync_session.commit()
+
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    sync_session.commit()
+
+    sync_session.refresh(json_wf)
+    sync_session.refresh(json_doc)
+    assert json_wf.status == WatchedFileStatus.removed
+    assert json_doc.status == "deleted"
+
+
+# ---------------------------------------------------------------------------
+# The extract stage is the sidecar's only reader, so a sidecar event after the
+# document was extracted must extract it again (#760).
+# ---------------------------------------------------------------------------
+
+
+def _mark_extracted(sync_session, doc_id):
+    """As the worker leaves a document once extract has run: no queued job."""
+    for job in sync_session.query(IngestionJob).filter_by(doc_id=doc_id).all():
+        job.status = JobStatus.done
+    sync_session.commit()
+
+
+def _queued_extract_jobs(sync_session, doc_id) -> int:
+    return (
+        sync_session.query(IngestionJob)
+        .filter_by(doc_id=doc_id, stage=JobStage.extract, status=JobStatus.queued)
+        .count()
+    )
+
+
+def test_sidecar_written_after_document_is_extracted_requeues_extract(sync_session, folder, tmp_path):
+    pdf = tmp_path / "INV-001.pdf"
+    pdf.write_bytes(b"%PDF-1.4 invoice body")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    _mark_extracted(sync_session, doc.doc_id)
+
+    sidecar = tmp_path / "INV-001.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+
+    assert sync_session.query(Document).count() == 1, "the sidecar is still not a document"
+    sync_session.refresh(doc)
+    assert doc.pipeline_seq == 1
+    assert doc.pipeline_status == PipelineStatus.queued
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
+
+    # An edit once that extraction has run queues another.
+    _mark_extracted(sync_session, doc.doc_id)
+    sidecar.write_text('{"vendor": "Acme", "total_usd": 1200}')
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+    sync_session.refresh(doc)
+    assert doc.pipeline_seq == 2
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
+
+
+_EXTRACTED_WITH_SIDECAR = {
+    "tika": {"content_type": "application/pdf"},
+    "sidecar": {"vendor": "Acme"},
+    "_source_provenance": {"tika": "2026-09-27T10:00:00+00:00", "sidecar": "2026-09-27T10:00:00+00:00"},
+}
+
+
+def _mark_extracted_with_sidecar(sync_session, doc) -> None:
+    """As the extract stage leaves a document whose sidecar it read (see `_run_extractors`)."""
+    _mark_extracted(sync_session, doc.doc_id)
+    doc.doc_metadata = dict(_EXTRACTED_WITH_SIDECAR)
+    sync_session.commit()
+
+
+def test_deleted_sidecar_drops_its_namespace_from_the_document_that_read_it(sync_session, folder, tmp_path):
+    """Removing the sidecar removes `metadata.sidecar.*` and its provenance
+    stamp in place, leaving the other namespaces, the chunks and the pipeline
+    alone: there is nothing on disk to extract."""
+    pdf = tmp_path / "INV-001.pdf"
+    pdf.write_bytes(b"%PDF-1.4 invoice body")
+    sidecar = tmp_path / "INV-001.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    _mark_extracted_with_sidecar(sync_session, doc)
+    sync_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="invoice body"))
+    sync_session.commit()
+
+    sidecar.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+
+    sync_session.refresh(doc)
+    assert doc.doc_metadata == {
+        "tika": {"content_type": "application/pdf"},
+        "_source_provenance": {"tika": "2026-09-27T10:00:00+00:00"},
+    }
+    assert doc.pipeline_seq == 0
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 0
+    assert sync_session.query(Chunk).filter_by(doc_id=doc.doc_id).count() == 1
+    assert sync_session.query(WatchedFile).count() == 1, "no row was ever created for the sidecar"
+
+
+def test_deleting_document_and_sidecar_together_sidecar_event_first(sync_session, folder, tmp_path):
+    """Trash both; the `.json` event is handled while the document is still
+    on disk (Finder removes files one after another). The owner must keep its
+    chunks and its pipeline: a re-extraction here would race its own deletion
+    a moment later, strip the chunks and queue an extract of a path that is
+    gone, leaving an empty, erroring document. Its own delete event then marks
+    its row removed and leaves the document as #604 leaves it."""
+    pdf = tmp_path / "INV-001.pdf"
+    pdf.write_bytes(b"%PDF-1.4 invoice body")
+    sidecar = tmp_path / "INV-001.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    _mark_extracted_with_sidecar(sync_session, doc)
+    sync_session.add(Chunk(doc_id=doc.doc_id, chunk_num=0, chunk_text="invoice body"))
+    sync_session.commit()
+
+    sidecar.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+    pdf.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "INV-001.pdf", str(pdf)))
+    sync_session.commit()
+
+    sync_session.refresh(doc)
+    assert doc.pipeline_seq == 0
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 0
+    assert sync_session.query(Chunk).filter_by(doc_id=doc.doc_id).count() == 1, "its chunks are kept"
+    assert "sidecar" not in doc.doc_metadata
+    assert sync_session.query(WatchedFile).one().status == WatchedFileStatus.removed
+
+
+def test_sidecar_in_a_subdirectory(sync_session, folder, tmp_path):
+    """Relative paths carry the directory; the owner lookup must too."""
+    sub = tmp_path / "invoices" / "2024-Q3"
+    sub.mkdir(parents=True)
+    pdf = sub / "INV-001.pdf"
+    pdf.write_bytes(b"%PDF-1.4 invoice body")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "invoices/2024-Q3/INV-001.pdf", str(pdf)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    _mark_extracted(sync_session, doc.doc_id)
+
+    sidecar = sub / "INV-001.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    handle_event(
+        sync_session, FileEvent(EventKind.created, folder.folder_id, "invoices/2024-Q3/INV-001.json", str(sidecar))
+    )
+    sync_session.commit()
+
+    assert sync_session.query(Document).count() == 1
+    sync_session.refresh(doc)
+    assert doc.pipeline_seq == 1
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
+
+
+def test_sidecar_with_two_owners_requeues_both(sync_session, folder, tmp_path):
+    """`x.json` beside `x.md` and `x.pdf`: the extractor attaches it to both, so both are refreshed."""
+    md = tmp_path / "x.md"
+    md.write_text("# x\n")
+    pdf = tmp_path / "x.pdf"
+    pdf.write_bytes(b"%PDF-1.4 x")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "x.md", str(md)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "x.pdf", str(pdf)))
+    sync_session.commit()
+    docs = sync_session.query(Document).all()
+    assert len(docs) == 2
+    for d in docs:
+        _mark_extracted(sync_session, d.doc_id)
+
+    sidecar = tmp_path / "x.json"
+    sidecar.write_text('{"topic": "x"}')
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "x.json", str(sidecar)))
+    sync_session.commit()
+
+    assert sync_session.query(Document).count() == 2
+    for d in docs:
+        sync_session.refresh(d)
+        assert d.pipeline_seq == 1, d.canonical_filename
+        assert _queued_extract_jobs(sync_session, d.doc_id) == 1, d.canonical_filename
+
+
+def test_deleting_an_ordinary_json_beside_a_document_is_an_ordinary_delete(sync_session, folder, tmp_path):
+    """`list.json` (a JSON list) beside `list.md` was never a sidecar: its
+    deletion neither re-extracts `list.md`, whose metadata never carried the
+    sidecar namespace, nor hides the `.json` document beyond what the delete
+    branch does for any file."""
+    md = tmp_path / "list.md"
+    md.write_text("# list\n")
+    listing = tmp_path / "list.json"
+    listing.write_text("[1, 2, 3]")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.md", str(md)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.json", str(listing)))
+    sync_session.commit()
+    md_doc = sync_session.query(Document).filter_by(canonical_filename="list.md").one()
+    json_doc = sync_session.query(Document).filter_by(canonical_filename="list.json").one()
+    _mark_extracted(sync_session, md_doc.doc_id)
+
+    listing.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "list.json", str(listing)))
+    sync_session.commit()
+
+    sync_session.refresh(md_doc)
+    assert md_doc.pipeline_seq == 0
+    assert _queued_extract_jobs(sync_session, md_doc.doc_id) == 0
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="list.json").one()
+    assert json_wf.status == WatchedFileStatus.removed
+    sync_session.refresh(json_doc)
+    assert json_doc.status == "active"
+
+
+@pytest.mark.parametrize("md_after", [b"# list\n", b"# list, edited\n"], ids=["same-sha", "new-sha"])
+def test_sibling_event_leaves_a_declined_json_document_alone(sync_session, folder, tmp_path, md_after):
+    """A same-stem `.json` the extractor would decline is a document in its
+    own right; an event on its neighbour, the same-hash visit of every
+    initial scan included, must not hide it."""
+    md = tmp_path / "list.md"
+    md.write_bytes(b"# list\n")
+    listing = tmp_path / "list.json"
+    listing.write_text("[1, 2, 3]")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.md", str(md)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.json", str(listing)))
+    sync_session.commit()
+    assert sync_session.query(Document).count() == 2
+
+    md.write_bytes(md_after)
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "list.md", str(md)))
+    sync_session.commit()
+
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="list.json").one()
+    assert json_wf.status == WatchedFileStatus.active
+    assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "active"
+
+
+def test_sidecar_arriving_while_extract_is_queued_is_read_by_that_extract(sync_session, folder, tmp_path):
+    """Document and sidecar dropped together: the queued extract will read the
+    sidecar as it is, so it is not re-queued with a bumped generation."""
+    pdf, sidecar = _sidecar_pair(tmp_path)
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+
+    doc = sync_session.query(Document).one()
+    assert doc.pipeline_seq == 0
+    assert sync_session.query(IngestionJob).filter_by(doc_id=doc.doc_id).count() == 1
+
+
+def test_sidecar_event_does_not_requeue_an_admin_deleted_sibling(sync_session, folder, tmp_path):
+    pdf = tmp_path / "INV-001.pdf"
+    pdf.write_bytes(b"%PDF-1.4 invoice body")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
+    sync_session.commit()
+    doc = sync_session.query(Document).one()
+    _mark_extracted(sync_session, doc.doc_id)
+    doc.status = "deleted"
+    sync_session.commit()
+
+    sidecar = tmp_path / "INV-001.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
+    sync_session.commit()
+
+    sync_session.refresh(doc)
+    assert doc.pipeline_seq == 0
+    assert doc.status == "deleted"
+    assert _queued_extract_jobs(sync_session, doc.doc_id) == 0
+
+
+def test_declined_json_beside_document_is_indexed_and_does_not_requeue(sync_session, folder, tmp_path):
+    """What the extractor would refuse (here a JSON list) must not vanish
+    from both sides: it is a document, and its neighbour is left alone."""
+    md = tmp_path / "list.md"
+    md.write_text("# list\n")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.md", str(md)))
+    sync_session.commit()
+    md_doc = sync_session.query(Document).one()
+    _mark_extracted(sync_session, md_doc.doc_id)
+
+    listing = tmp_path / "list.json"
+    listing.write_text("[1, 2, 3]")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.json", str(listing)))
+    sync_session.commit()
+
+    assert sorted(d.canonical_filename for d in sync_session.query(Document).all()) == ["list.json", "list.md"]
+    sync_session.refresh(md_doc)
+    assert md_doc.pipeline_seq == 0
+    assert _queued_extract_jobs(sync_session, md_doc.doc_id) == 0

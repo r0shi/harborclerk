@@ -285,3 +285,107 @@ def test_scan_folder_records_no_extension_sentinel(factory, tmp_path, monkeypatc
             sess.close()
     finally:
         _truncate_watched(factory)
+
+
+def _watched_file_paths(factory, folder_id, status=None) -> list[str]:
+    sess = factory()
+    try:
+        q = sess.query(WatchedFile).filter_by(folder_id=folder_id)
+        if status is not None:
+            q = q.filter_by(status=status)
+        return sorted(wf.relative_path for wf in q.all())
+    finally:
+        sess.close()
+
+
+def test_scan_folder_skips_sidecar_json_without_counting_it(factory, tmp_path, monkeypatch):
+    """Initial scan path (#728): `<stem>.json` beside a document is neither
+    dispatched nor tallied as unsupported; a .json on its own is a document."""
+    from sqlalchemy import select
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+
+    (tmp_path / "INV-001.pdf").write_bytes(b"%PDF-1.4\n%invoice\n")
+    (tmp_path / "INV-001.json").write_text('{"vendor": "Acme"}')
+    (tmp_path / "lone.json").write_text('{"kind": "export"}')
+    (tmp_path / "malware.exe").write_bytes(b"MZ")
+
+    sess = factory()
+    folder = WatchedFolder(path=str(tmp_path), auto_discovered=False)
+    sess.add(folder)
+    sess.commit()
+    folder_id = folder.folder_id
+    sess.close()
+
+    try:
+        daemon = WatcherDaemon(factory)
+        dispatched: list[str] = []
+        real_on_event = daemon._on_event
+
+        def _recording_on_event(event):
+            dispatched.append(event.relative_path)
+            real_on_event(event)
+
+        daemon._on_event = _recording_on_event
+        daemon._scan_folder(folder_id, str(tmp_path))
+
+        # The scan classifies before dispatching so a sidecar costs no hash
+        # and no round trip; handle_event would skip it, but must not be asked.
+        assert sorted(dispatched) == ["INV-001.pdf", "lone.json"]
+        assert _watched_file_paths(factory, folder_id) == ["INV-001.pdf", "lone.json"]
+        sess = factory()
+        try:
+            row = sess.execute(select(WatchedFolder).where(WatchedFolder.folder_id == folder_id)).scalar_one()
+            assert row.skipped_count == 1, f"only malware.exe counts, got {row.skipped_count}"
+            assert row.skipped_extensions == [".exe"]
+            assert row.last_scan_at is not None
+        finally:
+            sess.close()
+    finally:
+        _truncate_watched(factory)
+
+
+def test_scan_folder_retires_sidecar_rows_an_earlier_build_indexed(factory, tmp_path, monkeypatch):
+    """The first scan after the upgrade visits the document, and that visit
+    retires the sidecar's row from before #728 without touching the file."""
+    import harbor_clerk.watcher.events as ev
+    from harbor_clerk.models.document import Document
+
+    _truncate_watched(factory)
+    monkeypatch.setenv("WATCH_ROOT", "")
+
+    (tmp_path / "INV-001.pdf").write_bytes(b"%PDF-1.4\n%invoice\n")
+    sidecar = tmp_path / "INV-001.json"
+    sidecar.write_text('{"vendor": "Acme"}')
+    sidecar_bytes = sidecar.read_bytes()
+
+    sess = factory()
+    folder = WatchedFolder(path=str(tmp_path), auto_discovered=False)
+    sess.add(folder)
+    sess.commit()
+    folder_id = folder.folder_id
+    sess.close()
+
+    try:
+        daemon = WatcherDaemon(factory)
+        # Rows as the earlier build left them: both files indexed.
+        with monkeypatch.context() as m:
+            m.setattr(ev, "sidecar_owner_names", lambda _path, sibling_names=None: [])
+            m.setattr(ev, "_retire_sidecar_row", lambda *_args: False)
+            daemon._scan_folder(folder_id, str(tmp_path))
+        assert _watched_file_paths(factory, folder_id, WatchedFileStatus.active) == ["INV-001.json", "INV-001.pdf"]
+
+        daemon._scan_folder(folder_id, str(tmp_path))
+
+        assert _watched_file_paths(factory, folder_id, WatchedFileStatus.active) == ["INV-001.pdf"]
+        assert _watched_file_paths(factory, folder_id, WatchedFileStatus.removed) == ["INV-001.json"]
+        sess = factory()
+        try:
+            statuses = {d.canonical_filename: d.status for d in sess.query(Document).all()}
+        finally:
+            sess.close()
+        assert statuses == {"INV-001.pdf": "active", "INV-001.json": "removed"}
+        assert sidecar.read_bytes() == sidecar_bytes, "the watcher never modifies a source"
+    finally:
+        _truncate_watched(factory)
