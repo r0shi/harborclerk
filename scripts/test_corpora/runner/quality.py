@@ -95,10 +95,15 @@ _ROLEPLAY_RE = re.compile(
 # under 800.
 _REFUSAL_MAX_LEN = 1500
 
-# The app's own sentence for a model that produced nothing (``_nothing_produced_fallback`` in
-# ``harbor_clerk.llm.chat``, #742): it opens with these words, in italics, and a model answering the question does
-# not. The user received a sentence, but the model gave no answer, so it is ``empty`` here and not judged.
-APP_FALLBACK_LEAD = "the model produced no answer"
+# The app's own sentence when no answer came from the model (``_nothing_produced_fallback`` in
+# ``harbor_clerk.llm.chat``, #742): the model wrote nothing, or the model server failed the forced call. It opens
+# with one of these, in italics, on its own line (after the text the user watched arrive, when there was any), and
+# a model answering the question does not. The user received a sentence, but the model gave no answer, so it is
+# ``empty`` here and not judged.
+APP_FALLBACK_LEADS = ("the model produced no answer", "the model server failed")
+_APP_FALLBACK_RE = re.compile(
+    r"^[\s_*]*(?:" + "|".join(re.escape(lead) for lead in APP_FALLBACK_LEADS) + r")\b", re.I | re.M
+)
 
 AnswerLabel = Literal["real", "refusal", "roleplay", "empty"]
 
@@ -115,8 +120,8 @@ def classify_answer(answer: str | None) -> tuple[AnswerLabel, str | None]:
     1. Empty/whitespace → ``empty``. This is the dead-LLM cascade signature
        (chat returns "completed" with no tokens in ~2s) and is already
        captured as DEGRADED upstream; included here so the function totals
-       to a complete classification. The app's fallback sentence for a
-       model that produced nothing (#742) is ``empty`` too, with its own
+       to a complete classification. The app's fallback sentence when no
+       answer came from the model (#742) is ``empty`` too, with its own
        reason: the words are the app's, not an answer.
     2. Roleplay → ``roleplay``. Checked before refusal because a model that
        roleplays tool calls *and* hedges should be flagged as roleplay (the
@@ -128,7 +133,7 @@ def classify_answer(answer: str | None) -> tuple[AnswerLabel, str | None]:
     if not answer or not answer.strip():
         return ("empty", "completed with empty answer")
 
-    if answer.strip().lstrip("_*").lower().startswith(APP_FALLBACK_LEAD):
+    if _APP_FALLBACK_RE.search(answer):
         return ("empty", "completed with the app's fallback (the model produced no answer)")
 
     if _ROLEPLAY_RE.search(answer):
