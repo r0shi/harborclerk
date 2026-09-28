@@ -41,11 +41,16 @@ def _check(checks, name):
     return next(c for c in checks if c.name == name)
 
 
-def _run(tmp_path: Path, run, fetch=lambda url: None, models=("qwen3-8b",), api_base=None):
+def _loads(name: str) -> object:
+    """A spaCy model that is installed: the machine checks are about the machine, not this venv."""
+    return object()
+
+
+def _run(tmp_path: Path, run, fetch=lambda url: None, models=("qwen3-8b",), api_base=None, load=_loads):
     binary = tmp_path / "llama-server"
     binary.write_text("")
     return pf.preflight(
-        models=list(models), api_base=api_base, llama_server=binary, run=run, fetch=fetch, system="Darwin"
+        models=list(models), api_base=api_base, llama_server=binary, run=run, fetch=fetch, load=load, system="Darwin"
     )
 
 
@@ -61,6 +66,7 @@ def test_a_healthy_machine_passes_every_check(tmp_path):
         "GPU at idle",
         "llama-server at the pin",
         "other model servers",
+        "spaCy model en_core_web_sm",
         "fits: qwen3-8b",
     }
 
@@ -196,7 +202,9 @@ def test_the_instance_must_be_healthy_when_one_is_named(tmp_path):
 
 
 def test_off_macos_the_machine_checks_are_skipped_not_passed(tmp_path):
-    checks = pf.preflight(models=["qwen3-8b"], api_base=None, run=_machine(), fetch=lambda url: None, system="Linux")
+    checks = pf.preflight(
+        models=["qwen3-8b"], api_base=None, run=_machine(), fetch=lambda url: None, load=_loads, system="Linux"
+    )
     assert _check(checks, "machine state").status == pf.SKIPPED
     assert _check(checks, "fits: qwen3-8b").status == pf.SKIPPED
 
@@ -219,7 +227,7 @@ def test_a_model_the_operator_did_not_name_only_warns_because_the_sweep_skips_it
     small = _machine({"sysctl -n hw.memsize": f"{16 * pf.GIB}\n"})
     binary = tmp_path / "llama-server"
     binary.write_text("")
-    common = dict(api_base=None, llama_server=binary, run=small, fetch=lambda url: None, system="Darwin")
+    common = dict(api_base=None, llama_server=binary, run=small, fetch=lambda url: None, load=_loads, system="Darwin")
     unnamed = pf.preflight(models=["qwen3-8b", "qwen36-35b-a3b"], models_named=False, **common)
     big = _check(unnamed, "fits: qwen36-35b-a3b")
     assert big.status == pf.WARN and "the sweep will skip it" in big.detail and pf.verdict(unnamed) == pf.WARN
@@ -252,6 +260,44 @@ def test_a_preflight_that_could_not_look_does_not_say_pass(tmp_path):
     every other check green, the verdict read `pass`, and the report printed that and nothing else."""
     blind = _run(tmp_path, _machine({"notifyutil": None}))
     assert _check(blind, "thermal pressure").status == pf.SKIPPED and pf.verdict(blind) == pf.WARN
-    elsewhere = pf.preflight(models=["qwen3-8b"], api_base=None, run=_machine(), fetch=lambda url: None, system="Linux")
+    elsewhere = pf.preflight(
+        models=["qwen3-8b"], api_base=None, run=_machine(), fetch=lambda url: None, load=_loads, system="Linux"
+    )
     assert pf.verdict(elsewhere) == pf.WARN
     assert pf.verdict(_run(tmp_path, _machine())) == pf.PASS, "every check looked, and liked what it saw"
+
+
+def _raising(exc: Exception):
+    def load(name: str) -> object:
+        raise exc
+
+    return load
+
+
+def test_a_missing_spacy_model_fails_the_preflight_and_names_the_install_command(tmp_path):
+    """#683: `en_core_web_sm` is a wheel from a GitHub release, not a dependency, so a fresh venv lacks it. The
+    sweep found out on its first local-model answer, after ingest and USD 18 of baselines."""
+    absent = OSError(
+        "[E050] Can't find model 'en_core_web_sm'. It doesn't seem to be a Python package or a valid path."
+    )
+    checks = _run(tmp_path, _machine(), load=_raising(absent))
+    model = _check(checks, "spaCy model en_core_web_sm")
+    assert model.status == pf.FAIL and pf.verdict(checks) == pf.FAIL
+    assert "E050" in model.detail and pf.SPACY_INSTALL in model.detail
+    # spaCy itself missing is the same failure, with the same fix.
+    no_spacy = _run(tmp_path, _machine(), load=_raising(ImportError("No module named 'spacy'")))
+    assert _check(no_spacy, "spaCy model en_core_web_sm").status == pf.FAIL
+    # An exception with no message is a FAIL too, not a traceback out of the one check that must not raise.
+    mute = _check(_run(tmp_path, _machine(), load=_raising(RuntimeError())), "spaCy model en_core_web_sm")
+    assert mute.status == pf.FAIL and "RuntimeError" in mute.detail and pf.SPACY_INSTALL in mute.detail
+
+
+def test_the_spacy_model_the_metrics_load_is_the_one_checked(tmp_path):
+    asked: list[str] = []
+    checks = _run(tmp_path, _machine(), load=lambda name: asked.append(name) or object())
+    assert asked == ["en_core_web_sm"] and _check(checks, "spaCy model en_core_web_sm").status == pf.PASS
+    # Off macOS too: the venv is checked wherever the sweep runs.
+    linux = pf.preflight(
+        models=["qwen3-8b"], api_base=None, run=_machine(), fetch=lambda url: None, load=_loads, system="Linux"
+    )
+    assert _check(linux, "spaCy model en_core_web_sm").status == pf.PASS
