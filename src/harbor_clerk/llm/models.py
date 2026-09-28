@@ -289,6 +289,30 @@ MODELS: dict[str, ModelInfo] = {
             checkpoint_bytes=65_863_680,
             parallel_slots=1,  # heavy tier (>15 GB)
         ),
+        ModelInfo(
+            # Added for evaluation (#551): the size-matched successor of Qwen3.6-35B-A3B by the model survey
+            # (docs/reports/2026-09-17-model-survey-ix-8.md), and the only Qwen3.8 release under the 24 GB ceiling.
+            # It is dense: every token reads all 16.5 GB, so on a 120 GB/s Mac it decodes near 7 tokens a second,
+            # against the mixture-of-experts models' 3 to 4B active. Not yet evaluated on this product.
+            id="qwen38-27b",
+            name="Qwen3.8 27B",
+            huggingface_repo="unsloth/Qwen3.8-27B-GGUF",
+            filename="Qwen3.8-27B-UD-Q4_K_M.gguf",
+            size_bytes=16_464_440_224,
+            context_window=262144,
+            supports_tools=True,
+            # Hybrid, 65 layers: one in four keeps a KV cache (full_attention_interval = 4, so 16), at 4 KV heads
+            # x (256 + 256) x 2 bytes: 64 KB per token, 17.2 GB at 262K, more than the weights; the launcher
+            # clamps -c to what the Mac fits. The 49 linear-attention layers carry a fixed recurrent state per
+            # slot: (state 128 x inner 6144 + conv 3 x (6144 + 2 x 16 groups x 128)) x 4 bytes = 3,268,608 per
+            # layer, 160,161,792 for the slot, and as much again for each context checkpoint. The header also
+            # declares one multi-token-prediction layer (nextn_predict_layers), which plain decoding does not use.
+            # Read from the GGUF header on the Hub, 2026-09-28.
+            kv_bytes_per_token=65_536,
+            kv_fixed_bytes=160_161_792,
+            checkpoint_bytes=160_161_792,
+            parallel_slots=1,  # heavy tier (>15 GB)
+        ),
     ]
 }
 
