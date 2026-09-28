@@ -155,7 +155,13 @@ async def test_note_extraction_and_gap_analysis_get_the_slow_call_timeout():
     await _extract_notes(client, "http://llm", "q", "passage text")
     await _check_gaps(client, "http://llm", "q", "notes", "coverage")
 
-    assert [call.kwargs["timeout"] for call in client.post.await_args_list] == [_SLOW_LLM_TIMEOUT] * 2
+    timeouts = [call.kwargs["timeout"] for call in client.post.await_args_list]
+    assert len(timeouts) == 2
+    for t in timeouts:
+        assert isinstance(t, httpx.Timeout), t
+        assert t.read == _SLOW_LLM_TIMEOUT and t.write == _SLOW_LLM_TIMEOUT and t.pool == _SLOW_LLM_TIMEOUT
+        # Connecting is the one thing still retried; a bare float would make that retry wait ten minutes.
+        assert t.connect == 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +222,107 @@ async def test_research_stream_heartbeats_and_reports_while_note_extraction_runs
     assert max(waiting) < notes_index, "a keepalive was sent after the call returned"
     assert events[-1]["type"] == "done", events[-1]
     assert "".join(e["content"] for e in events if e.get("type") == "token") == "Final answer."
+
+
+@pytest.mark.asyncio
+async def test_research_stream_heartbeats_and_reports_during_planning_and_the_gap_rounds_calls_too(
+    db_session,
+    admin_user,
+    unscoped_research_state,  # noqa: F811
+    mock_research_session_factory,  # noqa: F811
+    monkeypatch,
+):
+    """The other call sites of the keepalive: planning, gap analysis and the gap round's note extraction. Each
+    slow call must see the persisted heartbeat move while it runs and must be named in a progress event of
+    its own step; the gap round's events carry the round."""
+    conv, _state = unscoped_research_state
+    monkeypatch.setattr(research_module, "_LLM_KEEPALIVE_INTERVAL", 0.02)
+    moved: dict[str, bool] = {}
+
+    def slow(name: str, result):
+        async def call(*args, **kwargs):
+            before = await _heartbeat_of(conv.conversation_id)
+            await asyncio.sleep(0.15)
+            moved[name] = (await _heartbeat_of(conv.conversation_id)) > before
+            return result
+
+        return call
+
+    mock_client = _make_mock_httpx_client(
+        planning_resp=_make_planning_response(["unused: planning is mocked"]),
+        note_resp=_make_note_extraction_response(),
+        synthesis_lines=_make_synthesis_stream_response("Final answer."),
+    )
+    with (
+        patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool()),
+        patch.object(research_module, "_plan_queries", new=slow("planning", ["termination notice period clause"])),
+        patch.object(research_module, "_extract_notes_with_retry", new=AsyncMock(return_value="Notes.")),
+        patch.object(research_module, "_read_evidence", new=AsyncMock(return_value=("a passage", []))),
+        patch.object(research_module, "_check_gaps", new=slow("gap_analysis", ["governing law clause"])),
+        patch.object(research_module, "_extract_notes", new=slow("gap_notes", "Gap notes.")),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        raw = [e async for e in research_module.research_stream(conv.conversation_id, user_id=admin_user.user_id)]
+
+    assert moved == {"planning": True, "gap_analysis": True, "gap_notes": True}, moved
+    events = _events(raw)
+    waiting = [e for e in events if e.get("type") == "progress" and "llm_call" in e]
+    assert {e["llm_call"] for e in waiting} >= {"planning", "gap_analysis", "notes"}, waiting
+    assert all(e["step"] == 1 and e["phase"] == "planning" for e in waiting if e["llm_call"] == "planning")
+    # Round 1 runs both calls; round 2 re-suggests the same query, finds nothing new and stops after its gap
+    # analysis, so its events carry round 2.
+    gap_waits = [e for e in waiting if e["step"] == 5]
+    assert all(e["phase"] == "gap_analysis" and e["round"] in (1, 2) for e in gap_waits), gap_waits
+    assert {e["llm_call"] for e in gap_waits if e["round"] == 1} == {"gap_analysis", "notes"}, gap_waits
+    assert events[-1]["type"] == "done", events[-1]
+
+
+@pytest.mark.asyncio
+async def test_closing_the_research_stream_mid_call_cancels_the_call(
+    db_session,
+    admin_user,
+    unscoped_research_state,  # noqa: F811
+    mock_research_session_factory,  # noqa: F811
+    monkeypatch,
+):
+    """An SSE client that disconnects closes the stream at a yield. The in-flight LLM call must be cancelled
+    then and there, by the stream's own code, not whenever the garbage collector finalizes the helper."""
+    conv, _state = unscoped_research_state
+    monkeypatch.setattr(research_module, "_LLM_KEEPALIVE_INTERVAL", 0.02)
+    outcome: dict[str, str] = {}
+
+    async def hung_notes(*args, **kwargs) -> str:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            outcome["notes"] = "cancelled"
+            raise
+        outcome["notes"] = "finished"
+        return "never"
+
+    mock_client = _make_mock_httpx_client(
+        planning_resp=_make_planning_response(["termination notice period clause"]),
+        note_resp=_make_note_extraction_response(),
+        synthesis_lines=_make_synthesis_stream_response(),
+    )
+    with (
+        patch.object(research_module, "execute_tool", side_effect=_fake_execute_tool(hits=False)),
+        patch.object(research_module, "_extract_notes_with_retry", new=hung_notes),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        stream = research_module.research_stream(conv.conversation_id, user_id=admin_user.user_id)
+        async for chunk in stream:
+            if '"llm_call": "notes"' in chunk:
+                break
+        await stream.aclose()
+        # Synchronously observable: aclose() has returned, so the cancellation must already have happened.
+        assert outcome == {"notes": "cancelled"}, outcome
+
+    from harbor_clerk.models.research_state import ResearchState
+
+    async with research_module.async_session_factory() as session:
+        fresh = await session.get(ResearchState, conv.conversation_id)
+    assert fresh.status == "interrupted", fresh.status
 
 
 @pytest.mark.asyncio

@@ -12,10 +12,12 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable
+from contextlib import aclosing
 from datetime import UTC, datetime
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from harbor_clerk.api.scope import UserScope, apply_folder_scope, build_user_scope
 from harbor_clerk.config import get_settings, refresh_llm_settings
@@ -51,8 +53,8 @@ _LLM_TIMEOUT = 120.0
 _SLOW_LLM_TIMEOUT = 600.0
 # While an LLM call is in flight the stream refreshes the heartbeat and emits a progress event this often.
 # The API's reaper marks a research task stale at five minutes without a heartbeat and the eval harness
-# aborts at 325 s without an SSE event; a call that is working must look like it to both (#720, as #700
-# did for the search fan-out).
+# aborts at 325 s without an SSE event; a call that is working must look like it to both (#720, as #703
+# did for the search fan-out, #700).
 _LLM_KEEPALIVE_INTERVAL = 30.0
 # Progress events carry the step of the phase they belong to: 1 planning, 2 searching, 3 reading,
 # 4 analyzing, 5 gap analysis. Synthesis follows them and is the same step on a fresh run and on a
@@ -223,12 +225,18 @@ def _get_context_budget() -> int:
     return context_budget(model, settings.llm_yarn_enabled)
 
 
+def _slow_call_timeout() -> httpx.Timeout:
+    """The slow call's timeout: ten minutes to read the answer, ten seconds to connect. A bare float would
+    make the connect timeout ten minutes too, and connecting is the one thing `_llm_complete` still retries."""
+    return httpx.Timeout(_SLOW_LLM_TIMEOUT, connect=10.0)
+
+
 async def _llm_complete(
     client: httpx.AsyncClient,
     url: str,
     messages: list[dict],
     *,
-    timeout: float = _LLM_TIMEOUT,
+    timeout: float | httpx.Timeout = _LLM_TIMEOUT,
     max_tokens: int | None = None,
     phase: str = "unknown",
     json_mode: bool = False,
@@ -817,7 +825,8 @@ def _waiting_progress(
     gap_round: int | None = None,
 ) -> str:
     """The SSE progress event the stream emits while an LLM call is in flight. ``llm_call`` names the call and
-    ``llm_call_seconds`` how long it has been running, so a client can show that the model is working."""
+    ``llm_call_seconds`` how long the phase has been waiting on the model (across a retry of the call, as
+    note extraction's forceful second attempt), so a client can show that the model is working."""
     now = datetime.now(UTC)
     event: dict = {
         "type": "progress",
@@ -833,6 +842,25 @@ def _waiting_progress(
     return _sse(event)
 
 
+async def _keepalive_tick(
+    state: ResearchState,
+    session: AsyncSession,
+    step: int,
+    phase: str,
+    call: str,
+    call_started: datetime,
+    start_time: datetime,
+    strategy: str | None,
+    gap_round: int | None = None,
+) -> str:
+    """One keepalive of the stream while an LLM call runs: refresh the heartbeat the reaper reads, commit it,
+    and return the progress event to send. One function for every call site, so one test guards them all:
+    the review of #755 mutated two of five copies of this body and nothing failed."""
+    state.heartbeat_at = datetime.now(UTC)
+    await session.commit()
+    return _waiting_progress(step, phase, call, call_started, start_time, strategy, gap_round=gap_round)
+
+
 async def _with_keepalive(
     source: Awaitable | AsyncIterator,
     *,
@@ -842,7 +870,9 @@ async def _with_keepalive(
 
     An awaitable produces one ``("item", result)``; an async iterator produces ``("item", value)`` per value.
     An exception in the source is raised here, after the items before it, so the caller's handlers see it
-    unchanged. Closing this generator early cancels the source, which closes its HTTP request.
+    unchanged. Closing this generator early cancels the source, which closes its HTTP request; callers wrap
+    it in ``aclosing`` so a consumer that stops (a disconnected SSE client) closes it at once rather than
+    when the garbage collector finalizes it.
 
     The source runs in its own task because the research stream is itself an async generator: it can only
     send an SSE event or refresh the heartbeat between its own ``yield``s, and a plain ``await`` of a
@@ -1060,7 +1090,7 @@ async def _extract_notes(
         client,
         url,
         messages,
-        timeout=_SLOW_LLM_TIMEOUT,
+        timeout=_slow_call_timeout(),
         max_tokens=_MAX_TOKENS_NOTES,
         phase="notes",
     )
@@ -1125,7 +1155,7 @@ async def _check_gaps(
         client,
         url,
         messages,
-        timeout=_SLOW_LLM_TIMEOUT,
+        timeout=_slow_call_timeout(),
         max_tokens=_MAX_TOKENS_GAP,
         phase="gap_analysis",
         json_mode=True,
@@ -1433,15 +1463,18 @@ async def research_stream(
 
                     try:
                         call_started = datetime.now(UTC)
-                        async for kind, value in _with_keepalive(
-                            _plan_queries(client, llm_url, user_question, topic_hint, depth_config, doc_list)
-                        ):
-                            if kind == "keepalive":
-                                state.heartbeat_at = datetime.now(UTC)
-                                await session.commit()
-                                yield _waiting_progress(1, "planning", "planning", call_started, start_time, strategy)
-                                continue
-                            queries = value
+                        async with aclosing(
+                            _with_keepalive(
+                                _plan_queries(client, llm_url, user_question, topic_hint, depth_config, doc_list)
+                            )
+                        ) as steps:
+                            async for kind, value in steps:
+                                if kind == "keepalive":
+                                    yield await _keepalive_tick(
+                                        state, session, 1, "planning", "planning", call_started, start_time, strategy
+                                    )
+                                    continue
+                                queries = value
                     except (httpx.HTTPStatusError, httpx.TransportError) as exc:
                         logger.error("LLM error during query planning: %s", exc)
                         # Fallback: use question and keyword splits when the LLM is unreachable.
@@ -1623,15 +1656,18 @@ async def research_stream(
                     else:
                         try:
                             call_started = datetime.now(UTC)
-                            async for kind, value in _with_keepalive(
-                                _extract_notes_with_retry(client, llm_url, user_question, passages_text, coverage)
-                            ):
-                                if kind == "keepalive":
-                                    state.heartbeat_at = datetime.now(UTC)
-                                    await session.commit()
-                                    yield _waiting_progress(4, "analyzing", "notes", call_started, start_time, strategy)
-                                    continue
-                                notes_text = value
+                            async with aclosing(
+                                _with_keepalive(
+                                    _extract_notes_with_retry(client, llm_url, user_question, passages_text, coverage)
+                                )
+                            ) as steps:
+                                async for kind, value in steps:
+                                    if kind == "keepalive":
+                                        yield await _keepalive_tick(
+                                            state, session, 4, "analyzing", "notes", call_started, start_time, strategy
+                                        )
+                                        continue
+                                    notes_text = value
                         except (httpx.HTTPStatusError, httpx.TransportError) as exc:
                             logger.error("LLM error during note extraction: %s", exc)
                             # Fallback: use raw passages as notes
@@ -1690,23 +1726,26 @@ async def research_stream(
                         gap_input_notes = "\n\n".join(collected_notes)
                         try:
                             call_started = datetime.now(UTC)
-                            async for kind, value in _with_keepalive(
-                                _check_gaps(client, llm_url, user_question, gap_input_notes, coverage_summary)
-                            ):
-                                if kind == "keepalive":
-                                    state.heartbeat_at = datetime.now(UTC)
-                                    await session.commit()
-                                    yield _waiting_progress(
-                                        5,
-                                        "gap_analysis",
-                                        "gap_analysis",
-                                        call_started,
-                                        start_time,
-                                        strategy,
-                                        gap_round=gap_round_n + 1,
-                                    )
-                                    continue
-                                gap_queries = value
+                            async with aclosing(
+                                _with_keepalive(
+                                    _check_gaps(client, llm_url, user_question, gap_input_notes, coverage_summary)
+                                )
+                            ) as steps:
+                                async for kind, value in steps:
+                                    if kind == "keepalive":
+                                        yield await _keepalive_tick(
+                                            state,
+                                            session,
+                                            5,
+                                            "gap_analysis",
+                                            "gap_analysis",
+                                            call_started,
+                                            start_time,
+                                            strategy,
+                                            gap_round=gap_round_n + 1,
+                                        )
+                                        continue
+                                    gap_queries = value
                         except Exception:
                             logger.exception("Gap analysis failed (round %d)", gap_round_n + 1)
                             gap_queries = []
@@ -1786,23 +1825,24 @@ async def research_stream(
                         elif gap_passages.strip():
                             try:
                                 call_started = datetime.now(UTC)
-                                async for kind, value in _with_keepalive(
-                                    _extract_notes(client, llm_url, user_question, gap_passages)
-                                ):
-                                    if kind == "keepalive":
-                                        state.heartbeat_at = datetime.now(UTC)
-                                        await session.commit()
-                                        yield _waiting_progress(
-                                            5,
-                                            "gap_analysis",
-                                            "notes",
-                                            call_started,
-                                            start_time,
-                                            strategy,
-                                            gap_round=gap_round_n + 1,
-                                        )
-                                        continue
-                                    gap_notes = value
+                                async with aclosing(
+                                    _with_keepalive(_extract_notes(client, llm_url, user_question, gap_passages))
+                                ) as steps:
+                                    async for kind, value in steps:
+                                        if kind == "keepalive":
+                                            yield await _keepalive_tick(
+                                                state,
+                                                session,
+                                                5,
+                                                "gap_analysis",
+                                                "notes",
+                                                call_started,
+                                                start_time,
+                                                strategy,
+                                                gap_round=gap_round_n + 1,
+                                            )
+                                            continue
+                                        gap_notes = value
                                 collected_notes.append(f"## Research notes (gap round {gap_round_n + 1})\n{gap_notes}")
                                 yield _sse({"type": "notes", "content": gap_notes[:2000]})
                                 last_round_added_content = True
@@ -1856,27 +1896,32 @@ async def research_stream(
                     # buffered, not sent, so the stream is silent too. Both cases refresh on the interval.
                     call_started = datetime.now(UTC)
                     last_heartbeat = call_started
-                    async for kind, token in _with_keepalive(
-                        _stream_llm_tokens(
-                            client,
-                            llm_url,
-                            synthesis_messages,
-                            timeout=_SYNTHESIS_TIMEOUT,
-                            max_tokens=_MAX_TOKENS_SYNTHESIS,
-                        )
-                    ):
-                        now = datetime.now(UTC)
-                        if kind == "keepalive" or (now - last_heartbeat).total_seconds() >= _LLM_KEEPALIVE_INTERVAL:
-                            state.heartbeat_at = now
-                            last_heartbeat = now
-                            await session.commit()
-                            yield _waiting_progress(
-                                _SYNTHESIS_STEP, "synthesis", "synthesis", call_started, start_time, strategy
-                            )
-                        if kind == "keepalive":
-                            continue
-                        report_content += token
-                        yield _sse({"type": "token", "content": token})
+                    token_stream = _stream_llm_tokens(
+                        client,
+                        llm_url,
+                        synthesis_messages,
+                        timeout=_SYNTHESIS_TIMEOUT,
+                        max_tokens=_MAX_TOKENS_SYNTHESIS,
+                    )
+                    async with aclosing(_with_keepalive(token_stream)) as steps:
+                        async for kind, token in steps:
+                            now = datetime.now(UTC)
+                            if kind == "keepalive" or (now - last_heartbeat).total_seconds() >= _LLM_KEEPALIVE_INTERVAL:
+                                last_heartbeat = now
+                                yield await _keepalive_tick(
+                                    state,
+                                    session,
+                                    _SYNTHESIS_STEP,
+                                    "synthesis",
+                                    "synthesis",
+                                    call_started,
+                                    start_time,
+                                    strategy,
+                                )
+                            if kind == "keepalive":
+                                continue
+                            report_content += token
+                            yield _sse({"type": "token", "content": token})
             except httpx.HTTPStatusError as exc:
                 logger.error("LLM HTTP error during synthesis: %s", exc)
                 if exc.response.status_code >= 500:
