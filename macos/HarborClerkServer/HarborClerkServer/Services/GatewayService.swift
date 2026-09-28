@@ -27,6 +27,7 @@ final class GatewayService: ManagedService {
         guard let process, process.isRunning else { return nil }
         return process.processIdentifier
     }
+    var holdsLiveProcess: Bool { processIdentifier != nil }
 
     func start() async throws {
         let settings = AppSettings.shared

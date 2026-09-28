@@ -48,6 +48,8 @@
 		AT10000014 /* LaunchdAgentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000014; };
 		AT10000015 /* CliShimInstallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000015; };
 		AT10000016 /* GatewayConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000016; };
+		AT10000017 /* ServiceManagerRelaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000017; };
+		AT10000018 /* LlamaServiceStopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BT10000018; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -106,6 +108,8 @@
 		BT10000014 /* LaunchdAgentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchdAgentTests.swift; sourceTree = "<group>"; };
 		BT10000015 /* CliShimInstallerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CliShimInstallerTests.swift; sourceTree = "<group>"; };
 		BT10000016 /* GatewayConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GatewayConfigTests.swift; sourceTree = "<group>"; };
+		BT10000017 /* ServiceManagerRelaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceManagerRelaunchTests.swift; sourceTree = "<group>"; };
+		BT10000018 /* LlamaServiceStopTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LlamaServiceStopTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -205,6 +209,8 @@
 				BT10000014 /* LaunchdAgentTests.swift */,
 				BT10000015 /* CliShimInstallerTests.swift */,
 				BT10000016 /* GatewayConfigTests.swift */,
+				BT10000017 /* ServiceManagerRelaunchTests.swift */,
+				BT10000018 /* LlamaServiceStopTests.swift */,
 			);
 			path = HarborClerkServerTests;
 			sourceTree = "<group>";
@@ -368,6 +374,8 @@
 				AT10000014 /* LaunchdAgentTests.swift in Sources */,
 				AT10000015 /* CliShimInstallerTests.swift in Sources */,
 				AT10000016 /* GatewayConfigTests.swift in Sources */,
+				AT10000017 /* ServiceManagerRelaunchTests.swift in Sources */,
+				AT10000018 /* LlamaServiceStopTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

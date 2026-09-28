@@ -166,15 +166,15 @@ extension Process {
     /// restarts. See `project_menubar_process_management_audit.md`
     /// item 4.
     ///
-    /// Implementation: `Process.run()` uses `posix_spawn` internally
-    /// but doesn't expose `POSIX_SPAWN_SETPGROUP`. We instead call
-    /// `setpgid()` on the child from the parent immediately after
-    /// `run()` returns. There's a theoretical race — if the child
-    /// fork-exec's another binary before our setpgid call lands, that
-    /// grandchild inherits the OLD pgid. In practice the window is
-    /// microseconds and none of our managed services (Python, llama,
-    /// Java/Tika) fork in their startup path before initialising; the
-    /// race has never been observed.
+    /// Implementation: `setpgid()` on the child from the parent immediately
+    /// after `run()` returns. Measured 2026-09-28 (LlamaServiceStopTests pins
+    /// it): Foundation's `Process.run()` on macOS already spawns the child as
+    /// its own process-group leader (`getpgid(pid) == pid`), so the setpgid
+    /// here is a no-op and the "grandchild inherits the old pgid" race below
+    /// cannot occur through `Process`. It stays because the guarantee is
+    /// Foundation's, not documented, and this is where a change would be
+    /// caught (the warning fires). Earlier text here said `run()` did not
+    /// make the child a leader; that was assumed, not measured.
     ///
     /// On macOS, `setpgid(pid, 0)` says "make this pid a new pgid
     /// leader, with its pid as the pgid value". The race-with-already-
