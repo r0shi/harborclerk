@@ -11,6 +11,7 @@ final class MockProcessService: ManagedService {
     let name: String
     var state: ServiceState
     var holdsLiveProcess: Bool
+    var isLaunchdManaged = false
     var stopCalls = 0
     var startCalls = 0
     var healthCalls = 0
@@ -139,6 +140,43 @@ final class ServiceManagerRelaunchTests: XCTestCase {
         XCTAssertEqual(svc.stopCalls, 1)
     }
 
+    /// launchd holds the process for Postgres and Tika, so there is no live
+    /// child to consult: a `stopped` agent may still be loaded and holding its
+    /// port, and is booted out before the restart as before.
+    func testStoppedLaunchdServiceIsStillBootedOut() async {
+        let sm = makeManager()
+        let svc = MockProcessService(state: .stopped, holdsLiveProcess: false)
+        svc.isLaunchdManaged = true
+
+        let stopped = await sm.stopForRelaunch(svc)
+
+        XCTAssertTrue(stopped)
+        XCTAssertEqual(svc.stopCalls, 1)
+    }
+
+    func testErroredLaunchdServiceIsOnlyReset() async {
+        let sm = makeManager()
+        let svc = MockProcessService(state: .errored, holdsLiveProcess: false)
+        svc.isLaunchdManaged = true
+
+        let stopped = await sm.stopForRelaunch(svc)
+
+        XCTAssertFalse(stopped)
+        XCTAssertEqual(svc.stopCalls, 0)
+        XCTAssertEqual(svc.state, .stopped)
+    }
+
+    // MARK: - a settings restart cancels the config-watcher relaunch only when it relaunches llama
+
+    func testSettingsRestartRelaunchesLlamaOnlyForLlamaKeys() {
+        XCTAssertTrue(ServiceManager.settingsRestartRelaunchesLlama(["llm_model_id"]))
+        XCTAssertTrue(ServiceManager.settingsRestartRelaunchesLlama(["llm_yarn_enabled", "log_level"]))
+        XCTAssertTrue(ServiceManager.settingsRestartRelaunchesLlama(["llama_port"]))
+        XCTAssertFalse(ServiceManager.settingsRestartRelaunchesLlama(["worker_preset"]))
+        XCTAssertFalse(ServiceManager.settingsRestartRelaunchesLlama(["log_level", "api_port", "reranker_enabled"]))
+        XCTAssertFalse(ServiceManager.settingsRestartRelaunchesLlama([]))
+    }
+
     // MARK: - startService only advances a service that is still starting
 
     func testStartServiceLeavesAServiceStoppedDuringStartAlone() async {
@@ -191,6 +229,18 @@ final class ServiceManagerRelaunchTests: XCTestCase {
 
         XCTAssertEqual(svc.state, .running)
         XCTAssertTrue(FileManager.default.fileExists(atPath: sm.pidFileURL.path), "reaching running records the pid file, in this test's scratch directory")
+    }
+
+    /// Start or Restart from the status window while a stop is still in
+    /// flight: the spawn would race the stop's tail for `process`.
+    func testStartServiceRefusesAServiceStillStopping() async {
+        let sm = makeManager()
+        let svc = MockProcessService(state: .stopping, holdsLiveProcess: true)
+
+        await sm.startService(svc)
+
+        XCTAssertEqual(svc.startCalls, 0, "no spawn while a stop is in flight")
+        XCTAssertEqual(svc.state, .stopping)
     }
 
     func testStartServiceHonoursARefusal() async {

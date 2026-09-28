@@ -620,9 +620,11 @@ class ServiceManager: ObservableObject {
         // "couldn't bind HTTP server socket" failures + flap-protection
         // trip when used as part of an automated sweep.
         try? await Task.sleep(for: .seconds(5))
-        // Cancelled while sleeping means stopAll or a settings restart took
-        // over; starting now would hand them a child to tear down again.
-        guard !Task.isCancelled else { return }
+        // No cancellation guard here: `restartForChangedSettings` cancels every
+        // auto-restart on every settings change and then restarts only the
+        // services its keys name, so a guard would strand an unrelated service
+        // at `stopped`. A start during `stopAll` is bounded instead: stopAll
+        // awaits the cancelled Tasks, then marks and stops what they started.
         await startService(service)
     }
 
@@ -640,6 +642,18 @@ class ServiceManager: ObservableObject {
         if service.state == .errored {
             // A deliberate relaunch earns a fresh flap budget.
             restartHistory.removeValue(forKey: service.name)
+        }
+        if service.isLaunchdManaged {
+            // launchd holds the process, not this service, so there is no
+            // `holdsLiveProcess` to consult; the old rule stands: an errored
+            // agent is reset, any other is booted out (a `stopped` one may
+            // still be loaded and holding its port).
+            if service.state == .errored {
+                service.state = .stopped
+                return false
+            }
+            await service.stop()
+            return true
         }
         if (service.state == .errored || service.state == .stopped) && !service.holdsLiveProcess {
             service.state = .stopped
@@ -689,7 +703,6 @@ class ServiceManager: ObservableObject {
             Log.logger("lifecycle").info(
                 "[\(service.name, privacy: .public)] Backing off \(String(format: "%.1f", wait), privacy: .public)s before retry")
             try? await Task.sleep(for: .seconds(Int(ceil(wait))))
-            guard !Task.isCancelled else { return }
         }
 
         history.append(now)
@@ -706,8 +719,16 @@ class ServiceManager: ObservableObject {
     }
 
     func startService(_ service: any ManagedService) async {
-        // Bail if a shutdown was requested while we were waiting to start
-        guard service.state != .shutdownPending else { return }
+        // Bail if a shutdown was requested while we were waiting to start, or
+        // a stop is still in flight: `start()` would spawn into it, and the
+        // stop's tail then runs beside a child it never waited on. Start and
+        // Restart from the status window reach here at any moment; the
+        // relaunch paths only after their own stop has returned.
+        guard service.state != .shutdownPending, service.state != .stopping else {
+            Log.logger("lifecycle").notice(
+                "[\(service.name, privacy: .public)] Not starting: \(service.state.rawValue, privacy: .public)")
+            return
+        }
 
         // Ensure Python services have env set
         if let pySvc = service as? PythonService, pySvc.baseEnvironment.isEmpty {
@@ -807,6 +828,9 @@ class ServiceManager: ObservableObject {
                 Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Health check timeout")
             }
         } catch {
+            // Same rule as the paths above: a stop that moved the state while
+            // `start()` was failing owns it.
+            guard service.state == .starting else { return }
             service.state = .errored
             notifyStateChanged()
             Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Start failed: \(error.localizedDescription, privacy: .public)")
@@ -841,6 +865,12 @@ class ServiceManager: ObservableObject {
 
     // MARK: - Targeted restart
 
+    /// The settings keys whose change makes `restartForChangedSettings`
+    /// relaunch llama-server itself; mirrors the `llamaService` cases below.
+    nonisolated static func settingsRestartRelaunchesLlama(_ changedKeys: Set<String>) -> Bool {
+        !changedKeys.isDisjoint(with: ["llama_port", "llm_model_id", "llm_yarn_enabled"])
+    }
+
     /// Restart only the services affected by the given changed setting keys.
     func restartForChangedSettings(_ changedKeys: Set<String>) async {
         // Cancel in-flight auto-restart Tasks AND the config-watcher restart
@@ -856,8 +886,15 @@ class ServiceManager: ObservableObject {
         // subsequent runs work normally.
         isShuttingDown = true
         defer { isShuttingDown = false }
-        configChangeTask?.cancel()
-        configChangeTask = nil
+        // The config-watcher relaunch is cancelled only when this restart
+        // relaunches llama itself. A cancelled relaunch does not start (the
+        // canceller owns the next start), so cancelling it for a change that
+        // never touches llama — worker preset, log level — stranded a model
+        // activated seconds earlier at `stopped` until a manual Start.
+        if Self.settingsRestartRelaunchesLlama(changedKeys) {
+            configChangeTask?.cancel()
+            configChangeTask = nil
+        }
         await healthChecker?.cancelInFlightRestarts()
 
         // Determine which infrastructure and python services need restart
@@ -900,6 +937,10 @@ class ServiceManager: ObservableObject {
 
             case "llm_model_id", "llm_yarn_enabled":
                 infraToRestart.append(llamaService)
+                // Recorded here as the config watcher records it, so the next
+                // poll of the file this save just wrote does not read the id
+                // as changed and relaunch the server this restart launches.
+                if key == "llm_model_id" { lastLlmModelId = AppSettings.shared.llmModelId }
 
             case "api_port":
                 pythonToRestart.insert(ObjectIdentifier(apiService))
