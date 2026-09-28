@@ -50,22 +50,26 @@ def sidecar_path_for(source_path: str) -> Path:
     return Path(source_path).with_suffix(SIDECAR_SUFFIX)
 
 
-def load_sidecar(sidecar: Path, *, owner: str = "<unknown>") -> dict | None:
+def load_sidecar(sidecar: Path, *, owner: str = "<unknown>", quiet: bool = False) -> dict | None:
     """The metadata `sidecar` carries, or None when it is not a usable sidecar.
 
-    `owner` names the document (or path) in log lines. Every refusal is
-    logged at warning level once per read, because a user who wrote the file
-    expects it to be attached.
+    `owner` names the document (or path) in log lines. The extract stage
+    logs every refusal at warning level, because a user who wrote the file
+    expects it to be attached. The watcher asks the same question on every
+    event and every scan, for files that may simply be JSON documents beside
+    a same-stem neighbour (`data.json` beside `data.csv`), so it passes
+    `quiet=True` and the refusals go to debug.
     """
+    refused = log.debug if quiet else log.warning
     if not sidecar.is_file():
         return None
     try:
         size = sidecar.stat().st_size
     except OSError as exc:
-        log.warning("sidecar stat failed for %s (%s): %s", owner, sidecar, exc)
+        refused("sidecar stat failed for %s (%s): %s", owner, sidecar, exc)
         return None
     if size > MAX_SIDECAR_BYTES:
-        log.warning(
+        refused(
             "sidecar for %s is %d bytes (>%d cap); ignoring to avoid bloating doc_metadata",
             owner,
             size,
@@ -76,11 +80,11 @@ def load_sidecar(sidecar: Path, *, owner: str = "<unknown>") -> dict | None:
         payload = json.loads(sidecar.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         # ValueError covers json.JSONDecodeError and UnicodeDecodeError alike.
-        log.warning("sidecar load failed for %s (%s): %s", owner, sidecar, exc)
+        refused("sidecar load failed for %s (%s): %s", owner, sidecar, exc)
         return None
 
     if not isinstance(payload, dict):
-        log.warning(
+        refused(
             "sidecar for %s is not a JSON object (got %s); ignoring",
             owner,
             type(payload).__name__,

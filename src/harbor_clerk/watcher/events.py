@@ -117,7 +117,12 @@ def classify_skip(
 
 
 def is_sidecar(absolute_path: str, sibling_names: Iterable[str] | None = None) -> bool:
-    """True when ``absolute_path`` is a ``.json`` the extract stage would attach to a sibling document.
+    """True when ``absolute_path`` is a ``.json`` the extract stage would attach to a sibling document."""
+    return bool(sidecar_owner_names(absolute_path, sibling_names))
+
+
+def sidecar_owner_names(absolute_path: str, sibling_names: Iterable[str] | None = None) -> list[str]:
+    """Names of the documents beside ``absolute_path`` that it is the sidecar of; empty when it is not one.
 
     Two conditions, the same two ``SidecarExtractor`` applies from the other
     side: a file with exactly the same stem that the watcher would itself
@@ -125,17 +130,20 @@ def is_sidecar(absolute_path: str, sibling_names: Iterable[str] | None = None) -
     ordinary document), and ``load_sidecar`` accepts the contents (an
     oversize, malformed, non-object or empty ``.json`` is an ordinary
     document, because the extractor would decline it and it must not vanish
-    from both). A ``.json`` that no longer exists is judged by its sibling
-    alone: a deleted sidecar still has that sibling's metadata to refresh.
+    from both). A ``.json`` that no longer exists cannot be read, so it is
+    judged by its siblings here; ``handle_event`` then asks the database
+    whether it was read as a sidecar or indexed as a document. One listing
+    and one read per call; the caller keeps the names.
     """
     path = Path(absolute_path)
     if path.suffix != SIDECAR_SUFFIX:
-        return False
-    if not _admitted_sibling_names(path, sibling_names):
-        return False
-    if not path.exists():
-        return True
-    return load_sidecar(path, owner=absolute_path) is not None
+        return []
+    owners = _admitted_sibling_names(path, sibling_names)
+    if not owners:
+        return []
+    if path.exists() and load_sidecar(path, owner=absolute_path, quiet=True) is None:
+        return []
+    return owners
 
 
 def _admitted_sibling_names(path: Path, names: Iterable[str] | None = None) -> list[str]:
@@ -196,23 +204,35 @@ def _sha256_of(path: str) -> bytes:
 
 def handle_event(session: Session, event: FileEvent) -> None:
     """Apply a FileEvent to the database. Caller is responsible for commit."""
-    reason = classify_skip(event.relative_path, event.absolute_path)
-    if reason is SkipReason.SIDECAR:
-        # The sidecar may have been indexed as a document before its
-        # sibling landed, or before this rule existed. Any event on it,
-        # a deletion included, retires that row; and since the extract
-        # stage is what reads the sidecar, the sibling is extracted again
-        # so `metadata.sidecar.*` follows the file.
-        _retire_sidecar_row(session, event.folder_id, event.relative_path)
-        _reextract_sidecar_owners(session, event)
-        return
-    if reason is not None:
+    if _should_ignore(event.relative_path):
         logger.debug("watcher: ignored event for %s", event.relative_path)
         return
 
     existing = (
         session.query(WatchedFile).filter_by(folder_id=event.folder_id, relative_path=event.relative_path).one_or_none()
     )
+
+    # A `.json` the extract stage reads as a sibling document's metadata
+    # sidecar (SkipReason.SIDECAR) is not a document. Since that stage is
+    # the only reader, the sibling is extracted again so `metadata.sidecar.*`
+    # follows the file.
+    owners = sidecar_owner_names(event.absolute_path)
+    if owners and event.kind != EventKind.deleted:
+        # The sidecar may have been indexed as a document before its
+        # sibling landed, or before this rule existed; that row is retired.
+        _retire_sidecar_row(session, event.folder_id, event.relative_path)
+        _reextract_sidecar_owners(session, event, owners)
+        return
+    if owners:
+        # The file is gone, so the database says what it was. A sibling
+        # whose metadata carries the sidecar namespace read it, and drops
+        # it on re-extraction. An active row means the `.json` was also a
+        # document (an ordinary one the extractor declined, or one indexed
+        # before its sibling or by an earlier build): the delete branch
+        # below handles that row as for any deleted file.
+        _reextract_sidecar_owners(session, event, owners, attached_only=True)
+        if existing is None or existing.status != WatchedFileStatus.active:
+            return
 
     # Delete events
     if event.kind == EventKind.deleted:
@@ -250,8 +270,13 @@ def handle_event(session: Session, event: FileEvent) -> None:
     # before the no-op branch so the initial scan after an upgrade retires
     # the rows the old rule created, and after the empty-file returns above:
     # a file still mid-copy will be back with content, and retires it then.
+    # Only a file the extract stage will read is retired, by the same
+    # predicate: a same-stem `.json` it would decline is a document in its
+    # own right, and a missing one has its own delete event.
     if Path(event.relative_path).suffix != SIDECAR_SUFFIX:
-        _retire_sidecar_row(session, event.folder_id, _sidecar_relative_path(event.relative_path))
+        sidecar = Path(event.absolute_path).with_suffix(SIDECAR_SUFFIX)
+        if load_sidecar(sidecar, owner=event.absolute_path, quiet=True) is not None:
+            _retire_sidecar_row(session, event.folder_id, _sidecar_relative_path(event.relative_path))
 
     # Branch 1: existing+active+same → no-op
     if existing is not None and existing.status == WatchedFileStatus.active and existing.sha256 == sha:
@@ -345,21 +370,26 @@ def _retire_sidecar_row(session: Session, folder_id: uuid.UUID, relative_path: s
     return True
 
 
-def _reextract_sidecar_owners(session: Session, event: FileEvent) -> int:
-    """Queue a fresh extraction of every admitted same-stem sibling of a sidecar event.
+def _reextract_sidecar_owners(
+    session: Session, event: FileEvent, owner_names: Iterable[str], *, attached_only: bool = False
+) -> int:
+    """Queue a fresh extraction of the sidecar event's owners (its admitted same-stem siblings).
 
     The extract stage is the only reader of the sidecar, so a sidecar that
     is created, edited or deleted after its document was extracted would
     otherwise leave `metadata.sidecar.*` frozen (#760). An extraction that is
     still queued will read the file as it now is, so it is left alone rather
     than re-queued with a bumped generation; that is also what keeps a
-    document and its sidecar landing together from being extracted twice.
-    Returns how many documents were re-queued.
+    document and its sidecar landing together from being extracted twice
+    (one already running is replaced, and may run twice: a stale snapshot
+    of the sidecar is worse). With ``attached_only`` (the file is gone),
+    only a document whose metadata carries the sidecar namespace, i.e. one
+    that read it, is re-extracted. Returns how many documents were re-queued.
     """
     path = Path(event.absolute_path)
     rel_dir = posixpath.dirname(event.relative_path)
     requeued = 0
-    for name in _admitted_sibling_names(path):
+    for name in owner_names:
         rel = posixpath.join(rel_dir, name) if rel_dir else name
         wf = (
             session.query(WatchedFile)
@@ -372,6 +402,8 @@ def _reextract_sidecar_owners(session: Session, event: FileEvent) -> int:
         # A hidden document (admin "deleted", or retired) is not the
         # watcher's to wake; the worker would not claim its jobs anyway.
         if doc is None or doc.status != "active":
+            continue
+        if attached_only and "sidecar" not in (doc.doc_metadata or {}):
             continue
         pending = (
             session.query(IngestionJob)

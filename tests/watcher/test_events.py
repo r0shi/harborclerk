@@ -667,8 +667,8 @@ class TestSidecarClassification:
         assert is_sidecar(str(tmp_path / "INV-001.json"), sibling_names=[]) is False
 
     def test_missing_json_is_judged_by_its_sibling(self, tmp_path):
-        """A deleted sidecar has no contents to check, but its document's
-        metadata still needs refreshing, so the sibling alone decides."""
+        """A deleted sidecar has no contents to check; the sibling alone
+        decides here, and handle_event asks the database what it was."""
         (tmp_path / "INV-001.pdf").write_bytes(b"%PDF-1.4")
         assert is_sidecar(str(tmp_path / "INV-001.json")) is True
         assert is_sidecar(str(tmp_path / "other.json")) is False
@@ -751,7 +751,7 @@ def _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypa
     pdf, sidecar = _sidecar_pair(tmp_path)
     handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.pdf", str(pdf)))
     with monkeypatch.context() as m:
-        m.setattr(ev, "is_sidecar", lambda _path, sibling_names=None: False)
+        m.setattr(ev, "sidecar_owner_names", lambda _path, sibling_names=None: [])
         handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
     sync_session.commit()
     assert sync_session.query(WatchedFile).filter_by(status=WatchedFileStatus.active).count() == 2
@@ -787,10 +787,13 @@ def test_sidecar_indexed_by_an_earlier_build_is_retired_by_its_own_event(sync_se
     assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "removed"
 
 
-def test_deleted_sidecar_with_a_row_is_retired(sync_session, folder, tmp_path, monkeypatch):
-    """Deleting a sidecar an earlier build indexed retires its row like any
-    other event on it: the document it never should have been is hidden."""
-    _, sidecar = _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypatch)
+def test_deleting_a_sidecar_an_earlier_build_indexed_is_an_ordinary_delete(sync_session, folder, tmp_path, monkeypatch):
+    """The file is gone, so its active row says it was a document too: the
+    delete branch handles it as for any deleted file (the document's fate on
+    deletion is #604's), and the sibling is left alone because its metadata
+    never carried the sidecar namespace."""
+    pdf, sidecar = _index_pair_as_an_earlier_build_did(sync_session, folder, tmp_path, monkeypatch)
+    pdf_doc = sync_session.query(Document).filter_by(canonical_filename="INV-001.pdf").one()
 
     sidecar.unlink()
     handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "INV-001.json", str(sidecar)))
@@ -799,7 +802,9 @@ def test_deleted_sidecar_with_a_row_is_retired(sync_session, folder, tmp_path, m
     json_wf = sync_session.query(WatchedFile).filter_by(relative_path="INV-001.json").one()
     assert json_wf.status == WatchedFileStatus.removed
     assert json_wf.removed_at is not None
-    assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "removed"
+    assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "active"
+    sync_session.refresh(pdf_doc)
+    assert pdf_doc.pipeline_seq == 0
 
 
 @pytest.mark.parametrize(
@@ -931,7 +936,14 @@ def test_sidecar_written_after_document_is_extracted_requeues_extract(sync_sessi
     assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
 
 
-def test_deleted_sidecar_requeues_extract(sync_session, folder, tmp_path):
+def _mark_extracted_with_sidecar(sync_session, doc, payload: dict) -> None:
+    """As the extract stage leaves a document whose sidecar it read."""
+    _mark_extracted(sync_session, doc.doc_id)
+    doc.doc_metadata = {"sidecar": payload}
+    sync_session.commit()
+
+
+def test_deleted_sidecar_requeues_the_document_that_read_it(sync_session, folder, tmp_path):
     """Removing the sidecar must drop `metadata.sidecar.*`, which only a fresh extract does."""
     pdf = tmp_path / "INV-001.pdf"
     pdf.write_bytes(b"%PDF-1.4 invoice body")
@@ -941,7 +953,7 @@ def test_deleted_sidecar_requeues_extract(sync_session, folder, tmp_path):
     handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "INV-001.json", str(sidecar)))
     sync_session.commit()
     doc = sync_session.query(Document).one()
-    _mark_extracted(sync_session, doc.doc_id)
+    _mark_extracted_with_sidecar(sync_session, doc, {"vendor": "Acme"})
 
     sidecar.unlink()
     handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "INV-001.json", str(sidecar)))
@@ -951,6 +963,58 @@ def test_deleted_sidecar_requeues_extract(sync_session, folder, tmp_path):
     assert doc.pipeline_seq == 1
     assert _queued_extract_jobs(sync_session, doc.doc_id) == 1
     assert sync_session.query(WatchedFile).count() == 1, "no row was ever created for the sidecar"
+
+
+def test_deleting_an_ordinary_json_beside_a_document_is_an_ordinary_delete(sync_session, folder, tmp_path):
+    """`list.json` (a JSON list) beside `list.md` was never a sidecar: its
+    deletion neither re-extracts `list.md`, whose metadata never carried the
+    sidecar namespace, nor hides the `.json` document beyond what the delete
+    branch does for any file."""
+    md = tmp_path / "list.md"
+    md.write_text("# list\n")
+    listing = tmp_path / "list.json"
+    listing.write_text("[1, 2, 3]")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.md", str(md)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.json", str(listing)))
+    sync_session.commit()
+    md_doc = sync_session.query(Document).filter_by(canonical_filename="list.md").one()
+    json_doc = sync_session.query(Document).filter_by(canonical_filename="list.json").one()
+    _mark_extracted(sync_session, md_doc.doc_id)
+
+    listing.unlink()
+    handle_event(sync_session, FileEvent(EventKind.deleted, folder.folder_id, "list.json", str(listing)))
+    sync_session.commit()
+
+    sync_session.refresh(md_doc)
+    assert md_doc.pipeline_seq == 0
+    assert _queued_extract_jobs(sync_session, md_doc.doc_id) == 0
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="list.json").one()
+    assert json_wf.status == WatchedFileStatus.removed
+    sync_session.refresh(json_doc)
+    assert json_doc.status == "active"
+
+
+@pytest.mark.parametrize("md_after", [b"# list\n", b"# list, edited\n"], ids=["same-sha", "new-sha"])
+def test_sibling_event_leaves_a_declined_json_document_alone(sync_session, folder, tmp_path, md_after):
+    """A same-stem `.json` the extractor would decline is a document in its
+    own right; an event on its neighbour, the same-hash visit of every
+    initial scan included, must not hide it."""
+    md = tmp_path / "list.md"
+    md.write_bytes(b"# list\n")
+    listing = tmp_path / "list.json"
+    listing.write_text("[1, 2, 3]")
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.md", str(md)))
+    handle_event(sync_session, FileEvent(EventKind.created, folder.folder_id, "list.json", str(listing)))
+    sync_session.commit()
+    assert sync_session.query(Document).count() == 2
+
+    md.write_bytes(md_after)
+    handle_event(sync_session, FileEvent(EventKind.modified, folder.folder_id, "list.md", str(md)))
+    sync_session.commit()
+
+    json_wf = sync_session.query(WatchedFile).filter_by(relative_path="list.json").one()
+    assert json_wf.status == WatchedFileStatus.active
+    assert sync_session.query(Document).filter_by(doc_id=json_wf.doc_id).one().status == "active"
 
 
 def test_sidecar_arriving_while_extract_is_queued_is_read_by_that_extract(sync_session, folder, tmp_path):

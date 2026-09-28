@@ -371,7 +371,7 @@ def test_scan_folder_retires_sidecar_rows_an_earlier_build_indexed(factory, tmp_
         daemon = WatcherDaemon(factory)
         # Rows as the earlier build left them: both files indexed.
         with monkeypatch.context() as m:
-            m.setattr(ev, "is_sidecar", lambda _path, sibling_names=None: False)
+            m.setattr(ev, "sidecar_owner_names", lambda _path, sibling_names=None: [])
             m.setattr(ev, "_retire_sidecar_row", lambda *_args: False)
             daemon._scan_folder(folder_id, str(tmp_path))
         assert _watched_file_paths(factory, folder_id, WatchedFileStatus.active) == ["INV-001.json", "INV-001.pdf"]
