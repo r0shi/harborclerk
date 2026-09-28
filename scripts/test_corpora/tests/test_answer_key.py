@@ -10,7 +10,7 @@ import pytest
 import yaml
 
 from scripts.test_corpora.corpora import cuad_key
-from scripts.test_corpora.runner.answer_key import date_spellings, named_contracts, score
+from scripts.test_corpora.runner.answer_key import date_spellings, named_contracts, opening, score
 
 KEYED = Path(cuad_key.__file__).resolve().parent.parent / "questions" / "keyed"
 STAAR = "StaarSurgicalCompany_20180801_10-Q_EX-10.37_11289449_EX-10.37_Distributor Agreement"
@@ -26,6 +26,32 @@ def test_a_fact_needs_every_group_in_any_of_its_spellings():
     assert score(entry, "The parties are Exxon-Mobil Research and FUELCELL ENERGY, Inc.")["score"] == 1.0
     assert score(entry, "FuelCell Energy is one party.")["score"] == 0.5
     assert score(entry, "")["score"] == 0.0 and score(entry, None)["score"] == 0.0
+
+
+def test_an_answer_that_opens_by_saying_the_fact_is_absent_scores_0_whatever_it_mentions_after():
+    """cuad-key-7 in bench-20260924-0724-keyed (#713), as the issue quotes it: qwen3-8b said the law was not
+    stated, listed a party "in Nevada", and guessed at Nevada. The key is Nevada; the scorer gave it 1.0 and the
+    judge failed it, and the judge was right."""
+    nevada = {"kind": "fact", "all_of": [["Nevada"]]}
+    absent = (
+        "The governing law of the Cybergy Holdings affiliate agreement is not explicitly stated in the retrieved "
+        "excerpts. The parties are Cybergy Holdings, Inc. and Mount Knowledge Holdings Inc. in Nevada. The "
+        "governing law might default to the state of incorporation of one of the parties (e.g., U.S. Virgin "
+        "Islands or Nevada)."
+    )
+    assert score(nevada, absent) == {"score": 0.0, "groups_found": 0, "groups": 1, "absent": "not explicitly stated"}
+    assert opening(absent).endswith("in the retrieved excerpts")
+    # A plain correct answer still scores 1.0; so does one that says something else is absent, later.
+    assert score(nevada, "The agreement is governed by the laws of the State of Nevada.")["score"] == 1.0
+    assert score(nevada, "**Nevada.** The venue, however, is not explicitly stated.")["score"] == 1.0
+    assert score(nevada, "\n\nNevada law governs\nThe venue is not explicitly stated.")["score"] == 1.0
+    # The date matcher is the same kind of check, and gets the same guard; the phrasings are quality.py's.
+    absent_date = {"kind": "date", "date": "2022-03-15"}
+    assert score(absent_date, "I could not find the agreement date; the term ran from March 15, 2022.") == {
+        "score": 0.0,
+        "absent": "could not find",
+    }
+    assert score(absent_date, "March 15, 2022. I could not find an expiry date.")["score"] == 1.0
 
 
 @pytest.mark.parametrize(

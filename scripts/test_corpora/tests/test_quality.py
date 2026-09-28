@@ -8,6 +8,7 @@ from scripts.test_corpora.runner.quality import (
     baseline_quality_problem,
     classify_answer,
     find_unfilled_placeholder,
+    nothing_found_signature,
 )
 
 # ── classify_answer ──
@@ -177,6 +178,16 @@ def test_baseline_found_nothing() -> None:
         )
     }
     assert baseline_quality_problem(baseline) == "baseline found no matching documents"
+
+
+def test_the_no_findings_list_is_shared_with_the_answer_key() -> None:
+    """#713: the answer key reads the same list over an answer's opening. A phrasing added for it is therefore
+    also a no-findings baseline, wherever in the baseline it appears; the two are one list on purpose."""
+    assert nothing_found_signature("The law is **not explicitly stated** in the excerpts.") == "not explicitly stated"
+    assert nothing_found_signature("Nevada.") is None and nothing_found_signature("") is None
+    assert baseline_quality_problem({"answer": "Nevada. The venue is not explicitly stated."}) == (
+        "baseline found no matching documents"
+    )
 
 
 def test_baseline_real_answer_passes() -> None:

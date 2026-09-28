@@ -197,11 +197,19 @@ _BASELINE_EMPTY_CORPUS_SIGNATURES = (
     # empty-corpus signal that it's safe even without a cited-count check.
     "actuellement vide",
 )
+# The harness's one list of "found nothing" phrasings. `baseline_quality_problem` looks for them anywhere in a
+# baseline; the answer key (`answer_key.score`, #713) looks for them in an answer's opening sentence, so an answer
+# that says the fact is absent and then mentions the keyed term in passing scores 0 instead of 1.0. One list, so
+# a phrasing learned in either place is known in both; a phrase added here also flags baselines that use it.
 _BASELINE_NOTHING_FOUND_SIGNATURES = (
     "i was unable to find",
     "i couldn't find any",
     "all searches returned zero results",
     "no information about",
+    # qwen3-8b on cuad-key-7, bench-20260924-0724-keyed (#713): "is not explicitly stated in the retrieved
+    # excerpts", then a party "in Nevada", the keyed answer.
+    "not explicitly stated",
+    "could not find",
 )
 _BASELINE_PLACEHOLDER_SIGNATURES = (
     "unfilled template placeholder",
@@ -221,6 +229,13 @@ def _normalize_for_match(text: str) -> str:
     carry no semantic load — they're a presentation artifact — so removing
     them before matching is safe and makes the marker list short."""
     return text.lower().replace("*", "")
+
+
+def nothing_found_signature(text: str) -> str | None:
+    """The first "found nothing" phrasing in `text`, or None. The one place the list is read, for the baseline
+    check and the answer key alike."""
+    low = _normalize_for_match(text or "")
+    return next((sig for sig in _BASELINE_NOTHING_FOUND_SIGNATURES if sig in low), None)
 
 
 def baseline_quality_problem(baseline: dict) -> str | None:
@@ -248,9 +263,8 @@ def baseline_quality_problem(baseline: dict) -> str | None:
     for sig in _BASELINE_PLACEHOLDER_SIGNATURES:
         if sig in low:
             return "baseline saw unfilled placeholder"
-    for sig in _BASELINE_NOTHING_FOUND_SIGNATURES:
-        if sig in low:
-            return "baseline found no matching documents"
+    if nothing_found_signature(answer):
+        return "baseline found no matching documents"
     for sig in _BASELINE_REFUSAL_SIGNATURES:
         if sig in low:
             return "baseline is a refusal"

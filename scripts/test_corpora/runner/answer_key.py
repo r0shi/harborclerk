@@ -10,7 +10,10 @@ read: a fact is present or it is not; a list is the F1 of the contracts an answe
 contracts labelled. What counts as "naming" a contract is the weakest part, and `named_contracts` says exactly what
 it does, and what it deliberately ignores. The fact matcher accepts negation ("New York law, not Delaware" finds
 "Delaware"); a key is one phrase, so this has not mattered yet, and is stated so that a score of 1.0 is read as
-"the phrase is present", nothing more.
+"the phrase is present", nothing more. The one thing read before the phrase is looked for is the answer's opening
+sentence: an answer that opens by saying the fact is absent ("is not explicitly stated in the retrieved excerpts",
+then a party "in Nevada", the keyed answer; #713) scores 0, whatever it mentions after. The phrasings are the
+harness's no-findings list in `quality.py`, not a second list.
 
 Key entries (see `corpora/cuad_key.py`, which writes them):
     {"kind": "fact",  "all_of": [["california"], ["exxonmobil", "exxon mobil"]]}    every group, any spelling in it
@@ -23,8 +26,21 @@ from __future__ import annotations
 import re
 from datetime import date
 
+from scripts.test_corpora.runner.quality import nothing_found_signature
+
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october")
 _MONTHS += ("november", "december")
+# A sentence ends at `.`, `!` or `?` followed by whitespace or the end, or at a line break. Closing bold, quotes
+# and brackets may sit between the two: models write `**Nevada.** The venue...`.
+_SENTENCE_END = re.compile(r"[.!?][*_)\]\"'”’]*(?=\s|$)|\n")
+
+
+def opening(answer: str) -> str:
+    """The answer's first sentence. "U.S. Virgin Islands" ends it early, which only makes the absence check
+    stricter: less text is read, and the terms are still matched over the whole answer."""
+    text = answer.lstrip()
+    found = _SENTENCE_END.search(text)
+    return text[: found.start()] if found else text
 
 
 def normalize(text: str) -> str:
@@ -99,9 +115,15 @@ def named_contracts(text: str, universe: list[str]) -> set[str]:
 
 
 def score(entry: dict, answer: str) -> dict:
-    """{"score": 0..1, ...detail}. An empty answer scores 0."""
+    """{"score": 0..1, ...detail}. An empty answer scores 0, and so does a fact or date answer whose opening
+    sentence says the thing is absent, before its text is searched (#713)."""
     answer = answer or ""
     kind = entry["kind"]
+    if kind in ("fact", "date"):
+        absent = nothing_found_signature(opening(answer))
+        if absent:
+            groups = {"groups_found": 0, "groups": len(entry["all_of"])} if kind == "fact" else {}
+            return {"score": 0.0, **groups, "absent": absent}
     if kind == "fact":
         squeezed = normalize(answer)
         hits = [any(normalize(alt) in squeezed for alt in group) for group in entry["all_of"]]
