@@ -202,6 +202,7 @@ private let modelOptions: [(id: String, name: String)] = [
     ("gpt-oss-20b", "GPT-OSS 20B (11.6 GB)"),
     ("qwen36-35b-a3b", "Qwen3.6 35B-A3B (22.1 GB)"),
     ("gemma4-26b-a4b", "Gemma 4 26B-A4B (17.0 GB)"),
+    ("qwen38-27b", "Qwen3.8 27B (16.5 GB)"),
 ]
 
 struct PreferencesWindow: View {

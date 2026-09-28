@@ -156,6 +156,7 @@ final class AppSettingsTests: XCTestCase {
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
             "qwen35-9b": "Qwen3.5-9B-Q4_K_M.gguf",
             "qwen35-4b": "Qwen3.5-4B-Q4_K_M.gguf",
+            "qwen38-27b": "Qwen3.8-27B-UD-Q4_K_M.gguf",
         ]
         for (modelId, filename) in expected {
             settings.llmModelId = modelId
@@ -200,6 +201,7 @@ final class AppSettingsTests: XCTestCase {
             "qwen36-35b-a3b": (20_480, 65_863_680, 263_454_720, 262144),
             "gemma4-12b": (16_384, 503_316_480, 2_013_265_920, 262144),
             "gemma4-26b-a4b": (20_480, 314_572_800, 1_258_291_200, 262144),  // #548
+            "qwen38-27b": (65_536, 156_893_184, 627_572_736, 262144),
         ]
         let settings = AppSettings(configURL: configURL)
         for (modelId, e) in expected {
@@ -319,6 +321,7 @@ final class AppSettingsTests: XCTestCase {
         "qwen36-35b-a3b",
         "gemma4-12b",
         "gemma4-26b-a4b",
+        "qwen38-27b",
     ]
 
     /// Mirror of `tests/test_llm_models.py::test_every_curated_model_runs_one_slot`.
@@ -338,6 +341,7 @@ final class AppSettingsTests: XCTestCase {
             "gemma4-12b": 1,
             "gemma4-26b-a4b": 1,
             "qwen36-35b-a3b": 1,
+            "qwen38-27b": 1,
         ]
         for (modelId, slots) in expected {
             settings.llmModelId = modelId

@@ -270,11 +270,12 @@ GEOMETRY = {
     "qwen36-35b-a3b": ("qwen35moe", "interval"),  # full_attention_interval
     "qwen35-9b": ("qwen35", "interval"),
     "qwen35-4b": ("qwen35", "interval"),
+    "qwen38-27b": ("qwen35", "interval"),
 }
 
 
 # Hybrid models: the recurrent state per slot, and so one context checkpoint, is derived from the header.
-RECURRENT_STATE_DERIVED = {"qwen35-9b", "qwen35-4b", "qwen36-35b-a3b"}
+RECURRENT_STATE_DERIVED = {"qwen35-9b", "qwen35-4b", "qwen36-35b-a3b", "qwen38-27b"}
 
 
 def test_the_launcher_bounds_what_llama_server_keeps_in_host_ram_and_the_budget_knows_both():
@@ -442,6 +443,8 @@ WHAT_EACH_MAC_GETS = {
         64: (128000, 8192),
     },
     "qwen36-35b-a3b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (16384, 0), 36: (164864, 0), 64: (262144, 8192)},
+    # Dense, so the weights are the cost: 4.5 times the 35B-A3B's context on a 32 GB Mac for 5.7 GB less of them.
+    "qwen38-27b": {16: (0, 0), 18: (0, 0), 24: (0, 0), 32: (72704, 0), 36: (132096, 0), 64: (262144, 8192)},
 }
 
 
@@ -566,7 +569,9 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
         h, actual_size = _gguf_header(path, prefix), path.stat().st_size
     else:
         h, actual_size = _gguf_header_from_hub(m.huggingface_repo, m.filename, prefix)
-    layers = h["block_count"]
+    # A multi-token-prediction head is counted in block_count but llama.cpp keeps it out of n_layer and gives it
+    # no cache (llama-hparams.cpp, n_layer() = n_layer_all - n_layer_nextn); the trunk is what holds memory.
+    layers = h["block_count"] - h.get("nextn_predict_layers", 0)
     heads = h["attention.head_count_kv"]
     k, v = h["attention.key_length"], h.get("attention.value_length", h["attention.key_length"])
     if growing == "all":

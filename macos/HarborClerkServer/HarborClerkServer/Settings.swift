@@ -196,6 +196,7 @@ final class AppSettings: @unchecked Sendable {
             "qwen36-35b-a3b": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
             "gemma4-12b": "gemma-4-12b-it-Q4_K_M.gguf",
             "gemma4-26b-a4b": "google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+            "qwen38-27b": "Qwen3.8-27B-UD-Q4_K_M.gguf",
         ]
         guard let filename = filenames[modelId] else { return "" }
         return modelsDir.appendingPathComponent(filename).path
@@ -213,6 +214,7 @@ final class AppSettings: @unchecked Sendable {
             "qwen36-35b-a3b": 262144,
             "gemma4-12b": 262144,
             "gemma4-26b-a4b": 262144,  // the GGUF's; 128K is the E2B/E4B figure (#548)
+            "qwen38-27b": 262144,
         ]
         return contextWindows[modelId] ?? 32768
     }
@@ -255,6 +257,7 @@ final class AppSettings: @unchecked Sendable {
         "qwen36-35b-a3b": 20_480,
         "gemma4-12b": 16_384,
         "gemma4-26b-a4b": 20_480,
+        "qwen38-27b": 65_536,
     ]
 
     static let kvFixedBytes: [String: Int] = [
@@ -266,6 +269,7 @@ final class AppSettings: @unchecked Sendable {
         "qwen36-35b-a3b": 65_863_680,
         "gemma4-12b": 503_316_480,
         "gemma4-26b-a4b": 314_572_800,
+        "qwen38-27b": 156_893_184,
     ]
 
     /// One context checkpoint: a copy of the memory llama-server cannot roll back
@@ -279,6 +283,7 @@ final class AppSettings: @unchecked Sendable {
         "qwen36-35b-a3b": 65_863_680,
         "gemma4-12b": 503_316_480,
         "gemma4-26b-a4b": 314_572_800,
+        "qwen38-27b": 156_893_184,
     ]
 
     /// YaRN configuration for models that support context extension.
@@ -317,6 +322,7 @@ final class AppSettings: @unchecked Sendable {
             "gemma4-12b": 1,
             "gemma4-26b-a4b": 1,
             "qwen36-35b-a3b": 1,
+            "qwen38-27b": 1,
         ]
         return slots[modelId] ?? 1
     }
