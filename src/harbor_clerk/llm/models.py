@@ -133,7 +133,7 @@ class ModelInfo:
     # "use the tool's static default of 100". The MCP server still clamps
     # at settings.find_all_max_results_cap regardless. This is the per-model
     # experimentation surface — small local models may want 30, larger
-    # ones 150. All 8 curated models start at None.
+    # ones 150. All 9 curated models start at None.
     find_all_default_max_results: int | None = None
     # llama-server `-np` value. `-c` is the total across slots, so a slot does
     # not add KV memory: it divides the context, and a request can use only
@@ -301,16 +301,17 @@ MODELS: dict[str, ModelInfo] = {
             size_bytes=16_464_440_224,
             context_window=262144,
             supports_tools=True,
-            # Hybrid, 65 layers: one in four keeps a KV cache (full_attention_interval = 4, so 16), at 4 KV heads
+            # Hybrid. The header's block_count is 65, but one of those is a multi-token-prediction head
+            # (nextn_predict_layers = 1) that llama.cpp excludes from n_layer and allocates no cache for, so the
+            # trunk is 64 layers. One in four keeps a KV cache (full_attention_interval = 4, so 16), at 4 KV heads
             # x (256 + 256) x 2 bytes: 64 KB per token, 17.2 GB at 262K, more than the weights; the launcher
-            # clamps -c to what the Mac fits. The 49 linear-attention layers carry a fixed recurrent state per
+            # clamps -c to what the Mac fits. The 48 linear-attention layers carry a fixed recurrent state per
             # slot: (state 128 x inner 6144 + conv 3 x (6144 + 2 x 16 groups x 128)) x 4 bytes = 3,268,608 per
-            # layer, 160,161,792 for the slot, and as much again for each context checkpoint. The header also
-            # declares one multi-token-prediction layer (nextn_predict_layers), which plain decoding does not use.
-            # Read from the GGUF header on the Hub, 2026-09-28.
+            # layer, 156,893,184 for the slot, and as much again for each context checkpoint. Read from the GGUF
+            # header, 2026-09-28; the first curated GGUF whose block_count counts an MTP head.
             kv_bytes_per_token=65_536,
-            kv_fixed_bytes=160_161_792,
-            checkpoint_bytes=160_161_792,
+            kv_fixed_bytes=156_893_184,
+            checkpoint_bytes=156_893_184,
             parallel_slots=1,  # heavy tier (>15 GB)
         ),
     ]

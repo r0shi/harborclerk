@@ -201,7 +201,7 @@ final class AppSettingsTests: XCTestCase {
             "qwen36-35b-a3b": (20_480, 65_863_680, 263_454_720, 262144),
             "gemma4-12b": (16_384, 503_316_480, 2_013_265_920, 262144),
             "gemma4-26b-a4b": (20_480, 314_572_800, 1_258_291_200, 262144),  // #548
-            "qwen38-27b": (65_536, 160_161_792, 640_647_168, 262144),
+            "qwen38-27b": (65_536, 156_893_184, 627_572_736, 262144),
         ]
         let settings = AppSettings(configURL: configURL)
         for (modelId, e) in expected {

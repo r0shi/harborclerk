@@ -269,7 +269,7 @@ final class AppSettings: @unchecked Sendable {
         "qwen36-35b-a3b": 65_863_680,
         "gemma4-12b": 503_316_480,
         "gemma4-26b-a4b": 314_572_800,
-        "qwen38-27b": 160_161_792,
+        "qwen38-27b": 156_893_184,
     ]
 
     /// One context checkpoint: a copy of the memory llama-server cannot roll back
@@ -283,7 +283,7 @@ final class AppSettings: @unchecked Sendable {
         "qwen36-35b-a3b": 65_863_680,
         "gemma4-12b": 503_316_480,
         "gemma4-26b-a4b": 314_572_800,
-        "qwen38-27b": 160_161_792,
+        "qwen38-27b": 156_893_184,
     ]
 
     /// YaRN configuration for models that support context extension.

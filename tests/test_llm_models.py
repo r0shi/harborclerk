@@ -569,7 +569,9 @@ def test_kv_cost_matches_the_gguf_header_when_the_file_is_here(model_id: str):
         h, actual_size = _gguf_header(path, prefix), path.stat().st_size
     else:
         h, actual_size = _gguf_header_from_hub(m.huggingface_repo, m.filename, prefix)
-    layers = h["block_count"]
+    # A multi-token-prediction head is counted in block_count but llama.cpp keeps it out of n_layer and gives it
+    # no cache (llama-hparams.cpp, n_layer() = n_layer_all - n_layer_nextn); the trunk is what holds memory.
+    layers = h["block_count"] - h.get("nextn_predict_layers", 0)
     heads = h["attention.head_count_kv"]
     k, v = h["attention.key_length"], h.get("attention.value_length", h["attention.key_length"])
     if growing == "all":

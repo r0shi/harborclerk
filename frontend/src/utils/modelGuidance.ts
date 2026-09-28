@@ -14,6 +14,11 @@ const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
     note: 'A dense 12B that sits between the lightweight and the large models. Evaluation on this product is pending.',
     warning: 'Not yet evaluated here: verify cited answers carefully.',
   },
+  'qwen38-27b': {
+    label: 'Newer heavy tier',
+    note: 'A dense 27B, the successor to Qwen3.6 35B-A3B. Every token reads all of its weights, so it answers more slowly than the mixture-of-experts models. Evaluation on this product is pending.',
+    warning: 'Not yet evaluated here: verify cited answers carefully.',
+  },
   'gemma4-26b-a4b': {
     label: 'Balanced local research',
     note: 'A steady larger model for cited answers and research when memory allows.',
