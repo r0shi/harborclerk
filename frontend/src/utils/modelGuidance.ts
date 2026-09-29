@@ -15,9 +15,9 @@ const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
     warning: 'Not yet evaluated here: verify cited answers carefully.',
   },
   'qwen38-27b': {
-    label: 'Newer heavy tier',
-    note: 'A dense 27B, the successor to Qwen3.6 35B-A3B. Every token reads all of its weights, so it answers more slowly than the mixture-of-experts models. Evaluation on this product is pending.',
-    warning: 'Not yet evaluated here: verify cited answers carefully.',
+    label: 'Exact but slow',
+    note: 'A dense 27B, the successor to Qwen3.6 35B-A3B. Every fact and date it was asked in evaluation was right, but every token reads all 16.5 GB of weights: on a 32 GB Mac it answers in minutes where the mixture-of-experts models take seconds. Made for a Mac with more memory bandwidth.',
+    warning: 'Slow on this class of Mac: expect several minutes per cited answer.',
   },
   'gemma4-26b-a4b': {
     label: 'Balanced local research',

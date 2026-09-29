@@ -292,8 +292,11 @@ MODELS: dict[str, ModelInfo] = {
         ModelInfo(
             # Added for evaluation (#551): the size-matched successor of Qwen3.6-35B-A3B by the model survey
             # (docs/reports/2026-09-17-model-survey-ix-8.md), and the only Qwen3.8 release under the 24 GB ceiling.
-            # It is dense: every token reads all 16.5 GB, so on a 120 GB/s Mac it decodes near 7 tokens a second,
-            # against the mixture-of-experts models' 3 to 4B active. Not yet evaluated on this product.
+            # It is dense: every token reads all 16.5 GB. Measured on the 32 GB mini (docs/reports/
+            # 2026-09-28-benchmark-ix-bench-20260928-1050-keyed.md): 5.9 tokens a second decode, 56 prefill,
+            # against 24 to 30 and 240 to 360 for the mixture-of-experts models; every fact and date right,
+            # a fact question in four minutes where the 26B-A4B took one. Kept as a quality tier for a Mac
+            # with more memory bandwidth; the owner's 64 GB M2 is the next place to measure it.
             id="qwen38-27b",
             name="Qwen3.8 27B",
             huggingface_repo="unsloth/Qwen3.8-27B-GGUF",
