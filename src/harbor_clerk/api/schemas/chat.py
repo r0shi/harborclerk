@@ -64,6 +64,10 @@ class ModelOut(BaseModel):
     downloading: bool = False
     yarn_available: bool = False
     yarn_extended_context: int | None = None
+    # The id of the registered model that replaces this one, None for a current model. The registry keeps a
+    # beaten model so an installed app with it active keeps working (#709); this is how the Models page knows
+    # to list it after the others and say what to pick instead (#551).
+    superseded_by: str | None = None
     # Memory budget (#556): what llama-server needs at the model's context, the
     # smallest Mac that runs it with the rest of the app resident, and what
     # this machine can do: the largest context that fits here (0 = the weights

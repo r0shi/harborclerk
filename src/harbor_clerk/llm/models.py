@@ -142,12 +142,27 @@ class ModelInfo:
     # barely issues parallel requests, and on a Mac the whole window for each
     # job is worth more than chat not queueing behind a summary.
     parallel_slots: int = 1
+    # The id of the registered model that replaces this one, for a model the benchmark has shown a newer
+    # tier beats; None for every model that is current. A beaten model is marked rather than removed
+    # because the registry is also the launcher's table: an installed app may have it active, and a
+    # `llm_model_id` the launcher cannot place starts nothing and says nothing (#709). So it stays
+    # launchable and downloadable, the API carries this field, and the surfaces that list models put it
+    # after the current ones and name what to pick instead. Removal is a separate decision, once no
+    # installed app can still be on it.
+    superseded_by: str | None = None
 
 
 MODELS: dict[str, ModelInfo] = {
     m.id: m
     for m in [
         ModelInfo(
+            # Superseded by Qwen3.5-9B (#551, owner's decision 2026-10-01). Measured on the mini, one build
+            # (docs/reports/2026-09-28-benchmark-ix-bench-20260928-1050-keyed.md): 0.43 on the answer key over
+            # all 20 keyed CUAD questions, half the facts and half the dates wrong, 12 of 19 chosen answers
+            # judged fail, against 0.81 for the 9B and 0.85 for the 4B. On the synthetic corpus
+            # (docs/reports/2026-09-30-benchmark-ix-bench-20260929-1943-synthetic.md) 2 / 2 / 7 on asks against
+            # the 9B's 4 / 5 / 2; level on Enron (docs/reports/2026-09-30-benchmark-ix-bench-20260928-2156-enron.md),
+            # where the judge compares prose to prose. Kept so an installed app with it active keeps working.
             id="qwen3-8b",
             name="Qwen3 8B",
             huggingface_repo="Qwen/Qwen3-8B-GGUF",
@@ -159,8 +174,13 @@ MODELS: dict[str, ModelInfo] = {
             kv_bytes_per_token=147_456,
             yarn=YarnConfig(extended_context=131072, rope_scale=4.0, original_context=32768),
             parallel_slots=1,
+            superseded_by="qwen35-9b",
         ),
         ModelInfo(
+            # Superseded by Qwen3.5-4B (#551, owner's decision 2026-10-01), on the 8B's evidence: this model was
+            # not downloaded on the benchmark Mac and has no row of its own in the three reports above. It is
+            # the same generation and half the size, and the Qwen3.5-4B that replaces it scored 0.85 on the key,
+            # every fact and date right, at 2.7 GB and 23 tokens a second. Kept for an installed app that has it.
             id="qwen3-4b",
             name="Qwen3 4B",
             huggingface_repo="Qwen/Qwen3-4B-GGUF",
@@ -176,8 +196,17 @@ MODELS: dict[str, ModelInfo] = {
             # search result, and the model emitted empty answers when the
             # prompt overflowed.
             parallel_slots=1,
+            superseded_by="qwen35-4b",
         ),
         ModelInfo(
+            # The lightweight tier, in place of Qwen3-8B (#551). Measured on the mini, all eight models on one
+            # build: 0.81 on the answer key over all 20 keyed CUAD questions, every fact right and one date lost
+            # to a forced answer, 13 pass and 1 marginal from the judge, no fail, at 15.9 tokens a second, a third
+            # slower than the 4B (docs/reports/2026-09-28-benchmark-ix-bench-20260928-1050-keyed.md). The best
+            # ask record on the synthetic corpus, 4 passes and 5 marginals of 11, and the one research pass among
+            # the small models (docs/reports/2026-09-30-benchmark-ix-bench-20260929-1943-synthetic.md); the best
+            # citation and entity overlap with the baseline on Enron
+            # (docs/reports/2026-09-30-benchmark-ix-bench-20260928-2156-enron.md).
             id="qwen35-9b",
             name="Qwen3.5 9B",
             huggingface_repo="unsloth/Qwen3.5-9B-GGUF",
@@ -197,6 +226,13 @@ MODELS: dict[str, ModelInfo] = {
             parallel_slots=1,
         ),
         ModelInfo(
+            # The smallest tier, in place of Qwen3-4B (#551), and the model to pick on a 16 GB Mac. Measured on
+            # the mini, all eight models on one build (docs/reports/2026-09-28-benchmark-ix-bench-20260928-1050-
+            # keyed.md): 0.85 on the answer key over all 20 keyed CUAD questions, 1.00 on every fact and every
+            # date, 14 pass and 1 marginal from the judge, no fail, at 2.7 GB and 22.8 tokens a second: level with
+            # Gemma 4 26B-A4B on that key at a sixth of the size. On the synthetic corpus it matches the 9B's 4
+            # ask passes with no marginals (docs/reports/2026-09-30-benchmark-ix-bench-20260929-1943-synthetic.md);
+            # level with the Qwen3 tier on Enron (docs/reports/2026-09-30-benchmark-ix-bench-20260928-2156-enron.md).
             id="qwen35-4b",
             name="Qwen3.5 4B",
             huggingface_repo="unsloth/Qwen3.5-4B-GGUF",

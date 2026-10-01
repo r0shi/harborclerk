@@ -21,9 +21,9 @@ describe('LocalModelChip', () => {
     expect(link).toHaveAttribute('title', expect.stringContaining('Strongest choice'))
   })
 
-  it('marks smaller models with a warning', () => {
+  it('marks a superseded model with its warning', () => {
     renderChip({ id: 'qwen3-4b', name: 'Qwen 4B', size_bytes: 2_500_000_000, supports_research: true })
 
-    expect(screen.getByLabelText('May miss details in long, messy, or multi-step questions.')).toBeInTheDocument()
+    expect(screen.getByLabelText('For a new install, pick Qwen3.5 4B instead.')).toBeInTheDocument()
   })
 })

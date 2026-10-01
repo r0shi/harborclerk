@@ -4,6 +4,9 @@ export interface ModelGuidance {
   warning?: string
 }
 
+// Measured results are from the three benchmark reports of 2026-09-28 and 2026-09-30 (docs/reports/
+// 2026-09-28-benchmark-ix-bench-20260928-1050-keyed.md, 2026-09-30-benchmark-ix-bench-20260929-1943-synthetic.md,
+// 2026-09-30-benchmark-ix-bench-20260928-2156-enron.md): all registered models, one build, on a 32 GB Mac.
 const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
   'qwen36-35b-a3b': {
     label: 'Best local research',
@@ -28,24 +31,22 @@ const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
     note: 'Good fit for structured answers, comparisons, and table-heavy work.',
   },
   'qwen35-9b': {
-    label: 'Newer lightweight',
-    note: 'The successor to Qwen3 8B. Its native window is longer than most Macs have memory for, so the app runs it with as much as fits. Evaluation on this product is pending.',
-    warning: 'Not yet evaluated here: verify cited answers carefully.',
+    label: 'Lightweight tier',
+    note: 'Replaces Qwen3 8B. In evaluation it had the best record of any model on direct questions over the synthetic corpus, and got every fact right on the keyed questions; about a third slower than Qwen3.5 4B. Its native window is longer than most Macs have memory for, so the app runs it with as much as fits.',
   },
   'qwen35-4b': {
-    label: 'Newer smallest',
-    note: 'The successor to Qwen3 4B. Its native window is longer than most Macs have memory for, so the app runs it with as much as fits. Evaluation on this product is pending.',
-    warning: 'Not yet evaluated here: verify cited answers carefully.',
+    label: 'Pick on a 16 GB Mac',
+    note: 'Replaces Qwen3 4B. In evaluation it got every fact and date right on the keyed questions, level with Gemma 4 26B-A4B at 2.7 GB and a sixth of the size: the model to pick on a 16 GB Mac. Its native window is longer than most Macs have memory for, so the app runs it with as much as fits.',
   },
   'qwen3-8b': {
-    label: 'Lightweight lookup',
-    note: 'Good starting point for quick cited answers and everyday document lookup.',
-    warning: 'For longer research tasks, verify cited answers carefully.',
+    label: 'Superseded',
+    note: 'Replaced by Qwen3.5 9B, which scored 0.81 to this model’s 0.43 on the keyed questions: every fact right where this model had half of them wrong. Kept so an install that has it keeps working.',
+    warning: 'For a new install, pick Qwen3.5 9B instead.',
   },
   'qwen3-4b': {
-    label: 'Smallest usable model',
-    note: 'Best for compact Macs and quick lookup, not deep synthesis.',
-    warning: 'May miss details in long, messy, or multi-step questions.',
+    label: 'Superseded',
+    note: 'Replaced by Qwen3.5 4B, which got every fact and date right on the keyed questions; this model was not run there, and its 8B sibling of the same generation scored 0.43. Kept so an install that has it keeps working.',
+    warning: 'For a new install, pick Qwen3.5 4B instead.',
   },
 }
 
