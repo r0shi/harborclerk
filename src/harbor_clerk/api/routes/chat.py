@@ -334,6 +334,7 @@ async def list_available_models(
             downloading=is_downloading(m.id),
             yarn_available=m.yarn is not None,
             yarn_extended_context=m.yarn.extended_context if m.yarn else None,
+            superseded_by=m.superseded_by,
         )
         for m in list_models()
     ]

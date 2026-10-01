@@ -192,10 +192,11 @@ private let defaultPorts: [String: Int] = [
     "llama": 8102,
 ]
 
+// Held to the registry (llm/models.py) by tests/test_llm_models.py: every model, its size, and the superseded
+// ones last. The Qwen3 tiers stay listed because an installed app may have one selected and the launcher has
+// no fallback for an id it cannot place (#709); the Qwen3.5 tiers beat them on the benchmark (#551).
 private let modelOptions: [(id: String, name: String)] = [
     ("", "None"),
-    ("qwen3-8b", "Qwen3 8B (5.0 GB)"),
-    ("qwen3-4b", "Qwen3 4B (2.5 GB)"),
     ("qwen35-9b", "Qwen3.5 9B (5.7 GB)"),
     ("qwen35-4b", "Qwen3.5 4B (2.7 GB)"),
     ("gemma4-12b", "Gemma 4 12B (7.1 GB)"),
@@ -203,6 +204,8 @@ private let modelOptions: [(id: String, name: String)] = [
     ("qwen36-35b-a3b", "Qwen3.6 35B-A3B (22.1 GB)"),
     ("gemma4-26b-a4b", "Gemma 4 26B-A4B (17.0 GB)"),
     ("qwen38-27b", "Qwen3.8 27B (16.5 GB)"),
+    ("qwen3-8b", "Qwen3 8B (5.0 GB, superseded by Qwen3.5 9B)"),
+    ("qwen3-4b", "Qwen3 4B (2.5 GB, superseded by Qwen3.5 4B)"),
 ]
 
 struct PreferencesWindow: View {

@@ -21,9 +21,12 @@ describe('LocalModelChip', () => {
     expect(link).toHaveAttribute('title', expect.stringContaining('Strongest choice'))
   })
 
-  it('marks smaller models with a warning', () => {
+  it('marks a superseded model with its warning', () => {
     renderChip({ id: 'qwen3-4b', name: 'Qwen 4B', size_bytes: 2_500_000_000, supports_research: true })
 
-    expect(screen.getByLabelText('May miss details in long, messy, or multi-step questions.')).toBeInTheDocument()
+    // The chip only ever shows the active model, so the warning must read right for someone who has it.
+    expect(
+      screen.getByLabelText('Superseded by Qwen3.5 4B: switch when convenient. Until then this model works as it did.'),
+    ).toBeInTheDocument()
   })
 })

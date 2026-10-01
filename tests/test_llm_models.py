@@ -67,6 +67,21 @@ def test_every_curated_model_runs_one_slot():
     assert {m.id: m.parallel_slots for m in MODELS.values()} == dict.fromkeys(MODELS, 1)
 
 
+def test_a_superseded_model_names_a_current_registered_model_of_its_own_size_and_only_the_qwen3_tiers_are():
+    """The Qwen3.5 tiers supersede the Qwen3 tiers (#551: 0.85 and 0.81 against 0.43 on the answer key). The
+    old entries stay, because an installed app may have one active and the launcher has no fallback for an id
+    it cannot place (#709), so what `superseded_by` points at must be a model that exists, is itself current
+    (a chain would send the user to a model this field says not to pick), and is the same class of model:
+    within a factor of two in size, so "pick this instead" never means a model this Mac cannot hold."""
+    superseded = {m.id: m.superseded_by for m in MODELS.values() if m.superseded_by is not None}
+    assert superseded == {"qwen3-8b": "qwen35-9b", "qwen3-4b": "qwen35-4b"}
+    for old_id, new_id in superseded.items():
+        assert new_id in MODELS, f"{old_id} is superseded by {new_id!r}, which is not registered"
+        assert MODELS[new_id].superseded_by is None, f"{old_id} -> {new_id} -> {MODELS[new_id].superseded_by}: a chain"
+        ratio = MODELS[new_id].size_bytes / MODELS[old_id].size_bytes
+        assert 0.5 <= ratio <= 2.0, f"{old_id} ({MODELS[old_id].size_bytes}) -> {new_id} ({MODELS[new_id].size_bytes})"
+
+
 # --- memory budget (#556) ---------------------------------------------------------------------------------------
 
 MODELS_DIR = Path.home() / "Library/Application Support/Harbor Clerk/models"
@@ -654,11 +669,24 @@ def _swift(rel: str) -> str:
     return re.sub(r"(?m)(^|\s)//.*$", "", re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL))
 
 
-def test_the_preferences_picker_lists_the_registrys_models_and_their_sizes():
+def test_the_preferences_picker_lists_the_registrys_models_and_their_sizes_with_the_superseded_ones_last():
+    """The picker is a hand-kept list. A superseded model stays in it (an installed app may have it selected,
+    #709) but after the current ones, and its label names what to pick instead (#551)."""
     block = re.search(r"let modelOptions: [^=]*= \[(.*?)\n\]", _swift("PreferencesWindow.swift"), re.DOTALL)
     assert block
-    listed = dict(re.findall(r'\("([a-z0-9.-]+)",\s*"[^"]*\(([\d.]+) GB\)"\)', block.group(1)))
-    assert listed == {m.id: f"{m.size_bytes / 1e9:.1f}" for m in MODELS.values()}
+    entries = re.findall(r'\("([a-z0-9.-]+)",\s*"([^"]*\(([\d.]+) GB[^"]*\))"\)', block.group(1))
+    assert {model_id: size for model_id, _, size in entries} == {
+        m.id: f"{m.size_bytes / 1e9:.1f}" for m in MODELS.values()
+    }
+    order = [model_id for model_id, _, _ in entries]
+    superseded = [model_id for model_id in order if MODELS[model_id].superseded_by]
+    assert superseded and order[-len(superseded) :] == superseded, "superseded models come after the current ones"
+    for model_id, label, _ in entries:
+        successor = MODELS[model_id].superseded_by
+        if successor:
+            assert f"superseded by {MODELS[successor].name}" in label, label
+        else:
+            assert "superseded" not in label, label
 
 
 def test_a_sliding_window_cache_is_the_window_plus_a_micro_batch_padded():

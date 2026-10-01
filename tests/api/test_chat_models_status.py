@@ -235,6 +235,25 @@ async def test_model_list_says_what_fits_this_mac(client, admin_token, _small_ma
 
 
 @pytest.mark.asyncio
+async def test_model_list_says_which_models_are_superseded_and_by_what(client, admin_token, _small_mac):
+    """The Models page orders by this field and names the successor from it (#551). The superseded models are
+    still listed in full: an installed app may have one active, and the launcher cannot place an id the
+    registry has dropped (#709)."""
+    from harbor_clerk.llm.models import MODELS
+
+    resp = await client.get("/api/chat/models", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    by_id = {m["id"]: m for m in resp.json()}
+    assert by_id.keys() == MODELS.keys(), "a superseded model is listed like any other"
+    assert {m_id: m["superseded_by"] for m_id, m in by_id.items() if m["superseded_by"] is not None} == {
+        "qwen3-8b": "qwen35-9b",
+        "qwen3-4b": "qwen35-4b",
+    }
+    assert all("superseded_by" in m for m in by_id.values()), "the field is present (null) on current models too"
+    assert by_id["qwen35-4b"]["superseded_by"] is None
+
+
+@pytest.mark.asyncio
 async def test_activating_a_model_this_mac_cannot_hold_is_refused_with_no_override(client, admin_token, _small_mac):
     """No force flag: the macOS launcher applies the same arithmetic and would
     refuse to start it, so an override here would activate a model that never runs."""

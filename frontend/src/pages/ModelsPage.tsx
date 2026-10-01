@@ -20,6 +20,8 @@ interface ModelInfo {
   downloading: boolean
   yarn_available: boolean
   yarn_extended_context: number | null
+  // The id of the model that replaced this one, null for a current model (#551).
+  superseded_by: string | null
   // Memory budget (#556): what the model needs, the smallest Mac that runs
   // it, and what this Mac can do (max_context_here is 0 when the weights
   // alone do not fit).
@@ -52,6 +54,16 @@ export default function ModelsPage() {
   const [downloadProgress, setDownloadProgress] = useState<Map<string, number>>(new Map())
   const [yarnEnabled, setYarnEnabled] = useState(false)
   const [summaryForceAfm, setSummaryForceAfm] = useState(false)
+  const [showSuperseded, setShowSuperseded] = useState(false)
+
+  // A superseded model (the API says what replaced it) is listed after the tiers, collapsed, unless this
+  // install has it: active (even with its file gone: the API sets `active` from config, not from disk),
+  // downloaded, or downloading. Such an install must still see it to deactivate or delete it or watch the
+  // download, and the launcher cannot place an id the registry has dropped (#709), which is why the model
+  // is still registered at all.
+  const inUse = (m: ModelInfo) => m.active || m.downloaded || m.downloading || downloading.has(m.id)
+  const current = models.filter((m) => !m.superseded_by || inUse(m))
+  const supersededHidden = models.filter((m) => m.superseded_by && !inUse(m))
 
   const loadModelsRef = useRef(loadModels)
   useEffect(() => {
@@ -280,6 +292,153 @@ export default function ModelsPage() {
     }
   }
 
+  // One row of the table, whatever group it is listed under.
+  function renderModelRow(model: ModelInfo) {
+    const progress = downloadProgress.get(model.id)
+    const guidance = modelGuidance(model)
+    return (
+      <tr key={model.id} className="bg-white dark:bg-[#2c2c2e]">
+        <td className="px-4 py-3">
+          <div className="font-medium text-gray-900 dark:text-gray-100">{model.name}</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400">{model.id}</div>
+          <div className="mt-1.5 inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/25 dark:text-blue-300">
+            {guidance.label}
+          </div>
+          <div className="mt-1 max-w-xs text-xs leading-snug text-gray-500 dark:text-gray-400">{guidance.note}</div>
+          {guidance.warning && (
+            <div className="mt-1 max-w-xs text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+              {guidance.warning}
+            </div>
+          )}
+        </td>
+        <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
+          <div>{formatSize(model.size_bytes)}</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400">{formatSize(model.memory_bytes)} to run</div>
+          {!model.fits_here && model.max_context_here > 0 && (
+            <div className="mt-1 max-w-[14rem] text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+              Fits this Mac ({model.system_ram_gb} GB) at up to {model.max_context_here.toLocaleString()} tokens of
+              context; the full window needs about {model.min_ram_gb} GB.
+            </div>
+          )}
+          {model.max_context_here === 0 && (
+            <div className="mt-1 max-w-[14rem] text-[11px] font-medium leading-snug text-red-700 dark:text-red-400">
+              Does not fit this Mac ({model.system_ram_gb} GB): needs about {model.min_ram_gb} GB.{' '}
+              {model.active
+                ? 'It is selected, but the LLM server will not start it here. Choose another model.'
+                : 'It cannot be activated here.'}
+            </div>
+          )}
+        </td>
+        <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
+          <span>{model.context_window.toLocaleString()}</span>
+          {model.max_context_here > 0 &&
+            model.max_context_here <
+              (yarnEnabled && model.yarn_extended_context ? model.yarn_extended_context : model.context_window) && (
+              <span
+                className="ml-1 text-xs text-amber-700 dark:text-amber-400"
+                title="Clamped to what this Mac's memory fits"
+              >
+                ({model.max_context_here.toLocaleString()} here)
+              </span>
+            )}
+          {model.yarn_available && model.yarn_extended_context && (
+            <span className="ml-1 text-xs text-gray-400 dark:text-gray-500">
+              ({yarnEnabled ? '' : '→ '}
+              {model.yarn_extended_context.toLocaleString()}
+              {yarnEnabled ? ' via YaRN' : ' w/ YaRN'})
+            </span>
+          )}
+        </td>
+        <td className="px-4 py-3">
+          {model.supports_tools ? (
+            <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
+              Yes
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+              No
+            </span>
+          )}
+        </td>
+        <td className="px-4 py-3">
+          {model.supports_research ? (
+            <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
+              Yes
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center rounded-md bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
+              title="Not recommended for Research mode — chat works fine"
+            >
+              Chat only
+            </span>
+          )}
+        </td>
+        <td className="px-4 py-3">
+          {model.active ? (
+            <StatusPill state="active" label="Active" />
+          ) : model.downloaded ? (
+            <StatusPill state="idle" label="Ready" />
+          ) : downloading.has(model.id) ? (
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                <div
+                  className="h-full rounded-full bg-amber-500 transition-all duration-300"
+                  style={{
+                    width: `${Math.min(progress ?? 0, 100)}%`,
+                  }}
+                />
+              </div>
+              <span className="text-xs tabular-nums text-amber-600 dark:text-amber-400">
+                {Math.round(progress ?? 0)}%
+              </span>
+            </div>
+          ) : (
+            <StatusPill state="idle" label="Not downloaded" />
+          )}
+        </td>
+        <td className="px-4 py-3 text-right">
+          <div className="flex items-center justify-end gap-2">
+            {model.active && (
+              <button
+                onClick={() => handleDeactivate()}
+                className="rounded-lg border border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 shadow-xs hover:bg-gray-50 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-700/50"
+              >
+                Deactivate
+              </button>
+            )}
+            {!model.downloaded && !downloading.has(model.id) && (
+              <button
+                onClick={() => handleDownload(model.id)}
+                className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-blue-700"
+              >
+                Download
+              </button>
+            )}
+            {model.downloaded && !model.active && (
+              <>
+                {model.max_context_here > 0 && (
+                  <button
+                    onClick={() => handleActivate(model.id)}
+                    className="rounded-lg border border-blue-600 px-3 py-1 text-xs font-medium text-blue-600 shadow-xs hover:bg-blue-50 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/20"
+                  >
+                    Activate
+                  </button>
+                )}
+                <button
+                  onClick={() => handleDelete(model.id)}
+                  className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-red-700"
+                >
+                  Delete
+                </button>
+              </>
+            )}
+          </div>
+        </td>
+      </tr>
+    )
+  }
+
   if (loading) {
     return <div className="text-sm text-gray-500 dark:text-gray-400">Loading models...</div>
   }
@@ -332,7 +491,7 @@ export default function ModelsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-(--color-border)">
-            {groupModelsByRam(models).map((tier) => (
+            {groupModelsByRam(current).map((tier) => (
               <Fragment key={tier.label}>
                 <tr>
                   <td
@@ -342,159 +501,37 @@ export default function ModelsPage() {
                     {tier.label}
                   </td>
                 </tr>
-                {tier.items.map((model) => {
-                  const progress = downloadProgress.get(model.id)
-                  const guidance = modelGuidance(model)
-                  return (
-                    <tr key={model.id} className="bg-white dark:bg-[#2c2c2e]">
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-gray-900 dark:text-gray-100">{model.name}</div>
-                        <div className="text-xs text-gray-500 dark:text-gray-400">{model.id}</div>
-                        <div className="mt-1.5 inline-flex rounded-md bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-900/25 dark:text-blue-300">
-                          {guidance.label}
-                        </div>
-                        <div className="mt-1 max-w-xs text-xs leading-snug text-gray-500 dark:text-gray-400">
-                          {guidance.note}
-                        </div>
-                        {guidance.warning && (
-                          <div className="mt-1 max-w-xs text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-                            {guidance.warning}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
-                        <div>{formatSize(model.size_bytes)}</div>
-                        <div className="text-xs text-gray-500 dark:text-gray-400">
-                          {formatSize(model.memory_bytes)} to run
-                        </div>
-                        {!model.fits_here && model.max_context_here > 0 && (
-                          <div className="mt-1 max-w-[14rem] text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-                            Fits this Mac ({model.system_ram_gb} GB) at up to {model.max_context_here.toLocaleString()}{' '}
-                            tokens of context; the full window needs about {model.min_ram_gb} GB.
-                          </div>
-                        )}
-                        {model.max_context_here === 0 && (
-                          <div className="mt-1 max-w-[14rem] text-[11px] font-medium leading-snug text-red-700 dark:text-red-400">
-                            Does not fit this Mac ({model.system_ram_gb} GB): needs about {model.min_ram_gb} GB.{' '}
-                            {model.active
-                              ? 'It is selected, but the LLM server will not start it here. Choose another model.'
-                              : 'It cannot be activated here.'}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-gray-700 dark:text-gray-300">
-                        <span>{model.context_window.toLocaleString()}</span>
-                        {model.max_context_here > 0 &&
-                          model.max_context_here <
-                            (yarnEnabled && model.yarn_extended_context
-                              ? model.yarn_extended_context
-                              : model.context_window) && (
-                            <span
-                              className="ml-1 text-xs text-amber-700 dark:text-amber-400"
-                              title="Clamped to what this Mac's memory fits"
-                            >
-                              ({model.max_context_here.toLocaleString()} here)
-                            </span>
-                          )}
-                        {model.yarn_available && model.yarn_extended_context && (
-                          <span className="ml-1 text-xs text-gray-400 dark:text-gray-500">
-                            ({yarnEnabled ? '' : '→ '}
-                            {model.yarn_extended_context.toLocaleString()}
-                            {yarnEnabled ? ' via YaRN' : ' w/ YaRN'})
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {model.supports_tools ? (
-                          <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
-                            Yes
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center rounded-md bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-[11px] text-gray-500 dark:text-gray-400">
-                            No
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {model.supports_research ? (
-                          <span className="inline-flex items-center rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
-                            Yes
-                          </span>
-                        ) : (
-                          <span
-                            className="inline-flex items-center rounded-md bg-amber-100 dark:bg-amber-900/30 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400"
-                            title="Not recommended for Research mode — chat works fine"
-                          >
-                            Chat only
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {model.active ? (
-                          <StatusPill state="active" label="Active" />
-                        ) : model.downloaded ? (
-                          <StatusPill state="idle" label="Ready" />
-                        ) : downloading.has(model.id) ? (
-                          <div className="flex items-center gap-2">
-                            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
-                              <div
-                                className="h-full rounded-full bg-amber-500 transition-all duration-300"
-                                style={{
-                                  width: `${Math.min(progress ?? 0, 100)}%`,
-                                }}
-                              />
-                            </div>
-                            <span className="text-xs tabular-nums text-amber-600 dark:text-amber-400">
-                              {Math.round(progress ?? 0)}%
-                            </span>
-                          </div>
-                        ) : (
-                          <StatusPill state="idle" label="Not downloaded" />
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                          {model.active && (
-                            <button
-                              onClick={() => handleDeactivate()}
-                              className="rounded-lg border border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 shadow-xs hover:bg-gray-50 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-700/50"
-                            >
-                              Deactivate
-                            </button>
-                          )}
-                          {!model.downloaded && !downloading.has(model.id) && (
-                            <button
-                              onClick={() => handleDownload(model.id)}
-                              className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-blue-700"
-                            >
-                              Download
-                            </button>
-                          )}
-                          {model.downloaded && !model.active && (
-                            <>
-                              {model.max_context_here > 0 && (
-                                <button
-                                  onClick={() => handleActivate(model.id)}
-                                  className="rounded-lg border border-blue-600 px-3 py-1 text-xs font-medium text-blue-600 shadow-xs hover:bg-blue-50 dark:text-blue-400 dark:border-blue-400 dark:hover:bg-blue-900/20"
-                                >
-                                  Activate
-                                </button>
-                              )}
-                              <button
-                                onClick={() => handleDelete(model.id)}
-                                className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-xs hover:bg-red-700"
-                              >
-                                Delete
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
+                {tier.items.map(renderModelRow)}
               </Fragment>
             ))}
+            {supersededHidden.length > 0 && (
+              <Fragment key="superseded">
+                <tr>
+                  <td
+                    colSpan={7}
+                    className="bg-(--color-bg-secondary) px-4 py-2 text-left text-xs text-gray-500 dark:text-gray-400"
+                  >
+                    <div className="flex items-center justify-between gap-4">
+                      <span>
+                        <span className="font-bold uppercase tracking-wider">Superseded</span>
+                        <span className="ml-2">
+                          {supersededHidden.length} older {supersededHidden.length === 1 ? 'model' : 'models'} that a
+                          newer tier beat on the benchmark. They stay available for installs that already have them.
+                        </span>
+                      </span>
+                      <button
+                        onClick={() => setShowSuperseded((v) => !v)}
+                        className="shrink-0 rounded-lg border border-gray-400 px-3 py-1 text-xs font-medium text-gray-600 shadow-xs hover:bg-gray-50 dark:text-gray-300 dark:border-gray-500 dark:hover:bg-gray-700/50"
+                        aria-expanded={showSuperseded}
+                      >
+                        {showSuperseded ? 'Hide' : 'Show'}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                {showSuperseded && supersededHidden.map(renderModelRow)}
+              </Fragment>
+            )}
           </tbody>
         </table>
       </Card>
