@@ -56,11 +56,14 @@ export default function ModelsPage() {
   const [summaryForceAfm, setSummaryForceAfm] = useState(false)
   const [showSuperseded, setShowSuperseded] = useState(false)
 
-  // A superseded model (the API says what replaced it) is listed after the tiers, collapsed, unless it is
-  // active or downloaded: an install that has one must still see it to deactivate or delete it, and the
-  // launcher cannot place an id the registry has dropped (#709), which is why it is still registered at all.
-  const current = models.filter((m) => !m.superseded_by || m.active || m.downloaded)
-  const supersededHidden = models.filter((m) => m.superseded_by && !m.active && !m.downloaded)
+  // A superseded model (the API says what replaced it) is listed after the tiers, collapsed, unless this
+  // install has it: active (even with its file gone: the API sets `active` from config, not from disk),
+  // downloaded, or downloading. Such an install must still see it to deactivate or delete it or watch the
+  // download, and the launcher cannot place an id the registry has dropped (#709), which is why the model
+  // is still registered at all.
+  const inUse = (m: ModelInfo) => m.active || m.downloaded || m.downloading || downloading.has(m.id)
+  const current = models.filter((m) => !m.superseded_by || inUse(m))
+  const supersededHidden = models.filter((m) => m.superseded_by && !inUse(m))
 
   const loadModelsRef = useRef(loadModels)
   useEffect(() => {

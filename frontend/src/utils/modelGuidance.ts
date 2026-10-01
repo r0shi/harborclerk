@@ -14,8 +14,7 @@ const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
   },
   'gemma4-12b': {
     label: 'Newer mid-size',
-    note: 'A dense 12B that sits between the lightweight and the large models. Evaluation on this product is pending.',
-    warning: 'Not yet evaluated here: verify cited answers carefully.',
+    note: 'A dense 12B that sits between the lightweight and the large models. In evaluation it got every fact and date right on the keyed questions (0.82 over all 20; four judged failures, all on lists) at 12 tokens a second, and did not displace GPT-OSS 20B on any corpus. Whether it stays registered is still open.',
   },
   'qwen38-27b': {
     label: 'Exact but slow',
@@ -41,12 +40,12 @@ const MODEL_GUIDANCE: Record<string, ModelGuidance> = {
   'qwen3-8b': {
     label: 'Superseded',
     note: 'Replaced by Qwen3.5 9B, which scored 0.81 to this model’s 0.43 on the keyed questions: every fact right where this model had half of them wrong. Kept so an install that has it keeps working.',
-    warning: 'For a new install, pick Qwen3.5 9B instead.',
+    warning: 'Superseded by Qwen3.5 9B: switch when convenient. Until then this model works as it did.',
   },
   'qwen3-4b': {
     label: 'Superseded',
     note: 'Replaced by Qwen3.5 4B, which got every fact and date right on the keyed questions; this model was not run there, and its 8B sibling of the same generation scored 0.43. Kept so an install that has it keeps working.',
-    warning: 'For a new install, pick Qwen3.5 4B instead.',
+    warning: 'Superseded by Qwen3.5 4B: switch when convenient. Until then this model works as it did.',
   },
 }
 

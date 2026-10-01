@@ -143,9 +143,33 @@ describe('ModelsPage superseded models (#551)', () => {
     const rows = screen.getAllByRole('row')
     const q4 = rows.find((r) => r.textContent?.includes('Qwen3 4B'))!
     expect(q4.textContent).toContain('Superseded')
-    expect(q4.textContent).toContain('For a new install, pick Qwen3.5 4B instead.')
+    expect(q4.textContent).toContain('Superseded by Qwen3.5 4B: switch when convenient.')
     expect(q4.textContent).toContain('Activate')
     // Both superseded models here are downloaded, so nothing is folded away.
+    expect(screen.queryByRole('button', { name: 'Show' })).not.toBeInTheDocument()
+  })
+
+  it('keeps an active superseded model in its tier even when its file is gone', async () => {
+    // `active` comes from config, `downloaded` from disk: the install the registry keeps the model for.
+    const list = models.map((m) =>
+      m.id === 'qwen3-8b' ? { ...m, active: true, downloaded: false } : { ...m, active: false },
+    )
+    getMock.mockImplementation(async (url: string) => answer(url, list) as never)
+    renderPage()
+    await screen.findByText('Qwen3 8B')
+    const q8 = screen.getAllByRole('row').find((r) => r.textContent?.includes('Qwen3 8B'))!
+    expect(q8.textContent).toContain('Superseded')
+    expect(q8.textContent).toContain('Deactivate')
+    expect(screen.queryByRole('button', { name: 'Show' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a superseded model that is downloading in its tier, with its progress', async () => {
+    const list = models.map((m) => (m.id === 'qwen3-8b' ? { ...m, downloaded: false, downloading: true } : m))
+    getMock.mockImplementation(async (url: string) => answer(url, list) as never)
+    renderPage()
+    await screen.findByText('Qwen3 8B')
+    const q8 = screen.getAllByRole('row').find((r) => r.textContent?.includes('Qwen3 8B'))!
+    expect(q8.textContent).toContain('0%')
     expect(screen.queryByRole('button', { name: 'Show' })).not.toBeInTheDocument()
   })
 

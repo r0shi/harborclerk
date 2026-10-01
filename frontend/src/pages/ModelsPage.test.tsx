@@ -18,12 +18,12 @@ describe('modelGuidance', () => {
     const q8 = modelGuidance({ id: 'qwen3-8b', size_bytes: 5_027_783_488, supports_research: true })
     expect(q8.label).toBe('Superseded')
     expect(q8.note).toContain('Qwen3.5 9B')
-    expect(q8.warning).toBe('For a new install, pick Qwen3.5 9B instead.')
+    expect(q8.warning).toBe('Superseded by Qwen3.5 9B: switch when convenient. Until then this model works as it did.')
     const q4 = modelGuidance({ id: 'qwen3-4b', size_bytes: 2_497_280_256, supports_research: true })
     expect(q4.label).toBe('Superseded')
-    expect(q4.warning).toBe('For a new install, pick Qwen3.5 4B instead.')
-    // The successors carry a measured result, not a pending evaluation.
-    for (const id of ['qwen35-9b', 'qwen35-4b']) {
+    expect(q4.warning).toBe('Superseded by Qwen3.5 4B: switch when convenient. Until then this model works as it did.')
+    // Every model the three benchmark runs measured carries its result, not a pending evaluation.
+    for (const id of ['qwen35-9b', 'qwen35-4b', 'gemma4-12b']) {
       const g = modelGuidance({ id, size_bytes: 3_000_000_000, supports_research: true })
       expect(g.note).not.toContain('pending')
       expect(g.warning).toBeUndefined()
