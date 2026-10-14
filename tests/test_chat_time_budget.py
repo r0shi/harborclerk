@@ -125,6 +125,7 @@ async def _drive(
     context_tokens: int | None = None,
     ratios: dict | None = None,
     prose_ratios: dict | None = None,
+    events_out: list | None = None,
 ):
     """Drive one chat turn. ``ratios`` and ``prose_ratios`` are the process's tables of measured ratios for the run
     (#805), empty unless given, so no test starts from another's measurements; the caller keeps the references to
@@ -160,6 +161,8 @@ async def _drive(
         return events
 
     events = await asyncio.wait_for(run(), timeout=30.0)
+    if events_out is not None:
+        events_out.extend(events)
     text = "".join(e.get("content", "") for e in events if e.get("type") == "token")
     done = next(e for e in events if e.get("type") == "done")
     return text, done, tool_calls
@@ -1909,19 +1912,28 @@ async def test_the_tool_loops_overflow_error_recognises_the_pins_wording(
 
 
 def _counting_client(
-    ratio: float, rounds: int | None = None, forced_ratio: float | None = None, double_usage: bool = False
+    ratio: float,
+    rounds: int | None = None,
+    forced_ratio: float | None = None,
+    double_usage: bool = False,
+    ctx: int | None = None,
+    usage: bool = True,
 ):
     """A model that calls a tool every round (the first ``rounds`` rounds, when given, then answers), on a server
     that counts each prompt at ``ratio`` times the raw estimate of what was sent and reports the count as usage, in
     a last chunk with no choices (the pin's shape). The forced final call is answered the same way, counted at
     ``forced_ratio`` (``ratio`` when not given), finish chunk and usage chunk before "[DONE]". ``double_usage`` is a
-    build that puts the usage on the finish chunk as well. Returns the client and the payloads the loop sent."""
+    build that puts the usage on the finish chunk as well. Given ``ctx``, a prompt counted over it is refused with
+    the pin's 400, as a real server does; with ``usage`` off, an accepted prompt is answered without any usage (an
+    older build), the refusals still naming their count. Returns the client and the payloads the loop sent."""
     from harbor_clerk.llm import chat as chat_module
 
     sent: list[dict] = []
 
     def tail(counted: int, finish: str) -> list[str]:
         finish_chunk = {"choices": [{"delta": {}, "finish_reason": finish}]}
+        if not usage:
+            return ["data: " + json.dumps(finish_chunk), "data: [DONE]"]
         if double_usage:
             finish_chunk["usage"] = json.loads(_usage_chunk(counted)[6:])["usage"]
         return ["data: " + json.dumps(finish_chunk), _usage_chunk(counted), "data: [DONE]"]
@@ -1930,6 +1942,8 @@ def _counting_client(
         payload = client.build_request.call_args.kwargs["json"]
         sent.append({**payload, "messages": list(payload["messages"])})  # a snapshot: the loop appends to its list
         counted = int(ratio * chat_module._estimate_payload_tokens(payload["messages"], payload.get("tools")))
+        if ctx is not None and counted > ctx:
+            return _refusal(counted, ctx)
         if rounds is not None and len(sent) > rounds:
             return _lines_response([_chunk(content="Answered on my own."), *tail(counted, "stop")])
         return _lines_response([_tool_call_chunk(), *tail(counted, "tool_calls")])
@@ -1937,6 +1951,8 @@ def _counting_client(
     def forced(*_a, **_k):
         payload = client.stream.call_args.kwargs["json"]
         counted = int((forced_ratio or ratio) * chat_module._estimate_messages_tokens(payload["messages"]))
+        if ctx is not None and counted > ctx:
+            return _refusal(counted, ctx)
         return _lines_response([_chunk(content="From the results."), *tail(counted, "stop")])
 
     client = MagicMock()
@@ -2158,33 +2174,46 @@ async def test_a_server_that_reports_no_usage_leaves_the_default_in_force(
     )
     assert text == "Done." and table == {}
     messages = client.build_request.call_args.kwargs["json"]["messages"]
-    estimate = chat_module._estimate_messages_tokens(messages) + chat_module._get_tool_schema_tokens(None)
-    estimate += chat_module._estimate_tokens("Done.")
-    assert done["context_pct"] == round(min(estimate * chat_module._ESTIMATE_RATIO_DEFAULT / ctx, 1.0) * 100)
-    assert done["context_pct"] != round(min(estimate / ctx, 1.0) * 100), "the default is not face value"
+    schema, seed = chat_module._get_tool_schema_tokens(None), chat_module._PROSE_RATIO_DEFAULT
+    used = chat_module._predict_prompt_tokens(messages, None, 0, schema, chat_module._ESTIMATE_RATIO_DEFAULT, seed)
+    used += chat_module._estimate_tokens("Done.") * seed
+    assert done["context_pct"] == round(min(used / ctx, 1.0) * 100)
+    estimate = chat_module._estimate_messages_tokens(messages) + schema + chat_module._estimate_tokens("Done.")
+    assert done["context_pct"] != round(min(estimate / ctx, 1.0) * 100), "the seed is not face value"
 
 
 @pytest.mark.asyncio
 async def test_a_conversation_on_a_measured_model_starts_calibrated(
     db_session, admin_user, chat_session_factory, monkeypatch
 ):
-    """The model was measured at three times the estimate in an earlier conversation of this process. A fresh
-    conversation reads its estimate at that ratio from its first call, before the server has said anything."""
+    """The model's prose was measured at 1.8x in an earlier conversation of this process. A fresh conversation reads
+    its prose at that ratio from its first call, before the server has said anything: here the UI percentage of a
+    call that reported no usage."""
     from harbor_clerk.llm import chat as chat_module
 
     conv = await _conversation(db_session, admin_user)
     ctx = 32768
     client, _ = _mock_client([[_chunk(content="Done."), "data: [DONE]"]])
-    table = {_MODEL_KEY: 3.0}
+    prose = {_MODEL_KEY: 1.8}
     text, done, _ = await _drive(
-        conv.conversation_id, admin_user, client, _Clock(), monkeypatch, budget=0.0, context_tokens=ctx, ratios=table
+        conv.conversation_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        budget=0.0,
+        context_tokens=ctx,
+        prose_ratios=prose,
     )
-    assert text == "Done." and table == {_MODEL_KEY: 3.0}, "no usage came: the measurement stands"
+    assert text == "Done." and prose == {_MODEL_KEY: 1.8}, "no usage came: the measurement stands"
     messages = client.build_request.call_args.kwargs["json"]["messages"]
-    estimate = chat_module._estimate_messages_tokens(messages) + chat_module._get_tool_schema_tokens(None)
-    estimate += chat_module._estimate_tokens("Done.")
-    assert done["context_pct"] == round(min(estimate * 3.0 / ctx, 1.0) * 100)
-    assert done["context_pct"] != round(min(estimate * chat_module._ESTIMATE_RATIO_DEFAULT / ctx, 1.0) * 100)
+    schema, default = chat_module._get_tool_schema_tokens(None), chat_module._ESTIMATE_RATIO_DEFAULT
+
+    def pct(at: float) -> int:
+        used = chat_module._predict_prompt_tokens(messages, None, 0, schema, default, at)
+        return round(min((used + chat_module._estimate_tokens("Done.") * at) / ctx, 1.0) * 100)
+
+    assert done["context_pct"] == pct(1.8) != pct(chat_module._PROSE_RATIO_DEFAULT)
 
 
 @pytest.mark.asyncio
@@ -2714,9 +2743,12 @@ async def test_a_count_below_the_clamp_is_distrusted(db_session, admin_user, cha
     rows = await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id))
     stored = [r for r in rows.scalars() if r.role == "assistant" and r.content][-1]
     assert stored.tokens_used is None, "a distrusted count is not stored"
-    estimate = chat_module._estimate_payload_tokens(sent[1]["messages"], sent[1]["tools"])
-    estimate += chat_module._estimate_tokens(text)
-    assert done["context_pct"] == round(min(estimate * chat_module._ESTIMATE_RATIO_DEFAULT / ctx, 1.0) * 100)
+    schema, seed = chat_module._get_tool_schema_tokens(None), chat_module._PROSE_RATIO_DEFAULT
+    used = chat_module._predict_prompt_tokens(
+        sent[1]["messages"], None, 0, schema, chat_module._ESTIMATE_RATIO_DEFAULT, seed
+    )
+    used += chat_module._estimate_tokens(text) * seed
+    assert done["context_pct"] == round(min(used / ctx, 1.0) * 100), "the weighted prediction, not the count"
 
 
 @pytest.mark.asyncio
@@ -2759,17 +2791,18 @@ async def test_a_dense_prose_history_is_trimmed_to_fit_once_the_model_has_been_m
     db_session, admin_user, chat_session_factory, monkeypatch
 ):
     """A tokenizer that counts prose at 1.8x the estimate (CJK text under the Qwen family), a 16,384 slot, twenty
-    prose exchanges of history. The first conversation's first prompt, trimmed at the seed, is over the slot by the
-    server's count (a real server refuses it); it is a tool-less prompt, so its count is an exact measurement of the
-    model's prose density. The second conversation's first prompt, trimmed at that measurement, is within the
-    trim's target by the server's count."""
+    prose exchanges of history, a server that refuses a prompt over its slot as the pin does. The first
+    conversation's first prompt, trimmed at the seed, is refused before any usage; the refusal names its count, the
+    prompt has no tool row, so the count is the model's prose density, recorded, and the turn is retried trimmed
+    against it and accepted. The second conversation's first prompt, trimmed at the measurement, is within the
+    trim's target by the server's count, first time."""
     from harbor_clerk.llm import chat as chat_module
     from harbor_clerk.models.chat_message import ChatMessage
 
     ctx = 16384
     table: dict = {}
     prose: dict = {}
-    counts: list[int] = []
+    runs: list[tuple[list[dict], list[int], list[dict]]] = []
     for _ in range(2):
         conv = await _conversation(db_session, admin_user)
         for i in range(20):
@@ -2784,7 +2817,8 @@ async def test_a_dense_prose_history_is_trimmed_to_fit_once_the_model_has_been_m
                 )
             )
         await db_session.commit()
-        client, sent = _counting_client(1.8, rounds=0)
+        client, sent = _counting_client(1.8, rounds=0, ctx=ctx)
+        events: list[dict] = []
         text, done, _ = await _drive(
             conv.conversation_id,
             admin_user,
@@ -2795,29 +2829,37 @@ async def test_a_dense_prose_history_is_trimmed_to_fit_once_the_model_has_been_m
             context_tokens=ctx,
             ratios=table,
             prose_ratios=prose,
+            events_out=events,
         )
-        assert text == "Answered on my own." and len(sent) == 1
-        counts.append(int(1.8 * chat_module._estimate_payload_tokens(sent[0]["messages"], sent[0]["tools"])))
-    assert counts[0] > ctx, f"the scenario: trimmed at the seed, the first prompt is over the slot ({counts[0]})"
-    assert prose[_MODEL_KEY] == pytest.approx(1.8, abs=0.01), "the first conversation measured the density"
-    assert counts[1] <= chat_module._TRIM_BUDGET_FRACTION * ctx, f"the second fits the target: {counts[1]} of {ctx}"
+        assert text == "Answered on my own.", text
+        assert not [e for e in events if e.get("type") == "error"], "the user saw no error"
+        counts = [int(1.8 * chat_module._estimate_payload_tokens(p["messages"], p["tools"])) for p in sent]
+        runs.append((sent, counts, events))
+    (first_sent, first_counts, _), (second_sent, second_counts, _) = runs
+    target = chat_module._TRIM_BUDGET_FRACTION * ctx
+    assert len(first_sent) == 2 and first_counts[0] > ctx, f"the scenario: refused first ({first_counts})"
+    assert first_counts[1] <= target, f"retried trimmed against the refusal's count: {first_counts[1]} of {ctx}"
+    assert len(first_sent[1]["messages"]) < len(first_sent[0]["messages"]), "the retry is the shorter prompt"
+    assert prose[_MODEL_KEY] == pytest.approx(1.8, abs=0.01), "the refusal measured the density"
+    assert len(second_sent) == 1 and second_counts[0] <= target, f"first time: {second_counts} of {ctx}"
     assert table == {}, "prose measures nothing of the tool ratio"
 
 
 @pytest.mark.asyncio
-async def test_a_server_at_the_seeds_density_leaves_the_seed_in_force(
-    db_session, admin_user, chat_session_factory, monkeypatch
-):
+async def test_an_accepted_prose_prompt_is_measured_too(db_session, admin_user, chat_session_factory, monkeypatch):
+    """A tool-less prompt the server accepts and counts at 1.5x the estimate (pasted logs, tables): its usage is the
+    measurement, and it replaces the seed."""
     from harbor_clerk.llm import chat as chat_module
 
     conv = await _conversation(db_session, admin_user)
     prose: dict = {}
-    client, sent = _counting_client(1.2, rounds=0)
+    client, sent = _counting_client(1.5, rounds=0)
     text, done, _ = await _drive(
         conv.conversation_id, admin_user, client, _Clock(), monkeypatch, budget=0.0, prose_ratios=prose
     )
-    assert text == "Answered on my own."
-    assert chat_module._prose_ratio(_MODEL_KEY) == pytest.approx(chat_module._PROSE_RATIO_DEFAULT, abs=0.01)
+    assert text == "Answered on my own." and len(sent) == 1
+    assert prose[_MODEL_KEY] == pytest.approx(1.5, abs=0.01)
+    assert chat_module._prose_ratio(_MODEL_KEY) == prose[_MODEL_KEY] != chat_module._PROSE_RATIO_DEFAULT
 
 
 def test_the_prose_ratio_replaces_its_seed_then_blends_under_the_clamp():
@@ -2895,3 +2937,51 @@ def test_the_predictor_agrees_with_an_independent_tokenizer_rule(messages):
     predicted = chat_module._predict_messages_tokens(messages, 2.2, 1.2)
     oracle = _server_count(messages, None, without_tools=1.2, with_tools=2.2)
     assert 0.95 <= predicted / oracle <= 1.05, f"predicted {predicted:.0f} against the oracle's {oracle}"
+
+
+@pytest.mark.asyncio
+async def test_a_refusals_count_alone_measures_the_prose_density(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The same dense history on a build that refuses an over-slot prompt, naming its count, but reports no usage on
+    the prompts it accepts: the refusal is the only measurement there is. Recorded from it, the retry and the next
+    conversation's first prompt fit; without it the next conversation would be refused and retried the same way."""
+    from harbor_clerk.llm import chat as chat_module
+    from harbor_clerk.models.chat_message import ChatMessage
+
+    ctx = 16384
+    prose: dict = {}
+    sent_per_conversation: list[list[dict]] = []
+    for _ in range(2):
+        conv = await _conversation(db_session, admin_user)
+        for i in range(20):
+            db_session.add(
+                ChatMessage(
+                    conversation_id=conv.conversation_id, role="user", content=f"Question {i}: " + "fee? " * 140
+                )
+            )
+            db_session.add(
+                ChatMessage(
+                    conversation_id=conv.conversation_id, role="assistant", content=f"Answer {i}: " + "fee. " * 140
+                )
+            )
+        await db_session.commit()
+        client, sent = _counting_client(1.8, rounds=0, ctx=ctx, usage=False)
+        text, done, _ = await _drive(
+            conv.conversation_id,
+            admin_user,
+            client,
+            _Clock(),
+            monkeypatch,
+            budget=0.0,
+            context_tokens=ctx,
+            prose_ratios=prose,
+        )
+        assert text == "Answered on my own.", text
+        sent_per_conversation.append(sent)
+    first, second = sent_per_conversation
+    assert len(first) == 2, "the scenario: the first conversation's first prompt was refused and retried"
+    assert prose[_MODEL_KEY] == pytest.approx(1.8, abs=0.01), "measured from the refusal's count, nothing else"
+    assert len(second) == 1, "the second conversation's first prompt, trimmed at that density, was accepted first time"
+    count = int(1.8 * chat_module._estimate_payload_tokens(second[0]["messages"], second[0]["tools"]))
+    assert count <= chat_module._TRIM_BUDGET_FRACTION * ctx
