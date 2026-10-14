@@ -105,6 +105,20 @@ a route with a blank gate unless it is public. Keys never receive `source_path` 
 `ABSOLUTE_PATH_FIELDS`, and any free-text field that may quote one (pipeline
 `error` text does) to `ABSOLUTE_PATH_TEXT_FIELDS`.
 
+## The chat token estimate is raw; the bounds are calibrated
+
+`llm/chat.py` estimates tokens by characters over `_CHARS_PER_TOKEN`, a prose
+figure that runs at about half the tokenizer's count on tool results (#805).
+The estimate is never used bare: every bound (the context-budget stop, the
+history trim, the forced call's outer deadline, the UI percentage) multiplies
+it by the model's measured ratio, kept per model id in `_estimate_ratios` for
+the life of the process and measured from `usage.prompt_tokens` on every
+completed call. llama-server (pin v0.4.1) sends usage only when the request
+carries `stream_options: {"include_usage": true}`, in a last chunk whose
+`choices` is an **empty array**: `chunk["choices"][0]` raises on it. A new
+estimate-derived figure takes the ratio (`_estimate_ratio(model_id)`); a new
+streamed call asks for usage and records it (`_record_estimate_ratio`).
+
 ## Async gotchas
 
 - `enqueue_stage()` uses a **sync** session. Calling it in a loop from an async
