@@ -166,8 +166,16 @@ class ApiKeyRequestLogMiddleware:
 
         elapsed = int((time.monotonic() - start) * 1000)
         status_code = response_status[0]
-        req_status = "ok" if status_code < 400 else "error"
-        status_detail = None if req_status == "ok" else f"HTTP {status_code}"
+        # require_read_access records a tier/scope refusal on request.state (the
+        # same dict as scope["state"]); log it as "denied", as MCP tool denials
+        # are, rather than as a generic HTTP 403 error.
+        denial = scope.get("state", {}).get("api_key_denied")
+        if denial:
+            req_status = "denied"
+            status_detail = str(denial)[:500]
+        else:
+            req_status = "ok" if status_code < 400 else "error"
+            status_detail = None if req_status == "ok" else f"HTTP {status_code}"
 
         # --- Log the request ---
         if key_id is not None:

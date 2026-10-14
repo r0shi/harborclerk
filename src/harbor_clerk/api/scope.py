@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
+from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.sql import Select
 
@@ -67,6 +68,54 @@ def compute_effective_tools(tier: str, overrides: dict[str, bool]) -> frozenset[
     return frozenset(effective - ADMIN_ONLY_TOOLS)
 
 
+def minimum_tier_for_tool(tool: str) -> str | None:
+    """The lowest tier whose base set includes ``tool``; None for admin-only or unknown tools."""
+    for tier in ("search", "read", "full"):
+        if tool in _TIERS[tier]:
+            return tier
+    return None
+
+
+# ---------------------------------------------------------------------------
+# REST routes reachable by API keys
+# ---------------------------------------------------------------------------
+
+# Every REST route an API key may call, mapped to the MCP tool whose data it
+# exposes. A key may call a route iff it may call that tool — tier plus per-key
+# overrides, via ``compute_effective_tools`` — so REST and MCP enforce one
+# contract and the admin UI's tool checklist describes both surfaces (#646).
+# Where a route exposes data from several tools, the most privileged governs.
+#
+# Keys are (HTTP method, route template as FastAPI registers it: the router's
+# own prefix included, the app-level ``/api`` mount excluded) — what
+# ``request.scope["route"].path`` yields inside a dependency.
+#
+# A route that uses ``require_read_access`` but has no entry here is CLOSED to
+# API keys; ``tests/test_rest_api_key_tier.py`` holds the two in step. Routes
+# with no MCP counterpart — jobs, stats, watched folders, chat — are human-only
+# and do not appear.
+REST_ROUTE_TOOLS: dict[tuple[str, str], str] = {
+    # search tier
+    ("POST", "/search"): "kb_search",
+    ("POST", "/search/find-all"): "kb_find_all",
+    ("GET", "/docs"): "kb_list_recent",
+    ("GET", "/docs/overview"): "kb_corpus_overview",
+    ("GET", "/docs/filters"): "kb_corpus_overview",
+    # read tier
+    ("POST", "/passages/read"): "kb_read_passages",
+    ("GET", "/docs/{doc_id}"): "kb_get_document",
+    ("GET", "/docs/{doc_id}/outline"): "kb_document_outline",
+    # full tier
+    ("GET", "/docs/{doc_id}/content"): "kb_read_document",
+    # Raw bytes are at least the full text; additionally gated by ALLOW_SOURCE_DOWNLOAD.
+    ("GET", "/docs/{doc_id}/download"): "kb_read_document",
+    ("GET", "/docs/{doc_id}/related"): "kb_find_related",
+    ("GET", "/docs/{doc_id}/entities"): "kb_entity_overview",
+    ("GET", "/docs/entities/autocomplete"): "kb_entity_search",
+    ("GET", "/docs/entities/top"): "kb_entity_overview",
+}
+
+
 @dataclass
 class KeyScope:
     """Snapshot of an API key's scope, attached to Principal at auth time.
@@ -124,6 +173,42 @@ class _ScopedPrincipal(Protocol):
 
     type: str
     key_scope: KeyScope | None
+
+
+# Response fields that carry an absolute on-disk path. Human sessions keep them
+# (the web app renders them and Reveal in Finder needs them); an API key never
+# receives one, at any tier — MCP payloads have never carried them
+# (tests/test_mcp_source_ref.py) and REST follows the same contract.
+ABSOLUTE_PATH_FIELDS: frozenset[str] = frozenset({"source_path", "watch_source_path"})
+
+
+def redact_paths_for_principal[Payload](payload: Payload, principal: _ScopedPrincipal) -> Payload:
+    """Blank every ``ABSOLUTE_PATH_FIELDS`` member throughout ``payload`` for an API-key caller.
+
+    Walks pydantic models, dicts, lists and tuples in place and returns ``payload``,
+    so a route can wrap its return value. No-op for human principals.
+    """
+    if principal.type == "api_key":
+        _blank_path_fields(payload)
+    return payload
+
+
+def _blank_path_fields(obj: object) -> None:
+    if isinstance(obj, BaseModel):
+        for name in type(obj).model_fields:
+            if name in ABSOLUTE_PATH_FIELDS:
+                setattr(obj, name, None)
+            else:
+                _blank_path_fields(getattr(obj, name, None))
+    elif isinstance(obj, dict):
+        for key in list(obj):
+            if key in ABSOLUTE_PATH_FIELDS:
+                obj[key] = None
+            else:
+                _blank_path_fields(obj[key])
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            _blank_path_fields(item)
 
 
 def build_user_scope(scope_dict: dict | None) -> "UserScope | None":

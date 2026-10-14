@@ -24,7 +24,7 @@ from harbor_clerk.api.schemas.documents import (
     PaginatedDocuments,
     RelatedDocumentsResponse,
 )
-from harbor_clerk.api.scope import apply_key_scope
+from harbor_clerk.api.scope import apply_key_scope, redact_paths_for_principal
 from harbor_clerk.audit import log_audit
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
@@ -228,7 +228,10 @@ async def list_documents(
             # watched_files table may not exist if migration 0011 hasn't run
             await session.rollback()
 
-    return PaginatedDocuments(items=summaries, total=total, limit=limit, offset=offset)
+    # API keys never receive absolute on-disk paths (source_path, watch_source_path).
+    return redact_paths_for_principal(
+        PaginatedDocuments(items=summaries, total=total, limit=limit, offset=offset), principal
+    )
 
 
 # Must be defined before /docs/{doc_id} to avoid path capture
@@ -502,7 +505,7 @@ async def get_document(
             )
         )
 
-    return DocumentDetail(
+    detail = DocumentDetail(
         doc_id=str(doc.doc_id),
         title=doc.title,
         canonical_filename=doc.canonical_filename,
@@ -523,6 +526,8 @@ async def get_document(
         updated_at=doc.updated_at,
         jobs=jobs,
     )
+    # API keys never receive the absolute on-disk source_path; human sessions keep it.
+    return redact_paths_for_principal(detail, principal)
 
 
 @router.get("/docs/{doc_id}/content", response_model=DocumentContentResponse)

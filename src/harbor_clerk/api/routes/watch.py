@@ -15,7 +15,9 @@ from pydantic import BaseModel
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import get_session, require_human_user, require_user
+# Every route here is human-only: folder rows carry absolute on-disk paths and
+# WATCH_ROOT is one, and no MCP tool exposes watched folders to API keys.
+from harbor_clerk.api.deps import get_session, require_human_user
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import async_session_factory
 from harbor_clerk.file_types import ALLOWED_EXTENSIONS, is_excalidraw
@@ -132,12 +134,12 @@ def _validate_source_path(source_path: str, folder_path: str) -> str:
 
 
 @router.get("/allowed-extensions")
-async def allowed_extensions(_: None = Depends(require_user)):
+async def allowed_extensions(_: None = Depends(require_human_user)):
     return sorted(ALLOWED_EXTENSIONS)
 
 
 @router.get("/system")
-async def get_system(_: None = Depends(require_user)):
+async def get_system(_: None = Depends(require_human_user)):
     """Platform-shape introspection for the frontend.
 
     Empty WATCH_ROOT → macOS native deployment (native folder picker).
@@ -155,7 +157,7 @@ async def get_system(_: None = Depends(require_user)):
 @router.get("/folders")
 async def list_folders(
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_user),
+    _: None = Depends(require_human_user),
 ):
     count_sub = (
         select(func.count(WatchedFile.file_id))
@@ -255,7 +257,7 @@ async def _folder_progress_event_generator(session_factory=None):
 
 
 @router.get("/folders/stream")
-async def folder_progress_stream(_: None = Depends(require_user)):
+async def folder_progress_stream(_: None = Depends(require_human_user)):
     """SSE stream of per-folder progress deltas.
 
     1Hz polling loop. Emits initial snapshot for all folders on connect,
@@ -276,7 +278,7 @@ async def folder_progress_stream(_: None = Depends(require_user)):
 async def get_folder_progress(
     folder_id: uuid.UUID,
     session: AsyncSession = Depends(get_session),
-    _: None = Depends(require_user),
+    _: None = Depends(require_human_user),
 ):
     """Aggregate per-folder ingestion status across all 7 pipeline stages."""
     folder = await session.get(WatchedFolder, folder_id)

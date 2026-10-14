@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.scope import KeyScope, UserScope
+from harbor_clerk.api.scope import REST_ROUTE_TOOLS, KeyScope, UserScope
 from harbor_clerk.auth import API_KEY_PREFIXES, decode_token, hash_api_key
 from harbor_clerk.db import get_session
 from harbor_clerk.models import ApiKey, User
@@ -185,7 +185,30 @@ async def require_admin(
 
 
 async def require_read_access(
+    request: Request,
     principal: Principal = Depends(get_current_principal),
 ) -> Principal:
-    """Any authenticated principal (users + API keys) can read."""
-    return principal
+    """Human users, and API keys whose scope includes the tool that governs this route.
+
+    Humans pass unconditionally. An API key passes only if the route is listed
+    in ``REST_ROUTE_TOOLS`` and the MCP tool it maps to is in the key's
+    effective tool set — the same tier-plus-overrides check that
+    ``ScopedFastMCP.call_tool`` applies — so a search-tier key that cannot call
+    ``kb_get_document`` over MCP cannot fetch document detail over REST either
+    (#646). A route that uses this dependency without a table entry is closed
+    to keys: fail closed, never open.
+    """
+    if principal.type != "api_key":
+        return principal
+    route = request.scope.get("route")
+    tool = REST_ROUTE_TOOLS.get((request.method, getattr(route, "path", "")))
+    if tool is None:
+        detail = "This endpoint is not available to API keys"
+    elif principal.key_scope is None or tool not in principal.key_scope.effective_tools:
+        tier = principal.key_scope.permission_tier if principal.key_scope is not None else "unknown"
+        detail = f"API key tier '{tier}' does not include {tool}, which governs this endpoint"
+    else:
+        return principal
+    # ApiKeyRequestLogMiddleware reads this so the audit log records a denial, as MCP does.
+    request.state.api_key_denied = detail
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)

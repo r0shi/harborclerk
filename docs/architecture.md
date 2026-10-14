@@ -311,7 +311,11 @@ Per-operation gates are generated in the [REST API](#rest-api) table's Access
 column, derived from each route's dependency tree.
 
 - **API keys** are read-only, stored as hashes, and carry a scope, rate limits,
-  snippet caps, and an expiry.
+  snippet caps, and an expiry. A key's permission tier governs REST as it
+  governs MCP: each REST route a key may reach maps to an MCP tool
+  (`REST_ROUTE_TOOLS` in `api/scope.py`) and the key must hold that tool;
+  every other route is human-only; and no response to a key carries an
+  absolute on-disk path (`redact_paths_for_principal`).
 - **OAuth 2.1** with dynamic client registration is implemented for connector
   clients: PKCE, authorization codes, token issue/refresh/revoke, and
   `.well-known` discovery documents.
@@ -470,7 +474,7 @@ Queue subscriptions:
 <!-- BEGIN GENERATED: rest-endpoints -->
 <!-- Do not edit by hand. Regenerate: uv run python -m scripts.gen_docs -->
 
-**142 operations**, 85 of them access-gated. Generated from the FastAPI OpenAPI schema; the Access column is derived from each route's dependency tree.
+**142 operations**, 122 of them access-gated. Generated from the FastAPI OpenAPI schema; the Access column is derived from each route's dependency tree. **admin** needs an admin session; **human only** rejects API keys; **key ≥ tier (tool)** admits an API key whose tier, or a per-key tool override, grants the named MCP tool — the one that governs the route, per `REST_ROUTE_TOOLS` in `api/scope.py`. Keys never receive absolute on-disk paths at any tier.
 
 ### `api-keys`
 
@@ -502,21 +506,21 @@ Queue subscriptions:
 
 | Method | Path | Access | Summary |
 |---|---|---|---|
-| `GET` | `/api/chat/conversations` | — | List Conversations |
+| `GET` | `/api/chat/conversations` | **human only** | List Conversations |
 | `POST` | `/api/chat/conversations` | **human only** | Create Conversation |
 | `DELETE` | `/api/chat/conversations/{conv_id}` | **human only** | Delete Conversation |
-| `GET` | `/api/chat/conversations/{conv_id}` | — | Get Conversation |
-| `GET` | `/api/chat/conversations/{conv_id}/export` | — | Export Conversation |
+| `GET` | `/api/chat/conversations/{conv_id}` | **human only** | Get Conversation |
+| `GET` | `/api/chat/conversations/{conv_id}/export` | **human only** | Export Conversation |
 | `POST` | `/api/chat/conversations/{conv_id}/messages` | **human only** | Send Message |
-| `GET` | `/api/chat/models` | — | List Available Models |
+| `GET` | `/api/chat/models` | **human only** | List Available Models |
 | `PUT` | `/api/chat/models/deactivate` | **admin** | Deactivate Model |
-| `GET` | `/api/chat/models/download-progress` | — | Download Progress Stream |
-| `GET` | `/api/chat/models/orphaned` | — | List Orphaned Models |
+| `GET` | `/api/chat/models/download-progress` | **human only** | Download Progress Stream |
+| `GET` | `/api/chat/models/orphaned` | **human only** | List Orphaned Models |
 | `DELETE` | `/api/chat/models/orphaned/{filename}` | **admin** | Remove Orphaned Model |
-| `GET` | `/api/chat/models/status` | — | Llm Status |
-| `GET` | `/api/chat/models/summary-afm` | — | Get Summary Force Afm |
+| `GET` | `/api/chat/models/status` | **human only** | Llm Status |
+| `GET` | `/api/chat/models/summary-afm` | **human only** | Get Summary Force Afm |
 | `PUT` | `/api/chat/models/summary-afm` | **admin** | Toggle Summary Force Afm |
-| `GET` | `/api/chat/models/yarn` | — | Get Yarn Status |
+| `GET` | `/api/chat/models/yarn` | **human only** | Get Yarn Status |
 | `PUT` | `/api/chat/models/yarn` | **admin** | Toggle Yarn |
 | `DELETE` | `/api/chat/models/{model_id}` | **admin** | Remove Model |
 | `PUT` | `/api/chat/models/{model_id}/activate` | **admin** | Activate Model |
@@ -526,20 +530,20 @@ Queue subscriptions:
 
 | Method | Path | Access | Summary |
 |---|---|---|---|
-| `GET` | `/api/docs` | — | List Documents |
-| `GET` | `/api/docs/entities/autocomplete` | — | Entity Autocomplete |
-| `GET` | `/api/docs/entities/top` | — | Top Entities |
-| `GET` | `/api/docs/filters` | — | Document Filters |
-| `GET` | `/api/docs/overview` | — | Corpus Overview |
+| `GET` | `/api/docs` | **key ≥ search (kb_list_recent)** | List Documents |
+| `GET` | `/api/docs/entities/autocomplete` | **key ≥ full (kb_entity_search)** | Entity Autocomplete |
+| `GET` | `/api/docs/entities/top` | **key ≥ full (kb_entity_overview)** | Top Entities |
+| `GET` | `/api/docs/filters` | **key ≥ search (kb_corpus_overview)** | Document Filters |
+| `GET` | `/api/docs/overview` | **key ≥ search (kb_corpus_overview)** | Corpus Overview |
 | `POST` | `/api/docs/reprocess-failed` | **admin** | Reprocess Failed Documents |
 | `DELETE` | `/api/docs/{doc_id}` | **admin** | Delete Document |
-| `GET` | `/api/docs/{doc_id}` | — | Get Document |
+| `GET` | `/api/docs/{doc_id}` | **key ≥ read (kb_get_document)** | Get Document |
 | `POST` | `/api/docs/{doc_id}/cancel` | **admin** | Cancel Processing |
-| `GET` | `/api/docs/{doc_id}/content` | — | Get Document Content |
-| `GET` | `/api/docs/{doc_id}/download` | — | Download Document |
-| `GET` | `/api/docs/{doc_id}/entities` | — | Get Document Entities |
-| `GET` | `/api/docs/{doc_id}/outline` | — | Get Document Outline |
-| `GET` | `/api/docs/{doc_id}/related` | — | Find Related Documents |
+| `GET` | `/api/docs/{doc_id}/content` | **key ≥ full (kb_read_document)** | Get Document Content |
+| `GET` | `/api/docs/{doc_id}/download` | **key ≥ full (kb_read_document)** | Download Document |
+| `GET` | `/api/docs/{doc_id}/entities` | **key ≥ full (kb_entity_overview)** | Get Document Entities |
+| `GET` | `/api/docs/{doc_id}/outline` | **key ≥ read (kb_document_outline)** | Get Document Outline |
+| `GET` | `/api/docs/{doc_id}/related` | **key ≥ full (kb_find_related)** | Find Related Documents |
 | `POST` | `/api/docs/{doc_id}/reprocess` | **admin** | Reprocess Document |
 | `POST` | `/api/docs/{doc_id}/resummarize` | **admin** | Resummarize Document |
 
@@ -547,9 +551,9 @@ Queue subscriptions:
 
 | Method | Path | Access | Summary |
 |---|---|---|---|
-| `GET` | `/api/jobs/active` | — | Active Jobs |
-| `GET` | `/api/jobs/snapshot` | — | Jobs Snapshot |
-| `GET` | `/api/jobs/stream` | — | Job Stream |
+| `GET` | `/api/jobs/active` | **human only** | Active Jobs |
+| `GET` | `/api/jobs/snapshot` | **human only** | Jobs Snapshot |
+| `GET` | `/api/jobs/stream` | **human only** | Job Stream |
 
 ### `languages`
 
@@ -604,9 +608,9 @@ Queue subscriptions:
 
 | Method | Path | Access | Summary |
 |---|---|---|---|
-| `POST` | `/api/passages/read` | — | Read Passages |
-| `POST` | `/api/search` | — | Search |
-| `POST` | `/api/search/find-all` | — | Search Find All |
+| `POST` | `/api/passages/read` | **key ≥ read (kb_read_passages)** | Read Passages |
+| `POST` | `/api/search` | **key ≥ search (kb_search)** | Search |
+| `POST` | `/api/search/find-all` | **key ≥ search (kb_find_all)** | Search Find All |
 
 ### `setup`
 
@@ -618,12 +622,12 @@ Queue subscriptions:
 
 | Method | Path | Access | Summary |
 |---|---|---|---|
-| `GET` | `/api/docs/{doc_id}/stats` | — | Document Stats |
-| `GET` | `/api/stats` | — | Corpus Stats |
-| `GET` | `/api/stats/clusters` | — | Document Clusters |
-| `GET` | `/api/stats/entity-network` | — | Entity Network |
-| `GET` | `/api/stats/timeline` | — | Document Timeline |
-| `GET` | `/api/stats/topics` | — | Topic Clusters |
+| `GET` | `/api/docs/{doc_id}/stats` | **human only** | Document Stats |
+| `GET` | `/api/stats` | **human only** | Corpus Stats |
+| `GET` | `/api/stats/clusters` | **human only** | Document Clusters |
+| `GET` | `/api/stats/entity-network` | **human only** | Entity Network |
+| `GET` | `/api/stats/timeline` | **human only** | Document Timeline |
+| `GET` | `/api/stats/topics` | **human only** | Topic Clusters |
 
 ### `system`
 
@@ -681,18 +685,18 @@ Queue subscriptions:
 
 | Method | Path | Access | Summary |
 |---|---|---|---|
-| `GET` | `/api/watch/allowed-extensions` | — | Allowed Extensions |
-| `GET` | `/api/watch/folders` | — | List Folders |
+| `GET` | `/api/watch/allowed-extensions` | **human only** | Allowed Extensions |
+| `GET` | `/api/watch/folders` | **human only** | List Folders |
 | `POST` | `/api/watch/folders` | **human only** | Create Folder |
-| `GET` | `/api/watch/folders/stream` | — | Folder Progress Stream |
+| `GET` | `/api/watch/folders/stream` | **human only** | Folder Progress Stream |
 | `DELETE` | `/api/watch/folders/{folder_id}` | **human only** | Delete Folder |
 | `PATCH` | `/api/watch/folders/{folder_id}` | **human only** | Patch Folder |
-| `GET` | `/api/watch/folders/{folder_id}/progress` | — | Get Folder Progress |
+| `GET` | `/api/watch/folders/{folder_id}/progress` | **human only** | Get Folder Progress |
 | `POST` | `/api/watch/folders/{folder_id}/rescan` | **human only** | Rescan Folder |
 | `POST` | `/api/watch/ingest` | **human only** | Ingest File |
 | `POST` | `/api/watch/remove` | **human only** | Remove File |
 | `POST` | `/api/watch/rename` | **human only** | Rename File |
-| `GET` | `/api/watch/system` | — | Get System |
+| `GET` | `/api/watch/system` | **human only** | Get System |
 <!-- END GENERATED: rest-endpoints -->
 
 ### Console scripts

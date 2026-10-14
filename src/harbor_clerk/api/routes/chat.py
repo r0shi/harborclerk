@@ -11,7 +11,9 @@ from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_admin, require_human_user, require_user
+# Conversations and model inventory are the web app's surface: human-only, as the
+# mutating routes already were. No MCP tool exposes either to API keys.
+from harbor_clerk.api.deps import Principal, require_admin, require_human_user
 from harbor_clerk.api.schemas.chat import (
     ChatMessageOut,
     ConversationDetail,
@@ -93,7 +95,7 @@ def _enrich_tool_calls(tool_calls: list[dict], results: dict[str, tuple[str, str
 
 @router.get("/chat/conversations", response_model=list[ConversationSummary])
 async def list_conversations(
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
@@ -137,7 +139,7 @@ async def create_conversation(
 @router.get("/chat/conversations/{conv_id}", response_model=ConversationDetail)
 async def get_conversation(
     conv_id: uuid.UUID,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     conv = await session.get(Conversation, conv_id)
@@ -205,7 +207,7 @@ async def delete_conversation(
 @router.get("/chat/conversations/{conv_id}/export")
 async def export_conversation(
     conv_id: uuid.UUID,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Export conversation as a Markdown transcript."""
@@ -303,7 +305,7 @@ async def send_message(
 
 @router.get("/chat/models", response_model=list[ModelOut])
 async def list_available_models(
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
 ):
     # Pick up changes that happened outside this process — most often
     # the menubar Preferences window writing config.json directly. Without
@@ -423,7 +425,7 @@ async def deactivate_model(
 
 @router.get("/chat/models/status")
 async def llm_status(
-    _principal: Principal = Depends(require_user),
+    _principal: Principal = Depends(require_human_user),
 ):
     """Lightweight probe of llama-server's health + the summarize backend.
 
@@ -528,7 +530,7 @@ async def toggle_yarn(
 
 @router.get("/chat/models/yarn", status_code=200)
 async def get_yarn_status(
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
 ):
     refresh_llm_settings()
     settings = get_settings()
@@ -555,7 +557,7 @@ async def toggle_summary_force_afm(
 
 @router.get("/chat/models/summary-afm", status_code=200)
 async def get_summary_force_afm(
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
 ):
     refresh_llm_settings()
     settings = get_settings()
@@ -582,7 +584,7 @@ async def remove_model(
 
 @router.get("/chat/models/orphaned")
 async def list_orphaned_models(
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
 ):
     """List GGUF files on disk that aren't in the current model registry."""
     return list_orphaned()
@@ -602,7 +604,7 @@ async def remove_orphaned_model(
 
 @router.get("/chat/models/download-progress")
 async def download_progress_stream(
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(require_human_user),
 ):
     """SSE stream for model download progress via in-memory polling."""
     import json

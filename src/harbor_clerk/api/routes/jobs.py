@@ -11,7 +11,9 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_read_access
+# Queue/pipeline views are corpus-wide and unscoped, with no MCP counterpart;
+# API keys use kb_ingest_status per document instead.
+from harbor_clerk.api.deps import Principal, require_human_user
 from harbor_clerk.config import get_settings
 from harbor_clerk.db import get_session
 from harbor_clerk.events import CHANNEL
@@ -56,7 +58,7 @@ async def _event_generator() -> AsyncGenerator[str, None]:
 
 @router.get("/jobs/stream")
 async def job_stream(
-    principal: Principal = Depends(require_read_access),
+    principal: Principal = Depends(require_human_user),
 ):
     return StreamingResponse(
         _event_generator(),
@@ -71,7 +73,7 @@ async def job_stream(
 
 @router.get("/jobs/active")
 async def active_jobs(
-    principal: Principal = Depends(require_read_access),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Return all non-terminal ingestion jobs for queue tray backfill on page load.
@@ -120,7 +122,7 @@ async def active_jobs(
 
 @router.get("/jobs/snapshot")
 async def jobs_snapshot(
-    principal: Principal = Depends(require_read_access),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Per-stage queued/running counts and recent throughput.

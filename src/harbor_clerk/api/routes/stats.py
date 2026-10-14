@@ -10,7 +10,9 @@ from sqlalchemy import case, cast, extract, func, select, text
 from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from harbor_clerk.api.deps import Principal, require_read_access
+# Observatory analytics are corpus-wide and unscoped, with no MCP counterpart;
+# API keys use kb_corpus_overview / kb_entity_* instead.
+from harbor_clerk.api.deps import Principal, require_human_user
 from harbor_clerk.db import get_session
 from harbor_clerk.models import (
     Chunk,
@@ -41,7 +43,7 @@ async def corpus_stats(
         default=None,
         description="Comma-separated entity types to exclude (default: CARDINAL,ORDINAL,QUANTITY). Pass empty string to include all.",
     ),
-    principal: Principal = Depends(require_read_access),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Return aggregate corpus-level statistics."""
@@ -231,7 +233,7 @@ async def corpus_stats(
 
 @router.get("/stats/clusters")
 async def document_clusters(
-    principal: Principal = Depends(require_read_access),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Return document centroid embeddings for client-side UMAP clustering."""
@@ -284,7 +286,7 @@ async def entity_network(
         default=None,
         description="Comma-separated entity types to exclude (default: CARDINAL,ORDINAL,QUANTITY). Pass empty string to include all.",
     ),
-    principal: Principal = Depends(require_read_access),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Return force-graph-ready entity co-occurrence network."""
@@ -358,7 +360,7 @@ async def entity_network(
 
 @router.get("/stats/topics")
 async def topic_clusters(
-    principal: Principal = Depends(require_read_access),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Return cached BERTopic clusters."""
@@ -383,7 +385,7 @@ async def topic_clusters(
 
 @router.get("/stats/timeline")
 async def document_timeline(
-    principal: Principal = Depends(require_read_access),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Document count by month for timeline visualization."""
@@ -406,7 +408,7 @@ async def document_stats(
         default=None,
         description="Comma-separated entity types to exclude (default: CARDINAL,ORDINAL,QUANTITY). Pass empty string to include all.",
     ),
-    principal: Principal = Depends(require_read_access),
+    principal: Principal = Depends(require_human_user),
     session: AsyncSession = Depends(get_session),
 ):
     """Return per-document statistics."""

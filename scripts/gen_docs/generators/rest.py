@@ -57,7 +57,37 @@ def _access_of(route) -> str:
         return "admin"
     if "require_human_user" in names:
         return "human only"
+    if "require_read_access" in names:
+        return _key_access_of(route)
     return ""
+
+
+def _key_access_of(route) -> str:
+    """Label a route API keys may reach with the lowest tier that reaches it.
+
+    `require_read_access` admits a key iff the key's effective tool set holds
+    the MCP tool `REST_ROUTE_TOOLS` maps the route to, so the label is that
+    tool's minimum tier. A route admitting keys with no table entry is closed
+    to them at runtime; refusing to document it is how that mistake surfaces.
+    """
+    from harbor_clerk.api.scope import REST_ROUTE_TOOLS, minimum_tier_for_tool
+
+    tools: set[str] = set()
+    for method in sorted(route.methods):
+        tool = REST_ROUTE_TOOLS.get((method, route.path))
+        if tool is None:
+            raise RuntimeError(
+                f"{method} {route.path} uses require_read_access but has no REST_ROUTE_TOOLS entry; "
+                "add one (or make the route human-only). Refusing to guess."
+            )
+        tools.add(tool)
+    if len(tools) != 1:
+        raise RuntimeError(f"{route.path}: its methods map to different tools ({tools}). Refusing to guess.")
+    tool = tools.pop()
+    tier = minimum_tier_for_tool(tool)
+    if tier is None:
+        raise RuntimeError(f"{route.path} is governed by {tool}, which no API-key tier grants. Refusing to guess.")
+    return f"key ≥ {tier} ({tool})"
 
 
 def _access_map() -> list[tuple[frozenset[str], str, str]]:
@@ -151,7 +181,11 @@ def generate_full() -> str:
     lines = [
         f"**{len(ops)} operations**, {gated} of them access-gated. "
         "Generated from the FastAPI OpenAPI schema; the Access column is derived "
-        "from each route's dependency tree.",
+        "from each route's dependency tree. **admin** needs an admin session; "
+        "**human only** rejects API keys; **key ≥ tier (tool)** admits an API key "
+        "whose tier, or a per-key tool override, grants the named MCP tool — the "
+        "one that governs the route, per `REST_ROUTE_TOOLS` in `api/scope.py`. "
+        "Keys never receive absolute on-disk paths at any tier.",
         "",
     ]
     for tag in sorted(by_tag):

@@ -266,6 +266,14 @@ def test_rest_access_gates_are_derived_for_every_operation() -> None:
     ):
         assert by_path.get((path, "POST")) == "admin", f"{path} must be marked admin-gated"
     assert any(a == "human only" for a in by_path.values()), "human-only gate should appear"
+    # Routes API keys may reach are labelled with the lowest tier that reaches
+    # them, derived from REST_ROUTE_TOOLS (#646); reads with no MCP counterpart
+    # are human-only.
+    assert by_path[("/api/docs", "GET")] == "key ≥ search (kb_list_recent)"
+    assert by_path[("/api/docs/{doc_id}", "GET")] == "key ≥ read (kb_get_document)"
+    assert by_path[("/api/docs/{doc_id}/content", "GET")] == "key ≥ full (kb_read_document)"
+    assert by_path[("/api/jobs/active", "GET")] == "human only"
+    assert by_path[("/api/watch/folders", "GET")] == "human only"
 
 
 def test_every_entry_point_is_described() -> None:

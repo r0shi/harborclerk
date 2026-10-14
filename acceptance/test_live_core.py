@@ -339,13 +339,12 @@ def test_d5_mcp_payloads_never_contain_an_absolute_path(corpus: Corpus, keys: Ke
         assert not leaked, f"{name} payload contains {leaked}"
 
 
-@pytest.mark.xfail(strict=True, reason="#646: API-key tier is enforced only in MCP; REST read routes admit any key")
 def test_d6_search_tier_key_cannot_read_documents_over_rest(
     admin: HarborClerk, corpus: Corpus, keys: KeyFactory
 ) -> None:
-    """Asserts the contract the README states. It fails today, which the
-    strict xfail records without reporting a pass; when #646 is fixed the
-    xfail turns into a strict XPASS failure, and the marker comes off."""
+    """The contract the README states, enforced over REST since #646: a key's
+    tier governs REST routes as it governs MCP tools, and a key never receives
+    an absolute source path."""
     doc_id = corpus.doc_id("lease-agreement.pdf")
     key = admin.with_key(keys.create("d6-search", permission_tier="search")["raw_key"])
     try:

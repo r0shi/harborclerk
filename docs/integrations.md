@@ -57,6 +57,20 @@ Recommended defaults:
 The admin-only tools `kb_system_health` and `kb_reprocess` are never available
 to API keys.
 
+### Tiers apply over REST too
+
+The same key authenticates REST calls under `/api`, and the same tier governs
+them. Each REST route an API key may reach is mapped to the MCP tool whose data
+it exposes (`REST_ROUTE_TOOLS` in `src/harbor_clerk/api/scope.py`): a key may
+call the route iff it may call the tool, so a per-key tool override moves both
+surfaces together and the tool checklist in **Settings -> API Keys** describes
+REST as well as MCP. The generated [REST API table](architecture.md#rest-api)
+labels every such route `key ≥ tier (tool)`; every other REST route — jobs,
+stats, watched folders, chat — has no MCP counterpart and refuses API keys.
+
+API keys never receive absolute on-disk paths (`source_path`,
+`watch_source_path`) from REST, at any tier. Only the web app's own sessions do.
+
 If a skill or harness tries a tool outside its key scope, treat that as a
 recoverable scope mismatch. The agent should continue with search and passage
 reads, then tell the operator which broader capability was denied.
@@ -228,6 +242,9 @@ mode is later added.
 ## Troubleshooting
 
 - **401 Unauthorized**: regenerate or re-copy the API key.
+- **403 on a REST route with an API key**: the key's tier does not include the
+  MCP tool that governs the route (the response names it). Raise the tier or add
+  a tool override; or the route is human-only and no key reaches it.
 - **403 CLI access disabled**: enable CLI access in Preferences or set
   `ENABLE_CLI_ACCESS=true` for Docker/Linux.
 - **MCP client cannot attach headers**: use the URL-token form.

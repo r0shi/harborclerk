@@ -88,6 +88,20 @@ alone. A new model states its `checkpoint_bytes`, in the registry and in Swift. 
 needs all of them. `HC_GGUF_LIVE=1` checks headers from the Hub for models not
 downloaded.
 
+## API keys over REST
+
+The tier is enforced on both surfaces from one table. `REST_ROUTE_TOOLS`
+(`api/scope.py`) maps each REST route a key may reach to the MCP tool whose data
+it exposes; `require_read_access` admits a key iff that tool is in the key's
+effective set, and a route that uses the dependency without an entry is closed
+to keys (`tests/test_rest_api_key_tier.py` fails when the two drift, and
+`gen_docs` refuses to run). A new key-reachable route needs an entry and a row
+in that test's `KEY_ROUTES`. Reads with no MCP counterpart (jobs, stats, watched
+folders, chat) are `require_human_user`. Keys never receive `source_path` /
+`watch_source_path`: wrap a document-shaped response in
+`redact_paths_for_principal`, and add any new absolute-path field to
+`ABSOLUTE_PATH_FIELDS`.
+
 ## Async gotchas
 
 - `enqueue_stage()` uses a **sync** session. Calling it in a loop from an async
