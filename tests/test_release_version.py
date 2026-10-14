@@ -321,11 +321,12 @@ def _fixture(tmp_path: Path, *, pyproject: str = "9.9.9", package: str = "9.9.9"
 
 
 def _stub_gh(tmp_path: Path) -> Path:
-    """A `gh` whose `release view` answers per FIXTURE_GH_RELEASE_VIEW — `missing`
-    (gh's real "release not found" on stderr, exit 1; the default), `exists`
-    (exit 0) or `error` (an auth failure on stderr, exit 1) — records `release
-    create` calls in FIXTURE_GH_LOG with exit FIXTURE_GH_CREATE_RC, and names a
-    repo. Beside it, a `PlistBuddy` that answers `Print :Key` from the one-line
+    """A `gh` whose `release view --json isDraft -q .isDraft` answers per
+    FIXTURE_GH_RELEASE_VIEW — `missing` (gh's real "release not found" on stderr,
+    exit 1; the default), `exists` (prints false), `draft` (prints true) or
+    `error` (an auth failure on stderr, exit 1) — records `release create` and
+    `release delete` calls in FIXTURE_GH_LOG (create exits FIXTURE_GH_CREATE_RC),
+    and names a repo. Beside it, a `PlistBuddy` that answers `Print :Key` from the one-line
     XML the fixture writes and fails like the real one on a missing key, so the
     bundle checks run where /usr/libexec/PlistBuddy does not exist."""
     d = tmp_path / "stub-bin"
@@ -336,10 +337,12 @@ def _stub_gh(tmp_path: Path) -> Path:
         'case "$1 $2" in\n'
         '  "release view")\n'
         '    case "${FIXTURE_GH_RELEASE_VIEW:-missing}" in\n'
-        "      exists) exit 0 ;;\n"
+        "      exists) echo false; exit 0 ;;\n"
+        "      draft) echo true; exit 0 ;;\n"
         '      error) echo "HTTP 401: Bad credentials (https://api.github.com/graphql)" >&2; exit 1 ;;\n'
         '      *) echo "release not found" >&2; exit 1 ;;\n'
         "    esac ;;\n"
+        '  "release delete") printf \'%s\\n\' "$*" >> "${FIXTURE_GH_LOG:-/dev/null}" ;;\n'
         '  "release create") printf \'%s\\n\' "$*" >> "${FIXTURE_GH_LOG:-/dev/null}"; exit "${FIXTURE_GH_CREATE_RC:-0}" ;;\n'
         '  "repo view") echo fixture/repo ;;\n'
         "esac\n"
@@ -636,14 +639,16 @@ def test_release_resumes_from_a_clone_that_lost_the_local_tag(tmp_path: Path) ->
     _fixture_git(root, "tag", "-d", "v9.9.9")
     check = _release(root, "v9.9.9", "--check", gh=gh)
     assert check.returncode == 0, check.stderr
-    assert "Fetched tag v9.9.9 from origin" in check.stdout
-    assert _fixture_git(root, "rev-parse", "refs/tags/v9.9.9").stdout.strip() == origin_object
+    assert "release pending (not local yet; a run fetches it)" in check.stdout
+    assert _tags(root) == [], "--check is a preflight and must not touch local refs"
 
     for mode in (("--skip-build",), ()):
-        _fixture_git(root, "tag", "-d", "v9.9.9")
+        if _tags(root):  # the previous run fetched it; --check above did not
+            _fixture_git(root, "tag", "-d", "v9.9.9")
         resumed = _release(root, "v9.9.9", *mode, gh=gh, FIXTURE_GH_LOG=str(log))
         assert resumed.returncode == 0, f"{mode}: {resumed.stderr}{resumed.stdout}"
         assert "Release v9.9.9 published" in resumed.stdout
+        assert "Fetched tag v9.9.9 from origin" in resumed.stdout
         local_object = _fixture_git(root, "rev-parse", "refs/tags/v9.9.9").stdout.strip()
         assert local_object == origin_object, f"{mode}: a new tag object was minted under origin's name"
         assert _origin_tag_object(remote) == origin_object
@@ -696,7 +701,8 @@ def test_release_refuses_a_tag_on_origin_at_another_commit(tmp_path: Path) -> No
     _fixture_git(root, "commit", "-q", "-m", "second")
     result = _release(root, "v9.9.9", "--check", gh=_stub_gh(tmp_path))
     assert result.returncode != 0
-    assert f"already on origin at {first[:7]}, not at HEAD" in result.stderr, result.stderr
+    assert f"is on origin at {first[:7]}, and HEAD is" in result.stderr, result.stderr
+    assert "git checkout v9.9.9 && bash macos/scripts/release.sh v9.9.9 --skip-build" in result.stderr
     assert _remote_tags(remote) == ["v9.9.9"] and _tags(root) == []
 
 
@@ -709,7 +715,40 @@ def test_release_refuses_when_origin_is_unreachable(tmp_path: Path) -> None:
         result = _release(root, "v9.9.9", *mode, gh=_stub_gh(tmp_path))
         assert result.returncode != 0, f"{mode}: {result.stdout}"
         assert "cannot reach origin" in result.stderr, result.stderr
+        assert "does not appear to be a git repository" in result.stderr, "git's own reason must be shown"
         assert _tags(root) == []
+
+
+def test_release_resumes_over_a_leftover_draft_release(tmp_path: Path) -> None:
+    """`gh release create` uploads into a draft and publishes last; when the
+    upload dies it may fail to delete the draft too. `gh release view` finds
+    drafts, so a draft must read as 'no release yet' and be deleted before the
+    publish — otherwise the resume path refuses forever in exactly the case it
+    exists for."""
+    root, remote, gh, log = _publishing_fixture(tmp_path)
+    failed = _release(root, "v9.9.9", gh=gh, FIXTURE_GH_LOG=str(log), FIXTURE_GH_CREATE_RC="1")
+    assert failed.returncode != 0 and _remote_tags(remote) == ["v9.9.9"]
+    resumed = _release(root, "v9.9.9", "--skip-build", gh=gh, FIXTURE_GH_LOG=str(log), FIXTURE_GH_RELEASE_VIEW="draft")
+    assert resumed.returncode == 0, resumed.stderr + resumed.stdout
+    assert "DRAFT release v9.9.9" in resumed.stdout and "Release v9.9.9 published" in resumed.stdout
+    calls = [line for line in log.read_text(encoding="utf-8").splitlines() if line.startswith("release ")]
+    assert calls[-2].startswith("release delete v9.9.9 --yes"), calls
+    assert calls[-1].startswith("release create v9.9.9"), calls
+
+
+def test_release_refuses_a_second_release_tag_at_head(tmp_path: Path) -> None:
+    """Two v[0-9]* tags at HEAD: `git describe` picks by tagger date, so the
+    build could be stamped with the other one and fail an hour later."""
+    root = _fixture(tmp_path)
+    _fixture_git(root, "tag", "v9.9.8")
+    result = _release(root, "v9.9.9", "--check", gh=_stub_gh(tmp_path))
+    assert result.returncode != 0
+    assert "also carries release tag(s) v9.9.8" in result.stderr, result.stderr
+    assert _tags(root) == ["v9.9.8"]
+    # The version being released, already at HEAD, is not a stray.
+    _fixture_git(root, "tag", "-d", "v9.9.8")
+    _fixture_git(root, "tag", "v9.9.9")
+    assert _release(root, "v9.9.9", "--check", gh=_stub_gh(tmp_path)).returncode == 0
 
 
 @NEEDS_DITTO

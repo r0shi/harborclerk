@@ -4,7 +4,7 @@
 # Prints shell assignments, meant for `eval "$(bash scripts/build-version.sh)"`:
 #
 #   HC_VERSION        MARKETING_VERSION / CFBundleShortVersionString: the nearest
-#                     `v*` tag without its `v` — "0.9.3"
+#                     `v[0-9]*` tag without its `v` — "0.9.3"
 #   HC_BUILD_NUMBER   CURRENT_PROJECT_VERSION / CFBundleVersion: commits since that
 #                     tag — "0" is the tagged commit itself, anything else is a
 #                     development build. Kept numeric: Apple allows only digits
@@ -22,7 +22,7 @@
 #   build-version.sh DESCRIBE     parse a fixed `git describe --tags --long --dirty`
 #                                 string instead, for tests
 #
-# Without any `v*` tag reachable (shallow CI clone, tarball) the version is
+# Without any `v[0-9]*` tag reachable (shallow CI clone, tarball) the version is
 # 0.0.0 with an "untagged" local segment, never a number that looks released.
 set -euo pipefail
 
