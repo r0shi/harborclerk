@@ -208,6 +208,14 @@ def _refused_prompt_tokens(detail: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _refused_context_tokens(detail: str) -> int | None:
+    """The slot's context as the refusal states it ("... exceeds the available context size (16384 tokens)", or its
+    ``n_ctx`` field); None when the body gives neither. It is what the server runs at, which the client's
+    ``context_budget`` need not be: under Compose nothing clamps the registry's window to the server's -c (#654)."""
+    match = re.search(r"context size \((\d+) tokens\)", detail) or re.search(r'"n_ctx"\s*:\s*(\d+)', detail)
+    return int(match.group(1)) if match else None
+
+
 def _estimate_tokens(text: str) -> int:
     """Estimate token count from character length."""
     return int(len(text) / _CHARS_PER_TOKEN)
@@ -892,11 +900,16 @@ async def chat_stream(
                                 # count of the prompt it refused, with a safety; a refusal without a count halves
                                 # the prompt. Either way the prompt gets shorter, or there is no point sending it.
                                 counted = _refused_prompt_tokens(detail)
+                                # The context to fit is the server's, when the refusal states it: the client's
+                                # figure is the registry's window, which can be 32,768 while the server runs at
+                                # 16,384 (#654), and a retry calibrated to the larger one is refused again.
+                                server_context = _refused_context_tokens(detail)
+                                fits_in = min(context_tokens, server_context) if server_context else context_tokens
                                 harder = forced_estimate // 2  # no count, or one that would trim nothing: halve
                                 if counted:
                                     ratio = counted / max(1, forced_estimate)
                                     calibrated = int(
-                                        context_tokens * (1 - _RESPONSE_RESERVE) / (ratio * _FORCED_CALL_RETRY_SAFETY)
+                                        fits_in * (1 - _RESPONSE_RESERVE) / (ratio * _FORCED_CALL_RETRY_SAFETY)
                                     )
                                     if calibrated < forced_estimate:
                                         harder = calibrated
@@ -905,9 +918,11 @@ async def chat_stream(
                                 if retried_estimate < forced_estimate:
                                     logger.info(
                                         "Forced final prompt refused as too long (%s tokens by the server against "
-                                        "%d estimated); retrying at %d estimated tokens (conversation=%s)",
+                                        "%d estimated, context %s); retrying at %d estimated tokens "
+                                        "(conversation=%s)",
                                         counted if counted else "unknown",
                                         forced_estimate,
+                                        server_context if server_context else "unknown",
                                         retried_estimate,
                                         conversation_id,
                                     )
@@ -1153,7 +1168,8 @@ def _truncate_for_llm(result_str: str, max_chars: int = 28_000) -> str:
     original_array = data[target_key]
     original_count = len(original_array)
     data["_truncated"] = True
-    data["_original_count"] = original_count
+    # A result cut once already (the forced call's trim re-cuts the loop's) keeps the count it started with.
+    data["_original_count"] = data.get("_original_count", original_count)
     lo, hi = 0, original_count
     while lo < hi:
         mid = (lo + hi + 1) // 2

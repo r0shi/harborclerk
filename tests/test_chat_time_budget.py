@@ -1259,7 +1259,9 @@ def _lines_response(lines: list[str]) -> MagicMock:
 
 
 def _bounded(fn, *, seconds: float):
-    """``fn()`` on a daemon thread, or a failure after ``seconds``: a pure function that spins must fail, not hang."""
+    """``fn()`` on a daemon thread, or a failure after ``seconds``: a pure function that spins must fail, not hang.
+    On failure the thread is left spinning until the process exits (a daemon thread cannot be stopped); the one
+    test that uses this fails loudly in that case, which is the point."""
     import threading
 
     box: list = []
@@ -1318,19 +1320,16 @@ async def _drive_context_stop(
 
 @pytest.mark.asyncio
 async def test_the_forced_prompt_goes_as_it_stands_and_the_stored_row_is_the_full_result(
-    db_session, admin_user, chat_session_factory, monkeypatch, caplog
+    db_session, admin_user, chat_session_factory, monkeypatch
 ):
     """The search stopped at the context budget with a result at the truncation cap. The forced prompt is the loop's
     messages plus the "search is over" message, not a prompt trimmed on the estimate: the server, not the estimate,
     says whether it fits (the retry below). The stored tool row is the full result."""
-    import logging
-
     from sqlalchemy import select
 
     from harbor_clerk.llm import chat as chat_module
     from harbor_clerk.models.chat_message import ChatMessage
 
-    caplog.set_level(logging.INFO, logger="harbor_clerk.llm.chat")
     conv = await _conversation(db_session, admin_user)
     client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"], [_chunk(content="From what fit."), "data: [DONE]"]])
     text, done = await _drive_context_stop(
@@ -1342,7 +1341,6 @@ async def test_the_forced_prompt_goes_as_it_stands_and_the_stored_row_is_the_ful
     loop_messages = client.build_request.call_args.kwargs["json"]["messages"]
     forced = client.stream.call_args.kwargs["json"]["messages"]
     assert forced == [*loop_messages, {"role": "user", "content": chat_module._SEARCH_OVER_MESSAGE}]
-    assert "trimmed" not in caplog.text.lower()
 
     rows = (
         (await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id)))
@@ -1370,7 +1368,9 @@ def test_trimming_shrinks_the_largest_result_first_and_stops_at_the_floor():
     not have terminated). An estimate still over when every result is at the floor is sent as it is."""
     from harbor_clerk.llm import chat as chat_module
 
-    small, large = _big_search_result(5), _big_search_result(60)
+    small = _big_search_result(5)
+    large = chat_module._truncate_for_llm(_big_search_result(60), 12_000)  # as the loop leaves it: cut once already
+    assert json.loads(large)["_original_count"] == 60 and len(json.loads(large)["results"]) < 60
     messages = [
         {"role": "system", "content": "s" * 3500},
         {"role": "tool", "content": small, "tool_call_id": "1"},
@@ -1381,7 +1381,9 @@ def test_trimming_shrinks_the_largest_result_first_and_stops_at_the_floor():
     trimmed = chat_module._trim_for_forced_call(messages, budget)
     assert chat_module._estimate_messages_tokens(trimmed) <= budget
     assert trimmed[1]["content"] == small, "the small result was not touched"
-    assert len(trimmed[2]["content"]) < len(large) and json.loads(trimmed[2]["content"])["_truncated"] is True
+    recut = json.loads(trimmed[2]["content"])
+    assert len(trimmed[2]["content"]) < len(large) and recut["_truncated"] is True
+    assert recut["_original_count"] == 60, "the second cut keeps the count the search returned, not the first cut's"
     assert messages[2]["content"] == large, "the input is not changed"
 
     # The near-floor case, directly: the structured cut alone comes back no shorter, so a trim built on it would spin.
@@ -1403,6 +1405,9 @@ def test_the_servers_refusal_is_recognised_and_its_count_read():
     assert chat_module._refused_prompt_tokens(body) == 18224
     assert chat_module._refused_prompt_tokens('{"n_prompt_tokens": 19240, "n_ctx": 16384}') == 19240
     assert chat_module._refused_prompt_tokens("the request exceeds the available context size") is None
+    assert chat_module._refused_context_tokens(body) == 16384
+    assert chat_module._refused_context_tokens('{"n_prompt_tokens": 19240, "n_ctx": 16384}') == 16384
+    assert chat_module._refused_context_tokens("the request exceeds the available context size") is None
     assert not chat_module._is_context_overflow(500, body), "a 500 is a server failure, whatever it says"
     assert not chat_module._is_context_overflow(400, '{"error": "invalid json body"}')
 
@@ -1485,6 +1490,102 @@ async def test_a_refusal_at_a_rate_halving_would_not_cover_is_trimmed_to_the_ser
     assert second <= calibrated, "trimmed to the calibrated target"
     assert second * ratio <= ctx * (1 - chat_module._RESPONSE_RESERVE), "fits with the reserve at the server's rate"
     assert second > first // 4, "and not to the floor: the result is halved until it fits, not discarded"
+
+
+@pytest.mark.asyncio
+async def test_a_retry_is_calibrated_to_the_context_the_server_states_not_the_registrys(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """Under Compose nothing clamps the registry's window to the server's -c (#654): the client budgets at 32,768
+    while llama-server runs at 16,384. The refusal states the slot's context, so the retry is trimmed to fit that
+    one; calibrated to the registry's it would be refused again, the outcome #774 set out to remove."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"]])
+    registry_ctx, server_ctx, ratio = 32768, 16384, 3
+    served: list = []
+
+    async def serve(*_a, **_k):
+        payload = client.stream.call_args.kwargs["json"]
+        served.append(payload["messages"])
+        if len(served) == 1:
+            estimate = chat_module._estimate_messages_tokens(payload["messages"])
+            assert estimate * ratio > server_ctx
+            return _refusal(estimate * ratio, server_ctx)
+        return _lines_response([_chunk(content="From the results, $4,500."), "data: [DONE]"])
+
+    client.stream.return_value.__aenter__ = AsyncMock(side_effect=serve)
+    text, done = await _drive_context_stop(
+        conv.conversation_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        context_tokens=registry_ctx,
+        budget=0.0,
+        result=_big_search_result(150),  # at the 32K truncation cap: about 9,100 estimated tokens
+    )
+    assert done["stop_reason"] == "context_budget" and text == "From the results, $4,500."
+    assert client.stream.call_count == 2
+    first, second = (chat_module._estimate_messages_tokens(m) for m in served)
+    reserve, safety = chat_module._RESPONSE_RESERVE, chat_module._FORCED_CALL_RETRY_SAFETY
+    assert second <= int(server_ctx * (1 - reserve) / (ratio * safety)), "trimmed to the server's context"
+    assert second * ratio <= server_ctx * (1 - reserve), "fits the server's slot with the reserve"
+    assert second > first // 4, "and not to the floor"
+
+
+@pytest.mark.asyncio
+async def test_a_retry_the_model_answers_with_nothing_is_the_models_nothing_not_the_servers_failure(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The refusal is retried and accepted, and the model then streams nothing. The server did not fail: the
+    sentence is the one for a model that wrote nothing, not the HTTP 400 one, and the harness reads it as such."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"]])
+    client.stream.return_value.__aenter__ = AsyncMock(
+        side_effect=[_refusal(60_000, 32768), _lines_response(["data: [DONE]"])]
+    )
+    text, done = await _drive_context_stop(
+        conv.conversation_id, admin_user, client, _Clock(), monkeypatch, context_tokens=32768, budget=0.0
+    )
+    assert done["stop_reason"] == "context_budget" and client.stream.call_count == 2
+    assert text == chat_module._nothing_produced_fallback("context_budget")
+    assert "HTTP 400" not in text and "model server failed" not in text
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_without_a_count_halves_the_prompt(db_session, admin_user, chat_session_factory, monkeypatch):
+    """A build whose refusal names no count ("the request exceeds the available context size"): nothing to
+    calibrate on, so the prompt is halved, the largest result first."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _conversation(db_session, admin_user)
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"]])
+    uncounted = MagicMock()
+    uncounted.status_code = 400
+    uncounted.text = (
+        '{"error":{"code":400,"message":"the request exceeds the available context size, try increasing it"}}'
+    )
+    uncounted.aread = AsyncMock()
+    uncounted.aclose = AsyncMock()
+    served: list = []
+
+    async def serve(*_a, **_k):
+        served.append(client.stream.call_args.kwargs["json"]["messages"])
+        if len(served) == 1:
+            return uncounted
+        return _lines_response([_chunk(content="Halved."), "data: [DONE]"])
+
+    client.stream.return_value.__aenter__ = AsyncMock(side_effect=serve)
+    text, done = await _drive_context_stop(
+        conv.conversation_id, admin_user, client, _Clock(), monkeypatch, context_tokens=32768, budget=0.0
+    )
+    assert done["stop_reason"] == "context_budget" and text == "Halved." and client.stream.call_count == 2
+    first, second = (chat_module._estimate_messages_tokens(m) for m in served)
+    assert first // 4 <= second <= first // 2, f"about half: {first} -> {second}"
 
 
 @pytest.mark.asyncio
@@ -1602,6 +1703,51 @@ async def test_the_outer_deadline_cuts_a_forced_call_whose_first_token_never_arr
     assert text == chat_module._nothing_produced_fallback("time_budget")
     assert text.startswith("_The model produced no answer in the time allowed")
     assert resumed == [], "the cut came at the keepalive"
+    assert "Final answer cut at its outer bound" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_first_content_token_past_the_outer_deadline_is_cut_at_the_token(
+    db_session, admin_user, chat_session_factory, monkeypatch, caplog
+):
+    """No keepalive this time: the model's first content token itself arrives after the outer deadline. It is
+    cut there, not read as the start of a grace, and the user gets the sentence for nothing produced in time."""
+    import asyncio
+    import logging
+
+    from harbor_clerk.llm import chat as chat_module
+
+    caplog.set_level(logging.INFO, logger="harbor_clerk.llm.chat")
+    conv = await _conversation(db_session, admin_user)
+    clock = _Clock()
+    client, _ = _mock_client([[_tool_call_chunk(), "data: [DONE]"]])
+
+    async def first_token_too_late():
+        payload = client.stream.call_args.kwargs["json"]
+        outer = chat_module._forced_call_outer_deadline(
+            301.0, chat_module._estimate_messages_tokens(payload["messages"])
+        )
+        clock.now = outer + 1.0
+        yield _chunk(content="Too late.")
+        yield _finish_chunk("stop")
+        yield "data: [DONE]"
+
+    _forced_response(client, first_token_too_late)
+    text, done, _ = await asyncio.wait_for(
+        _drive(
+            conv.conversation_id,
+            admin_user,
+            client,
+            clock,
+            monkeypatch,
+            budget=300.0,
+            on_tool=lambda: setattr(clock, "now", 301.0),
+        ),
+        timeout=10.0,
+    )
+    assert done["stop_reason"] == "time_budget"
+    assert "Too late" not in text
+    assert text == chat_module._nothing_produced_fallback("time_budget")
     assert "Final answer cut at its outer bound" in caplog.text
 
 
