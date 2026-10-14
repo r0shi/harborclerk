@@ -325,6 +325,37 @@ async def test_the_list_reports_the_context_the_launcher_will_ask_for_when_yarn_
     assert roomy["max_context_here"] == 32768 and roomy["fits_here"] is True
 
 
+@pytest.mark.asyncio
+async def test_status_says_when_the_active_model_does_not_fit_this_mac(
+    client, admin_token, _set_llm_model_id, _fail_llama_probe, _afm_binary, monkeypatch
+):
+    """A budget change can leave an installed app with an active model the launcher refuses (#709). The probe
+    then says `loading` forever; this is the field that lets the banner say why, with the Models page's
+    figures ("Does not fit this Mac (16 GB): needs about 48 GB")."""
+    _afm_binary(False)
+    _set_llm_model_id("qwen36-35b-a3b")
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 16 * 1024**3)
+    body = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
+    assert body["state"] == "loading"
+    assert body["does_not_fit_here"] == {"system_ram_gb": 16.0, "min_ram_gb": 48}
+
+    # The same Mac holds the 4B: nothing to say, whether or not the server has answered yet.
+    _set_llm_model_id("qwen35-4b")
+    body = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
+    assert body["state"] == "loading" and body["does_not_fit_here"] is None
+
+    # Memory unknown: nothing is refused, so nothing is claimed.
+    _set_llm_model_id("qwen36-35b-a3b")
+    monkeypatch.setattr("harbor_clerk.api.routes.chat.system_ram_bytes", lambda: 0)
+    body = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
+    assert body["does_not_fit_here"] is None
+
+    # No model: the field is there, and null.
+    _set_llm_model_id(None)
+    body = (await client.get("/api/chat/models/status", headers=auth_header(admin_token))).json()
+    assert body["state"] == "deactivated" and body["does_not_fit_here"] is None
+
+
 # --- a model swap under the probe (#690) ---------------------------------------------------------------------------
 
 

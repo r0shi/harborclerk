@@ -23,6 +23,9 @@ final class MockProcessService: ManagedService {
     /// Models a stop that landed during the probe.
     var stateDuringHealthCheck: ServiceState?
     var healthy = false
+    /// A standing refusal (#709), as LlamaService reports one for a model
+    /// whose weights do not fit this Mac.
+    var startRefusal: LaunchRefusal?
 
     init(name: String = "mock", state: ServiceState, holdsLiveProcess: Bool = false) {
         self.name = name
@@ -266,6 +269,121 @@ final class ServiceManagerRelaunchTests: XCTestCase {
 
         XCTAssertEqual(svc.state, .errored)
         XCTAssertEqual(svc.healthCalls, 0, "a start that said why it refused is not waited on")
+    }
+
+    // MARK: - a start refusal is said once, and not restarted into (#709)
+
+    private static let doesNotFit = LaunchRefusal(
+        modelId: "qwen36-35b-a3b",
+        message: "Does not fit this Mac (18 GB): needs about 48 GB. Open the Models page and pick a model that fits."
+    )
+
+    /// A manager whose notices land in `notices` instead of Notification Center.
+    private func makeNoticingManager() -> (ServiceManager, () -> [(title: String, body: String)]) {
+        let sm = makeManager()
+        var notices: [(title: String, body: String)] = []
+        sm.presentNotice = { title, body in notices.append((title, body)) }
+        return (sm, { notices })
+    }
+
+    func testStartServiceNoticesARefusalOnceWithTheModelsPagesWords() async {
+        let (sm, notices) = makeNoticingManager()
+        let svc = MockProcessService(name: "LLM", state: .stopped)
+        svc.stateAfterStart = .errored
+        svc.startRefusal = Self.doesNotFit
+
+        await sm.startService(svc)
+
+        XCTAssertEqual(svc.state, .errored)
+        XCTAssertEqual(notices().count, 1)
+        XCTAssertEqual(notices().first?.title, "LLM not started")
+        XCTAssertEqual(notices().first?.body, Self.doesNotFit.message)
+        XCTAssertEqual(sm.noticedRefusals, ["qwen36-35b-a3b"])
+
+        // Start All, Restart, a config-change relaunch, a health tick: every
+        // path reaches startService again, and the same model refuses again.
+        await sm.startService(svc)
+        await sm.startService(svc)
+
+        XCTAssertEqual(svc.startCalls, 3, "each start still asks; the answer is the same")
+        XCTAssertEqual(notices().count, 1, "said once per launch per model, not once per attempt")
+    }
+
+    func testADifferentRefusedModelIsNoticedInItsTurn() async {
+        let (sm, notices) = makeNoticingManager()
+        let svc = MockProcessService(name: "LLM", state: .stopped)
+        svc.stateAfterStart = .errored
+        svc.startRefusal = Self.doesNotFit
+        await sm.startService(svc)
+
+        svc.startRefusal = LaunchRefusal(modelId: "gemma4-26b-a4b", message: "Does not fit this Mac (18 GB): needs about 36 GB. Open the Models page and pick a model that fits.")
+        await sm.startService(svc)
+        svc.startRefusal = Self.doesNotFit
+        await sm.startService(svc)
+
+        XCTAssertEqual(notices().map(\.body).filter { $0.contains("36 GB") }.count, 1)
+        XCTAssertEqual(notices().count, 2, "one notice per model this launch; switching back repeats nothing")
+    }
+
+    func testAnErrorThatIsNotARefusalIsNotNoticed() async {
+        let (sm, notices) = makeNoticingManager()
+        let svc = MockProcessService(name: "LLM", state: .stopped)
+        svc.stateAfterStart = .errored  // the model file is missing, say
+
+        await sm.startService(svc)
+
+        XCTAssertEqual(svc.state, .errored)
+        XCTAssertTrue(notices().isEmpty, "a crash or a missing file keeps the old channel: the log and the red dot")
+        XCTAssertTrue(sm.noticedRefusals.isEmpty)
+    }
+
+    func testAutoRestartLeavesARefusedModelAlone() async {
+        let sm = makeManager()
+        let svc = MockProcessService(name: "LLM", state: .errored)
+        svc.startRefusal = Self.doesNotFit
+        svc.stateAfterStart = .errored
+
+        await sm.attemptAutoRestart(svc)
+
+        XCTAssertEqual(svc.stopCalls, 0, "nothing to stop, and nothing to restart into")
+        XCTAssertEqual(svc.startCalls, 0, "a model that cannot fit is not retried; the setting has to change first")
+        XCTAssertEqual(svc.state, .errored)
+    }
+
+    func testAutoRestartStillRestartsAServiceWithoutARefusal() async {
+        let sm = makeManager()
+        let svc = MockProcessService(name: "mock", state: .errored)
+        svc.stateAfterStart = .errored  // refuses nothing, so the restart runs its course, and the start is reached
+
+        let done = expectation(description: "attemptAutoRestart returned")
+        let task = Task { @MainActor in
+            await sm.attemptAutoRestart(svc)
+            done.fulfill()
+        }
+        // The restart path sleeps 5 s for the old socket; well inside this bound.
+        await fulfillment(of: [done], timeout: 30)
+        await task.value
+
+        XCTAssertEqual(svc.startCalls, 1, "the guard is for refusals only")
+    }
+
+    /// LlamaService reports its refusal for as long as the settings name the
+    /// model it was about; a new model id is a new question.
+    func testLlamaRefusalStandsUntilTheSettingNamesAnotherModel() {
+        let settings = AppSettings(configURL: tempDir.appendingPathComponent("config.json"))
+        settings.llmModelId = "qwen36-35b-a3b"
+        let llama = LlamaService()
+        llama.settingsOverride = settings
+        XCTAssertNil(llama.startRefusal)
+
+        llama.refusal = Self.doesNotFit
+        XCTAssertEqual(llama.startRefusal, Self.doesNotFit)
+
+        settings.llmModelId = "qwen35-4b"
+        XCTAssertNil(llama.startRefusal, "the user picked another model; the next start decides for it")
+
+        settings.llmModelId = "qwen36-35b-a3b"
+        XCTAssertEqual(llama.startRefusal, Self.doesNotFit, "back to the refused one: the answer has not changed")
     }
 
     // MARK: - the health wait sleeps even on a cancelled Task

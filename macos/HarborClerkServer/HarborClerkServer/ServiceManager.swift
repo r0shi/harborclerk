@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 import os
 
 // MARK: - Service protocol & state
@@ -9,6 +10,47 @@ enum ServiceState: String, CaseIterable {
 
 extension Notification.Name {
     static let servicesStateChanged = Notification.Name("servicesStateChanged")
+}
+
+/// Why `start()` would not launch the model the setting names: the fit check
+/// said the weights alone do not fit this Mac. Every start path computes the
+/// same figures (the file's size, the Mac's physical memory, the registry
+/// mirror) and gets the same answer, so the refusal stands until the setting
+/// names another model; a retry buys nothing (#709).
+struct LaunchRefusal: Equatable {
+    let modelId: String
+    /// The Models page's words ("Does not fit this Mac (N GB): needs about M
+    /// GB.") plus what to do, so the two surfaces say the same thing.
+    let message: String
+}
+
+/// The one channel the menubar app has for telling the user about something
+/// it did not do. The status window shows a state ("Errored"), the menubar a
+/// count; neither says why. Nothing posted a notification before #709, so the
+/// authorization is requested the first time one is needed; a user who
+/// declines keeps the reason in the status window row.
+enum UserNotice {
+    @MainActor static func present(title: String, body: String) {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert]) { granted, error in
+            if let error {
+                Log.logger("lifecycle").error("Notification authorization failed: \(error.localizedDescription, privacy: .public)")
+            }
+            guard granted else {
+                Log.logger("lifecycle").notice("Notifications not authorized; the status window keeps the reason: \(body, privacy: .public)")
+                return
+            }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            center.add(request) { error in
+                if let error {
+                    Log.logger("lifecycle").error("Notification not delivered: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
 }
 
 protocol ManagedService: AnyObject {
@@ -26,6 +68,11 @@ protocol ManagedService: AnyObject {
     /// while `start()` is suspended runs before the spawn. Relaunch paths
     /// decide what to stop by this, not by `state` (#689).
     var holdsLiveProcess: Bool { get }
+    /// The refusal `start()` left standing, if it declined to launch what the
+    /// settings name and nothing has changed since: `errored` with a reason a
+    /// restart cannot change. Only LlamaService has one (#709); the manager
+    /// puts it in front of the user once and does not auto-restart into it.
+    var startRefusal: LaunchRefusal? { get }
     func start() async throws
     func stop() async
     func healthCheck() async -> Bool
@@ -35,9 +82,11 @@ protocol ManagedService: AnyObject {
 /// PostgresService and TikaService override with `let isLaunchdManaged = true`.
 /// Default-false `holdsLiveProcess` for services with no child of their own
 /// (the launchd-managed pair); every service that keeps a `Process` overrides it.
+/// Default-nil `startRefusal`: a crash or a health timeout is not a refusal.
 extension ManagedService {
     var isLaunchdManaged: Bool { false }
     var holdsLiveProcess: Bool { false }
+    var startRefusal: LaunchRefusal? { nil }
 }
 
 /// Sleep that a cancelled Task still serves in full. `Task.sleep` returns
@@ -157,6 +206,17 @@ class ServiceManager: ObservableObject {
     private let restartWindowSeconds: TimeInterval = 300 // 5 minutes
     /// Guards against concurrent auto-restarts for the same service.
     private var autoRestartInProgress: Set<String> = []
+
+    // MARK: - Start refusals (#709)
+
+    /// Model ids whose refusal has been put in front of the user this launch.
+    /// The status window keeps the reason for as long as it stands; this is
+    /// what keeps the notice from repeating on every Start All, Restart,
+    /// config-change relaunch or health tick that refuses the same model
+    /// again. Internal so a test can read it.
+    private(set) var noticedRefusals: Set<String> = []
+    /// The user-visible channel for a refusal; a test swaps in a recorder.
+    var presentNotice: @MainActor (_ title: String, _ body: String) -> Void = UserNotice.present
 
     var overallState: ServiceState {
         Self.computeOverallState(services.map(\.state))
@@ -677,6 +737,15 @@ class ServiceManager: ObservableObject {
         // Don't auto-restart Postgres (data safety) or during shutdown
         guard !(service is PostgresService) else { return }
         guard service.state != .shutdownPending else { return }
+        // A refused model is terminal until the setting names another: the
+        // figures a start computes do not change between attempts, so a
+        // restart would refuse again, and five of them in a row would spend
+        // the flap budget on a model that was never going to load (#709).
+        if let refusal = service.startRefusal {
+            Log.logger("lifecycle").notice(
+                "[\(service.name, privacy: .public)] Not restarting \(refusal.modelId, privacy: .public): \(refusal.message, privacy: .public)")
+            return
+        }
         // Prevent concurrent auto-restarts for the same service
         guard !autoRestartInProgress.contains(service.name) else { return }
         autoRestartInProgress.insert(service.name)
@@ -774,6 +843,9 @@ class ServiceManager: ObservableObject {
             // any of those to `running` or `errored` below would report a state
             // the process does not have (#689).
             guard service.state == .starting else {
+                if service.state == .errored, let refusal = service.startRefusal {
+                    noticeRefusal(refusal, of: service)
+                }
                 notifyStateChanged()
                 return
             }
@@ -839,6 +911,16 @@ class ServiceManager: ObservableObject {
             notifyStateChanged()
             Log.logger("lifecycle").error("[\(service.name, privacy: .public)] Start failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// Put a start refusal in front of the user, once per launch per model.
+    /// The row in the status window carries the same words for as long as
+    /// the refusal stands; this is the one-time nudge towards it (#709).
+    private func noticeRefusal(_ refusal: LaunchRefusal, of service: any ManagedService) {
+        guard noticedRefusals.insert(refusal.modelId).inserted else { return }
+        Log.logger("lifecycle").error(
+            "[\(service.name, privacy: .public)] Not started, \(refusal.modelId, privacy: .public): \(refusal.message, privacy: .public)")
+        presentNotice("\(service.name) not started", refusal.message)
     }
 
     /// Run Alembic migrations. Returns true on success, false on failure.

@@ -122,8 +122,19 @@ struct StatusWindow: View {
             }
             .frame(width: 18, height: 18)
 
-            Text(service.name)
-                .font(.body)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(service.name)
+                    .font(.body)
+                // Why "Errored", when the service declined rather than failed:
+                // the active model does not fit this Mac (#709). Stays for as
+                // long as the settings name that model.
+                if let refusal = service.startRefusal {
+                    Text(refusal.message)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
 
             Spacer()
 

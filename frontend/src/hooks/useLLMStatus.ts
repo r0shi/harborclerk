@@ -12,11 +12,19 @@ export interface SummarizeBackend {
   state: LLMState
 }
 
+// The active model's weights alone do not fit this Mac, so the launcher refuses to start it and `loading`
+// never ends (#709). The figures are the Models page's: this Mac's memory and the tier the model needs.
+export interface DoesNotFitHere {
+  system_ram_gb: number
+  min_ram_gb: number
+}
+
 export interface LLMStatus {
   state: LLMState
   model_id: string | null
   model_name: string | null
   summarize?: SummarizeBackend
+  does_not_fit_here?: DoesNotFitHere | null
 }
 
 const IDLE_INTERVAL_MS = 8000 // poll every 8s when nothing seems to be transitioning

@@ -1,8 +1,9 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     private var serviceManager: ServiceManager!
     private var statusWindowController: NSWindowController?
@@ -38,6 +39,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         serviceManager = ServiceManager()
         healthChecker = HealthChecker(serviceManager: serviceManager)
         serviceManager.healthChecker = healthChecker
+
+        // The one notification this app posts says a model was not started
+        // (#709). Without a delegate it is dropped whenever this app is the
+        // active one, which it is with the status window open, where the
+        // user is looking for exactly that reason.
+        UNUserNotificationCenter.current().delegate = self
 
         setupStatusItem()
 
@@ -386,6 +393,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Only unpause if this task wasn't superseded by a newer restart
             guard !Task.isCancelled else { return }
             healthChecker.paused = false
+        }
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list])
+    }
+
+    /// Clicking the notice opens the web app, where the Models page is.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        Task { @MainActor in
+            self.openFrontendApp()
+            completionHandler()
         }
     }
 

@@ -128,6 +128,26 @@ describe('ModelsPage memory budget (#556)', () => {
     const q4 = rows.find((r) => r.textContent?.includes('Qwen3 4B'))!
     expect(q4.textContent).not.toContain('here)')
   })
+
+  it('states the context the active model is running with when this Mac clamps it (#709)', async () => {
+    // After a budget change the launcher relaunches the active model at less than its window; the page says
+    // what it got, in the present tense, rather than what it could be given.
+    const list = models.map((m) => ({ ...m, active: m.id === 'qwen3-8b' }))
+    getMock.mockImplementation(async (url: string) => answer(url, list) as never)
+    renderPage()
+    await screen.findByText('Qwen3 8B')
+    const rows = screen.getAllByRole('row')
+    const q8 = rows.find((r) => r.textContent?.includes('Qwen3 8B'))!
+    expect(q8.textContent).toContain(
+      'This Mac (16 GB) gives it 22,528 tokens of context; the full window needs about 36 GB.',
+    )
+    expect(q8.textContent).not.toContain('Fits this Mac')
+    expect(q8.textContent).toContain('(22,528 here)')
+    // The model that does not fit at all keeps its own line, whether or not it is active.
+    const q35 = rows.find((r) => r.textContent?.includes('Qwen3.6 35B-A3B'))!
+    expect(q35.textContent).toContain('Does not fit this Mac (16 GB): needs about 36 GB.')
+    expect(q35.textContent).toContain('It cannot be activated here.')
+  })
 })
 
 describe('ModelsPage superseded models (#551)', () => {

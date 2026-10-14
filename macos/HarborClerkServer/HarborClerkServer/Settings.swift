@@ -459,6 +459,41 @@ enum MemoryBudget {
     /// What sizing a context leaves free on a Mac with `ramBytes`.
     static func freeMarginBytes(_ ramBytes: Int) -> Int { ramBytes / freeMemoryDivisor }
 
+    /// Memory sizes Macs come with, for `minRamGB`. MAC_RAM_TIERS_GB in src/harbor_clerk/llm/models.py.
+    static let macRamTiersGB = [8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512]
+
+    /// Physical memory a Mac needs to run the model at `context` with the rest
+    /// of the app resident and a tenth of the machine free: the Mac on which
+    /// `maxContext` gives `context` in full. `ram_required_bytes` in models.py,
+    /// ceiling division included.
+    static func ramRequiredBytes(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, context: Int) -> Int {
+        let need = modelBytes + fixedBytes + kvBytesPerToken * context + runtimeOverheadBytes + hostHeadroomBytes
+        let keep = freeMemoryDivisor - 1
+        return (need * freeMemoryDivisor + keep - 1) / keep
+    }
+
+    /// `ramRequiredBytes` rounded up to a size Macs come with; `min_ram_gb` in
+    /// models.py, which is the "needs about M GB" the Models page shows.
+    static func minRamGB(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, context: Int) -> Int {
+        let need = Double(ramRequiredBytes(modelBytes: modelBytes, kvBytesPerToken: kvBytesPerToken, fixedBytes: fixedBytes, context: context)) / 1_073_741_824
+        return macRamTiersGB.first { Double($0) >= need } ?? Int(need.rounded(.up))
+    }
+
+    /// This Mac's memory as the Models page prints `system_ram_gb`: GiB to one
+    /// decimal, the decimal dropped when it is zero ("16", "7.5").
+    static func systemRamLabel(_ ramBytes: Int) -> String {
+        let gb = (Double(ramBytes) / 1_073_741_824 * 10).rounded() / 10
+        return gb == gb.rounded() ? String(Int(gb)) : String(format: "%.1f", gb)
+    }
+
+    /// What the user is told when the weights alone do not fit (`maxContext`
+    /// is 0): the Models page's line for that model, word for word, and what
+    /// to do about it (#709).
+    static func refusalMessage(modelBytes: Int, kvBytesPerToken: Int, fixedBytes: Int, requested: Int, ramBytes: Int) -> String {
+        let needs = minRamGB(modelBytes: modelBytes, kvBytesPerToken: kvBytesPerToken, fixedBytes: fixedBytes, context: requested)
+        return "Does not fit this Mac (\(systemRamLabel(ramBytes)) GB): needs about \(needs) GB. Open the Models page and pick a model that fits."
+    }
+
     /// Tokens of KV cache that `spareBytes` holds, up to `requested`, in multiples of 1024.
     private static func contextIn(_ spareBytes: Int, kvBytesPerToken: Int, requested: Int) -> Int {
         if spareBytes <= 0 { return 0 }

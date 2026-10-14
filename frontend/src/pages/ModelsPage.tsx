@@ -316,8 +316,11 @@ export default function ModelsPage() {
           <div className="text-xs text-gray-500 dark:text-gray-400">{formatSize(model.memory_bytes)} to run</div>
           {!model.fits_here && model.max_context_here > 0 && (
             <div className="mt-1 max-w-[14rem] text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-              Fits this Mac ({model.system_ram_gb} GB) at up to {model.max_context_here.toLocaleString()} tokens of
-              context; the full window needs about {model.min_ram_gb} GB.
+              {model.active
+                ? // The launcher clamps -c to this figure (#709): the same arithmetic as max_context_here, so
+                  // this is what the active model is running with, not what it could be given.
+                  `This Mac (${model.system_ram_gb} GB) gives it ${model.max_context_here.toLocaleString()} tokens of context; the full window needs about ${model.min_ram_gb} GB.`
+                : `Fits this Mac (${model.system_ram_gb} GB) at up to ${model.max_context_here.toLocaleString()} tokens of context; the full window needs about ${model.min_ram_gb} GB.`}
             </div>
           )}
           {model.max_context_here === 0 && (

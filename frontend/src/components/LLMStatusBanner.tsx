@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Link } from 'react-router'
 import { useLLMStatus, type LLMStatus } from '../hooks/useLLMStatus'
 
 interface LLMStatusContextValue {
@@ -62,6 +63,10 @@ export function LLMStatusBanner() {
   const isLoading = status.state === 'loading'
   if (!isLoading && !showSuccess) return null
 
+  // The launcher refused the active model: its weights alone do not fit this Mac (#709). Without this the
+  // spinner would say "Loading model…" until the user picked another one, and nothing would tell them to.
+  const unfit = isLoading ? status.does_not_fit_here : null
+
   return (
     <div
       role="status"
@@ -69,7 +74,22 @@ export function LLMStatusBanner() {
       className="fixed bottom-4 right-4 z-50 max-w-sm rounded-xl bg-(--bg-vibrancy) backdrop-blur-xl shadow-mac-lg ring-1 ring-(--color-border) px-4 py-3"
     >
       <div className="flex items-center gap-3">
-        {isLoading ? (
+        {unfit ? (
+          <>
+            <WarningMark />
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-(--color-text-primary)">Model not started</div>
+              <div className="text-[11px] text-(--color-text-secondary)">
+                {status.model_name ?? status.model_id} does not fit this Mac ({unfit.system_ram_gb} GB): needs about{' '}
+                {unfit.min_ram_gb} GB.{' '}
+                <Link to="/models" className="font-medium text-(--color-accent) hover:underline">
+                  Pick a model that fits
+                </Link>
+                .
+              </div>
+            </div>
+          </>
+        ) : isLoading ? (
           <>
             <Spinner />
             <div className="min-w-0">
@@ -102,6 +122,25 @@ function Spinner() {
     <svg className="h-4 w-4 shrink-0 animate-spin text-(--color-accent)" viewBox="0 0 24 24" fill="none">
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
       <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v3a5 5 0 0 0-5 5H4Z" />
+    </svg>
+  )
+}
+
+function WarningMark() {
+  return (
+    <svg
+      className="h-4 w-4 shrink-0 text-red-500"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.5}
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M12 9v4m0 4h.01M10.3 4.3 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.3a2 2 0 0 0-3.4 0Z"
+      />
     </svg>
   )
 }

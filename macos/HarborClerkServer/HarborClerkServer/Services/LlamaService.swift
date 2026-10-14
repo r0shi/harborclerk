@@ -40,10 +40,26 @@ final class LlamaService: ManagedService {
     /// it at a port nothing on the machine holds, because the default is the
     /// live app's llama-server.
     var portOverride: Int?
-    private var port: Int { portOverride ?? AppSettings.shared.llamaPort }
+    private var port: Int { portOverride ?? settings.llamaPort }
+    /// The settings this service reads. A test points it at a config file of
+    /// its own, because the default is the live app's config.json.
+    var settingsOverride: AppSettings?
+    private var settings: AppSettings { settingsOverride ?? AppSettings.shared }
+
+    /// Set when `start()` declined to launch the active model because its
+    /// weights alone do not fit this Mac; cleared by a start that got past the
+    /// fit check. Internal so a test can stand one up (#709).
+    var refusal: LaunchRefusal?
+    /// The refusal as long as it stands: the settings still name the model it
+    /// was about. A new model id is a new question, and the next start
+    /// answers it.
+    var startRefusal: LaunchRefusal? {
+        guard let refusal, refusal.modelId == settings.llmModelId else { return nil }
+        return refusal
+    }
 
     func start() async throws {
-        let settings = AppSettings.shared
+        let settings = self.settings
         let modelPath = settings.activeModelPath
         guard !modelPath.isEmpty else {
             // No model selected — revert to stopped (ServiceManager set .starting)
@@ -103,12 +119,24 @@ final class LlamaService: ManagedService {
             ramBytes: ramBytes
         )
         if contextWindow == 0 {
+            // Terminal for this model id: the manager says so to the user once
+            // and does not auto-restart into it (#709). The words are the Models
+            // page's, so the two surfaces agree.
+            let why = MemoryBudget.refusalMessage(
+                modelBytes: modelBytes,
+                kvBytesPerToken: settings.activeModelKvBytesPerToken,
+                fixedBytes: settings.activeModelFixedBytes,
+                requested: requestedContext,
+                ramBytes: ramBytes
+            )
+            refusal = LaunchRefusal(modelId: settings.llmModelId, message: why)
             Log.logger("llm").error(
-                "Not launching: \(modelPath, privacy: .public) needs more memory than this Mac has (weights \(modelBytes / 1_000_000_000) GB, \(ramBytes / 1_000_000_000) GB installed)"
+                "Not launching \(modelPath, privacy: .public) (weights \(modelBytes / 1_000_000_000) GB): \(why, privacy: .public)"
             )
             state = .errored
             return
         }
+        refusal = nil
         if contextWindow < requestedContext {
             Log.logger("llm").warning(
                 "Context clamped from \(requestedContext) to \(contextWindow) tokens to fit \(ramBytes / 1_000_000_000) GB of memory"
@@ -304,7 +332,7 @@ final class LlamaService: ManagedService {
     }
 
     func healthCheck() async -> Bool {
-        guard !AppSettings.shared.activeModelPath.isEmpty else { return false }
+        guard !settings.activeModelPath.isEmpty else { return false }
         guard let url = URL(string: "http://127.0.0.1:\(port)/health") else { return false }
         return await httpProbeOK(url)
     }

@@ -266,6 +266,47 @@ final class AppSettingsTests: XCTestCase {
         XCTAssertEqual(fit(34_359_738_368, (22_134_528_992, 20_480, 263_454_720, 262144)), 16_384)
     }
 
+    /// Same cases as `test_min_ram_rounds_up_to_a_size_macs_come_with` in Python: the "needs about M GB"
+    /// the Models page shows is what the launcher's refusal says too (#709).
+    func testMinRamGBRoundsUpToASizeMacsComeWithLikePython() {
+        func minRam(_ bytes: Int, _ perToken: Int = 147_456, _ fixed: Int = 0, _ context: Int = 32768) -> Int {
+            MemoryBudget.minRamGB(modelBytes: bytes, kvBytesPerToken: perToken, fixedBytes: fixed, context: context)
+        }
+        XCTAssertEqual(MemoryBudget.macRamTiersGB, [8, 16, 18, 24, 32, 36, 48, 64, 96, 128, 192, 256, 512])
+        // 5 + 4.8 + 1 + 8 = 18.8e9 bytes and a tenth of the Mac free on top: 20.9e9 = 19.5 GiB.
+        XCTAssertEqual(MemoryBudget.ramRequiredBytes(modelBytes: 5_000_000_000, kvBytesPerToken: 147_456, fixedBytes: 0, context: 32768), 20_924_264_676, "ceil(18.831e9 * 10 / 9)")
+        XCTAssertEqual(minRam(5_000_000_000), 24)
+        XCTAssertEqual(minRam(2_500_000_000), 18, "16.3e9 and the margin: 18.1e9 = 16.9 GiB, past 16")
+        XCTAssertEqual(minRam(6_000_000_000), 24, "19.8e9 and the margin: 22.0e9 = 20.5 GiB")
+        XCTAssertEqual(minRam(22_134_528_992, 20_480, 263_454_720, 262144), 48, "the 35B-A3B at full context")
+        XCTAssertEqual(minRam(17_035_038_112, 20_480, 1_258_291_200, 262144), 36, "#698 moves Gemma out of the 32 GB tier")
+        XCTAssertEqual(minRam(11_624_759_488, 24_576, 75_497_472, 128000), 32, "gpt-oss-20b")
+        XCTAssertEqual(minRam(600_000_000_000), 636, "past the largest Mac, the exact number of GiB")
+    }
+
+    /// The refusal is the Models page's line for that model, word for word, so the user reads the same
+    /// thing in the notice, the status window and the page it sends them to.
+    func testRefusalMessageUsesTheModelsPagesWords() {
+        let gib = 1_073_741_824
+        XCTAssertEqual(MemoryBudget.systemRamLabel(16 * gib), "16")
+        XCTAssertEqual(MemoryBudget.systemRamLabel(18 * gib), "18")
+        XCTAssertEqual(MemoryBudget.systemRamLabel(8_000_000_000), "7.5", "as the API rounds system_ram_gb")
+        let qwen35b = (bytes: 22_134_528_992, perToken: 20_480, fixed: 263_454_720, requested: 262144)
+        XCTAssertEqual(
+            MemoryBudget.maxContext(modelBytes: qwen35b.bytes, kvBytesPerToken: qwen35b.perToken, fixedBytes: qwen35b.fixed, requested: qwen35b.requested, ramBytes: 24 * gib),
+            0, "the case the message is for"
+        )
+        XCTAssertEqual(
+            MemoryBudget.refusalMessage(modelBytes: qwen35b.bytes, kvBytesPerToken: qwen35b.perToken, fixedBytes: qwen35b.fixed, requested: qwen35b.requested, ramBytes: 24 * gib),
+            "Does not fit this Mac (24 GB): needs about 48 GB. Open the Models page and pick a model that fits."
+        )
+        // At the context the launcher asks for: YaRN on, the figure is the extended window's.
+        XCTAssertEqual(
+            MemoryBudget.refusalMessage(modelBytes: 5_027_783_488, kvBytesPerToken: 147_456, fixedBytes: 0, requested: 131072, ramBytes: 8_000_000_000),
+            "Does not fit this Mac (7.5 GB): needs about 36 GB. Open the Models page and pick a model that fits."
+        )
+    }
+
     /// Same cases as `test_the_prompt_cache_gets_what_the_context_leaves` in Python.
     func testThePromptCacheGetsWhatTheContextLeaves() {
         let gib = 1_073_741_824
