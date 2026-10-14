@@ -126,6 +126,7 @@ async def _drive(
     ratios: dict | None = None,
     prose_ratios: dict | None = None,
     events_out: list | None = None,
+    question: str = "What did the Q3 contract cost?",
 ):
     """Drive one chat turn. ``ratios`` and ``prose_ratios`` are the process's tables of measured ratios for the run
     (#805), empty unless given, so no test starts from another's measurements; the caller keeps the references to
@@ -157,7 +158,7 @@ async def _drive(
             patch.object(chat_module, "execute_tool", side_effect=fake_execute_tool),
             patch("httpx.AsyncClient", return_value=client),
         ):
-            async for raw in chat_module.chat_stream(conv_id, "What did the Q3 contract cost?", admin_user.user_id):
+            async for raw in chat_module.chat_stream(conv_id, question, admin_user.user_id):
                 if raw.startswith("data: "):
                     events.append(json.loads(raw[6:]))
         return events
@@ -2488,13 +2489,19 @@ def _server_count(messages: list[dict], tools: list[dict] | None, *, without_too
 
 
 def _two_density_client(
-    ctx: int, without_tools: float = 1.2, with_tools: float = 2.2, rounds: int | None = None, refuse: bool = True
+    ctx: int,
+    without_tools: float = 1.2,
+    with_tools: float = 2.2,
+    rounds: int | None = None,
+    refuse: bool = True,
+    forced_usage: bool = True,
 ):
     """The second review's server, counting per message by a rule of its own: prose rows and the schema at about
-    ``without_tools`` times the estimate, tool results and the calls that asked for them at about ``with_tools``. The model calls a tool every round
-    (the first ``rounds``, when given, then answers). A prompt counted over ``ctx`` is refused with the pin's 400, as
-    a real server would (unless ``refuse`` is off), and the forced call likewise. Returns the client, the loop's
-    payloads, the server's count of each, the forced call's counts, and the counting function."""
+    ``without_tools`` times the estimate, tool results and the calls that asked for them at about ``with_tools``.
+    The model calls a tool every round (the first ``rounds``, when given, then answers). A prompt counted over ``ctx``
+    is refused with the pin's 400, as a real server would (unless ``refuse`` is off), and the forced call likewise;
+    with ``forced_usage`` off the forced call's answer carries no usage. Returns the client, the loop's payloads, the
+    server's count of each, the forced call's counts, and the counting function."""
     sent: list[dict] = []
     counts: list[int] = []
     forced_counts: list[int] = []
@@ -2519,9 +2526,8 @@ def _two_density_client(
         forced_counts.append(counted)
         if refuse and counted > ctx:
             return _refusal(counted, ctx)
-        return _lines_response(
-            [_chunk(content="From the results."), _finish_chunk("stop"), _usage_chunk(counted), "data: [DONE]"]
-        )
+        tail = [_usage_chunk(counted), "data: [DONE]"] if forced_usage else ["data: [DONE]"]
+        return _lines_response([_chunk(content="From the results."), _finish_chunk("stop"), *tail])
 
     client = MagicMock()
     client.build_request = MagicMock(return_value=MagicMock())
@@ -3058,12 +3064,17 @@ async def test_a_refusal_later_in_the_loop_ends_the_search_and_the_forced_call_k
     2.2x on a 16,384 slot. Round one's prompt is predicted under the budget and sent; the server refuses it. The
     history trim would keep the latest tool row as the "question" and pop the real one: instead the search ends as
     at the context budget, the forced prompt holds the question and the call with its result, and the answer is the
-    forced one, with its stop reason."""
+    forced one, with its stop reason. The refusal's count is an increment like any other (the table moves from 1.0
+    half way to 2.2) and the bookkeeping the forced call reads from: the forced call here returns no usage, so the
+    UI percentage and tokens_used are the refusal's count (plus round zero's completion)."""
+    from sqlalchemy import select
+
     from harbor_clerk.llm import chat as chat_module
+    from harbor_clerk.models.chat_message import ChatMessage
 
     conv = await _prose_history(db_session, admin_user, exchanges=6)
     ctx = 16384
-    client, sent, counts, forced_counts, _count = _two_density_client(ctx)
+    client, sent, counts, forced_counts, _count = _two_density_client(ctx, forced_usage=False)
     table = {_MODEL_KEY: 1.0}
     events: list[dict] = []
     text, done, tool_calls = await _drive(
@@ -3090,6 +3101,11 @@ async def test_a_refusal_later_in_the_loop_ends_the_search_and_the_forced_call_k
     assert forced[-2]["tool_call_id"] == forced[-3]["tool_calls"][0]["id"], "the result still answers its call"
     assert forced[-1] == {"role": "user", "content": chat_module._SEARCH_OVER_MESSAGE}
     assert len(forced_counts) == 1 and forced_counts[0] < ctx, "the forced prompt fit"
+    assert table[_MODEL_KEY] == pytest.approx(1.6, abs=0.05), "the refusal's count, measured as an increment"
+    assert done["context_pct"] == round(min((counts[1] + 5) / ctx, 1.0) * 100), "the UI reads the refusal's count"
+    rows = await db_session.execute(select(ChatMessage).where(ChatMessage.conversation_id == conv.conversation_id))
+    stored = [r for r in rows.scalars() if r.role == "assistant" and r.content][-1]
+    assert stored.tokens_used == counts[1] + 5, "the refusal's count plus round zero's completion"
 
 
 @pytest.mark.asyncio
@@ -3399,3 +3415,48 @@ async def test_a_tiny_increment_does_not_move_a_converged_ratio(
     tiny = sent[-1]["messages"][len(sent[-2]["messages"]) :]
     assert chat_module._estimate_messages_tokens(tiny) < chat_module._INCREMENT_FLOOR_TOKENS, "the scenario"
     assert table[_MODEL_KEY] == pytest.approx(2.2, abs=0.02), f"the empty result left the table at {table}"
+
+
+@pytest.mark.asyncio
+async def test_a_retry_trimmed_to_the_floor_is_still_sent_when_nothing_has_been_searched(
+    db_session, admin_user, chat_session_factory, monkeypatch
+):
+    """The fifth review's run: prose at 1.8x, 16,384, two prior exchanges and a pasted question of about 5,000 raw
+    tokens. The first prompt is refused; the retry is trimmed to the floor (system prompt and question), which the
+    prediction, at the just-measured prose ratio, puts at 97% of the slot, over the budget. Keyed on the round the
+    budget stop never sent it and forced an answer to a search that never happened; keyed on the turn having
+    searched it is sent, the server accepts it, the model searches once and answers from the result."""
+    from harbor_clerk.llm import chat as chat_module
+
+    conv = await _prose_history(db_session, admin_user, exchanges=2)
+    ctx = 16384
+    question = "What does this say about the fee? " + "clause " * 2500  # about 5,000 raw tokens
+    client, sent = _counting_client(1.8, ctx=ctx)
+    prose: dict = {}
+    events: list[dict] = []
+    text, done, tool_calls = await _drive(
+        conv.conversation_id,
+        admin_user,
+        client,
+        _Clock(),
+        monkeypatch,
+        budget=0.0,
+        context_tokens=ctx,
+        prose_ratios=prose,
+        events_out=events,
+        question=question,
+    )
+    counts = [int(1.8 * chat_module._estimate_payload_tokens(p["messages"], p["tools"])) for p in sent]
+    assert len(sent) == 2 and counts[0] > ctx, f"the scenario: the first prompt refused ({counts})"
+    floor = sent[1]["messages"]
+    assert [m["role"] for m in floor] == ["system", "user"], "the retry is the floor"
+    schema = chat_module._get_tool_schema_tokens(None)
+    predicted = chat_module._predict_prompt_tokens(floor, None, 0, schema, chat_module._ESTIMATE_RATIO_DEFAULT, 1.8)
+    assert chat_module._TOOL_LOOP_BUDGET * ctx <= predicted < ctx, "the scenario: over the budget, inside the slot"
+    assert chat_module._TOOL_LOOP_BUDGET * ctx <= counts[1] < ctx, f"and the server took it: {counts}"
+    assert tool_calls == ["search_documents"], "the floor was sent and the model searched"
+    assert done["stop_reason"] == "context_budget" and text == "From the results."
+    assert not [e for e in events if e.get("type") == "error"]
+    forced = client.stream.call_args.kwargs["json"]["messages"]
+    assert forced[-1] == {"role": "user", "content": chat_module._SEARCH_OVER_MESSAGE}, "answered from a search"
+    assert prose[_MODEL_KEY] == pytest.approx(1.8, abs=0.01)

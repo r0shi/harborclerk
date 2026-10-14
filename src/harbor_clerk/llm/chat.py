@@ -731,14 +731,17 @@ async def chat_stream(
         for _round in range(_MAX_TOOL_ROUNDS):
             # Check context budget before each LLM call, against the next prompt as predicted from the server's
             # count of the last one (#805): the previous round's usage.prompt_tokens, plus what this round appended
-            # at the model's measured ratio.
+            # at the model's measured ratio. The stop needs a search to answer from, so it is keyed on the turn
+            # having searched, not on the round: a first prompt refused and retried runs at round one with nothing
+            # searched, and a retry trimmed to the floor that the prediction puts over the budget must still be sent
+            # (the server, not the prediction, says whether it fits; the fifth review of #808).
             estimate_ratio = _estimate_ratio(active_model_id)
             prose_ratio = _prose_ratio(active_model_id)
             predicted = _predict_prompt_tokens(
                 messages, prompt_tokens_last, counted_upto, _get_tool_schema_tokens(model), estimate_ratio, prose_ratio
             )
             usage_frac = predicted / context_tokens if context_tokens > 0 else 0.0
-            if usage_frac >= _TOOL_LOOP_BUDGET and _round > 0:
+            if usage_frac >= _TOOL_LOOP_BUDGET and searched_this_turn:
                 budget_exhausted = True
                 logger.info(
                     "Context budget %.0f%% >= %.0f%% after %d tool rounds (%d tokens predicted from the server's "
